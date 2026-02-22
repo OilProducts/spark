@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Attractor Factory Control Room</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        #network { height: 100%; width: 100%; }
+        .log-window { font-family: 'Courier New', Courier, monospace; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white h-screen flex flex-col">
+
+    <!-- Header -->
+    <header class="bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center">
+        <h1 class="text-xl font-bold flex items-center gap-2">
+            ⚙️ StrongDM Attractor <span class="text-gray-400 text-sm font-normal">| Control Room</span>
+        </h1>
+
+        <div class="flex items-center gap-2">
+            <span class="text-gray-400 text-sm font-semibold">Workspace Dir:</span>
+            <input type="text" id="workingDir" value="./test-app"
+                   class="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm text-green-400 font-mono w-64 focus:outline-none focus:border-blue-500" />
+        </div>
+
+        <div class="space-x-2">
+            <button onclick="resetState()" class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm font-semibold transition">Reset Checkpoint</button>
+            <button onclick="runPipeline()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-semibold transition">🚀 Run Pipeline</button>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <div class="flex-1 flex overflow-hidden">
+
+        <!-- Left Panel: Blueprint Editor -->
+        <div class="w-1/3 border-r border-gray-700 flex flex-col">
+            <div class="p-3 bg-gray-800 text-sm font-semibold border-b border-gray-700 text-gray-300">
+                📄 Blueprint Editor (.dot)
+            </div>
+            <textarea id="blueprint" class="flex-1 w-full bg-gray-950 text-green-400 p-4 font-mono text-sm resize-none focus:outline-none" spellcheck="false">
+digraph SoftwareFactory {
+    setup [prompt="Initialize a python uv project, install fastapi."];
+
+    backend [prompt="Write a generic mysql backed crud backend."];
+    frontend [prompt="Write the UI using tailwind, and plain js to consume the backend."];
+
+    test [prompt="Write jest tests for frontend and backend and execute them"];
+
+    setup -> backend;
+    setup -> frontend;
+    backend -> test;
+    frontend -> test;
+}
+            </textarea>
+        </div>
+
+        <!-- Right Panel: Visualization & Logs -->
+        <div class="w-2/3 flex flex-col">
+            <!-- Graph Vis -->
+            <div class="h-3/5 bg-gray-100 border-b border-gray-700 relative">
+                <div class="absolute top-2 left-2 text-gray-800 font-bold z-10 text-sm bg-white/70 px-2 py-1 rounded shadow">
+                    Graph Visualization
+                </div>
+                <div id="network"></div>
+            </div>
+
+            <!-- Terminal Logs -->
+            <div class="h-2/5 bg-black p-4 overflow-y-auto log-window text-sm" id="logs">
+                <div class="text-gray-500">// System ready. Waiting for execution...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- VIS-NETWORK SETUP ---
+        const nodesData = new vis.DataSet([]);
+        const edgesData = new vis.DataSet([]);
+        const network = new vis.Network(
+            document.getElementById('network'),
+            { nodes: nodesData, edges: edgesData },
+            {
+                layout: { hierarchical: { direction: "UD", sortMethod: "directed" } },
+                physics: false,
+                nodes: { shape: 'box', font: { color: 'white', face: 'monospace' }, margin: 10 }
+            }
+        );
+
+        const COLOR_MAP = {
+            "pending": { background: "#4B5563", border: "#374151" }, // Gray
+            "running": { background: "#2563EB", border: "#1D4ED8" }, // Blue
+            "success": { background: "#16A34A", border: "#15803D" }, // Green
+            "skipped": { background: "#059669", border: "#047857" }, // Dark Green
+            "failed":  { background: "#DC2626", border: "#B91C1C" }  // Red
+        };
+
+        // --- WEBSOCKET CONNECTION ---
+        const ws = new WebSocket(`ws://${window.location.host}/ws`);
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.type === "graph") {
+                // Initialize the graph from the backend parser
+                nodesData.clear();
+                edgesData.clear();
+                data.nodes.forEach(n => nodesData.add({ id: n.id, label: n.label, color: COLOR_MAP["pending"] }));
+                data.edges.forEach(e => edgesData.add({ from: e.from, to: e.to, arrows: "to", color: "#9CA3AF" }));
+            }
+            else if (data.type === "state") {
+                // Update Node Color
+                if (nodesData.get(data.node)) {
+                    nodesData.update({ id: data.node, color: COLOR_MAP[data.status] });
+                }
+            }
+            else if (data.type === "log") {
+                // Append log to terminal
+                const logs = document.getElementById('logs');
+                const logEl = document.createElement('div');
+                logEl.className = "text-green-400 mt-1";
+                logEl.innerText = `> ${data.msg}`;
+                logs.appendChild(logEl);
+                logs.scrollTop = logs.scrollHeight; // Auto-scroll
+            }
+        };
+
+        // --- ACTIONS ---
+        async function runPipeline() {
+            const blueprint = document.getElementById('blueprint').value;
+            const working_directory = document.getElementById('workingDir').value;
+
+            // Clear logs and reset graph colors to pending
+            document.getElementById('logs').innerHTML = '';
+            nodesData.forEach(n => nodesData.update({id: n.id, color: COLOR_MAP["pending"]}));
+
+            await fetch('/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ blueprint, working_directory })
+            });
+        }
+
+        async function resetState() {
+            const working_directory = document.getElementById('workingDir').value;
+
+            await fetch('/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ working_directory })
+            });
+            const logs = document.getElementById('logs');
+            logs.innerHTML += `<div class="text-yellow-400 mt-1">> [System] Checkpoint reset for ${working_directory}.</div>`;
+            logs.scrollTop = logs.scrollHeight;
+        }
+    </script>
+</body>
+</html>
