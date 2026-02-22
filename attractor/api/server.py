@@ -63,7 +63,7 @@ RUNTIME = RuntimeState(last_completed_nodes=[])
 class RunRequest(BaseModel):
     blueprint: str
     working_directory: str = "./workspace"
-    backend: str = "mock"  # mock | codex
+    backend: str = "codex"
 
 
 class ResetRequest(BaseModel):
@@ -78,11 +78,6 @@ DEFAULT_BLUEPRINT = """digraph SoftwareFactory {
 
     start -> setup -> build -> done;
 }"""
-
-
-class MockCodergenBackend(CodergenBackend):
-    def run(self, node_id: str, prompt: str, context: Context) -> bool:
-        return True
 
 
 class LocalCodexCliBackend(CodergenBackend):
@@ -202,11 +197,13 @@ async def run_pipeline(req: RunRequest):
     def emit(message: dict):
         asyncio.run_coroutine_threadsafe(manager.broadcast(message), loop)
 
-    backend: CodergenBackend
-    if req.backend == "codex":
-        backend = LocalCodexCliBackend(working_dir, emit)
-    else:
-        backend = MockCodergenBackend()
+    if req.backend != "codex":
+        return {
+            "status": "validation_error",
+            "error": "Unsupported backend. This build requires backend='codex'.",
+        }
+
+    backend: CodergenBackend = LocalCodexCliBackend(working_dir, emit)
 
     registry = build_default_registry(
         codergen_backend=backend,

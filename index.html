@@ -136,7 +136,7 @@ digraph SoftwareFactory {
             await fetch('/run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ blueprint, working_directory })
+                body: JSON.stringify({ blueprint, working_directory, backend: "codex" })
             });
         }
 
