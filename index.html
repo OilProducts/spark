@@ -13,15 +13,26 @@
 <body class="bg-gray-900 text-white h-screen flex flex-col">
 
     <!-- Header -->
-    <header class="bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center">
+    <header class="bg-gray-800 p-4 border-b border-gray-700 flex flex-wrap justify-between items-center gap-3">
         <h1 class="text-xl font-bold flex items-center gap-2">
             ⚙️ StrongDM Attractor <span class="text-gray-400 text-sm font-normal">| Control Room</span>
         </h1>
 
-        <div class="flex items-center gap-2">
-            <span class="text-gray-400 text-sm font-semibold">Workspace Dir:</span>
-            <input type="text" id="workingDir" value="./test-app"
-                   class="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm text-green-400 font-mono w-64 focus:outline-none focus:border-blue-500" />
+        <div class="flex flex-wrap items-center gap-3">
+            <div class="flex items-center gap-2">
+                <span class="text-gray-400 text-sm font-semibold">Workspace Dir:</span>
+                <input type="text" id="workingDir" value="./test-app"
+                       class="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm text-green-400 font-mono w-56 sm:w-64 focus:outline-none focus:border-blue-500" />
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-gray-400 text-sm font-semibold">Model:</span>
+                <input type="text" id="model" value=""
+                       placeholder="codex default"
+                       class="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm text-green-400 font-mono w-48 sm:w-56 focus:outline-none focus:border-blue-500" />
+            </div>
+            <div id="modelDisplay" class="text-xs text-gray-300 font-mono">
+                Using: codex default (config/profile)
+            </div>
         </div>
 
         <div class="space-x-2">
@@ -40,6 +51,9 @@
             </div>
             <textarea id="blueprint" class="flex-1 w-full bg-gray-950 text-green-400 p-4 font-mono text-sm resize-none focus:outline-none" spellcheck="false">
 digraph SoftwareFactory {
+    start [shape=Mdiamond, label="Start"];
+    done [shape=Msquare, label="Done"];
+
     setup [prompt="Initialize a python uv project, install fastapi."];
 
     backend [prompt="Write a generic mysql backed crud backend."];
@@ -47,10 +61,12 @@ digraph SoftwareFactory {
 
     test [prompt="Write jest tests for frontend and backend and execute them"];
 
+    start -> setup;
     setup -> backend;
     setup -> frontend;
     backend -> test;
     frontend -> test;
+    test -> done;
 }
             </textarea>
         </div>
@@ -107,6 +123,10 @@ digraph SoftwareFactory {
                 data.nodes.forEach(n => nodesData.add({ id: n.id, label: n.label, color: COLOR_MAP["pending"] }));
                 data.edges.forEach(e => edgesData.add({ from: e.from, to: e.to, arrows: "to", color: "#9CA3AF" }));
             }
+            else if (data.type === "run_meta") {
+                const displayModel = data.model || "codex default (config/profile)";
+                document.getElementById('modelDisplay').innerText = `Using: ${displayModel}`;
+            }
             else if (data.type === "state") {
                 // Update Node Color
                 if (nodesData.get(data.node)) {
@@ -128,15 +148,23 @@ digraph SoftwareFactory {
         async function runPipeline() {
             const blueprint = document.getElementById('blueprint').value;
             const working_directory = document.getElementById('workingDir').value;
+            const model = document.getElementById('model').value.trim();
+            const displayModel = model || "codex default (config/profile)";
 
             // Clear logs and reset graph colors to pending
             document.getElementById('logs').innerHTML = '';
             nodesData.forEach(n => nodesData.update({id: n.id, color: COLOR_MAP["pending"]}));
+            document.getElementById('modelDisplay').innerText = `Using: ${displayModel}`;
+
+            const payload = { blueprint, working_directory, backend: "codex" };
+            if (model) {
+                payload.model = model;
+            }
 
             await fetch('/run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ blueprint, working_directory, backend: "codex" })
+                body: JSON.stringify(payload)
             });
         }
 

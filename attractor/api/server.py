@@ -54,6 +54,7 @@ class RuntimeState:
     status: str = "idle"
     last_error: str = ""
     last_working_directory: str = ""
+    last_model: str = ""
     last_completed_nodes: list[str] = None
 
 
@@ -64,6 +65,7 @@ class RunRequest(BaseModel):
     blueprint: str
     working_directory: str = "./workspace"
     backend: str = "codex"
+    model: Optional[str] = None
 
 
 class ResetRequest(BaseModel):
@@ -81,12 +83,16 @@ DEFAULT_BLUEPRINT = """digraph SoftwareFactory {
 
 
 class LocalCodexCliBackend(CodergenBackend):
-    def __init__(self, working_dir: str, emit):
+    def __init__(self, working_dir: str, emit, model: Optional[str] = None):
         self.working_dir = working_dir
         self.emit = emit
+        self.model = model
 
     def run(self, node_id: str, prompt: str, context: Context) -> bool:
-        cmd = ["codex", "exec", prompt]
+        cmd = ["codex", "exec"]
+        if self.model:
+            cmd.extend(["-m", self.model])
+        cmd.append(prompt)
         proc = subprocess.run(
             cmd,
             cwd=self.working_dir,
@@ -143,6 +149,7 @@ async def get_status():
         "status": RUNTIME.status,
         "last_error": RUNTIME.last_error,
         "last_working_directory": RUNTIME.last_working_directory,
+        "last_model": RUNTIME.last_model,
         "last_completed_nodes": RUNTIME.last_completed_nodes,
     }
 
@@ -183,6 +190,8 @@ async def run_pipeline(req: RunRequest):
 
     os.makedirs(req.working_directory, exist_ok=True)
     working_dir = str(Path(req.working_directory).resolve())
+    selected_model = (req.model or "").strip()
+    display_model = selected_model or "codex default (config/profile)"
 
     await manager.broadcast(
         {
@@ -203,7 +212,11 @@ async def run_pipeline(req: RunRequest):
             "error": "Unsupported backend. This build requires backend='codex'.",
         }
 
-    backend: CodergenBackend = LocalCodexCliBackend(working_dir, emit)
+    backend: CodergenBackend = LocalCodexCliBackend(
+        working_dir,
+        emit,
+        model=selected_model or None,
+    )
 
     registry = build_default_registry(
         codergen_backend=backend,
@@ -220,6 +233,21 @@ async def run_pipeline(req: RunRequest):
     RUNTIME.status = "running"
     RUNTIME.last_error = ""
     RUNTIME.last_working_directory = working_dir
+    RUNTIME.last_model = display_model
+
+    await manager.broadcast(
+        {
+            "type": "run_meta",
+            "working_directory": working_dir,
+            "model": display_model,
+        }
+    )
+    await manager.broadcast(
+        {
+            "type": "log",
+            "msg": f"[System] Launching in {working_dir} with model: {display_model}",
+        }
+    )
 
     async def _run():
         nonlocal context
@@ -244,7 +272,7 @@ async def run_pipeline(req: RunRequest):
             await manager.broadcast({"type": "log", "msg": f"⚠️ Pipeline Aborted: {exc}"})
 
     asyncio.create_task(_run())
-    return {"status": "started"}
+    return {"status": "started", "working_directory": working_dir, "model": display_model}
 
 
 @app.post("/reset")
