@@ -1,0 +1,31 @@
+import unittest
+
+from attractor.engine.conditions import evaluate_condition
+from attractor.engine.context import Context
+from attractor.engine.outcome import Outcome, OutcomeStatus
+
+
+class TestConditions(unittest.TestCase):
+    def test_empty_condition_true(self):
+        outcome = Outcome(status=OutcomeStatus.SUCCESS)
+        self.assertTrue(evaluate_condition("", outcome, Context()))
+
+    def test_equals_not_equals_and(self):
+        outcome = Outcome(status=OutcomeStatus.FAIL, preferred_label="Fix")
+        ctx = Context(values={"tests_passed": "false", "loop": {"state": "open"}})
+
+        self.assertTrue(evaluate_condition("outcome=fail", outcome, ctx))
+        self.assertTrue(evaluate_condition("outcome!=success", outcome, ctx))
+        self.assertTrue(evaluate_condition("outcome=fail && context.tests_passed=false", outcome, ctx))
+        self.assertFalse(evaluate_condition("outcome=success && context.tests_passed=false", outcome, ctx))
+        self.assertTrue(evaluate_condition("preferred_label=Fix", outcome, ctx))
+        self.assertTrue(evaluate_condition("context.loop.state=open", outcome, ctx))
+
+    def test_invalid_clause_false(self):
+        outcome = Outcome(status=OutcomeStatus.SUCCESS)
+        self.assertFalse(evaluate_condition("bad clause", outcome, Context()))
+        self.assertFalse(evaluate_condition("unknown=foo", outcome, Context()))
+
+
+if __name__ == "__main__":
+    unittest.main()
