@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 from typing import Dict, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -24,6 +24,10 @@ from attractor.transforms import (
 
 
 app = FastAPI()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+FRONTEND_DIST_INDEX = FRONTEND_DIST / "index.html"
+LEGACY_INDEX = PROJECT_ROOT / "index.html"
 
 
 class ConnectionManager:
@@ -62,17 +66,26 @@ RUNTIME = RuntimeState(last_completed_nodes=[])
 
 
 class RunRequest(BaseModel):
-    blueprint: str
+    flow_content: str
     working_directory: str = "./workspace"
     backend: str = "codex"
     model: Optional[str] = None
+
+
+class PreviewRequest(BaseModel):
+    flow_content: str
+
+
+class SaveFlowRequest(BaseModel):
+    name: str
+    content: str
 
 
 class ResetRequest(BaseModel):
     working_directory: str = "./workspace"
 
 
-DEFAULT_BLUEPRINT = """digraph SoftwareFactory {
+DEFAULT_FLOW = """digraph SoftwareFactory {
     start [shape=Mdiamond, label="Start"];
     setup [shape=box, prompt="Initialize project"];
     build [shape=box, prompt="Build app"];
@@ -130,7 +143,25 @@ class BroadcastingRunner:
 
 @app.get("/")
 async def get_ui():
-    return FileResponse("index.html")
+    if FRONTEND_DIST_INDEX.exists():
+        return FileResponse(FRONTEND_DIST_INDEX)
+    return FileResponse(LEGACY_INDEX)
+
+
+@app.get("/assets/{asset_path:path}")
+async def get_frontend_asset(asset_path: str):
+    file_path = FRONTEND_DIST / "assets" / asset_path
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return FileResponse(file_path)
+
+
+@app.get("/vite.svg")
+async def get_frontend_vite_icon():
+    file_path = FRONTEND_DIST / "vite.svg"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return FileResponse(file_path)
 
 
 @app.websocket("/ws")
@@ -154,10 +185,47 @@ async def get_status():
     }
 
 
+def _graph_payload(graph) -> dict:
+    return {
+        "nodes": [{"id": n.node_id, "label": n.node_id} for n in graph.nodes.values()],
+        "edges": [{"from": e.source, "to": e.target} for e in graph.edges],
+    }
+
+
+@app.post("/preview")
+async def preview_pipeline(req: PreviewRequest):
+    try:
+        graph = parse_dot(req.flow_content)
+    except DotParseError as exc:
+        return {"status": "parse_error", "error": str(exc)}
+
+    pipeline = TransformPipeline()
+    pipeline.register(GoalVariableTransform())
+    pipeline.register(ModelStylesheetTransform())
+    graph = pipeline.apply(graph)
+
+    diagnostics = validate_graph(graph)
+    errors = [d for d in diagnostics if d.severity == DiagnosticSeverity.ERROR]
+
+    payload = {
+        "status": "ok" if not errors else "validation_error",
+        "graph": _graph_payload(graph),
+        "errors": [
+            {
+                "rule_id": d.rule_id,
+                "message": d.message,
+                "line": d.line,
+            }
+            for d in errors
+        ],
+    }
+    return payload
+
+
 @app.post("/run")
 async def run_pipeline(req: RunRequest):
     try:
-        graph = parse_dot(req.blueprint)
+        graph = parse_dot(req.flow_content)
     except DotParseError as exc:
         RUNTIME.status = "validation_error"
         RUNTIME.last_error = str(exc)
@@ -196,8 +264,7 @@ async def run_pipeline(req: RunRequest):
     await manager.broadcast(
         {
             "type": "graph",
-            "nodes": [{"id": n.node_id, "label": n.node_id} for n in graph.nodes.values()],
-            "edges": [{"from": e.source, "to": e.target} for e in graph.edges],
+            **_graph_payload(graph),
         }
     )
 
@@ -267,6 +334,8 @@ async def run_pipeline(req: RunRequest):
             RUNTIME.last_completed_nodes = result.completed_nodes
             await manager.broadcast({"type": "log", "msg": f"Pipeline {result.status}"})
         except Exception as exc:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
             RUNTIME.status = "failed"
             RUNTIME.last_error = str(exc)
             await manager.broadcast({"type": "log", "msg": f"⚠️ Pipeline Aborted: {exc}"})
@@ -281,3 +350,38 @@ async def reset_checkpoint(req: ResetRequest):
     if target_state.exists():
         target_state.unlink()
     return {"status": "reset"}
+
+
+@app.get("/api/flows")
+async def list_flows():
+    flows_dir = Path("flows")
+    flows_dir.mkdir(exist_ok=True)
+    return [f.name for f in flows_dir.glob("*.dot")]
+
+
+@app.get("/api/flows/{name}")
+async def get_flow(name: str):
+    flow_path = Path("flows") / name
+    if not flow_path.exists():
+        return {"error": "Flow not found"}, 404
+    return {"name": name, "content": flow_path.read_text()}
+
+
+@app.post("/api/flows")
+async def save_flow(req: SaveFlowRequest):
+    flows_dir = Path("flows")
+    flows_dir.mkdir(exist_ok=True)
+    flow_path = flows_dir / req.name
+    if not flow_path.name.endswith(".dot"):
+        flow_path = flow_path.with_suffix(".dot")
+    flow_path.write_text(req.content)
+    return {"status": "saved", "name": flow_path.name}
+
+
+@app.delete("/api/flows/{flow_name}")
+async def delete_flow(flow_name: str):
+    filepath = Path("flows") / flow_name
+    if filepath.exists():
+        filepath.unlink()
+        return {"status": "deleted"}
+    return {"error": "Flow not found"}, 404
