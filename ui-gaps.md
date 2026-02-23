@@ -28,7 +28,7 @@ DoD: Flow list shows a clear human-input-needed indicator; executing graph highl
 Notes: Implemented node-expanding panel, flow list indicator, and a web interviewer path. Auto-approve only when no websocket clients are connected.
 Open question: None (node-expanding panel chosen).
 
-2. Live node status updates during execution.
+2. Live node status updates during execution. **DONE**
 DoD: Nodes reflect running/success/fail based on `/ws` state messages, and UI resets appropriately between runs.
 
 3. Edge attributes: display and editing.
