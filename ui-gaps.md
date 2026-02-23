@@ -23,9 +23,9 @@ The UI currently covers basic node editing, flow loading/saving, and run initiat
 5. Frontend lint and build pass.
 
 **Backlog Items**
-1. Human gate UI end-to-end.
+1. Human gate UI end-to-end. **DONE**
 DoD: Flow list shows a clear human-input-needed indicator; executing graph highlights/expands the gate node; user can choose an option; selection routes execution; handler no longer auto-approves for active UI runs.
-Notes: Requires a UI surface for questions and a backend delivery/answer path.
+Notes: Implemented node-expanding panel, flow list indicator, and a web interviewer path. Auto-approve only when no websocket clients are connected.
 Open question: None (node-expanding panel chosen).
 
 2. Live node status updates during execution.
