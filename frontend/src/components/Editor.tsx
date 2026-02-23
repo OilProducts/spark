@@ -28,6 +28,10 @@ interface PreviewNode {
     label?: string
     shape?: string
     prompt?: string
+    tool_command?: string
+    join_policy?: string
+    error_policy?: string
+    max_parallel?: number | string
 }
 
 interface PreviewEdge {
@@ -92,7 +96,16 @@ export function Editor() {
                     id: n.id,
                     type: 'customTask',
                     position: { x: 250, y: i * 150 }, // Auto-layout stub
-                    data: { label: n.label, shape: n.shape ?? 'box', prompt: n.prompt ?? '', status: 'idle' },
+                    data: {
+                        label: n.label,
+                        shape: n.shape ?? 'box',
+                        prompt: n.prompt ?? '',
+                        tool_command: n.tool_command ?? '',
+                        join_policy: n.join_policy ?? 'wait_all',
+                        error_policy: n.error_policy ?? 'continue',
+                        max_parallel: n.max_parallel ?? 4,
+                        status: 'idle'
+                    },
                 }));
 
                 const rfEdges: Edge[] = preview.graph.edges.map((e, i: number) => ({

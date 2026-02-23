@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import copy
 from typing import Any, Dict
 
 
@@ -17,6 +18,9 @@ class Context:
     def merge_updates(self, updates: Dict[str, Any]) -> None:
         for key, value in updates.items():
             self.values[key] = value
+
+    def clone(self) -> "Context":
+        return Context(values=copy.deepcopy(self.values))
 
     def get_context_path(self, path: str) -> str:
         # path is expected to be the suffix after "context."

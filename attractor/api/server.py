@@ -202,6 +202,10 @@ def _graph_payload(graph) -> dict:
                 "label": _attr_value(n.attrs, "label", n.node_id),
                 "shape": _attr_value(n.attrs, "shape"),
                 "prompt": _attr_value(n.attrs, "prompt"),
+                "tool_command": _attr_value(n.attrs, "tool_command"),
+                "join_policy": _attr_value(n.attrs, "join_policy"),
+                "error_policy": _attr_value(n.attrs, "error_policy"),
+                "max_parallel": _attr_value(n.attrs, "max_parallel"),
             }
             for n in graph.nodes.values()
         ],

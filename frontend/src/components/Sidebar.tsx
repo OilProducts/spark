@@ -177,7 +177,9 @@ export function Sidebar() {
                                     <option value="box">Codergen (Task)</option>
                                     <option value="hexagon">Wait for Human</option>
                                     <option value="diamond">Condition</option>
-                                    <option value="parallelogram">Parallel</option>
+                                    <option value="component">Parallel (Fan Out)</option>
+                                    <option value="tripleoctagon">Parallel (Fan In)</option>
+                                    <option value="parallelogram">Tool</option>
                                     <option value="Mdiamond">Start Node</option>
                                     <option value="Msquare">End Node</option>
                                 </select>
@@ -192,6 +194,54 @@ export function Sidebar() {
                                     placeholder="Enter system prompt instructions..."
                                 />
                             </div>
+                            {(selectedNode?.data?.shape as string) === 'parallelogram' && (
+                                <div className="space-y-1.5">
+                                    <label className="text-sm font-medium">Tool Command</label>
+                                    <input
+                                        value={(selectedNode?.data?.tool_command as string) || ''}
+                                        onChange={(e) => handlePropertyChange('tool_command', e.target.value)}
+                                        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        placeholder="e.g. pytest -q"
+                                    />
+                                </div>
+                            )}
+                            {(selectedNode?.data?.shape as string) === 'component' && (
+                                <>
+                                    <div className="space-y-1.5">
+                                        <label className="text-sm font-medium">Join Policy</label>
+                                        <select
+                                            value={(selectedNode?.data?.join_policy as string) || 'wait_all'}
+                                            onChange={(e) => handlePropertyChange('join_policy', e.target.value)}
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        >
+                                            <option value="wait_all">Wait All</option>
+                                            <option value="first_success">First Success</option>
+                                            <option value="k_of_n">K of N</option>
+                                            <option value="quorum">Quorum</option>
+                                        </select>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <label className="text-sm font-medium">Error Policy</label>
+                                        <select
+                                            value={(selectedNode?.data?.error_policy as string) || 'continue'}
+                                            onChange={(e) => handlePropertyChange('error_policy', e.target.value)}
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        >
+                                            <option value="continue">Continue</option>
+                                            <option value="fail_fast">Fail Fast</option>
+                                            <option value="ignore">Ignore</option>
+                                        </select>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <label className="text-sm font-medium">Max Parallel</label>
+                                        <input
+                                            value={(selectedNode?.data?.max_parallel as number | string | undefined) ?? 4}
+                                            onChange={(e) => handlePropertyChange('max_parallel', e.target.value)}
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        />
+                                    </div>
+                                </>
+                            )}
                         </div>
                     )}
                 </div>

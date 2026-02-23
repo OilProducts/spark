@@ -24,6 +24,7 @@ class PipelineResult:
     completed_nodes: List[str] = field(default_factory=list)
     context: Dict[str, object] = field(default_factory=dict)
     node_outcomes: Dict[str, Outcome] = field(default_factory=dict)
+    failure_reason: str = ""
 
 
 class PipelineExecutor:
@@ -145,6 +146,90 @@ class PipelineExecutor:
                 context=ctx,
                 retry_counts=retry_counts,
             )
+
+            steps += 1
+            if max_steps is not None and steps >= max_steps:
+                return PipelineResult(
+                    status="paused",
+                    current_node=current,
+                    completed_nodes=completed,
+                    context=dict(ctx.values),
+                    node_outcomes=outcomes,
+                )
+
+    def run_from(
+        self,
+        start_node: str,
+        context: Optional[Context] = None,
+        *,
+        max_steps: Optional[int] = None,
+        stop_nodes: Optional[set[str]] = None,
+    ) -> PipelineResult:
+        ctx = context or Context()
+        completed: List[str] = []
+        outcomes: Dict[str, Outcome] = {}
+        retry_counts: Dict[str, int] = {}
+        current = start_node
+        steps = 0
+        stop_nodes = set(stop_nodes or [])
+
+        while True:
+            if current in stop_nodes:
+                return PipelineResult(
+                    status="success",
+                    current_node=current,
+                    completed_nodes=completed,
+                    context=dict(ctx.values),
+                    node_outcomes=outcomes,
+                )
+
+            if self._is_exit_node(current):
+                return PipelineResult(
+                    status="success",
+                    current_node=current,
+                    completed_nodes=completed,
+                    context=dict(ctx.values),
+                    node_outcomes=outcomes,
+                )
+
+            node = self.graph.nodes[current]
+            prompt = self._prompt_for_node(node.node_id)
+            outcome = self.runner(node.node_id, prompt, ctx)
+            outcomes[node.node_id] = outcome
+
+            ctx.set("outcome", outcome.status.value)
+            if outcome.preferred_label:
+                ctx.set("preferred_label", outcome.preferred_label)
+            if outcome.context_updates:
+                ctx.merge_updates(outcome.context_updates)
+            self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
+
+            self._write_stage_artifacts(node.node_id, prompt, outcome)
+
+            max_retries = self._max_retries_for_node(node.node_id)
+            retries_so_far = retry_counts.get(node.node_id, 0)
+            if self._should_retry(outcome, retries_so_far, max_retries):
+                retry_counts[node.node_id] = retries_so_far + 1
+                continue
+
+            completed.append(node.node_id)
+            outgoing = [edge for edge in self.graph.edges if edge.source == node.node_id]
+            next_edge = select_next_edge(outgoing, outcome, ctx)
+            if not next_edge and outcome.status.value == "fail":
+                route = self._resolve_failure_retry_target(node.node_id)
+                if route:
+                    next_edge = _SyntheticEdge(route)
+            if not next_edge:
+                return PipelineResult(
+                    status="fail",
+                    current_node=current,
+                    completed_nodes=completed,
+                    context=dict(ctx.values),
+                    node_outcomes=outcomes,
+                    failure_reason=f"Stage '{node.node_id}' has no eligible outgoing edge",
+                )
+
+            current = next_edge.target
 
             steps += 1
             if max_steps is not None and steps >= max_steps:

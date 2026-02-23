@@ -14,6 +14,12 @@ export function TaskNode({ id, data, selected }: NodeProps) {
     const [isEditingDetails, setIsEditingDetails] = useState(false);
     const [draftShape, setDraftShape] = useState<string>((data.shape as string) || 'box');
     const [draftPrompt, setDraftPrompt] = useState<string>((data.prompt as string) || '');
+    const [draftToolCommand, setDraftToolCommand] = useState<string>((data.tool_command as string) || '');
+    const [draftJoinPolicy, setDraftJoinPolicy] = useState<string>((data.join_policy as string) || 'wait_all');
+    const [draftErrorPolicy, setDraftErrorPolicy] = useState<string>((data.error_policy as string) || 'continue');
+    const [draftMaxParallel, setDraftMaxParallel] = useState<string>(
+        data.max_parallel !== undefined ? String(data.max_parallel) : '4'
+    );
     const status = (data.status as string) || 'idle';
 
     useEffect(() => {
@@ -78,6 +84,10 @@ export function TaskNode({ id, data, selected }: NodeProps) {
         event.stopPropagation();
         setDraftShape((data.shape as string) || 'box');
         setDraftPrompt((data.prompt as string) || '');
+        setDraftToolCommand((data.tool_command as string) || '');
+        setDraftJoinPolicy((data.join_policy as string) || 'wait_all');
+        setDraftErrorPolicy((data.error_policy as string) || 'continue');
+        setDraftMaxParallel(data.max_parallel !== undefined ? String(data.max_parallel) : '4');
         setIsEditingDetails(true);
     };
 
@@ -89,6 +99,10 @@ export function TaskNode({ id, data, selected }: NodeProps) {
         persistNodeData({
             shape: draftShape,
             prompt: draftPrompt,
+            tool_command: draftToolCommand,
+            join_policy: draftJoinPolicy,
+            error_policy: draftErrorPolicy,
+            max_parallel: draftMaxParallel,
         });
         setIsEditingDetails(false);
     };
@@ -162,7 +176,9 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                 <option value="box">Codergen (Task)</option>
                                 <option value="hexagon">Wait for Human</option>
                                 <option value="diamond">Condition</option>
-                                <option value="parallelogram">Parallel</option>
+                                <option value="component">Parallel (Fan Out)</option>
+                                <option value="tripleoctagon">Parallel (Fan In)</option>
+                                <option value="parallelogram">Tool</option>
                                 <option value="Mdiamond">Start Node</option>
                                 <option value="Msquare">End Node</option>
                             </select>
@@ -175,6 +191,55 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                 className="nodrag h-20 w-full resize-none rounded-md border border-input bg-background px-2 py-1 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             />
                         </div>
+                        {draftShape === 'parallelogram' && (
+                            <div className="space-y-1">
+                                <label className="text-xs font-medium text-foreground">Tool Command</label>
+                                <input
+                                    value={draftToolCommand}
+                                    onChange={(event) => setDraftToolCommand(event.target.value)}
+                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    placeholder="e.g. pytest -q"
+                                />
+                            </div>
+                        )}
+                        {draftShape === 'component' && (
+                            <>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Join Policy</label>
+                                    <select
+                                        value={draftJoinPolicy}
+                                        onChange={(event) => setDraftJoinPolicy(event.target.value)}
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    >
+                                        <option value="wait_all">Wait All</option>
+                                        <option value="first_success">First Success</option>
+                                        <option value="k_of_n">K of N</option>
+                                        <option value="quorum">Quorum</option>
+                                    </select>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Error Policy</label>
+                                    <select
+                                        value={draftErrorPolicy}
+                                        onChange={(event) => setDraftErrorPolicy(event.target.value)}
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    >
+                                        <option value="continue">Continue</option>
+                                        <option value="fail_fast">Fail Fast</option>
+                                        <option value="ignore">Ignore</option>
+                                    </select>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Max Parallel</label>
+                                    <input
+                                        value={draftMaxParallel}
+                                        onChange={(event) => setDraftMaxParallel(event.target.value)}
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        placeholder="4"
+                                    />
+                                </div>
+                            </>
+                        )}
                     </div>
                     <div className="mt-3 flex items-center justify-end gap-2">
                         <button

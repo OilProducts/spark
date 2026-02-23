@@ -24,15 +24,29 @@ export function generateDot(flowName: string, nodes: Node[], edges: Edge[]): str
         const labelValue = typeof n.data.label === 'string' ? n.data.label : n.id;
         const shapeValue = typeof n.data.shape === 'string' ? n.data.shape : '';
         const promptValue = typeof n.data.prompt === 'string' ? n.data.prompt : '';
+        const toolCommandValue = typeof n.data.tool_command === 'string' ? n.data.tool_command : '';
+        const joinPolicyValue = typeof n.data.join_policy === 'string' ? n.data.join_policy : '';
+        const errorPolicyValue = typeof n.data.error_policy === 'string' ? n.data.error_policy : '';
+        const maxParallelValue = typeof n.data.max_parallel === 'string' || typeof n.data.max_parallel === 'number'
+            ? n.data.max_parallel
+            : '';
 
         const label = `"${escapeDotString(labelValue)}"`;
         const shape = shapeValue ? `shape=${formatAttrValue(shapeValue)}` : '';
         const prompt = promptValue ? `prompt="${escapeDotString(promptValue)}"` : '';
+        const toolCommand = toolCommandValue ? `tool_command="${escapeDotString(toolCommandValue)}"` : '';
+        const joinPolicy = joinPolicyValue ? `join_policy=${formatAttrValue(joinPolicyValue)}` : '';
+        const errorPolicy = errorPolicyValue ? `error_policy=${formatAttrValue(errorPolicyValue)}` : '';
+        const maxParallel = _formatIntAttr('max_parallel', maxParallelValue);
 
         const attrs = [
             `label=${label}`,
             shape,
-            prompt
+            prompt,
+            toolCommand,
+            joinPolicy,
+            errorPolicy,
+            maxParallel
         ].filter(Boolean).join(', ');
 
         dot += `  ${n.id} [${attrs}];\n`;
@@ -44,4 +58,11 @@ export function generateDot(flowName: string, nodes: Node[], edges: Edge[]): str
 
     dot += `}\n`;
     return dot;
+}
+
+function _formatIntAttr(key: string, value: string | number): string {
+    if (value === "" || value === null || value === undefined) return "";
+    const parsed = typeof value === 'number' ? Math.floor(value) : parseInt(value, 10);
+    if (Number.isNaN(parsed)) return "";
+    return `${key}=${parsed}`;
 }

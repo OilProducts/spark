@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Protocol
+from typing import Callable, Dict, List, Protocol
 
-from attractor.dsl.models import DotAttribute, DotEdge
+from attractor.dsl.models import DotAttribute, DotEdge, DotGraph
 from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome
 
@@ -20,6 +20,8 @@ class HandlerRuntime:
     node_attrs: Dict[str, DotAttribute]
     outgoing_edges: List[DotEdge]
     context: Context
+    graph: DotGraph
+    runner: Callable[[str, str, Context], Outcome]
 
 
 class Handler(Protocol):

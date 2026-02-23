@@ -25,5 +25,7 @@ class HandlerRunner:
             node_attrs=node.attrs,
             outgoing_edges=outgoing,
             context=context,
+            graph=self.graph,
+            runner=self,
         )
         return handler.run(runtime)

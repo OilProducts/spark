@@ -1,15 +1,131 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import math
+from typing import Any, Dict, List, Tuple
+
+from attractor.engine.context import Context
+from attractor.engine.executor import PipelineExecutor
 from attractor.engine.outcome import Outcome, OutcomeStatus
 
 from ..base import HandlerRuntime
 
 
+SUCCESS_STATUSES = {"success", "paused"}
+
+
 class ParallelHandler:
     def run(self, runtime: HandlerRuntime) -> Outcome:
-        suggested = [edge.target for edge in runtime.outgoing_edges]
+        if not runtime.outgoing_edges:
+            return Outcome(status=OutcomeStatus.FAIL, failure_reason="parallel node has no outgoing edges")
+
+        join_policy = _attr_str(runtime.node_attrs, "join_policy", "wait_all")
+        error_policy = _attr_str(runtime.node_attrs, "error_policy", "continue")
+        max_parallel = max(1, _attr_int(runtime.node_attrs, "max_parallel", 4))
+
+        fan_in_nodes = _fan_in_nodes(runtime.graph)
+
+        def run_branch(target: str, base_context: Context) -> Tuple[str, Dict[str, Any]]:
+            branch_context = base_context.clone()
+            executor = PipelineExecutor(runtime.graph, runtime.runner)
+            result = executor.run_from(
+                target,
+                branch_context,
+                stop_nodes=fan_in_nodes,
+            )
+            payload = {
+                "id": target,
+                "status": result.status,
+                "current_node": result.current_node,
+                "completed_nodes": result.completed_nodes,
+                "context": result.context,
+                "node_outcomes": {k: v.status.value for k, v in result.node_outcomes.items()},
+                "failure_reason": result.failure_reason,
+            }
+            return target, payload
+
+        results: List[Dict[str, Any]] = []
+        futures = []
+        with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+            for edge in runtime.outgoing_edges:
+                futures.append(pool.submit(run_branch, edge.target, runtime.context))
+
+            for future in as_completed(futures):
+                _, payload = future.result()
+                results.append(payload)
+
+                if error_policy == "fail_fast" and payload["status"] == "fail":
+                    for remaining in futures:
+                        remaining.cancel()
+                    break
+
+                if join_policy == "first_success" and payload["status"] in SUCCESS_STATUSES:
+                    for remaining in futures:
+                        remaining.cancel()
+                    break
+
+        results_for_policy = list(results)
+        if error_policy == "ignore":
+            results_for_policy = [r for r in results_for_policy if r["status"] in SUCCESS_STATUSES]
+
+        success_count = sum(1 for r in results_for_policy if r["status"] in SUCCESS_STATUSES)
+        fail_count = sum(1 for r in results_for_policy if r["status"] == "fail")
+
+        outcome_status = OutcomeStatus.SUCCESS
+        if join_policy == "wait_all":
+            outcome_status = OutcomeStatus.SUCCESS if fail_count == 0 else OutcomeStatus.PARTIAL_SUCCESS
+        elif join_policy == "first_success":
+            outcome_status = OutcomeStatus.SUCCESS if success_count > 0 else OutcomeStatus.FAIL
+        elif join_policy == "k_of_n":
+            required = max(1, _attr_int(runtime.node_attrs, "join_k", len(results_for_policy)))
+            outcome_status = OutcomeStatus.SUCCESS if success_count >= required else OutcomeStatus.FAIL
+        elif join_policy == "quorum":
+            quorum = _attr_float(runtime.node_attrs, "join_quorum", 0.5)
+            required = max(1, math.ceil(len(results_for_policy) * quorum))
+            outcome_status = OutcomeStatus.SUCCESS if success_count >= required else OutcomeStatus.FAIL
+
         return Outcome(
-            status=OutcomeStatus.SUCCESS,
-            suggested_next_ids=suggested,
-            notes="parallel fan-out staged",
+            status=outcome_status,
+            context_updates={"parallel.results": results},
+            notes="parallel fan-out completed",
         )
+
+
+def _fan_in_nodes(graph) -> set[str]:
+    fan_in = set()
+    for node_id, node in graph.nodes.items():
+        type_attr = node.attrs.get("type")
+        if type_attr and str(type_attr.value).strip() == "parallel.fan_in":
+            fan_in.add(node_id)
+            continue
+        shape_attr = node.attrs.get("shape")
+        if shape_attr and str(shape_attr.value) == "tripleoctagon":
+            fan_in.add(node_id)
+    return fan_in
+
+
+def _attr_str(attrs: Dict[str, Any], key: str, default: str) -> str:
+    attr = attrs.get(key)
+    if not attr:
+        return default
+    return str(attr.value)
+
+
+def _attr_int(attrs: Dict[str, Any], key: str, default: int) -> int:
+    attr = attrs.get(key)
+    if not attr:
+        return default
+    try:
+        return int(str(attr.value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _attr_float(attrs: Dict[str, Any], key: str, default: float) -> float:
+    attr = attrs.get(key)
+    if not attr:
+        return default
+    try:
+        return float(str(attr.value))
+    except (TypeError, ValueError):
+        return default
