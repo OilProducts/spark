@@ -9,7 +9,6 @@ import {
     addEdge,
     applyNodeChanges,
     applyEdgeChanges,
-    BackgroundVariant,
 } from '@xyflow/react';
 import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeParams } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -87,7 +86,6 @@ export function Editor() {
                     target: e.to,
                     type: 'smoothstep',
                     style: { stroke: 'hsl(var(--border))', strokeWidth: 2 },
-                    animated: true,
                 }));
 
                 setNodes(rfNodes);
@@ -167,7 +165,7 @@ export function Editor() {
                     maskColor="hsl(var(--background)/0.5)"
                     className="bg-card border border-border rounded-md"
                 />
-                <Background variant={BackgroundVariant.Dots} gap={12} size={1} color="hsl(var(--border))" />
+                <Background gap={20} size={1} color="hsl(var(--border))" />
             </ReactFlow>
 
             {viewMode === 'editor' && activeFlow && (
