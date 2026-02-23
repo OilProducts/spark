@@ -8,6 +8,7 @@ export function Sidebar() {
     const { viewMode, activeFlow, setActiveFlow, selectedNodeId, selectedEdgeId } = useStore()
     const humanGate = useStore((state) => state.humanGate)
     const graphAttrs = useStore((state) => state.graphAttrs)
+    const setSuppressPreview = useStore((state) => state.setSuppressPreview)
     const [tab, setTab] = useState<'flows' | 'edit' | 'edge'>('flows')
     const [flows, setFlows] = useState<string[]>([])
     const [showAdvanced, setShowAdvanced] = useState(false)
@@ -246,6 +247,8 @@ export function Sidebar() {
                                 <textarea
                                     value={(selectedNode?.data?.prompt as string) || ''}
                                     onChange={(e) => handlePropertyChange('prompt', e.target.value)}
+                                    onFocus={() => setSuppressPreview(true)}
+                                    onBlur={() => setSuppressPreview(false)}
                                     className="flex flex-1 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
                                     placeholder="Enter system prompt instructions..."
                                 />

@@ -95,6 +95,7 @@ export function Editor() {
     const setGraphAttrs = useStore((state) => state.setGraphAttrs);
     const setDiagnostics = useStore((state) => state.setDiagnostics);
     const clearDiagnostics = useStore((state) => state.clearDiagnostics);
+    const suppressPreview = useStore((state) => state.suppressPreview);
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
     const hydratedRef = useRef(false);
@@ -226,7 +227,7 @@ export function Editor() {
     }, [setDiagnostics, clearDiagnostics]);
 
     useEffect(() => {
-        if (!activeFlow || !hydratedRef.current || viewMode === 'execution') return;
+        if (!activeFlow || !hydratedRef.current || viewMode === 'execution' || suppressPreview) return;
         const dot = generateDot(activeFlow, nodes, edges, graphAttrs);
         if (previewTimer.current) {
             window.clearTimeout(previewTimer.current);
@@ -238,7 +239,7 @@ export function Editor() {
                 window.clearTimeout(previewTimer.current);
             }
         };
-    }, [activeFlow, nodes, edges, graphAttrs, viewMode, requestPreview]);
+    }, [activeFlow, nodes, edges, graphAttrs, viewMode, requestPreview, suppressPreview]);
 
     // Handle new connections via UI
     const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {

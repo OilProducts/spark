@@ -103,6 +103,8 @@ interface AppState {
     nodeDiagnostics: Record<string, DiagnosticEntry[]>
     edgeDiagnostics: Record<string, DiagnosticEntry[]>
     hasValidationErrors: boolean
+    suppressPreview: boolean
+    setSuppressPreview: (value: boolean) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -164,4 +166,6 @@ export const useStore = create<AppState>((set) => ({
     nodeDiagnostics: {},
     edgeDiagnostics: {},
     hasValidationErrors: false,
+    suppressPreview: false,
+    setSuppressPreview: (value) => set({ suppressPreview: value }),
 }))
