@@ -7,9 +7,11 @@ import {
     useNodesState,
     useEdgesState,
     addEdge,
+    applyNodeChanges,
+    applyEdgeChanges,
     BackgroundVariant,
 } from '@xyflow/react';
-import type { Connection, Edge, Node, OnSelectionChangeParams } from '@xyflow/react';
+import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeParams } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 import { useStore } from '@/store';
@@ -22,8 +24,18 @@ const nodeTypes = {
 
 export function Editor() {
     const { activeFlow, viewMode, setSelectedNodeId } = useStore();
-    const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
-    const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+    const [nodes, setNodes] = useNodesState<Node>([]);
+    const [edges, setEdges] = useEdgesState<Edge>([]);
+
+    const saveFlow = useCallback((nextNodes: Node[], nextEdges: Edge[]) => {
+        if (!activeFlow) return;
+        const dot = generateDot(activeFlow, nextNodes, nextEdges);
+        fetch('/api/flows', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: activeFlow, content: dot }),
+        }).catch(console.error);
+    }, [activeFlow]);
 
     // Auto-load and sync with Backend Preview
     useEffect(() => {
@@ -66,22 +78,31 @@ export function Editor() {
     }, [activeFlow, setNodes, setEdges]);
 
     // Handle new connections via UI
+    const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
+        setNodes((currentNodes) => {
+            const updatedNodes = applyNodeChanges(changes, currentNodes);
+            saveFlow(updatedNodes, edges);
+            return updatedNodes;
+        });
+    }, [setNodes, saveFlow, edges]);
+
+    const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
+        setEdges((currentEdges) => {
+            const updatedEdges = applyEdgeChanges(changes, currentEdges);
+            saveFlow(nodes, updatedEdges);
+            return updatedEdges;
+        });
+    }, [setEdges, saveFlow, nodes]);
+
     const onConnect = useCallback(
         (params: Connection | Edge) => {
-            setEdges((eds) => {
-                const newEdges = addEdge(params, eds);
-                if (activeFlow) {
-                    const dot = generateDot(activeFlow, nodes, newEdges);
-                    fetch('/api/flows', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ name: activeFlow, content: dot })
-                    });
-                }
+            setEdges((currentEdges) => {
+                const newEdges = addEdge(params, currentEdges);
+                saveFlow(nodes, newEdges);
                 return newEdges;
             });
         },
-        [setEdges, activeFlow, nodes],
+        [setEdges, saveFlow, nodes],
     );
 
     const onAddNode = useCallback(() => {
@@ -96,15 +117,10 @@ export function Editor() {
 
         setNodes(nds => {
             const newNodes = [...nds, newNode];
-            const dot = generateDot(activeFlow, newNodes, edges);
-            fetch('/api/flows', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: activeFlow, content: dot })
-            });
+            saveFlow(newNodes, edges);
             return newNodes;
         });
-    }, [activeFlow, edges, setNodes]);
+    }, [activeFlow, edges, setNodes, saveFlow]);
 
     const onSelectionChange = useCallback(({ nodes }: OnSelectionChangeParams) => {
         const selectedNode = nodes.find(n => n.selected);
