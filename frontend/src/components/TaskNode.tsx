@@ -6,6 +6,7 @@ import { generateDot } from '@/lib/dotUtils';
 export function TaskNode({ id, data, selected }: NodeProps) {
     const { activeFlow, viewMode } = useStore();
     const humanGate = useStore((state) => state.humanGate);
+    const graphAttrs = useStore((state) => state.graphAttrs);
     const { setNodes, getEdges } = useReactFlow();
     const inputRef = useRef<HTMLInputElement>(null);
 
@@ -43,7 +44,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
         });
 
         if (updatedNodes.length > 0) {
-            const dot = generateDot(activeFlow, updatedNodes, getEdges());
+            const dot = generateDot(activeFlow, updatedNodes, getEdges(), graphAttrs);
             fetch('/api/flows', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

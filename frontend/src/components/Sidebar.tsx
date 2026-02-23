@@ -7,6 +7,7 @@ import { generateDot } from "@/lib/dotUtils"
 export function Sidebar() {
     const { viewMode, activeFlow, setActiveFlow, selectedNodeId, selectedEdgeId } = useStore()
     const humanGate = useStore((state) => state.humanGate)
+    const graphAttrs = useStore((state) => state.graphAttrs)
     const [tab, setTab] = useState<'flows' | 'edit' | 'edge'>('flows')
     const [flows, setFlows] = useState<string[]>([])
     const { getNodes, setNodes, getEdges, setEdges } = useReactFlow()
@@ -75,7 +76,7 @@ export function Sidebar() {
         // Auto-save
         setTimeout(() => {
             if (newNodes.length > 0) {
-                const dot = generateDot(activeFlow, newNodes, getEdges());
+                const dot = generateDot(activeFlow, newNodes, getEdges(), graphAttrs);
                 fetch('/api/flows', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -109,7 +110,7 @@ export function Sidebar() {
 
         setTimeout(() => {
             if (newEdges.length > 0) {
-                const dot = generateDot(activeFlow, getNodes(), newEdges);
+                const dot = generateDot(activeFlow, getNodes(), newEdges, graphAttrs);
                 fetch('/api/flows', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

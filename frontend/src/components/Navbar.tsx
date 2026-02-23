@@ -4,8 +4,8 @@ import { Play, Settings2 } from "lucide-react"
 
 export function Navbar() {
     const { viewMode, setViewMode, activeFlow } = useStore()
-    const [model, setModel] = useState("")
-    const [workingDir, setWorkingDir] = useState("./test-app")
+    const model = useStore((state) => state.model)
+    const workingDir = useStore((state) => state.workingDir)
     const [isRunning, setIsRunning] = useState(false)
 
     const runPipeline = async () => {
@@ -70,27 +70,6 @@ export function Navbar() {
             </div>
 
             <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                    <label htmlFor="model" className="text-sm font-medium text-muted-foreground">Model</label>
-                    <input
-                        type="text"
-                        id="model"
-                        placeholder="codex default"
-                        value={model}
-                        onChange={(e) => setModel(e.target.value)}
-                        className="flex h-9 w-40 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                    />
-                </div>
-                <div className="flex items-center gap-2">
-                    <label htmlFor="workingDir" className="text-sm font-medium text-muted-foreground">Path</label>
-                    <input
-                        type="text"
-                        id="workingDir"
-                        value={workingDir}
-                        onChange={(e) => setWorkingDir(e.target.value)}
-                        className="flex h-9 w-48 rounded-md border border-input bg-transparent px-3 py-1 text-xs font-mono shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                    />
-                </div>
                 <button
                     onClick={runPipeline}
                     disabled={!activeFlow || isRunning}

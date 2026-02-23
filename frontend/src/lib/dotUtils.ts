@@ -1,4 +1,5 @@
 import type { Edge, Node } from '@xyflow/react';
+import type { GraphAttrs } from '@/store';
 
 function escapeDotString(value: string): string {
     return value
@@ -14,11 +15,30 @@ function formatAttrValue(value: string): string {
     return `"${escapeDotString(value)}"`;
 }
 
-export function generateDot(flowName: string, nodes: Node[], edges: Edge[]): string {
+export function generateDot(
+    flowName: string,
+    nodes: Node[],
+    edges: Edge[],
+    graphAttrs: GraphAttrs = {}
+): string {
     // Strip .dot for graph name
     const name = flowName.replace('.dot', '');
 
     let dot = `digraph ${name} {\n`;
+
+    const graphAttrLines = [
+        _formatGraphAttr('goal', graphAttrs.goal),
+        _formatGraphAttr('label', graphAttrs.label),
+        _formatGraphAttr('model_stylesheet', graphAttrs.model_stylesheet),
+        _formatIntAttr('default_max_retry', graphAttrs.default_max_retry ?? ''),
+        _formatGraphAttr('retry_target', graphAttrs.retry_target),
+        _formatGraphAttr('fallback_retry_target', graphAttrs.fallback_retry_target),
+        _formatGraphAttr('default_fidelity', graphAttrs.default_fidelity),
+    ].filter(Boolean);
+
+    if (graphAttrLines.length > 0) {
+        dot += `  graph [${graphAttrLines.join(', ')}];\n`;
+    }
 
     nodes.forEach(n => {
         const labelValue = typeof n.data.label === 'string' ? n.data.label : n.id;
@@ -88,4 +108,9 @@ function _formatIntAttr(key: string, value: string | number): string {
     const parsed = typeof value === 'number' ? Math.floor(value) : parseInt(value, 10);
     if (Number.isNaN(parsed)) return "";
     return `${key}=${parsed}`;
+}
+
+function _formatGraphAttr(key: string, value?: string): string {
+    if (!value) return "";
+    return `${key}="${escapeDotString(value)}"`;
 }

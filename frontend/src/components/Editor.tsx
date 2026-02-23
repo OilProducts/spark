@@ -15,6 +15,7 @@ import '@xyflow/react/dist/style.css';
 
 import { useStore } from '@/store';
 import { TaskNode } from './TaskNode';
+import { GraphSettings } from './GraphSettings';
 import { generateDot } from '@/lib/dotUtils';
 
 const nodeTypes = {
@@ -49,6 +50,15 @@ interface PreviewResponse {
     graph?: {
         nodes: PreviewNode[]
         edges: PreviewEdge[]
+        graph_attrs?: {
+            goal?: string
+            label?: string
+            model_stylesheet?: string
+            default_max_retry?: number | string
+            retry_target?: string
+            fallback_retry_target?: string
+            default_fidelity?: string
+        }
     }
 }
 
@@ -59,18 +69,20 @@ function normalizeLegacyDot(content: string): string {
 export function Editor() {
     const { activeFlow, viewMode, setSelectedNodeId, setSelectedEdgeId } = useStore();
     const nodeStatuses = useStore((state) => state.nodeStatuses);
+    const graphAttrs = useStore((state) => state.graphAttrs);
+    const setGraphAttrs = useStore((state) => state.setGraphAttrs);
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
 
     const saveFlow = useCallback((nextNodes: Node[], nextEdges: Edge[]) => {
         if (!activeFlow) return;
-        const dot = generateDot(activeFlow, nextNodes, nextEdges);
+        const dot = generateDot(activeFlow, nextNodes, nextEdges, graphAttrs);
         fetch('/api/flows', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: activeFlow, content: dot }),
         }).catch(console.error);
-    }, [activeFlow]);
+    }, [activeFlow, graphAttrs]);
 
     // Auto-load and sync with Backend Preview
     useEffect(() => {
@@ -97,6 +109,10 @@ export function Editor() {
             .then((res) => res.json())
             .then((preview: PreviewResponse) => {
                 if (!preview.graph) return;
+
+                if (preview.graph.graph_attrs) {
+                    setGraphAttrs(preview.graph.graph_attrs)
+                }
 
                 // Convert Preview JSON graph to ReactFlow format
                 const rfNodes: Node[] = preview.graph.nodes.map((n, i: number) => ({
@@ -136,7 +152,7 @@ export function Editor() {
                 setEdges(rfEdges);
             })
             .catch(console.error);
-    }, [activeFlow, setNodes, setEdges]);
+    }, [activeFlow, setNodes, setEdges, setGraphAttrs]);
 
     // Handle new connections via UI
     const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
@@ -238,6 +254,8 @@ export function Editor() {
                     </button>
                 </div>
             )}
+
+            {activeFlow && <GraphSettings />}
         </div>
     );
 }
