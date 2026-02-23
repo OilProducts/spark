@@ -25,7 +25,7 @@ export function Terminal() {
                         type: isSuccess ? 'success' : isError ? 'error' : 'info'
                     }])
                 }
-            } catch (err) {
+            } catch {
                 // ignore
             }
         }

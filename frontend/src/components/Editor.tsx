@@ -22,6 +22,25 @@ const nodeTypes = {
     customTask: TaskNode,
 };
 
+interface PreviewNode {
+    id: string
+    label?: string
+    shape?: string
+    prompt?: string
+}
+
+interface PreviewEdge {
+    from: string
+    to: string
+}
+
+interface PreviewResponse {
+    graph?: {
+        nodes: PreviewNode[]
+        edges: PreviewEdge[]
+    }
+}
+
 export function Editor() {
     const { activeFlow, viewMode, setSelectedNodeId } = useStore();
     const [nodes, setNodes] = useNodesState<Node>([]);
@@ -51,18 +70,18 @@ export function Editor() {
                 });
             })
             .then((res) => res.json())
-            .then((preview) => {
+            .then((preview: PreviewResponse) => {
                 if (!preview.graph) return;
 
                 // Convert Preview JSON graph to ReactFlow format
-                const rfNodes: Node[] = preview.graph.nodes.map((n: any, i: number) => ({
+                const rfNodes: Node[] = preview.graph.nodes.map((n, i: number) => ({
                     id: n.id,
                     type: 'customTask',
                     position: { x: 250, y: i * 150 }, // Auto-layout stub
                     data: { label: n.label, shape: n.shape ?? 'box', prompt: n.prompt ?? '', status: 'idle' },
                 }));
 
-                const rfEdges: Edge[] = preview.graph.edges.map((e: any, i: number) => ({
+                const rfEdges: Edge[] = preview.graph.edges.map((e, i: number) => ({
                     id: `e-${e.from}-${e.to}-${i}`,
                     source: e.from,
                     target: e.to,
