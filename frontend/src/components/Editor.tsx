@@ -160,8 +160,9 @@ export function Editor() {
     }, [setSelectedNodeId]);
 
     return (
-        <div className="w-full h-full relative" style={{ background: 'hsl(var(--background))' }}>
+        <div className="flow-surface w-full h-full relative">
             <ReactFlow
+                className="flow-canvas"
                 nodes={nodes}
                 edges={edges}
                 onNodesChange={onNodesChange}
@@ -176,11 +177,11 @@ export function Editor() {
                 minZoom={0.1}
                 maxZoom={1.5}
             >
-                <Controls className="bg-muted text-muted-foreground border-border" />
+                <Controls />
                 <MiniMap
                     nodeColor="hsl(var(--muted))"
                     maskColor="hsl(var(--background)/0.5)"
-                    className="bg-card border border-border rounded-md"
+                    className="flow-minimap"
                 />
                 <Background gap={20} size={1} color="hsl(var(--border))" />
             </ReactFlow>

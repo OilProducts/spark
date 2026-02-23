@@ -80,7 +80,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
     return (
         <div
             onDoubleClick={startEditLabel}
-            className={`bg-card text-card-foreground shadow-sm rounded-md border p-4 min-w-[150px] relative ${borderColor} transition-colors`}
+            className={`bg-card/95 text-card-foreground shadow-sm rounded-md border p-4 min-w-[150px] relative ${borderColor} transition-[color,box-shadow,border-color,background-color] hover:shadow-md`}
         >
             <Handle type="target" position={Position.Top} className="w-3 h-3 bg-muted-foreground border-border" />
 
