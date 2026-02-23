@@ -24,6 +24,7 @@ class Question:
     prompt: str
     question_type: QuestionType
     options: List[QuestionOption] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass

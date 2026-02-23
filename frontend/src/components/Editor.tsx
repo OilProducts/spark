@@ -52,6 +52,7 @@ function normalizeLegacyDot(content: string): string {
 
 export function Editor() {
     const { activeFlow, viewMode, setSelectedNodeId } = useStore();
+    const nodeStatuses = useStore((state) => state.nodeStatuses);
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
 
@@ -171,6 +172,16 @@ export function Editor() {
         const selectedNode = nodes.find(n => n.selected);
         setSelectedNodeId(selectedNode ? selectedNode.id : null);
     }, [setSelectedNodeId]);
+
+    useEffect(() => {
+        setNodes((currentNodes) => currentNodes.map((node) => {
+            const nextStatus = nodeStatuses[node.id] || 'idle';
+            if (node.data?.status === nextStatus) {
+                return node;
+            }
+            return { ...node, data: { ...node.data, status: nextStatus } };
+        }));
+    }, [nodeStatuses, setNodes]);
 
     return (
         <div className="flow-surface w-full h-full relative">

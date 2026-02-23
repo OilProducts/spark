@@ -2,11 +2,13 @@ import { Navbar } from "./components/Navbar"
 import { Sidebar } from "./components/Sidebar"
 import { Terminal } from "./components/Terminal"
 import { Editor } from "./components/Editor"
+import { RunStream } from "./components/RunStream"
 import { ReactFlowProvider } from "@xyflow/react"
 
 function App() {
   return (
     <ReactFlowProvider>
+      <RunStream />
       <div className="h-screen flex flex-col antialiased bg-background text-foreground">
         <Navbar />
         <div className="flex-1 flex overflow-hidden">

@@ -22,12 +22,13 @@ export function Navbar() {
             const runRes = await fetch('/run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    flow_content: flow.content,
-                    working_directory: workingDir,
-                    backend: 'codex',
-                    model: model.trim() || null,
-                }),
+                    body: JSON.stringify({
+                        flow_content: flow.content,
+                        working_directory: workingDir,
+                        backend: 'codex',
+                        model: model.trim() || null,
+                        flow_name: activeFlow,
+                    }),
             })
             if (!runRes.ok) {
                 throw new Error('Run request failed')

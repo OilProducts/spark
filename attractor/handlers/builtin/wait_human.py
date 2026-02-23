@@ -25,6 +25,7 @@ class WaitHumanHandler:
             prompt=runtime.prompt or "Choose next route",
             question_type=QuestionType.SINGLE_SELECT,
             options=options,
+            metadata={"node_id": runtime.node_id},
         )
 
         answer = self.interviewer.ask(question)

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import threading
+import uuid
 import os
 from pathlib import Path
 import subprocess
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -16,6 +18,8 @@ from attractor.engine import Context, PipelineExecutor
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.handlers.base import CodergenBackend
 from attractor.interviewer import AutoApproveInterviewer
+from attractor.interviewer.base import Interviewer
+from attractor.interviewer.models import Answer, Question
 from attractor.transforms import (
     GoalVariableTransform,
     ModelStylesheetTransform,
@@ -53,6 +57,81 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+class HumanGateBroker:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._pending: Dict[str, Dict[str, object]] = {}
+
+    def request(
+        self,
+        question: Question,
+        node_id: str,
+        flow_name: str,
+        emit: Callable[[dict], None],
+    ) -> Answer:
+        gate_id = uuid.uuid4().hex
+        event = threading.Event()
+        with self._lock:
+            self._pending[gate_id] = {
+                "event": event,
+                "answer": None,
+            }
+
+        emit(
+            {
+                "type": "state",
+                "node": node_id,
+                "status": "waiting",
+            }
+        )
+        emit(
+            {
+                "type": "human_gate",
+                "question_id": gate_id,
+                "node_id": node_id,
+                "flow_name": flow_name,
+                "prompt": question.prompt,
+                "options": [
+                    {"label": opt.label, "value": opt.value} for opt in question.options
+                ],
+            }
+        )
+
+        event.wait()
+        with self._lock:
+            entry = self._pending.pop(gate_id, {})
+            selected = entry.get("answer") if entry else None
+
+        if selected:
+            return Answer(selected_values=[str(selected)])
+        return Answer()
+
+    def answer(self, gate_id: str, selected_value: str) -> bool:
+        with self._lock:
+            entry = self._pending.get(gate_id)
+            if not entry:
+                return False
+            entry["answer"] = selected_value
+            entry["event"].set()
+            return True
+
+
+HUMAN_BROKER = HumanGateBroker()
+
+
+class WebInterviewer(Interviewer):
+    def __init__(self, broker: HumanGateBroker, emit: Callable[[dict], None], flow_name: str):
+        self._broker = broker
+        self._emit = emit
+        self._flow_name = flow_name
+
+    def ask(self, question: Question) -> Answer:
+        node_id = str(question.metadata.get("node_id", "")).strip()
+        if not node_id and question.title.lower().startswith("human gate:"):
+            node_id = question.title.split(":", 1)[1].strip()
+        return self._broker.request(question, node_id, self._flow_name, self._emit)
+
+
 @dataclass
 class RuntimeState:
     status: str = "idle"
@@ -60,6 +139,7 @@ class RuntimeState:
     last_working_directory: str = ""
     last_model: str = ""
     last_completed_nodes: list[str] = None
+    last_flow_name: str = ""
 
 
 RUNTIME = RuntimeState(last_completed_nodes=[])
@@ -70,6 +150,7 @@ class RunRequest(BaseModel):
     working_directory: str = "./workspace"
     backend: str = "codex"
     model: Optional[str] = None
+    flow_name: Optional[str] = None
 
 
 class PreviewRequest(BaseModel):
@@ -83,6 +164,11 @@ class SaveFlowRequest(BaseModel):
 
 class ResetRequest(BaseModel):
     working_directory: str = "./workspace"
+
+
+class HumanAnswerRequest(BaseModel):
+    question_id: str
+    selected_value: str
 
 
 DEFAULT_FLOW = """digraph SoftwareFactory {
@@ -182,6 +268,7 @@ async def get_status():
         "last_working_directory": RUNTIME.last_working_directory,
         "last_model": RUNTIME.last_model,
         "last_completed_nodes": RUNTIME.last_completed_nodes,
+        "last_flow_name": RUNTIME.last_flow_name,
     }
 
 
@@ -280,6 +367,7 @@ async def run_pipeline(req: RunRequest):
     os.makedirs(req.working_directory, exist_ok=True)
     working_dir = str(Path(req.working_directory).resolve())
     selected_model = (req.model or "").strip()
+    flow_name = (req.flow_name or "").strip()
     display_model = selected_model or "codex default (config/profile)"
 
     await manager.broadcast(
@@ -306,9 +394,15 @@ async def run_pipeline(req: RunRequest):
         model=selected_model or None,
     )
 
+    interviewer: Interviewer
+    if manager.active_connections:
+        interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name)
+    else:
+        interviewer = AutoApproveInterviewer()
+
     registry = build_default_registry(
         codergen_backend=backend,
-        interviewer=AutoApproveInterviewer(),
+        interviewer=interviewer,
     )
     runner = BroadcastingRunner(HandlerRunner(graph, registry), emit)
 
@@ -322,12 +416,14 @@ async def run_pipeline(req: RunRequest):
     RUNTIME.last_error = ""
     RUNTIME.last_working_directory = working_dir
     RUNTIME.last_model = display_model
+    RUNTIME.last_flow_name = flow_name
 
     await manager.broadcast(
         {
             "type": "run_meta",
             "working_directory": working_dir,
             "model": display_model,
+            "flow_name": flow_name,
         }
     )
     await manager.broadcast(
@@ -371,6 +467,14 @@ async def reset_checkpoint(req: ResetRequest):
     if target_state.exists():
         target_state.unlink()
     return {"status": "reset"}
+
+
+@app.post("/human/answer")
+async def submit_human_answer(req: HumanAnswerRequest):
+    ok = HUMAN_BROKER.answer(req.question_id, req.selected_value)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Unknown human gate request")
+    return {"status": "accepted"}
 
 
 @app.get("/api/flows")

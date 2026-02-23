@@ -6,6 +6,7 @@ import { generateDot } from "@/lib/dotUtils"
 
 export function Sidebar() {
     const { viewMode, activeFlow, setActiveFlow, selectedNodeId } = useStore()
+    const humanGate = useStore((state) => state.humanGate)
     const [tab, setTab] = useState<'flows' | 'edit'>('flows')
     const [flows, setFlows] = useState<string[]>([])
     const { getNodes, setNodes, getEdges, setEdges } = useReactFlow()
@@ -127,7 +128,15 @@ export function Sidebar() {
                                         : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                                         }`}
                                 >
-                                    {f}
+                                    <span className="flex items-center gap-2">
+                                        {humanGate?.flowName === f && (
+                                            <span
+                                                className="h-2 w-2 rounded-full bg-amber-500"
+                                                title="Needs human input"
+                                            />
+                                        )}
+                                        {f}
+                                    </span>
                                 </button>
                                 <button
                                     onClick={(e) => handleDeleteFlow(e, f)}

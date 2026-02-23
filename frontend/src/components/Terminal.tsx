@@ -1,39 +1,12 @@
 import { useStore } from "@/store"
 import { TerminalSquare } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef } from "react"
 
 export function Terminal() {
-    const { viewMode } = useStore()
-    const [logs, setLogs] = useState<{ time: string; msg: string; type: 'info' | 'success' | 'error' }[]>([])
+    const viewMode = useStore((state) => state.viewMode)
+    const logs = useStore((state) => state.logs)
+    const clearLogs = useStore((state) => state.clearLogs)
     const logsEndRef = useRef<HTMLDivElement>(null)
-
-    useEffect(() => {
-        // Connect to WebSocket proxy
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-        const ws = new WebSocket(`${wsProtocol}://${window.location.host}/ws`)
-
-        ws.onmessage = (e) => {
-            try {
-                const data = JSON.parse(e.data)
-                if (data.type === "log") {
-                    const isSuccess = data.msg.toLowerCase().includes("success")
-                    const isError = /fail|error|⚠️/i.test(data.msg)
-
-                    setLogs(prev => [...prev, {
-                        time: new Date().toLocaleTimeString('en-GB', { hour12: false }),
-                        msg: data.msg,
-                        type: isSuccess ? 'success' : isError ? 'error' : 'info'
-                    }])
-                }
-            } catch {
-                // ignore
-            }
-        }
-
-        return () => {
-            ws.close()
-        }
-    }, [])
 
     useEffect(() => {
         logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -48,7 +21,7 @@ export function Terminal() {
                     <TerminalSquare className="w-4 h-4 text-muted-foreground" />
                     <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Terminal Output</span>
                 </div>
-                <button onClick={() => setLogs([])} className="h-7 px-2 text-xs font-medium text-muted-foreground hover:text-foreground">
+                <button onClick={clearLogs} className="h-7 px-2 text-xs font-medium text-muted-foreground hover:text-foreground">
                     Clear
                 </button>
             </div>
