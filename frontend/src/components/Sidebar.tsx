@@ -3,6 +3,7 @@ import { FilePlus, Trash2 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
 import { generateDot } from "@/lib/dotUtils"
+import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from "@/lib/llmSuggestions"
 
 export function Sidebar() {
     const { viewMode, activeFlow, setActiveFlow, selectedNodeId, selectedEdgeId } = useStore()
@@ -419,16 +420,28 @@ export function Sidebar() {
                                             <input
                                                 value={(selectedNode?.data?.llm_model as string) || ''}
                                                 onChange={(e) => handlePropertyChange('llm_model', e.target.value)}
+                                                list="llm-model-options-panel"
                                                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             />
+                                            <datalist id="llm-model-options-panel">
+                                                {getModelSuggestions((selectedNode?.data?.llm_provider as string) || '').map((model) => (
+                                                    <option key={model} value={model} />
+                                                ))}
+                                            </datalist>
                                         </div>
                                         <div className="space-y-1.5">
                                             <label className="text-sm font-medium">LLM Provider</label>
                                             <input
                                                 value={(selectedNode?.data?.llm_provider as string) || ''}
                                                 onChange={(e) => handlePropertyChange('llm_provider', e.target.value)}
+                                                list="llm-provider-options-panel"
                                                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             />
+                                            <datalist id="llm-provider-options-panel">
+                                                {LLM_PROVIDER_OPTIONS.map((provider) => (
+                                                    <option key={provider} value={provider} />
+                                                ))}
+                                            </datalist>
                                         </div>
                                     </div>
                                     <div className="space-y-1.5">

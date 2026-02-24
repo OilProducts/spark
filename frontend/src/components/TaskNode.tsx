@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Handle, NodeToolbar, Position, type Node, type NodeProps, useReactFlow } from '@xyflow/react';
 import { useStore } from '@/store';
 import { generateDot } from '@/lib/dotUtils';
+import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions';
 
 export function TaskNode({ id, data, selected }: NodeProps) {
     const { activeFlow, viewMode } = useStore();
@@ -420,16 +421,28 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                         <input
                                             value={draftLlmModel}
                                             onChange={(event) => setDraftLlmModel(event.target.value)}
+                                            list={`llm-model-options-${id}`}
                                             className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         />
+                                        <datalist id={`llm-model-options-${id}`}>
+                                            {getModelSuggestions(draftLlmProvider).map((model) => (
+                                                <option key={model} value={model} />
+                                            ))}
+                                        </datalist>
                                     </div>
                                     <div className="space-y-1">
                                         <label className="text-xs font-medium text-foreground">LLM Provider</label>
                                         <input
                                             value={draftLlmProvider}
                                             onChange={(event) => setDraftLlmProvider(event.target.value)}
+                                            list={`llm-provider-options-${id}`}
                                             className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         />
+                                        <datalist id={`llm-provider-options-${id}`}>
+                                            {LLM_PROVIDER_OPTIONS.map((provider) => (
+                                                <option key={provider} value={provider} />
+                                            ))}
+                                        </datalist>
                                     </div>
                                 </div>
                                 <div className="space-y-1">
