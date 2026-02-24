@@ -6,38 +6,49 @@ explicitly implemented. The goal is to keep UI behavior deterministic while pres
 
 ---
 
-## 1. UI Default LLM Selection (Graph-Level UI Extension)
+## 1. UI Default LLM Selection (Global + Flow)
 
 ### 1.1 Overview
 
-The editor may store **per-flow UI defaults** for LLM selection. These defaults are used when creating
-new nodes and for initializing UI fields. They are **UI-only** and **do not affect runtime execution**
-unless the UI writes explicit node attributes.
+The editor stores **global UI defaults** and **optional per-flow overrides** for LLM selection.
+Defaults are used when creating new nodes and for initializing UI fields. They are **UI-only**
+and **do not affect runtime execution** unless the UI writes explicit node attributes.
 
-### 1.2 Storage (Graph Attributes)
+### 1.2 Storage (Global Defaults)
+
+Global defaults are stored in the UI layer (outside DOT). A local settings store is acceptable
+(for example, browser local storage) as long as it is deterministic and user-editable.
+
+Recommended key (client-side):
+
+- `sparkspawn.ui_defaults`
+
+### 1.3 Storage (Graph Attributes)
 
 These attributes live in the DOT `graph [ ... ]` block and are persisted with the flow:
 
 | Key                      | Type   | Default | Description |
 |--------------------------|--------|---------|-------------|
-| `ui_default_llm_model`   | String | `""`    | Default model ID shown/seeded by the UI. |
-| `ui_default_llm_provider`| String | `""`    | Default provider key shown/seeded by the UI. |
-| `ui_default_reasoning_effort` | String | `""` | Default reasoning effort shown/seeded by the UI. |
+| `ui_default_llm_model`   | String | `""`    | Flow-level default model ID shown/seeded by the UI. |
+| `ui_default_llm_provider`| String | `""`    | Flow-level default provider key shown/seeded by the UI. |
+| `ui_default_reasoning_effort` | String | `""` | Flow-level default reasoning effort shown/seeded by the UI. |
 
-### 1.3 Behavior
+### 1.4 Behavior
 
 When a new node is created in the UI:
 
-1. The editor **may prefill** node LLM fields using the `ui_default_*` values.
-2. The editor **may persist** these values into the node’s explicit attributes when saving.
-3. The engine **must ignore** `ui_default_*` attributes; they are UI-only metadata.
+1. If flow-level `ui_default_*` values are present, the editor **prefers** them.
+2. Otherwise, the editor **falls back** to the global defaults.
+3. The editor **may prefill** node LLM fields using the resolved defaults.
+4. The editor **may persist** these values into the node’s explicit attributes when saving.
+5. The engine **must ignore** `ui_default_*` attributes; they are UI-only metadata.
 
-### 1.4 Interaction With Core Spec
+### 1.5 Interaction With Core Spec
 
 If the UI writes explicit node attributes (`llm_model`, `llm_provider`, `reasoning_effort`),
 those values **override** `model_stylesheet` rules per the core spec precedence order.
 
-### 1.5 Example
+### 1.6 Example
 
 ```
 digraph Example {
