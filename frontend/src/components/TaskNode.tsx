@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { Handle, NodeToolbar, Position, type Node, type NodeProps, useReactFlow } from '@xyflow/react';
 import { useStore } from '@/store';
 import { generateDot } from '@/lib/dotUtils';
@@ -51,6 +51,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
         data.allow_partial === true || data.allow_partial === 'true'
     );
     const status = (data.status as string) || 'idle';
+    const nodeShape = (data.shape as string) || 'box';
     const handlerType = getHandlerType(draftShape, draftType);
     const visibility = getNodeFieldVisibility(handlerType);
     const diagnosticsForNode = nodeDiagnostics[id] || [];
@@ -180,14 +181,50 @@ export function TaskNode({ id, data, selected }: NodeProps) {
     if (isWaiting) borderColor = 'border-amber-500 ring-2 ring-amber-500/40 ring-offset-2 ring-offset-background';
     else if (selected) borderColor = 'border-foreground ring-1 ring-ring ring-offset-2 ring-offset-background';
 
+    const shapeStyle: CSSProperties = {};
+    const shapeClasses: string[] = [];
+    let showComponentBars = false;
+
+    switch (nodeShape) {
+        case 'diamond':
+            shapeStyle.clipPath = 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)';
+            shapeClasses.push('rounded-none');
+            break;
+        case 'Mdiamond':
+            shapeStyle.clipPath = 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)';
+            shapeClasses.push('rounded-none', 'border-double', 'border-[3px]');
+            break;
+        case 'hexagon':
+            shapeStyle.clipPath = 'polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%)';
+            shapeClasses.push('rounded-none');
+            break;
+        case 'parallelogram':
+            shapeStyle.clipPath = 'polygon(10% 0%, 100% 0%, 90% 100%, 0% 100%)';
+            shapeClasses.push('rounded-none');
+            break;
+        case 'tripleoctagon':
+            shapeStyle.clipPath = 'polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%)';
+            shapeClasses.push('rounded-none');
+            break;
+        case 'component':
+            shapeClasses.push('rounded-none', 'pl-8');
+            showComponentBars = true;
+            break;
+        case 'Msquare':
+            shapeClasses.push('rounded-none', 'border-double', 'border-[3px]');
+            break;
+        default:
+            break;
+    }
+
     return (
         <div
             onDoubleClick={startEditLabel}
-            className={`bg-card/95 text-card-foreground shadow-sm rounded-md border p-4 min-w-[150px] relative ${borderColor} transition-[color,box-shadow,border-color,background-color] hover:shadow-md`}
+            className="flow-node relative"
         >
             <Handle type="target" position={Position.Top} className="w-3 h-3 bg-muted-foreground border-border" />
 
-            <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
+            <div className="absolute right-2 top-2 z-10 flex flex-col items-end gap-1">
                 {selected && viewMode === 'editor' && (
                     <button
                         onClick={openDetailsEditor}
@@ -212,12 +249,23 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                 )}
             </div>
             {isWaiting && (
-                <div className="absolute left-2 top-2 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                <div className="absolute left-2 top-2 z-10 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
                     Needs Input
                 </div>
             )}
 
-            <div className="flex flex-col gap-1 items-center justify-center">
+            <div
+                className={`flow-node__body bg-card/95 text-card-foreground shadow-sm rounded-md border p-4 min-w-[150px] relative ${borderColor} transition-[color,box-shadow,border-color,background-color] hover:shadow-md ${shapeClasses.join(' ')}`}
+                style={shapeStyle}
+                data-shape={nodeShape}
+            >
+                {showComponentBars && (
+                    <span
+                        aria-hidden
+                        className="pointer-events-none absolute left-2 top-2 bottom-2 w-2 border-l-2 border-r-2 border-border/60"
+                    />
+                )}
+                <div className="flex flex-col gap-1 items-center justify-center">
                 {isEditingLabel ? (
                     <input
                         ref={inputRef}
@@ -240,6 +288,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                         {status}
                     </span>
                 )}
+                </div>
             </div>
 
             <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-muted-foreground border-border" />
