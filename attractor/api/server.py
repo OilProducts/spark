@@ -318,6 +318,9 @@ def _graph_payload(graph) -> dict:
             "retry_target": _attr_value(graph.graph_attrs, "retry_target"),
             "fallback_retry_target": _attr_value(graph.graph_attrs, "fallback_retry_target"),
             "default_fidelity": _attr_value(graph.graph_attrs, "default_fidelity"),
+            "ui_default_llm_model": _attr_value(graph.graph_attrs, "ui_default_llm_model"),
+            "ui_default_llm_provider": _attr_value(graph.graph_attrs, "ui_default_llm_provider"),
+            "ui_default_reasoning_effort": _attr_value(graph.graph_attrs, "ui_default_reasoning_effort"),
         },
         "edges": [
             {

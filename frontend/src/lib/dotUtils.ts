@@ -34,6 +34,9 @@ export function generateDot(
         _formatGraphAttr('retry_target', graphAttrs.retry_target),
         _formatGraphAttr('fallback_retry_target', graphAttrs.fallback_retry_target),
         _formatGraphAttr('default_fidelity', graphAttrs.default_fidelity),
+        _formatGraphAttr('ui_default_llm_model', graphAttrs.ui_default_llm_model),
+        _formatGraphAttr('ui_default_llm_provider', graphAttrs.ui_default_llm_provider),
+        _formatGraphAttr('ui_default_reasoning_effort', graphAttrs.ui_default_reasoning_effort),
     ].filter(Boolean);
 
     if (graphAttrLines.length > 0) {

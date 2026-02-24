@@ -91,6 +91,9 @@ interface PreviewResponse {
             retry_target?: string
             fallback_retry_target?: string
             default_fidelity?: string
+            ui_default_llm_model?: string
+            ui_default_llm_provider?: string
+            ui_default_reasoning_effort?: string
         }
     }
     diagnostics?: DiagnosticEntry[]
@@ -137,6 +140,7 @@ export function Editor() {
     const { activeFlow, viewMode, setSelectedNodeId, setSelectedEdgeId } = useStore();
     const nodeStatuses = useStore((state) => state.nodeStatuses);
     const graphAttrs = useStore((state) => state.graphAttrs);
+    const uiDefaults = useStore((state) => state.uiDefaults);
     const setGraphAttrs = useStore((state) => state.setGraphAttrs);
     const setDiagnostics = useStore((state) => state.setDiagnostics);
     const clearDiagnostics = useStore((state) => state.clearDiagnostics);
@@ -366,12 +370,22 @@ export function Editor() {
 
     const onAddNode = useCallback(() => {
         if (!activeFlow) return;
+        const defaultModel = graphAttrs.ui_default_llm_model || uiDefaults.llm_model || '';
+        const defaultProvider = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '';
+        const defaultReasoning = graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || '';
         const newNodeId = `node_${Math.floor(Math.random() * 10000)}`;
         const newNode: Node = {
             id: newNodeId,
             type: 'customTask',
             position: { x: Math.random() * 200 + 100, y: Math.random() * 200 + 100 },
-            data: { label: 'New Node', shape: 'box', status: 'idle' }
+            data: {
+                label: 'New Node',
+                shape: 'box',
+                status: 'idle',
+                llm_model: defaultModel,
+                llm_provider: defaultProvider,
+                reasoning_effort: defaultReasoning,
+            }
         };
 
         setNodes(nds => {
@@ -379,7 +393,7 @@ export function Editor() {
             scheduleSave(newNodes, edges);
             return newNodes;
         });
-    }, [activeFlow, edges, setNodes, scheduleSave]);
+    }, [activeFlow, edges, graphAttrs, uiDefaults, setNodes, scheduleSave]);
 
     const onSelectionChange = useCallback(({ nodes, edges }: OnSelectionChangeParams) => {
         const selectedNode = nodes.find(n => n.selected);

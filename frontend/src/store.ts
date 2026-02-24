@@ -31,6 +31,9 @@ export interface GraphAttrs {
     retry_target?: string
     fallback_retry_target?: string
     default_fidelity?: string
+    ui_default_llm_model?: string
+    ui_default_llm_provider?: string
+    ui_default_reasoning_effort?: string
 }
 
 export interface DiagnosticEntry {
@@ -64,6 +67,46 @@ const buildDiagnosticMaps = (diagnostics: DiagnosticEntry[]) => {
     })
 
     return { nodeDiagnostics, edgeDiagnostics }
+}
+
+export interface UiDefaults {
+    llm_model: string
+    llm_provider: string
+    reasoning_effort: string
+}
+
+const DEFAULT_UI_DEFAULTS: UiDefaults = {
+    llm_model: "",
+    llm_provider: "",
+    reasoning_effort: "",
+}
+
+const UI_DEFAULTS_STORAGE_KEY = "sparkspawn.ui_defaults"
+
+const loadUiDefaults = (): UiDefaults => {
+    if (typeof window === "undefined") {
+        return { ...DEFAULT_UI_DEFAULTS }
+    }
+    try {
+        const raw = window.localStorage.getItem(UI_DEFAULTS_STORAGE_KEY)
+        if (!raw) return { ...DEFAULT_UI_DEFAULTS }
+        const parsed = JSON.parse(raw) as Partial<UiDefaults>
+        return {
+            ...DEFAULT_UI_DEFAULTS,
+            ...parsed,
+        }
+    } catch {
+        return { ...DEFAULT_UI_DEFAULTS }
+    }
+}
+
+const saveUiDefaults = (defaults: UiDefaults) => {
+    if (typeof window === "undefined") return
+    try {
+        window.localStorage.setItem(UI_DEFAULTS_STORAGE_KEY, JSON.stringify(defaults))
+    } catch {
+        // Ignore storage failures (private mode, quota, etc.)
+    }
 }
 
 interface AppState {
@@ -105,6 +148,10 @@ interface AppState {
     hasValidationErrors: boolean
     suppressPreview: boolean
     setSuppressPreview: (value: boolean) => void
+
+    uiDefaults: UiDefaults
+    setUiDefaults: (values: Partial<UiDefaults>) => void
+    setUiDefault: (key: keyof UiDefaults, value: string) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -168,4 +215,18 @@ export const useStore = create<AppState>((set) => ({
     hasValidationErrors: false,
     suppressPreview: false,
     setSuppressPreview: (value) => set({ suppressPreview: value }),
+
+    uiDefaults: loadUiDefaults(),
+    setUiDefaults: (values) =>
+        set((state) => {
+            const next = { ...state.uiDefaults, ...values }
+            saveUiDefaults(next)
+            return { uiDefaults: next }
+        }),
+    setUiDefault: (key, value) =>
+        set((state) => {
+            const next = { ...state.uiDefaults, [key]: value }
+            saveUiDefaults(next)
+            return { uiDefaults: next }
+        }),
 }))

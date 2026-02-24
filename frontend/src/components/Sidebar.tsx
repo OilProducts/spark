@@ -10,6 +10,7 @@ export function Sidebar() {
     const { viewMode, activeFlow, setActiveFlow, selectedNodeId, selectedEdgeId } = useStore()
     const humanGate = useStore((state) => state.humanGate)
     const graphAttrs = useStore((state) => state.graphAttrs)
+    const uiDefaults = useStore((state) => state.uiDefaults)
     const setSuppressPreview = useStore((state) => state.setSuppressPreview)
     const [tab, setTab] = useState<'flows' | 'edit' | 'edge'>('flows')
     const [flows, setFlows] = useState<string[]>([])
@@ -40,7 +41,15 @@ export function Sidebar() {
         const fileName = name.endsWith('.dot') ? name : `${name}.dot`;
         const graphName = fileName.replace('.dot', '');
 
-        const initialContent = `digraph ${graphName} {\n  start [shape=Mdiamond, label="Start"];\n  end [shape=Msquare, label="End"];\n  start -> end;\n}`;
+        const escapeDot = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+        const uiAttrLines = [
+            uiDefaults.llm_model ? `ui_default_llm_model="${escapeDot(uiDefaults.llm_model)}"` : '',
+            uiDefaults.llm_provider ? `ui_default_llm_provider="${escapeDot(uiDefaults.llm_provider)}"` : '',
+            uiDefaults.reasoning_effort ? `ui_default_reasoning_effort="${escapeDot(uiDefaults.reasoning_effort)}"` : '',
+        ].filter(Boolean)
+        const graphAttrBlock = uiAttrLines.length ? `  graph [${uiAttrLines.join(', ')}];\n` : ''
+
+        const initialContent = `digraph ${graphName} {\n${graphAttrBlock}  start [shape=Mdiamond, label="Start"];\n  end [shape=Msquare, label="End"];\n  start -> end;\n}`;
 
         await fetch('/api/flows', {
             method: 'POST',
