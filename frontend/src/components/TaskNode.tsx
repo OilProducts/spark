@@ -52,6 +52,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
     );
     const status = (data.status as string) || 'idle';
     const nodeShape = (data.shape as string) || 'box';
+    const isBoxShape = nodeShape === 'box';
     const handlerType = getHandlerType(draftShape, draftType);
     const visibility = getNodeFieldVisibility(handlerType);
     const diagnosticsForNode = nodeDiagnostics[id] || [];
@@ -224,9 +225,17 @@ export function TaskNode({ id, data, selected }: NodeProps) {
     const svgHeight = 110;
     const svgStrokeWidth = nodeShape === 'Mdiamond' || nodeShape === 'Msquare' ? 3 : 2;
     const svgFill = 'hsl(var(--card) / 0.95)';
-    const svgStroke = `hsl(var(--border))`;
+    const svgStroke = (() => {
+        if (status === 'success') return 'hsl(142 76% 36%)';
+        if (status === 'failed') return 'hsl(var(--destructive))';
+        if (status === 'running') return 'hsl(var(--primary))';
+        if (isWaiting) return 'hsl(38 92% 50%)';
+        if (selected) return 'hsl(var(--foreground))';
+        return 'hsl(var(--border))';
+    })();
     const svgStrokeInner =
-        nodeShape === 'Mdiamond' || nodeShape === 'Msquare' ? `hsl(var(--border))` : '';
+        nodeShape === 'Mdiamond' || nodeShape === 'Msquare' ? svgStroke : '';
+    const svgShadow = 'drop-shadow(0 1px 2px hsl(240 10% 4% / 0.24))';
     const svgPathForShape = () => {
         switch (nodeShape) {
             case 'diamond':
@@ -285,7 +294,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
             )}
 
             <div
-                className={`flow-node__body bg-card/95 text-card-foreground shadow-sm rounded-md border p-4 min-w-[150px] relative ${borderColor} ${minHeightClass} transition-[color,box-shadow,border-color,background-color] hover:shadow-md ${shapeClasses.join(' ')}`}
+                className={`flow-node__body text-card-foreground p-4 min-w-[150px] relative ${minHeightClass} transition-[color,box-shadow,border-color,background-color] ${isBoxShape ? `bg-card/95 shadow-sm border rounded-md ${borderColor} hover:shadow-md` : 'bg-transparent border-0 shadow-none'} ${shapeClasses.join(' ')}`}
                 data-shape={nodeShape}
             >
                 {isSvgShape && (
@@ -301,6 +310,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                             fill={svgFill}
                             stroke={svgStroke}
                             strokeWidth={svgStrokeWidth}
+                            style={{ filter: svgShadow }}
                         />
                         {svgStrokeInner && (
                             <path
@@ -308,7 +318,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                 fill="none"
                                 stroke={svgStrokeInner}
                                 strokeWidth={1}
-                                transform="translate(0.5 0.5) scale(0.985)"
+                                transform="translate(2 2) scale(0.96)"
                             />
                         )}
                     </svg>
