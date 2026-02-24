@@ -1,0 +1,38 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HOME=/codex-home
+      - XDG_CONFIG_HOME=/codex-home/.config
+      - XDG_DATA_HOME=/codex-home/.local/share
+    command: uvicorn attractor.api.server:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app
+      - codex_home:/codex-home
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_BACKEND_URL=http://backend:8000
+      - CHOKIDAR_USEPOLLING=1
+    command: sh -lc "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    depends_on:
+      - backend
+
+volumes:
+  frontend_node_modules:
+  codex_home:
