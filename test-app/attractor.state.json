@@ -1,1 +1,14 @@
-["setup", "backend"]
+{
+  "completed_nodes": [
+    "start"
+  ],
+  "context": {
+    "_attractor.node_outcomes": {
+      "start": "success"
+    },
+    "graph.goal": "",
+    "outcome": "success"
+  },
+  "current_node": "end",
+  "retry_counts": {}
+}
