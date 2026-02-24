@@ -203,6 +203,11 @@
       opacity 140ms ease, stroke-dasharray 140ms ease;
   }
 
+  .flow-canvas .react-flow__edge-interaction {
+    stroke: transparent;
+    pointer-events: stroke;
+  }
+
   .react-flow__edge.flow-edge.selected .react-flow__edge-path {
     stroke: hsl(var(--primary));
     stroke-width: 4;
