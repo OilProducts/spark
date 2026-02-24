@@ -12,6 +12,7 @@ import {
 } from '@xyflow/react';
 import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeParams } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import ELK from 'elkjs/lib/elk.bundled.js';
 
 import { useStore, type DiagnosticEntry } from '@/store';
 import { TaskNode } from './TaskNode';
@@ -28,6 +29,17 @@ const edgeTypes = {
 };
 const EDGE_TYPE: Edge['type'] = 'validation';
 const EDGE_CLASS = 'flow-edge';
+const elk = new ELK();
+
+const DEFAULT_NODE_WIDTH = 220;
+const DEFAULT_NODE_HEIGHT = 110;
+const ELK_OPTIONS = {
+    'elk.algorithm': 'layered',
+    'elk.direction': 'DOWN',
+    'elk.layered.spacing.nodeNodeBetweenLayers': '120',
+    'elk.spacing.nodeNode': '80',
+    'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
+};
 
 interface PreviewNode {
     id: string
@@ -86,6 +98,38 @@ interface PreviewResponse {
 
 function normalizeLegacyDot(content: string): string {
     return content.replace(/\blabel=label=/g, 'label=');
+}
+
+async function layoutWithElk(nodes: Node[], edges: Edge[]): Promise<Node[]> {
+    const graph = {
+        id: 'root',
+        layoutOptions: ELK_OPTIONS,
+        children: nodes.map((node) => ({
+            id: node.id,
+            width: node.width ?? DEFAULT_NODE_WIDTH,
+            height: node.height ?? DEFAULT_NODE_HEIGHT,
+        })),
+        edges: edges.map((edge) => ({
+            id: edge.id,
+            sources: [edge.source],
+            targets: [edge.target],
+        })),
+    };
+
+    const layout = await elk.layout(graph);
+    const layoutMap = new Map((layout.children ?? []).map((child) => [child.id, child]));
+
+    return nodes.map((node) => {
+        const layoutNode = layoutMap.get(node.id);
+        if (!layoutNode) return node;
+        return {
+            ...node,
+            position: {
+                x: layoutNode.x ?? node.position.x,
+                y: layoutNode.y ?? node.position.y,
+            },
+        };
+    });
 }
 
 export function Editor() {
@@ -153,7 +197,7 @@ export function Editor() {
                 });
             })
             .then((res) => res.json())
-            .then((preview: PreviewResponse) => {
+            .then(async (preview: PreviewResponse) => {
                 if (preview.diagnostics) {
                     setDiagnostics(preview.diagnostics);
                 } else {
@@ -214,7 +258,13 @@ export function Editor() {
                     },
                 }));
 
-                setNodes(rfNodes);
+                try {
+                    const layoutNodes = await layoutWithElk(rfNodes, rfEdges);
+                    setNodes(layoutNodes);
+                } catch (error) {
+                    console.error('ELK layout failed, using fallback positions.', error);
+                    setNodes(rfNodes);
+                }
                 setEdges(rfEdges);
                 hydratedRef.current = true;
             })
