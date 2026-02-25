@@ -222,18 +222,19 @@ class RunRecord:
 
 
 RUN_HISTORY_LOCK = threading.Lock()
+RUNS_ROOT = PROJECT_ROOT / ".attractor" / "runs"
 
 
-def _run_root(working_directory: str, run_id: str) -> Path:
-    return Path(working_directory) / ".attractor" / "runs" / run_id
+def _run_root(run_id: str) -> Path:
+    return RUNS_ROOT / run_id
 
 
-def _run_meta_path(working_directory: str, run_id: str) -> Path:
-    return _run_root(working_directory, run_id) / "run.json"
+def _run_meta_path(run_id: str) -> Path:
+    return _run_root(run_id) / "run.json"
 
 
 def _write_run_meta(record: RunRecord) -> None:
-    run_meta_path = _run_meta_path(record.working_directory, record.run_id)
+    run_meta_path = _run_meta_path(record.run_id)
     try:
         run_meta_path.parent.mkdir(parents=True, exist_ok=True)
         with run_meta_path.open("w", encoding="utf-8") as f:
@@ -274,14 +275,8 @@ TOKEN_LINE_RE = re.compile(r"tokens used\\s*[:=]?\\s*(\\d[\\d,]*)", re.IGNORECAS
 TOKEN_NUMBER_ONLY_RE = re.compile(r"^\\d[\\d,]*$")
 
 
-def _extract_token_usage(working_directory: str, run_id: str) -> Optional[int]:
-    run_log_path = (
-        Path(working_directory)
-        / ".attractor"
-        / "runs"
-        / run_id
-        / "run.log"
-    )
+def _extract_token_usage(run_id: str) -> Optional[int]:
+    run_log_path = _run_root(run_id) / "run.log"
     if not run_log_path.exists():
         return None
     try:
@@ -307,7 +302,7 @@ def _extract_token_usage(working_directory: str, run_id: str) -> Optional[int]:
 def _record_run_end(run_id: str, working_directory: str, status: str, last_error: str = "") -> None:
     normalized_status = _normalize_run_status(status)
     with RUN_HISTORY_LOCK:
-        record = _read_run_meta(_run_meta_path(working_directory, run_id))
+        record = _read_run_meta(_run_meta_path(run_id))
         if not record:
             record = RunRecord(
                 run_id=run_id,
@@ -322,20 +317,14 @@ def _record_run_end(run_id: str, working_directory: str, status: str, last_error
         record.result = normalized_status
         record.ended_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
         record.last_error = last_error
-        record.token_usage = _extract_token_usage(working_directory, run_id)
+        record.token_usage = _extract_token_usage(run_id)
         _write_run_meta(record)
 
 
 def _append_runtime_log(message: str) -> None:
-    if not RUNTIME.last_working_directory or not RUNTIME.last_run_id:
+    if not RUNTIME.last_run_id:
         return
-    run_log_path = (
-        Path(RUNTIME.last_working_directory)
-        / ".attractor"
-        / "runs"
-        / RUNTIME.last_run_id
-        / "run.log"
-    )
+    run_log_path = _run_root(RUNTIME.last_run_id) / "run.log"
     try:
         run_log_path.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -481,16 +470,12 @@ async def get_status():
 
 
 @app.get("/runs")
-async def list_runs(working_directory: Optional[str] = None):
-    working_dir = (working_directory or RUNTIME.last_working_directory or "").strip()
-    if not working_dir:
-        return {"runs": []}
-    runs_root = Path(working_dir) / ".attractor" / "runs"
-    if not runs_root.exists():
+async def list_runs():
+    if not RUNS_ROOT.exists():
         return {"runs": []}
 
     records: List[RunRecord] = []
-    for run_dir in runs_root.iterdir():
+    for run_dir in RUNS_ROOT.iterdir():
         if not run_dir.is_dir():
             continue
         meta_path = run_dir / "run.json"
@@ -505,13 +490,13 @@ async def list_runs(working_directory: Optional[str] = None):
             flow_name="",
             status="unknown",
             result=None,
-            working_directory=working_dir,
+            working_directory="",
             model="",
             started_at="",
         )
         run_log_path = run_dir / "run.log"
         if run_log_path.exists():
-            record.token_usage = _extract_token_usage(working_dir, run_id)
+            record.token_usage = _extract_token_usage(run_id)
             try:
                 lines = run_log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
             except Exception:
@@ -745,7 +730,7 @@ async def run_pipeline(req: RunRequest):
     )
     runner = BroadcastingRunner(HandlerRunner(graph, registry), emit)
 
-    run_root = Path(working_dir) / ".attractor" / "runs" / run_id
+    run_root = _run_root(run_id)
     checkpoint_file = str(run_root / "state.json")
     logs_root = str(run_root / "logs")
 
@@ -844,9 +829,8 @@ async def abort_pipeline():
 
 @app.post("/reset")
 async def reset_checkpoint(req: ResetRequest):
-    run_root = Path(req.working_directory).resolve() / ".attractor" / "runs"
-    if run_root.exists():
-        shutil.rmtree(run_root, ignore_errors=True)
+    if RUNS_ROOT.exists():
+        shutil.rmtree(RUNS_ROOT, ignore_errors=True)
     return {"status": "reset"}
 
 
