@@ -244,10 +244,8 @@ class LocalCodexCliBackend(CodergenBackend):
             "exec",
             "-C",
             self.working_dir,
-            "-c",
-            'sandbox_mode="workspace-write"',
-            "-c",
-            'sandbox_workspace_write.writable_roots=["/app","/tmp","/codex-home"]',
+            "-s",
+            "danger-full-access",
         ]
         if self.model:
             cmd.extend(["-m", self.model])

@@ -20,6 +20,7 @@ services:
       - codex_home:/codex-home
       - ${HOME}/.codex:/codex-home/.codex
       - ${HOME}/.codex/skills:/codex-home/.codex/skills
+      - ${HOME}/projects/agent-skills:/Users/chris/projects/agent-skills:ro
 
   frontend:
     build:
