@@ -18,6 +18,7 @@ export function GraphSettings() {
     const { getNodes, getEdges } = useReactFlow()
     const saveTimer = useRef<number | null>(null)
     const flowProviderFallback = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
+    const [defaultsScope, setDefaultsScope] = useState<'flow' | 'global'>('flow')
 
     useEffect(() => {
         if (!activeFlow) return
@@ -74,53 +75,136 @@ export function GraphSettings() {
                         </div>
                     </div>
 
-                    <div className="mt-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        UI Defaults (Global)
+                    <div className="mt-4 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <span>LLM Defaults</span>
+                        <div className="inline-flex items-center rounded-md border border-border bg-muted p-1 text-[10px] font-semibold uppercase tracking-wide">
+                            <button
+                                type="button"
+                                onClick={() => setDefaultsScope('flow')}
+                                className={`rounded-sm px-2 py-0.5 ${defaultsScope === 'flow'
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:text-foreground'}`}
+                            >
+                                Flow
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setDefaultsScope('global')}
+                                className={`rounded-sm px-2 py-0.5 ${defaultsScope === 'global'
+                                    ? 'bg-background text-foreground shadow-sm'
+                                    : 'text-muted-foreground hover:text-foreground'}`}
+                            >
+                                Global
+                            </button>
+                        </div>
                     </div>
                     <div className="mt-3 space-y-3">
-                        <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default LLM Provider</label>
-                            <input
-                                value={uiDefaults.llm_provider}
-                                onChange={(event) => setUiDefault('llm_provider', event.target.value)}
-                                list="global-llm-provider-options"
-                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                placeholder="openai"
-                            />
-                            <datalist id="global-llm-provider-options">
-                                {LLM_PROVIDER_OPTIONS.map((provider) => (
-                                    <option key={provider} value={provider} />
-                                ))}
-                            </datalist>
-                        </div>
-                        <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default LLM Model</label>
-                            <input
-                                value={uiDefaults.llm_model}
-                                onChange={(event) => setUiDefault('llm_model', event.target.value)}
-                                list="global-llm-model-options"
-                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                placeholder="gpt-5.2"
-                            />
-                            <datalist id="global-llm-model-options">
-                                {getModelSuggestions(uiDefaults.llm_provider).map((modelOption) => (
-                                    <option key={modelOption} value={modelOption} />
-                                ))}
-                            </datalist>
-                        </div>
-                        <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default Reasoning Effort</label>
-                            <select
-                                value={uiDefaults.reasoning_effort}
-                                onChange={(event) => setUiDefault('reasoning_effort', event.target.value)}
-                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            >
-                                <option value="">Use handler default</option>
-                                <option value="low">Low</option>
-                                <option value="medium">Medium</option>
-                                <option value="high">High</option>
-                            </select>
-                        </div>
+                        {defaultsScope === 'global' ? (
+                            <>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Default LLM Provider</label>
+                                    <input
+                                        value={uiDefaults.llm_provider}
+                                        onChange={(event) => setUiDefault('llm_provider', event.target.value)}
+                                        list="global-llm-provider-options"
+                                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        placeholder="openai"
+                                    />
+                                    <datalist id="global-llm-provider-options">
+                                        {LLM_PROVIDER_OPTIONS.map((provider) => (
+                                            <option key={provider} value={provider} />
+                                        ))}
+                                    </datalist>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Default LLM Model</label>
+                                    <input
+                                        value={uiDefaults.llm_model}
+                                        onChange={(event) => setUiDefault('llm_model', event.target.value)}
+                                        list="global-llm-model-options"
+                                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        placeholder="gpt-5.2"
+                                    />
+                                    <datalist id="global-llm-model-options">
+                                        {getModelSuggestions(uiDefaults.llm_provider).map((modelOption) => (
+                                            <option key={modelOption} value={modelOption} />
+                                        ))}
+                                    </datalist>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Default Reasoning Effort</label>
+                                    <select
+                                        value={uiDefaults.reasoning_effort}
+                                        onChange={(event) => setUiDefault('reasoning_effort', event.target.value)}
+                                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    >
+                                        <option value="">Use handler default</option>
+                                        <option value="low">Low</option>
+                                        <option value="medium">Medium</option>
+                                        <option value="high">High</option>
+                                    </select>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Default LLM Provider</label>
+                                    <input
+                                        value={graphAttrs.ui_default_llm_provider || ''}
+                                        onChange={(event) => updateGraphAttr('ui_default_llm_provider', event.target.value)}
+                                        list="flow-llm-provider-options"
+                                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        placeholder={uiDefaults.llm_provider ? `Snapshot: ${uiDefaults.llm_provider}` : 'Snapshot of global default'}
+                                    />
+                                    <datalist id="flow-llm-provider-options">
+                                        {LLM_PROVIDER_OPTIONS.map((provider) => (
+                                            <option key={provider} value={provider} />
+                                        ))}
+                                    </datalist>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Default LLM Model</label>
+                                    <input
+                                        value={graphAttrs.ui_default_llm_model || ''}
+                                        onChange={(event) => updateGraphAttr('ui_default_llm_model', event.target.value)}
+                                        list="flow-llm-model-options"
+                                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        placeholder={uiDefaults.llm_model ? `Snapshot: ${uiDefaults.llm_model}` : 'Snapshot of global default'}
+                                    />
+                                    <datalist id="flow-llm-model-options">
+                                        {getModelSuggestions(flowProviderFallback).map((modelOption) => (
+                                            <option key={modelOption} value={modelOption} />
+                                        ))}
+                                    </datalist>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Default Reasoning Effort</label>
+                                    <select
+                                        value={graphAttrs.ui_default_reasoning_effort || ''}
+                                        onChange={(event) => updateGraphAttr('ui_default_reasoning_effort', event.target.value)}
+                                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    >
+                                        <option value="">Use global default</option>
+                                        <option value="low">Low</option>
+                                        <option value="medium">Medium</option>
+                                        <option value="high">High</option>
+                                    </select>
+                                </div>
+                                <div className="flex justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            updateGraphAttr('ui_default_llm_provider', uiDefaults.llm_provider);
+                                            updateGraphAttr('ui_default_llm_model', uiDefaults.llm_model);
+                                            updateGraphAttr('ui_default_reasoning_effort', uiDefaults.reasoning_effort);
+                                        }}
+                                        className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                    >
+                                        Reset From Global
+                                    </button>
+                                </div>
+                            </>
+                        )}
                     </div>
 
                     <div className="mt-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -188,67 +272,6 @@ export function GraphSettings() {
                         </div>
                     </div>
 
-                    <div className="mt-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        UI Defaults (Flow Snapshot)
-                    </div>
-                    <div className="mt-3 space-y-3">
-                        <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default LLM Provider</label>
-                            <input
-                                value={graphAttrs.ui_default_llm_provider || ''}
-                                onChange={(event) => updateGraphAttr('ui_default_llm_provider', event.target.value)}
-                                list="flow-llm-provider-options"
-                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                placeholder={uiDefaults.llm_provider ? `Snapshot: ${uiDefaults.llm_provider}` : 'Snapshot of global default'}
-                            />
-                            <datalist id="flow-llm-provider-options">
-                                {LLM_PROVIDER_OPTIONS.map((provider) => (
-                                    <option key={provider} value={provider} />
-                                ))}
-                            </datalist>
-                        </div>
-                        <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default LLM Model</label>
-                            <input
-                                value={graphAttrs.ui_default_llm_model || ''}
-                                onChange={(event) => updateGraphAttr('ui_default_llm_model', event.target.value)}
-                                list="flow-llm-model-options"
-                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                placeholder={uiDefaults.llm_model ? `Snapshot: ${uiDefaults.llm_model}` : 'Snapshot of global default'}
-                            />
-                            <datalist id="flow-llm-model-options">
-                                {getModelSuggestions(flowProviderFallback).map((modelOption) => (
-                                    <option key={modelOption} value={modelOption} />
-                                ))}
-                            </datalist>
-                        </div>
-                        <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default Reasoning Effort</label>
-                            <select
-                                value={graphAttrs.ui_default_reasoning_effort || ''}
-                                onChange={(event) => updateGraphAttr('ui_default_reasoning_effort', event.target.value)}
-                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            >
-                                <option value="">Use global default</option>
-                                <option value="low">Low</option>
-                                <option value="medium">Medium</option>
-                                <option value="high">High</option>
-                            </select>
-                        </div>
-                        <div className="flex justify-end">
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    updateGraphAttr('ui_default_llm_provider', uiDefaults.llm_provider);
-                                    updateGraphAttr('ui_default_llm_model', uiDefaults.llm_model);
-                                    updateGraphAttr('ui_default_reasoning_effort', uiDefaults.reasoning_effort);
-                                }}
-                                className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
-                            >
-                                Reset From Global
-                            </button>
-                        </div>
-                    </div>
                 </div>
             )}
         </div>
