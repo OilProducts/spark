@@ -159,26 +159,36 @@ export function Sidebar() {
 
     return (
         <nav className="w-72 border-r bg-background flex flex-col shrink-0 overflow-hidden z-40">
-            <div className="flex p-4 pb-2">
-                <div className="inline-flex h-9 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground w-full">
-                    <div
-                        className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1 text-sm font-medium ring-offset-background transition-all flex-1 ${activeTab === 'flows' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
-                            }`}
+            <div className="px-4 pb-2 pt-4">
+                <div className="flex items-center gap-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    <span
+                        className={`transition-colors ${activeTab === 'flows' ? 'text-foreground' : ''}`}
                     >
                         Flows
-                    </div>
-                    <div
-                        className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1 text-sm font-medium ring-offset-background transition-all flex-1 ${activeTab === 'edit' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
-                            }`}
+                    </span>
+                    <span className="text-muted-foreground/60">/</span>
+                    <span
+                        className={`transition-colors ${activeTab === 'edit' ? 'text-foreground' : ''}`}
                     >
                         Node
-                    </div>
-                    <div
-                        className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1 text-sm font-medium ring-offset-background transition-all flex-1 ${activeTab === 'edge' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
-                            }`}
+                    </span>
+                    <span className="text-muted-foreground/60">/</span>
+                    <span
+                        className={`transition-colors ${activeTab === 'edge' ? 'text-foreground' : ''}`}
                     >
                         Edge
-                    </div>
+                    </span>
+                </div>
+                <div className="mt-2 h-[2px] w-full rounded-full bg-muted">
+                    <div
+                        className={`h-full rounded-full bg-foreground transition-all ${
+                            activeTab === 'flows'
+                                ? 'w-1/3'
+                                : activeTab === 'edit'
+                                    ? 'w-2/3'
+                                    : 'w-full'
+                        }`}
+                    />
                 </div>
             </div>
 
