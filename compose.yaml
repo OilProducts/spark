@@ -19,6 +19,7 @@ services:
       - .:/app
       - codex_home:/codex-home
       - ${HOME}/.codex:/codex-home/.codex
+      - ${HOME}/.codex/skills:/codex-home/.codex/skills
 
   frontend:
     build:
