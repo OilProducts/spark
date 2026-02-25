@@ -1,30 +1,22 @@
 digraph demo {
-  graph [
-    label="Demo: Feature Delivery",
-    goal="Ship a small feature with tests and approval",
-    model_stylesheet="* { llm_model = gpt-5.2; llm_provider = openai; reasoning_effort = medium; }\n.code { llm_model = gpt-5.2; llm_provider = openai; }\n.review { llm_model = claude-opus-4-6; llm_provider = anthropic; reasoning_effort = high; }",
-    ui_default_llm_model="gpt-5.2",
-    ui_default_llm_provider="openai",
-    ui_default_reasoning_effort="medium"
-  ];
-
-  start [shape=Mdiamond, label="Start"];
-  exit [shape=Msquare, label="End"];
-
-  intake [label="Intake", prompt="Summarize the feature request and constraints for: $goal"];
-  plan [label="Plan", class="planning", prompt="Create an implementation plan for: $goal"];
-  fan_out [shape=component, label="Parallel Build", join_policy=wait_all, max_parallel=3];
-  backend [label="Backend", class="code", prompt="Implement backend changes for: $goal"];
-  frontend [label="Frontend", class="code", prompt="Implement UI changes for: $goal"];
-  docs [label="Docs", prompt="Draft release notes and usage docs for: $goal"];
-  fan_in [shape=tripleoctagon, label="Merge Work", join_policy=wait_all, error_policy=fail_fast];
-  run_tests [shape=parallelogram, label="Run Tests", tool_command="pytest -q"];
-  gate [shape=diamond, label="Tests Passing?"];
-  fix [label="Fix Issues", class="code", prompt="Fix failures from tests and update code accordingly."];
-  approval [shape=hexagon, label="Human Approval", prompt="Approve deploy?"];
-  deploy [label="Deploy", class="review", prompt="Prepare deployment checklist and rollout steps."];
-
-  start -> intake -> plan -> fan_out;
+  graph [goal="Ship a small feature with tests and approval", label="Demo: Feature Delivery", model_stylesheet="* { llm_model = gpt-5.2; llm_provider = openai; reasoning_effort = medium; }\n.code { llm_model = gpt-5.2; llm_provider = openai; }\n.review { llm_model = claude-opus-4-6; llm_provider = anthropic; reasoning_effort = high; }", ui_default_llm_model="gpt-5.2", ui_default_llm_provider="openai", ui_default_reasoning_effort="medium"];
+  start [label="Start", shape=Mdiamond, join_policy=wait_all, error_policy=continue, max_parallel=4];
+  exit [label="End", shape=Msquare, join_policy=wait_all, error_policy=continue, max_parallel=4];
+  intake [label="Intake", shape=box, prompt="Summarize the feature request and constraints.", join_policy=wait_all, error_policy=continue, max_parallel=4];
+  plan [label="Plan", shape=box, prompt="Create an implementation plan for: Ship a small feature with tests and approval", join_policy=wait_all, error_policy=continue, max_parallel=4, class="planning"];
+  fan_out [label="Parallel Build", shape=component, join_policy=wait_all, error_policy=continue, max_parallel=3];
+  backend [label="Backend", shape=box, prompt="Implement backend changes for: Ship a small feature with tests and approval", join_policy=wait_all, error_policy=continue, max_parallel=4, class="code"];
+  frontend [label="Frontend", shape=box, prompt="Implement UI changes for: Ship a small feature with tests and approval", join_policy=wait_all, error_policy=continue, max_parallel=4, class="code"];
+  docs [label="Docs", shape=box, prompt="Draft release notes and usage docs for: Ship a small feature with tests and approval", join_policy=wait_all, error_policy=continue, max_parallel=4];
+  fan_in [label="Merge Work", shape=tripleoctagon, join_policy=wait_all, error_policy=fail_fast, max_parallel=4];
+  run_tests [label="Run Tests", shape=parallelogram, tool_command="pytest -q", join_policy=wait_all, error_policy=continue, max_parallel=4];
+  gate [label="Tests Passing?", shape=diamond, join_policy=wait_all, error_policy=continue, max_parallel=4];
+  fix [label="Fix Issues", shape=box, prompt="Fix failures from tests and update code accordingly.", join_policy=wait_all, error_policy=continue, max_parallel=4, class="code"];
+  approval [label="Human Approval", shape=hexagon, prompt="Approve deploy?", join_policy=wait_all, error_policy=continue, max_parallel=4];
+  deploy [label="Deploy", shape=box, prompt="Prepare deployment checklist and rollout steps.", join_policy=wait_all, error_policy=continue, max_parallel=4, class="review"];
+  start -> intake;
+  intake -> plan;
+  plan -> fan_out;
   fan_out -> backend;
   fan_out -> frontend;
   fan_out -> docs;
