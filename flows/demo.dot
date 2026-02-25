@@ -1,0 +1,42 @@
+digraph demo {
+  graph [
+    label="Demo: Feature Delivery",
+    goal="Ship a small feature with tests and approval",
+    model_stylesheet="* { llm_model: gpt-5.2; llm_provider: openai; reasoning_effort: medium; }\n.code { llm_model: gpt-5.2; llm_provider: openai; }\n.review { llm_model: claude-opus-4-6; llm_provider: anthropic; reasoning_effort: high; }",
+    ui_default_llm_model="gpt-5.2",
+    ui_default_llm_provider="openai",
+    ui_default_reasoning_effort="medium"
+  ];
+
+  start [shape=Mdiamond, label="Start"];
+  exit [shape=Msquare, label="End"];
+
+  intake [shape=box, label="Intake", prompt="Summarize the feature request and constraints."];
+  plan [shape=box, label="Plan", class="planning", prompt="Create an implementation plan for: $goal"];
+  fan_out [shape=component, label="Parallel Build", join_policy=wait_all, max_parallel=3];
+  backend [shape=box, class="code", label="Backend", prompt="Implement backend changes for: $goal"];
+  frontend [shape=box, class="code", label="Frontend", prompt="Implement UI changes for: $goal"];
+  docs [shape=box, label="Docs", prompt="Draft release notes and usage docs for: $goal"];
+  fan_in [shape=tripleoctagon, label="Merge Work", join_policy=wait_all, error_policy=fail_fast];
+  run_tests [shape=parallelogram, label="Run Tests", tool_command="pytest -q"];
+  gate [shape=diamond, label="Tests Passing?"];
+  fix [shape=box, class="code", label="Fix Issues", prompt="Fix failures from tests and update code accordingly."];
+  approval [shape=hexagon, label="Human Approval", prompt="Approve deploy?"];
+  deploy [shape=box, class="review", label="Deploy", prompt="Prepare deployment checklist and rollout steps."];
+
+  start -> intake -> plan -> fan_out;
+  fan_out -> backend;
+  fan_out -> frontend;
+  fan_out -> docs;
+  backend -> fan_in;
+  frontend -> fan_in;
+  docs -> fan_in;
+  fan_in -> run_tests;
+  run_tests -> gate;
+  gate -> approval [label="Yes", condition="outcome=success"];
+  gate -> fix [label="No", condition="outcome!=success"];
+  fix -> run_tests;
+  approval -> deploy [label="Approve"];
+  approval -> exit [label="Reject"];
+  deploy -> exit;
+}
