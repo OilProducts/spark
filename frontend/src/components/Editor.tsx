@@ -38,8 +38,8 @@ const DEFAULT_NODE_HEIGHT = 110;
 const ELK_OPTIONS = {
     'elk.algorithm': 'layered',
     'elk.direction': 'DOWN',
-    'elk.layered.spacing.nodeNodeBetweenLayers': '60',
-    'elk.spacing.nodeNode': '40',
+    'elk.layered.spacing.nodeNodeBetweenLayers': '30',
+    'elk.spacing.nodeNode': '20',
     'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
 };
 
