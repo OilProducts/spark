@@ -13,10 +13,41 @@ export function GraphSettings() {
     const setModel = useStore((state) => state.setModel)
     const workingDir = useStore((state) => state.workingDir)
     const setWorkingDir = useStore((state) => state.setWorkingDir)
+    const viewMode = useStore((state) => state.viewMode)
     const uiDefaults = useStore((state) => state.uiDefaults)
-    const { getNodes, getEdges } = useReactFlow()
+    const { getNodes, getEdges, setNodes } = useReactFlow()
     const saveTimer = useRef<number | null>(null)
     const flowProviderFallback = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
+    const canApplyDefaults = !!activeFlow && viewMode === 'editor'
+
+    const applyDefaultsToNodes = () => {
+        if (!activeFlow) return
+        const defaultModel = graphAttrs.ui_default_llm_model || uiDefaults.llm_model || ''
+        const defaultProvider = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
+        const defaultReasoning = graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || ''
+
+        const currentNodes = getNodes()
+        if (currentNodes.length === 0) return
+
+        const updatedNodes = currentNodes.map((node) => ({
+            ...node,
+            data: {
+                ...node.data,
+                llm_model: defaultModel,
+                llm_provider: defaultProvider,
+                reasoning_effort: defaultReasoning,
+            },
+        }))
+
+        setNodes(updatedNodes)
+
+        const dot = generateDot(activeFlow, updatedNodes, getEdges(), graphAttrs)
+        fetch('/api/flows', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: activeFlow, content: dot }),
+        }).catch(console.error)
+    }
 
     useEffect(() => {
         if (!activeFlow) return
@@ -185,7 +216,16 @@ export function GraphSettings() {
                                 <option value="high">High</option>
                             </select>
                         </div>
-                        <div className="flex justify-end">
+                        <div className="flex items-center justify-between gap-2">
+                            <button
+                                type="button"
+                                onClick={applyDefaultsToNodes}
+                                disabled={!canApplyDefaults}
+                                className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                                title={canApplyDefaults ? 'Apply current flow defaults to every node.' : 'Switch to the editor to apply defaults.'}
+                            >
+                                Apply To Nodes
+                            </button>
                             <button
                                 type="button"
                                 onClick={() => {
