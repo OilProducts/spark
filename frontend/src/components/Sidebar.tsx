@@ -160,35 +160,9 @@ export function Sidebar() {
     return (
         <nav className="w-72 border-r bg-background flex flex-col shrink-0 overflow-hidden z-40">
             <div className="px-4 pb-2 pt-4">
-                <div className="flex items-center gap-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                    <span
-                        className={`transition-colors ${activeTab === 'flows' ? 'text-foreground' : ''}`}
-                    >
-                        Flows
-                    </span>
-                    <span className="text-muted-foreground/60">/</span>
-                    <span
-                        className={`transition-colors ${activeTab === 'edit' ? 'text-foreground' : ''}`}
-                    >
-                        Node
-                    </span>
-                    <span className="text-muted-foreground/60">/</span>
-                    <span
-                        className={`transition-colors ${activeTab === 'edge' ? 'text-foreground' : ''}`}
-                    >
-                        Edge
-                    </span>
-                </div>
-                <div className="mt-2 h-[2px] w-full rounded-full bg-muted">
-                    <div
-                        className={`h-full rounded-full bg-foreground transition-all ${
-                            activeTab === 'flows'
-                                ? 'w-1/3'
-                                : activeTab === 'edit'
-                                    ? 'w-2/3'
-                                    : 'w-full'
-                        }`}
-                    />
+                <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-[0.2em] text-foreground">
+                    <span>{activeTab === 'flows' ? 'Flows' : activeTab === 'edit' ? 'Node' : 'Edge'}</span>
+                    <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
                 </div>
             </div>
 
