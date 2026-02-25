@@ -505,7 +505,7 @@ async def list_runs():
                 first_line = lines[0]
                 timestamp_match = re.search(r"^\\[(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}) UTC\\]", first_line)
                 if timestamp_match:
-                    record.started_at = f\"{timestamp_match.group(1).replace(' ', 'T')}Z\"
+                    record.started_at = f"{timestamp_match.group(1).replace(' ', 'T')}Z"
                 for line in reversed(lines):
                     status_match = re.search(r\"Pipeline\\s+(\\w+)\", line)
                     if status_match:
@@ -515,7 +515,7 @@ async def list_runs():
                 last_line = lines[-1]
                 last_timestamp = re.search(r\"^\\[(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}) UTC\\]\", last_line)
                 if last_timestamp:
-                    record.ended_at = f\"{last_timestamp.group(1).replace(' ', 'T')}Z\"
+                    record.ended_at = f"{last_timestamp.group(1).replace(' ', 'T')}Z"
         records.append(record)
 
     def _sort_key(item: RunRecord) -> str:
