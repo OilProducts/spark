@@ -71,9 +71,9 @@ def _parse_rules(stylesheet: str) -> List[_StyleRule]:
         body = match.group(2).strip()
         properties: Dict[str, str] = {}
         for stmt in [s.strip() for s in body.split(";") if s.strip()]:
-            if "=" not in stmt:
+            if ":" not in stmt:
                 continue
-            raw_key, raw_value = stmt.split("=", 1)
+            raw_key, raw_value = stmt.split(":", 1)
             key = raw_key.strip()
             value = _strip_quotes(raw_value.strip())
             mapped = _PROPERTY_MAP.get(key)

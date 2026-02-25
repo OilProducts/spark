@@ -360,7 +360,7 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
     if text == "":
         return diagnostics
 
-    # Minimal structural parse: selector { key = value; ... }
+    # Minimal structural parse: selector { key: value; ... }
     idx = 0
     n = len(text)
     while idx < n:
@@ -417,12 +417,12 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
         else:
             statements = [s.strip() for s in body.split(";") if s.strip()]
             for stmt in statements:
-                if "=" not in stmt:
+                if ":" not in stmt:
                     diagnostics.append(
                         Diagnostic(
                             rule_id="stylesheet_syntax",
                             severity=DiagnosticSeverity.ERROR,
-                            message=f"stylesheet statement '{stmt}' must contain '='",
+                            message=f"stylesheet statement '{stmt}' must contain ':'",
                             line=line,
                         )
                     )
