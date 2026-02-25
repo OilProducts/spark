@@ -38,7 +38,7 @@ const formatTimestamp = (value?: string | null) => {
     return date.toLocaleString()
 }
 
-const formatDuration = (start?: string, end?: string | null, status?: string) => {
+const formatDuration = (start?: string, end?: string | null, status?: string, now?: number) => {
     if (!start) return '—'
     const startMs = Date.parse(start)
     if (!Number.isFinite(startMs)) return '—'
@@ -47,7 +47,7 @@ const formatDuration = (start?: string, end?: string | null, status?: string) =>
         const parsed = Date.parse(end)
         if (Number.isFinite(parsed)) endMs = parsed
     } else if (status === 'running' || status === 'pause_requested' || status === 'abort_requested') {
-        endMs = Date.now()
+        endMs = now ?? Date.now()
     }
     if (endMs === null) return '—'
     const delta = Math.max(0, endMs - startMs)
@@ -57,7 +57,7 @@ const formatDuration = (start?: string, end?: string | null, status?: string) =>
     const remSeconds = seconds % 60
     const remMinutes = minutes % 60
     if (hours > 0) return `${hours}h ${remMinutes}m`
-    if (minutes > 0) return `${minutes}m ${remSeconds}s`
+    if (minutes > 0) return `${minutes}m`
     return `${remSeconds}s`
 }
 
@@ -66,6 +66,7 @@ export function RunsPanel() {
     const [runs, setRuns] = useState<RunRecord[]>([])
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [now, setNow] = useState(() => Date.now())
 
     const fetchRuns = async () => {
         setIsLoading(true)
@@ -88,6 +89,12 @@ export function RunsPanel() {
     useEffect(() => {
         if (viewMode !== 'runs') return
         fetchRuns()
+    }, [viewMode])
+
+    useEffect(() => {
+        if (viewMode !== 'runs') return
+        const interval = window.setInterval(() => setNow(Date.now()), 1000)
+        return () => window.clearInterval(interval)
     }, [viewMode])
 
     const summary = useMemo(() => {
@@ -167,7 +174,7 @@ export function RunsPanel() {
                                         {formatTimestamp(run.ended_at)}
                                     </span>
                                     <span className="text-xs text-muted-foreground">
-                                        {formatDuration(run.started_at, run.ended_at, run.status)}
+                                        {formatDuration(run.started_at, run.ended_at, run.status, now)}
                                     </span>
                                     <span className="text-xs text-muted-foreground">
                                         {typeof run.token_usage === 'number' ? run.token_usage.toLocaleString() : '—'}
