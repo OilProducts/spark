@@ -103,6 +103,27 @@ class TestDotParser:
         with pytest.raises(DotParseError):
             parse_dot(dot)
 
+    def test_parse_qualified_attribute_keys(self):
+        dot = """
+        digraph Qualified {
+            a [model.provider="openai", model.reasoning.effort="high"]
+        }
+        """
+        graph = parse_dot(dot)
+        attrs = graph.nodes["a"].attrs
+
+        assert attrs["model.provider"].value == "openai"
+        assert attrs["model.reasoning.effort"].value == "high"
+
+    def test_reject_malformed_qualified_attribute_key(self):
+        dot = """
+        digraph Bad {
+            a [model..provider="openai"]
+        }
+        """
+        with pytest.raises(DotParseError, match="invalid attribute key"):
+            parse_dot(dot)
+
     def test_reject_undirected_graph_declaration(self):
         dot = """
         graph Bad {

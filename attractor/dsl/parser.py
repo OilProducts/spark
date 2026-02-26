@@ -17,6 +17,7 @@ from .models import (
 
 
 NODE_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ATTR_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
 class DotParseError(ValueError):
@@ -214,6 +215,8 @@ class _Parser:
 
         while True:
             key_tok = self.expect("IDENT")
+            if not ATTR_KEY_RE.match(key_tok.value):
+                raise DotParseError(f"invalid attribute key '{key_tok.value}'", key_tok.line)
             self.expect("EQ")
             value, value_type, value_line = self.parse_value()
             attrs[key_tok.value] = DotAttribute(
