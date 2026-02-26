@@ -299,7 +299,7 @@ Status key:
 ## 7. Validation and Linting
 
 ### 7.1 Diagnostic Model
-- [ ] [7.1-01] Implement diagnostic structure with rule/severity/message/node/edge/fix fields.
+- [x] [7.1-01] Implement diagnostic structure with rule/severity/message/node/edge/fix fields.
 - [ ] [7.1-02] Block execution when any ERROR diagnostic exists.
 - [ ] [7.1-03] Preserve WARNING/INFO diagnostics in API responses and UI surfaces.
 

@@ -12,6 +12,24 @@ class TestDotValidator:
     def _errors(self, diagnostics):
         return [d for d in diagnostics if d.severity == DiagnosticSeverity.ERROR]
 
+    def test_diagnostic_exposes_spec_field_aliases(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            orphan [shape=box]
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        reachability = next(d for d in diagnostics if d.rule_id == "reachability")
+
+        assert reachability.rule == "reachability"
+        assert reachability.node == "orphan"
+        assert reachability.edge is None
+        assert reachability.fix is None
+
     def test_start_exit_and_reachability_rules(self):
         dot = """
         digraph G {

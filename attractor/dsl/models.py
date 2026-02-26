@@ -70,6 +70,22 @@ class Diagnostic:
     edge: Optional[Tuple[str, str]] = None
     fix: Optional[str] = None
 
+    @property
+    def rule(self) -> str:
+        return self.rule_id
+
+    @rule.setter
+    def rule(self, value: str) -> None:
+        self.rule_id = value
+
+    @property
+    def node(self) -> Optional[str]:
+        return self.node_id
+
+    @node.setter
+    def node(self, value: Optional[str]) -> None:
+        self.node_id = value
+
 
 DURATION_UNITS = {"ms", "s", "m", "h", "d"}
 
