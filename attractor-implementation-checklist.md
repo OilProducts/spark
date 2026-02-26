@@ -229,7 +229,6 @@ Status key:
 - [x] [4.11-04] Emit intervention and telemetry artifacts for supervisor decisions.
 
 ### 4.12 Custom Handlers
-- [ ] [4.12-01] Document and support custom handler registration by type string.
 - [ ] [4.12-02] Catch handler exceptions and convert to FAIL outcomes.
 - [ ] [4.12-03] Enforce statelessness/synchronization expectations for handler implementations.
 
@@ -565,3 +564,4 @@ Status key:
 - [ ] [4.8-04] Serialize branch results into `parallel.results`. Deferred because `ParallelHandler` already emits `context_updates["parallel.results"]` and existing tests assert populated branch-result payloads (`tests/handlers/test_handlers.py`, `tests/integration/test_parity_matrix.py`), so this is checklist state drift.
 - [ ] [4.9-01] Read `parallel.results` and fail when empty. Deferred because `FanInHandler.execute` already reads `parallel.results` and returns `FAIL` with `"No parallel results to evaluate"` when normalized results are empty, so this is checklist state drift.
 - [ ] [4.9-04] Publish selected candidate via `parallel.fan_in.*` context keys. Deferred because `FanInHandler.execute` already sets `parallel.fan_in.best_id` and `parallel.fan_in.best_outcome`, and tests assert both keys in `tests/handlers/test_handlers.py`, so this is checklist state drift.
+- [ ] [4.12-01] Document and support custom handler registration by type string. Deferred because type-string registration is already implemented in `HandlerRegistry.register` and exercised by custom-type resolution coverage (`tests/handlers/test_handlers.py`, `tests/integration/test_parity_matrix.py`), so this is checklist state drift.
