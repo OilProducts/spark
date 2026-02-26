@@ -556,6 +556,7 @@ Status key:
 ---
 
 ## Deferred Tasks
+- [ ] [3.2-04] Save checkpoint after each stage with current node and completed list. Deferred because `PipelineExecutor` already appends the completed node then saves checkpoint with `current_node` + `completed_nodes`, and this is verified by checkpointing tests in `tests/engine/test_checkpointing.py`, so this is checklist state drift.
 - [ ] [2.6-02] Resolve `type` override before shape-based handler mapping. Deferred because `HandlerRegistry.resolve_handler_type` already checks explicit `type` before shape mapping and tests already cover this precedence (`tests/handlers/test_handlers.py`), so this is checklist state drift.
 - [ ] [2.8-02] Ensure explicit `type` attribute overrides shape mapping. Deferred because explicit `type` precedence is already implemented in `HandlerRegistry.resolve_handler_type` and validated by `tests/handlers/test_handlers.py::test_registry_resolution_by_shape_and_type`, so this is checklist state drift.
 - [ ] [2.3-05] Accept optional statement semicolons. Deferred because parser behavior is already implemented and covered by existing tests (`tests/dsl/test_parser.py`), so this is checklist state drift rather than a code gap.
