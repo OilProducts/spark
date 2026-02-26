@@ -290,3 +290,26 @@ class TestRouting:
         )
         outcome = Outcome(status=OutcomeStatus.SUCCESS)
         self._assert_stable_target(self._edges_from(graph, "a"), outcome, "high")
+
+    def test_skipped_status_uses_non_fail_fallback_routing(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                a [shape=box]
+                primary [shape=box]
+                secondary [shape=box]
+                done [shape=Msquare]
+
+                start -> a
+                a -> secondary [condition="outcome=success", weight=1]
+                a -> primary [condition="outcome=partial_success", weight=3]
+                primary -> done
+                secondary -> done
+            }
+            """
+        )
+        outcome = Outcome(status=OutcomeStatus.SKIPPED)
+        edge = select_next_edge(self._edges_from(graph, "a"), outcome, Context())
+        assert edge is not None
+        assert edge.target == "primary"

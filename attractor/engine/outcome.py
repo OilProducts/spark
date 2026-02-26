@@ -10,6 +10,7 @@ class OutcomeStatus(str, Enum):
     RETRY = "retry"
     FAIL = "fail"
     PARTIAL_SUCCESS = "partial_success"
+    SKIPPED = "skipped"
 
 
 @dataclass

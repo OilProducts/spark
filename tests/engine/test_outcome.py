@@ -38,3 +38,15 @@ class TestOutcomePayload:
             "notes": "",
             "failure_reason": "",
         }
+
+    def test_to_payload_supports_skipped_status(self):
+        outcome = Outcome(status=OutcomeStatus.SKIPPED, notes="condition not met")
+
+        assert outcome.to_payload() == {
+            "status": "skipped",
+            "preferred_label": "",
+            "suggested_next_ids": [],
+            "context_updates": {},
+            "notes": "condition not met",
+            "failure_reason": "",
+        }
