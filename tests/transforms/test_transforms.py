@@ -31,10 +31,30 @@ class TestTransforms:
         assert task.attrs["shape"].value_type == DotValueType.STRING
         assert task.attrs["label"].value == "task"
         assert task.attrs["label"].value_type == DotValueType.STRING
+        assert task.attrs["type"].value == ""
+        assert task.attrs["type"].value_type == DotValueType.STRING
+        assert task.attrs["prompt"].value == ""
+        assert task.attrs["prompt"].value_type == DotValueType.STRING
         assert task.attrs["max_retries"].value == 0
         assert task.attrs["max_retries"].value_type == DotValueType.INTEGER
         assert task.attrs["goal_gate"].value is False
         assert task.attrs["goal_gate"].value_type == DotValueType.BOOLEAN
+        assert task.attrs["retry_target"].value == ""
+        assert task.attrs["retry_target"].value_type == DotValueType.STRING
+        assert task.attrs["fallback_retry_target"].value == ""
+        assert task.attrs["fallback_retry_target"].value_type == DotValueType.STRING
+        assert task.attrs["fidelity"].value == ""
+        assert task.attrs["fidelity"].value_type == DotValueType.STRING
+        assert task.attrs["thread_id"].value == ""
+        assert task.attrs["thread_id"].value_type == DotValueType.STRING
+        assert task.attrs["class"].value == ""
+        assert task.attrs["class"].value_type == DotValueType.STRING
+        assert task.attrs["timeout"].value is None
+        assert task.attrs["timeout"].value_type == DotValueType.DURATION
+        assert task.attrs["llm_model"].value == ""
+        assert task.attrs["llm_model"].value_type == DotValueType.STRING
+        assert task.attrs["llm_provider"].value == ""
+        assert task.attrs["llm_provider"].value_type == DotValueType.STRING
         assert task.attrs["reasoning_effort"].value == "high"
         assert task.attrs["reasoning_effort"].value_type == DotValueType.STRING
         assert task.attrs["auto_status"].value is False

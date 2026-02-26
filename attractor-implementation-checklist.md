@@ -71,7 +71,7 @@ Status key:
 - [x] [2.5-06] Implement `default_fidelity` fallback in fidelity resolution.
 
 ### 2.6 Node Attributes
-- [ ] [2.6-01] Support and persist all node attrs from spec table.
+- [x] [2.6-01] Support and persist all node attrs from spec table.
 - [ ] [2.6-02] Resolve `type` override before shape-based handler mapping.
 - [ ] [2.6-03] Implement prompt fallback to `label` for LLM stages.
 - [ ] [2.6-04] Implement `max_retries` semantics as additional attempts.
