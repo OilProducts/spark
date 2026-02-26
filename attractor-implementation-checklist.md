@@ -284,7 +284,7 @@ Status key:
 - [x] [6.3-02] Support `YES/NO/SKIPPED/TIMEOUT` answer values.
 
 ### 6.4 Built-In Interviewer Implementations
-- [ ] [6.4-01] Implement `AutoApproveInterviewer` behavior for yes/no and multiple-choice.
+- [x] [6.4-01] Implement `AutoApproveInterviewer` behavior for yes/no and multiple-choice.
 - [ ] [6.4-02] Implement `ConsoleInterviewer` input handling and option matching.
 - [ ] [6.4-03] Implement `CallbackInterviewer` delegation path.
 - [ ] [6.4-04] Implement `QueueInterviewer` deterministic dequeue behavior.

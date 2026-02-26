@@ -4,16 +4,17 @@ from collections import deque
 from typing import Callable, Deque, Iterable
 
 from .base import Interviewer
-from .models import Answer, Question, QuestionType
+from .models import Answer, AnswerValue, Question, QuestionType
 
 
 class AutoApproveInterviewer(Interviewer):
     def ask(self, question: Question) -> Answer:
-        if question.question_type == QuestionType.CONFIRM:
-            return Answer(selected_values=["yes"])
+        if question.type in {QuestionType.YES_NO, QuestionType.CONFIRMATION}:
+            return Answer(value=AnswerValue.YES)
         if question.options:
-            return Answer(selected_values=[question.options[0].value])
-        return Answer()
+            first = question.options[0]
+            return Answer(value=first.key, selected_option=first)
+        return Answer(value="auto-approved", text="auto-approved")
 
 
 class ConsoleInterviewer(Interviewer):

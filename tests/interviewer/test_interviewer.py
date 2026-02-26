@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from attractor.interviewer import (
     Answer,
+    AnswerValue,
     AutoApproveInterviewer,
     CallbackInterviewer,
     ConsoleInterviewer,
@@ -37,15 +38,23 @@ class TestInterviewerImplementations:
         interviewer = _StubInterviewer()
         assert interviewer.inform("Heads up", "review") is None
 
-    def test_autoapprove_picks_first(self):
+    def test_autoapprove_yes_no_returns_yes_value(self):
+        q = Question(title="Deploy", prompt="Ship it?", question_type=QuestionType.YES_NO)
+        answer = AutoApproveInterviewer().ask(q)
+        assert answer.value == AnswerValue.YES.value
+
+    def test_autoapprove_multiple_choice_picks_first_option_key(self):
+        first = QuestionOption(label="A", value="a", key="A")
+        second = QuestionOption(label="B", value="b", key="B")
         q = Question(
             title="Pick",
             prompt="choose",
             question_type=QuestionType.MULTIPLE_CHOICE,
-            options=[QuestionOption(label="A", value="a", key="A"), QuestionOption(label="B", value="b", key="B")],
+            options=[first, second],
         )
         answer = AutoApproveInterviewer().ask(q)
-        assert answer.selected_values == ["a"]
+        assert answer.value == "A"
+        assert answer.selected_option == first
 
     def test_callback_interviewer(self):
         interviewer = CallbackInterviewer(lambda q: Answer(selected_values=["x"]))
