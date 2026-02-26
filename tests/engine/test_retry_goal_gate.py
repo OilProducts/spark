@@ -583,3 +583,34 @@ class TestRetryAndGoalGate:
         assert result.node_outcomes["task"].status is OutcomeStatus.FAIL
         assert result.node_outcomes["task"].failure_reason == "transient backend outage"
         assert "fix" in result.completed_nodes
+
+    def test_non_retryable_exception_does_not_retry_and_routes_fail_immediately(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, max_retries=3]
+                fix [shape=box]
+                done [shape=Msquare]
+                start -> task
+                task -> done [condition="outcome=success"]
+                task -> fix [condition="outcome=fail"]
+                fix -> done
+            }
+            """
+        )
+
+        calls = {"task": 0}
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "task":
+                calls["task"] += 1
+                raise RuntimeError("401 unauthorized")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert calls["task"] == 1
+        assert result.route_trace == ["start", "task", "fix", "done"]
+        assert result.node_outcomes["task"].failure_reason == "401 unauthorized"

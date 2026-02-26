@@ -757,9 +757,11 @@ class PipelineExecutor:
         try:
             raw_outcome = self.runner(node_id, prompt, context)
         except Exception as exc:
+            failure_reason = str(exc) or exc.__class__.__name__
             return Outcome(
                 status=OutcomeStatus.FAIL,
-                failure_reason=str(exc) or exc.__class__.__name__,
+                failure_reason=failure_reason,
+                retryable=_is_retryable_exception(exc),
             )
         return self._normalize_outcome(node_id, raw_outcome)
 
@@ -936,6 +938,8 @@ class PipelineExecutor:
         if outcome.status.value == "retry":
             return True
         if outcome.status.value == "fail":
+            if outcome.retryable is not None:
+                return outcome.retryable
             return True
         return False
 
@@ -1080,3 +1084,43 @@ def _edge_endpoint_text(edge: object | None, key: str) -> str:
 
 def _is_outcome_fail_condition(condition: str) -> bool:
     return "".join(condition.split()).lower() == "outcome=fail"
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    text = f"{exc.__class__.__name__} {exc}".strip().lower()
+
+    non_retryable_tokens = (
+        "401",
+        "403",
+        "400",
+        "unauthorized",
+        "forbidden",
+        "bad request",
+        "validation",
+        "invalid",
+        "config",
+        "configuration",
+        "authentication",
+        "permission",
+    )
+    if any(token in text for token in non_retryable_tokens):
+        return False
+
+    retryable_tokens = (
+        "timeout",
+        "timed out",
+        "transient",
+        "temporary",
+        "network",
+        "connection",
+        "rate limit",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "unavailable",
+        "reset by peer",
+        "econn",
+    )
+    return any(token in text for token in retryable_tokens)

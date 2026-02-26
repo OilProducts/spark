@@ -20,3 +20,4 @@ class Outcome:
     context_updates: Dict[str, str] = field(default_factory=dict)
     failure_reason: str = ""
     notes: str = ""
+    retryable: Optional[bool] = None
