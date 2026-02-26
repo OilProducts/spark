@@ -326,6 +326,32 @@ class PipelineExecutor:
                 routing_outcome = self._routing_outcome(node.node_id, outcome, prior_status)
                 next_edge = self._select_route_edge(node.node_id, outgoing, routing_outcome, ctx)
                 if not next_edge:
+                    if routing_outcome.status == OutcomeStatus.FAIL:
+                        failure_reason = self._stage_failure_reason(routing_outcome)
+                        self._emit_event(
+                            "StageFailed",
+                            node_id=node.node_id,
+                            index=len(completed),
+                            error=failure_reason,
+                            will_retry=False,
+                        )
+                        self._finalize_run(
+                            current_node=node.node_id,
+                            completed_nodes=completed,
+                            context=ctx,
+                            retry_counts=retry_counts,
+                            event_type="PipelineFailed",
+                            error=failure_reason,
+                        )
+                        return PipelineResult(
+                            status="fail",
+                            current_node=node.node_id,
+                            completed_nodes=completed,
+                            context=dict(ctx.values),
+                            node_outcomes=outcomes,
+                            route_trace=route_trace,
+                            failure_reason=failure_reason,
+                        )
                     message = self._no_route_message(node.node_id, routing_outcome)
                     self._emit_event(
                         "StageFailed",
@@ -589,6 +615,32 @@ class PipelineExecutor:
                 routing_outcome = self._routing_outcome(node.node_id, outcome, prior_status)
                 next_edge = self._select_route_edge(node.node_id, outgoing, routing_outcome, ctx)
                 if not next_edge:
+                    if routing_outcome.status == OutcomeStatus.FAIL:
+                        failure_reason = self._stage_failure_reason(routing_outcome)
+                        self._emit_event(
+                            "StageFailed",
+                            node_id=node.node_id,
+                            index=len(completed),
+                            error=failure_reason,
+                            will_retry=False,
+                        )
+                        self._finalize_run(
+                            current_node=node.node_id,
+                            completed_nodes=completed,
+                            context=ctx,
+                            retry_counts=retry_counts,
+                            event_type="PipelineFailed",
+                            error=failure_reason,
+                        )
+                        return PipelineResult(
+                            status="fail",
+                            current_node=node.node_id,
+                            completed_nodes=completed,
+                            context=dict(ctx.values),
+                            node_outcomes=outcomes,
+                            route_trace=route_trace,
+                            failure_reason=failure_reason,
+                        )
                     message = self._no_route_message(node.node_id, routing_outcome)
                     self._finalize_run(
                         current_node=node.node_id,
@@ -1114,6 +1166,12 @@ class PipelineExecutor:
         if routing_outcome.status == OutcomeStatus.FAIL:
             return f"Stage '{node_id}' failed with no outgoing fail edge"
         return f"Stage '{node_id}' has no eligible outgoing edge"
+
+    def _stage_failure_reason(self, outcome: Outcome) -> str:
+        reason = (outcome.failure_reason or "").strip()
+        if reason:
+            return reason
+        return "stage_failed"
 
 
 class _SyntheticEdge:

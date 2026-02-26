@@ -685,8 +685,38 @@ class TestRetryAndGoalGate:
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
             return Outcome(status=OutcomeStatus.SUCCESS)
 
-        with pytest.raises(RuntimeError, match="Stage 'task' failed with no outgoing fail edge"):
-            PipelineExecutor(graph, runner).run(Context())
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "fail"
+        assert result.route_trace == ["start", "task"]
+        assert result.failure_reason == "permanent"
+
+    def test_non_goal_gate_fail_without_failure_route_uses_stage_failure_reason_in_run_from(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [retry_target="fix"]
+                start [shape=Mdiamond]
+                task [shape=box, max_retries=0]
+                fix [shape=box]
+                done [shape=Msquare]
+                start -> task
+                task -> done [condition="outcome=success"]
+                fix -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "task":
+                return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run_from("start", Context())
+
+        assert result.status == "fail"
+        assert result.route_trace == ["start", "task"]
+        assert result.failure_reason == "permanent"
 
     def test_handler_exception_retries_then_persists_fail_outcome_for_fail_routing(self):
         graph = parse_dot(

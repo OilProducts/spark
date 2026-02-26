@@ -199,8 +199,11 @@ class TestCheckpointAndArtifacts:
                 on_event=events.append,
             )
 
-            with pytest.raises(RuntimeError, match="failed with no outgoing fail edge"):
-                executor.run(Context())
+            result = executor.run(Context())
+
+            assert result.status == "fail"
+            assert result.current_node == "start"
+            assert result.failure_reason == "runner exploded"
 
             checkpoint = load_checkpoint(checkpoint_file)
             assert checkpoint is not None

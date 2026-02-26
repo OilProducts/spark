@@ -158,7 +158,7 @@ Status key:
 
 ### 3.7 Failure Routing
 - [x] [3.7-02] Fallback to node `retry_target` then `fallback_retry_target`.
-- [ ] [3.7-03] Terminate with failure reason when no route exists.
+- [x] [3.7-03] Terminate with failure reason when no route exists.
 
 ### 3.8 Concurrency Model
 - [ ] [3.8-01] Keep top-level traversal single-threaded.
