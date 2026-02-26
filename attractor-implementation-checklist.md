@@ -59,7 +59,6 @@ Status key:
 
 ### 2.4 Value Types
 - [x] [2.4-01] Parse quoted strings with escapes (`\\n`, `\\t`, escaped quotes, escaped backslash).
-- [ ] [2.4-02] Parse signed integers and floats.
 - [ ] [2.4-03] Parse booleans as typed values.
 - [ ] [2.4-04] Parse durations with units (`ms|s|m|h|d`) and normalize representation.
 
@@ -565,3 +564,4 @@ Status key:
 
 ## Deferred Tasks
 - [ ] [2.3-05] Accept optional statement semicolons. Deferred because parser behavior is already implemented and covered by existing tests (`tests/dsl/test_parser.py`), so this is checklist state drift rather than a code gap.
+- [ ] [2.4-02] Parse signed integers and floats. Deferred because signed integer/float parsing is already implemented in `attractor/dsl/parser.py` and exercised by parser tests, so this item is currently non-actionable checklist drift.
