@@ -78,7 +78,7 @@ Status key:
 - [x] [2.6-06] Implement node-level retry target fallback chain.
 - [x] [2.6-07] Implement fidelity/thread/session attrs (`fidelity`, `thread_id`).
 - [x] [2.6-08] Parse and apply stylesheet `class` selectors (comma-separated classes).
-- [ ] [2.6-09] Enforce `timeout` in handler execution paths.
+- [x] [2.6-09] Enforce `timeout` in handler execution paths.
 - [ ] [2.6-10] Resolve model attrs (`llm_model`, `llm_provider`, `reasoning_effort`) with precedence rules.
 - [ ] [2.6-11] Implement `auto_status` status synthesis behavior.
 - [ ] [2.6-12] Implement `allow_partial` behavior when retries exhaust.

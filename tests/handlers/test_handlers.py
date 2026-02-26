@@ -1,3 +1,5 @@
+import time
+
 from attractor.dsl import parse_dot
 from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome
@@ -20,6 +22,12 @@ class _StubBackend:
 class _PluginHandler:
     def run(self, runtime):
         return Outcome(status=OutcomeStatus.SUCCESS, notes=f"plugin:{runtime.node_id}")
+
+
+class _SlowHandler:
+    def run(self, runtime):
+        time.sleep(0.2)
+        return Outcome(status=OutcomeStatus.SUCCESS, notes="slow handler completed")
 
 
 class _FalseyInterviewer(Interviewer):
@@ -185,3 +193,21 @@ class TestBuiltInHandlers:
 
         outcome = runner("gate", "", Context(values={"outcome": "fail"}))
         assert outcome.status == OutcomeStatus.SUCCESS
+
+    def test_handler_runner_enforces_node_timeout(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                slow [shape=box, type="custom.slow", timeout=50ms]
+            }
+            """
+        )
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            extra_handlers={"custom.slow": _SlowHandler()},
+        )
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("slow", "", Context())
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == "handler timed out after 0.05s"
