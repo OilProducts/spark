@@ -148,7 +148,7 @@ Status key:
 - [x] [3.5-01] Build max attempts from `max_retries` + 1 semantics.
 - [x] [3.5-02] Retry on `RETRY` outcomes and retryable exceptions until attempts exhausted.
 - [x] [3.5-03] Reset retry counter on success/partial success.
-- [ ] [3.5-04] Honor `allow_partial=true` conversion after retry exhaustion.
+- [x] [3.5-04] Honor `allow_partial=true` conversion after retry exhaustion.
 
 ### 3.6 Retry Policy
 - [ ] [3.6-01] Implement retry policy object (`max_attempts`, backoff config, `should_retry`).

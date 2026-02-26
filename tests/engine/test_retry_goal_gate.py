@@ -118,6 +118,37 @@ class TestRetryAndGoalGate:
         assert calls["task"] == 2
         assert result.node_outcomes["task"].status is OutcomeStatus.PARTIAL_SUCCESS
 
+    def test_allow_partial_converts_retryable_fail_exhaustion_to_partial_success(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, max_retries=1, allow_partial=true]
+                done [shape=Msquare]
+                start -> task
+                task -> done [condition="outcome=partial_success"]
+            }
+            """
+        )
+
+        calls = {"task": 0}
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "task":
+                calls["task"] += 1
+                return Outcome(
+                    status=OutcomeStatus.FAIL,
+                    failure_reason="transient dependency",
+                    retryable=True,
+                )
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert calls["task"] == 2
+        assert result.node_outcomes["task"].status is OutcomeStatus.PARTIAL_SUCCESS
+
     def test_retry_counter_resets_after_success_before_revisiting_node(self):
         graph = parse_dot(
             """

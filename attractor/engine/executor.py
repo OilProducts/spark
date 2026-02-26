@@ -910,13 +910,15 @@ class PipelineExecutor:
         retries_so_far: int,
         max_retries: int,
     ) -> Outcome:
-        if outcome.status != OutcomeStatus.RETRY:
+        if outcome.status not in {OutcomeStatus.RETRY, OutcomeStatus.FAIL}:
             return outcome
         if retries_so_far < max_retries:
             return outcome
 
         allow_partial_attr = self.graph.nodes[node_id].attrs.get("allow_partial")
         if not allow_partial_attr or not _to_bool(allow_partial_attr.value):
+            if outcome.status == OutcomeStatus.FAIL:
+                return outcome
             return Outcome(
                 status=OutcomeStatus.FAIL,
                 preferred_label=outcome.preferred_label,
@@ -925,6 +927,9 @@ class PipelineExecutor:
                 failure_reason="max retries exceeded",
                 notes=outcome.notes,
             )
+
+        if outcome.status == OutcomeStatus.FAIL and outcome.retryable is False:
+            return outcome
 
         return Outcome(
             status=OutcomeStatus.PARTIAL_SUCCESS,
