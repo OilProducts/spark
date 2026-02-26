@@ -2,9 +2,39 @@ from attractor.dsl import parse_dot
 from attractor.engine.context import Context
 from attractor.engine.executor import PipelineExecutor
 from attractor.engine.outcome import Outcome, OutcomeStatus
+from attractor.transforms import AttributeDefaultsTransform
 
 
 class TestRetryAndGoalGate:
+    def test_graph_default_max_retry_applies_when_node_omits_max_retries(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [default_max_retry=2]
+                start [shape=Mdiamond]
+                task [shape=box]
+                done [shape=Msquare]
+                start -> task
+                task -> done
+            }
+            """
+        )
+        graph = AttributeDefaultsTransform().apply(graph)
+
+        calls = {"task": 0}
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "task":
+                calls["task"] += 1
+                if calls["task"] < 3:
+                    return Outcome(status=OutcomeStatus.RETRY, failure_reason="retryable")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert calls["task"] == 3
+
     def test_retry_status_retries_same_node(self):
         graph = parse_dot(
             """

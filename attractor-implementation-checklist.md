@@ -66,7 +66,7 @@ Status key:
 - [x] [2.5-01] Implement `goal` extraction and mirror to context key `graph.goal`.
 - [x] [2.5-02] Implement `label` as graph display metadata.
 - [x] [2.5-03] Parse and validate `model_stylesheet` text.
-- [ ] [2.5-04] Apply `default_max_retry` fallback for nodes without `max_retries`.
+- [x] [2.5-04] Apply `default_max_retry` fallback for nodes without `max_retries`.
 - [ ] [2.5-05] Implement graph-level `retry_target` and `fallback_retry_target` for goal-gate recovery.
 - [ ] [2.5-06] Implement `default_fidelity` fallback in fidelity resolution.
 

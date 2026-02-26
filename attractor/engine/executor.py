@@ -539,12 +539,15 @@ class PipelineExecutor:
     def _max_retries_for_node(self, node_id: str) -> int:
         node = self.graph.nodes[node_id]
         node_attr = node.attrs.get("max_retries")
-        if node_attr:
+        if node_attr and node_attr.line > 0:
             return _to_int(node_attr.value, 0)
 
         graph_attr = self.graph.graph_attrs.get("default_max_retry")
         if graph_attr:
             return _to_int(graph_attr.value, 50)
+
+        if node_attr:
+            return _to_int(node_attr.value, 0)
         return 50
 
     def _should_retry(self, outcome: Outcome, retries_so_far: int, max_retries: int) -> bool:
