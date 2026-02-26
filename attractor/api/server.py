@@ -25,7 +25,7 @@ from attractor.graphviz_export import export_graphviz_artifact
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.handlers.base import CodergenBackend
 from attractor.interviewer.base import Interviewer
-from attractor.interviewer.models import Answer, Question
+from attractor.interviewer.models import Answer, AnswerValue, Question
 from attractor.transforms import (
     GoalVariableTransform,
     ModelStylesheetTransform,
@@ -142,7 +142,7 @@ class HumanGateBroker:
             return question.default
         if selected:
             return Answer(selected_values=[str(selected)])
-        return Answer()
+        return Answer(value=AnswerValue.TIMEOUT)
 
     def answer(self, run_id: str, gate_id: str, selected_value: str) -> bool:
         with self._lock:
