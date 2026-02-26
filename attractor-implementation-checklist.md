@@ -214,8 +214,7 @@ Status key:
 - [x] [4.8-03] Support error policies (`fail_fast`, `continue`, `ignore`).
 
 ### 4.9 Fan-In Handler
-- [ ] [4.9-01] Read `parallel.results` and fail when empty.
-- [ ] [4.9-02] Support LLM-based ranking when prompt is present.
+- [x] [4.9-02] Support LLM-based ranking when prompt is present.
 - [ ] [4.9-03] Support heuristic ranking fallback.
 - [ ] [4.9-04] Publish selected candidate via `parallel.fan_in.*` context keys.
 
@@ -565,3 +564,4 @@ Status key:
 - [ ] [3.3-04] Implement weight-descending selection for unconditional edges. Deferred because unconditional-edge routing already uses descending `weight` selection via `attractor/engine/routing.py::_best_by_weight_then_lexical` and is covered by routing tests, so this is checklist state drift.
 - [ ] [3.7-01] Route fail outcomes to fail-edge (`condition="outcome=fail"`) when present. Deferred because fail-edge prioritization for `FAIL` outcomes is already implemented in `attractor/engine/executor.py::_select_route_edge` and covered by `tests/engine/test_retry_goal_gate.py::test_failure_routing_prefers_outcome_fail_edge_over_other_true_conditions`, so this is checklist state drift.
 - [ ] [4.8-04] Serialize branch results into `parallel.results`. Deferred because `ParallelHandler` already emits `context_updates["parallel.results"]` and existing tests assert populated branch-result payloads (`tests/handlers/test_handlers.py`, `tests/integration/test_parity_matrix.py`), so this is checklist state drift.
+- [ ] [4.9-01] Read `parallel.results` and fail when empty. Deferred because `FanInHandler.execute` already reads `parallel.results` and returns `FAIL` with `"No parallel results to evaluate"` when normalized results are empty, so this is checklist state drift.

@@ -34,7 +34,7 @@ def build_default_registry(
     registry.register("wait.human", WaitHumanHandler(interviewer))
     registry.register("conditional", ConditionalHandler())
     registry.register("parallel", ParallelHandler())
-    registry.register("parallel.fan_in", FanInHandler())
+    registry.register("parallel.fan_in", FanInHandler(codergen_backend))
     registry.register("tool", ToolHandler())
     registry.register("stack.manager_loop", ManagerLoopHandler())
     if extra_handlers:

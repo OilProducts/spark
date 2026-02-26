@@ -65,6 +65,23 @@ class _OutcomeBackend:
         return self.outcome
 
 
+class _FanInRankingBackend:
+    def __init__(self, response: str):
+        self.response = response
+        self.calls = []
+
+    def run(self, node_id: str, prompt: str, context: Context, *, timeout=None) -> str:
+        self.calls.append(
+            {
+                "node_id": node_id,
+                "prompt": prompt,
+                "context": dict(context.values),
+                "timeout": timeout,
+            }
+        )
+        return self.response
+
+
 class _PluginHandler:
     def run(self, runtime):
         return Outcome(status=OutcomeStatus.SUCCESS, notes=f"plugin:{runtime.node_id}")
@@ -1209,3 +1226,31 @@ class TestBuiltInHandlers:
         assert len(branch_results) == expected_result_count
         fail_count = sum(1 for result in branch_results if result.get("status") == "fail")
         assert fail_count == expected_failures
+
+    def test_fan_in_uses_backend_ranking_when_prompt_present(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                fan_in [shape=tripleoctagon, prompt="Rank the branch results"]
+            }
+            """
+        )
+        backend = _FanInRankingBackend('{"best_id":"branch_b"}')
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+        context = Context(
+            values={
+                "parallel.results": [
+                    {"id": "branch_a", "status": "success"},
+                    {"id": "branch_b", "status": "success"},
+                ]
+            }
+        )
+
+        outcome = runner("fan_in", "Rank the branch results", context)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert outcome.context_updates["parallel.fan_in.best_id"] == "branch_b"
+        assert outcome.context_updates["parallel.fan_in.best_outcome"] == "success"
+        assert len(backend.calls) == 1
+        assert "Rank the branch results" in backend.calls[0]["prompt"]
