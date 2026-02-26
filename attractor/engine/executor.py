@@ -125,6 +125,7 @@ class PipelineExecutor:
         self._shape_exit_nodes = self._node_ids_for_shape("Msquare")
         self._active_top_level_node: str | None = None
         self._active_top_level_node_lock = threading.Lock()
+        self._stage_status_transitions: Dict[str, List[str]] = {}
         self._sync_runner_logs_root()
 
     def run(
@@ -134,6 +135,9 @@ class PipelineExecutor:
         resume: bool = False,
         max_steps: Optional[int] = None,
     ) -> PipelineResult:
+        if not resume:
+            self._stage_status_transitions = {}
+
         ctx = context or Context()
         completed: List[str] = []
         outcomes: Dict[str, Outcome] = {}
@@ -442,6 +446,8 @@ class PipelineExecutor:
         max_steps: Optional[int] = None,
         stop_nodes: Optional[set[str]] = None,
     ) -> PipelineResult:
+        self._stage_status_transitions = {}
+
         ctx = context or Context()
         self._mirror_graph_goal(ctx)
         completed: List[str] = []
@@ -817,6 +823,9 @@ class PipelineExecutor:
         if not self.logs_root:
             return
 
+        transitions = self._stage_status_transitions.setdefault(node_id, [])
+        transitions.append(outcome.status.value)
+
         stage_dir = self.logs_root / node_id
         stage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -830,6 +839,7 @@ class PipelineExecutor:
             "suggested_next_ids": list(outcome.suggested_next_ids),
             "context_updates": dict(outcome.context_updates),
             "notes": outcome.notes,
+            "status_transitions": list(transitions),
         }
         with (stage_dir / "status.json").open("w", encoding="utf-8") as f:
             json.dump(status_payload, f, indent=2, sort_keys=True)

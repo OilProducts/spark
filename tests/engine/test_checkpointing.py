@@ -94,6 +94,39 @@ class TestCheckpointAndArtifacts:
             assert checkpoint.current_node == "done"
             assert checkpoint.completed_nodes == ["start", "plan"]
 
+    def test_status_json_persists_stage_status_transitions_across_retries(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                work [shape=box, max_retries=2]
+                done [shape=Msquare]
+
+                start -> work
+                work -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_root = Path(tmp) / "logs"
+            work_calls = {"count": 0}
+
+            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+                if node_id == "work":
+                    work_calls["count"] += 1
+                    if work_calls["count"] == 1:
+                        return Outcome(status=OutcomeStatus.RETRY, notes="transient")
+                    return Outcome(status=OutcomeStatus.SUCCESS, notes="recovered")
+                return Outcome(status=OutcomeStatus.SUCCESS)
+
+            result = PipelineExecutor(graph, runner, logs_root=str(logs_root)).run(Context())
+
+            assert result.status == "success"
+            status_payload = json.loads((logs_root / "work" / "status.json").read_text(encoding="utf-8"))
+            assert status_payload["outcome"] == "success"
+            assert status_payload["status_transitions"] == ["retry", "success"]
+
     def test_resume_from_checkpoint(self):
         graph = parse_dot(
             """
