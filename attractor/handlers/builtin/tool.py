@@ -49,6 +49,16 @@ class ToolHandler:
                     "tool.exit_code": -1,
                 },
             )
+        except Exception as exc:
+            reason = str(exc) or "tool command execution error"
+            return Outcome(
+                status=OutcomeStatus.FAIL,
+                failure_reason=reason,
+                context_updates={
+                    "tool.output": "",
+                    "tool.exit_code": -1,
+                },
+            )
 
 
 def _to_seconds(attr: Any) -> float | None:

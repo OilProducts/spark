@@ -755,6 +755,42 @@ class TestBuiltInHandlers:
         assert outcome.status == OutcomeStatus.SUCCESS
         assert "hello" in outcome.notes
 
+    def test_tool_handler_fails_when_command_missing(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                tool_node [shape=parallelogram]
+            }
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+        outcome = runner("tool_node", "", Context())
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == "No tool_command specified"
+
+    def test_tool_handler_returns_fail_for_execution_errors(self, monkeypatch):
+        graph = parse_dot(
+            """
+            digraph G {
+                tool_node [shape=parallelogram, tool_command="echo hi"]
+            }
+            """
+        )
+
+        def _raise_exec_error(*args, **kwargs):
+            del args, kwargs
+            raise OSError("execution exploded")
+
+        monkeypatch.setattr("attractor.handlers.builtin.tool.subprocess.run", _raise_exec_error)
+
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+        outcome = runner("tool_node", "", Context())
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == "execution exploded"
+
     def test_tool_handler_timeout_surfaces_command_context(self, monkeypatch):
         graph = parse_dot(
             """

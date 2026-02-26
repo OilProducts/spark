@@ -219,7 +219,7 @@ Status key:
 
 ### 4.10 Tool Handler
 - [x] [4.10-01] Execute `tool_command` with timeout handling.
-- [ ] [4.10-02] Return FAIL when command missing or execution errors.
+- [x] [4.10-02] Return FAIL when command missing or execution errors.
 - [ ] [4.10-03] Store command output in context updates/log artifacts.
 
 ### 4.11 Manager Loop Handler
