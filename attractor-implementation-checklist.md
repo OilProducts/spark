@@ -142,7 +142,7 @@ Status key:
 - [x] [3.4-01] Track outcomes for all nodes with `goal_gate=true`.
 - [x] [3.4-02] Block terminal exit if any goal-gate node is non-success/non-partial-success.
 - [x] [3.4-03] Resolve retry target chain: node retry target -> node fallback -> graph retry target -> graph fallback.
-- [ ] [3.4-04] Fail run when no valid retry target exists.
+- [x] [3.4-04] Fail run when no valid retry target exists.
 
 ### 3.5 Retry Logic
 - [ ] [3.5-01] Build max attempts from `max_retries` + 1 semantics.

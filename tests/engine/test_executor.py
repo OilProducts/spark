@@ -362,7 +362,7 @@ class TestExecutor:
         assert result.status == "fail"
         assert result.current_node == "done"
         assert result.route_trace == ["start", "review", "done"]
-        assert result.failure_reason == "goal_gate_failed"
+        assert result.failure_reason == "Goal gate unsatisfied and no retry target"
 
     def test_goal_gate_does_not_block_exit_for_unvisited_goal_gate_nodes(self):
         graph = parse_dot(

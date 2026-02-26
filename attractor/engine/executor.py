@@ -29,6 +29,7 @@ _NON_CODEGEN_SHAPES = {
     "parallelogram",
     "house",
 }
+GOAL_GATE_NO_RETRY_TARGET_REASON = "Goal gate unsatisfied and no retry target"
 
 
 @dataclass
@@ -174,7 +175,7 @@ class PipelineExecutor:
                         context=ctx,
                         retry_counts=retry_counts,
                         event_type="PipelineFailed",
-                        error="goal_gate_failed",
+                        error=GOAL_GATE_NO_RETRY_TARGET_REASON,
                     )
                     return PipelineResult(
                         status="fail",
@@ -183,7 +184,7 @@ class PipelineExecutor:
                         context=dict(ctx.values),
                         node_outcomes=outcomes,
                         route_trace=route_trace,
-                        failure_reason="goal_gate_failed",
+                        failure_reason=GOAL_GATE_NO_RETRY_TARGET_REASON,
                     )
 
                 node = self.graph.nodes[current]
@@ -423,7 +424,7 @@ class PipelineExecutor:
                         context=ctx,
                         retry_counts=retry_counts,
                         event_type="PipelineFailed",
-                        error="goal_gate_failed",
+                        error=GOAL_GATE_NO_RETRY_TARGET_REASON,
                     )
                     return PipelineResult(
                         status="fail",
@@ -432,7 +433,7 @@ class PipelineExecutor:
                         context=dict(ctx.values),
                         node_outcomes=outcomes,
                         route_trace=route_trace,
-                        failure_reason="goal_gate_failed",
+                        failure_reason=GOAL_GATE_NO_RETRY_TARGET_REASON,
                     )
 
                 if current in stop_nodes:
