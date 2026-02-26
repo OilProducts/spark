@@ -172,6 +172,28 @@ class TestRetryAndGoalGate:
         assert result.status == "success"
         assert calls["implement"] == 2
 
+    def test_goal_gate_allows_partial_success_at_exit(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                implement [shape=box, goal_gate=true]
+                done [shape=Msquare]
+
+                start -> implement
+                implement -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "implement":
+                return Outcome(status=OutcomeStatus.PARTIAL_SUCCESS, notes="good enough")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+        assert result.status == "success"
+
     def test_goal_gate_recovery_uses_graph_level_retry_target(self):
         graph = parse_dot(
             """

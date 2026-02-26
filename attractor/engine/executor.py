@@ -651,7 +651,7 @@ class PipelineExecutor:
 
             if node_id not in statuses:
                 continue
-            if statuses.get(node_id) != "success":
+            if statuses.get(node_id) not in {"success", "partial_success"}:
                 return False, node_id
 
         return True, ""
