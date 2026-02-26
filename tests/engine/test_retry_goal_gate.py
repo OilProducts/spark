@@ -118,6 +118,86 @@ class TestRetryAndGoalGate:
         assert calls["task"] == 2
         assert result.node_outcomes["task"].status is OutcomeStatus.PARTIAL_SUCCESS
 
+    def test_retry_counter_resets_after_success_before_revisiting_node(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, max_retries=1]
+                requeue [shape=box]
+                done [shape=Msquare]
+
+                start -> task
+                task -> requeue [condition="context.second_pass=true", weight=10]
+                task -> done [condition="outcome=success"]
+                requeue -> task
+            }
+            """
+        )
+
+        calls = {"task": 0}
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "task":
+                calls["task"] += 1
+                if calls["task"] in {1, 3}:
+                    return Outcome(status=OutcomeStatus.RETRY, failure_reason="transient")
+                if calls["task"] == 2:
+                    return Outcome(
+                        status=OutcomeStatus.SUCCESS,
+                        context_updates={"second_pass": "true"},
+                    )
+                return Outcome(status=OutcomeStatus.SUCCESS)
+            if node_id == "requeue":
+                return Outcome(status=OutcomeStatus.SUCCESS, context_updates={"second_pass": "false"})
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert calls["task"] == 4
+        assert result.route_trace == ["start", "task", "requeue", "task", "done"]
+
+    def test_retry_counter_resets_after_partial_success_before_revisiting_node(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, max_retries=1, allow_partial=true]
+                requeue [shape=box]
+                done [shape=Msquare]
+
+                start -> task
+                task -> requeue [condition="context.second_pass=true", weight=10]
+                task -> done [condition="outcome=partial_success"]
+                requeue -> task
+            }
+            """
+        )
+
+        calls = {"task": 0}
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "task":
+                calls["task"] += 1
+                if calls["task"] == 2:
+                    return Outcome(
+                        status=OutcomeStatus.RETRY,
+                        failure_reason="stuck",
+                        context_updates={"second_pass": "true"},
+                    )
+                return Outcome(status=OutcomeStatus.RETRY, failure_reason="stuck")
+            if node_id == "requeue":
+                return Outcome(status=OutcomeStatus.SUCCESS, context_updates={"second_pass": "false"})
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert calls["task"] == 4
+        assert result.route_trace == ["start", "task", "requeue", "task", "done"]
+        assert result.node_outcomes["task"].status is OutcomeStatus.PARTIAL_SUCCESS
+
     def test_retry_exhaustion_uses_max_retries_plus_one_attempts_then_routes_fail(self):
         graph = parse_dot(
             """

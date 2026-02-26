@@ -237,6 +237,7 @@ class PipelineExecutor:
                     ctx.set("outcome", outcome.status.value)
                     self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
                     self._write_stage_artifacts(node.node_id, prompt, outcome)
+                self._reset_retry_counter(node.node_id, outcome, retry_counts)
 
                 if outcome.status.value == "fail":
                     self._emit_event(
@@ -497,6 +498,7 @@ class PipelineExecutor:
                     ctx.set("outcome", outcome.status.value)
                     self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
                     self._write_stage_artifacts(node.node_id, prompt, outcome)
+                self._reset_retry_counter(node.node_id, outcome, retry_counts)
 
                 if outcome.status.value == "fail":
                     self._emit_event(
@@ -942,6 +944,11 @@ class PipelineExecutor:
                 return outcome.retryable
             return True
         return False
+
+    def _reset_retry_counter(self, node_id: str, outcome: Outcome, retry_counts: Dict[str, int]) -> None:
+        if outcome.status not in {OutcomeStatus.SUCCESS, OutcomeStatus.PARTIAL_SUCCESS}:
+            return
+        retry_counts.pop(node_id, None)
 
     def _resolve_failure_retry_target(self, node_id: str) -> str:
         node = self.graph.nodes[node_id]
