@@ -213,6 +213,19 @@ class PipelineExecutor:
                 )
                 continue
 
+            original_status = outcome.status
+            outcome = self._coerce_retry_exhausted_outcome(
+                node.node_id,
+                outcome,
+                retries_so_far,
+                max_retries,
+            )
+            if outcome.status != original_status:
+                outcomes[node.node_id] = outcome
+                ctx.set("outcome", outcome.status.value)
+                self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
+                self._write_stage_artifacts(node.node_id, prompt, outcome)
+
             if outcome.status.value == "fail":
                 self._emit_event(
                     "StageFailed",
@@ -370,6 +383,19 @@ class PipelineExecutor:
                     delay=0,
                 )
                 continue
+
+            original_status = outcome.status
+            outcome = self._coerce_retry_exhausted_outcome(
+                node.node_id,
+                outcome,
+                retries_so_far,
+                max_retries,
+            )
+            if outcome.status != original_status:
+                outcomes[node.node_id] = outcome
+                ctx.set("outcome", outcome.status.value)
+                self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
+                self._write_stage_artifacts(node.node_id, prompt, outcome)
 
             if outcome.status.value == "fail":
                 self._emit_event(
@@ -631,6 +657,30 @@ class PipelineExecutor:
         if node_attr:
             return _to_int(node_attr.value, 0)
         return 50
+
+    def _coerce_retry_exhausted_outcome(
+        self,
+        node_id: str,
+        outcome: Outcome,
+        retries_so_far: int,
+        max_retries: int,
+    ) -> Outcome:
+        if outcome.status != OutcomeStatus.RETRY:
+            return outcome
+        if retries_so_far < max_retries:
+            return outcome
+
+        allow_partial_attr = self.graph.nodes[node_id].attrs.get("allow_partial")
+        if not allow_partial_attr or not _to_bool(allow_partial_attr.value):
+            return outcome
+
+        return Outcome(
+            status=OutcomeStatus.PARTIAL_SUCCESS,
+            preferred_label=outcome.preferred_label,
+            suggested_next_ids=list(outcome.suggested_next_ids),
+            context_updates=dict(outcome.context_updates),
+            notes=outcome.notes or "retries exhausted, partial accepted",
+        )
 
     def _should_retry(self, outcome: Outcome, retries_so_far: int, max_retries: int) -> bool:
         if retries_so_far >= max_retries:

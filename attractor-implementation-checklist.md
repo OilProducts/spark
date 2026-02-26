@@ -81,7 +81,7 @@ Status key:
 - [x] [2.6-09] Enforce `timeout` in handler execution paths.
 - [x] [2.6-10] Resolve model attrs (`llm_model`, `llm_provider`, `reasoning_effort`) with precedence rules.
 - [x] [2.6-11] Implement `auto_status` status synthesis behavior.
-- [ ] [2.6-12] Implement `allow_partial` behavior when retries exhaust.
+- [x] [2.6-12] Implement `allow_partial` behavior when retries exhaust.
 
 ### 2.7 Edge Attributes
 - [ ] [2.7-01] Implement edge `label` for preferred-label routing.
