@@ -124,7 +124,7 @@ Status key:
 - [x] [3.1-03] In finalize, persist final checkpoint and completion events, then clean resources.
 
 ### 3.2 Core Execution Loop
-- [ ] [3.2-01] Resolve start node by shape/id rules; fail fast if ambiguous/missing.
+- [x] [3.2-01] Resolve start node by shape/id rules; fail fast if ambiguous/missing.
 - [ ] [3.2-02] For each node: execute handler with retry policy and persist outcome.
 - [ ] [3.2-03] Merge `context_updates`, set `outcome`, set `preferred_label` when present.
 - [ ] [3.2-04] Save checkpoint after each stage with current node and completed list.

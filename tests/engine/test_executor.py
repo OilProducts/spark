@@ -493,3 +493,33 @@ class TestExecutor:
 
         with pytest.raises(RuntimeError):
             PipelineExecutor(graph, lambda *_: Outcome(status=OutcomeStatus.SUCCESS)).run(Context())
+
+    def test_executor_fails_fast_when_start_missing(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                entry [shape=box]
+                done [shape=Msquare]
+                entry -> done
+            }
+            """
+        )
+
+        with pytest.raises(RuntimeError, match="No start node found"):
+            PipelineExecutor(graph, lambda *_: Outcome(status=OutcomeStatus.SUCCESS)).run(Context())
+
+    def test_executor_fails_fast_when_start_ambiguous_without_shape_start(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=box]
+                Start [shape=box]
+                done [shape=Msquare]
+                start -> done
+                Start -> done
+            }
+            """
+        )
+
+        with pytest.raises(RuntimeError, match="Ambiguous start nodes"):
+            PipelineExecutor(graph, lambda *_: Outcome(status=OutcomeStatus.SUCCESS)).run(Context())

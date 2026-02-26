@@ -691,13 +691,11 @@ class PipelineExecutor:
             return
 
     def _resolve_start_node(self) -> str:
-        starts = [
-            node.node_id
-            for node in self.graph.nodes.values()
-            if self._is_start_node(node.node_id)
-        ]
-        if len(starts) != 1:
-            raise RuntimeError(f"Expected exactly one start node, found {len(starts)}")
+        starts = [node.node_id for node in self.graph.nodes.values() if self._is_start_node(node.node_id)]
+        if not starts:
+            raise RuntimeError("No start node found; expected shape=Mdiamond or node id start/Start")
+        if len(starts) > 1:
+            raise RuntimeError(f"Ambiguous start nodes: {', '.join(sorted(starts))}")
         return starts[0]
 
     def _normalize_outcome(self, node_id: str, outcome: Outcome | None) -> Outcome:
