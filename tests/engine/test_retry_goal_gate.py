@@ -329,6 +329,78 @@ class TestRetryAndGoalGate:
         assert result.status == "success"
         assert calls["implement"] == 2
 
+    def test_goal_gate_failure_without_retry_target_fails_at_exit(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                implement [shape=box, goal_gate=true, max_retries=0]
+                done [shape=Msquare]
+
+                start -> implement
+                implement -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "implement":
+                return Outcome(status=OutcomeStatus.FAIL, failure_reason="needs fix")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+        assert result.status == "fail"
+        assert result.route_trace == ["start", "implement", "done"]
+        assert result.failure_reason == "goal_gate_failed"
+
+    def test_goal_gate_failure_without_retry_target_fails_at_exit_in_run_from(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                implement [shape=box, goal_gate=true, max_retries=0]
+                done [shape=Msquare]
+
+                start -> implement
+                implement -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "implement":
+                return Outcome(status=OutcomeStatus.FAIL, failure_reason="needs fix")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run_from("start", Context())
+        assert result.status == "fail"
+        assert result.route_trace == ["start", "implement", "done"]
+        assert result.failure_reason == "goal_gate_failed"
+
+    def test_goal_gate_enforced_when_terminal_is_in_run_from_stop_nodes(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                implement [shape=box, goal_gate=true, max_retries=0]
+                done [shape=Msquare]
+
+                start -> implement
+                implement -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "implement":
+                return Outcome(status=OutcomeStatus.FAIL, failure_reason="needs fix")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run_from("start", Context(), stop_nodes={"done"})
+        assert result.status == "fail"
+        assert result.route_trace == ["start", "implement", "done"]
+        assert result.failure_reason == "goal_gate_failed"
+
     def test_non_goal_gate_fail_routing_ignores_graph_level_retry_target(self):
         graph = parse_dot(
             """

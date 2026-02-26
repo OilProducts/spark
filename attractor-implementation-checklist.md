@@ -130,7 +130,7 @@ Status key:
 - [x] [3.2-04] Save checkpoint after each stage with current node and completed list.
 - [x] [3.2-05] Select next edge via algorithm in 3.3; handle no-edge failure cases.
 - [x] [3.2-06] Implement `loop_restart` branch behavior.
-- [ ] [3.2-07] Stop at terminal node only after goal-gate enforcement.
+- [x] [3.2-07] Stop at terminal node only after goal-gate enforcement.
 
 ### 3.3 Edge Selection Algorithm
 - [ ] [3.3-01] Implement condition-pass candidate evaluation.

@@ -183,6 +183,7 @@ class PipelineExecutor:
                         context=dict(ctx.values),
                         node_outcomes=outcomes,
                         route_trace=route_trace,
+                        failure_reason="goal_gate_failed",
                     )
 
                 node = self.graph.nodes[current]
@@ -384,24 +385,51 @@ class PipelineExecutor:
                         route_trace=route_trace,
                     )
 
-                if current in stop_nodes:
+                if self._is_exit_node(current):
+                    gates_ok, failed_gate_node = self._check_goal_gates(ctx)
+                    if gates_ok:
+                        self._finalize_run(
+                            current_node=current,
+                            completed_nodes=completed,
+                            context=ctx,
+                            retry_counts=retry_counts,
+                            event_type="PipelineCompleted",
+                        )
+                        return PipelineResult(
+                            status="success",
+                            current_node=current,
+                            completed_nodes=completed,
+                            context=dict(ctx.values),
+                            node_outcomes=outcomes,
+                            route_trace=route_trace,
+                        )
+
+                    retry_target = self._resolve_goal_gate_retry_target(failed_gate_node)
+                    if retry_target:
+                        current = retry_target
+                        incoming_edge = None
+                        route_trace.append(current)
+                        continue
+
                     self._finalize_run(
                         current_node=current,
                         completed_nodes=completed,
                         context=ctx,
                         retry_counts=retry_counts,
-                        event_type="PipelineCompleted",
+                        event_type="PipelineFailed",
+                        error="goal_gate_failed",
                     )
                     return PipelineResult(
-                        status="success",
+                        status="fail",
                         current_node=current,
                         completed_nodes=completed,
                         context=dict(ctx.values),
                         node_outcomes=outcomes,
                         route_trace=route_trace,
+                        failure_reason="goal_gate_failed",
                     )
 
-                if self._is_exit_node(current):
+                if current in stop_nodes:
                     self._finalize_run(
                         current_node=current,
                         completed_nodes=completed,
