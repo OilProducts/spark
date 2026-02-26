@@ -302,6 +302,8 @@ class _Parser:
                 raise DotParseError(f"invalid attribute key '{key_tok.value}'", key_tok.line)
             self.expect("EQ")
             value, value_type, value_line = self.parse_value()
+            if key_tok.value == "class" and value_type == DotValueType.STRING:
+                value = _normalize_class_list(str(value))
             attrs[key_tok.value] = DotAttribute(
                 key=key_tok.value,
                 value=value,
@@ -613,3 +615,14 @@ def _append_class(node: DotNode, class_name: str, line: int) -> None:
         return
     existing_attr.value = ",".join(classes + [class_name])
     existing_attr.value_type = DotValueType.STRING
+
+
+def _normalize_class_list(raw: str) -> str:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for class_name in [c.strip() for c in raw.split(",")]:
+        if class_name == "" or class_name in seen:
+            continue
+        seen.add(class_name)
+        ordered.append(class_name)
+    return ",".join(ordered)

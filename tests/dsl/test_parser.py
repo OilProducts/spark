@@ -323,6 +323,17 @@ line2"]
         assert graph.nodes["plan"].attrs["class"].value == "loop-a-1"
         assert graph.nodes["review"].attrs["class"].value == "critical,loop-a-1"
 
+    def test_normalizes_comma_separated_class_attribute_values(self):
+        dot = """
+        digraph ClassList {
+            review [class="  code , critical,code ,, lint  "]
+        }
+        """
+        graph = parse_dot(dot)
+
+        assert graph.nodes["review"].attrs["class"].value == "code,critical,lint"
+        assert graph.nodes["review"].attrs["class"].value_type == DotValueType.STRING
+
     def test_reject_undirected_edges(self):
         dot = """
         digraph Bad {

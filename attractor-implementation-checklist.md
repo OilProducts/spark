@@ -105,7 +105,7 @@ Status key:
 - [x] [2.11-03] Ensure explicit per-node/per-edge attrs always win over defaults.
 
 ### 2.12 Class Attribute
-- [ ] [2.12-01] Parse comma-separated node classes into normalized class list.
+- [x] [2.12-01] Parse comma-separated node classes into normalized class list.
 - [ ] [2.12-02] Match `.class` stylesheet selectors against parsed class list.
 - [ ] [2.12-03] Add tests for multiple-class matching and precedence interactions.
 
