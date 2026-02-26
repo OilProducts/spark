@@ -863,6 +863,11 @@ class BroadcastingRunner:
         self.delegate = delegate
         self.emit = emit
 
+    def set_logs_root(self, logs_root):
+        setter = getattr(self.delegate, "set_logs_root", None)
+        if callable(setter):
+            setter(logs_root)
+
     def __call__(self, node_id: str, prompt: str, context: Context):
         self.emit({"type": "state", "node": node_id, "status": "running"})
         self.emit({"type": "log", "msg": f"[{node_id}] running"})

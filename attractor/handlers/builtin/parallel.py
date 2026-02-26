@@ -28,7 +28,11 @@ class ParallelHandler:
 
         def run_branch(target: str, base_context: Context) -> Tuple[str, Dict[str, Any]]:
             branch_context = base_context.clone()
-            executor = PipelineExecutor(runtime.graph, runtime.runner)
+            executor = PipelineExecutor(
+                runtime.graph,
+                runtime.runner,
+                logs_root=str(runtime.logs_root) if runtime.logs_root is not None else None,
+            )
             result = executor.run_from(
                 target,
                 branch_context,

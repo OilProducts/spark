@@ -5,6 +5,7 @@ import pytest
 
 from attractor.dsl import parse_dot
 from attractor.engine.context import Context
+from attractor.engine.executor import PipelineExecutor
 from attractor.engine.outcome import Outcome
 from attractor.engine.outcome import OutcomeStatus
 from attractor.handlers.base import CodergenBackend
@@ -35,6 +36,15 @@ class _ExecuteOnlyHandler:
     def execute(self, runtime):
         self.calls.append(runtime)
         return Outcome(status=OutcomeStatus.SUCCESS, notes=f"execute:{runtime.node_id}")
+
+
+class _RuntimeCaptureHandler:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, runtime):
+        self.calls.append(runtime)
+        return Outcome(status=OutcomeStatus.SUCCESS, notes="captured")
 
 
 class _SlowHandler:
@@ -330,6 +340,36 @@ class TestBuiltInHandlers:
         assert len(execute_handler.calls) == 1
         assert execute_handler.calls[0].node_id == "execute_stage"
 
+    def test_handler_contract_receives_node_context_graph_and_logs_root(self, tmp_path):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                capture [shape=box, type="custom.capture"]
+                done [shape=Msquare]
+                start -> capture
+                capture -> done
+            }
+            """
+        )
+        capture_handler = _RuntimeCaptureHandler()
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            extra_handlers={"custom.capture": capture_handler},
+        )
+        runner = HandlerRunner(graph, registry)
+        context = Context(values={"seed": "ok"})
+
+        result = PipelineExecutor(graph, runner, logs_root=str(tmp_path)).run(context)
+
+        assert result.status == "success"
+        assert len(capture_handler.calls) == 1
+        runtime = capture_handler.calls[0]
+        assert runtime.node is graph.nodes["capture"]
+        assert runtime.context is context
+        assert runtime.graph is graph
+        assert runtime.logs_root == tmp_path
+
     def test_conditional_handler_is_noop_success(self):
         graph = parse_dot(
             """
@@ -431,3 +471,36 @@ class TestBuiltInHandlers:
         branch_results = context.get("parallel.results", [])
         assert len(branch_results) == 2
         assert all(item.get("status") == "success" for item in branch_results)
+
+    def test_parallel_handler_preserves_logs_root_for_branch_and_followup_calls(self, tmp_path):
+        graph = parse_dot(
+            """
+            digraph G {
+                fan [shape=component]
+                a [shape=box, type="custom.capture"]
+                b [shape=box, type="custom.capture"]
+                join [shape=tripleoctagon]
+                post [shape=box, type="custom.capture"]
+                fan -> a
+                fan -> b
+                a -> join [condition="outcome=success"]
+                b -> join [condition="outcome=success"]
+            }
+            """
+        )
+        capture_handler = _RuntimeCaptureHandler()
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            extra_handlers={"custom.capture": capture_handler},
+        )
+        runner = HandlerRunner(graph, registry, logs_root=tmp_path)
+
+        parallel_outcome = runner("fan", "", Context())
+        followup_outcome = runner("post", "", Context())
+
+        assert parallel_outcome.status == OutcomeStatus.SUCCESS
+        assert followup_outcome.status == OutcomeStatus.SUCCESS
+
+        captures = [runtime for runtime in capture_handler.calls if runtime.node_id in {"a", "b", "post"}]
+        assert len(captures) == 3
+        assert all(runtime.logs_root == tmp_path for runtime in captures)

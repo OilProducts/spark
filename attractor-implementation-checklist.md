@@ -171,7 +171,7 @@ Status key:
 
 ### 4.1 Handler Interface
 - [x] [4.1-01] Standardize handler execute signature and return `Outcome` contract.
-- [ ] [4.1-02] Pass `node`, `context`, `graph`, and `logs_root` to every handler call.
+- [x] [4.1-02] Pass `node`, `context`, `graph`, and `logs_root` to every handler call.
 - [ ] [4.1-03] Add handler conformance tests for contract shape.
 
 ### 4.2 Handler Registry

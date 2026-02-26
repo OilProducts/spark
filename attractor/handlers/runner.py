@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import signal
 from dataclasses import dataclass, field
+from pathlib import Path
 import threading
 from typing import Any
 
@@ -20,6 +21,7 @@ from .registry import HandlerRegistry
 class HandlerRunner:
     graph: DotGraph
     registry: HandlerRegistry
+    logs_root: Path | None = None
     _concurrency_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _active_calls: int = field(default=0, init=False, repr=False)
     _concurrency_overrides: int = field(default=0, init=False, repr=False)
@@ -34,11 +36,13 @@ class HandlerRunner:
             handler = self.registry.resolve(node)
             runtime = HandlerRuntime(
                 node_id=node_id,
+                node=node,
                 prompt=prompt,
                 node_attrs=node.attrs,
                 outgoing_edges=outgoing,
                 context=context,
                 graph=self.graph,
+                logs_root=self.logs_root,
                 runner=self,
             )
             timeout = _to_seconds(node.attrs.get("timeout"))
@@ -77,6 +81,12 @@ class HandlerRunner:
     def _exit_call(self) -> None:
         with self._concurrency_lock:
             self._active_calls = max(0, self._active_calls - 1)
+
+    def set_logs_root(self, logs_root: str | Path | None) -> None:
+        if logs_root is None:
+            self.logs_root = None
+            return
+        self.logs_root = Path(logs_root)
 
 
 class _SignalTimeout:

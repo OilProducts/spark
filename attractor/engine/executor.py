@@ -125,6 +125,7 @@ class PipelineExecutor:
         self._shape_exit_nodes = self._node_ids_for_shape("Msquare")
         self._active_top_level_node: str | None = None
         self._active_top_level_node_lock = threading.Lock()
+        self._sync_runner_logs_root()
 
     def run(
         self,
@@ -857,7 +858,13 @@ class PipelineExecutor:
                 continue
             candidate.mkdir(parents=True, exist_ok=True)
             self.logs_root = candidate
+            self._sync_runner_logs_root()
             return
+
+    def _sync_runner_logs_root(self) -> None:
+        setter = getattr(self.runner, "set_logs_root", None)
+        if callable(setter):
+            setter(self.logs_root)
 
     def _resolve_start_node(self) -> str:
         starts = [node.node_id for node in self.graph.nodes.values() if self._is_start_node(node.node_id)]
