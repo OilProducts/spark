@@ -93,7 +93,6 @@ Status key:
 - [x] [2.8-03] Add mapping coverage tests for all listed shapes (`Mdiamond`, `Msquare`, `box`, `hexagon`, `diamond`, `component`, `tripleoctagon`, `parallelogram`, `house`).
 
 ### 2.9 Chained Edges
-- [ ] [2.9-01] Expand chained declarations into pairwise edges.
 - [ ] [2.9-02] Apply shared edge attr block to each expanded edge.
 - [ ] [2.9-03] Add parser normalization test for chain equivalence.
 
@@ -565,3 +564,4 @@ Status key:
 - [ ] [2.4-02] Parse signed integers and floats. Deferred because signed integer/float parsing is already implemented in `attractor/dsl/parser.py` and exercised by parser tests, so this item is currently non-actionable checklist drift.
 - [ ] [2.7-01] Implement edge `label` for preferred-label routing. Deferred because preferred-label edge routing is already implemented in `attractor/engine/routing.py` and covered by `tests/engine/test_routing.py::test_preferred_label_then_suggested_ids`, so this is checklist state drift.
 - [ ] [2.7-03] Implement `weight` for deterministic prioritization. Deferred because deterministic weight routing is already implemented in `attractor/engine/routing.py` (`_best_by_weight_then_lexical`) and covered by `tests/engine/test_routing.py::test_weight_then_lexical_tiebreak_for_unconditional`, so this is checklist state drift.
+- [ ] [2.9-01] Expand chained declarations into pairwise edges. Deferred because parser chain expansion already emits pairwise edges in `attractor/dsl/parser.py::parse_node_or_edge` and is covered by parser tests (`tests/dsl/test_parser.py`), so this is checklist state drift.
