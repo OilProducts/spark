@@ -195,7 +195,7 @@ Status key:
 
 #### CodergenBackend Interface
 - [x] [4.5b-01] Define backend interface returning `String | Outcome` for a stage invocation.
-- [ ] [4.5b-02] Add adapter tests for multiple backend implementations.
+- [x] [4.5b-02] Add adapter tests for multiple backend implementations.
 
 ### 4.6 Wait For Human Handler
 - [ ] [4.6-01] Build answer options from outgoing edges (label fallback to target node ID).

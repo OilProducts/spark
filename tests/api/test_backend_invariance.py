@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import List
 
 import pytest
 
 import attractor.api.server as server
-from attractor.engine import load_checkpoint
+from attractor.engine import Context, load_checkpoint
+from attractor.engine.outcome import Outcome, OutcomeStatus
 
 
 FLOW = """
@@ -138,3 +140,64 @@ def test_initialize_creates_run_dir_and_seed_checkpoint_with_transformed_graph(
     assert nodes_by_id["plan"]["llm_model"] == "fast-model"
 
     server._pop_active_run(run_id)
+
+
+@pytest.mark.parametrize(
+    ("backend_name", "expected_type"),
+    [
+        ("codex", server.LocalCodexAppServerBackend),
+        ("codex_app_server", server.LocalCodexAppServerBackend),
+        ("codex-cli", server.LocalCodexCliBackend),
+    ],
+)
+def test_backend_factory_builds_multiple_implementations(
+    backend_name: str, expected_type: type[object], tmp_path: Path
+) -> None:
+    events: List[dict] = []
+
+    backend = server._build_codergen_backend(
+        backend_name,
+        str(tmp_path),
+        events.append,
+        model=None,
+    )
+
+    assert isinstance(backend, expected_type)
+
+
+def test_local_codex_cli_backend_missing_binary_returns_fail_outcome_and_emits_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events: List[dict] = []
+    backend = server.LocalCodexCliBackend(str(tmp_path), events.append, model=None)
+
+    def _raise_missing(*args, **kwargs):
+        raise FileNotFoundError("codex")
+
+    monkeypatch.setattr(server.subprocess, "run", _raise_missing)
+
+    result = backend.run("plan", "hello", Context())
+
+    assert isinstance(result, Outcome)
+    assert result.status == OutcomeStatus.FAIL
+    assert result.failure_reason == "codex executable not found on PATH"
+    assert events[-1] == {"type": "log", "msg": "[plan] codex executable not found on PATH"}
+
+
+def test_local_codex_app_server_backend_missing_binary_returns_fail_outcome_and_emits_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events: List[dict] = []
+    backend = server.LocalCodexAppServerBackend(str(tmp_path), events.append, model=None)
+
+    def _raise_missing(*args, **kwargs):
+        raise FileNotFoundError("codex")
+
+    monkeypatch.setattr(server.subprocess, "Popen", _raise_missing)
+
+    result = backend.run("plan", "hello", Context())
+
+    assert isinstance(result, Outcome)
+    assert result.status == OutcomeStatus.FAIL
+    assert result.failure_reason == "codex app-server not found on PATH"
+    assert events[-1] == {"type": "log", "msg": "[plan] codex app-server not found on PATH"}

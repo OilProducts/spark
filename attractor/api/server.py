@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from attractor.dsl import DotParseError, Diagnostic, DiagnosticSeverity, parse_dot, validate_graph
-from attractor.engine import Checkpoint, Context, PipelineExecutor, save_checkpoint
+from attractor.engine import Checkpoint, Context, Outcome, OutcomeStatus, PipelineExecutor, save_checkpoint
 from attractor.graphviz_export import export_graphviz_artifact
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.handlers.base import CodergenBackend
@@ -552,7 +552,7 @@ class LocalCodexCliBackend(CodergenBackend):
         context: Context,
         *,
         timeout: Optional[float] = None,
-    ) -> bool:
+    ) -> str | Outcome:
         cmd = [
             "codex",
             "exec",
@@ -572,14 +572,23 @@ class LocalCodexCliBackend(CodergenBackend):
                 text=True,
                 timeout=timeout,
             )
+        except FileNotFoundError:
+            failure_reason = "codex executable not found on PATH"
+            self.emit({"type": "log", "msg": f"[{node_id}] {failure_reason}"})
+            return Outcome(status=OutcomeStatus.FAIL, failure_reason=failure_reason)
         except subprocess.TimeoutExpired:
-            self.emit({"type": "log", "msg": f"[{node_id}] timeout after {timeout}s"})
-            return False
+            failure_reason = f"timeout after {timeout}s"
+            self.emit({"type": "log", "msg": f"[{node_id}] {failure_reason}"})
+            return Outcome(status=OutcomeStatus.FAIL, failure_reason=failure_reason)
         if proc.stdout.strip():
             self.emit({"type": "log", "msg": f"[{node_id}] {proc.stdout.strip()}"})
         if proc.stderr.strip():
             self.emit({"type": "log", "msg": f"[{node_id}] {proc.stderr.strip()}"})
-        return proc.returncode == 0
+        if proc.returncode != 0:
+            failure_reason = proc.stderr.strip() or f"codex cli exited with code {proc.returncode}"
+            return Outcome(status=OutcomeStatus.FAIL, failure_reason=failure_reason)
+        output = proc.stdout.strip()
+        return output if output else "codex cli completed successfully"
 
 
 class LocalCodexAppServerBackend(CodergenBackend):
@@ -595,7 +604,7 @@ class LocalCodexAppServerBackend(CodergenBackend):
         context: Context,
         *,
         timeout: Optional[float] = None,
-    ) -> bool:
+    ) -> str | Outcome:
         cmd = ["codex", "app-server"]
         deadline = time.time() + timeout if timeout else None
         agent_chunks: list[str] = []
@@ -608,6 +617,10 @@ class LocalCodexAppServerBackend(CodergenBackend):
             if message:
                 self.emit({"type": "log", "msg": f"[{node_id}] {message}"})
 
+        def fail(reason: str) -> Outcome:
+            log_line(reason)
+            return Outcome(status=OutcomeStatus.FAIL, failure_reason=reason)
+
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -619,8 +632,7 @@ class LocalCodexAppServerBackend(CodergenBackend):
                 bufsize=1,
             )
         except FileNotFoundError:
-            log_line("codex app-server not found on PATH")
-            return False
+            return fail("codex app-server not found on PATH")
 
         selector = selectors.DefaultSelector()
         if proc.stdout is not None:
@@ -774,8 +786,7 @@ class LocalCodexAppServerBackend(CodergenBackend):
             )
             init_response = wait_for_response(init_id)
             if not init_response or init_response.get("error"):
-                log_line("app-server initialize failed")
-                return False
+                return fail("app-server initialize failed")
 
             thread_params = {
                 "cwd": self.working_dir,
@@ -787,13 +798,11 @@ class LocalCodexAppServerBackend(CodergenBackend):
             thread_id = send_request("thread/start", thread_params)
             thread_response = wait_for_response(thread_id)
             if not thread_response or thread_response.get("error"):
-                log_line("app-server thread/start failed")
-                return False
+                return fail("app-server thread/start failed")
             thread = (thread_response.get("result") or {}).get("thread") or {}
             thread_uuid = thread.get("id")
             if not thread_uuid:
-                log_line("app-server thread/start did not return thread id")
-                return False
+                return fail("app-server thread/start did not return thread id")
 
             turn_params = {
                 "threadId": thread_uuid,
@@ -807,18 +816,14 @@ class LocalCodexAppServerBackend(CodergenBackend):
             turn_request_id = send_request("turn/start", turn_params)
             turn_response = wait_for_response(turn_request_id)
             if not turn_response or turn_response.get("error"):
-                log_line("app-server turn/start failed")
-                return False
+                return fail("app-server turn/start failed")
 
             completed = wait_for_turn_completion()
             if not completed:
-                log_line("app-server turn timed out or exited early")
-                return False
+                return fail("app-server turn timed out or exited early")
 
             if turn_status and turn_status != "completed":
-                if turn_error:
-                    log_line(turn_error)
-                return False
+                return fail(turn_error or f"app-server turn ended with status '{turn_status}'")
 
             agent_text = "".join(agent_chunks).strip()
             if agent_text:
@@ -828,7 +833,11 @@ class LocalCodexAppServerBackend(CodergenBackend):
                 log_line(command_text)
             if last_token_total is not None:
                 log_line(f"tokens used: {last_token_total}")
-            return True
+            if agent_text:
+                return agent_text
+            if command_text:
+                return command_text
+            return "codex app-server completed successfully"
         finally:
             try:
                 if proc.poll() is None:
