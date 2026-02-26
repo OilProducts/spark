@@ -164,6 +164,24 @@ class _SharedRefIsolationChecker:
         )
 
 
+class _MaxParallelProbeHandler:
+    def __init__(self, state: dict[str, object], delay_s: float = 0.05):
+        self.state = state
+        self.delay_s = delay_s
+
+    def run(self, runtime):
+        lock = self.state["lock"]
+        with lock:
+            self.state["in_flight"] += 1
+            self.state["peak"] = max(self.state["peak"], self.state["in_flight"])
+        try:
+            time.sleep(self.delay_s)
+        finally:
+            with lock:
+                self.state["in_flight"] -= 1
+        return Outcome(status=OutcomeStatus.SUCCESS, notes=f"probe:{runtime.node_id}")
+
+
 class _FalseyInterviewer(Interviewer):
     def __bool__(self) -> bool:
         return False
@@ -939,6 +957,69 @@ class TestBuiltInHandlers:
         branch_results = context.get("parallel.results", [])
         assert len(branch_results) == 2
         assert all(item.get("status") == "success" for item in branch_results)
+
+    def test_parallel_handler_respects_max_parallel_bound(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                fan [shape=component, max_parallel=2]
+                a [shape=box, type="custom.probe"]
+                b [shape=box, type="custom.probe"]
+                c [shape=box, type="custom.probe"]
+                d [shape=box, type="custom.probe"]
+                a_stop [shape=tripleoctagon]
+                b_stop [shape=tripleoctagon]
+                c_stop [shape=tripleoctagon]
+                d_stop [shape=tripleoctagon]
+
+                fan -> a
+                fan -> b
+                fan -> c
+                fan -> d
+                a -> a_stop [condition="outcome=success"]
+                b -> b_stop [condition="outcome=success"]
+                c -> c_stop [condition="outcome=success"]
+                d -> d_stop [condition="outcome=success"]
+            }
+            """
+        )
+        state = {"lock": threading.Lock(), "in_flight": 0, "peak": 0}
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            extra_handlers={"custom.probe": _MaxParallelProbeHandler(state)},
+        )
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("fan", "", Context())
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert state["peak"] <= 2
+        branch_results = outcome.context_updates.get("parallel.results", [])
+        assert isinstance(branch_results, list)
+        assert len(branch_results) == 4
+
+    def test_parallel_handler_rejects_non_positive_max_parallel(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                fan [shape=component, max_parallel=0]
+                a [shape=box]
+                b [shape=box]
+                a_stop [shape=tripleoctagon]
+                b_stop [shape=tripleoctagon]
+
+                fan -> a
+                fan -> b
+                a -> a_stop [condition="outcome=success"]
+                b -> b_stop [condition="outcome=success"]
+            }
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("fan", "", Context())
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == "max_parallel must be >= 1"
 
     def test_parallel_handler_preserves_logs_root_for_branch_and_followup_calls(self, tmp_path):
         graph = parse_dot(

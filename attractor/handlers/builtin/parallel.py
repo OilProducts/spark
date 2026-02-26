@@ -22,7 +22,9 @@ class ParallelHandler:
 
         join_policy = _attr_str(runtime.node_attrs, "join_policy", "wait_all")
         error_policy = _attr_str(runtime.node_attrs, "error_policy", "continue")
-        max_parallel = max(1, _attr_int(runtime.node_attrs, "max_parallel", 4))
+        max_parallel = _attr_int(runtime.node_attrs, "max_parallel", 4)
+        if max_parallel < 1:
+            return Outcome(status=OutcomeStatus.FAIL, failure_reason="max_parallel must be >= 1")
 
         fan_in_nodes = _fan_in_nodes(runtime.graph)
 
