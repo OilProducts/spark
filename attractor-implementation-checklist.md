@@ -175,8 +175,7 @@ Status key:
 - [x] [4.1-03] Add handler conformance tests for contract shape.
 
 ### 4.2 Handler Registry
-- [ ] [4.2-01] Implement registration API with replacement behavior for duplicate keys.
-- [ ] [4.2-02] Implement resolution order: explicit node type -> shape map -> default handler.
+- [x] [4.2-02] Implement resolution order: explicit node type -> shape map -> default handler.
 - [ ] [4.2-03] Add resolution tests for each precedence level.
 
 ### 4.3 Start Handler
@@ -553,6 +552,7 @@ Status key:
 ---
 
 ## Deferred Tasks
+- [ ] [4.2-01] Implement registration API with replacement behavior for duplicate keys. Deferred because `HandlerRegistry.register` already replaces existing entries via direct map assignment and this is checklist state drift.
 - [ ] [2.6-02] Resolve `type` override before shape-based handler mapping. Deferred because `HandlerRegistry.resolve_handler_type` already checks explicit `type` before shape mapping and tests already cover this precedence (`tests/handlers/test_handlers.py`), so this is checklist state drift.
 - [ ] [2.8-02] Ensure explicit `type` attribute overrides shape mapping. Deferred because explicit `type` precedence is already implemented in `HandlerRegistry.resolve_handler_type` and validated by `tests/handlers/test_handlers.py::test_registry_resolution_by_shape_and_type`, so this is checklist state drift.
 - [ ] [2.3-05] Accept optional statement semicolons. Deferred because parser behavior is already implemented and covered by existing tests (`tests/dsl/test_parser.py`), so this is checklist state drift rather than a code gap.

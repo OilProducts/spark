@@ -161,6 +161,45 @@ class TestBuiltInHandlers:
         assert registry.resolve_handler_type(graph.nodes["human"]) == "wait.human"
         assert registry.resolve_handler_type(graph.nodes["custom"]) == "tool"
 
+    def test_registry_falls_back_to_shape_when_explicit_type_is_unregistered(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                gate [shape=hexagon, type="custom.missing", prompt="Choose"]
+                pass [shape=box]
+                fail [shape=box]
+                gate -> pass [label="Approve"]
+                gate -> fail [label="Fix"]
+            }
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("gate", "Choose", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert outcome.preferred_label == "Approve"
+
+    def test_registry_falls_back_to_default_handler_when_shape_mapping_is_unregistered(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=hexagon, label="Use default", type="custom.missing"]
+            }
+            """
+        )
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        del registry.handlers["wait.human"]
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert backend.calls[0][0] == "task"
+        assert backend.calls[0][1] == "Use default"
+
     @pytest.mark.parametrize(
         ("shape", "expected_handler_type"),
         [
