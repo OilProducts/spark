@@ -243,7 +243,7 @@ Status key:
 - [x] [5.1-04] Enforce namespace conventions (`context.*`, `graph.*`, `internal.*`, `parallel.*`, `stack.*`, `human.gate.*`, `work.*`).
 
 ### 5.2 Outcome
-- [ ] [5.2-01] Define full outcome payload fields (`status`, `preferred_label`, `suggested_next_ids`, `context_updates`, `notes`, `failure_reason`).
+- [x] [5.2-01] Define full outcome payload fields (`status`, `preferred_label`, `suggested_next_ids`, `context_updates`, `notes`, `failure_reason`).
 - [ ] [5.2-02] Implement valid status enum and routing semantics for each status.
 - [ ] [5.2-03] Ensure stage status transitions are persisted in `status.json` artifacts.
 
