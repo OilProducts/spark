@@ -286,6 +286,24 @@ class TestBuiltInHandlers:
         assert outcome.status == OutcomeStatus.SUCCESS
         assert backend.calls[0][1] == "Plan for ship"
 
+    def test_codergen_handler_expands_goal_from_graph_attr_when_context_missing(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [goal="Ship docs"]
+                task [shape=box, prompt="Plan for $goal"]
+            }
+            """
+        )
+
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "Plan for $goal", Context())
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert backend.calls[0][1] == "Plan for Ship docs"
+
     def test_codergen_handler_falls_back_to_label_when_prompt_is_empty(self):
         graph = parse_dot(
             """

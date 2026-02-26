@@ -21,7 +21,7 @@ class CodergenHandler:
                 prompt = str(label_attr.value).strip()
             if not prompt:
                 prompt = runtime.node_id
-        prompt = _expand_goal(prompt, runtime.context)
+        prompt = _expand_goal(prompt, runtime.context, runtime.graph)
         if self.backend is None:
             return Outcome(
                 status=OutcomeStatus.SUCCESS,
@@ -35,8 +35,14 @@ class CodergenHandler:
         return Outcome(status=OutcomeStatus.FAIL, failure_reason="codergen backend failure")
 
 
-def _expand_goal(prompt: str, context) -> str:
-    goal = context.get("graph.goal", "")
+def _expand_goal(prompt: str, context, graph) -> str:
+    goal = context.get("graph.goal")
+    if goal in (None, ""):
+        goal_attr = graph.graph_attrs.get("goal")
+        if goal_attr is not None:
+            goal = goal_attr.value
+    if goal is None:
+        goal = ""
     return prompt.replace("$goal", str(goal))
 
 
