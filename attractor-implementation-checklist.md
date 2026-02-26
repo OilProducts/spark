@@ -89,7 +89,7 @@ Status key:
 - [x] [2.7-05] Implement `loop_restart` semantics to relaunch run with fresh logs.
 
 ### 2.8 Shape-to-Handler-Type Mapping
-- [ ] [2.8-01] Implement canonical shape->type mapping exactly as specified.
+- [x] [2.8-01] Implement canonical shape->type mapping exactly as specified.
 - [ ] [2.8-02] Ensure explicit `type` attribute overrides shape mapping.
 - [ ] [2.8-03] Add mapping coverage tests for all listed shapes (`Mdiamond`, `Msquare`, `box`, `hexagon`, `diamond`, `component`, `tripleoctagon`, `parallelogram`, `house`).
 

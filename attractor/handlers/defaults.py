@@ -10,6 +10,7 @@ from .builtin import (
     ConditionalHandler,
     ExitHandler,
     FanInHandler,
+    ManagerLoopHandler,
     ParallelHandler,
     StartHandler,
     ToolHandler,
@@ -35,6 +36,7 @@ def build_default_registry(
     registry.register("parallel", ParallelHandler())
     registry.register("parallel.fan_in", FanInHandler())
     registry.register("tool", ToolHandler())
+    registry.register("stack.manager_loop", ManagerLoopHandler())
     if extra_handlers:
         for handler_type, handler in extra_handlers.items():
             registry.register(handler_type, handler)

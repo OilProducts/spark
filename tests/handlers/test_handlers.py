@@ -67,6 +67,22 @@ class TestBuiltInHandlers:
         assert registry.resolve_handler_type(graph.nodes["human"]) == "wait.human"
         assert registry.resolve_handler_type(graph.nodes["custom"]) == "tool"
 
+    def test_house_shape_resolves_and_executes_with_default_registry(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [shape=house]
+            }
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+
+        assert registry.resolve_handler_type(graph.nodes["manager"]) == "stack.manager_loop"
+        outcome = runner("manager", "", Context())
+        assert outcome.status == OutcomeStatus.FAIL
+        assert "not implemented" in outcome.failure_reason
+
     def test_codergen_handler_calls_backend(self):
         graph = parse_dot(
             """
