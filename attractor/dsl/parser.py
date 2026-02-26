@@ -105,12 +105,12 @@ class _Parser:
 
         scope = _Scope()
         while not self.accept("RBRACE"):
-            self.parse_statement(graph, scope)
+            self.parse_statement(graph, scope, in_subgraph=False)
             self.accept("SEMI")
 
         return graph
 
-    def parse_statement(self, graph: DotGraph, scope: _Scope) -> None:
+    def parse_statement(self, graph: DotGraph, scope: _Scope, *, in_subgraph: bool) -> None:
         tok = self.current()
 
         if tok.kind == "IDENT" and tok.value == "subgraph":
@@ -121,14 +121,15 @@ class _Parser:
             self.expect("LBRACE")
             child_scope = scope.child()
             while not self.accept("RBRACE"):
-                self.parse_statement(graph, child_scope)
+                self.parse_statement(graph, child_scope, in_subgraph=True)
                 self.accept("SEMI")
             return
 
         if tok.kind == "IDENT" and tok.value == "graph" and self.peek().kind == "LBRACKET":
             self.advance()
             attrs = self.parse_attr_block()
-            graph.graph_attrs.update(attrs)
+            if not in_subgraph:
+                graph.graph_attrs.update(attrs)
             return
 
         if tok.kind == "IDENT" and tok.value == "node" and self.peek().kind == "LBRACKET":
@@ -145,12 +146,13 @@ class _Parser:
             key_tok = self.advance()
             self.expect("EQ")
             value, value_type, line = self.parse_value()
-            graph.graph_attrs[key_tok.value] = DotAttribute(
-                key=key_tok.value,
-                value=value,
-                value_type=value_type,
-                line=line,
-            )
+            if not in_subgraph:
+                graph.graph_attrs[key_tok.value] = DotAttribute(
+                    key=key_tok.value,
+                    value=value,
+                    value_type=value_type,
+                    line=line,
+                )
             return
 
         if tok.kind == "IDENT":

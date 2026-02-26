@@ -57,6 +57,25 @@ class TestDotParser:
         assert plan.attrs["thread_id"].value == "loop-a"
         assert plan.attrs["timeout"].value.raw == "15m"
 
+    def test_subgraph_attr_decl_does_not_override_graph_attrs(self):
+        dot = """
+        digraph Scoped {
+            label="Top Level"
+
+            subgraph cluster_loop {
+                label="Loop A"
+                node [thread_id="loop-a"]
+                plan [prompt="p"]
+            }
+
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> plan -> done
+        }
+        """
+        graph = parse_dot(dot)
+        assert graph.graph_attrs["label"].value == "Top Level"
+
     def test_reject_undirected_edges(self):
         dot = """
         digraph Bad {
