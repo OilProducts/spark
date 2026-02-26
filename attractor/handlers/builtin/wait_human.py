@@ -17,7 +17,11 @@ class WaitHumanHandler:
         options = []
         for edge in runtime.outgoing_edges:
             label_attr = edge.attrs.get("label")
-            label = str(label_attr.value) if label_attr else edge.target
+            label = edge.target
+            if label_attr is not None:
+                raw_label = str(label_attr.value)
+                if raw_label.strip():
+                    label = raw_label
             options.append(QuestionOption(label=label, value=label))
 
         question = Question(

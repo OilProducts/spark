@@ -15,7 +15,7 @@ from attractor.engine.outcome import OutcomeStatus
 from attractor.handlers.base import CodergenBackend
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.handlers.registry import SHAPE_TO_TYPE
-from attractor.interviewer import Answer, Interviewer, Question
+from attractor.interviewer import Answer, CallbackInterviewer, Interviewer, Question
 
 
 class _StubBackend:
@@ -542,6 +542,40 @@ class TestBuiltInHandlers:
         outcome = runner("gate", "Choose", Context())
         assert outcome.status == OutcomeStatus.SUCCESS
         assert outcome.preferred_label == "Fix"
+
+    def test_wait_human_builds_options_with_label_fallback_to_target_id(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                gate [shape=hexagon, prompt="Choose"]
+                ship [shape=box]
+                fix [shape=box]
+                gate -> ship [label=""]
+                gate -> fix
+            }
+            """
+        )
+
+        seen = {}
+
+        def _capture(question):
+            seen["question"] = question
+            return Answer(selected_values=[question.options[0].value])
+
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            interviewer=CallbackInterviewer(_capture),
+        )
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("gate", "Choose", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert outcome.preferred_label == "ship"
+        assert [(option.label, option.value) for option in seen["question"].options] == [
+            ("ship", "ship"),
+            ("fix", "fix"),
+        ]
 
     def test_tool_handler_executes_command(self):
         graph = parse_dot(
