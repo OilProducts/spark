@@ -24,7 +24,7 @@ Status key:
 - [x] [1.2-03] Validate `.dot` files are diff-friendly in CI (format/lint check with stable ordering).
 
 ### 1.3 Design Principles
-- [ ] [1.3-01] Enforce declarative execution model: engine chooses runtime flow from graph + outcomes.
+- [x] [1.3-01] Enforce declarative execution model: engine chooses runtime flow from graph + outcomes.
 - [ ] [1.3-02] Ensure handler system is pluggable and registry-driven.
 - [ ] [1.3-03] Persist checkpoint after each stage and support resume from checkpoint.
 - [ ] [1.3-04] Support human-gate decision points with external interviewer implementations.

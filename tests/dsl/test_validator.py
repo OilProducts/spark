@@ -121,3 +121,40 @@ class TestDotValidator:
         graph = parse_dot(dot)
         diagnostics = validate_graph(graph)
         assert self._errors(diagnostics) == []
+
+    def test_shape_start_takes_precedence_over_start_id_fallback(self):
+        dot = """
+        digraph G {
+            entry [shape=Mdiamond]
+            start [shape=box]
+            done [shape=Msquare]
+
+            entry -> done
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "start_node" not in error_rules
+
+    def test_shape_exit_takes_precedence_over_end_id_fallback(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            review [shape=box]
+            end [shape=box]
+            done [shape=Msquare]
+
+            start -> review
+            review -> end
+            end -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "terminal_node" not in error_rules
+        assert "exit_no_outgoing" not in error_rules

@@ -7,6 +7,49 @@ from attractor.engine.outcome import Outcome, OutcomeStatus
 
 
 class TestExecutor:
+    def test_shape_start_takes_precedence_over_start_id_fallback(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                entry [shape=Mdiamond]
+                start [shape=box]
+                work [shape=box]
+                done [shape=Msquare]
+
+                entry -> work
+                start -> work
+                work -> done
+            }
+            """
+        )
+
+        result = PipelineExecutor(graph, lambda *_: Outcome(status=OutcomeStatus.SUCCESS)).run(Context())
+
+        assert result.status == "success"
+        assert result.route_trace == ["entry", "work", "done"]
+
+    def test_shape_exit_takes_precedence_over_end_id_fallback(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                review [shape=box]
+                end [shape=box]
+                done [shape=Msquare]
+
+                start -> review
+                review -> end
+                end -> done
+            }
+            """
+        )
+
+        result = PipelineExecutor(graph, lambda *_: Outcome(status=OutcomeStatus.SUCCESS)).run(Context())
+
+        assert result.status == "success"
+        assert result.current_node == "done"
+        assert result.route_trace == ["start", "review", "end", "done"]
+
     def test_replay_with_identical_outcomes_and_context_has_identical_routing(self):
         graph = parse_dot(
             """

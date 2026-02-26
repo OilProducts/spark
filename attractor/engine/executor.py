@@ -43,6 +43,8 @@ class PipelineExecutor:
         self.logs_root = Path(logs_root) if logs_root else None
         self.checkpoint_path = Path(checkpoint_file) if checkpoint_file else None
         self.control = control
+        self._shape_start_nodes = self._node_ids_for_shape("Mdiamond")
+        self._shape_exit_nodes = self._node_ids_for_shape("Msquare")
 
     def run(
         self,
@@ -375,18 +377,22 @@ class PipelineExecutor:
         return starts[0]
 
     def _is_start_node(self, node_id: str) -> bool:
-        node = self.graph.nodes[node_id]
-        shape_attr = node.attrs.get("shape")
-        if shape_attr and str(shape_attr.value) == "Mdiamond":
-            return True
+        if self._shape_start_nodes:
+            return node_id in self._shape_start_nodes
         return node_id in {"start", "Start"}
 
     def _is_exit_node(self, node_id: str) -> bool:
-        node = self.graph.nodes[node_id]
-        shape_attr = node.attrs.get("shape")
-        if shape_attr and str(shape_attr.value) == "Msquare":
-            return True
+        if self._shape_exit_nodes:
+            return node_id in self._shape_exit_nodes
         return node_id in {"exit", "end", "Exit", "End"}
+
+    def _node_ids_for_shape(self, shape: str) -> set[str]:
+        matches: set[str] = set()
+        for node in self.graph.nodes.values():
+            shape_attr = node.attrs.get("shape")
+            if shape_attr and str(shape_attr.value) == shape:
+                matches.add(node.node_id)
+        return matches
 
     def _prompt_for_node(self, node_id: str) -> str:
         node = self.graph.nodes[node_id]

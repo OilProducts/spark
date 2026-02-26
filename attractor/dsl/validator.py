@@ -166,21 +166,27 @@ def validate_graph(graph: DotGraph) -> List[Diagnostic]:
 
 
 def _find_start_nodes(graph: DotGraph) -> List[DotNode]:
-    nodes: List[DotNode] = []
+    shape_nodes: List[DotNode] = []
+    fallback_nodes: List[DotNode] = []
     for node in graph.nodes.values():
         shape = _attr_str(node.attrs, "shape")
-        if shape == "Mdiamond" or node.node_id in {"start", "Start"}:
-            nodes.append(node)
-    return nodes
+        if shape == "Mdiamond":
+            shape_nodes.append(node)
+        elif node.node_id in {"start", "Start"}:
+            fallback_nodes.append(node)
+    return shape_nodes or fallback_nodes
 
 
 def _find_exit_nodes(graph: DotGraph) -> List[DotNode]:
-    nodes: List[DotNode] = []
+    shape_nodes: List[DotNode] = []
+    fallback_nodes: List[DotNode] = []
     for node in graph.nodes.values():
         shape = _attr_str(node.attrs, "shape")
-        if shape == "Msquare" or node.node_id in {"exit", "end", "Exit", "End"}:
-            nodes.append(node)
-    return nodes
+        if shape == "Msquare":
+            shape_nodes.append(node)
+        elif node.node_id in {"exit", "end", "Exit", "End"}:
+            fallback_nodes.append(node)
+    return shape_nodes or fallback_nodes
 
 
 def _attr_str(attrs: Dict[str, object], key: str) -> str:
