@@ -48,6 +48,9 @@ def parse_dot(source: str) -> DotGraph:
     tokens = _tokenize(source)
     parser = _Parser(tokens)
     graph = parser.parse_graph()
+    trailing = parser.current()
+    if trailing.kind == "IDENT" and trailing.value in {"digraph", "graph", "strict"}:
+        raise DotParseError("multiple graph declarations are not supported", trailing.line)
     parser.expect("EOF")
     return graph
 
@@ -90,6 +93,8 @@ class _Parser:
         first = self.current()
         if first.kind == "IDENT" and first.value == "strict":
             raise DotParseError("strict modifier is not supported", first.line)
+        if first.kind == "IDENT" and first.value == "graph":
+            raise DotParseError("undirected graph declarations are not supported", first.line)
 
         self.expect("IDENT", "digraph")
         graph_id_tok = self.expect("IDENT")

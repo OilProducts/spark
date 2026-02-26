@@ -16,11 +16,11 @@ Status key:
 ### 1.1 Problem Statement
 - [x] [1.1-01] Implement at least one reference workflow that chains multiple LLM stages with conditions, human approval, and parallel execution.
 - [x] [1.1-02] Verify workflows are defined as graph structure (nodes/edges/attrs), not imperative control flow code.
-- [ ] [1.1-03] Add a deterministic replay test proving identical routing given identical outcomes/context.
+- [x] [1.1-03] Add a deterministic replay test proving identical routing given identical outcomes/context.
 
 ### 1.2 Why DOT Syntax
-- [ ] [1.2-01] Restrict ingestion to DOT `digraph` workflows and reject unsupported DOT features.
-- [ ] [1.2-02] Add visualization export path (DOT -> Graphviz render artifact) for operator inspection.
+- [x] [1.2-01] Restrict ingestion to DOT `digraph` workflows and reject unsupported DOT features.
+- [x] [1.2-02] Add visualization export path (DOT -> Graphviz render artifact) for operator inspection.
 - [ ] [1.2-03] Validate `.dot` files are diff-friendly in CI (format/lint check with stable ordering).
 
 ### 1.3 Design Principles

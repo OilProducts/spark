@@ -83,3 +83,54 @@ class TestDotParser:
         """
         with pytest.raises(DotParseError):
             parse_dot(dot)
+
+    def test_reject_undirected_graph_declaration(self):
+        dot = """
+        graph Bad {
+            a -> b
+        }
+        """
+        with pytest.raises(DotParseError, match="undirected graph declarations are not supported"):
+            parse_dot(dot)
+
+    def test_reject_multiple_graph_declarations(self):
+        dot = """
+        digraph One {
+            a -> b
+        }
+        digraph Two {
+            c -> d
+        }
+        """
+        with pytest.raises(DotParseError, match="multiple graph declarations are not supported"):
+            parse_dot(dot)
+
+    def test_reject_strict_graph_modifier(self):
+        dot = """
+        strict digraph G {
+            a -> b
+        }
+        """
+        with pytest.raises(DotParseError, match="strict modifier is not supported"):
+            parse_dot(dot)
+
+    def test_reject_html_like_label_value(self):
+        dot = """
+        digraph G {
+            a [label=<b>Bold</b>]
+        }
+        """
+        with pytest.raises(DotParseError):
+            parse_dot(dot)
+
+    def test_strip_block_comments_before_parse(self):
+        dot = """
+        digraph G {
+            /* this edge should be ignored: a -- b */
+            a -> b
+        }
+        """
+        graph = parse_dot(dot)
+        assert len(graph.edges) == 1
+        assert graph.edges[0].source == "a"
+        assert graph.edges[0].target == "b"

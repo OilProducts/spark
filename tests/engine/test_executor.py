@@ -7,6 +7,39 @@ from attractor.engine.outcome import Outcome, OutcomeStatus
 
 
 class TestExecutor:
+    def test_replay_with_identical_outcomes_and_context_has_identical_routing(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                approve [shape=box]
+                revise [shape=box]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> approve [condition="outcome=success", label="Approve", weight=10]
+                plan -> revise [condition="outcome=fail", label="Revise", weight=10]
+                approve -> done
+                revise -> done
+            }
+            """
+        )
+
+        calls = {"plan": 0}
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "plan":
+                calls["plan"] += 1
+                return Outcome(status=OutcomeStatus.SUCCESS)
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        first = PipelineExecutor(graph, runner).run(Context(values={"seed": "same"}))
+        second = PipelineExecutor(graph, runner).run(Context(values={"seed": "same"}))
+
+        assert first.route_trace == ["start", "plan", "approve", "done"]
+        assert second.route_trace == first.route_trace
+
     def test_executor_resolves_start_and_branches(self):
         graph = parse_dot(
             """

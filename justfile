@@ -13,5 +13,8 @@ restart:
   docker compose down
   docker compose up --build
 
+dot-lint:
+  uv run pytest -q tests/integration/test_dot_format_lint.py
+
 test:
   uv run pytest -q

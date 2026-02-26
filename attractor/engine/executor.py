@@ -25,6 +25,7 @@ class PipelineResult:
     completed_nodes: List[str] = field(default_factory=list)
     context: Dict[str, object] = field(default_factory=dict)
     node_outcomes: Dict[str, Outcome] = field(default_factory=dict)
+    route_trace: List[str] = field(default_factory=list)
     failure_reason: str = ""
 
 
@@ -56,12 +57,14 @@ class PipelineExecutor:
         retry_counts: Dict[str, int] = {}
 
         current = self._resolve_start_node()
+        route_trace: List[str] = [current]
         if resume and self.checkpoint_path:
             checkpoint = load_checkpoint(self.checkpoint_path)
             if checkpoint:
                 candidate = checkpoint.current_node or current
                 if candidate in self.graph.nodes:
                     current = candidate
+                    route_trace = [current]
                     completed = [node for node in checkpoint.completed_nodes if node in self.graph.nodes]
                     retry_counts = {
                         node_id: count
@@ -88,6 +91,7 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                     failure_reason="aborted_by_user",
                 )
             if action == "pause":
@@ -103,6 +107,7 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                 )
 
             if self._is_exit_node(current):
@@ -120,11 +125,13 @@ class PipelineExecutor:
                         completed_nodes=completed,
                         context=dict(ctx.values),
                         node_outcomes=outcomes,
+                        route_trace=route_trace,
                     )
 
                 retry_target = self._resolve_goal_gate_retry_target(failed_gate_node)
                 if retry_target:
                     current = retry_target
+                    route_trace.append(current)
                     self._save_checkpoint(
                         current_node=current,
                         completed_nodes=completed,
@@ -139,6 +146,7 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                 )
 
             node = self.graph.nodes[current]
@@ -180,6 +188,7 @@ class PipelineExecutor:
                 )
 
             current = next_edge.target
+            route_trace.append(current)
             self._save_checkpoint(
                 current_node=current,
                 completed_nodes=completed,
@@ -195,6 +204,7 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                 )
 
     def run_from(
@@ -210,6 +220,7 @@ class PipelineExecutor:
         outcomes: Dict[str, Outcome] = {}
         retry_counts: Dict[str, int] = {}
         current = start_node
+        route_trace: List[str] = [current]
         steps = 0
         stop_nodes = set(stop_nodes or [])
 
@@ -222,6 +233,7 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                     failure_reason="aborted_by_user",
                 )
             if action == "pause":
@@ -231,6 +243,7 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                 )
 
             if current in stop_nodes:
@@ -240,6 +253,7 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                 )
 
             if self._is_exit_node(current):
@@ -249,6 +263,7 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                 )
 
             node = self.graph.nodes[current]
@@ -285,10 +300,12 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                     failure_reason=f"Stage '{node.node_id}' has no eligible outgoing edge",
                 )
 
             current = next_edge.target
+            route_trace.append(current)
 
             steps += 1
             if max_steps is not None and steps >= max_steps:
@@ -298,6 +315,7 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=dict(ctx.values),
                     node_outcomes=outcomes,
+                    route_trace=route_trace,
                 )
 
     def _save_checkpoint(

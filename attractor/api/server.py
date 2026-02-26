@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from attractor.dsl import DotParseError, Diagnostic, DiagnosticSeverity, parse_dot, validate_graph
 from attractor.engine import Context, PipelineExecutor
+from attractor.graphviz_export import export_graphviz_artifact
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.handlers.base import CodergenBackend
 from attractor.interviewer.base import Interviewer
@@ -1141,6 +1142,7 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
     run_root = _run_root(run_id)
     checkpoint_file = str(run_root / "state.json")
     logs_root = str(run_root / "logs")
+    graphviz_export = export_graphviz_artifact(req.flow_content, run_root)
 
     goal_attr = graph.graph_attrs.get("goal")
     context = Context(values={"graph.goal": str(goal_attr.value) if goal_attr else ""})
@@ -1173,8 +1175,18 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
             "model": display_model,
             "flow_name": flow_name,
             "run_id": run_id,
+            "graph_dot_path": str(graphviz_export.dot_path),
+            "graph_render_path": str(graphviz_export.rendered_path) if graphviz_export.rendered_path else None,
         },
     )
+    if graphviz_export.error:
+        await _publish_run_event(
+            run_id,
+            {
+                "type": "log",
+                "msg": f"[System] Graph render unavailable: {graphviz_export.error}",
+            },
+        )
     await _publish_run_event(
         run_id,
         {
@@ -1226,6 +1238,8 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
         "run_id": run_id,
         "working_directory": working_dir,
         "model": display_model,
+        "graph_dot_path": str(graphviz_export.dot_path),
+        "graph_render_path": str(graphviz_export.rendered_path) if graphviz_export.rendered_path else None,
     }
 
 
