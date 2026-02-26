@@ -7,6 +7,30 @@ from attractor.engine.outcome import Outcome, OutcomeStatus
 
 
 class TestExecutor:
+    def test_executor_resolves_runtime_thread_id_from_node_attr_for_full_fidelity(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [default_fidelity="full"]
+                start [shape=Mdiamond]
+                work [shape=box, thread_id="work-thread"]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+        seen_thread_ids: list[str] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            seen_thread_ids.append(str(context.get("_attractor.runtime.thread_id", "")))
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert seen_thread_ids == ["start", "work-thread"]
+
     def test_executor_resolves_runtime_fidelity_from_graph_default(self):
         graph = parse_dot(
             """
@@ -30,6 +54,30 @@ class TestExecutor:
 
         assert result.status == "success"
         assert seen_fidelity == ["summary:medium", "summary:medium"]
+
+    def test_executor_node_fidelity_overrides_graph_default(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [default_fidelity="summary:medium"]
+                start [shape=Mdiamond]
+                work [shape=box, fidelity="full"]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+        seen_fidelity: list[str] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            seen_fidelity.append(str(context.get("_attractor.runtime.fidelity", "")))
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert seen_fidelity == ["summary:medium", "full"]
 
     def test_executor_mirrors_graph_goal_into_context(self):
         graph = parse_dot(

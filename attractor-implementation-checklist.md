@@ -76,7 +76,7 @@ Status key:
 - [x] [2.6-04] Implement `max_retries` semantics as additional attempts.
 - [x] [2.6-05] Enforce `goal_gate` tracking and exit blocking behavior.
 - [x] [2.6-06] Implement node-level retry target fallback chain.
-- [ ] [2.6-07] Implement fidelity/thread/session attrs (`fidelity`, `thread_id`).
+- [x] [2.6-07] Implement fidelity/thread/session attrs (`fidelity`, `thread_id`).
 - [ ] [2.6-08] Parse and apply stylesheet `class` selectors (comma-separated classes).
 - [ ] [2.6-09] Enforce `timeout` in handler execution paths.
 - [ ] [2.6-10] Resolve model attrs (`llm_model`, `llm_provider`, `reasoning_effort`) with precedence rules.

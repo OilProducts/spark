@@ -18,6 +18,7 @@ ControlFn = Callable[[], Optional[str]]
 EventFn = Callable[[Dict[str, object]], None]
 NODE_OUTCOMES_KEY = "_attractor.node_outcomes"
 RUNTIME_FIDELITY_KEY = "_attractor.runtime.fidelity"
+RUNTIME_THREAD_ID_KEY = "_attractor.runtime.thread_id"
 _NON_CODEGEN_SHAPES = {
     "Mdiamond",
     "Msquare",
@@ -174,7 +175,9 @@ class PipelineExecutor:
                 )
 
             node = self.graph.nodes[current]
-            ctx.set(RUNTIME_FIDELITY_KEY, self._resolve_runtime_fidelity(node.node_id, incoming_edge))
+            fidelity = self._resolve_runtime_fidelity(node.node_id, incoming_edge)
+            ctx.set(RUNTIME_FIDELITY_KEY, fidelity)
+            ctx.set(RUNTIME_THREAD_ID_KEY, self._resolve_runtime_thread_id(node.node_id, incoming_edge, fidelity))
             prior_status = self._context_outcome_status(ctx)
             prompt = self._prompt_for_node(node.node_id)
             self._emit_event("StageStarted", node_id=node.node_id, index=len(completed))
@@ -335,7 +338,9 @@ class PipelineExecutor:
                 )
 
             node = self.graph.nodes[current]
-            ctx.set(RUNTIME_FIDELITY_KEY, self._resolve_runtime_fidelity(node.node_id, incoming_edge))
+            fidelity = self._resolve_runtime_fidelity(node.node_id, incoming_edge)
+            ctx.set(RUNTIME_FIDELITY_KEY, fidelity)
+            ctx.set(RUNTIME_THREAD_ID_KEY, self._resolve_runtime_thread_id(node.node_id, incoming_edge, fidelity))
             prior_status = self._context_outcome_status(ctx)
             prompt = self._prompt_for_node(node.node_id)
             self._emit_event("StageStarted", node_id=node.node_id, index=len(completed))
@@ -579,6 +584,24 @@ class PipelineExecutor:
 
         return "compact"
 
+    def _resolve_runtime_thread_id(
+        self,
+        node_id: str,
+        incoming_edge: object | None,
+        fidelity: str,
+    ) -> str:
+        if fidelity != "full":
+            return ""
+
+        node_attr = self.graph.nodes[node_id].attrs.get("thread_id")
+        if node_attr and str(node_attr.value).strip():
+            return str(node_attr.value).strip()
+
+        previous_node_id = _edge_endpoint_text(incoming_edge, "source")
+        if previous_node_id:
+            return previous_node_id
+        return node_id
+
     def _max_retries_for_node(self, node_id: str) -> int:
         node = self.graph.nodes[node_id]
         node_attr = node.attrs.get("max_retries")
@@ -712,6 +735,15 @@ def _edge_attr_text(edge: object | None, key: str) -> str:
     if not attr:
         return ""
     return str(attr.value).strip()
+
+
+def _edge_endpoint_text(edge: object | None, key: str) -> str:
+    if edge is None or not hasattr(edge, key):
+        return ""
+    value = getattr(edge, key)
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def _is_outcome_fail_condition(condition: str) -> bool:
