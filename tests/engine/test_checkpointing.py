@@ -94,6 +94,42 @@ class TestCheckpointAndArtifacts:
             assert checkpoint.current_node == "done"
             assert checkpoint.completed_nodes == ["start", "plan"]
 
+    def test_checkpoint_json_persists_timestamp_retry_context_and_logs(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                done [shape=Msquare]
+                start -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+
+            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+                return Outcome(status=OutcomeStatus.SUCCESS)
+
+            context = Context()
+            context.append_log("bootstrap")
+
+            result = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+            ).run(context)
+
+            assert result.status == "success"
+            raw_checkpoint = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+            assert raw_checkpoint["current_node"] == "done"
+            assert raw_checkpoint["completed_nodes"] == ["start"]
+            assert raw_checkpoint["retry_counts"] == {}
+            assert isinstance(raw_checkpoint["context"], dict)
+            assert raw_checkpoint["logs"] == ["bootstrap"]
+            assert isinstance(raw_checkpoint["timestamp"], str)
+            assert raw_checkpoint["timestamp"]
+
     def test_status_json_persists_stage_status_transitions_across_retries(self):
         graph = parse_dot(
             """

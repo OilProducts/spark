@@ -760,6 +760,7 @@ class PipelineExecutor:
                 completed_nodes=list(completed_nodes),
                 context=dict(context.values),
                 retry_counts=dict(retry_counts),
+                logs=list(context.clone().logs),
             )
             save_checkpoint(self.checkpoint_path, checkpoint)
         self._emit_event("CheckpointSaved", node_id=current_node, persisted=persisted)
