@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from attractor.dsl.models import Duration
@@ -22,17 +23,26 @@ class CodergenHandler:
             if not prompt:
                 prompt = runtime.node_id
         prompt = _expand_goal(prompt, runtime.context, runtime.graph)
+        stage_dir = _ensure_stage_dir(runtime.logs_root, runtime.node_id)
+        _write_stage_file(stage_dir, "prompt.md", prompt)
+
         if self.backend is None:
-            return Outcome(
+            outcome = Outcome(
                 status=OutcomeStatus.SUCCESS,
                 notes="codergen handler completed without backend",
             )
+            _write_stage_file(stage_dir, "response.md", outcome.notes or "")
+            return outcome
 
         timeout = _to_seconds(runtime.node_attrs.get("timeout"))
         ok = self.backend.run(runtime.node_id, prompt, runtime.context, timeout=timeout)
+        outcome: Outcome
         if ok:
-            return Outcome(status=OutcomeStatus.SUCCESS, notes="codergen backend success")
-        return Outcome(status=OutcomeStatus.FAIL, failure_reason="codergen backend failure")
+            outcome = Outcome(status=OutcomeStatus.SUCCESS, notes="codergen backend success")
+        else:
+            outcome = Outcome(status=OutcomeStatus.FAIL, failure_reason="codergen backend failure")
+        _write_stage_file(stage_dir, "response.md", outcome.notes or outcome.failure_reason or "")
+        return outcome
 
 
 def _expand_goal(prompt: str, context, graph) -> str:
@@ -68,3 +78,17 @@ def _to_seconds(attr) -> float | None:
         return float(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _ensure_stage_dir(logs_root: Path | None, node_id: str) -> Path | None:
+    if logs_root is None:
+        return None
+    stage_dir = logs_root / node_id
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    return stage_dir
+
+
+def _write_stage_file(stage_dir: Path | None, filename: str, content: str) -> None:
+    if stage_dir is None:
+        return
+    (stage_dir / filename).write_text(content + "\n", encoding="utf-8")

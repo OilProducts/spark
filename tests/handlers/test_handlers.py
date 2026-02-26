@@ -1,6 +1,7 @@
 import threading
 import time
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -23,6 +24,25 @@ class _StubBackend:
     def run(self, node_id: str, prompt: str, context: Context, *, timeout=None) -> bool:
         self.calls.append((node_id, prompt, dict(context.values)))
         return self.ok
+
+
+class _ArtifactProbeBackend:
+    def __init__(self, logs_root: Path):
+        self.logs_root = logs_root
+        self.prompt_exists_during_call = False
+        self.response_exists_during_call = False
+        self.prompt_text_during_call = ""
+
+    def run(self, node_id: str, prompt: str, context: Context, *, timeout=None) -> bool:
+        del prompt, context, timeout
+        stage_dir = self.logs_root / node_id
+        prompt_path = stage_dir / "prompt.md"
+        response_path = stage_dir / "response.md"
+        self.prompt_exists_during_call = prompt_path.exists()
+        if self.prompt_exists_during_call:
+            self.prompt_text_during_call = prompt_path.read_text(encoding="utf-8").strip()
+        self.response_exists_during_call = response_path.exists()
+        return True
 
 
 class _PluginHandler:
@@ -320,6 +340,32 @@ class TestBuiltInHandlers:
         outcome = runner("task", "", Context())
         assert outcome.status == OutcomeStatus.SUCCESS
         assert backend.calls[0][1] == "Label Prompt"
+
+    def test_codergen_handler_writes_prompt_before_backend_and_response_afterward(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, prompt="Plan for $goal"]
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_root = Path(tmp) / "logs"
+            backend = _ArtifactProbeBackend(logs_root)
+            registry = build_default_registry(codergen_backend=backend)
+            runner = HandlerRunner(graph, registry, logs_root=logs_root)
+            ctx = Context(values={"graph.goal": "ship"})
+
+            outcome = runner("task", "Plan for $goal", ctx)
+
+            assert outcome.status == OutcomeStatus.SUCCESS
+            assert backend.prompt_exists_during_call is True
+            assert backend.prompt_text_during_call == "Plan for ship"
+            assert backend.response_exists_during_call is False
+            response_path = logs_root / "task" / "response.md"
+            assert response_path.exists()
+            assert response_path.read_text(encoding="utf-8").strip() == "codergen backend success"
 
     def test_wait_human_uses_interviewer_and_sets_preferred_label(self):
         graph = parse_dot(
