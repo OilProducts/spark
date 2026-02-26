@@ -237,7 +237,7 @@ Status key:
 ## 5. State and Context
 
 ### 5.1 Context
-- [ ] [5.1-01] Implement thread-safe context map with read/write locking semantics.
+- [x] [5.1-01] Implement thread-safe context map with read/write locking semantics.
 - [ ] [5.1-02] Implement context helpers: `set`, `get`, `get_string`, `append_log`, `snapshot`, `clone`, `apply_updates`.
 - [ ] [5.1-03] Seed built-in keys (`outcome`, `preferred_label`, `graph.goal`, etc.) at appropriate lifecycle points.
 - [ ] [5.1-04] Enforce namespace conventions (`context.*`, `graph.*`, `internal.*`, `parallel.*`, `stack.*`, `human.gate.*`, `work.*`).

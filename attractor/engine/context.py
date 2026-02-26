@@ -2,42 +2,87 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import copy
+from contextlib import contextmanager
+import threading
 from typing import Any, Dict
+
+
+class ReadWriteLock:
+    def __init__(self) -> None:
+        self._condition = threading.Condition(threading.Lock())
+        self._readers = 0
+        self._writer_active = False
+        self._waiting_writers = 0
+
+    @contextmanager
+    def read_lock(self):
+        with self._condition:
+            while self._writer_active or self._waiting_writers > 0:
+                self._condition.wait()
+            self._readers += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._readers -= 1
+                if self._readers == 0:
+                    self._condition.notify_all()
+
+    @contextmanager
+    def write_lock(self):
+        with self._condition:
+            self._waiting_writers += 1
+            while self._writer_active or self._readers > 0:
+                self._condition.wait()
+            self._waiting_writers -= 1
+            self._writer_active = True
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._writer_active = False
+                self._condition.notify_all()
 
 
 @dataclass
 class Context:
     values: Dict[str, Any] = field(default_factory=dict)
+    lock: ReadWriteLock = field(default_factory=ReadWriteLock)
 
     def set(self, key: str, value: Any) -> None:
-        self.values[key] = value
+        with self.lock.write_lock():
+            self.values[key] = value
 
     def get(self, key: str, default: Any = "") -> Any:
-        return self.values.get(key, default)
+        with self.lock.read_lock():
+            return self.values.get(key, default)
 
     def merge_updates(self, updates: Dict[str, Any]) -> None:
-        for key, value in updates.items():
-            self.values[key] = copy.deepcopy(value)
+        with self.lock.write_lock():
+            for key, value in updates.items():
+                self.values[key] = copy.deepcopy(value)
 
     def clone(self) -> "Context":
-        return Context(values=copy.deepcopy(self.values))
+        with self.lock.read_lock():
+            return Context(values=copy.deepcopy(self.values))
 
     def get_context_path(self, path: str) -> str:
         # path is expected to be the suffix after "context."
         if path == "":
             return ""
 
-        # Flat key fallback first for keys that themselves contain dots.
-        if path in self.values:
-            return _to_string(self.values[path])
+        with self.lock.read_lock():
+            # Flat key fallback first for keys that themselves contain dots.
+            if path in self.values:
+                return _to_string(self.values[path])
 
-        cur: Any = self.values
-        for part in path.split("."):
-            if isinstance(cur, dict) and part in cur:
-                cur = cur[part]
-            else:
-                return ""
-        return _to_string(cur)
+            cur: Any = self.values
+            for part in path.split("."):
+                if isinstance(cur, dict) and part in cur:
+                    cur = cur[part]
+                else:
+                    return ""
+            return _to_string(cur)
 
 
 def _to_string(value: Any) -> str:
