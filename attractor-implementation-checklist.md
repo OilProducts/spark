@@ -107,7 +107,7 @@ Status key:
 ### 2.12 Class Attribute
 - [x] [2.12-01] Parse comma-separated node classes into normalized class list.
 - [x] [2.12-02] Match `.class` stylesheet selectors against parsed class list.
-- [ ] [2.12-03] Add tests for multiple-class matching and precedence interactions.
+- [x] [2.12-03] Add tests for multiple-class matching and precedence interactions.
 
 ### 2.13 Minimal Examples
 - [ ] [2.13-01] Add parser+validator fixture for simple linear workflow example.

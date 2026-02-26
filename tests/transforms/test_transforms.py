@@ -191,6 +191,49 @@ class TestTransforms:
 
         assert graph.nodes["review"].attrs["llm_model"].value == "gpt-5.2"
 
+    def test_stylesheet_multiple_matching_classes_use_rule_order_for_equal_specificity(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [model_stylesheet=".quality { llm_model: model-quality; llm_provider: provider-quality; } .urgent { llm_model: model-urgent; }"]
+                start [shape=Mdiamond]
+                review [shape=box, class="quality, urgent"]
+                done [shape=Msquare]
+                start -> review -> done
+            }
+            """
+        )
+
+        AttributeDefaultsTransform().apply(graph)
+        ModelStylesheetTransform().apply(graph)
+
+        # Both selectors match; later equal-specificity rule wins for llm_model.
+        assert graph.nodes["review"].attrs["llm_model"].value == "model-urgent"
+        # Unset properties continue to use the best available earlier match.
+        assert graph.nodes["review"].attrs["llm_provider"].value == "provider-quality"
+
+    def test_stylesheet_multiple_matching_classes_still_yield_to_id_specificity(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [
+                    model_stylesheet=".quality { llm_model: model-quality; llm_provider: provider-quality; } .urgent { llm_model: model-urgent; llm_provider: provider-urgent; } #review { llm_provider: provider-review; reasoning_effort: low; }"
+                ]
+                start [shape=Mdiamond]
+                review [shape=box, class="quality, urgent"]
+                done [shape=Msquare]
+                start -> review -> done
+            }
+            """
+        )
+
+        AttributeDefaultsTransform().apply(graph)
+        ModelStylesheetTransform().apply(graph)
+
+        assert graph.nodes["review"].attrs["llm_model"].value == "model-urgent"
+        assert graph.nodes["review"].attrs["llm_provider"].value == "provider-review"
+        assert graph.nodes["review"].attrs["reasoning_effort"].value == "low"
+
     def test_model_attr_precedence_node_then_stylesheet_then_graph_default(self):
         graph = parse_dot(
             """
