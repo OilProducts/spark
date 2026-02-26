@@ -201,7 +201,7 @@ class PipelineExecutor:
                     )
 
                 if self._is_exit_node(current):
-                    gates_ok, failed_gate_node = self._check_goal_gates(ctx)
+                    gates_ok, failed_gate_node = self._check_goal_gates(ctx, completed)
                     if gates_ok:
                         self._finalize_run(
                             current_node=current,
@@ -483,7 +483,7 @@ class PipelineExecutor:
                     )
 
                 if self._is_exit_node(current):
-                    gates_ok, failed_gate_node = self._check_goal_gates(ctx)
+                    gates_ok, failed_gate_node = self._check_goal_gates(ctx, completed)
                     if gates_ok:
                         self._finalize_run(
                             current_node=current,
@@ -1165,12 +1165,15 @@ class PipelineExecutor:
         stored[node_id] = status
         context.set(NODE_OUTCOMES_KEY, stored)
 
-    def _check_goal_gates(self, context: Context) -> Tuple[bool, str]:
+    def _check_goal_gates(self, context: Context, completed_nodes: List[str]) -> Tuple[bool, str]:
         statuses = context.get(NODE_OUTCOMES_KEY, {})
         if not isinstance(statuses, dict):
             statuses = {}
 
+        visited = set(completed_nodes)
         for node_id, status in statuses.items():
+            if node_id not in visited:
+                continue
             node = self.graph.nodes.get(node_id)
             if node is None:
                 continue

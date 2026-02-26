@@ -184,7 +184,7 @@ Status key:
 
 ### 4.4 Exit Handler
 - [x] [4.4-01] Implement no-op exit handler returning SUCCESS.
-- [ ] [4.4-02] Keep goal-gate logic in engine, not exit handler.
+- [x] [4.4-02] Keep goal-gate logic in engine, not exit handler.
 
 ### 4.5 Codergen Handler (LLM Task)
 - [ ] [4.5-01] Build prompt from node prompt/label with `$goal` expansion.

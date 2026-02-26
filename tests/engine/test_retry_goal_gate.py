@@ -622,6 +622,27 @@ class TestRetryAndGoalGate:
         assert result.route_trace == ["start", "implement", "done"]
         assert result.failure_reason == "Goal gate unsatisfied and no retry target"
 
+    def test_goal_gate_check_ignores_unvisited_gate_statuses_seeded_in_context(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box]
+                skipped_gate [shape=box, goal_gate=true]
+                done [shape=Msquare]
+
+                start -> task
+                task -> done
+            }
+            """
+        )
+
+        context = Context(values={"_attractor.node_outcomes": {"skipped_gate": "fail"}})
+        result = PipelineExecutor(graph, lambda *_: Outcome(status=OutcomeStatus.SUCCESS)).run(context)
+
+        assert result.status == "success"
+        assert result.route_trace == ["start", "task", "done"]
+
     def test_run_from_goal_gate_recovery_checkpoints_retry_target_before_stage_execution(self):
         graph = parse_dot(
             """
