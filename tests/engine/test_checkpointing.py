@@ -5,7 +5,7 @@ import tempfile
 import pytest
 
 from attractor.dsl import parse_dot
-from attractor.engine import load_checkpoint
+from attractor.engine import Checkpoint, load_checkpoint, save_checkpoint
 import attractor.engine.executor as executor_module
 from attractor.engine.context import Context
 from attractor.engine.executor import PipelineExecutor
@@ -206,6 +206,51 @@ class TestCheckpointAndArtifacts:
 
             # start executes once; resume continues at plan.
             assert calls == ["start", "plan", "review"]
+
+    def test_resume_from_checkpoint_continues_from_next_node_after_last_completed(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box, prompt="plan"]
+                review [shape=box, prompt="review"]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> review
+                review -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+            calls = []
+
+            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+                calls.append(node_id)
+                return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
+
+            save_checkpoint(
+                checkpoint_file,
+                Checkpoint(
+                    current_node="plan",
+                    completed_nodes=["start", "plan"],
+                    context={"outcome": "success"},
+                ),
+            )
+
+            executor = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+            )
+
+            resumed = executor.run(Context(), resume=True)
+            assert resumed.status == "success"
+            assert resumed.current_node == "done"
+            assert resumed.completed_nodes == ["start", "plan", "review"]
+            assert calls == ["review"]
 
     def test_checkpoint_updates_after_stage_completion_before_routing_error(self):
         graph = parse_dot(

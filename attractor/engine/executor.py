@@ -162,6 +162,12 @@ class PipelineExecutor:
                     restored_context = dict(checkpoint.context)
                     restored_context.update(ctx.values)
                     ctx = Context(values=restored_context)
+                    if current in completed:
+                        resumed_next = self._resolve_resume_next_edge(current, ctx)
+                        if resumed_next is not None:
+                            current = resumed_next.target
+                            incoming_edge = resumed_next
+                            route_trace = [current]
         self._mirror_graph_goal(ctx)
         self._seed_builtin_context(ctx, current)
         self._emit_event("PipelineStarted", current_node=current, resumed=resume)
@@ -1204,6 +1210,39 @@ class PipelineExecutor:
             return _SyntheticEdge(route)
 
         return next_edge
+
+    def _resolve_resume_next_edge(self, node_id: str, context: Context) -> DotEdge | _SyntheticEdge | None:
+        outgoing = [edge for edge in self.graph.edges if edge.source == node_id]
+        if not outgoing:
+            return None
+        status = self._resume_status_for_node(node_id, context)
+        preferred_label = self._context_preferred_label(context)
+        return self._select_route_edge(
+            node_id,
+            outgoing,
+            Outcome(status=status, preferred_label=preferred_label),
+            context,
+        )
+
+    def _resume_status_for_node(self, node_id: str, context: Context) -> OutcomeStatus:
+        stored = context.get(NODE_OUTCOMES_KEY, {})
+        if isinstance(stored, dict):
+            parsed = self._parse_outcome_status(stored.get(node_id, ""))
+            if parsed is not None:
+                return parsed
+        parsed = self._context_outcome_status(context)
+        if parsed is not None:
+            return parsed
+        return OutcomeStatus.SUCCESS
+
+    def _parse_outcome_status(self, value: object) -> OutcomeStatus | None:
+        if isinstance(value, OutcomeStatus):
+            return value
+        text = str(value).strip().lower()
+        try:
+            return OutcomeStatus(text)
+        except ValueError:
+            return None
 
     def _remember_node_outcome(self, context: Context, node_id: str, status: str) -> None:
         stored = context.get(NODE_OUTCOMES_KEY, {})
