@@ -174,3 +174,18 @@ class TestDotParser:
         assert len(graph.edges) == 1
         assert graph.edges[0].source == "a"
         assert graph.edges[0].target == "b"
+
+    def test_chained_edge_trailing_attrs_are_copied_per_edge(self):
+        dot = """
+        digraph G {
+            a -> b -> c [label="next"]
+        }
+        """
+        graph = parse_dot(dot)
+
+        assert len(graph.edges) == 2
+        assert graph.edges[0].attrs["label"].value == "next"
+        assert graph.edges[1].attrs["label"].value == "next"
+
+        graph.edges[0].attrs["label"].value = "changed"
+        assert graph.edges[1].attrs["label"].value == "next"

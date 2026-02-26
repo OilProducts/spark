@@ -46,7 +46,7 @@ Status key:
 
 ### 2.2 BNF-Style Grammar
 - [x] [2.2-01] Implement parser productions for graph statements (`graph/node/edge/subgraph/attr decl`).
-- [ ] [2.2-02] Support chained edge syntax (`A -> B -> C`) with optional trailing attr block.
+- [x] [2.2-02] Support chained edge syntax (`A -> B -> C`) with optional trailing attr block.
 - [ ] [2.2-03] Parse attribute blocks with comma-separated key/value pairs and qualified keys.
 - [ ] [2.2-04] Support value lexing for string/integer/float/boolean/duration.
 - [ ] [2.2-05] Add parser tests for optional semicolons and mixed statement ordering.

@@ -186,7 +186,7 @@ class _Parser:
                     DotEdge(
                         source=src.value,
                         target=dst.value,
-                        attrs=dict(effective),
+                        attrs=_clone_attrs(effective),
                         line=src.line,
                     )
                 )
@@ -398,3 +398,15 @@ def _tokenize(source: str) -> List[Token]:
 
     tokens.append(Token("EOF", "", line))
     return tokens
+
+
+def _clone_attrs(attrs: Dict[str, DotAttribute]) -> Dict[str, DotAttribute]:
+    return {
+        key: DotAttribute(
+            key=attr.key,
+            value=attr.value,
+            value_type=attr.value_type,
+            line=attr.line,
+        )
+        for key, attr in attrs.items()
+    }
