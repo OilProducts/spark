@@ -1035,7 +1035,7 @@ class PipelineExecutor:
         for key in ("retry_target", "fallback_retry_target"):
             attr = node.attrs.get(key)
             if attr:
-                target = str(attr.value)
+                target = str(attr.value).strip()
                 if target in self.graph.nodes:
                     return target
         return ""

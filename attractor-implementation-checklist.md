@@ -157,7 +157,7 @@ Status key:
 - [x] [3.6-04] Implement default retryability predicate by error class/status code.
 
 ### 3.7 Failure Routing
-- [ ] [3.7-02] Fallback to node `retry_target` then `fallback_retry_target`.
+- [x] [3.7-02] Fallback to node `retry_target` then `fallback_retry_target`.
 - [ ] [3.7-03] Terminate with failure reason when no route exists.
 
 ### 3.8 Concurrency Model

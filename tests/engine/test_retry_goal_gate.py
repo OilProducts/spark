@@ -338,6 +338,31 @@ class TestRetryAndGoalGate:
         assert result.status == "success"
         assert result.route_trace == ["start", "task", "fix", "done"]
 
+    def test_failure_routing_prefers_retry_target_over_fallback_retry_target(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, max_retries=0, retry_target=" fix ", fallback_retry_target="fallback"]
+                fix [shape=box]
+                fallback [shape=box]
+                done [shape=Msquare]
+                start -> task
+                fix -> done
+                fallback -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "task":
+                return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+        assert result.status == "success"
+        assert result.route_trace == ["start", "task", "fix", "done"]
+
     def test_failure_routing_prefers_outcome_fail_edge_over_other_true_conditions(self):
         graph = parse_dot(
             """
