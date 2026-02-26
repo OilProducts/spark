@@ -191,7 +191,7 @@ Status key:
 - [x] [4.5-02] Write `prompt.md` before backend call and `response.md` afterward.
 - [x] [4.5-03] Support backend return as text or full `Outcome`.
 - [x] [4.5-04] Serialize `status.json` from final outcome.
-- [ ] [4.5-05] Return simulation response when backend is absent.
+- [x] [4.5-05] Return simulation response when backend is absent.
 
 #### CodergenBackend Interface
 - [ ] [4.5b-01] Define backend interface returning `String | Outcome` for a stage invocation.

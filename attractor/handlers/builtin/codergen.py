@@ -28,11 +28,16 @@ class CodergenHandler:
         _write_stage_file(stage_dir, "prompt.md", prompt)
 
         if self.backend is None:
+            response_text = f"[Simulated] Response for stage: {runtime.node_id}"
             outcome = Outcome(
                 status=OutcomeStatus.SUCCESS,
-                notes="codergen handler completed without backend",
+                notes=f"Stage completed: {runtime.node_id}",
+                context_updates={
+                    "last_stage": runtime.node_id,
+                    "last_response": response_text[:200],
+                },
             )
-            _write_stage_file(stage_dir, "response.md", outcome.notes or "")
+            _write_stage_file(stage_dir, "response.md", response_text)
             _write_status_file(stage_dir, outcome)
             return outcome
 

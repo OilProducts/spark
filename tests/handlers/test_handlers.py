@@ -468,6 +468,32 @@ class TestBuiltInHandlers:
                 "suggested_next_ids": ["followup"],
             }
 
+    def test_codergen_handler_returns_simulation_response_when_backend_absent(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, prompt="Plan for $goal"]
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_root = Path(tmp) / "logs"
+            registry = build_default_registry(codergen_backend=None)
+            runner = HandlerRunner(graph, registry, logs_root=logs_root)
+
+            outcome = runner("task", "Plan for $goal", Context(values={"graph.goal": "ship"}))
+
+            assert outcome.status == OutcomeStatus.SUCCESS
+            assert outcome.notes == "Stage completed: task"
+            assert outcome.context_updates == {
+                "last_response": "[Simulated] Response for stage: task",
+                "last_stage": "task",
+            }
+            response_path = logs_root / "task" / "response.md"
+            assert response_path.exists()
+            assert response_path.read_text(encoding="utf-8").strip() == "[Simulated] Response for stage: task"
+
     def test_wait_human_uses_interviewer_and_sets_preferred_label(self):
         graph = parse_dot(
             """
