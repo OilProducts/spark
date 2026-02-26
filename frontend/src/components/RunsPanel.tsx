@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { RefreshCcw } from 'lucide-react'
+import { Eye, OctagonX, RefreshCcw } from 'lucide-react'
 import { useStore } from '@/store'
 
 interface RunRecord {
@@ -24,12 +24,14 @@ const STATUS_STYLES: Record<string, string> = {
     paused: 'bg-amber-500/15 text-amber-700',
     pause_requested: 'bg-amber-500/15 text-amber-700',
     abort_requested: 'bg-amber-500/15 text-amber-700',
+    cancel_requested: 'bg-amber-500/15 text-amber-700',
     validation_error: 'bg-destructive/15 text-destructive',
 }
 
 const STATUS_LABELS: Record<string, string> = {
     pause_requested: 'Pausing',
     abort_requested: 'Aborting',
+    cancel_requested: 'Canceling',
 }
 
 const formatTimestamp = (value?: string | null) => {
@@ -47,7 +49,7 @@ const formatDuration = (start?: string, end?: string | null, status?: string, no
     if (end) {
         const parsed = Date.parse(end)
         if (Number.isFinite(parsed)) endMs = parsed
-    } else if (status === 'running' || status === 'pause_requested' || status === 'abort_requested') {
+    } else if (status === 'running' || status === 'pause_requested' || status === 'abort_requested' || status === 'cancel_requested') {
         endMs = now ?? Date.now()
     }
     if (endMs === null) return '—'
@@ -64,6 +66,10 @@ const formatDuration = (start?: string, end?: string | null, status?: string, no
 
 export function RunsPanel() {
     const viewMode = useStore((state) => state.viewMode)
+    const selectedRunId = useStore((state) => state.selectedRunId)
+    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
+    const setViewMode = useStore((state) => state.setViewMode)
+    const setActiveFlow = useStore((state) => state.setActiveFlow)
     const [runs, setRuns] = useState<RunRecord[]>([])
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -100,9 +106,30 @@ export function RunsPanel() {
 
     const summary = useMemo(() => {
         const total = runs.length
-        const running = runs.filter((run) => run.status === 'running').length
+        const running = runs.filter((run) => run.status === 'running' || run.status === 'cancel_requested').length
         return { total, running }
     }, [runs])
+
+    const openRun = (run: RunRecord) => {
+        setSelectedRunId(run.run_id)
+        if (run.flow_name) {
+            setActiveFlow(run.flow_name)
+        }
+        setViewMode('execution')
+    }
+
+    const requestCancel = async (runId: string) => {
+        if (!window.confirm('Cancel this run? It will stop after the active node finishes.')) {
+            return
+        }
+        try {
+            await fetch(`/pipelines/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })
+            fetchRuns()
+        } catch (err) {
+            console.error(err)
+            window.alert('Failed to cancel run')
+        }
+    }
 
     return (
         <div className="flex-1 overflow-auto p-6">
@@ -130,7 +157,7 @@ export function RunsPanel() {
                 )}
 
                 <div className="rounded-md border border-border bg-card shadow-sm">
-                    <div className="grid grid-cols-[120px_120px_1.5fr_160px_160px_110px_120px] gap-2 border-b px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <div className="grid grid-cols-[120px_120px_1.5fr_160px_160px_110px_120px_170px] gap-2 border-b px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         <span>Status</span>
                         <span>Result</span>
                         <span>Flow</span>
@@ -138,6 +165,7 @@ export function RunsPanel() {
                         <span>Ended</span>
                         <span>Duration</span>
                         <span>Tokens</span>
+                        <span>Actions</span>
                     </div>
                     {runs.length === 0 ? (
                         <div className="px-4 py-8 text-center text-sm text-muted-foreground">
@@ -148,7 +176,9 @@ export function RunsPanel() {
                             {runs.map((run) => (
                                 <div
                                     key={run.run_id}
-                                    className="grid grid-cols-[120px_120px_1.5fr_160px_160px_110px_120px] gap-2 px-4 py-3 text-sm"
+                                    className={`grid grid-cols-[120px_120px_1.5fr_160px_160px_110px_120px_170px] gap-2 px-4 py-3 text-sm ${
+                                        selectedRunId === run.run_id ? 'bg-muted/40' : ''
+                                    }`}
                                 >
                                     <span
                                         className={`inline-flex h-6 items-center rounded-md px-2 text-[11px] font-semibold uppercase tracking-wide ${
@@ -180,6 +210,23 @@ export function RunsPanel() {
                                     <span className="text-xs text-muted-foreground">
                                         {typeof run.token_usage === 'number' ? run.token_usage.toLocaleString() : '—'}
                                     </span>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => openRun(run)}
+                                            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                                        >
+                                            <Eye className="h-3.5 w-3.5" />
+                                            Open
+                                        </button>
+                                        <button
+                                            onClick={() => requestCancel(run.run_id)}
+                                            disabled={!(run.status === 'running' || run.status === 'cancel_requested')}
+                                            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-destructive px-2 text-[11px] font-semibold text-destructive-foreground hover:bg-destructive/90 disabled:pointer-events-none disabled:opacity-50"
+                                        >
+                                            <OctagonX className="h-3.5 w-3.5" />
+                                            Cancel
+                                        </button>
+                                    </div>
                                 </div>
                             ))}
                         </div>

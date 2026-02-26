@@ -6,9 +6,7 @@ export type DiagnosticSeverity = 'error' | 'warning' | 'info'
 export type RuntimeStatus =
     | 'idle'
     | 'running'
-    | 'paused'
-    | 'pause_requested'
-    | 'abort_requested'
+    | 'cancel_requested'
     | 'aborted'
     | 'failed'
     | 'validation_error'
@@ -21,6 +19,7 @@ export interface HumanGateOption {
 
 export interface HumanGateState {
     id: string
+    runId: string
     nodeId: string
     prompt: string
     options: HumanGateOption[]
@@ -128,6 +127,8 @@ interface AppState {
     setSelectedNodeId: (id: string | null) => void
     selectedEdgeId: string | null
     setSelectedEdgeId: (id: string | null) => void
+    selectedRunId: string | null
+    setSelectedRunId: (id: string | null) => void
 
     logs: LogEntry[]
     addLog: (entry: LogEntry) => void
@@ -176,6 +177,8 @@ export const useStore = create<AppState>((set) => ({
     setSelectedNodeId: (id) => set({ selectedNodeId: id }),
     selectedEdgeId: null,
     setSelectedEdgeId: (id) => set({ selectedEdgeId: id }),
+    selectedRunId: null,
+    setSelectedRunId: (id) => set({ selectedRunId: id }),
 
     logs: [],
     addLog: (entry) => set((state) => ({ logs: [...state.logs, entry] })),

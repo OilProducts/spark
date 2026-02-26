@@ -1,17 +1,14 @@
-import { useState } from "react"
 import { useStore } from "@/store"
 import { Play, Settings2 } from "lucide-react"
 
 export function Navbar() {
-    const { viewMode, setViewMode, activeFlow } = useStore()
+    const { viewMode, setViewMode, activeFlow, setSelectedRunId } = useStore()
     const model = useStore((state) => state.model)
     const workingDir = useStore((state) => state.workingDir)
     const hasValidationErrors = useStore((state) => state.hasValidationErrors)
-    const [isRunning, setIsRunning] = useState(false)
 
     const runPipeline = async () => {
-        if (!activeFlow || isRunning || hasValidationErrors) return
-        setIsRunning(true)
+        if (!activeFlow || hasValidationErrors) return
 
         try {
             const flowRes = await fetch(`/api/flows/${encodeURIComponent(activeFlow)}`)
@@ -20,27 +17,34 @@ export function Navbar() {
             }
 
             const flow = await flowRes.json()
-            const runRes = await fetch('/run', {
+            const runRes = await fetch('/pipelines', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        flow_content: flow.content,
-                        working_directory: workingDir,
-                        backend: 'codex',
-                        model: model.trim() || null,
-                        flow_name: activeFlow,
-                    }),
+                body: JSON.stringify({
+                    flow_content: flow.content,
+                    working_directory: workingDir,
+                    backend: 'codex',
+                    model: model.trim() || null,
+                    flow_name: activeFlow,
+                }),
             })
             if (!runRes.ok) {
                 throw new Error('Run request failed')
+            }
+
+            const runData = await runRes.json()
+            if (runData?.status !== 'started') {
+                const reason = runData?.error || runData?.status || 'Unknown run error'
+                throw new Error(`Run not started: ${reason}`)
+            }
+            if (typeof runData?.pipeline_id === 'string') {
+                setSelectedRunId(runData.pipeline_id)
             }
 
             setViewMode('execution')
         } catch (error) {
             console.error(error)
             window.alert('Failed to start pipeline run. Check backend logs for details.')
-        } finally {
-            setIsRunning(false)
         }
     }
 
@@ -87,12 +91,12 @@ export function Navbar() {
             <div className="flex items-center gap-4">
                 <button
                     onClick={runPipeline}
-                    disabled={!activeFlow || isRunning || hasValidationErrors}
+                    disabled={!activeFlow || hasValidationErrors}
                     title={hasValidationErrors ? 'Fix validation errors before running.' : undefined}
                     className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
                 >
                     <Play className="w-4 h-4" />
-                    {isRunning ? 'Running...' : 'Deploy Flow'}
+                    Execute
                 </button>
             </div>
         </header>

@@ -12,16 +12,44 @@ function classifyLog(message: string): 'info' | 'success' | 'error' {
 
 export function RunStream() {
     const addLog = useStore((state) => state.addLog)
+    const clearLogs = useStore((state) => state.clearLogs)
     const setNodeStatus = useStore((state) => state.setNodeStatus)
     const setHumanGate = useStore((state) => state.setHumanGate)
     const clearHumanGate = useStore((state) => state.clearHumanGate)
     const resetNodeStatuses = useStore((state) => state.resetNodeStatuses)
-    const humanGate = useStore((state) => state.humanGate)
     const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
+    const selectedRunId = useStore((state) => state.selectedRunId)
+    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
+
+    useEffect(() => {
+        resetNodeStatuses()
+        clearHumanGate()
+        clearLogs()
+        if (!selectedRunId) {
+            setRuntimeStatus('idle')
+        }
+    }, [selectedRunId, resetNodeStatuses, clearHumanGate, clearLogs, setRuntimeStatus])
 
     useEffect(() => {
         fetch('/status')
             .then((res) => res.json())
+            .then((data) => {
+                const runId = typeof data?.last_run_id === 'string' ? data.last_run_id : null
+                if (!selectedRunId && runId) {
+                    setSelectedRunId(runId)
+                }
+                if (data?.status && (!selectedRunId || runId === selectedRunId)) {
+                    setRuntimeStatus(data.status)
+                }
+            })
+            .catch(() => null)
+    }, [selectedRunId, setRuntimeStatus, setSelectedRunId])
+
+    useEffect(() => {
+        if (!selectedRunId) return
+
+        fetch(`/pipelines/${encodeURIComponent(selectedRunId)}`)
+            .then((res) => (res.ok ? res.json() : null))
             .then((data) => {
                 if (data?.status) {
                     setRuntimeStatus(data.status)
@@ -29,10 +57,9 @@ export function RunStream() {
             })
             .catch(() => null)
 
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-        const ws = new WebSocket(`${wsProtocol}://${window.location.host}/ws`)
+        const source = new EventSource(`/pipelines/${encodeURIComponent(selectedRunId)}/events`)
 
-        ws.onmessage = (event) => {
+        source.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data)
                 if (data.type === 'log') {
@@ -44,7 +71,8 @@ export function RunStream() {
                 }
                 if (data.type === 'state' && data.node && data.status) {
                     setNodeStatus(data.node, data.status)
-                    if (data.status !== 'waiting' && humanGate?.nodeId === data.node) {
+                    const currentGate = useStore.getState().humanGate
+                    if (data.status !== 'waiting' && currentGate?.nodeId === data.node) {
                         clearHumanGate()
                     }
                 }
@@ -52,6 +80,7 @@ export function RunStream() {
                     setNodeStatus(data.node_id, 'waiting')
                     setHumanGate({
                         id: data.question_id,
+                        runId: selectedRunId,
                         nodeId: data.node_id,
                         prompt: data.prompt,
                         options: data.options || [],
@@ -72,17 +101,9 @@ export function RunStream() {
         }
 
         return () => {
-            ws.close()
+            source.close()
         }
-    }, [
-        addLog,
-        setNodeStatus,
-        setHumanGate,
-        clearHumanGate,
-        resetNodeStatuses,
-        humanGate,
-        setRuntimeStatus,
-    ])
+    }, [selectedRunId, addLog, setNodeStatus, clearHumanGate, resetNodeStatuses, setHumanGate, setRuntimeStatus])
 
     return null
 }

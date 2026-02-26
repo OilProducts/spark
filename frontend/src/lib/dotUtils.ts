@@ -21,8 +21,7 @@ export function generateDot(
     edges: Edge[],
     graphAttrs: GraphAttrs = {}
 ): string {
-    // Strip .dot for graph name
-    const name = flowName.replace('.dot', '');
+    const name = sanitizeGraphId(flowName);
 
     let dot = `digraph ${name} {\n`;
 
@@ -136,6 +135,16 @@ export function generateDot(
 
     dot += `}\n`;
     return dot;
+}
+
+export function sanitizeGraphId(flowName: string): string {
+    const raw = flowName.replace(/\.dot$/i, '');
+    const replaced = raw.replace(/[^A-Za-z0-9_]/g, '_');
+    const normalized = replaced.length > 0 ? replaced : 'flow';
+    if (/^[A-Za-z_]/.test(normalized)) {
+        return normalized;
+    }
+    return `_${normalized}`;
 }
 
 function _formatIntAttr(key: string, value: string | number): string {

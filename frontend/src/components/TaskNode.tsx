@@ -8,6 +8,7 @@ import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility';
 export function TaskNode({ id, data, selected }: NodeProps) {
     const { activeFlow, viewMode } = useStore();
     const humanGate = useStore((state) => state.humanGate);
+    const selectedRunId = useStore((state) => state.selectedRunId);
     const graphAttrs = useStore((state) => state.graphAttrs);
     const nodeDiagnostics = useStore((state) => state.nodeDiagnostics);
     const { setNodes, getEdges } = useReactFlow();
@@ -529,7 +530,8 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                 <button
                                     key={option.value}
                                     onClick={() => {
-                                        fetch('/human/answer', {
+                                        if (!humanGate.runId) return
+                                        fetch(`/pipelines/${encodeURIComponent(humanGate.runId)}/questions/${encodeURIComponent(humanGate.id)}/answer`, {
                                             method: 'POST',
                                             headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify({
@@ -538,6 +540,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                             }),
                                         }).catch(console.error)
                                     }}
+                                    disabled={!humanGate.runId || !selectedRunId}
                                     className="rounded-md border border-amber-200 bg-white px-2 py-1 text-left text-xs font-medium text-amber-900 hover:bg-amber-100"
                                 >
                                     {option.label}

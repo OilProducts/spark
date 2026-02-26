@@ -2,7 +2,7 @@ import { useStore } from "@/store"
 import { FilePlus, Trash2 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
-import { generateDot } from "@/lib/dotUtils"
+import { generateDot, sanitizeGraphId } from "@/lib/dotUtils"
 import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from "@/lib/llmSuggestions"
 import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 
@@ -38,7 +38,7 @@ export function Sidebar() {
 
         // Auto-append .dot if missing
         const fileName = name.endsWith('.dot') ? name : `${name}.dot`;
-        const graphName = fileName.replace('.dot', '');
+        const graphName = sanitizeGraphId(fileName);
 
         const escapeDot = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
         const uiAttrLines = [
