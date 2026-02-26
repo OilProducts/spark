@@ -19,6 +19,7 @@ class ToolHandler:
         timeout = _to_seconds(runtime.node_attrs.get("timeout"))
         try:
             proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+            _write_output_artifact(runtime, proc.stdout)
             if proc.returncode == 0:
                 notes = proc.stdout.strip()
                 return Outcome(
@@ -40,16 +41,19 @@ class ToolHandler:
                 },
             )
         except subprocess.TimeoutExpired as exc:
+            timeout_output = str(exc.stdout or "")
+            _write_output_artifact(runtime, timeout_output)
             reason = str(exc) or "tool command timed out"
             return Outcome(
                 status=OutcomeStatus.FAIL,
                 failure_reason=reason,
                 context_updates={
-                    "tool.output": "",
+                    "tool.output": timeout_output.strip(),
                     "tool.exit_code": -1,
                 },
             )
         except Exception as exc:
+            _write_output_artifact(runtime, "")
             reason = str(exc) or "tool command execution error"
             return Outcome(
                 status=OutcomeStatus.FAIL,
@@ -59,6 +63,17 @@ class ToolHandler:
                     "tool.exit_code": -1,
                 },
             )
+
+
+def _write_output_artifact(runtime: HandlerRuntime, output: str) -> None:
+    if not runtime.logs_root:
+        return
+    try:
+        stage_dir = runtime.logs_root / runtime.node_id
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        (stage_dir / "tool_output.txt").write_text(output, encoding="utf-8")
+    except OSError:
+        return
 
 
 def _to_seconds(attr: Any) -> float | None:

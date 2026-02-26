@@ -754,6 +754,27 @@ class TestBuiltInHandlers:
         outcome = runner("tool_node", "", Context())
         assert outcome.status == OutcomeStatus.SUCCESS
         assert "hello" in outcome.notes
+        assert outcome.context_updates["tool.output"] == "hello"
+        assert outcome.context_updates["tool.exit_code"] == 0
+
+    def test_tool_handler_writes_output_artifact(self, tmp_path):
+        graph = parse_dot(
+            """
+            digraph G {
+                tool_node [shape=parallelogram, tool_command="printf hello"]
+            }
+            """
+        )
+        logs_root = tmp_path / "logs"
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry, logs_root=logs_root)
+
+        outcome = runner("tool_node", "", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        artifact_path = logs_root / "tool_node" / "tool_output.txt"
+        assert artifact_path.exists()
+        assert artifact_path.read_text(encoding="utf-8") == "hello"
 
     def test_tool_handler_fails_when_command_missing(self):
         graph = parse_dot(
@@ -801,7 +822,11 @@ class TestBuiltInHandlers:
         )
 
         def _raise_timeout(command, **kwargs):
-            raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"])
+            raise subprocess.TimeoutExpired(
+                cmd=command,
+                timeout=kwargs["timeout"],
+                output="partial output",
+            )
 
         monkeypatch.setattr("attractor.handlers.builtin.tool.subprocess.run", _raise_timeout)
 
@@ -812,6 +837,8 @@ class TestBuiltInHandlers:
         assert outcome.status == OutcomeStatus.FAIL
         assert "timed out" in (outcome.failure_reason or "")
         assert "sleep 5" in (outcome.failure_reason or "")
+        assert outcome.context_updates["tool.output"] == "partial output"
+        assert outcome.context_updates["tool.exit_code"] == -1
 
     def test_registry_allows_plugin_injection_via_builder(self):
         graph = parse_dot(
