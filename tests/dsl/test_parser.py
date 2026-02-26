@@ -5,6 +5,52 @@ from attractor.dsl.models import DotValueType, Duration
 
 
 class TestDotParser:
+    def test_lexes_all_supported_typed_values(self):
+        dot = """
+        digraph TypedValues {
+            node_a [
+                title="Ship it",
+                max_retries=+3,
+                threshold=+0.75,
+                goal_gate=true,
+                timeout=250ms
+            ]
+        }
+        """
+        graph = parse_dot(dot)
+        attrs = graph.nodes["node_a"].attrs
+
+        assert attrs["title"].value == "Ship it"
+        assert attrs["title"].value_type == DotValueType.STRING
+
+        assert attrs["max_retries"].value == 3
+        assert attrs["max_retries"].value_type == DotValueType.INTEGER
+
+        assert attrs["threshold"].value == pytest.approx(0.75)
+        assert attrs["threshold"].value_type == DotValueType.FLOAT
+
+        assert attrs["goal_gate"].value is True
+        assert attrs["goal_gate"].value_type == DotValueType.BOOLEAN
+
+        timeout = attrs["timeout"]
+        assert timeout.value_type == DotValueType.DURATION
+        assert isinstance(timeout.value, Duration)
+        assert timeout.value.raw == "250ms"
+
+    def test_lexes_float_literals_without_leading_zero(self):
+        dot = """
+        digraph FloatForms {
+            node_a [x=.5, y=-.5]
+        }
+        """
+        graph = parse_dot(dot)
+        attrs = graph.nodes["node_a"].attrs
+
+        assert attrs["x"].value == pytest.approx(0.5)
+        assert attrs["x"].value_type == DotValueType.FLOAT
+        assert attrs["y"].value == pytest.approx(-0.5)
+        assert attrs["y"].value_type == DotValueType.FLOAT
+
     def test_parse_basic_graph_with_typed_attrs_and_chained_edges(self):
         dot = """
         // graph comment

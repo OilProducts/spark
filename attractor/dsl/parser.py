@@ -361,13 +361,23 @@ def _tokenize(source: str) -> List[Token]:
             tokens.append(Token("STRING", "".join(value_chars), start_line))
             continue
 
-        # Number: int/float with optional leading sign
-        if ch.isdigit() or (
-            ch == "-" and i + 1 < n and source[i + 1].isdigit()
-        ):
+        # Number: int/float with optional leading sign.
+        starts_number = ch.isdigit()
+        starts_signed_number = (
+            ch in "+-"
+            and i + 1 < n
+            and (
+                source[i + 1].isdigit()
+                or (source[i + 1] == "." and i + 2 < n and source[i + 2].isdigit())
+            )
+        )
+        starts_leading_dot_float = ch == "." and i + 1 < n and source[i + 1].isdigit()
+
+        if starts_number or starts_signed_number or starts_leading_dot_float:
             start = i
             start_line = line
-            i += 1
+            if source[i] in "+-":
+                i += 1
             while i < n and source[i].isdigit():
                 i += 1
 
