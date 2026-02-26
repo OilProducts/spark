@@ -159,9 +159,10 @@ class PipelineExecutor:
                         for node_id, count in checkpoint.retry_counts.items()
                         if node_id in self.graph.nodes
                     }
-                    restored_context = dict(checkpoint.context)
-                    restored_context.update(ctx.values)
-                    ctx = Context(values=restored_context)
+                    ctx = Context(
+                        values=dict(checkpoint.context),
+                        logs=list(checkpoint.logs),
+                    )
                     if current in completed:
                         resumed_next = self._resolve_resume_next_edge(current, ctx)
                         if resumed_next is not None:

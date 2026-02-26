@@ -252,6 +252,63 @@ class TestCheckpointAndArtifacts:
             assert resumed.completed_nodes == ["start", "plan", "review"]
             assert calls == ["review"]
 
+    def test_resume_restores_retry_counters_and_checkpoint_context_exactly(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                work [shape=box, max_retries=2]
+                done [shape=Msquare]
+
+                start -> work
+                work -> done [condition="outcome=success"]
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+            attempts = {"work": 0}
+            seen_resume_markers: list[str] = []
+
+            save_checkpoint(
+                checkpoint_file,
+                Checkpoint(
+                    current_node="work",
+                    completed_nodes=["start"],
+                    context={
+                        "outcome": "retry",
+                        "preferred_label": "",
+                        "context.resume.marker": "from-checkpoint",
+                    },
+                    retry_counts={"work": 2},
+                ),
+            )
+
+            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+                if node_id == "work":
+                    attempts["work"] += 1
+                    seen_resume_markers.append(str(context.get("context.resume.marker", "")))
+                    return Outcome(status=OutcomeStatus.RETRY, notes="still flaky")
+                return Outcome(status=OutcomeStatus.SUCCESS)
+
+            executor = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+            )
+
+            resumed = executor.run(
+                Context(values={"context.resume.marker": "from-input-context"}),
+                resume=True,
+            )
+
+            assert resumed.status == "fail"
+            assert resumed.current_node == "work"
+            assert attempts["work"] == 1
+            assert seen_resume_markers == ["from-checkpoint"]
+            assert resumed.context["context.resume.marker"] == "from-checkpoint"
+
     def test_checkpoint_updates_after_stage_completion_before_routing_error(self):
         graph = parse_dot(
             """

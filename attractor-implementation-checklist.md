@@ -250,7 +250,7 @@ Status key:
 ### 5.3 Checkpoint
 - [x] [5.3-01] Persist checkpoint JSON with timestamp/current node/completed/retries/context/logs.
 - [x] [5.3-02] Restore checkpoint for resume and continue from correct next node.
-- [ ] [5.3-03] Restore retry counters and context values exactly.
+- [x] [5.3-03] Restore retry counters and context values exactly.
 - [ ] [5.3-04] Implement post-resume fidelity degradation rule for previous `full` stage.
 
 ### 5.4 Context Fidelity
