@@ -327,6 +327,20 @@ class TestDotParser:
         assert graph.edges[0].source == "a"
         assert graph.edges[0].target == "b"
 
+    def test_strips_comments_before_parsing_signed_numeric_literals(self):
+        dot = """
+        digraph G {
+            a [max_retries=-/* keep */3, threshold=./* keep */5]
+        }
+        """
+        graph = parse_dot(dot)
+        attrs = graph.nodes["a"].attrs
+
+        assert attrs["max_retries"].value == -3
+        assert attrs["max_retries"].value_type == DotValueType.INTEGER
+        assert attrs["threshold"].value == pytest.approx(0.5)
+        assert attrs["threshold"].value_type == DotValueType.FLOAT
+
     def test_chained_edge_trailing_attrs_are_copied_per_edge(self):
         dot = """
         digraph G {

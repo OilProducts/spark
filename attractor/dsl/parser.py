@@ -46,7 +46,7 @@ class _Scope:
 
 
 def parse_dot(source: str) -> DotGraph:
-    tokens = _tokenize(source)
+    tokens = _tokenize(_strip_comments(source))
     parser = _Parser(tokens)
     graph = parser.parse_graph()
     while parser.accept("SEMI"):
@@ -446,6 +446,63 @@ def _tokenize(source: str) -> List[Token]:
 
     tokens.append(Token("EOF", "", line))
     return tokens
+
+
+def _strip_comments(source: str) -> str:
+    out: List[str] = []
+    i = 0
+    line = 1
+    n = len(source)
+    in_string = False
+
+    while i < n:
+        ch = source[i]
+
+        if in_string:
+            out.append(ch)
+            if ch == "\\":
+                if i + 1 >= n:
+                    raise DotParseError("unterminated escape sequence", line)
+                out.append(source[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            if ch == "\n":
+                line += 1
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == "/" and i + 1 < n and source[i + 1] == "/":
+            i += 2
+            while i < n and source[i] != "\n":
+                i += 1
+            continue
+
+        if ch == "/" and i + 1 < n and source[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (source[i] == "*" and source[i + 1] == "/"):
+                if source[i] == "\n":
+                    line += 1
+                    out.append("\n")
+                i += 1
+            if i + 1 >= n:
+                raise DotParseError("unterminated block comment", line)
+            i += 2
+            continue
+
+        if ch == "\n":
+            line += 1
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
 
 
 def _clone_attrs(attrs: Dict[str, DotAttribute]) -> Dict[str, DotAttribute]:
