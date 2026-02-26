@@ -45,11 +45,47 @@ class WaitHumanHandler:
         )
 
         answer = self.interviewer.ask(question)
+        if _is_timeout(answer):
+            default_choice = _default_choice(runtime.node_attrs, choices)
+            if default_choice is None:
+                return Outcome(status=OutcomeStatus.RETRY, failure_reason="human gate timeout, no default")
+            return Outcome(
+                status=OutcomeStatus.SUCCESS,
+                preferred_label=default_choice.label,
+                notes="human selection applied",
+            )
+
         selected = _select_choice(answer, choices)
         if selected is None:
             return Outcome(status=OutcomeStatus.FAIL, failure_reason="human skipped interaction")
 
         return Outcome(status=OutcomeStatus.SUCCESS, preferred_label=selected.label, notes="human selection applied")
+
+
+def _is_timeout(answer: Answer) -> bool:
+    if any(value and value.strip() for value in answer.selected_values):
+        return False
+    if answer.text and answer.text.strip():
+        return False
+    return True
+
+
+def _default_choice(node_attrs, choices: list[_Choice]) -> _Choice | None:
+    attr = node_attrs.get("human.default_choice")
+    if not attr:
+        return None
+
+    default_target = str(attr.value).strip()
+    if not default_target:
+        return None
+
+    for choice in choices:
+        if choice.target == default_target:
+            return choice
+    for choice in choices:
+        if choice.target.lower() == default_target.lower():
+            return choice
+    return None
 
 
 def _select_choice(answer: Answer, choices: list[_Choice]) -> _Choice | None:

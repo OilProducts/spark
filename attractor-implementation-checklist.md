@@ -201,7 +201,7 @@ Status key:
 - [x] [4.6-01] Build answer options from outgoing edges (label fallback to target node ID).
 - [x] [4.6-02] Parse accelerator keys from supported label patterns.
 - [x] [4.6-03] Ask interviewer and map answer to selected edge/target.
-- [ ] [4.6-04] Implement timeout/default-choice behavior (`human.default_choice`).
+- [x] [4.6-04] Implement timeout/default-choice behavior (`human.default_choice`).
 - [ ] [4.6-05] Return `suggested_next_ids` + `human.gate.*` context updates.
 
 ### 4.7 Conditional Handler
