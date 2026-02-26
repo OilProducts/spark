@@ -33,6 +33,10 @@ class ManagerLoopHandler:
                 _steer_child(runtime.context, runtime.node_id, cycle)
                 last_steer_at = now
 
+            child_resolution = _resolve_child_status(runtime.context)
+            if child_resolution is not None:
+                return child_resolution
+
             if stop_condition and _stop_condition_met(stop_condition, runtime.context):
                 return Outcome(status=OutcomeStatus.SUCCESS, notes="Stop condition satisfied")
 
@@ -109,6 +113,19 @@ def _stop_condition(attr: DotAttribute | None) -> str:
 def _stop_condition_met(stop_condition: str, context: Context) -> bool:
     probe = Outcome(status=OutcomeStatus.SUCCESS)
     return evaluate_condition(stop_condition, probe, context)
+
+
+def _resolve_child_status(context: Context) -> Outcome | None:
+    child_status = str(context.get("context.stack.child.status", "")).strip().lower()
+    if child_status not in {"completed", "failed"}:
+        return None
+
+    child_outcome = str(context.get("context.stack.child.outcome", "")).strip().lower()
+    if child_outcome == OutcomeStatus.SUCCESS.value:
+        return Outcome(status=OutcomeStatus.SUCCESS, notes="Child completed")
+    if child_status == "failed":
+        return Outcome(status=OutcomeStatus.FAIL, failure_reason="Child failed")
+    return None
 
 
 def _ingest_child_telemetry(context: Context, node_id: str, cycle: int) -> None:

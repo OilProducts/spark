@@ -475,6 +475,68 @@ class TestBuiltInHandlers:
         assert outcome.status == OutcomeStatus.SUCCESS
         assert outcome.notes == "Stop condition satisfied"
 
+    def test_manager_loop_returns_success_when_child_is_completed_with_success(self, monkeypatch):
+        def _fake_sleep(seconds: float) -> None:
+            raise AssertionError(f"unexpected wait call: {seconds}")
+
+        monkeypatch.setattr("attractor.handlers.builtin.manager_loop.time.sleep", _fake_sleep)
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [
+                    shape=house,
+                    manager.poll_interval=25ms,
+                    manager.max_cycles=5,
+                    manager.actions="wait"
+                ]
+            }
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+        context = Context(
+            values={
+                "context.stack.child.status": "completed",
+                "context.stack.child.outcome": "success",
+            }
+        )
+
+        outcome = runner("manager", "", context)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert outcome.notes == "Child completed"
+
+    def test_manager_loop_returns_fail_when_child_status_is_failed(self, monkeypatch):
+        def _fake_sleep(seconds: float) -> None:
+            raise AssertionError(f"unexpected wait call: {seconds}")
+
+        monkeypatch.setattr("attractor.handlers.builtin.manager_loop.time.sleep", _fake_sleep)
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [
+                    shape=house,
+                    manager.poll_interval=25ms,
+                    manager.max_cycles=5,
+                    manager.actions="wait"
+                ]
+            }
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+        context = Context(
+            values={
+                "context.stack.child.status": "failed",
+                "context.stack.child.outcome": "fail",
+            }
+        )
+
+        outcome = runner("manager", "", context)
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == "Child failed"
+
     def test_codergen_handler_calls_backend(self):
         graph = parse_dot(
             """
