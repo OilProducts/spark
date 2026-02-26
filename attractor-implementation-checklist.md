@@ -304,7 +304,7 @@ Status key:
 
 ### 7.2 Built-In Lint Rules
 - [x] [7.2-01] Implement `start_node` rule.
-- [ ] [7.2-02] Implement `terminal_node` rule.
+- [x] [7.2-02] Implement `terminal_node` rule.
 - [ ] [7.2-03] Implement `reachability` rule.
 - [ ] [7.2-04] Implement `edge_target_exists` rule.
 - [ ] [7.2-05] Implement `start_no_incoming` rule.

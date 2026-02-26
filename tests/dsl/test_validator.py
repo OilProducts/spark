@@ -209,3 +209,57 @@ class TestDotValidator:
 
         assert "terminal_node" not in error_rules
         assert "exit_no_outgoing" not in error_rules
+
+    def test_terminal_rule_allows_multiple_terminal_nodes(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            review [shape=box]
+            done [shape=Msquare]
+            archived [shape=Msquare]
+
+            start -> review
+            review -> done
+            review -> archived
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "terminal_node" not in error_rules
+
+    def test_terminal_rule_errors_when_no_terminal_nodes_exist(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            review [shape=box]
+            draft [shape=box]
+
+            start -> review
+            review -> draft
+            draft -> review
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "terminal_node" in error_rules
+
+    def test_terminal_rule_accepts_end_id_without_msquare(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            review [shape=box]
+            end [shape=box]
+
+            start -> review
+            review -> end
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "terminal_node" not in error_rules
