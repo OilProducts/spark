@@ -426,3 +426,19 @@ line2"]
 
         graph.edges[0].attrs["label"].value = "changed"
         assert graph.edges[1].attrs["label"].value == "next"
+
+    def test_chained_edge_trailing_typed_attrs_are_cloned_per_edge(self):
+        dot = """
+        digraph G {
+            a -> b -> c [timeout=5s]
+        }
+        """
+        graph = parse_dot(dot)
+
+        first_timeout = graph.edges[0].attrs["timeout"].value
+        second_timeout = graph.edges[1].attrs["timeout"].value
+
+        assert isinstance(first_timeout, Duration)
+        assert isinstance(second_timeout, Duration)
+        assert first_timeout == second_timeout
+        assert first_timeout is not second_timeout

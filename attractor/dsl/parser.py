@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 import re
 from typing import Dict, List, Optional
@@ -509,7 +510,7 @@ def _clone_attrs(attrs: Dict[str, DotAttribute]) -> Dict[str, DotAttribute]:
     return {
         key: DotAttribute(
             key=attr.key,
-            value=attr.value,
+            value=copy.deepcopy(attr.value),
             value_type=attr.value_type,
             line=attr.line,
         )

@@ -93,7 +93,7 @@ Status key:
 - [x] [2.8-03] Add mapping coverage tests for all listed shapes (`Mdiamond`, `Msquare`, `box`, `hexagon`, `diamond`, `component`, `tripleoctagon`, `parallelogram`, `house`).
 
 ### 2.9 Chained Edges
-- [ ] [2.9-02] Apply shared edge attr block to each expanded edge.
+- [x] [2.9-02] Apply shared edge attr block to each expanded edge.
 - [ ] [2.9-03] Add parser normalization test for chain equivalence.
 
 ### 2.10 Subgraphs
