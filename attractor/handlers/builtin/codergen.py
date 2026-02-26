@@ -35,13 +35,22 @@ class CodergenHandler:
             return outcome
 
         timeout = _to_seconds(runtime.node_attrs.get("timeout"))
-        ok = self.backend.run(runtime.node_id, prompt, runtime.context, timeout=timeout)
+        result = self.backend.run(runtime.node_id, prompt, runtime.context, timeout=timeout)
         outcome: Outcome
-        if ok:
+        response_text: str
+        if isinstance(result, Outcome):
+            outcome = result
+            response_text = outcome.notes or outcome.failure_reason or ""
+        elif isinstance(result, str):
+            response_text = result
             outcome = Outcome(status=OutcomeStatus.SUCCESS, notes="codergen backend success")
+        elif result:
+            outcome = Outcome(status=OutcomeStatus.SUCCESS, notes="codergen backend success")
+            response_text = outcome.notes
         else:
             outcome = Outcome(status=OutcomeStatus.FAIL, failure_reason="codergen backend failure")
-        _write_stage_file(stage_dir, "response.md", outcome.notes or outcome.failure_reason or "")
+            response_text = outcome.failure_reason
+        _write_stage_file(stage_dir, "response.md", response_text)
         return outcome
 
 

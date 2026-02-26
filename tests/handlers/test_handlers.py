@@ -45,6 +45,24 @@ class _ArtifactProbeBackend:
         return True
 
 
+class _TextBackend:
+    def __init__(self, text: str):
+        self.text = text
+
+    def run(self, node_id: str, prompt: str, context: Context, *, timeout=None) -> str:
+        del node_id, prompt, context, timeout
+        return self.text
+
+
+class _OutcomeBackend:
+    def __init__(self, outcome: Outcome):
+        self.outcome = outcome
+
+    def run(self, node_id: str, prompt: str, context: Context, *, timeout=None) -> Outcome:
+        del node_id, prompt, context, timeout
+        return self.outcome
+
+
 class _PluginHandler:
     def run(self, runtime):
         return Outcome(status=OutcomeStatus.SUCCESS, notes=f"plugin:{runtime.node_id}")
@@ -366,6 +384,54 @@ class TestBuiltInHandlers:
             response_path = logs_root / "task" / "response.md"
             assert response_path.exists()
             assert response_path.read_text(encoding="utf-8").strip() == "codergen backend success"
+
+    def test_codergen_handler_supports_backend_text_response(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, prompt="Plan for $goal"]
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_root = Path(tmp) / "logs"
+            backend = _TextBackend("backend text response")
+            registry = build_default_registry(codergen_backend=backend)
+            runner = HandlerRunner(graph, registry, logs_root=logs_root)
+
+            outcome = runner("task", "Plan for $goal", Context(values={"graph.goal": "ship"}))
+
+            assert outcome.status == OutcomeStatus.SUCCESS
+            response_path = logs_root / "task" / "response.md"
+            assert response_path.exists()
+            assert response_path.read_text(encoding="utf-8").strip() == "backend text response"
+
+    def test_codergen_handler_supports_backend_outcome_response(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, prompt="Plan for $goal"]
+            }
+            """
+        )
+
+        backend_outcome = Outcome(
+            status=OutcomeStatus.RETRY,
+            notes="please retry",
+            suggested_next_ids=["fallback_stage"],
+            context_updates={"work.last": "task"},
+        )
+        registry = build_default_registry(codergen_backend=_OutcomeBackend(backend_outcome))
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "Plan for $goal", Context(values={"graph.goal": "ship"}))
+
+        assert outcome is backend_outcome
+        assert outcome.status == OutcomeStatus.RETRY
+        assert outcome.notes == "please retry"
+        assert outcome.suggested_next_ids == ["fallback_stage"]
+        assert outcome.context_updates == {"work.last": "task"}
 
     def test_wait_human_uses_interviewer_and_sets_preferred_label(self):
         graph = parse_dot(
