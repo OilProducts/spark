@@ -15,7 +15,7 @@ Status key:
 
 ### 1.1 Problem Statement
 - [x] [1.1-01] Implement at least one reference workflow that chains multiple LLM stages with conditions, human approval, and parallel execution.
-- [ ] [1.1-02] Verify workflows are defined as graph structure (nodes/edges/attrs), not imperative control flow code.
+- [x] [1.1-02] Verify workflows are defined as graph structure (nodes/edges/attrs), not imperative control flow code.
 - [ ] [1.1-03] Add a deterministic replay test proving identical routing given identical outcomes/context.
 
 ### 1.2 Why DOT Syntax

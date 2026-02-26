@@ -41,6 +41,22 @@ class TestDotValidator:
         assert "start_no_incoming" in rule_ids
         assert "exit_no_outgoing" in rule_ids
 
+    def test_non_exit_nodes_must_have_outgoing_edges(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            stuck [shape=box]
+            done [shape=Msquare]
+
+            start -> stuck
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        rule_ids = {d.rule_id for d in diagnostics}
+
+        assert "node_has_outgoing_edge" in rule_ids
+
     def test_condition_and_stylesheet_syntax(self):
         dot = """
         digraph G {

@@ -129,6 +129,21 @@ def validate_graph(graph: DotGraph) -> List[Diagnostic]:
                 )
             )
 
+    exit_node_ids = {node.node_id for node in exit_nodes}
+    for node in graph.nodes.values():
+        if node.node_id in exit_node_ids:
+            continue
+        if out_degree.get(node.node_id, 0) == 0:
+            diagnostics.append(
+                Diagnostic(
+                    rule_id="node_has_outgoing_edge",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"node '{node.node_id}' must declare at least one outgoing edge",
+                    line=node.line,
+                    node_id=node.node_id,
+                )
+            )
+
     if len(start_nodes) == 1:
         reachable = _reachable_nodes(graph, start_nodes[0].node_id)
         for node_id, node in graph.nodes.items():
