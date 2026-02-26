@@ -119,7 +119,7 @@ Status key:
 ## 3. Pipeline Execution Engine
 
 ### 3.1 Run Lifecycle
-- [ ] [3.1-01] Implement lifecycle phases: `PARSE -> VALIDATE -> INITIALIZE -> EXECUTE -> FINALIZE`.
+- [x] [3.1-01] Implement lifecycle phases: `PARSE -> VALIDATE -> INITIALIZE -> EXECUTE -> FINALIZE`.
 - [ ] [3.1-02] In initialize, create run directory, seed context/checkpoint, apply transforms.
 - [ ] [3.1-03] In finalize, persist final checkpoint and completion events, then clean resources.
 

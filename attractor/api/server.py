@@ -311,6 +311,7 @@ class RunRecord:
 
 RUN_HISTORY_LOCK = threading.Lock()
 RUNS_ROOT = PROJECT_ROOT / ".attractor" / "runs"
+PIPELINE_LIFECYCLE_PHASES = ("PARSE", "VALIDATE", "INITIALIZE", "EXECUTE", "FINALIZE")
 
 
 def _run_root(run_id: str) -> Path:
@@ -444,6 +445,10 @@ async def _publish_run_event(run_id: str, message: dict) -> None:
         _append_run_log(run_id, str(payload.get("msg", "")))
     await manager.broadcast(payload)
     await EVENT_HUB.publish(run_id, payload)
+
+
+async def _publish_lifecycle_phase(run_id: str, phase: str) -> None:
+    await _publish_run_event(run_id, {"type": "lifecycle", "phase": phase})
 
 
 def _set_active_run_status(run_id: str, status: str, *, last_error: Optional[str] = None) -> None:
@@ -1080,6 +1085,8 @@ async def preview_pipeline(req: PreviewRequest):
 
 
 async def _start_pipeline(req: PipelineStartRequest) -> dict:
+    run_id = uuid.uuid4().hex
+    await _publish_lifecycle_phase(run_id, PIPELINE_LIFECYCLE_PHASES[0])
     try:
         graph = parse_dot(req.flow_content)
     except DotParseError as exc:
@@ -1100,6 +1107,7 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
             "errors": [parse_diag],
         }
 
+    await _publish_lifecycle_phase(run_id, PIPELINE_LIFECYCLE_PHASES[1])
     diagnostics = validate_graph(graph)
     errors = [d for d in diagnostics if d.severity == DiagnosticSeverity.ERROR]
     if errors:
@@ -1111,6 +1119,7 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
             "errors": [_diagnostic_payload(d) for d in errors],
         }
 
+    await _publish_lifecycle_phase(run_id, PIPELINE_LIFECYCLE_PHASES[2])
     pipeline = TransformPipeline()
     pipeline.register(GoalVariableTransform())
     pipeline.register(ModelStylesheetTransform())
@@ -1121,7 +1130,6 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
     selected_model = (req.model or "").strip()
     flow_name = (req.flow_name or "").strip()
     display_model = selected_model or "codex default (config/profile)"
-    run_id = uuid.uuid4().hex
 
     await _publish_run_event(
         run_id,
@@ -1215,6 +1223,7 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
 
     async def _run():
         try:
+            await _publish_lifecycle_phase(run_id, PIPELINE_LIFECYCLE_PHASES[3])
             active = _get_active_run(run_id)
             control = active.control if active else ExecutionControl()
             executor = PipelineExecutor(
@@ -1247,6 +1256,7 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
             _record_run_end(run_id, working_dir, "failed", str(exc))
             await _publish_run_event(run_id, {"type": "log", "msg": f"⚠️ Pipeline Failed: {exc}"})
         finally:
+            await _publish_lifecycle_phase(run_id, PIPELINE_LIFECYCLE_PHASES[4])
             _pop_active_run(run_id)
 
     asyncio.create_task(_run())
