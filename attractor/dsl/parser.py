@@ -46,6 +46,13 @@ class _Scope:
         )
 
 
+@dataclass
+class _SubgraphState:
+    node_ids: set[str] = field(default_factory=set)
+    label_value: Optional[object] = None
+    label_line: int = 0
+
+
 def parse_dot(source: str) -> DotGraph:
     tokens = _tokenize(_strip_comments(source))
     parser = _Parser(tokens)
@@ -133,13 +140,20 @@ class _Parser:
                 pass
             if self.accept("RBRACE"):
                 break
-            self.parse_statement(graph, scope, in_subgraph=False)
+            self.parse_statement(graph, scope, in_subgraph=False, subgraph_state=None)
             while self.accept("SEMI"):
                 pass
 
         return graph
 
-    def parse_statement(self, graph: DotGraph, scope: _Scope, *, in_subgraph: bool) -> None:
+    def parse_statement(
+        self,
+        graph: DotGraph,
+        scope: _Scope,
+        *,
+        in_subgraph: bool,
+        subgraph_state: Optional[_SubgraphState],
+    ) -> None:
         tok = self.current()
 
         if tok.kind == "IDENT" and tok.value == "subgraph":
@@ -149,14 +163,25 @@ class _Parser:
                 self.advance()
             self.expect("LBRACE")
             child_scope = scope.child()
+            child_subgraph = _SubgraphState()
             while True:
                 while self.accept("SEMI"):
                     pass
                 if self.accept("RBRACE"):
                     break
-                self.parse_statement(graph, child_scope, in_subgraph=True)
+                self.parse_statement(graph, child_scope, in_subgraph=True, subgraph_state=child_subgraph)
                 while self.accept("SEMI"):
                     pass
+
+            derived_class = _derive_subgraph_class(child_subgraph.label_value)
+            if derived_class:
+                for node_id in child_subgraph.node_ids:
+                    node = graph.nodes.get(node_id)
+                    if node:
+                        _append_class(node, derived_class, child_subgraph.label_line)
+
+            if subgraph_state is not None:
+                subgraph_state.node_ids.update(child_subgraph.node_ids)
             return
 
         if tok.kind == "IDENT" and tok.value == "graph" and self.peek().kind == "LBRACKET":
@@ -164,6 +189,10 @@ class _Parser:
             attrs = self.parse_attr_block()
             if not in_subgraph:
                 graph.graph_attrs.update(attrs)
+            elif subgraph_state is not None and "label" in attrs:
+                label_attr = attrs["label"]
+                subgraph_state.label_value = label_attr.value
+                subgraph_state.label_line = label_attr.line
             return
 
         if tok.kind == "IDENT" and tok.value == "node" and self.peek().kind == "LBRACKET":
@@ -187,15 +216,24 @@ class _Parser:
                     value_type=value_type,
                     line=line,
                 )
+            elif subgraph_state is not None and key_tok.value == "label":
+                subgraph_state.label_value = value
+                subgraph_state.label_line = line
             return
 
         if tok.kind == "IDENT":
-            self.parse_node_or_edge(graph, scope)
+            self.parse_node_or_edge(graph, scope, subgraph_state=subgraph_state)
             return
 
         raise DotParseError(f"unexpected token {tok.kind}:{tok.value}", tok.line)
 
-    def parse_node_or_edge(self, graph: DotGraph, scope: _Scope) -> None:
+    def parse_node_or_edge(
+        self,
+        graph: DotGraph,
+        scope: _Scope,
+        *,
+        subgraph_state: Optional[_SubgraphState],
+    ) -> None:
         first = self.expect("IDENT")
         self._validate_node_id(first)
 
@@ -235,9 +273,13 @@ class _Parser:
             merged = dict(existing.attrs)
             merged.update(effective)
             existing.attrs = merged
+            if subgraph_state is not None:
+                subgraph_state.node_ids.add(first.value)
             return
 
         graph.nodes[first.value] = DotNode(node_id=first.value, attrs=effective, line=first.line)
+        if subgraph_state is not None:
+            subgraph_state.node_ids.add(first.value)
 
     def parse_attr_block(self) -> Dict[str, DotAttribute]:
         self.expect("LBRACKET")
@@ -536,3 +578,30 @@ def _clone_attrs(attrs: Dict[str, DotAttribute]) -> Dict[str, DotAttribute]:
         )
         for key, attr in attrs.items()
     }
+
+
+def _derive_subgraph_class(label_value: Optional[object]) -> str:
+    if label_value is None:
+        return ""
+    normalized = re.sub(r"\s+", "-", str(label_value).strip().lower())
+    normalized = re.sub(r"[^a-z0-9-]", "", normalized)
+    normalized = re.sub(r"-{2,}", "-", normalized)
+    return normalized.strip("-")
+
+
+def _append_class(node: DotNode, class_name: str, line: int) -> None:
+    existing_attr = node.attrs.get("class")
+    if existing_attr is None:
+        node.attrs["class"] = DotAttribute(
+            key="class",
+            value=class_name,
+            value_type=DotValueType.STRING,
+            line=line or node.line,
+        )
+        return
+
+    classes = [c.strip() for c in str(existing_attr.value).split(",") if c.strip()]
+    if class_name in classes:
+        return
+    existing_attr.value = ",".join(classes + [class_name])
+    existing_attr.value_type = DotValueType.STRING

@@ -236,6 +236,21 @@ line2"]
         graph = parse_dot(dot)
         assert graph.graph_attrs["label"].value == "Top Level"
 
+    def test_derives_subgraph_label_class_for_enclosed_nodes(self):
+        dot = """
+        digraph ScopedClass {
+            subgraph cluster_loop {
+                label="Loop A! #1"
+                plan [prompt="p"]
+                review [prompt="r", class="critical"]
+            }
+        }
+        """
+        graph = parse_dot(dot)
+
+        assert graph.nodes["plan"].attrs["class"].value == "loop-a-1"
+        assert graph.nodes["review"].attrs["class"].value == "critical,loop-a-1"
+
     def test_reject_undirected_edges(self):
         dot = """
         digraph Bad {
