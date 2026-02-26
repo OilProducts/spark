@@ -53,7 +53,7 @@ Status key:
 
 ### 2.3 Key Constraints
 - [x] [2.3-01] Reject multiple graphs, undirected graphs, and `strict` graphs.
-- [ ] [2.3-02] Enforce node ID regex `[A-Za-z_][A-Za-z0-9_]*`.
+- [x] [2.3-02] Enforce node ID regex `[A-Za-z_][A-Za-z0-9_]*`.
 - [ ] [2.3-03] Enforce comma separation inside attr blocks.
 - [ ] [2.3-04] Strip `//` and `/* */` comments before parse.
 - [ ] [2.3-05] Accept optional statement semicolons.

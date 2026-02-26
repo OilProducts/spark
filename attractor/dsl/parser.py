@@ -324,6 +324,27 @@ def _tokenize(source: str) -> List[Token]:
         if ch == "-" and i + 1 < n and source[i + 1] == "-":
             raise DotParseError("undirected edges ('--') are not supported", line)
 
+        if (
+            ch == "-"
+            and i + 1 < n
+            and (source[i + 1].isalpha() or source[i + 1] == "_")
+            and tokens
+            and tokens[-1].kind == "IDENT"
+            and (len(tokens) == 1 or tokens[-2].kind in {"LBRACE", "SEMI", "ARROW", "RBRACE"})
+        ):
+            j = i + 1
+            while j < n and (source[j].isalnum() or source[j] in "_-"):
+                j += 1
+            k = j
+            while k < n and source[k] in " \t\r":
+                k += 1
+            if k >= n or source[k] != "=":
+                invalid_id = f"{tokens[-1].value}-{source[i + 1:j]}"
+                raise DotParseError(
+                    f"invalid node id '{invalid_id}', must match [A-Za-z_][A-Za-z0-9_]*",
+                    line,
+                )
+
         punct = {
             "{": "LBRACE",
             "}": "RBRACE",

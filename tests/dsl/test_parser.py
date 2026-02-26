@@ -180,7 +180,10 @@ class TestDotParser:
             bad-id [prompt="x"]
         }
         """
-        with pytest.raises(DotParseError):
+        with pytest.raises(
+            DotParseError,
+            match=r"invalid node id 'bad-id', must match \[A-Za-z_\]\[A-Za-z0-9_\]\*",
+        ):
             parse_dot(dot)
 
     def test_requires_commas_between_attributes(self):
