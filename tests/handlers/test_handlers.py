@@ -1,11 +1,14 @@
 import time
 
+import pytest
+
 from attractor.dsl import parse_dot
 from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome
 from attractor.engine.outcome import OutcomeStatus
 from attractor.handlers.base import CodergenBackend
 from attractor.handlers import HandlerRunner, build_default_registry
+from attractor.handlers.registry import SHAPE_TO_TYPE
 from attractor.interviewer import Answer, Interviewer, Question
 
 
@@ -66,6 +69,34 @@ class TestBuiltInHandlers:
         assert registry.resolve_handler_type(graph.nodes["start"]) == "start"
         assert registry.resolve_handler_type(graph.nodes["human"]) == "wait.human"
         assert registry.resolve_handler_type(graph.nodes["custom"]) == "tool"
+
+    @pytest.mark.parametrize(
+        ("shape", "expected_handler_type"),
+        [
+            ("Mdiamond", "start"),
+            ("Msquare", "exit"),
+            ("box", "codergen"),
+            ("hexagon", "wait.human"),
+            ("diamond", "conditional"),
+            ("component", "parallel"),
+            ("tripleoctagon", "parallel.fan_in"),
+            ("parallelogram", "tool"),
+            ("house", "stack.manager_loop"),
+        ],
+    )
+    def test_registry_shape_mapping_covers_all_spec_shapes(self, shape, expected_handler_type):
+        graph = parse_dot(
+            f"""
+            digraph G {{
+                stage [shape={shape}]
+            }}
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+
+        assert SHAPE_TO_TYPE[shape] == expected_handler_type
+        assert registry.resolve_handler_type(graph.nodes["stage"]) == expected_handler_type
+        assert expected_handler_type in registry.handlers
 
     def test_house_shape_resolves_and_executes_with_default_registry(self):
         graph = parse_dot(

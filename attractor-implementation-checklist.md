@@ -90,7 +90,7 @@ Status key:
 
 ### 2.8 Shape-to-Handler-Type Mapping
 - [x] [2.8-01] Implement canonical shape->type mapping exactly as specified.
-- [ ] [2.8-03] Add mapping coverage tests for all listed shapes (`Mdiamond`, `Msquare`, `box`, `hexagon`, `diamond`, `component`, `tripleoctagon`, `parallelogram`, `house`).
+- [x] [2.8-03] Add mapping coverage tests for all listed shapes (`Mdiamond`, `Msquare`, `box`, `hexagon`, `diamond`, `component`, `tripleoctagon`, `parallelogram`, `house`).
 
 ### 2.9 Chained Edges
 - [ ] [2.9-01] Expand chained declarations into pairwise edges.
