@@ -17,6 +17,7 @@ RunnerFn = Callable[[str, str, Context], Outcome]
 ControlFn = Callable[[], Optional[str]]
 EventFn = Callable[[Dict[str, object]], None]
 NODE_OUTCOMES_KEY = "_attractor.node_outcomes"
+RUNTIME_FIDELITY_KEY = "_attractor.runtime.fidelity"
 
 
 @dataclass
@@ -62,6 +63,7 @@ class PipelineExecutor:
         retry_counts: Dict[str, int] = {}
 
         current = self._resolve_start_node()
+        incoming_edge: object | None = None
         route_trace: List[str] = [current]
         if resume and self.checkpoint_path:
             checkpoint = load_checkpoint(self.checkpoint_path)
@@ -141,6 +143,7 @@ class PipelineExecutor:
                 retry_target = self._resolve_goal_gate_retry_target(failed_gate_node)
                 if retry_target:
                     current = retry_target
+                    incoming_edge = None
                     route_trace.append(current)
                     self._save_checkpoint(
                         current_node=current,
@@ -161,6 +164,7 @@ class PipelineExecutor:
                 )
 
             node = self.graph.nodes[current]
+            ctx.set(RUNTIME_FIDELITY_KEY, self._resolve_runtime_fidelity(node.node_id, incoming_edge))
             prior_status = self._context_outcome_status(ctx)
             prompt = self._prompt_for_node(node.node_id)
             self._emit_event("StageStarted", node_id=node.node_id, index=len(completed))
@@ -237,6 +241,7 @@ class PipelineExecutor:
                 raise RuntimeError(message)
 
             current = next_edge.target
+            incoming_edge = next_edge
             route_trace.append(current)
             self._save_checkpoint(
                 current_node=current,
@@ -271,6 +276,7 @@ class PipelineExecutor:
         outcomes: Dict[str, Outcome] = {}
         retry_counts: Dict[str, int] = {}
         current = start_node
+        incoming_edge: object | None = None
         route_trace: List[str] = [current]
         steps = 0
         stop_nodes = set(stop_nodes or [])
@@ -323,6 +329,7 @@ class PipelineExecutor:
                 )
 
             node = self.graph.nodes[current]
+            ctx.set(RUNTIME_FIDELITY_KEY, self._resolve_runtime_fidelity(node.node_id, incoming_edge))
             prior_status = self._context_outcome_status(ctx)
             prompt = self._prompt_for_node(node.node_id)
             self._emit_event("StageStarted", node_id=node.node_id, index=len(completed))
@@ -388,6 +395,7 @@ class PipelineExecutor:
                 )
 
             current = next_edge.target
+            incoming_edge = next_edge
             route_trace.append(current)
 
             steps += 1
@@ -536,6 +544,21 @@ class PipelineExecutor:
         goal_attr = self.graph.graph_attrs.get("goal")
         context.set("graph.goal", str(goal_attr.value) if goal_attr else "")
 
+    def _resolve_runtime_fidelity(self, node_id: str, incoming_edge: object | None) -> str:
+        edge_fidelity = _edge_attr_text(incoming_edge, "fidelity")
+        if edge_fidelity:
+            return edge_fidelity
+
+        node_attr = self.graph.nodes[node_id].attrs.get("fidelity")
+        if node_attr and str(node_attr.value).strip():
+            return str(node_attr.value).strip()
+
+        graph_attr = self.graph.graph_attrs.get("default_fidelity")
+        if graph_attr and str(graph_attr.value).strip():
+            return str(graph_attr.value).strip()
+
+        return "compact"
+
     def _max_retries_for_node(self, node_id: str) -> int:
         node = self.graph.nodes[node_id]
         node_attr = node.attrs.get("max_retries")
@@ -646,3 +669,15 @@ def _to_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() == "true"
+
+
+def _edge_attr_text(edge: object | None, key: str) -> str:
+    if edge is None:
+        return ""
+    attrs = getattr(edge, "attrs", None)
+    if not isinstance(attrs, dict):
+        return ""
+    attr = attrs.get(key)
+    if not attr:
+        return ""
+    return str(attr.value).strip()

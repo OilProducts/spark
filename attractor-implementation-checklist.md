@@ -68,7 +68,7 @@ Status key:
 - [x] [2.5-03] Parse and validate `model_stylesheet` text.
 - [x] [2.5-04] Apply `default_max_retry` fallback for nodes without `max_retries`.
 - [x] [2.5-05] Implement graph-level `retry_target` and `fallback_retry_target` for goal-gate recovery.
-- [ ] [2.5-06] Implement `default_fidelity` fallback in fidelity resolution.
+- [x] [2.5-06] Implement `default_fidelity` fallback in fidelity resolution.
 
 ### 2.6 Node Attributes
 - [ ] [2.6-01] Support and persist all node attrs from spec table.

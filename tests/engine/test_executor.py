@@ -7,6 +7,30 @@ from attractor.engine.outcome import Outcome, OutcomeStatus
 
 
 class TestExecutor:
+    def test_executor_resolves_runtime_fidelity_from_graph_default(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [default_fidelity="summary:medium"]
+                start [shape=Mdiamond]
+                work [shape=box]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+        seen_fidelity: list[str] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            seen_fidelity.append(str(context.get("_attractor.runtime.fidelity", "")))
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert seen_fidelity == ["summary:medium", "summary:medium"]
+
     def test_executor_mirrors_graph_goal_into_context(self):
         graph = parse_dot(
             """
