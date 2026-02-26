@@ -201,6 +201,26 @@ class TestBuiltInHandlers:
         assert backend.calls[0][1] == "Use default"
 
     @pytest.mark.parametrize(
+        ("node_attrs", "expected_handler_type"),
+        [
+            ('shape=box, type="tool", tool_command="printf hi"', "tool"),
+            ('shape=" hexagon "', "wait.human"),
+            ('shape="unknown"', "codergen"),
+        ],
+    )
+    def test_registry_resolution_precedence_levels(self, node_attrs, expected_handler_type):
+        graph = parse_dot(
+            f"""
+            digraph G {{
+                stage [{node_attrs}]
+            }}
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+
+        assert registry.resolve_handler_type(graph.nodes["stage"]) == expected_handler_type
+
+    @pytest.mark.parametrize(
         ("shape", "expected_handler_type"),
         [
             ("Mdiamond", "start"),

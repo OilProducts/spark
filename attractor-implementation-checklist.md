@@ -176,7 +176,7 @@ Status key:
 
 ### 4.2 Handler Registry
 - [x] [4.2-02] Implement resolution order: explicit node type -> shape map -> default handler.
-- [ ] [4.2-03] Add resolution tests for each precedence level.
+- [x] [4.2-03] Add resolution tests for each precedence level.
 
 ### 4.3 Start Handler
 - [ ] [4.3-01] Implement no-op start handler returning SUCCESS.

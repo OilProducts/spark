@@ -43,7 +43,7 @@ class HandlerRegistry:
 
         shape = node.attrs.get("shape")
         if shape:
-            mapped = SHAPE_TO_TYPE.get(str(shape.value), None)
+            mapped = SHAPE_TO_TYPE.get(str(shape.value).strip(), None)
             if mapped and mapped in self.handlers:
                 return mapped
 
