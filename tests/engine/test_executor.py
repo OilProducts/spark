@@ -232,7 +232,7 @@ class TestExecutor:
         assert result.status == "success"
         assert seen_fidelity == ["summary:medium", "full"]
 
-    def test_executor_edge_thread_id_overrides_target_node_thread_id(self):
+    def test_executor_target_node_thread_id_overrides_edge_thread_id(self):
         graph = parse_dot(
             """
             digraph G {
@@ -254,7 +254,60 @@ class TestExecutor:
         result = PipelineExecutor(graph, runner).run(Context())
 
         assert result.status == "success"
-        assert seen_thread_ids == ["start", "edge-thread"]
+        assert seen_thread_ids == ["start", "work-thread"]
+
+    def test_executor_uses_graph_thread_id_when_full_fidelity_has_no_node_or_edge_thread_id(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [default_fidelity="full", thread_id="graph-thread"]
+                start [shape=Mdiamond]
+                work [shape=box]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+        seen_thread_ids: list[str] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            seen_thread_ids.append(str(context.get("_attractor.runtime.thread_id", "")))
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert seen_thread_ids == ["graph-thread", "graph-thread"]
+
+    def test_executor_uses_subgraph_derived_class_for_full_fidelity_thread_fallback(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [default_fidelity="full"]
+                start [shape=Mdiamond]
+                done [shape=Msquare]
+
+                subgraph cluster_loop {
+                    graph [label="Loop A"]
+                    work [shape=box]
+                }
+
+                start -> work
+                work -> done
+            }
+            """
+        )
+        seen_thread_ids: list[str] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            seen_thread_ids.append(str(context.get("_attractor.runtime.thread_id", "")))
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert seen_thread_ids == ["start", "loop-a"]
 
     @pytest.mark.parametrize(
         ("mode", "expected_snippet"),

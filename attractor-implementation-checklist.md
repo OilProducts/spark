@@ -255,8 +255,7 @@ Status key:
 
 ### 5.4 Context Fidelity
 - [x] [5.4-01] Implement supported fidelity modes (`full`, `truncate`, `compact`, `summary:low`, `summary:medium`, `summary:high`).
-- [ ] [5.4-02] Implement fidelity precedence: edge -> target node -> graph default -> `compact`.
-- [ ] [5.4-03] Implement thread-key resolution precedence for `full` fidelity.
+- [x] [5.4-03] Implement thread-key resolution precedence for `full` fidelity.
 - [ ] [5.4-04] Verify session reuse/isolation behavior with thread keys.
 
 ### 5.5 Artifact Store
@@ -565,3 +564,4 @@ Status key:
 - [ ] [4.9-01] Read `parallel.results` and fail when empty. Deferred because `FanInHandler.execute` already reads `parallel.results` and returns `FAIL` with `"No parallel results to evaluate"` when normalized results are empty, so this is checklist state drift.
 - [ ] [4.9-04] Publish selected candidate via `parallel.fan_in.*` context keys. Deferred because `FanInHandler.execute` already sets `parallel.fan_in.best_id` and `parallel.fan_in.best_outcome`, and tests assert both keys in `tests/handlers/test_handlers.py`, so this is checklist state drift.
 - [ ] [4.12-01] Document and support custom handler registration by type string. Deferred because type-string registration is already implemented in `HandlerRegistry.register` and exercised by custom-type resolution coverage (`tests/handlers/test_handlers.py`, `tests/integration/test_parity_matrix.py`), so this is checklist state drift.
+- [ ] [5.4-02] Implement fidelity precedence: edge -> target node -> graph default -> `compact`. Deferred because `PipelineExecutor._resolve_runtime_fidelity` already enforces this precedence (including `compact` fallback), and executor fidelity tests already cover edge/node/graph precedence, so this is checklist state drift.

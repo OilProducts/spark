@@ -1093,13 +1093,23 @@ class PipelineExecutor:
         if fidelity != "full":
             return ""
 
+        node_attr = self.graph.nodes[node_id].attrs.get("thread_id")
+        if node_attr and str(node_attr.value).strip():
+            return str(node_attr.value).strip()
+
         edge_thread_id = _edge_attr_text(incoming_edge, "thread_id")
         if edge_thread_id:
             return edge_thread_id
 
-        node_attr = self.graph.nodes[node_id].attrs.get("thread_id")
-        if node_attr and str(node_attr.value).strip():
-            return str(node_attr.value).strip()
+        graph_attr = self.graph.graph_attrs.get("thread_id")
+        if graph_attr and str(graph_attr.value).strip():
+            return str(graph_attr.value).strip()
+
+        class_attr = self.graph.nodes[node_id].attrs.get("class")
+        if class_attr:
+            classes = [part.strip() for part in str(class_attr.value).split(",") if part.strip()]
+            if classes:
+                return classes[0]
 
         previous_node_id = _edge_endpoint_text(incoming_edge, "source")
         if previous_node_id:
