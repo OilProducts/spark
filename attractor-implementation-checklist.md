@@ -206,7 +206,7 @@ Status key:
 
 ### 4.7 Conditional Handler
 - [x] [4.7-01] Implement pass-through handler that returns SUCCESS.
-- [ ] [4.7-02] Keep actual condition routing in engine selector logic.
+- [x] [4.7-02] Keep actual condition routing in engine selector logic.
 
 ### 4.8 Parallel Handler
 - [ ] [4.8-01] Execute outgoing branches with bounded parallelism (`max_parallel`).

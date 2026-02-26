@@ -631,6 +631,35 @@ class TestExecutor:
         assert result.status == "success"
         assert result.route_trace == ["start", "plan", "gate", "fix", "done"]
 
+    def test_conditional_node_routes_using_prior_stage_preferred_label(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                gate [shape=diamond]
+                fix [shape=box]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> gate
+                gate -> fix [condition="preferred_label=Fix"]
+                gate -> done [condition="preferred_label=Approve"]
+                fix -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "plan":
+                return Outcome(status=OutcomeStatus.SUCCESS, preferred_label="Fix")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert result.route_trace == ["start", "plan", "gate", "fix", "done"]
+
     def test_executor_requires_single_start(self):
         graph = parse_dot(
             """

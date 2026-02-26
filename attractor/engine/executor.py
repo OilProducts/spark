@@ -255,6 +255,7 @@ class PipelineExecutor:
                 ctx.set(RUNTIME_FIDELITY_KEY, fidelity)
                 ctx.set(RUNTIME_THREAD_ID_KEY, self._resolve_runtime_thread_id(node.node_id, incoming_edge, fidelity))
                 prior_status = self._context_outcome_status(ctx)
+                prior_preferred_label = self._context_preferred_label(ctx)
                 prompt = self._prompt_for_node(node.node_id)
                 self._emit_event("StageStarted", node_id=node.node_id, index=len(completed))
                 self._enter_top_level_stage(node.node_id)
@@ -331,7 +332,12 @@ class PipelineExecutor:
                     retry_counts=retry_counts,
                 )
                 outgoing = [edge for edge in self.graph.edges if edge.source == node.node_id]
-                routing_outcome = self._routing_outcome(node.node_id, outcome, prior_status)
+                routing_outcome = self._routing_outcome(
+                    node.node_id,
+                    outcome,
+                    prior_status,
+                    prior_preferred_label,
+                )
                 next_edge = self._select_route_edge(node.node_id, outgoing, routing_outcome, ctx)
                 if not next_edge:
                     if routing_outcome.status == OutcomeStatus.FAIL:
@@ -554,6 +560,7 @@ class PipelineExecutor:
                 ctx.set(RUNTIME_FIDELITY_KEY, fidelity)
                 ctx.set(RUNTIME_THREAD_ID_KEY, self._resolve_runtime_thread_id(node.node_id, incoming_edge, fidelity))
                 prior_status = self._context_outcome_status(ctx)
+                prior_preferred_label = self._context_preferred_label(ctx)
                 prompt = self._prompt_for_node(node.node_id)
                 self._emit_event("StageStarted", node_id=node.node_id, index=len(completed))
                 self._enter_top_level_stage(node.node_id)
@@ -624,7 +631,12 @@ class PipelineExecutor:
                     retry_counts=retry_counts,
                 )
                 outgoing = [edge for edge in self.graph.edges if edge.source == node.node_id]
-                routing_outcome = self._routing_outcome(node.node_id, outcome, prior_status)
+                routing_outcome = self._routing_outcome(
+                    node.node_id,
+                    outcome,
+                    prior_status,
+                    prior_preferred_label,
+                )
                 next_edge = self._select_route_edge(node.node_id, outgoing, routing_outcome, ctx)
                 if not next_edge:
                     if routing_outcome.status == OutcomeStatus.FAIL:
@@ -946,17 +958,21 @@ class PipelineExecutor:
         node_id: str,
         outcome: Outcome,
         prior_status: Optional[OutcomeStatus],
+        prior_preferred_label: str,
     ) -> Outcome:
         if not prior_status or not self._is_conditional_node(node_id):
             return outcome
         return Outcome(
             status=prior_status,
-            preferred_label=outcome.preferred_label,
+            preferred_label=prior_preferred_label,
             suggested_next_ids=list(outcome.suggested_next_ids),
             context_updates=dict(outcome.context_updates),
             failure_reason=outcome.failure_reason,
             notes=outcome.notes,
         )
+
+    def _context_preferred_label(self, context: Context) -> str:
+        return str(context.get("preferred_label", "")).strip()
 
     def _node_ids_for_shape(self, shape: str) -> set[str]:
         matches: set[str] = set()
