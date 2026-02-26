@@ -3,6 +3,7 @@ from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome
 from attractor.engine.outcome import OutcomeStatus
 from attractor.handlers import HandlerRunner, build_default_registry
+from attractor.interviewer import Answer, Interviewer, Question
 
 
 class _StubBackend:
@@ -18,6 +19,14 @@ class _StubBackend:
 class _PluginHandler:
     def run(self, runtime):
         return Outcome(status=OutcomeStatus.SUCCESS, notes=f"plugin:{runtime.node_id}")
+
+
+class _FalseyInterviewer(Interviewer):
+    def __bool__(self) -> bool:
+        return False
+
+    def ask(self, question: Question) -> Answer:
+        return Answer(selected_values=["Fix"])
 
 
 class TestBuiltInHandlers:
@@ -82,6 +91,29 @@ class TestBuiltInHandlers:
         outcome = runner("gate", "Choose", Context())
         assert outcome.status == OutcomeStatus.SUCCESS
         assert outcome.preferred_label == "Approve"
+
+    def test_wait_human_uses_falsey_external_interviewer(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                gate [shape=hexagon, prompt="Choose"]
+                pass [shape=box]
+                fail [shape=box]
+                gate -> pass [label="Approve"]
+                gate -> fail [label="Fix"]
+            }
+            """
+        )
+
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            interviewer=_FalseyInterviewer(),
+        )
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("gate", "Choose", Context())
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert outcome.preferred_label == "Fix"
 
     def test_tool_handler_executes_command(self):
         graph = parse_dot(

@@ -24,7 +24,8 @@ def build_default_registry(
     interviewer: Optional[Interviewer] = None,
     extra_handlers: Optional[Mapping[str, Handler]] = None,
 ) -> HandlerRegistry:
-    interviewer = interviewer or AutoApproveInterviewer()
+    if interviewer is None:
+        interviewer = AutoApproveInterviewer()
     registry = HandlerRegistry()
     registry.register("start", StartHandler())
     registry.register("exit", ExitHandler())
