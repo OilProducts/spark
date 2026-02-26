@@ -195,11 +195,11 @@ class PipelineExecutor:
                 outcome = self._execute_node_handler(node.node_id, prompt, ctx)
                 outcomes[node.node_id] = outcome
 
+                if outcome.context_updates:
+                    ctx.merge_updates(outcome.context_updates)
                 ctx.set("outcome", outcome.status.value)
                 if outcome.preferred_label:
                     ctx.set("preferred_label", outcome.preferred_label)
-                if outcome.context_updates:
-                    ctx.merge_updates(outcome.context_updates)
                 self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
 
                 self._write_stage_artifacts(node.node_id, prompt, outcome)
@@ -428,11 +428,11 @@ class PipelineExecutor:
                 outcome = self._execute_node_handler(node.node_id, prompt, ctx)
                 outcomes[node.node_id] = outcome
 
+                if outcome.context_updates:
+                    ctx.merge_updates(outcome.context_updates)
                 ctx.set("outcome", outcome.status.value)
                 if outcome.preferred_label:
                     ctx.set("preferred_label", outcome.preferred_label)
-                if outcome.context_updates:
-                    ctx.merge_updates(outcome.context_updates)
                 self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
 
                 self._write_stage_artifacts(node.node_id, prompt, outcome)

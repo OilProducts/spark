@@ -421,6 +421,40 @@ class TestExecutor:
         assert result.context.get("needs_fix") == "true"
         assert calls[1][1] == "plan"
 
+    def test_executor_applies_context_updates_before_outcome_and_preferred_label(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "plan":
+                return Outcome(
+                    status=OutcomeStatus.SUCCESS,
+                    preferred_label="Approve",
+                    context_updates={
+                        "outcome": "fail",
+                        "preferred_label": "Reject",
+                        "custom.flag": "set",
+                    },
+                )
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert result.context["custom.flag"] == "set"
+        assert result.context["outcome"] == "success"
+        assert result.context["preferred_label"] == "Approve"
+
     def test_prompt_falls_back_to_label_for_llm_stage_only(self):
         graph = parse_dot(
             """

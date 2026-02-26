@@ -126,7 +126,7 @@ Status key:
 ### 3.2 Core Execution Loop
 - [x] [3.2-01] Resolve start node by shape/id rules; fail fast if ambiguous/missing.
 - [x] [3.2-02] For each node: execute handler with retry policy and persist outcome.
-- [ ] [3.2-03] Merge `context_updates`, set `outcome`, set `preferred_label` when present.
+- [x] [3.2-03] Merge `context_updates`, set `outcome`, set `preferred_label` when present.
 - [ ] [3.2-04] Save checkpoint after each stage with current node and completed list.
 - [ ] [3.2-05] Select next edge via algorithm in 3.3; handle no-edge failure cases.
 - [ ] [3.2-06] Implement `loop_restart` branch behavior.
