@@ -262,7 +262,7 @@ class PipelineExecutor:
                 routing_outcome = self._routing_outcome(node.node_id, outcome, prior_status)
                 next_edge = self._select_route_edge(node.node_id, outgoing, routing_outcome, ctx)
                 if not next_edge:
-                    message = f"Stage '{node.node_id}' has no eligible outgoing edge"
+                    message = self._no_route_message(node.node_id, routing_outcome)
                     self._emit_event(
                         "StageFailed",
                         node_id=node.node_id,
@@ -489,7 +489,7 @@ class PipelineExecutor:
                 routing_outcome = self._routing_outcome(node.node_id, outcome, prior_status)
                 next_edge = self._select_route_edge(node.node_id, outgoing, routing_outcome, ctx)
                 if not next_edge:
-                    message = f"Stage '{node.node_id}' has no eligible outgoing edge"
+                    message = self._no_route_message(node.node_id, routing_outcome)
                     self._finalize_run(
                         current_node=node.node_id,
                         completed_nodes=completed,
@@ -973,6 +973,11 @@ class PipelineExecutor:
         if node_target:
             return node_target
         return self._resolve_graph_retry_target()
+
+    def _no_route_message(self, node_id: str, routing_outcome: Outcome) -> str:
+        if routing_outcome.status == OutcomeStatus.FAIL:
+            return f"Stage '{node_id}' failed with no outgoing fail edge"
+        return f"Stage '{node_id}' has no eligible outgoing edge"
 
 
 class _SyntheticEdge:

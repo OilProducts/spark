@@ -199,7 +199,7 @@ class TestCheckpointAndArtifacts:
                 on_event=events.append,
             )
 
-            with pytest.raises(RuntimeError, match="no eligible outgoing edge"):
+            with pytest.raises(RuntimeError, match="failed with no outgoing fail edge"):
                 executor.run(Context())
 
             checkpoint = load_checkpoint(checkpoint_file)

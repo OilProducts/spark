@@ -350,7 +350,7 @@ class TestRetryAndGoalGate:
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
             return Outcome(status=OutcomeStatus.SUCCESS)
 
-        with pytest.raises(RuntimeError, match="Stage 'task' has no eligible outgoing edge"):
+        with pytest.raises(RuntimeError, match="Stage 'task' failed with no outgoing fail edge"):
             PipelineExecutor(graph, runner).run(Context())
 
     def test_handler_exception_retries_then_persists_fail_outcome_for_fail_routing(self):
