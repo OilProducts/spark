@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import nullcontext
 import math
 from typing import Any, Dict, List, Tuple
@@ -14,6 +14,7 @@ from ..base import HandlerRuntime
 
 SUCCESS_STATUSES = {"success", "paused"}
 SUPPORTED_JOIN_POLICIES = {"wait_all", "k_of_n", "first_success", "quorum"}
+SUPPORTED_ERROR_POLICIES = {"fail_fast", "continue", "ignore"}
 
 
 class ParallelHandler:
@@ -25,6 +26,8 @@ class ParallelHandler:
         if join_policy not in SUPPORTED_JOIN_POLICIES:
             return Outcome(status=OutcomeStatus.FAIL, failure_reason=f"unsupported join_policy: {join_policy}")
         error_policy = _attr_str(runtime.node_attrs, "error_policy", "continue")
+        if error_policy not in SUPPORTED_ERROR_POLICIES:
+            return Outcome(status=OutcomeStatus.FAIL, failure_reason=f"unsupported error_policy: {error_policy}")
         max_parallel = _attr_int(runtime.node_attrs, "max_parallel", 4)
         if max_parallel < 1:
             return Outcome(status=OutcomeStatus.FAIL, failure_reason="max_parallel must be >= 1")
@@ -55,27 +58,47 @@ class ParallelHandler:
             return target, payload
 
         results: List[Dict[str, Any]] = []
-        futures = []
         allow_concurrency = getattr(runtime.runner, "allow_concurrency", None)
         concurrency_scope = allow_concurrency() if callable(allow_concurrency) else nullcontext()
         with concurrency_scope:
             with ThreadPoolExecutor(max_workers=max_parallel) as pool:
-                for edge in runtime.outgoing_edges:
-                    futures.append(pool.submit(run_branch, edge.target, runtime.context))
+                pending = {}
+                edge_iter = iter(runtime.outgoing_edges)
 
-                for future in as_completed(futures):
-                    _, payload = future.result()
-                    results.append(payload)
+                def submit_next() -> bool:
+                    try:
+                        edge = next(edge_iter)
+                    except StopIteration:
+                        return False
+                    future = pool.submit(run_branch, edge.target, runtime.context)
+                    pending[future] = edge.target
+                    return True
 
-                    if error_policy == "fail_fast" and payload["status"] == "fail":
-                        for remaining in futures:
+                for _ in range(max_parallel):
+                    if not submit_next():
+                        break
+
+                terminated_early = False
+                while pending:
+                    completed, _ = wait(set(pending.keys()), return_when=FIRST_COMPLETED)
+                    for future in completed:
+                        pending.pop(future, None)
+                        _, payload = future.result()
+                        results.append(payload)
+
+                        if error_policy == "fail_fast" and payload["status"] == "fail":
+                            terminated_early = True
+
+                        if join_policy == "first_success" and payload["status"] in SUCCESS_STATUSES:
+                            terminated_early = True
+
+                    if terminated_early:
+                        for remaining in pending:
                             remaining.cancel()
                         break
 
-                    if join_policy == "first_success" and payload["status"] in SUCCESS_STATUSES:
-                        for remaining in futures:
-                            remaining.cancel()
-                        break
+                    while len(pending) < max_parallel and submit_next():
+                        pass
 
         results_for_policy = list(results)
         if error_policy == "ignore":
@@ -99,7 +122,7 @@ class ParallelHandler:
 
         return Outcome(
             status=outcome_status,
-            context_updates={"parallel.results": results},
+            context_updates={"parallel.results": results_for_policy if error_policy == "ignore" else results},
             notes="parallel fan-out completed",
         )
 

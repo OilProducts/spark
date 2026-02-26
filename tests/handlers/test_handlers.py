@@ -1135,3 +1135,77 @@ class TestBuiltInHandlers:
 
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_reason == "unsupported join_policy: not_a_policy"
+
+    def test_parallel_handler_rejects_unknown_error_policy(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                fan [shape=component, error_policy=not_a_policy]
+                a [shape=box, type="custom.success"]
+                stop_a [shape=tripleoctagon]
+                fan -> a
+                a -> stop_a [condition="outcome=success"]
+            }
+            """
+        )
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            extra_handlers={"custom.success": _AlwaysSuccessHandler()},
+        )
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("fan", "", Context())
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == "unsupported error_policy: not_a_policy"
+
+    @pytest.mark.parametrize(
+        ("error_policy", "expected_status", "expected_result_count", "expected_failures"),
+        [
+            ("continue", OutcomeStatus.PARTIAL_SUCCESS, 3, 1),
+            ("ignore", OutcomeStatus.SUCCESS, 2, 0),
+            ("fail_fast", OutcomeStatus.PARTIAL_SUCCESS, 1, 1),
+        ],
+    )
+    def test_parallel_handler_supports_error_policies(
+        self,
+        error_policy: str,
+        expected_status: OutcomeStatus,
+        expected_result_count: int,
+        expected_failures: int,
+    ):
+        graph = parse_dot(
+            f"""
+            digraph G {{
+                fan [shape=component, join_policy=wait_all, error_policy={error_policy}, max_parallel=1]
+                bad [shape=box, type="custom.fail"]
+                good_a [shape=box, type="custom.success"]
+                good_b [shape=box, type="custom.success"]
+                stop_a [shape=tripleoctagon]
+                stop_b [shape=tripleoctagon]
+
+                fan -> bad
+                fan -> good_a
+                fan -> good_b
+                good_a -> stop_a [condition="outcome=success"]
+                good_b -> stop_b [condition="outcome=success"]
+            }}
+            """
+        )
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            extra_handlers={
+                "custom.success": _AlwaysSuccessHandler(),
+                "custom.fail": _AlwaysFailHandler(),
+            },
+        )
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("fan", "", Context())
+
+        assert outcome.status == expected_status
+        branch_results = outcome.context_updates.get("parallel.results", [])
+        assert isinstance(branch_results, list)
+        assert len(branch_results) == expected_result_count
+        fail_count = sum(1 for result in branch_results if result.get("status") == "fail")
+        assert fail_count == expected_failures
