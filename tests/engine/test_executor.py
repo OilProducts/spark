@@ -79,6 +79,54 @@ class TestExecutor:
         assert result.status == "success"
         assert seen_fidelity == ["summary:medium", "full"]
 
+    def test_executor_edge_fidelity_overrides_node_and_graph_defaults(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [default_fidelity="summary:medium"]
+                start [shape=Mdiamond]
+                work [shape=box, fidelity="compact"]
+                done [shape=Msquare]
+                start -> work [fidelity="full"]
+                work -> done
+            }
+            """
+        )
+        seen_fidelity: list[str] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            seen_fidelity.append(str(context.get("_attractor.runtime.fidelity", "")))
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert seen_fidelity == ["summary:medium", "full"]
+
+    def test_executor_edge_thread_id_overrides_target_node_thread_id(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [default_fidelity="full"]
+                start [shape=Mdiamond]
+                work [shape=box, thread_id="work-thread"]
+                done [shape=Msquare]
+                start -> work [thread_id="edge-thread"]
+                work -> done
+            }
+            """
+        )
+        seen_thread_ids: list[str] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            seen_thread_ids.append(str(context.get("_attractor.runtime.thread_id", "")))
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert seen_thread_ids == ["start", "edge-thread"]
+
     def test_executor_mirrors_graph_goal_into_context(self):
         graph = parse_dot(
             """

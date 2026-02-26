@@ -635,6 +635,10 @@ class PipelineExecutor:
         if fidelity != "full":
             return ""
 
+        edge_thread_id = _edge_attr_text(incoming_edge, "thread_id")
+        if edge_thread_id:
+            return edge_thread_id
+
         node_attr = self.graph.nodes[node_id].attrs.get("thread_id")
         if node_attr and str(node_attr.value).strip():
             return str(node_attr.value).strip()
