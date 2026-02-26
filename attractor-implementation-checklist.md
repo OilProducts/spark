@@ -84,7 +84,6 @@ Status key:
 - [x] [2.6-12] Implement `allow_partial` behavior when retries exhaust.
 
 ### 2.7 Edge Attributes
-- [ ] [2.7-01] Implement edge `label` for preferred-label routing.
 - [ ] [2.7-02] Parse/evaluate edge `condition` expressions.
 - [ ] [2.7-03] Implement `weight` for deterministic prioritization.
 - [ ] [2.7-04] Implement edge-level `fidelity` and `thread_id` overrides for target node execution.
@@ -565,3 +564,4 @@ Status key:
 - [ ] [2.6-02] Resolve `type` override before shape-based handler mapping. Deferred because `HandlerRegistry.resolve_handler_type` already checks explicit `type` before shape mapping and tests already cover this precedence (`tests/handlers/test_handlers.py`), so this is checklist state drift.
 - [ ] [2.3-05] Accept optional statement semicolons. Deferred because parser behavior is already implemented and covered by existing tests (`tests/dsl/test_parser.py`), so this is checklist state drift rather than a code gap.
 - [ ] [2.4-02] Parse signed integers and floats. Deferred because signed integer/float parsing is already implemented in `attractor/dsl/parser.py` and exercised by parser tests, so this item is currently non-actionable checklist drift.
+- [ ] [2.7-01] Implement edge `label` for preferred-label routing. Deferred because preferred-label edge routing is already implemented in `attractor/engine/routing.py` and covered by `tests/engine/test_routing.py::test_preferred_label_then_suggested_ids`, so this is checklist state drift.
