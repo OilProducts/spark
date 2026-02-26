@@ -1,3 +1,5 @@
+import pytest
+
 from attractor.dsl import parse_dot
 from attractor.engine.context import Context
 from attractor.engine.executor import BackoffConfig, PipelineExecutor, RetryPolicy
@@ -30,6 +32,65 @@ def test_retry_policy_object_uses_max_attempts_from_node_max_retries():
     assert policy.backoff.backoff_factor == 2.0
     assert policy.backoff.max_delay_ms == 60000
     assert policy.backoff.jitter is True
+
+
+@pytest.mark.parametrize(
+    ("preset", "max_attempts", "initial_delay_ms", "backoff_factor"),
+    [
+        ("none", 1, 0, 1.0),
+        ("standard", 5, 200, 2.0),
+        ("aggressive", 5, 500, 2.0),
+        ("linear", 3, 500, 1.0),
+        ("patient", 3, 2000, 3.0),
+    ],
+)
+def test_retry_policy_uses_named_presets(
+    preset: str,
+    max_attempts: int,
+    initial_delay_ms: int,
+    backoff_factor: float,
+):
+    graph = parse_dot(
+        f"""
+        digraph G {{
+            start [shape=Mdiamond]
+            task [shape=box, retry_policy="{preset}"]
+            done [shape=Msquare]
+            start -> task
+            task -> done
+        }}
+        """
+    )
+
+    executor = PipelineExecutor(graph, _runner)
+
+    policy = executor._retry_policy_for_node("task")
+
+    assert policy.max_attempts == max_attempts
+    assert policy.backoff.initial_delay_ms == initial_delay_ms
+    assert policy.backoff.backoff_factor == backoff_factor
+
+
+def test_retry_policy_preset_overrides_max_retries_when_present():
+    graph = parse_dot(
+        """
+        digraph G {
+            start [shape=Mdiamond]
+            task [shape=box, retry_policy="linear", max_retries=9]
+            done [shape=Msquare]
+            start -> task
+            task -> done
+        }
+        """
+    )
+
+    executor = PipelineExecutor(graph, _runner)
+
+    policy = executor._retry_policy_for_node("task")
+
+    assert policy.max_attempts == 3
+    assert policy.backoff.initial_delay_ms == 500
+    assert policy.backoff.backoff_factor == 1.0
 
 
 def test_retry_policy_should_retry_for_retry_and_retryable_fail():

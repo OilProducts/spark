@@ -67,6 +67,30 @@ class RetryPolicy:
     should_retry: ShouldRetryFn = _default_should_retry_outcome
 
 
+_RETRY_POLICY_PRESETS: Dict[str, RetryPolicy] = {
+    "none": RetryPolicy(
+        max_attempts=1,
+        backoff=BackoffConfig(initial_delay_ms=0, backoff_factor=1.0, max_delay_ms=0, jitter=False),
+    ),
+    "standard": RetryPolicy(
+        max_attempts=5,
+        backoff=BackoffConfig(initial_delay_ms=200, backoff_factor=2.0, max_delay_ms=60000, jitter=True),
+    ),
+    "aggressive": RetryPolicy(
+        max_attempts=5,
+        backoff=BackoffConfig(initial_delay_ms=500, backoff_factor=2.0, max_delay_ms=60000, jitter=True),
+    ),
+    "linear": RetryPolicy(
+        max_attempts=3,
+        backoff=BackoffConfig(initial_delay_ms=500, backoff_factor=1.0, max_delay_ms=60000, jitter=True),
+    ),
+    "patient": RetryPolicy(
+        max_attempts=3,
+        backoff=BackoffConfig(initial_delay_ms=2000, backoff_factor=3.0, max_delay_ms=60000, jitter=True),
+    ),
+}
+
+
 @dataclass
 class PipelineResult:
     status: str
@@ -943,9 +967,22 @@ class PipelineExecutor:
         return 50
 
     def _retry_policy_for_node(self, node_id: str) -> RetryPolicy:
+        preset_name = self._retry_policy_name_for_node(node_id)
+        if preset_name:
+            preset = _RETRY_POLICY_PRESETS.get(preset_name)
+            if preset is not None:
+                return preset
+
         max_retries = self._max_retries_for_node(node_id)
         max_attempts = max(1, max_retries + 1)
         return RetryPolicy(max_attempts=max_attempts)
+
+    def _retry_policy_name_for_node(self, node_id: str) -> str:
+        node = self.graph.nodes[node_id]
+        attr = node.attrs.get("retry_policy")
+        if not attr:
+            return ""
+        return str(attr.value).strip().lower()
 
     def _coerce_retry_exhausted_outcome(
         self,
