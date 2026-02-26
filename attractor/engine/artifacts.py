@@ -75,6 +75,31 @@ class ArtifactStore:
             )
         return data
 
+    def has(self, artifact_id: str) -> bool:
+        with self._lock.read_lock():
+            return artifact_id in self._artifacts
+
+    def list(self) -> list[ArtifactInfo]:
+        with self._lock.read_lock():
+            return [info for info, _ in self._artifacts.values()]
+
+    def remove(self, artifact_id: str) -> None:
+        with self._lock.write_lock():
+            artifact = self._artifacts.pop(artifact_id, None)
+        if artifact is None:
+            return
+        info, stored_data = artifact
+        if info.is_file_backed:
+            Path(stored_data).unlink(missing_ok=True)
+
+    def clear(self) -> None:
+        with self._lock.write_lock():
+            artifacts = list(self._artifacts.values())
+            self._artifacts.clear()
+        for info, stored_data in artifacts:
+            if info.is_file_backed:
+                Path(stored_data).unlink(missing_ok=True)
+
 
 def _byte_size(data: Any) -> int:
     try:

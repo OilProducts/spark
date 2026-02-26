@@ -261,7 +261,7 @@ Status key:
 ### 5.5 Artifact Store
 - [x] [5.5-01] Implement artifact registry with metadata (`ArtifactInfo`) and typed retrieval.
 - [x] [5.5-02] Implement file-backing threshold behavior (default 100KB).
-- [ ] [5.5-03] Implement `store`, `retrieve`, `has`, `list`, `remove`, `clear`.
+- [x] [5.5-03] Implement `store`, `retrieve`, `has`, `list`, `remove`, `clear`.
 
 ### 5.6 Run Directory Structure
 - [ ] [5.6-01] Create run root with `checkpoint.json`, `manifest.json`, stage directories, and `artifacts/`.

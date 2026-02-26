@@ -56,3 +56,44 @@ def test_store_keeps_large_payload_in_memory_without_base_dir() -> None:
 
     assert info.is_file_backed is False
     assert store.retrieve("artifact-memory", expected_type=str) == payload
+
+
+def test_has_reports_presence_by_artifact_id() -> None:
+    store = ArtifactStore()
+
+    assert store.has("artifact-1") is False
+    store.store("artifact-1", "sample", {"ok": True})
+    assert store.has("artifact-1") is True
+
+
+def test_list_returns_registered_artifact_metadata() -> None:
+    store = ArtifactStore()
+    first = store.store("artifact-1", "one", 1)
+    second = store.store("artifact-2", "two", 2)
+
+    infos = store.list()
+
+    assert infos == [first, second]
+
+
+def test_remove_deletes_registered_artifact() -> None:
+    store = ArtifactStore()
+    store.store("artifact-1", "sample", {"ok": True})
+
+    store.remove("artifact-1")
+
+    assert store.has("artifact-1") is False
+    with pytest.raises(KeyError):
+        store.retrieve("artifact-1")
+
+
+def test_clear_removes_all_artifacts() -> None:
+    store = ArtifactStore()
+    store.store("artifact-1", "one", {"a": 1})
+    store.store("artifact-2", "two", {"b": 2})
+
+    store.clear()
+
+    assert store.list() == []
+    assert store.has("artifact-1") is False
+    assert store.has("artifact-2") is False
