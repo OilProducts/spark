@@ -273,6 +273,29 @@ class TestRetryAndGoalGate:
         result = PipelineExecutor(graph, runner).run(Context())
         assert result.status == "success"
 
+    def test_goal_gate_without_recorded_outcome_blocks_exit(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                implement [shape=box, goal_gate=true]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+        assert result.status == "fail"
+        assert result.route_trace == ["start", "plan", "done"]
+        assert result.failure_reason == "goal_gate_failed"
+
     def test_goal_gate_recovery_uses_graph_level_retry_target(self):
         graph = parse_dot(
             """

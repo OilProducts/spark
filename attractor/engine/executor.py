@@ -989,9 +989,8 @@ class PipelineExecutor:
             if not _to_bool(goal_gate_attr.value):
                 continue
 
-            if node_id not in statuses:
-                continue
-            if statuses.get(node_id) not in {"success", "partial_success"}:
+            status = statuses.get(node_id)
+            if status not in {"success", "partial_success"}:
                 return False, node_id
 
         return True, ""
