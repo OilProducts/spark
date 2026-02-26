@@ -81,6 +81,23 @@ class TestBuiltInHandlers:
         assert outcome.status == OutcomeStatus.SUCCESS
         assert backend.calls[0][1] == "Plan for ship"
 
+    def test_codergen_handler_falls_back_to_label_when_prompt_is_empty(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, label="Label Prompt"]
+            }
+            """
+        )
+
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "", Context())
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert backend.calls[0][1] == "Label Prompt"
+
     def test_wait_human_uses_interviewer_and_sets_preferred_label(self):
         graph = parse_dot(
             """

@@ -14,7 +14,14 @@ class CodergenHandler:
         self.backend = backend
 
     def run(self, runtime: HandlerRuntime) -> Outcome:
-        prompt = _expand_goal(runtime.prompt, runtime.context)
+        prompt = runtime.prompt.strip()
+        if not prompt:
+            label_attr = runtime.node_attrs.get("label")
+            if label_attr:
+                prompt = str(label_attr.value).strip()
+            if not prompt:
+                prompt = runtime.node_id
+        prompt = _expand_goal(prompt, runtime.context)
         if self.backend is None:
             return Outcome(
                 status=OutcomeStatus.SUCCESS,

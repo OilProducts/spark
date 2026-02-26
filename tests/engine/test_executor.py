@@ -227,6 +227,34 @@ class TestExecutor:
         assert result.context.get("needs_fix") == "true"
         assert calls[1][1] == "plan"
 
+    def test_prompt_falls_back_to_label_for_llm_stage_only(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box, label="Plan from label"]
+                gate [shape=hexagon, label="Human label"]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> gate
+                gate -> done
+            }
+            """
+        )
+
+        seen_prompts: dict[str, str] = {}
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            seen_prompts[node_id] = prompt
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert seen_prompts["plan"] == "Plan from label"
+        assert seen_prompts["gate"] == ""
+
     def test_conditional_node_routes_using_prior_stage_outcome(self):
         graph = parse_dot(
             """

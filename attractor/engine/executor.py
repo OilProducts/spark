@@ -18,6 +18,16 @@ ControlFn = Callable[[], Optional[str]]
 EventFn = Callable[[Dict[str, object]], None]
 NODE_OUTCOMES_KEY = "_attractor.node_outcomes"
 RUNTIME_FIDELITY_KEY = "_attractor.runtime.fidelity"
+_NON_CODEGEN_SHAPES = {
+    "Mdiamond",
+    "Msquare",
+    "hexagon",
+    "diamond",
+    "component",
+    "tripleoctagon",
+    "parallelogram",
+    "house",
+}
 
 
 @dataclass
@@ -533,12 +543,30 @@ class PipelineExecutor:
     def _prompt_for_node(self, node_id: str) -> str:
         node = self.graph.nodes[node_id]
         prompt_attr = node.attrs.get("prompt")
-        if prompt_attr:
-            return str(prompt_attr.value)
-        label_attr = node.attrs.get("label")
-        if label_attr:
-            return str(label_attr.value)
-        return node_id
+        prompt_text = str(prompt_attr.value) if prompt_attr else ""
+        if prompt_text.strip():
+            return prompt_text
+
+        if self._resolved_handler_type(node_id) == "codergen":
+            label_attr = node.attrs.get("label")
+            if label_attr:
+                label = str(label_attr.value).strip()
+                if label:
+                    return label
+            return node_id
+
+        return prompt_text
+
+    def _resolved_handler_type(self, node_id: str) -> str:
+        node = self.graph.nodes[node_id]
+        explicit = node.attrs.get("type")
+        if explicit and str(explicit.value).strip():
+            return str(explicit.value).strip()
+
+        shape = node.attrs.get("shape")
+        if shape and str(shape.value).strip() in _NON_CODEGEN_SHAPES:
+            return "non-codergen"
+        return "codergen"
 
     def _mirror_graph_goal(self, context: Context) -> None:
         goal_attr = self.graph.graph_attrs.get("goal")
