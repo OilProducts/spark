@@ -281,6 +281,68 @@ class TestExecutor:
         assert result.context["graph.goal"] == "Ship docs"
         assert seen_goals == ["Ship docs", "Ship docs"]
 
+    def test_executor_seeds_builtin_context_keys_across_lifecycle(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [goal="Ship docs"]
+                start [shape=Mdiamond]
+                plan [shape=box]
+                review [shape=box]
+                done [shape=Msquare]
+                start -> plan
+                plan -> review
+                review -> done
+            }
+            """
+        )
+        snapshots: list[dict[str, str]] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            snapshots.append(
+                {
+                    "node_id": node_id,
+                    "outcome": str(context.get("outcome", "")),
+                    "preferred_label": str(context.get("preferred_label", "")),
+                    "graph.goal": str(context.get("graph.goal", "")),
+                    "current_node": str(context.get("current_node", "")),
+                }
+            )
+            if node_id == "start":
+                return Outcome(status=OutcomeStatus.SUCCESS, preferred_label="Approve")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "success"
+        assert snapshots == [
+            {
+                "node_id": "start",
+                "outcome": "",
+                "preferred_label": "",
+                "graph.goal": "Ship docs",
+                "current_node": "start",
+            },
+            {
+                "node_id": "plan",
+                "outcome": "success",
+                "preferred_label": "Approve",
+                "graph.goal": "Ship docs",
+                "current_node": "plan",
+            },
+            {
+                "node_id": "review",
+                "outcome": "success",
+                "preferred_label": "",
+                "graph.goal": "Ship docs",
+                "current_node": "review",
+            },
+        ]
+        assert result.context["outcome"] == "success"
+        assert result.context["preferred_label"] == ""
+        assert result.context["graph.goal"] == "Ship docs"
+        assert result.context["current_node"] == "done"
+
     def test_executor_emits_typed_runtime_events_for_ui_consumers(self):
         graph = parse_dot(
             """

@@ -159,11 +159,13 @@ class PipelineExecutor:
                     restored_context.update(ctx.values)
                     ctx = Context(values=restored_context)
         self._mirror_graph_goal(ctx)
+        self._seed_builtin_context(ctx, current)
         self._emit_event("PipelineStarted", current_node=current, resumed=resume)
 
         steps = 0
         try:
             while True:
+                ctx.set("current_node", current)
                 action = self._poll_control()
                 if action == "abort":
                     self._finalize_run(
@@ -222,6 +224,7 @@ class PipelineExecutor:
                     retry_target = self._resolve_goal_gate_retry_target(failed_gate_node)
                     if retry_target:
                         current = retry_target
+                        ctx.set("current_node", current)
                         incoming_edge = None
                         route_trace.append(current)
                         self._save_checkpoint(
@@ -268,8 +271,7 @@ class PipelineExecutor:
                 if outcome.context_updates:
                     ctx.merge_updates(outcome.context_updates)
                 ctx.set("outcome", outcome.status.value)
-                if outcome.preferred_label:
-                    ctx.set("preferred_label", outcome.preferred_label)
+                ctx.set("preferred_label", outcome.preferred_label or "")
                 self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
 
                 self._write_stage_artifacts(node.node_id, prompt, outcome)
@@ -305,6 +307,7 @@ class PipelineExecutor:
                 if outcome.status != original_status:
                     outcomes[node.node_id] = outcome
                     ctx.set("outcome", outcome.status.value)
+                    ctx.set("preferred_label", outcome.preferred_label or "")
                     self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
                     self._write_stage_artifacts(node.node_id, prompt, outcome)
                 self._reset_retry_counter(node.node_id, outcome, retry_counts)
@@ -393,6 +396,7 @@ class PipelineExecutor:
                     continue
 
                 current = next_edge.target
+                ctx.set("current_node", current)
                 incoming_edge = next_edge
                 route_trace.append(current)
                 self._save_checkpoint(
@@ -444,6 +448,7 @@ class PipelineExecutor:
         outcomes: Dict[str, Outcome] = {}
         retry_counts: Dict[str, int] = {}
         current = start_node
+        self._seed_builtin_context(ctx, current)
         incoming_edge: object | None = None
         route_trace: List[str] = [current]
         steps = 0
@@ -452,6 +457,7 @@ class PipelineExecutor:
 
         try:
             while True:
+                ctx.set("current_node", current)
                 action = self._poll_control()
                 if action == "abort":
                     self._finalize_run(
@@ -510,6 +516,7 @@ class PipelineExecutor:
                     retry_target = self._resolve_goal_gate_retry_target(failed_gate_node)
                     if retry_target:
                         current = retry_target
+                        ctx.set("current_node", current)
                         incoming_edge = None
                         route_trace.append(current)
                         self._save_checkpoint(
@@ -573,8 +580,7 @@ class PipelineExecutor:
                 if outcome.context_updates:
                     ctx.merge_updates(outcome.context_updates)
                 ctx.set("outcome", outcome.status.value)
-                if outcome.preferred_label:
-                    ctx.set("preferred_label", outcome.preferred_label)
+                ctx.set("preferred_label", outcome.preferred_label or "")
                 self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
 
                 self._write_stage_artifacts(node.node_id, prompt, outcome)
@@ -604,6 +610,7 @@ class PipelineExecutor:
                 if outcome.status != original_status:
                     outcomes[node.node_id] = outcome
                     ctx.set("outcome", outcome.status.value)
+                    ctx.set("preferred_label", outcome.preferred_label or "")
                     self._remember_node_outcome(ctx, node.node_id, outcome.status.value)
                     self._write_stage_artifacts(node.node_id, prompt, outcome)
                 self._reset_retry_counter(node.node_id, outcome, retry_counts)
@@ -701,6 +708,7 @@ class PipelineExecutor:
                     continue
 
                 current = next_edge.target
+                ctx.set("current_node", current)
                 incoming_edge = next_edge
                 route_trace.append(current)
 
@@ -846,6 +854,7 @@ class PipelineExecutor:
         context.set(NODE_OUTCOMES_KEY, {})
         context.set("outcome", "")
         context.set("preferred_label", "")
+        context.set("current_node", restart_node)
 
         self._rotate_logs_root_for_restart()
 
@@ -1015,6 +1024,16 @@ class PipelineExecutor:
     def _mirror_graph_goal(self, context: Context) -> None:
         goal_attr = self.graph.graph_attrs.get("goal")
         context.set("graph.goal", str(goal_attr.value) if goal_attr else "")
+
+    def _seed_builtin_context(self, context: Context, current_node: str) -> None:
+        outcomes = context.get(NODE_OUTCOMES_KEY, None)
+        if not isinstance(outcomes, dict):
+            context.set(NODE_OUTCOMES_KEY, {})
+        if context.get("outcome", None) is None:
+            context.set("outcome", "")
+        if context.get("preferred_label", None) is None:
+            context.set("preferred_label", "")
+        context.set("current_node", current_node)
 
     def _resolve_runtime_fidelity(self, node_id: str, incoming_edge: object | None) -> str:
         edge_fidelity = _edge_attr_text(incoming_edge, "fidelity")
