@@ -950,6 +950,29 @@ class TestBuiltInHandlers:
             "human.gate.label": "Fix",
         }
 
+    def test_wait_human_timeout_default_choice_requires_exact_target_match(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                gate [shape=hexagon, prompt="Choose", human.default_choice="FIX"]
+                ship [shape=box]
+                fix [shape=box]
+                gate -> ship [label="Approve"]
+                gate -> fix [label="Fix"]
+            }
+            """
+        )
+
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            interviewer=QueueInterviewer([Answer(value="TIMEOUT")]),
+        )
+        runner = HandlerRunner(graph, registry)
+        outcome = runner("gate", "Choose", Context())
+
+        assert outcome.status == OutcomeStatus.RETRY
+        assert outcome.failure_reason == "human gate timeout, no default"
+
     def test_wait_human_timeout_without_default_returns_retry(self):
         graph = parse_dot(
             """

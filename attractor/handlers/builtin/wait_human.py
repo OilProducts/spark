@@ -100,9 +100,6 @@ def _default_choice(node_attrs, choices: list[_Choice]) -> _Choice | None:
     for choice in choices:
         if choice.target == default_target:
             return choice
-    for choice in choices:
-        if choice.target.lower() == default_target.lower():
-            return choice
     return None
 
 
