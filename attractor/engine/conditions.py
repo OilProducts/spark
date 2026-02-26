@@ -41,6 +41,9 @@ def _resolve_key(key: str, outcome: Outcome, context: Context) -> str:
     if key == "preferred_label":
         return _normalize_value(outcome.preferred_label)
     if key.startswith("context."):
+        prefixed = context.get(key, None)
+        if prefixed is not None:
+            return _normalize_value(_stringify(prefixed))
         return _normalize_value(context.get_context_path(key[len("context.") :]))
     return ""
 
@@ -50,3 +53,11 @@ def _normalize_value(raw: str) -> str:
     if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
         text = text[1:-1]
     return text
+
+
+def _stringify(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)

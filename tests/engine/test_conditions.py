@@ -23,3 +23,12 @@ class TestConditions:
         outcome = Outcome(status=OutcomeStatus.SUCCESS)
         assert not evaluate_condition("bad clause", outcome, Context())
         assert not evaluate_condition("unknown=foo", outcome, Context())
+
+    def test_context_key_resolution_prefers_prefixed_then_unprefixed(self):
+        outcome = Outcome(status=OutcomeStatus.SUCCESS)
+
+        prefixed = Context(values={"context.tests_passed": "true", "tests_passed": "false"})
+        assert evaluate_condition("context.tests_passed=true", outcome, prefixed)
+
+        unprefixed = Context(values={"tests_passed": "true"})
+        assert evaluate_condition("context.tests_passed=true", outcome, unprefixed)

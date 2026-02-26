@@ -84,7 +84,7 @@ Status key:
 - [x] [2.6-12] Implement `allow_partial` behavior when retries exhaust.
 
 ### 2.7 Edge Attributes
-- [ ] [2.7-02] Parse/evaluate edge `condition` expressions.
+- [x] [2.7-02] Parse/evaluate edge `condition` expressions.
 - [ ] [2.7-03] Implement `weight` for deterministic prioritization.
 - [ ] [2.7-04] Implement edge-level `fidelity` and `thread_id` overrides for target node execution.
 - [ ] [2.7-05] Implement `loop_restart` semantics to relaunch run with fresh logs.
