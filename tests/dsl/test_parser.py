@@ -237,6 +237,33 @@ line2"]
         graph.nodes["second"].attrs["llm_model"].value = "mutated"
         assert graph.nodes["third"].attrs["llm_model"].value == "gpt-5"
 
+    def test_explicit_node_attrs_override_later_defaults_when_redeclared(self):
+        dot = """
+        digraph ExplicitWins {
+            node [timeout=15m]
+            plan [prompt="p", timeout=30s]
+
+            node [timeout=1h]
+            plan
+        }
+        """
+        graph = parse_dot(dot)
+
+        assert graph.nodes["plan"].attrs["timeout"].value.raw == "30s"
+
+    def test_explicit_edge_attrs_override_edge_defaults(self):
+        dot = """
+        digraph EdgeExplicitWins {
+            edge [label="default", weight=1]
+            start -> plan [label="explicit", weight=9]
+        }
+        """
+        graph = parse_dot(dot)
+        edge = graph.edges[0]
+
+        assert edge.attrs["label"].value == "explicit"
+        assert edge.attrs["weight"].value == 9
+
     def test_edge_defaults_are_scoped_and_apply_to_subsequent_edge_declarations(self):
         dot = """
         digraph ScopedEdgeDefaults {

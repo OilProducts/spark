@@ -271,7 +271,15 @@ class _Parser:
         existing = graph.nodes.get(first.value)
         if existing:
             merged = dict(existing.attrs)
-            merged.update(effective)
+            for key, attr in scope.node_defaults.items():
+                if key not in merged:
+                    merged[key] = DotAttribute(
+                        key=attr.key,
+                        value=copy.deepcopy(attr.value),
+                        value_type=attr.value_type,
+                        line=attr.line,
+                    )
+            merged.update(stmt_attrs)
             existing.attrs = merged
             if subgraph_state is not None:
                 subgraph_state.node_ids.add(first.value)

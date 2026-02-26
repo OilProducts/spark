@@ -102,7 +102,7 @@ Status key:
 ### 2.11 Node and Edge Default Blocks
 - [x] [2.11-01] Implement scoped `node [...]` defaults for subsequent node declarations.
 - [x] [2.11-02] Implement scoped `edge [...]` defaults for subsequent edge declarations.
-- [ ] [2.11-03] Ensure explicit per-node/per-edge attrs always win over defaults.
+- [x] [2.11-03] Ensure explicit per-node/per-edge attrs always win over defaults.
 
 ### 2.12 Class Attribute
 - [ ] [2.12-01] Parse comma-separated node classes into normalized class list.
