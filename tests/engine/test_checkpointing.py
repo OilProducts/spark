@@ -100,3 +100,39 @@ class TestCheckpointAndArtifacts:
 
             # start executes once; resume continues at plan.
             assert calls == ["start", "plan", "review"]
+
+    def test_checkpoint_updates_after_stage_completion_before_routing_error(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box, prompt="plan"]
+                done [shape=Msquare]
+
+                start -> plan
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+
+            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+                return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
+
+            executor = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+            )
+
+            try:
+                executor.run(Context())
+                raise AssertionError("Expected pipeline execution to fail on missing outgoing edge")
+            except RuntimeError as exc:
+                assert "no eligible outgoing edge" in str(exc)
+
+            checkpoint = load_checkpoint(checkpoint_file)
+            assert checkpoint is not None
+            assert checkpoint.current_node == "plan"
+            assert checkpoint.completed_nodes == ["start", "plan"]

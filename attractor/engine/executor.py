@@ -178,6 +178,12 @@ class PipelineExecutor:
                 continue
 
             completed.append(node.node_id)
+            self._save_checkpoint(
+                current_node=node.node_id,
+                completed_nodes=completed,
+                context=ctx,
+                retry_counts=retry_counts,
+            )
             outgoing = [edge for edge in self.graph.edges if edge.source == node.node_id]
             next_edge = select_next_edge(outgoing, outcome, ctx)
             if not next_edge and outcome.status.value == "fail":
