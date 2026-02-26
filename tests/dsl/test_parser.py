@@ -132,7 +132,16 @@ class TestDotParser:
             a [label=<b>Bold</b>]
         }
         """
-        with pytest.raises(DotParseError):
+        with pytest.raises(DotParseError, match="HTML-like labels are not supported"):
+            parse_dot(dot)
+
+    def test_reject_port_or_compass_point_syntax(self):
+        dot = """
+        digraph G {
+            a:out -> b:in
+        }
+        """
+        with pytest.raises(DotParseError, match="port and compass point syntax is not supported"):
             parse_dot(dot)
 
     def test_strip_block_comments_before_parse(self):

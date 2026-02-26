@@ -386,6 +386,12 @@ def _tokenize(source: str) -> List[Token]:
             tokens.append(Token("IDENT", source[start:i], line))
             continue
 
+        if ch == "<":
+            raise DotParseError("HTML-like labels are not supported", line)
+
+        if ch == ":":
+            raise DotParseError("port and compass point syntax is not supported", line)
+
         raise DotParseError(f"unexpected character '{ch}'", line)
 
     tokens.append(Token("EOF", "", line))
