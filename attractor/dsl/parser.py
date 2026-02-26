@@ -620,7 +620,7 @@ def _append_class(node: DotNode, class_name: str, line: int) -> None:
 def _normalize_class_list(raw: str) -> str:
     seen: set[str] = set()
     ordered: list[str] = []
-    for class_name in [c.strip() for c in raw.split(",")]:
+    for class_name in [c.strip().lower() for c in raw.split(",")]:
         if class_name == "" or class_name in seen:
             continue
         seen.add(class_name)

@@ -173,6 +173,24 @@ class TestTransforms:
         assert graph.nodes["review"].attrs["llm_model"].value == "gpt-5.2"
         assert graph.nodes["review"].attrs["llm_provider"].value == "openai"
 
+    def test_stylesheet_class_selector_matches_normalized_parsed_class_list(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [model_stylesheet=".critical { llm_model: gpt-5.2; }"]
+                start [shape=Mdiamond]
+                review [shape=box, class=" Critical , code , CRITICAL "]
+                done [shape=Msquare]
+                start -> review -> done
+            }
+            """
+        )
+
+        AttributeDefaultsTransform().apply(graph)
+        ModelStylesheetTransform().apply(graph)
+
+        assert graph.nodes["review"].attrs["llm_model"].value == "gpt-5.2"
+
     def test_model_attr_precedence_node_then_stylesheet_then_graph_default(self):
         graph = parse_dot(
             """
