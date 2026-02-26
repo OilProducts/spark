@@ -256,6 +256,82 @@ class TestExecutor:
         assert result.status == "success"
         assert seen_thread_ids == ["start", "edge-thread"]
 
+    @pytest.mark.parametrize(
+        ("mode", "expected_snippet"),
+        [
+            ("truncate", "carryover:truncate"),
+            ("compact", "carryover:compact"),
+            ("summary:low", "carryover:summary:low"),
+            ("summary:medium", "carryover:summary:medium"),
+            ("summary:high", "carryover:summary:high"),
+        ],
+    )
+    def test_executor_builds_runtime_context_carryover_for_non_full_fidelity(self, mode, expected_snippet):
+        graph = parse_dot(
+            f"""
+            digraph G {{
+                graph [goal="Ship docs", default_fidelity="{mode}"]
+                start [shape=Mdiamond]
+                work [shape=box]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }}
+            """
+        )
+
+        seen_payload = ""
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            nonlocal seen_payload
+            if node_id == "start":
+                return Outcome(
+                    status=OutcomeStatus.SUCCESS,
+                    notes="seed-start",
+                    context_updates={
+                        "context.release": "v1",
+                        "context.tests_passed": True,
+                    },
+                )
+            if node_id == "work":
+                seen_payload = str(context.get("_attractor.runtime.context_carryover", ""))
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        initial_context = Context(values={"internal.run_id": "run-123"})
+        result = PipelineExecutor(graph, runner).run(initial_context)
+
+        assert result.status == "success"
+        assert expected_snippet in seen_payload
+        assert "goal=Ship docs" in seen_payload
+        assert "run_id=run-123" in seen_payload
+
+    def test_executor_uses_empty_runtime_context_carryover_for_full_fidelity(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [goal="Ship docs", default_fidelity="full"]
+                start [shape=Mdiamond]
+                work [shape=box]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+
+        seen_payload = "not-set"
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            nonlocal seen_payload
+            if node_id == "work":
+                seen_payload = str(context.get("_attractor.runtime.context_carryover", ""))
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context(values={"internal.run_id": "run-123"}))
+
+        assert result.status == "success"
+        assert seen_payload == ""
+
     def test_executor_mirrors_graph_goal_into_context(self):
         graph = parse_dot(
             """

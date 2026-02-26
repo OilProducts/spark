@@ -254,7 +254,7 @@ Status key:
 - [x] [5.3-04] Implement post-resume fidelity degradation rule for previous `full` stage.
 
 ### 5.4 Context Fidelity
-- [ ] [5.4-01] Implement supported fidelity modes (`full`, `truncate`, `compact`, `summary:low`, `summary:medium`, `summary:high`).
+- [x] [5.4-01] Implement supported fidelity modes (`full`, `truncate`, `compact`, `summary:low`, `summary:medium`, `summary:high`).
 - [ ] [5.4-02] Implement fidelity precedence: edge -> target node -> graph default -> `compact`.
 - [ ] [5.4-03] Implement thread-key resolution precedence for `full` fidelity.
 - [ ] [5.4-04] Verify session reuse/isolation behavior with thread keys.
@@ -548,7 +548,6 @@ Status key:
 ---
 
 ## Deferred Tasks
-- [ ] [5.4-01] Implement supported fidelity modes (`full`, `truncate`, `compact`, `summary:low`, `summary:medium`, `summary:high`). Deferred because full spec coverage requires mode-specific context carryover plus real full-fidelity thread/session reuse semantics, which are not yet wired through runtime transforms/backends.
 - [ ] [4.2-01] Implement registration API with replacement behavior for duplicate keys. Deferred because `HandlerRegistry.register` already replaces existing entries via direct map assignment and this is checklist state drift.
 - [ ] [2.6-02] Resolve `type` override before shape-based handler mapping. Deferred because `HandlerRegistry.resolve_handler_type` already checks explicit `type` before shape mapping and tests already cover this precedence (`tests/handlers/test_handlers.py`), so this is checklist state drift.
 - [ ] [2.8-02] Ensure explicit `type` attribute overrides shape mapping. Deferred because explicit `type` precedence is already implemented in `HandlerRegistry.resolve_handler_type` and validated by `tests/handlers/test_handlers.py::test_registry_resolution_by_shape_and_type`, so this is checklist state drift.
