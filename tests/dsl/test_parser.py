@@ -5,6 +5,28 @@ from attractor.dsl.models import DotValueType, Duration
 
 
 class TestDotParser:
+    def test_parses_quoted_strings_with_supported_escapes(self):
+        dot = r'''
+        digraph EscapedStrings {
+            node_a [label="line1\nline2\t\"quoted\"\\path"]
+        }
+        '''
+        graph = parse_dot(dot)
+        label = graph.nodes["node_a"].attrs["label"]
+
+        assert label.value == 'line1\nline2\t"quoted"\\path'
+        assert label.value_type == DotValueType.STRING
+
+    def test_rejects_unescaped_newline_in_string_literal(self):
+        dot = """
+        digraph Bad {
+            node_a [label="line1
+line2"]
+        }
+        """
+        with pytest.raises(DotParseError, match="unescaped newline in string literal"):
+            parse_dot(dot)
+
     def test_lexes_all_supported_typed_values(self):
         dot = """
         digraph TypedValues {

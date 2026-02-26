@@ -58,7 +58,7 @@ Status key:
 - [x] [2.3-04] Strip `//` and `/* */` comments before parse.
 
 ### 2.4 Value Types
-- [ ] [2.4-01] Parse quoted strings with escapes (`\\n`, `\\t`, escaped quotes, escaped backslash).
+- [x] [2.4-01] Parse quoted strings with escapes (`\\n`, `\\t`, escaped quotes, escaped backslash).
 - [ ] [2.4-02] Parse signed integers and floats.
 - [ ] [2.4-03] Parse booleans as typed values.
 - [ ] [2.4-04] Parse durations with units (`ms|s|m|h|d`) and normalize representation.

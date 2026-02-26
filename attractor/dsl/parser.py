@@ -387,7 +387,7 @@ def _tokenize(source: str) -> List[Token]:
                     i += 1
                     break
                 if c == "\n":
-                    line += 1
+                    raise DotParseError("unescaped newline in string literal", line)
                 value_chars.append(c)
                 i += 1
             else:
