@@ -217,6 +217,26 @@ line2"]
         assert plan.attrs["thread_id"].value == "loop-a"
         assert plan.attrs["timeout"].value.raw == "15m"
 
+    def test_node_defaults_apply_per_subsequent_declaration_without_aliasing(self):
+        dot = """
+        digraph ScopedDefaults {
+            node [llm_model="gpt-5-mini"]
+            first [prompt="first"]
+
+            node [llm_model="gpt-5"]
+            second [prompt="second"]
+            third [prompt="third"]
+        }
+        """
+        graph = parse_dot(dot)
+
+        assert graph.nodes["first"].attrs["llm_model"].value == "gpt-5-mini"
+        assert graph.nodes["second"].attrs["llm_model"].value == "gpt-5"
+        assert graph.nodes["third"].attrs["llm_model"].value == "gpt-5"
+
+        graph.nodes["second"].attrs["llm_model"].value = "mutated"
+        assert graph.nodes["third"].attrs["llm_model"].value == "gpt-5"
+
     def test_subgraph_attr_decl_does_not_override_graph_attrs(self):
         dot = """
         digraph Scoped {

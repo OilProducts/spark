@@ -265,7 +265,7 @@ class _Parser:
             return
 
         stmt_attrs = self.parse_attr_block() if self.current().kind == "LBRACKET" else {}
-        effective = dict(scope.node_defaults)
+        effective = _clone_attrs(scope.node_defaults)
         effective.update(stmt_attrs)
 
         existing = graph.nodes.get(first.value)

@@ -100,7 +100,7 @@ Status key:
 - [x] [2.10-03] Derive stylesheet classes from subgraph labels (normalize case/spaces/symbols).
 
 ### 2.11 Node and Edge Default Blocks
-- [ ] [2.11-01] Implement scoped `node [...]` defaults for subsequent node declarations.
+- [x] [2.11-01] Implement scoped `node [...]` defaults for subsequent node declarations.
 - [ ] [2.11-02] Implement scoped `edge [...]` defaults for subsequent edge declarations.
 - [ ] [2.11-03] Ensure explicit per-node/per-edge attrs always win over defaults.
 
