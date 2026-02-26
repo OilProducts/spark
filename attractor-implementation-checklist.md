@@ -85,7 +85,6 @@ Status key:
 
 ### 2.7 Edge Attributes
 - [x] [2.7-02] Parse/evaluate edge `condition` expressions.
-- [ ] [2.7-03] Implement `weight` for deterministic prioritization.
 - [ ] [2.7-04] Implement edge-level `fidelity` and `thread_id` overrides for target node execution.
 - [ ] [2.7-05] Implement `loop_restart` semantics to relaunch run with fresh logs.
 
@@ -565,3 +564,4 @@ Status key:
 - [ ] [2.3-05] Accept optional statement semicolons. Deferred because parser behavior is already implemented and covered by existing tests (`tests/dsl/test_parser.py`), so this is checklist state drift rather than a code gap.
 - [ ] [2.4-02] Parse signed integers and floats. Deferred because signed integer/float parsing is already implemented in `attractor/dsl/parser.py` and exercised by parser tests, so this item is currently non-actionable checklist drift.
 - [ ] [2.7-01] Implement edge `label` for preferred-label routing. Deferred because preferred-label edge routing is already implemented in `attractor/engine/routing.py` and covered by `tests/engine/test_routing.py::test_preferred_label_then_suggested_ids`, so this is checklist state drift.
+- [ ] [2.7-03] Implement `weight` for deterministic prioritization. Deferred because deterministic weight routing is already implemented in `attractor/engine/routing.py` (`_best_by_weight_then_lexical`) and covered by `tests/engine/test_routing.py::test_weight_then_lexical_tiebreak_for_unconditional`, so this is checklist state drift.
