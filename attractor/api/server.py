@@ -253,6 +253,13 @@ class PipelineEventHub:
             self._subscribers.setdefault(run_id, []).append(queue)
         return queue
 
+    def subscribe_with_history(self, run_id: str) -> tuple[asyncio.Queue[dict], List[dict]]:
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=256)
+        with self._lock:
+            history = list(self._history.get(run_id, []))
+            self._subscribers.setdefault(run_id, []).append(queue)
+        return queue, history
+
     def unsubscribe(self, run_id: str, queue: asyncio.Queue[dict]) -> None:
         with self._lock:
             listeners = self._subscribers.get(run_id)
@@ -1460,8 +1467,7 @@ async def pipeline_events(pipeline_id: str, request: Request):
     if not active and not existing and not EVENT_HUB.history(pipeline_id):
         raise HTTPException(status_code=404, detail="Unknown pipeline")
 
-    queue = EVENT_HUB.subscribe(pipeline_id)
-    history = EVENT_HUB.history(pipeline_id)
+    queue, history = EVENT_HUB.subscribe_with_history(pipeline_id)
 
     async def stream():
         try:

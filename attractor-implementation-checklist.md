@@ -373,7 +373,7 @@ Status key:
 ### 9.5 HTTP Server Mode
 - [x] [9.5-01] Implement `POST /pipelines` start endpoint.
 - [x] [9.5-02] Implement `GET /pipelines/{id}` status/progress endpoint.
-- [ ] [9.5-03] Implement `GET /pipelines/{id}/events` SSE stream.
+- [x] [9.5-03] Implement `GET /pipelines/{id}/events` SSE stream.
 - [ ] [9.5-04] Implement `POST /pipelines/{id}/cancel` endpoint.
 - [ ] [9.5-05] Implement `GET /pipelines/{id}/graph` visualization endpoint.
 - [ ] [9.5-06] Implement `GET /pipelines/{id}/questions` endpoint.
