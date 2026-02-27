@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from attractor.dsl import DiagnosticSeverity, parse_dot, validate_graph
-from attractor.engine import Context, PipelineExecutor
+from attractor.engine import Context, PipelineExecutor, goal_gate_satisfied, load_checkpoint
 from attractor.handlers import HandlerRunner, build_default_registry
 
 
@@ -72,3 +72,12 @@ def test_spec_smoke_pipeline_parse_validate_execute_and_artifacts(tmp_path: Path
         assert (stage_dir / "prompt.md").is_file()
         assert (stage_dir / "response.md").is_file()
         assert (stage_dir / "status.json").is_file()
+
+    assert goal_gate_satisfied(graph, result, "implement")
+
+    checkpoint = load_checkpoint(logs_root / "checkpoint.json")
+    assert checkpoint is not None
+    assert checkpoint.current_node == "done"
+    assert "plan" in checkpoint.completed_nodes
+    assert "implement" in checkpoint.completed_nodes
+    assert "review" in checkpoint.completed_nodes

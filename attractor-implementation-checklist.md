@@ -466,7 +466,7 @@ Status key:
 ### 11.13 Integration Smoke Test
 - [x] [11.13-01] Implement exact smoke-test pipeline from spec in CI integration suite.
 - [x] [11.13-02] Assert parse/validate/execute outcomes and all required stage artifacts.
-- [ ] [11.13-03] Assert goal-gate and checkpoint postconditions exactly as listed.
+- [x] [11.13-03] Assert goal-gate and checkpoint postconditions exactly as listed.
 
 ---
 

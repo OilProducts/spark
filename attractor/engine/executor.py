@@ -111,6 +111,22 @@ class PipelineResult:
     failure_reason: str = ""
 
 
+def goal_gate_satisfied(graph: DotGraph, result: PipelineResult, node_id: str) -> bool:
+    node = graph.nodes.get(node_id)
+    if node is None:
+        return False
+
+    goal_gate_attr = node.attrs.get("goal_gate")
+    if goal_gate_attr is None or not _to_bool(goal_gate_attr.value):
+        return False
+
+    statuses = result.context.get(NODE_OUTCOMES_KEY, {})
+    if not isinstance(statuses, dict):
+        return False
+
+    return node_id in result.completed_nodes and statuses.get(node_id) in {"success", "partial_success"}
+
+
 class PipelineExecutor:
     def __init__(
         self,
