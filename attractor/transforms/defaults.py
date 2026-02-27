@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 
 from attractor.dsl.models import DotAttribute, DotGraph, DotValueType
@@ -20,6 +21,10 @@ GRAPH_DEFAULTS: tuple[tuple[str, DotValueType, _DefaultFactory], ...] = (
     ("retry_target", DotValueType.STRING, _static("")),
     ("fallback_retry_target", DotValueType.STRING, _static("")),
     ("default_fidelity", DotValueType.STRING, _static("")),
+    ("stack.child_dotfile", DotValueType.STRING, _static("")),
+    ("stack.child_workdir", DotValueType.STRING, lambda _graph_id: os.getcwd()),
+    ("tool_hooks.pre", DotValueType.STRING, _static("")),
+    ("tool_hooks.post", DotValueType.STRING, _static("")),
 )
 
 NODE_DEFAULTS: tuple[tuple[str, DotValueType, _DefaultFactory], ...] = (

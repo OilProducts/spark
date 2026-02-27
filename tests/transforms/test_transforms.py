@@ -28,10 +28,26 @@ class TestTransforms:
 
         assert graph.graph_attrs["goal"].value == ""
         assert graph.graph_attrs["goal"].value_type == DotValueType.STRING
+        assert graph.graph_attrs["label"].value == ""
+        assert graph.graph_attrs["label"].value_type == DotValueType.STRING
+        assert graph.graph_attrs["model_stylesheet"].value == ""
+        assert graph.graph_attrs["model_stylesheet"].value_type == DotValueType.STRING
         assert graph.graph_attrs["default_max_retry"].value == 50
         assert graph.graph_attrs["default_max_retry"].value_type == DotValueType.INTEGER
+        assert graph.graph_attrs["retry_target"].value == ""
+        assert graph.graph_attrs["retry_target"].value_type == DotValueType.STRING
+        assert graph.graph_attrs["fallback_retry_target"].value == ""
+        assert graph.graph_attrs["fallback_retry_target"].value_type == DotValueType.STRING
         assert graph.graph_attrs["default_fidelity"].value == ""
         assert graph.graph_attrs["default_fidelity"].value_type == DotValueType.STRING
+        assert graph.graph_attrs["stack.child_dotfile"].value == ""
+        assert graph.graph_attrs["stack.child_dotfile"].value_type == DotValueType.STRING
+        assert graph.graph_attrs["stack.child_workdir"].value == str(Path.cwd())
+        assert graph.graph_attrs["stack.child_workdir"].value_type == DotValueType.STRING
+        assert graph.graph_attrs["tool_hooks.pre"].value == ""
+        assert graph.graph_attrs["tool_hooks.pre"].value_type == DotValueType.STRING
+        assert graph.graph_attrs["tool_hooks.post"].value == ""
+        assert graph.graph_attrs["tool_hooks.post"].value_type == DotValueType.STRING
 
         task = graph.nodes["task"]
         assert task.attrs["shape"].value == "box"
