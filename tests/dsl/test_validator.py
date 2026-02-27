@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from attractor.dsl import parse_dot, validate, validate_graph
+from attractor.dsl import ValidationError, parse_dot, validate, validate_graph, validate_or_raise
 from attractor.dsl.models import Diagnostic, DiagnosticSeverity
 
 
@@ -572,3 +572,39 @@ class TestDotValidator:
 
         assert diagnostics[: len(baseline)] == baseline
         assert diagnostics[len(baseline) :][-1].rule_id == "custom_rule"
+
+    def test_validate_or_raise_returns_diagnostics_when_only_warnings(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            custom [type="custom.handler"]
+            done [shape=Msquare]
+
+            start -> custom
+            custom -> done
+        }
+        """
+        graph = parse_dot(dot)
+
+        diagnostics = validate_or_raise(graph)
+
+        assert diagnostics
+        assert all(d.severity != DiagnosticSeverity.ERROR for d in diagnostics)
+        assert any(d.rule_id == "type_known" for d in diagnostics)
+
+    def test_validate_or_raise_raises_with_aggregated_error_messages(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+        }
+        """
+        graph = parse_dot(dot)
+
+        try:
+            validate_or_raise(graph)
+            assert False, "validate_or_raise should raise when validation has errors"
+        except ValidationError as exc:
+            assert len(exc.errors) >= 2
+            assert all(d.severity == DiagnosticSeverity.ERROR for d in exc.errors)
+            assert "terminal_node" in str(exc)
+            assert "node_has_outgoing_edge" in str(exc)

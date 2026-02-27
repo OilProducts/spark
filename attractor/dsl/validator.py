@@ -50,6 +50,13 @@ class LintRule(Protocol):
         ...
 
 
+class ValidationError(Exception):
+    def __init__(self, errors: List[Diagnostic]):
+        self.errors = list(errors)
+        detail = "; ".join(_format_diagnostic_error(error) for error in self.errors)
+        super().__init__(f"validation failed with {len(self.errors)} error(s): {detail}")
+
+
 def validate(graph: DotGraph, extra_rules: Iterable[LintRule] | None = None) -> List[Diagnostic]:
     diagnostics = validate_graph(graph)
     if extra_rules is None:
@@ -57,6 +64,14 @@ def validate(graph: DotGraph, extra_rules: Iterable[LintRule] | None = None) -> 
 
     for rule in extra_rules:
         diagnostics.extend(rule.apply(graph))
+    return diagnostics
+
+
+def validate_or_raise(graph: DotGraph, extra_rules: Iterable[LintRule] | None = None) -> List[Diagnostic]:
+    diagnostics = validate(graph, extra_rules=extra_rules)
+    errors = [d for d in diagnostics if d.severity == DiagnosticSeverity.ERROR]
+    if errors:
+        raise ValidationError(errors)
     return diagnostics
 
 
@@ -193,6 +208,12 @@ def validate_graph(graph: DotGraph) -> List[Diagnostic]:
     diagnostics.extend(_validate_stylesheet(graph))
 
     return diagnostics
+
+
+def _format_diagnostic_error(diagnostic: Diagnostic) -> str:
+    if diagnostic.line > 0:
+        return f"[{diagnostic.rule_id}] line {diagnostic.line}: {diagnostic.message}"
+    return f"[{diagnostic.rule_id}] {diagnostic.message}"
 
 
 def _find_start_nodes(graph: DotGraph) -> List[DotNode]:
