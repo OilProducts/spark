@@ -202,6 +202,98 @@ class TestDotValidator:
 
         assert "stylesheet_syntax" in error_rules
 
+    def test_stylesheet_attribute_rejects_empty_string(self):
+        dot = """
+        digraph G {
+            graph [model_stylesheet="   "]
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "stylesheet_syntax" in error_rules
+
+    def test_stylesheet_requires_semicolon_between_declarations(self):
+        dot = """
+        digraph G {
+            graph [model_stylesheet="* { llm_model: gpt llm_provider: openai; }"]
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "stylesheet_syntax" in error_rules
+
+    def test_stylesheet_rejects_empty_property_value(self):
+        dot = """
+        digraph G {
+            graph [model_stylesheet="* { llm_model: ; }"]
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "stylesheet_syntax" in error_rules
+
+    def test_stylesheet_rejects_unclosed_quoted_property_value(self):
+        dot = """
+        digraph G {
+            graph [model_stylesheet="* { llm_provider: \\"openai; }"]
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "stylesheet_syntax" in error_rules
+
+    def test_stylesheet_rejects_empty_declaration_between_semicolons(self):
+        dot = """
+        digraph G {
+            graph [model_stylesheet="* { llm_model: gpt;; llm_provider: openai; }"]
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "stylesheet_syntax" in error_rules
+
+    def test_stylesheet_allows_semicolon_inside_quoted_value(self):
+        dot = """
+        digraph G {
+            graph [model_stylesheet="* { llm_model: \\"gpt;v2\\"; llm_provider: openai; }"]
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        stylesheet_errors = [
+            d for d in self._errors(diagnostics) if d.rule_id == "stylesheet_syntax"
+        ]
+
+        assert stylesheet_errors == []
+
     def test_retry_target_and_fidelity_warnings(self):
         dot = """
         digraph G {

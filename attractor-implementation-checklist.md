@@ -308,7 +308,7 @@ Status key:
 - [x] [7.2-04] Implement `edge_target_exists` rule.
 - [x] [7.2-05] Implement `start_no_incoming` rule.
 - [x] [7.2-07] Implement `condition_syntax` rule.
-- [ ] [7.2-08] Implement `stylesheet_syntax` rule.
+- [x] [7.2-08] Implement `stylesheet_syntax` rule.
 - [ ] [7.2-09] Implement `type_known` warning rule.
 - [ ] [7.2-10] Implement `fidelity_valid` warning rule.
 - [ ] [7.2-11] Implement `retry_target_exists` warning rule.

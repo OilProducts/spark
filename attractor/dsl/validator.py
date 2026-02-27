@@ -20,6 +20,7 @@ _CONTEXT_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_
 _STYLESHEET_ALLOWED_PROPERTIES = {"llm_model", "llm_provider", "reasoning_effort"}
 _STYLESHEET_CLASS_RE = re.compile(r"^[a-z0-9-]+$")
 _STYLESHEET_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_STYLESHEET_QUOTED_VALUE_RE = re.compile(r'^"(?:[^"\\]|\\.)+"$')
 
 
 def validate_graph(graph: DotGraph) -> List[Diagnostic]:
@@ -371,6 +372,14 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
     diagnostics: List[Diagnostic] = []
     text = stylesheet.strip()
     if text == "":
+        diagnostics.append(
+            Diagnostic(
+                rule_id="stylesheet_syntax",
+                severity=DiagnosticSeverity.ERROR,
+                message="model_stylesheet must include at least one rule",
+                line=line,
+            )
+        )
         return diagnostics
 
     # Minimal structural parse: selector { key: value; ... }
@@ -382,7 +391,7 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
         if idx >= n:
             break
 
-        brace = text.find("{", idx)
+        brace = _find_unquoted(text, "{", idx)
         if brace == -1:
             diagnostics.append(
                 Diagnostic(
@@ -419,7 +428,7 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
                 )
             )
 
-        close = text.find("}", brace + 1)
+        close = _find_unquoted(text, "}", brace + 1)
         if close == -1:
             diagnostics.append(
                 Diagnostic(
@@ -442,7 +451,22 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
                 )
             )
         else:
-            statements = [s.strip() for s in body.split(";") if s.strip()]
+            raw_statements = _split_unquoted(body, ";")
+            has_empty_declaration = any(
+                statement.strip() == "" and idx < len(raw_statements) - 1
+                for idx, statement in enumerate(raw_statements)
+            )
+            if has_empty_declaration:
+                diagnostics.append(
+                    Diagnostic(
+                        rule_id="stylesheet_syntax",
+                        severity=DiagnosticSeverity.ERROR,
+                        message="stylesheet contains an empty declaration between ';' separators",
+                        line=line,
+                    )
+                )
+
+            statements = [s.strip() for s in raw_statements if s.strip()]
             if not statements:
                 diagnostics.append(
                     Diagnostic(
@@ -453,12 +477,23 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
                     )
                 )
             for stmt in statements:
-                if ":" not in stmt:
+                colon_count = _count_unquoted(stmt, ":")
+                if colon_count == 0:
                     diagnostics.append(
                         Diagnostic(
                             rule_id="stylesheet_syntax",
                             severity=DiagnosticSeverity.ERROR,
                             message=f"stylesheet statement '{stmt}' must contain ':'",
+                            line=line,
+                        )
+                    )
+                    continue
+                if colon_count > 1:
+                    diagnostics.append(
+                        Diagnostic(
+                            rule_id="stylesheet_syntax",
+                            severity=DiagnosticSeverity.ERROR,
+                            message="stylesheet declarations must be separated by ';'",
                             line=line,
                         )
                     )
@@ -480,7 +515,18 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
                     )
                     continue
 
-                value = raw_value.strip().strip('"')
+                value = _parse_stylesheet_value(raw_value)
+                if value is None:
+                    diagnostics.append(
+                        Diagnostic(
+                            rule_id="stylesheet_syntax",
+                            severity=DiagnosticSeverity.ERROR,
+                            message=f"stylesheet property '{key}' must have a valid non-empty value",
+                            line=line,
+                        )
+                    )
+                    continue
+
                 if key == "reasoning_effort" and value not in {"low", "medium", "high"}:
                     diagnostics.append(
                         Diagnostic(
@@ -494,3 +540,67 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
         idx = close + 1
 
     return diagnostics
+
+
+def _count_unquoted(text: str, token: str) -> int:
+    count = 0
+    in_quotes = False
+    escaped = False
+    for char in text:
+        if char == "\\" and in_quotes and not escaped:
+            escaped = True
+            continue
+        if char == '"' and not escaped:
+            in_quotes = not in_quotes
+        elif char == token and not in_quotes:
+            count += 1
+        escaped = False
+    return count
+
+
+def _find_unquoted(text: str, token: str, start: int = 0) -> int:
+    in_quotes = False
+    escaped = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if char == "\\" and in_quotes and not escaped:
+            escaped = True
+            continue
+        if char == '"' and not escaped:
+            in_quotes = not in_quotes
+        elif char == token and not in_quotes:
+            return idx
+        escaped = False
+    return -1
+
+
+def _split_unquoted(text: str, token: str) -> List[str]:
+    parts: List[str] = []
+    start = 0
+    in_quotes = False
+    escaped = False
+    for idx, char in enumerate(text):
+        if char == "\\" and in_quotes and not escaped:
+            escaped = True
+            continue
+        if char == '"' and not escaped:
+            in_quotes = not in_quotes
+        elif char == token and not in_quotes:
+            parts.append(text[start:idx])
+            start = idx + 1
+        escaped = False
+    parts.append(text[start:])
+    return parts
+
+
+def _parse_stylesheet_value(raw_value: str) -> str | None:
+    value = raw_value.strip()
+    if not value:
+        return None
+    if value.startswith('"') or value.endswith('"'):
+        if not _STYLESHEET_QUOTED_VALUE_RE.fullmatch(value):
+            return None
+        return value[1:-1]
+    if '"' in value:
+        return None
+    return value
