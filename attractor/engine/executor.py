@@ -689,6 +689,12 @@ class PipelineExecutor:
                         attempt=retry_counts[node.node_id],
                         delay=delay_ms,
                     )
+                    self._save_checkpoint(
+                        current_node=node.node_id,
+                        completed_nodes=completed,
+                        context=ctx,
+                        retry_counts=retry_counts,
+                    )
                     continue
 
                 original_status = outcome.status

@@ -446,7 +446,7 @@ Status key:
 ### 11.6 Node Handlers
 
 ### 11.7 State and Context
-- [ ] [11.7-01] Convert each DoD bullet in spec 11.7 into context/checkpoint/artifact tests.
+- [x] [11.7-01] Convert each DoD bullet in spec 11.7 into context/checkpoint/artifact tests.
 
 ### 11.8 Human-in-the-Loop
 - [ ] [11.8-01] Convert each DoD bullet in spec 11.8 into interviewer/human-gate tests.

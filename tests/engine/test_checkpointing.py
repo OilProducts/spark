@@ -629,3 +629,66 @@ class TestCheckpointAndArtifacts:
             assert result.status == "success"
             assert ("start", ["start"]) in snapshots
             assert ("plan", ["start", "plan"]) in snapshots
+
+    def test_run_from_persists_retry_checkpoint_with_retry_counts_and_context(self, monkeypatch):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                work [shape=box, max_retries=1]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+            calls = {"work": 0}
+            snapshots: list[Checkpoint] = []
+            original_save_checkpoint = executor_module.save_checkpoint
+
+            def capture_checkpoint(path: Path, checkpoint: Checkpoint):
+                snapshots.append(checkpoint)
+                original_save_checkpoint(path, checkpoint)
+
+            monkeypatch.setattr(executor_module, "save_checkpoint", capture_checkpoint)
+
+            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+                if node_id == "start":
+                    return Outcome(
+                        status=OutcomeStatus.SUCCESS,
+                        context_updates={"context.shared": "visible-to-work"},
+                    )
+
+                if node_id == "work":
+                    calls["work"] += 1
+                    assert context.get("context.shared") == "visible-to-work"
+                    if calls["work"] == 1:
+                        return Outcome(
+                            status=OutcomeStatus.RETRY,
+                            context_updates={"context.retry.phase": "first-attempt"},
+                        )
+                    assert context.get("context.retry.phase") == "first-attempt"
+                    return Outcome(
+                        status=OutcomeStatus.SUCCESS,
+                        context_updates={"context.retry.phase": "second-attempt"},
+                    )
+
+                return Outcome(status=OutcomeStatus.SUCCESS)
+
+            result = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+            ).run_from("start", Context(values={"context.seed": "ready"}))
+
+            assert result.status == "success"
+            retry_snapshots = [snap for snap in snapshots if snap.current_node == "work" and snap.retry_counts]
+            assert retry_snapshots, "expected checkpoint persistence for work retry attempt"
+            retry_snapshot = retry_snapshots[0]
+            assert retry_snapshot.retry_counts == {"work": 1}
+            assert retry_snapshot.completed_nodes == ["start"]
+            assert retry_snapshot.context["context.shared"] == "visible-to-work"
+            assert retry_snapshot.context["context.retry.phase"] == "first-attempt"
