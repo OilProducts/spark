@@ -461,7 +461,7 @@ Status key:
 
 ### 11.12 Cross-Feature Parity Matrix
 - [x] [11.12-01] Execute the entire parity matrix and persist a pass/fail report artifact.
-- [ ] [11.12-02] Fail release gate if any matrix row is unchecked.
+- [x] [11.12-02] Fail release gate if any matrix row is unchecked.
 
 ### 11.13 Integration Smoke Test
 - [ ] [11.13-01] Implement exact smoke-test pipeline from spec in CI integration suite.

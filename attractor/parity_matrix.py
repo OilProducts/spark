@@ -118,6 +118,26 @@ def run_cross_feature_parity_matrix(report_path: Path | str) -> Dict[str, object
     return report
 
 
+def enforce_cross_feature_parity_release_gate(report: Dict[str, object]) -> None:
+    rows = report.get("rows")
+    if not isinstance(rows, list):
+        raise RuntimeError("Cross-feature parity matrix release gate failed: unchecked rows")
+
+    row_pass_by_name: Dict[str, bool] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not isinstance(name, str):
+            continue
+        row_pass_by_name[name] = bool(row.get("pass", False))
+
+    unchecked = [name for name in CROSS_FEATURE_PARITY_MATRIX_ROWS if not row_pass_by_name.get(name, False)]
+    if unchecked:
+        joined = ", ".join(unchecked)
+        raise RuntimeError(f"Cross-feature parity matrix release gate failed: unchecked rows: {joined}")
+
+
 def _cross_feature_parity_cases() -> List[ParityMatrixCase]:
     cases = [
         ParityMatrixCase(CROSS_FEATURE_PARITY_MATRIX_ROWS[0], _check_parse_simple_linear_pipeline),
