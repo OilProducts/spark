@@ -39,6 +39,12 @@ _NON_CODEGEN_SHAPES = {
     "house",
 }
 GOAL_GATE_NO_RETRY_TARGET_REASON = "Goal gate unsatisfied and no retry target"
+STATUS_FILE_ALLOWED_OUTCOMES = {
+    OutcomeStatus.SUCCESS,
+    OutcomeStatus.RETRY,
+    OutcomeStatus.FAIL,
+    OutcomeStatus.PARTIAL_SUCCESS,
+}
 
 
 def _utc_timestamp() -> str:
@@ -1091,7 +1097,34 @@ class PipelineExecutor:
 
     def _normalize_outcome(self, node_id: str, outcome: Outcome | None) -> Outcome:
         if isinstance(outcome, Outcome):
-            return outcome
+            normalized_status = self._parse_outcome_status(outcome.status)
+            preferred_label = str(outcome.preferred_label or "")
+            suggested_next_ids = self._normalize_suggested_next_ids(outcome.suggested_next_ids)
+            context_updates = self._normalize_context_updates(outcome.context_updates)
+            notes = "" if outcome.notes is None else str(outcome.notes)
+            failure_reason = "" if outcome.failure_reason is None else str(outcome.failure_reason)
+            retryable = outcome.retryable if isinstance(outcome.retryable, bool) or outcome.retryable is None else None
+
+            if normalized_status is None or normalized_status not in STATUS_FILE_ALLOWED_OUTCOMES:
+                return Outcome(
+                    status=OutcomeStatus.FAIL,
+                    preferred_label=preferred_label,
+                    suggested_next_ids=suggested_next_ids,
+                    context_updates=context_updates,
+                    notes=notes,
+                    failure_reason=f"invalid outcome status: {outcome.status}",
+                    retryable=False,
+                )
+
+            return Outcome(
+                status=normalized_status,
+                preferred_label=preferred_label,
+                suggested_next_ids=suggested_next_ids,
+                context_updates=context_updates,
+                notes=notes,
+                failure_reason=failure_reason,
+                retryable=retryable,
+            )
 
         node = self.graph.nodes[node_id]
         auto_status_attr = node.attrs.get("auto_status")
@@ -1102,6 +1135,20 @@ class PipelineExecutor:
             )
 
         return Outcome(status=OutcomeStatus.FAIL, failure_reason="handler returned no outcome")
+
+    def _normalize_suggested_next_ids(self, suggested_next_ids: object) -> List[str]:
+        if suggested_next_ids is None:
+            return []
+        if isinstance(suggested_next_ids, (list, tuple, set)):
+            return [str(node_id) for node_id in suggested_next_ids]
+        return []
+
+    def _normalize_context_updates(self, context_updates: object) -> Dict[str, object]:
+        if context_updates is None:
+            return {}
+        if isinstance(context_updates, dict):
+            return dict(context_updates)
+        return {}
 
     def _execute_node_handler(self, node_id: str, prompt: str, context: Context) -> Outcome:
         timeout = self._node_timeout_seconds(node_id)

@@ -181,6 +181,88 @@ class TestCheckpointAndArtifacts:
             assert status_payload["context_updates"] == {}
             assert status_payload["notes"] == ""
 
+    def test_status_json_contract_constrains_invalid_outcome_enum_and_optional_field_values(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> done [condition="outcome=fail"]
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_root = Path(tmp) / "logs"
+
+            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+                if node_id == "plan":
+                    return Outcome(
+                        status="not-a-valid-status",  # type: ignore[arg-type]
+                        suggested_next_ids="done",  # type: ignore[arg-type]
+                        context_updates="bad-updates",  # type: ignore[arg-type]
+                        notes=123,  # type: ignore[arg-type]
+                    )
+                return Outcome(status=OutcomeStatus.SUCCESS)
+
+            result = PipelineExecutor(
+                graph,
+                runner,
+                logs_root=str(logs_root),
+            ).run(Context())
+
+            assert result.status == "success"
+            plan_outcome = result.node_outcomes["plan"]
+            assert plan_outcome.status == OutcomeStatus.FAIL
+            assert "invalid outcome status" in plan_outcome.failure_reason
+
+            status_payload = json.loads((logs_root / "plan" / "status.json").read_text(encoding="utf-8"))
+            assert status_payload["outcome"] == "fail"
+            assert status_payload["preferred_next_label"] == ""
+            assert status_payload["suggested_next_ids"] == []
+            assert status_payload["context_updates"] == {}
+            assert status_payload["notes"] == "123"
+
+    def test_status_json_contract_rejects_skipped_enum_value_for_stage_outcome(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> done [condition="outcome=fail"]
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_root = Path(tmp) / "logs"
+
+            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+                if node_id == "plan":
+                    return Outcome(status=OutcomeStatus.SKIPPED, notes="condition not met")
+                return Outcome(status=OutcomeStatus.SUCCESS)
+
+            result = PipelineExecutor(
+                graph,
+                runner,
+                logs_root=str(logs_root),
+            ).run(Context())
+
+            assert result.status == "success"
+            plan_outcome = result.node_outcomes["plan"]
+            assert plan_outcome.status == OutcomeStatus.FAIL
+            assert "invalid outcome status" in plan_outcome.failure_reason
+
+            status_payload = json.loads((logs_root / "plan" / "status.json").read_text(encoding="utf-8"))
+            assert status_payload["outcome"] == "fail"
+            assert status_payload["notes"] == "condition not met"
+
     def test_artifacts_and_checkpoint_written_each_step(self):
         graph = parse_dot(
             """

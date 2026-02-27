@@ -494,7 +494,7 @@ Status key:
 
 ## Appendix C: Status File Contract
 - [x] [C-01] Enforce `status.json` schema for all non-terminal stages.
-- [ ] [C-02] Validate required enum/value constraints for `outcome` and optional fields.
+- [x] [C-02] Validate required enum/value constraints for `outcome` and optional fields.
 - [ ] [C-03] Ensure `context_updates` merge semantics match engine behavior.
 - [ ] [C-04] Implement `auto_status=true` synthesized file behavior when handler does not write status.
 
