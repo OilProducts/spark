@@ -312,6 +312,26 @@ class TestDotValidator:
         assert "retry_target_exists" in warning_rules
         assert "fidelity_valid" in warning_rules
 
+    def test_unknown_node_type_emits_type_known_warning(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            known [shape=box, type="tool"]
+            custom [shape=box, type="custom.unknown"]
+            done [shape=Msquare]
+            start -> known
+            known -> custom
+            custom -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+
+        type_warnings = [d for d in diagnostics if d.rule_id == "type_known" and d.severity == DiagnosticSeverity.WARNING]
+        assert len(type_warnings) == 1
+        assert type_warnings[0].node_id == "custom"
+        assert "custom.unknown" in type_warnings[0].message
+
     def test_valid_minimal_graph(self):
         dot = """
         digraph G {

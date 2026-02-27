@@ -21,6 +21,17 @@ _STYLESHEET_ALLOWED_PROPERTIES = {"llm_model", "llm_provider", "reasoning_effort
 _STYLESHEET_CLASS_RE = re.compile(r"^[a-z0-9-]+$")
 _STYLESHEET_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _STYLESHEET_QUOTED_VALUE_RE = re.compile(r'^"(?:[^"\\]|\\.)+"$')
+_KNOWN_HANDLER_TYPES = {
+    "start",
+    "exit",
+    "codergen",
+    "wait.human",
+    "conditional",
+    "parallel",
+    "parallel.fan_in",
+    "tool",
+    "stack.manager_loop",
+}
 
 
 def validate_graph(graph: DotGraph) -> List[Diagnostic]:
@@ -150,6 +161,7 @@ def validate_graph(graph: DotGraph) -> List[Diagnostic]:
 
     diagnostics.extend(_validate_retry_targets(graph))
     diagnostics.extend(_validate_fidelity_values(graph))
+    diagnostics.extend(_validate_known_types(graph))
     diagnostics.extend(_validate_stylesheet(graph))
 
     return diagnostics
@@ -345,6 +357,29 @@ def _validate_fidelity_values(graph: DotGraph) -> List[Diagnostic]:
             attr.line if attr else edge.line,
             edge=(edge.source, edge.target),
         )
+
+    return diagnostics
+
+
+def _validate_known_types(graph: DotGraph) -> List[Diagnostic]:
+    diagnostics: List[Diagnostic] = []
+
+    for node in graph.nodes.values():
+        attr = node.attrs.get("type")
+        if not attr:
+            continue
+
+        handler_type = str(attr.value).strip()
+        if handler_type and handler_type not in _KNOWN_HANDLER_TYPES:
+            diagnostics.append(
+                Diagnostic(
+                    rule_id="type_known",
+                    severity=DiagnosticSeverity.WARNING,
+                    message=f"node '{node.node_id}' type '{handler_type}' is not a recognized handler type",
+                    line=attr.line,
+                    node_id=node.node_id,
+                )
+            )
 
     return diagnostics
 
