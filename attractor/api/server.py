@@ -1492,6 +1492,8 @@ async def pipeline_events(pipeline_id: str, request: Request):
 async def cancel_pipeline(pipeline_id: str):
     active = _get_active_run(pipeline_id)
     if not active:
+        if not _read_run_meta(_run_meta_path(pipeline_id)):
+            raise HTTPException(status_code=404, detail="Unknown pipeline")
         return {"status": "ignored", "pipeline_id": pipeline_id}
     active.control.request_cancel()
     _set_active_run_status(pipeline_id, "cancel_requested", last_error="cancel_requested_by_user")
