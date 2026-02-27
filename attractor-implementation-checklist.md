@@ -403,7 +403,7 @@ Status key:
 ### 10.2 Grammar
 - [x] [10.2-01] Parse clauses joined by `&&`.
 - [x] [10.2-02] Support keys: `outcome`, `preferred_label`, `context.<path>`.
-- [ ] [10.2-03] Support operators `=` and `!=` with typed literals.
+- [x] [10.2-03] Support operators `=` and `!=` with typed literals.
 
 ### 10.3 Semantics
 - [ ] [10.3-01] Evaluate clauses left-to-right with logical AND semantics.

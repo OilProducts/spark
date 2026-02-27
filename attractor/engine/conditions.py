@@ -24,7 +24,7 @@ def evaluate_condition(condition: str, outcome: Outcome, context: Context) -> bo
 
         key = match.group(1)
         op = match.group(2)
-        expected = _normalize_value(match.group(3))
+        expected = _normalize_literal(match.group(3))
         actual = _resolve_key(key, outcome, context)
 
         if op == "=" and actual != expected:
@@ -90,6 +90,35 @@ def _normalize_value(raw: str) -> str:
     if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
         text = text[1:-1]
     return text
+
+
+def _normalize_literal(raw: str) -> str:
+    text = raw.strip()
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        return _unescape_quoted(text[1:-1])
+    return text
+
+
+def _unescape_quoted(text: str) -> str:
+    unescaped: list[str] = []
+    escaped = False
+    for char in text:
+        if escaped:
+            if char in {'"', "\\"}:
+                unescaped.append(char)
+            else:
+                unescaped.append("\\")
+                unescaped.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        unescaped.append(char)
+
+    if escaped:
+        unescaped.append("\\")
+    return "".join(unescaped)
 
 
 def _stringify(value: object) -> str:

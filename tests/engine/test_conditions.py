@@ -36,3 +36,18 @@ class TestConditions:
     def test_quoted_literal_can_contain_and_delimiter(self):
         outcome = Outcome(status=OutcomeStatus.SUCCESS, preferred_label="A && B")
         assert evaluate_condition('preferred_label="A && B"', outcome, Context())
+
+    def test_typed_literals_with_equals_and_not_equals(self):
+        outcome = Outcome(status=OutcomeStatus.SUCCESS, preferred_label='Fix "Now"')
+        context = Context(values={"context.retries": 2, "context.tests_passed": True})
+
+        assert evaluate_condition(
+            'context.retries=2 && context.tests_passed=true && preferred_label="Fix \\"Now\\""',
+            outcome,
+            context,
+        )
+        assert evaluate_condition(
+            'context.retries!=3 && context.tests_passed!=false && preferred_label!="Fix \\"Later\\""',
+            outcome,
+            context,
+        )
