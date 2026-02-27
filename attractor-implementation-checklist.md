@@ -436,7 +436,6 @@ Status key:
 
 ### 11.3 Execution Engine
 - [x] [11.3-01] Convert each DoD bullet in spec 11.3 into execution tests.
-- [ ] [11.3-02] Add deterministic edge-selection conformance tests.
 
 ### 11.4 Goal Gate Enforcement
 - [ ] [11.4-01] Convert each DoD bullet in spec 11.4 into goal-gate tests.
@@ -523,6 +522,7 @@ Status key:
 ---
 
 ## Deferred Tasks
+- [ ] [11.3-02] Add deterministic edge-selection conformance tests. Deferred because deterministic edge-selection conformance is already covered by routing tests for the five-step priority and stable tie-breaking (`tests/engine/test_routing.py`), so this is checklist state drift.
 - [ ] [10.6-01] Add routing tests for `outcome=success` and `outcome=fail`. Deferred because success/fail edge-condition routing is already covered by engine execution tests (`tests/engine/test_retry_goal_gate.py`) and condition-evaluation tests (`tests/engine/test_conditions.py`), so this is checklist state drift.
 - [ ] [10.6-02] Add routing test for conjunction with `context.tests_passed=true`. Deferred because conjunction evaluation with `context.tests_passed` is already covered in `tests/engine/test_conditions.py`, so this is checklist state drift.
 - [ ] [10.6-03] Add routing tests for inequality and `preferred_label` matching. Deferred because `!=` and `preferred_label` condition evaluation plus preferred-label routing are already covered in `tests/engine/test_conditions.py`, `tests/engine/test_executor.py`, and `tests/engine/test_routing.py`, so this is checklist state drift.
