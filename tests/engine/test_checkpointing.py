@@ -564,6 +564,35 @@ class TestCheckpointAndArtifacts:
         assert runner.closed == 1
         assert control.closed == 1
 
+    def test_run_from_writes_terminal_stage_status_artifact(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                done [shape=Msquare]
+                start -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_root = Path(tmp) / "logs"
+
+            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+                return Outcome(status=OutcomeStatus.SUCCESS, notes=f"{node_id} complete")
+
+            result = PipelineExecutor(
+                graph,
+                runner,
+                logs_root=str(logs_root),
+            ).run_from("start", Context())
+
+            assert result.status == "success"
+            terminal_status_path = logs_root / "done" / "status.json"
+            assert terminal_status_path.is_file()
+            terminal_status = json.loads(terminal_status_path.read_text(encoding="utf-8"))
+            assert terminal_status["outcome"] == "success"
+
     def test_run_from_saves_checkpoint_after_each_stage_with_current_node_and_completed_list(self, monkeypatch):
         graph = parse_dot(
             """

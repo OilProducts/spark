@@ -435,7 +435,7 @@ Status key:
 - [x] [11.2-02] Assert `validate_or_raise` behavior and diagnostic payload shape.
 
 ### 11.3 Execution Engine
-- [ ] [11.3-01] Convert each DoD bullet in spec 11.3 into execution tests.
+- [x] [11.3-01] Convert each DoD bullet in spec 11.3 into execution tests.
 - [ ] [11.3-02] Add deterministic edge-selection conformance tests.
 
 ### 11.4 Goal Gate Enforcement

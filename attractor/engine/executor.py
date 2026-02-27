@@ -565,6 +565,12 @@ class PipelineExecutor:
                 if self._is_exit_node(current):
                     gates_ok, failed_gate_node = self._check_goal_gates(ctx, completed)
                     if gates_ok:
+                        prompt = self._prompt_for_node(current)
+                        self._write_stage_artifacts(
+                            current,
+                            prompt,
+                            Outcome(status=OutcomeStatus.SUCCESS),
+                        )
                         self._finalize_run(
                             current_node=current,
                             completed_nodes=completed,
