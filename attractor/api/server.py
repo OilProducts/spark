@@ -186,6 +186,8 @@ class HumanGateBroker:
             for gate_id, entry in self._pending.items():
                 if str(entry.get("run_id", "")) != run_id:
                     continue
+                if entry.get("answer") is not None:
+                    continue
                 payload.append(
                     {
                         "question_id": gate_id,
