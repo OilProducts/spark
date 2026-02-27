@@ -304,6 +304,36 @@ class TestDotValidator:
 
         assert stylesheet_errors == []
 
+    def test_stylesheet_rejects_invalid_class_selector_characters(self):
+        dot = """
+        digraph G {
+            graph [model_stylesheet=".bad$class { llm_model: gpt-5; }"]
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "stylesheet_syntax" in error_rules
+
+    def test_stylesheet_rejects_equals_declaration_syntax(self):
+        dot = """
+        digraph G {
+            graph [model_stylesheet="* { llm_model = gpt-5; }"]
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "stylesheet_syntax" in error_rules
+
     def test_retry_target_and_fidelity_warnings(self):
         dot = """
         digraph G {

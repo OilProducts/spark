@@ -332,7 +332,7 @@ Status key:
 ### 8.2 Stylesheet Grammar
 - [x] [8.2-01] Implement parser for `Rule+` grammar with selector/declaration blocks.
 - [x] [8.2-02] Restrict properties to `llm_model`, `llm_provider`, `reasoning_effort`.
-- [ ] [8.2-03] Enforce class name format and declaration syntax validation.
+- [x] [8.2-03] Enforce class name format and declaration syntax validation.
 
 ### 8.3 Selectors and Specificity
 - [ ] [8.3-01] Implement selector matching for `*`, `.class`, and `#node_id`.

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Dict, List, Tuple
 
 from attractor.dsl.models import DotAttribute, DotGraph, DotNode, DotValueType
 
 
 _ALLOWED_PROPERTIES = {"llm_model", "llm_provider", "reasoning_effort"}
+_CLASS_NAME_RE = re.compile(r"^[a-z0-9-]+$")
+_NODE_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass
@@ -93,15 +96,16 @@ def _parse_rules(stylesheet: str) -> List[_StyleRule]:
         body = text[brace + 1 : close].strip()
 
         properties: Dict[str, str] = {}
-        rule_is_valid = True
+        rule_is_valid = _selector_is_valid(selector)
         for statement in _split_unquoted(body, ";"):
             stmt = statement.strip()
             if not stmt:
                 continue
-            colon = _find_unquoted(stmt, ":")
-            if colon == -1:
+            colon_count = _count_unquoted(stmt, ":")
+            if colon_count != 1:
                 rule_is_valid = False
                 break
+            colon = _find_unquoted(stmt, ":")
             raw_key = stmt[:colon]
             raw_value = stmt[colon + 1 :]
             key = raw_key.strip()
@@ -115,6 +119,16 @@ def _parse_rules(stylesheet: str) -> List[_StyleRule]:
         order += 1
         idx = close + 1
     return rules
+
+
+def _selector_is_valid(selector: str) -> bool:
+    if selector == "*":
+        return True
+    if selector.startswith("."):
+        return bool(_CLASS_NAME_RE.fullmatch(selector[1:] or ""))
+    if selector.startswith("#"):
+        return bool(_NODE_ID_RE.fullmatch(selector[1:] or ""))
+    return False
 
 
 def _selector_matches(selector: str, node: DotNode) -> bool:
@@ -166,6 +180,22 @@ def _find_unquoted(text: str, token: str, start: int = 0) -> int:
             return idx
         escaped = False
     return -1
+
+
+def _count_unquoted(text: str, token: str) -> int:
+    count = 0
+    in_quotes = False
+    escaped = False
+    for char in text:
+        if char == "\\" and in_quotes and not escaped:
+            escaped = True
+            continue
+        if char == '"' and not escaped:
+            in_quotes = not in_quotes
+        elif char == token and not in_quotes:
+            count += 1
+        escaped = False
+    return count
 
 
 def _split_unquoted(text: str, token: str) -> List[str]:
