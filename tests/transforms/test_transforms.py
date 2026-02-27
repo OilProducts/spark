@@ -513,7 +513,33 @@ class TestTransforms:
         pipeline = TransformPipeline()
         pipeline.register(GoalVariableTransform())
         pipeline.register(ModelStylesheetTransform())
-        pipeline.apply(graph)
+        graph = pipeline.apply(graph)
 
         assert graph.nodes["task"].attrs["prompt"].value == "Build Landing Page"
         assert graph.nodes["task"].attrs["llm_model"].value == "gpt-5"
+
+    def test_transform_pipeline_does_not_mutate_input_graph(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [goal="Landing Page", model_stylesheet="* { llm_model: gpt-5; }"]
+                start [shape=Mdiamond]
+                task [shape=box, prompt="Build $goal"]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """
+        )
+        original_prompt = graph.nodes["task"].attrs["prompt"].value
+        assert "llm_model" not in graph.nodes["task"].attrs
+
+        pipeline = TransformPipeline()
+        pipeline.register(GoalVariableTransform())
+        pipeline.register(ModelStylesheetTransform())
+        transformed = pipeline.apply(graph)
+
+        assert transformed is not graph
+        assert graph.nodes["task"].attrs["prompt"].value == original_prompt
+        assert "llm_model" not in graph.nodes["task"].attrs
+        assert transformed.nodes["task"].attrs["prompt"].value == "Build Landing Page"
+        assert transformed.nodes["task"].attrs["llm_model"].value == "gpt-5"

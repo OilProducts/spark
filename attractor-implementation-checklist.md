@@ -354,7 +354,7 @@ Status key:
 ## 9. Transforms and Extensibility
 
 ### 9.1 AST Transforms
-- [ ] [9.1-02] Prevent destructive in-place mutation of original parsed graph.
+- [x] [9.1-02] Prevent destructive in-place mutation of original parsed graph.
 
 ### 9.2 Built-In Transforms
 - [ ] [9.2-01] Implement variable expansion transform for `$goal` in prompts.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import List
 
@@ -16,7 +17,7 @@ class TransformPipeline:
         self.transforms.append(transform)
 
     def apply(self, graph: DotGraph) -> DotGraph:
-        cur = graph
+        cur = copy.deepcopy(graph)
         for transform in self.transforms:
             cur = transform.apply(cur)
         return cur
