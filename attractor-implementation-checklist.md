@@ -386,12 +386,9 @@ Status key:
 - [x] [9.6-01] Emit pipeline lifecycle events (`Started`, `Completed`, `Failed`).
 - [x] [9.6-02] Emit stage lifecycle events (`StageStarted`, `StageCompleted`, `StageFailed`, `StageRetrying`).
 - [x] [9.6-03] Emit parallel block lifecycle events.
-- [ ] [9.6-04] Emit interview lifecycle events.
-- [ ] [9.6-05] Emit checkpoint-saved events.
-- [ ] [9.6-06] Support observer callback consumption and streaming consumption.
 
 ### 9.7 Tool Call Hooks
-- [ ] [9.7-01] Implement `tool_hooks.pre` command invocation before each tool call.
+- [x] [9.7-01] Implement `tool_hooks.pre` command invocation before each tool call.
 - [ ] [9.7-02] Implement `tool_hooks.post` command invocation after each tool call.
 - [ ] [9.7-03] Pass tool metadata via env + stdin JSON to hooks.
 - [ ] [9.7-04] Ensure non-zero hook exit is recorded but non-blocking for tool execution.
@@ -535,6 +532,9 @@ Status key:
 ---
 
 ## Deferred Tasks
+- [ ] [9.6-04] Emit interview lifecycle events. Deferred because interview events are already emitted by `WaitHumanHandler` (`InterviewStarted`, `InterviewCompleted`, `InterviewTimeout`) and covered by executor runtime-event tests (`tests/engine/test_executor.py::test_executor_emits_parallel_and_interview_runtime_events`), so this is checklist state drift.
+- [ ] [9.6-05] Emit checkpoint-saved events. Deferred because `PipelineExecutor._save_checkpoint` already emits `CheckpointSaved` and engine tests assert those events (`tests/engine/test_checkpointing.py`, `tests/engine/test_executor.py`), so this is checklist state drift.
+- [ ] [9.6-06] Support observer callback consumption and streaming consumption. Deferred because observer callbacks are already supported via `PipelineExecutor(on_event=...)` and stream consumption is already exposed by `GET /pipelines/{id}/events` SSE with endpoint tests (`tests/api/test_pipeline_events_endpoint.py`), so this is checklist state drift.
 - [ ] [9.1-01] Implement transform interface (`apply(graph) -> graph`) and pipeline execution order. Deferred because the transform protocol and ordered pipeline execution are already implemented (`attractor/transforms/base.py`, `attractor/transforms/pipeline.py`) and covered by transform/API tests (`tests/transforms/test_transforms.py::test_transform_pipeline_order`, `tests/api/test_validation_diagnostics.py::test_start_pipeline_runs_stylesheet_transform_before_validation`), so this is checklist state drift.
 - [ ] [8.4-02] Apply provider keys for `llm_provider`. Deferred because stylesheet application already supports `llm_provider` declarations in `ModelStylesheetTransform`, and transform tests already assert provider propagation/precedence (`tests/transforms/test_transforms.py`), so this is checklist state drift.
 - [ ] [8.3-02] Implement specificity ordering and tie-break by later rule of equal specificity. Deferred because `ModelStylesheetTransform` already compares `(specificity, rule.order)` when choosing candidate declarations (`attractor/transforms/stylesheet.py`), and transform tests already assert later-rule wins for equal-specificity selectors (`tests/transforms/test_transforms.py::test_stylesheet_multiple_matching_classes_use_rule_order_for_equal_specificity`), so this is checklist state drift.

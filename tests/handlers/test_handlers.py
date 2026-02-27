@@ -1,6 +1,7 @@
 import threading
 import time
 import json
+import shlex
 import subprocess
 from pathlib import Path
 import tempfile
@@ -1110,6 +1111,28 @@ class TestBuiltInHandlers:
         assert "hello" in outcome.notes
         assert outcome.context_updates["context.tool.output"] == "hello"
         assert outcome.context_updates["context.tool.exit_code"] == 0
+
+    def test_tool_handler_runs_pre_hook_before_tool_command(self, tmp_path):
+        hook_file = tmp_path / "hook.log"
+        tool_file = tmp_path / "tool.log"
+        pre_hook = f"printf pre >> {shlex.quote(str(hook_file))}"
+        tool_command = f"test -f {shlex.quote(str(hook_file))} && printf ran >> {shlex.quote(str(tool_file))}"
+        graph = parse_dot(
+            f"""
+            digraph G {{
+                graph [tool_hooks.pre="{pre_hook}"]
+                tool_node [shape=parallelogram, tool_command="{tool_command}"]
+            }}
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("tool_node", "", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert hook_file.read_text(encoding="utf-8") == "pre"
+        assert tool_file.read_text(encoding="utf-8") == "ran"
 
     def test_tool_handler_writes_output_artifact(self, tmp_path):
         graph = parse_dot(

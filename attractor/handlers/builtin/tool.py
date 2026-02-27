@@ -15,6 +15,10 @@ class ToolHandler:
         if not cmd_attr or not str(cmd_attr.value).strip():
             return Outcome(status=OutcomeStatus.FAIL, failure_reason="No tool_command specified")
 
+        pre_hook = _resolve_hook_command(runtime, "tool_hooks.pre")
+        if pre_hook:
+            _run_hook(pre_hook)
+
         command = str(cmd_attr.value)
         timeout = _to_seconds(runtime.node_attrs.get("timeout"))
         try:
@@ -63,6 +67,25 @@ class ToolHandler:
                     "context.tool.exit_code": -1,
                 },
             )
+
+
+def _resolve_hook_command(runtime: HandlerRuntime, key: str) -> str:
+    node_attr = runtime.node_attrs.get(key)
+    if node_attr and str(node_attr.value).strip():
+        return str(node_attr.value).strip()
+
+    graph_attr = runtime.graph.graph_attrs.get(key)
+    if graph_attr and str(graph_attr.value).strip():
+        return str(graph_attr.value).strip()
+
+    return ""
+
+
+def _run_hook(command: str) -> None:
+    try:
+        subprocess.run(command, shell=True, capture_output=True, text=True)
+    except Exception:
+        return
 
 
 def _write_output_artifact(runtime: HandlerRuntime, output: str) -> None:
