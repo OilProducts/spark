@@ -280,8 +280,9 @@ def _is_explicit_node_attr(attr: DotAttribute, node: DotNode, key: str) -> bool:
         return False
     if attr.line <= 0:
         return False
-    # Attributes inherited from `node [...]` defaults appear on an earlier line
-    # than the node declaration itself; treat those as overridable defaults.
-    if node.line > 0 and attr.line < node.line:
+    # Attributes inherited from `node [...]` defaults can land on the same line
+    # as a node declaration (e.g. `node [...] task`), so treat line<=node.line
+    # as overridable when no explicit per-node attrs exist.
+    if node.line > 0 and attr.line <= node.line:
         return False
     return True
