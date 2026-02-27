@@ -425,6 +425,57 @@ line2"]
         assert attrs["model.provider"].value == "openai"
         assert attrs["model.reasoning.effort"].value == "high"
 
+    def test_parses_all_appendix_a_graph_attribute_keys(self):
+        dot = """
+        digraph GraphAttrs {
+            graph [
+                goal="Ship release",
+                label="Release Flow",
+                model_stylesheet="* { llm_model: gpt-5; }",
+                default_max_retry=7,
+                default_fidelity="summary:high",
+                retry_target="implement",
+                fallback_retry_target="plan",
+                stack.child_dotfile="child.dot",
+                stack.child_workdir="/tmp/child",
+                tool_hooks.pre="echo pre",
+                tool_hooks.post="echo post"
+            ]
+            start [shape=Mdiamond]
+            exit [shape=Msquare]
+            start -> exit
+        }
+        """
+        graph = parse_dot(dot)
+
+        assert set(graph.graph_attrs) == {
+            "goal",
+            "label",
+            "model_stylesheet",
+            "default_max_retry",
+            "default_fidelity",
+            "retry_target",
+            "fallback_retry_target",
+            "stack.child_dotfile",
+            "stack.child_workdir",
+            "tool_hooks.pre",
+            "tool_hooks.post",
+        }
+        assert graph.graph_attrs["default_max_retry"].value == 7
+        assert graph.graph_attrs["default_max_retry"].value_type == DotValueType.INTEGER
+        assert graph.graph_attrs["stack.child_dotfile"].value == "child.dot"
+        assert graph.graph_attrs["tool_hooks.pre"].value == "echo pre"
+        assert graph.graph_attrs["tool_hooks.post"].value == "echo post"
+
+    def test_rejects_malformed_graph_assignment_key(self):
+        dot = """
+        digraph Bad {
+            tool_hooks..pre="echo pre"
+        }
+        """
+        with pytest.raises(DotParseError, match="invalid attribute key"):
+            parse_dot(dot)
+
     def test_reject_malformed_qualified_attribute_key(self):
         dot = """
         digraph Bad {

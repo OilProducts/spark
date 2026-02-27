@@ -209,6 +209,8 @@ class _Parser:
 
         if tok.kind == "IDENT" and self.peek().kind == "EQ":
             key_tok = self.advance()
+            if not ATTR_KEY_RE.match(key_tok.value):
+                raise DotParseError(f"invalid attribute key '{key_tok.value}'", key_tok.line)
             self.expect("EQ")
             value, value_type, line = self.parse_value()
             if not in_subgraph:

@@ -473,7 +473,7 @@ Status key:
 ## Appendix A: Complete Attribute Reference
 
 ### Graph Attributes
-- [ ] [A.G-01] Verify parser accepts and stores every listed graph attribute key.
+- [x] [A.G-01] Verify parser accepts and stores every listed graph attribute key.
 - [ ] [A.G-02] Add validation/default-resolution coverage for each graph attribute.
 - [ ] [A.G-03] Ensure `stack.*` and `tool_hooks.*` graph attrs are wired into manager/hook features.
 
