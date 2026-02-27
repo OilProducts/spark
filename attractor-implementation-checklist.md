@@ -401,7 +401,7 @@ Status key:
 - [x] [10.1-02] Reject unsupported operators/syntax during validation.
 
 ### 10.2 Grammar
-- [ ] [10.2-01] Parse clauses joined by `&&`.
+- [x] [10.2-01] Parse clauses joined by `&&`.
 - [ ] [10.2-02] Support keys: `outcome`, `preferred_label`, `context.<path>`.
 - [ ] [10.2-03] Support operators `=` and `!=` with typed literals.
 
