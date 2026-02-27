@@ -8,9 +8,6 @@ class GoalVariableTransform:
         goal_attr = graph.graph_attrs.get("goal")
         goal = str(goal_attr.value) if goal_attr else ""
 
-        if goal == "":
-            return graph
-
         for node in graph.nodes.values():
             prompt_attr = node.attrs.get("prompt")
             if not prompt_attr:

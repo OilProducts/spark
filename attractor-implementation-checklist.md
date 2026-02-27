@@ -357,7 +357,7 @@ Status key:
 - [x] [9.1-02] Prevent destructive in-place mutation of original parsed graph.
 
 ### 9.2 Built-In Transforms
-- [ ] [9.2-01] Implement variable expansion transform for `$goal` in prompts.
+- [x] [9.2-01] Implement variable expansion transform for `$goal` in prompts.
 - [ ] [9.2-02] Implement stylesheet application transform.
 - [ ] [9.2-03] Implement runtime preamble transform for non-`full` fidelity handoff.
 

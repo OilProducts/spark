@@ -131,6 +131,21 @@ class TestTransforms:
         GoalVariableTransform().apply(graph)
         assert graph.nodes["plan"].attrs["prompt"].value == "Plan for Build API"
 
+    def test_goal_variable_transform_replaces_with_empty_goal(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box, prompt="Plan for $goal"]
+                done [shape=Msquare]
+                start -> plan -> done
+            }
+            """
+        )
+
+        GoalVariableTransform().apply(graph)
+        assert graph.nodes["plan"].attrs["prompt"].value == "Plan for "
+
     def test_stylesheet_specificity_and_explicit_override(self):
         graph = parse_dot(
             """
