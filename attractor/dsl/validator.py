@@ -82,6 +82,7 @@ def validate_graph(graph: DotGraph) -> List[Diagnostic]:
                     message=f"edge target '{edge.target}' does not reference an existing node",
                     line=edge.line,
                     edge=(edge.source, edge.target),
+                    fix=f"define node '{edge.target}' or update the edge target",
                 )
             )
 

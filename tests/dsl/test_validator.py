@@ -65,6 +65,28 @@ class TestDotValidator:
         assert "start_no_incoming" in rule_ids
         assert "exit_no_outgoing" in rule_ids
 
+    def test_edge_target_exists_reports_edge_and_fix_hint(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+
+            start -> done
+            start -> missing
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        target_errors = [
+            d for d in diagnostics if d.rule_id == "edge_target_exists" and d.severity == DiagnosticSeverity.ERROR
+        ]
+
+        assert len(target_errors) == 1
+        error = target_errors[0]
+        assert error.edge == ("start", "missing")
+        assert error.message == "edge target 'missing' does not reference an existing node"
+        assert error.fix == "define node 'missing' or update the edge target"
+
     def test_non_exit_nodes_must_have_outgoing_edges(self):
         dot = """
         digraph G {
