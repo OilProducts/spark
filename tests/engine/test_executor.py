@@ -512,6 +512,61 @@ class TestExecutor:
         assert event_types.count("CheckpointSaved") >= 1
         assert all(isinstance(event, dict) and "type" in event for event in events)
 
+    def test_pipeline_started_and_completed_events_include_lifecycle_payload(self):
+        graph = parse_dot(
+            """
+            digraph ReleaseFlow {
+                start [shape=Mdiamond]
+                work [shape=box]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+        events: list[dict] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner, on_event=events.append).run(Context())
+
+        started = next(event for event in events if event["type"] == "PipelineStarted")
+        completed = next(event for event in events if event["type"] == "PipelineCompleted")
+
+        assert result.status == "success"
+        assert started["name"] == "ReleaseFlow"
+        assert started["id"] == "ReleaseFlow"
+        assert isinstance(completed["duration"], (int, float))
+        assert float(completed["duration"]) >= 0.0
+        assert completed["artifact_count"] == 3
+
+    def test_pipeline_failed_event_includes_lifecycle_payload(self):
+        graph = parse_dot(
+            """
+            digraph ReleaseFlow {
+                start [shape=Mdiamond]
+                work [shape=box]
+                start -> work
+            }
+            """
+        )
+        events: list[dict] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            if node_id == "work":
+                return Outcome(status=OutcomeStatus.FAIL, failure_reason="boom")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner, on_event=events.append).run(Context())
+        failed = next(event for event in events if event["type"] == "PipelineFailed")
+
+        assert result.status == "fail"
+        assert failed["error"] == "boom"
+        assert isinstance(failed["duration"], (int, float))
+        assert float(failed["duration"]) >= 0.0
+        assert failed["artifact_count"] == 2
+
     def test_executor_emits_stage_retrying_event(self):
         graph = parse_dot(
             """

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import random
 import threading
+import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from attractor.dsl.models import DotGraph
@@ -140,6 +141,8 @@ class PipelineExecutor:
         self._stage_status_transitions: Dict[str, List[str]] = {}
         self._runtime_preamble_transform = RuntimePreambleTransform(node_outcomes_key=NODE_OUTCOMES_KEY)
         self._run_started_at: str | None = None
+        self._run_started_monotonic: float | None = None
+        self._artifact_node_ids: set[str] = set()
         self._sync_runner_logs_root()
 
     def run(
@@ -190,7 +193,7 @@ class PipelineExecutor:
         self._mirror_graph_goal(ctx)
         self._seed_builtin_context(ctx, current)
         self._ensure_run_root_layout(current_node=current, context=ctx)
-        self._emit_event("PipelineStarted", current_node=current, resumed=resume)
+        self._emit_pipeline_started(current_node=current, resumed=resume)
 
         steps = 0
         try:
@@ -499,7 +502,7 @@ class PipelineExecutor:
         steps = 0
         stop_nodes = set(stop_nodes or [])
         self._ensure_run_root_layout(current_node=current, context=ctx)
-        self._emit_event("PipelineStarted", current_node=current, resumed=False)
+        self._emit_pipeline_started(current_node=current, resumed=False)
 
         try:
             while True:
@@ -857,10 +860,13 @@ class PipelineExecutor:
             context=context,
             retry_counts=retry_counts,
         )
+        event_payload: Dict[str, object] = {"current_node": current_node}
         if error:
-            self._emit_event(event_type, current_node=current_node, error=error)
-        else:
-            self._emit_event(event_type, current_node=current_node)
+            event_payload["error"] = error
+        if event_type in {"PipelineCompleted", "PipelineFailed"}:
+            event_payload["duration"] = self._pipeline_duration_seconds()
+            event_payload["artifact_count"] = len(self._artifact_node_ids)
+        self._emit_event(event_type, **event_payload)
         self._cleanup_resources()
 
     def _cleanup_resources(self) -> None:
@@ -896,7 +902,26 @@ class PipelineExecutor:
         except Exception:
             return
 
+    def _emit_pipeline_started(self, *, current_node: str, resumed: bool, restarted: bool = False) -> None:
+        self._run_started_monotonic = time.perf_counter()
+        self._artifact_node_ids = set()
+        payload: Dict[str, object] = {
+            "name": self.graph.graph_id,
+            "id": self.graph.graph_id,
+            "current_node": current_node,
+            "resumed": resumed,
+        }
+        if restarted:
+            payload["restarted"] = True
+        self._emit_event("PipelineStarted", **payload)
+
+    def _pipeline_duration_seconds(self) -> float:
+        if self._run_started_monotonic is None:
+            return 0.0
+        return max(0.0, time.perf_counter() - self._run_started_monotonic)
+
     def _write_stage_artifacts(self, node_id: str, prompt: str, outcome: Outcome) -> None:
+        self._artifact_node_ids.add(node_id)
         if not self.logs_root:
             return
 
@@ -954,7 +979,7 @@ class PipelineExecutor:
                 retry_counts=retry_counts,
             )
 
-        self._emit_event("PipelineStarted", current_node=restart_node, resumed=False, restarted=True)
+        self._emit_pipeline_started(current_node=restart_node, resumed=False, restarted=True)
 
     def _rotate_logs_root_for_restart(self) -> None:
         if not self._base_logs_root:

@@ -383,7 +383,7 @@ Status key:
 - [x] [9.5-10] Verify human-gate web controls operate entirely through run-scoped APIs.
 
 ### 9.6 Observability and Events
-- [ ] [9.6-01] Emit pipeline lifecycle events (`Started`, `Completed`, `Failed`).
+- [x] [9.6-01] Emit pipeline lifecycle events (`Started`, `Completed`, `Failed`).
 - [ ] [9.6-02] Emit stage lifecycle events (`StageStarted`, `StageCompleted`, `StageFailed`, `StageRetrying`).
 - [ ] [9.6-03] Emit parallel block lifecycle events.
 - [ ] [9.6-04] Emit interview lifecycle events.
