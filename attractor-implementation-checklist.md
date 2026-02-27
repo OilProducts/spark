@@ -310,7 +310,6 @@ Status key:
 - [x] [7.2-07] Implement `condition_syntax` rule.
 - [x] [7.2-08] Implement `stylesheet_syntax` rule.
 - [x] [7.2-09] Implement `type_known` warning rule.
-- [ ] [7.2-10] Implement `fidelity_valid` warning rule.
 - [ ] [7.2-11] Implement `retry_target_exists` warning rule.
 - [ ] [7.2-12] Implement `goal_gate_has_retry` warning rule.
 - [ ] [7.2-13] Implement `prompt_on_llm_nodes` warning rule.
@@ -565,3 +564,4 @@ Status key:
 - [ ] [5.4-02] Implement fidelity precedence: edge -> target node -> graph default -> `compact`. Deferred because `PipelineExecutor._resolve_runtime_fidelity` already enforces this precedence (including `compact` fallback), and executor fidelity tests already cover edge/node/graph precedence, so this is checklist state drift.
 - [ ] [7.1-02] Block execution when any ERROR diagnostic exists. Deferred because pipeline start already aborts on error-severity diagnostics in `attractor/api/server.py::_start_pipeline`, so this is checklist state drift.
 - [ ] [7.2-06] Implement `exit_no_outgoing` rule. Deferred because `validate_graph` already emits `exit_no_outgoing` diagnostics for terminal nodes with outgoing edges and validator coverage exists in `tests/dsl/test_validator.py::test_edge_target_exists_and_start_incoming_exit_outgoing`, so this is checklist state drift.
+- [ ] [7.2-10] Implement `fidelity_valid` warning rule. Deferred because fidelity warnings for graph/node/edge attrs are already implemented in `attractor/dsl/validator.py::_validate_fidelity_values` and covered by `tests/dsl/test_validator.py::test_retry_target_and_fidelity_warnings`, so this is checklist state drift.
