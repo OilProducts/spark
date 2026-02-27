@@ -391,7 +391,7 @@ Status key:
 - [x] [9.7-01] Implement `tool_hooks.pre` command invocation before each tool call.
 - [x] [9.7-02] Implement `tool_hooks.post` command invocation after each tool call.
 - [x] [9.7-03] Pass tool metadata via env + stdin JSON to hooks.
-- [ ] [9.7-04] Ensure non-zero hook exit is recorded but non-blocking for tool execution.
+- [x] [9.7-04] Ensure non-zero hook exit is recorded but non-blocking for tool execution.
 
 ---
 

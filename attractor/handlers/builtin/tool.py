@@ -25,7 +25,8 @@ class ToolHandler:
 
         pre_hook = _resolve_hook_command(runtime, "tool_hooks.pre")
         if pre_hook:
-            _run_hook(pre_hook, hook_phase="pre", metadata=hook_metadata)
+            pre_hook_result = _run_hook(pre_hook, hook_phase="pre", metadata=hook_metadata)
+            _record_hook_failure(runtime, command=pre_hook, hook_phase="pre", result=pre_hook_result)
         post_hook = _resolve_hook_command(runtime, "tool_hooks.post")
 
         timeout = _to_seconds(runtime.node_attrs.get("timeout"))
@@ -77,7 +78,8 @@ class ToolHandler:
             )
         finally:
             if post_hook:
-                _run_hook(post_hook, hook_phase="post", metadata=hook_metadata)
+                post_hook_result = _run_hook(post_hook, hook_phase="post", metadata=hook_metadata)
+                _record_hook_failure(runtime, command=post_hook, hook_phase="post", result=post_hook_result)
 
 
 def _resolve_hook_command(runtime: HandlerRuntime, key: str) -> str:
@@ -92,7 +94,7 @@ def _resolve_hook_command(runtime: HandlerRuntime, key: str) -> str:
     return ""
 
 
-def _run_hook(command: str, *, hook_phase: str, metadata: dict[str, str]) -> None:
+def _run_hook(command: str, *, hook_phase: str, metadata: dict[str, str]) -> subprocess.CompletedProcess[str]:
     payload = {
         "hook_phase": hook_phase,
         "node_id": metadata.get("node_id", ""),
@@ -107,7 +109,7 @@ def _run_hook(command: str, *, hook_phase: str, metadata: dict[str, str]) -> Non
         }
     )
     try:
-        subprocess.run(
+        return subprocess.run(
             command,
             shell=True,
             capture_output=True,
@@ -115,7 +117,35 @@ def _run_hook(command: str, *, hook_phase: str, metadata: dict[str, str]) -> Non
             input=json.dumps(payload),
             env=env,
         )
-    except Exception:
+    except Exception as exc:
+        reason = str(exc) or exc.__class__.__name__
+        return subprocess.CompletedProcess(command, -1, stdout="", stderr=reason)
+
+
+def _record_hook_failure(
+    runtime: HandlerRuntime,
+    *,
+    command: str,
+    hook_phase: str,
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    if result.returncode == 0:
+        return
+    if not runtime.logs_root:
+        return
+    try:
+        stage_dir = runtime.logs_root / runtime.node_id
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "hook_phase": hook_phase,
+            "command": command,
+            "exit_code": int(result.returncode),
+            "stdout": str(result.stdout or "").strip(),
+            "stderr": str(result.stderr or "").strip(),
+        }
+        with (stage_dir / "tool_hook_failures.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
         return
 
 

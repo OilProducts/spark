@@ -1195,6 +1195,45 @@ class TestBuiltInHandlers:
             assert payload["node_id"] == "tool_node"
             assert payload["tool_command"] == "run-tool"
 
+    def test_tool_handler_records_nonzero_hook_exits_without_blocking_tool_execution(self, monkeypatch, tmp_path):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [tool_hooks.pre="pre-hook", tool_hooks.post="post-hook"]
+                tool_node [shape=parallelogram, tool_command="run-tool"]
+            }
+            """
+        )
+        logs_root = tmp_path / "logs"
+
+        def _fake_run(command, **kwargs):
+            del kwargs
+            if command == "run-tool":
+                return subprocess.CompletedProcess(command, 0, stdout="tool-output", stderr="")
+            if command == "pre-hook":
+                return subprocess.CompletedProcess(command, 7, stdout="", stderr="pre failed")
+            if command == "post-hook":
+                return subprocess.CompletedProcess(command, 9, stdout="", stderr="post failed")
+            raise AssertionError(f"unexpected command: {command}")
+
+        monkeypatch.setattr("attractor.handlers.builtin.tool.subprocess.run", _fake_run)
+
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry, logs_root=logs_root)
+        outcome = runner("tool_node", "", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert outcome.context_updates["context.tool.output"] == "tool-output"
+        hook_failures_path = logs_root / "tool_node" / "tool_hook_failures.jsonl"
+        assert hook_failures_path.exists()
+        records = [
+            json.loads(line)
+            for line in hook_failures_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [record["hook_phase"] for record in records] == ["pre", "post"]
+        assert [record["exit_code"] for record in records] == [7, 9]
+
     def test_tool_handler_writes_output_artifact(self, tmp_path):
         graph = parse_dot(
             """
