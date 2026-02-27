@@ -428,7 +428,7 @@ Status key:
 
 ### 11.1 DOT Parsing
 - [x] [11.1-01] Convert each DoD bullet in spec 11.1 into an automated parser test.
-- [ ] [11.1-02] Ensure parser test suite fails CI on any unsupported-grammar regression.
+- [x] [11.1-02] Ensure parser test suite fails CI on any unsupported-grammar regression.
 
 ### 11.2 Validation and Linting
 - [ ] [11.2-01] Convert each DoD bullet in spec 11.2 into validator tests.

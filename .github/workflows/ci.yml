@@ -21,3 +21,6 @@ jobs:
 
       - name: DOT lint
         run: uv run pytest -q tests/integration/test_dot_format_lint.py
+
+      - name: Parser unsupported grammar regression suite
+        run: just parser-unsupported-grammar

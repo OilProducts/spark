@@ -67,3 +67,25 @@ def test_ci_runs_dot_lint() -> None:
             break
 
     assert has_dot_lint_step, "expected CI workflow to run DOT lint check"
+
+
+def test_ci_runs_parser_unsupported_grammar_regression_suite() -> None:
+    justfile = Path(__file__).resolve().parents[2] / "justfile"
+    justfile_content = justfile.read_text(encoding="utf-8")
+
+    assert "\nparser-unsupported-grammar:\n" in f"\n{justfile_content}"
+    assert "uv run pytest -q tests/dsl/test_parser.py -k unsupported_grammar_regression" in justfile_content
+
+    workflows_dir = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+    workflow_paths = sorted(workflows_dir.glob("*.yml")) + sorted(workflows_dir.glob("*.yaml"))
+
+    assert workflow_paths, "expected at least one CI workflow under .github/workflows/"
+
+    has_parser_guard_step = False
+    for path in workflow_paths:
+        content = path.read_text(encoding="utf-8")
+        if "just parser-unsupported-grammar" in content:
+            has_parser_guard_step = True
+            break
+
+    assert has_parser_guard_step, "expected CI workflow to run parser unsupported-grammar regression suite"

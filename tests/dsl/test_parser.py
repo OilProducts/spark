@@ -1,10 +1,10 @@
 from pathlib import Path
+import re
 
 import pytest
 
 from attractor.dsl import DotParseError, normalize_graph, parse_dot
 from attractor.dsl.models import DotValueType, Duration
-from attractor.transforms import ModelStylesheetTransform
 
 
 SIMPLE_LINEAR_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "simple_linear_workflow.dot"
@@ -721,6 +721,8 @@ class TestDotParserDefinitionOfDone11_1:
         }
 
     def test_node_class_attribute_merges_stylesheet_attributes(self):
+        from attractor.transforms.stylesheet import ModelStylesheetTransform
+
         graph = parse_dot(
             """
             digraph G {
@@ -770,3 +772,54 @@ class TestDotParserDefinitionOfDone11_1:
 
         assert set(graph.nodes.keys()) == {"start", "done"}
         assert [(edge.source, edge.target) for edge in graph.edges] == [("start", "done")]
+
+
+class TestDotParserUnsupportedGrammarRegression:
+    @pytest.mark.parametrize(
+        ("dot", "message"),
+        [
+            (
+                """
+                strict digraph G {
+                    a -> b
+                }
+                """,
+                "strict modifier is not supported",
+            ),
+            (
+                """
+                graph G {
+                    a -> b
+                }
+                """,
+                "undirected graph declarations are not supported",
+            ),
+            (
+                """
+                digraph G {
+                    a -- b
+                }
+                """,
+                "undirected edges ('--') are not supported",
+            ),
+            (
+                """
+                digraph G {
+                    a [label=<b>Bold</b>]
+                }
+                """,
+                "HTML-like labels are not supported",
+            ),
+            (
+                """
+                digraph G {
+                    a:out -> b
+                }
+                """,
+                "port and compass point syntax is not supported",
+            ),
+        ],
+    )
+    def test_unsupported_grammar_regression_inputs_are_rejected(self, dot: str, message: str):
+        with pytest.raises(DotParseError, match=re.escape(message)):
+            parse_dot(dot)
