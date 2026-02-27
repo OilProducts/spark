@@ -467,6 +467,59 @@ line2"]
         assert graph.graph_attrs["tool_hooks.pre"].value == "echo pre"
         assert graph.graph_attrs["tool_hooks.post"].value == "echo post"
 
+    def test_parses_all_appendix_a_node_attribute_keys(self):
+        dot = """
+        digraph NodeAttrs {
+            stage [
+                label="Review Stage",
+                shape=box,
+                type=wait.human,
+                prompt="Review changes",
+                max_retries=3,
+                goal_gate=true,
+                retry_target=fix_stage,
+                fallback_retry_target=plan_stage,
+                fidelity="summary:high",
+                thread_id="review-thread",
+                class="review,critical",
+                timeout=45s,
+                llm_model="gpt-5.2",
+                llm_provider=openai,
+                reasoning_effort=medium,
+                auto_status=true,
+                allow_partial=false
+            ]
+        }
+        """
+        graph = parse_dot(dot)
+        attrs = graph.nodes["stage"].attrs
+
+        assert set(attrs) == {
+            "label",
+            "shape",
+            "type",
+            "prompt",
+            "max_retries",
+            "goal_gate",
+            "retry_target",
+            "fallback_retry_target",
+            "fidelity",
+            "thread_id",
+            "class",
+            "timeout",
+            "llm_model",
+            "llm_provider",
+            "reasoning_effort",
+            "auto_status",
+            "allow_partial",
+        }
+        assert graph.nodes["stage"].explicit_attr_keys == set(attrs)
+        assert attrs["max_retries"].value_type == DotValueType.INTEGER
+        assert attrs["goal_gate"].value_type == DotValueType.BOOLEAN
+        assert attrs["auto_status"].value_type == DotValueType.BOOLEAN
+        assert attrs["allow_partial"].value_type == DotValueType.BOOLEAN
+        assert attrs["timeout"].value_type == DotValueType.DURATION
+
     def test_rejects_malformed_graph_assignment_key(self):
         dot = """
         digraph Bad {

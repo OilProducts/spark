@@ -478,7 +478,7 @@ Status key:
 - [x] [A.G-03] Ensure `stack.*` and `tool_hooks.*` graph attrs are wired into manager/hook features.
 
 ### Node Attributes
-- [ ] [A.N-01] Verify parser accepts and stores every listed node attribute key.
+- [x] [A.N-01] Verify parser accepts and stores every listed node attribute key.
 - [ ] [A.N-02] Add runtime behavior test for each non-display node attr (`max_retries`, `goal_gate`, `retry_target`, `fidelity`, `timeout`, `auto_status`, `allow_partial`).
 - [ ] [A.N-03] Add precedence tests for model-related node attrs vs stylesheet/defaults.
 
