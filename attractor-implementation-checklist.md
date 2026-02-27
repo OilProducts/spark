@@ -513,7 +513,6 @@ Status key:
 ---
 
 ## Deferred Tasks
-- [ ] [A.E-03] Add runtime tests for `fidelity`, `thread_id`, and `loop_restart` behavior. Deferred because runtime fidelity precedence, full-fidelity thread-id resolution, and `loop_restart` relaunch semantics are already implemented and covered in `tests/engine/test_executor.py`, so this is checklist state drift.
 - [ ] [A.E-02] Add routing tests for `condition`, `weight`, and `label` interplay. Deferred because routing interplay is already covered by existing tests for condition precedence, preferred-label selection, and weight/lexical tie-breaks in `tests/engine/test_routing.py`.
 - [ ] [D-02] Route retryable errors through retry policy and backoff path. Deferred because retryable outcomes/exceptions already flow through retry policy/backoff in `PipelineExecutor` and are covered by retry execution/backoff tests (`tests/engine/test_retry_goal_gate.py`, `tests/engine/test_retry_policy.py`), so this is checklist state drift.
 - [ ] [D-03] Route terminal errors immediately to fail routing (no retries). Deferred because terminal-error no-retry fail-routing is already implemented and covered by `tests/engine/test_retry_goal_gate.py::test_non_retryable_exception_does_not_retry_and_routes_fail_immediately`, so this is checklist state drift.
@@ -565,3 +564,4 @@ Status key:
 - [ ] [10.5-01] Return true for empty condition. Deferred because `evaluate_condition` already returns true for empty strings in `attractor/engine/conditions.py`, and this is covered by `tests/engine/test_conditions.py::test_empty_condition_true`, so this is checklist state drift.
 - [ ] [10.5-02] Evaluate `!=` and `=` clauses correctly. Deferred because `evaluate_condition` already applies exact `=`/`!=` comparisons and evaluator tests cover both operators across outcome/context/quoted literals (`attractor/engine/conditions.py`, `tests/engine/test_conditions.py`), so this is checklist state drift.
 - [ ] [RG-01] Every subsection above has at least one completed implementation task. Deferred because this is an aggregate release-gate criterion that depends on remaining release-gate traceability closure, not a single independently implementable code/test task.
+- [ ] [A.E-03] Add runtime tests for `fidelity`, `thread_id`, and `loop_restart` behavior. Deferred because executor/runtime coverage already verifies fidelity precedence, full-fidelity thread resolution, and loop-restart relaunch behavior (`tests/engine/test_executor.py`), so this remains checklist state drift.
