@@ -1531,6 +1531,9 @@ async def list_pipeline_questions(pipeline_id: str):
 
 @app.post("/pipelines/{pipeline_id}/questions/{question_id}/answer")
 async def submit_pipeline_answer(pipeline_id: str, question_id: str, req: HumanAnswerRequest):
+    active = _get_active_run(pipeline_id)
+    if not active and not _read_run_meta(_run_meta_path(pipeline_id)):
+        raise HTTPException(status_code=404, detail="Unknown pipeline")
     ok = HUMAN_BROKER.answer(pipeline_id, question_id, req.selected_value)
     if not ok:
         raise HTTPException(status_code=404, detail="Unknown question for pipeline")
