@@ -513,7 +513,7 @@ Status key:
 ---
 
 ## Deferred Tasks
-- [ ] [D-02] Route retryable errors through retry policy and backoff path. Deferred because retryable outcomes/exceptions already flow through retry policy/backoff in `PipelineExecutor` and are covered by retry execution/backoff tests (`tests/engine/test_retry_goal_gate.py`, `tests/engine/test_retry_policy.py`), so this is checklist state drift.
+- [x] [D-02] Route retryable errors through retry policy and backoff path. Verified in `PipelineExecutor` retry loop (`_should_retry` + `backoff.delay_for_attempt`) and rechecked by passing retry/backoff coverage (`uv run pytest -q tests/engine/test_retry_goal_gate.py tests/engine/test_retry_policy.py`).
 - [ ] [D-03] Route terminal errors immediately to fail routing (no retries). Deferred because terminal-error no-retry fail-routing is already implemented and covered by `tests/engine/test_retry_goal_gate.py::test_non_retryable_exception_does_not_retry_and_routes_fail_immediately`, so this is checklist state drift.
 - [ ] [D-04] Surface pipeline structural errors during validation whenever possible. Deferred because structural pipeline errors are already surfaced at validation time by `start_node`, `reachability`, `edge_source_exists`, `edge_target_exists`, and `condition_syntax` validator diagnostics with coverage in `tests/dsl/test_validator.py`, so this is checklist state drift.
 - [ ] [11.9-01] Convert each DoD bullet in spec 11.9 into evaluator tests. Deferred because every spec 11.9 DoD bullet (`=`, `!=`, `&&`, `outcome`, `preferred_label`, `context.*` with missing-key empty string, and empty-condition true) is already covered in `tests/engine/test_conditions.py`, so this is checklist state drift.
