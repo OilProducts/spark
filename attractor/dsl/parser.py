@@ -240,15 +240,18 @@ class _Parser:
     ) -> None:
         first = self.expect("IDENT")
         self._validate_node_id(first)
+        self._reject_port_syntax_after_id()
 
         if self.accept("ARROW"):
             chain_ids = [first]
             next_tok = self.expect("IDENT")
             self._validate_node_id(next_tok)
+            self._reject_port_syntax_after_id()
             chain_ids.append(next_tok)
             while self.accept("ARROW"):
                 next_tok = self.expect("IDENT")
                 self._validate_node_id(next_tok)
+                self._reject_port_syntax_after_id()
                 chain_ids.append(next_tok)
 
             stmt_attrs = self.parse_attr_block() if self.current().kind == "LBRACKET" else {}
@@ -347,8 +350,12 @@ class _Parser:
                 if val_tok.value in {"true", "false"}:
                     value, value_type = parse_typed_value(val_tok.value, val_tok.kind)
                     return value, value_type, val_tok.line
+                value_text = val_tok.value
+                while self.accept("COLON"):
+                    suffix = self.expect("IDENT")
+                    value_text = f"{value_text}:{suffix.value}"
                 # Bare identifiers are accepted as string-like enums (e.g. rankdir=LR).
-                return val_tok.value, DotValueType.STRING, val_tok.line
+                return value_text, DotValueType.STRING, val_tok.line
 
             value, value_type = parse_typed_value(val_tok.value, val_tok.kind)
             return value, value_type, val_tok.line
@@ -361,6 +368,10 @@ class _Parser:
                 f"invalid node id '{token.value}', must match [A-Za-z_][A-Za-z0-9_]*",
                 token.line,
             )
+
+    def _reject_port_syntax_after_id(self) -> None:
+        if self.current().kind == "COLON":
+            raise DotParseError("port and compass point syntax is not supported", self.current().line)
 
 
 def _tokenize(source: str) -> List[Token]:
@@ -438,6 +449,7 @@ def _tokenize(source: str) -> List[Token]:
             ",": "COMMA",
             ";": "SEMI",
             "=": "EQ",
+            ":": "COLON",
         }
         if ch in punct:
             tokens.append(Token(punct[ch], ch, line))
@@ -521,9 +533,6 @@ def _tokenize(source: str) -> List[Token]:
 
         if ch == "<":
             raise DotParseError("HTML-like labels are not supported", line)
-
-        if ch == ":":
-            raise DotParseError("port and compass point syntax is not supported", line)
 
         raise DotParseError(f"unexpected character '{ch}'", line)
 

@@ -483,7 +483,7 @@ Status key:
 - [x] [A.N-03] Add precedence tests for model-related node attrs vs stylesheet/defaults.
 
 ### Edge Attributes
-- [ ] [A.E-01] Verify parser accepts and stores every listed edge attribute key.
+- [x] [A.E-01] Verify parser accepts and stores every listed edge attribute key.
 - [ ] [A.E-02] Add routing tests for `condition`, `weight`, and `label` interplay.
 - [ ] [A.E-03] Add runtime tests for `fidelity`, `thread_id`, and `loop_restart` behavior.
 

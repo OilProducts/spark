@@ -758,11 +758,18 @@ class TestDotParserDefinitionOfDone11_1:
         assert attrs["timeout"].value.raw == "45s"
         assert attrs["goal_gate"].value is True
 
-    def test_parses_edge_label_condition_and_weight_attributes(self):
+    def test_parses_all_supported_edge_attributes(self):
         graph = parse_dot(
             """
             digraph G {
-                review -> fix [label="retry", condition="outcome=fail", weight=7]
+                review -> fix [
+                    label="retry",
+                    condition="outcome=fail",
+                    weight=7,
+                    fidelity=summary:low,
+                    thread_id="review-thread",
+                    loop_restart=true
+                ]
             }
             """
         )
@@ -771,6 +778,9 @@ class TestDotParserDefinitionOfDone11_1:
         assert edge.attrs["label"].value == "retry"
         assert edge.attrs["condition"].value == "outcome=fail"
         assert edge.attrs["weight"].value == 7
+        assert edge.attrs["fidelity"].value == "summary:low"
+        assert edge.attrs["thread_id"].value == "review-thread"
+        assert edge.attrs["loop_restart"].value is True
 
     def test_expands_chained_edges_into_pairwise_edges(self):
         graph = parse_dot(
