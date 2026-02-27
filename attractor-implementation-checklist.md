@@ -414,7 +414,6 @@ Status key:
 - [x] [10.4-03] Resolve unknown keys to empty string.
 
 ### 10.5 Evaluation
-- [ ] [10.5-02] Evaluate `!=` and `=` clauses correctly.
 - [ ] [10.5-03] Support bare-key truthy checks.
 - [ ] [10.5-04] Add parser/evaluator tests for mixed-clause expressions.
 
@@ -565,3 +564,4 @@ Status key:
 - [ ] [10.3-01] Evaluate clauses left-to-right with logical AND semantics. Deferred because `evaluate_condition` already evaluates clauses in source order and short-circuits on first false clause (`attractor/engine/conditions.py`), so this is checklist state drift.
 - [ ] [10.3-02] Treat missing context keys as empty string. Deferred because `context.*` resolution already returns `""` for missing keys via `Context.get_context_path`, and existing condition tests cover missing-key behavior, so this is checklist state drift.
 - [ ] [10.5-01] Return true for empty condition. Deferred because `evaluate_condition` already returns true for empty strings in `attractor/engine/conditions.py`, and this is covered by `tests/engine/test_conditions.py::test_empty_condition_true`, so this is checklist state drift.
+- [ ] [10.5-02] Evaluate `!=` and `=` clauses correctly. Deferred because `evaluate_condition` already applies exact `=`/`!=` comparisons and evaluator tests cover both operators across outcome/context/quoted literals (`attractor/engine/conditions.py`, `tests/engine/test_conditions.py`), so this is checklist state drift.
