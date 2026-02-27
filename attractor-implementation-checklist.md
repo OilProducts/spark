@@ -454,7 +454,7 @@ Status key:
 ### 11.9 Condition Expressions
 
 ### 11.10 Model Stylesheet
-- [ ] [11.10-01] Convert each DoD bullet in spec 11.10 into stylesheet transform tests.
+- [x] [11.10-01] Convert each DoD bullet in spec 11.10 into stylesheet transform tests.
 
 ### 11.11 Transforms and Extensibility
 - [ ] [11.11-01] Convert each DoD bullet in spec 11.11 into transform/HTTP integration tests.

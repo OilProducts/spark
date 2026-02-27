@@ -497,6 +497,51 @@ class TestTransforms:
         assert graph.nodes["task"].attrs["llm_model"].value == ""
         assert graph.nodes["task"].attrs["llm_provider"].value == ""
 
+    def test_stylesheet_rejects_equals_sign_declaration_syntax(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [model_stylesheet="* { llm_model = gpt-5; llm_provider: openai; }"]
+                start [shape=Mdiamond]
+                task [shape=box]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """
+        )
+
+        AttributeDefaultsTransform().apply(graph)
+        ModelStylesheetTransform().apply(graph)
+
+        # Declarations must use "property: value"; "=" invalidates the rule.
+        assert graph.nodes["task"].attrs["llm_model"].value == ""
+        assert graph.nodes["task"].attrs["llm_provider"].value == ""
+
+    def test_stylesheet_rejects_malformed_quoted_value(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """
+        )
+        graph.graph_attrs["model_stylesheet"] = DotAttribute(
+            key="model_stylesheet",
+            value='* { llm_model: "alpha""beta"; llm_provider: openai; }',
+            value_type=DotValueType.STRING,
+            line=1,
+        )
+
+        AttributeDefaultsTransform().apply(graph)
+        ModelStylesheetTransform().apply(graph)
+
+        # Malformed quoted strings must invalidate the containing rule.
+        assert graph.nodes["task"].attrs["llm_model"].value == ""
+        assert graph.nodes["task"].attrs["llm_provider"].value == ""
+
     def test_stylesheet_spec_example_fixture_parses_documented_structure(self):
         fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / "stylesheet_precedence_example.dot"
         graph = parse_dot(fixture_path.read_text(encoding="utf-8"))

@@ -16,6 +16,7 @@ _SYSTEM_DEFAULTS = {
 }
 _CLASS_NAME_RE = re.compile(r"^[a-z0-9-]+$")
 _NODE_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_QUOTED_VALUE_RE = re.compile(r'^"(?:[^"\\]|\\.)+"$')
 
 
 @dataclass
@@ -119,7 +120,7 @@ def _parse_rules(stylesheet: str) -> List[_StyleRule]:
             raw_value = stmt[colon + 1 :]
             key = raw_key.strip()
             value = _parse_value(raw_value.strip())
-            if key not in _ALLOWED_PROPERTIES or value == "":
+            if key not in _ALLOWED_PROPERTIES or value is None or value == "":
                 rule_is_valid = False
                 break
             if key == "reasoning_effort" and value not in _ALLOWED_REASONING_EFFORTS:
@@ -172,9 +173,13 @@ def _selector_specificity(selector: str) -> int:
     return -1
 
 
-def _parse_value(value: str) -> str:
-    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+def _parse_value(value: str) -> str | None:
+    if value.startswith('"') or value.endswith('"'):
+        if not _QUOTED_VALUE_RE.fullmatch(value):
+            return None
         return _unescape_quoted(value[1:-1])
+    if '"' in value:
+        return None
     return value
 
 
