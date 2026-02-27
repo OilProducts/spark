@@ -1114,10 +1114,12 @@ def _graph_payload(graph) -> dict:
 
 def _diagnostic_payload(diagnostic: Diagnostic) -> dict:
     payload = {
+        "rule": diagnostic.rule_id,
         "rule_id": diagnostic.rule_id,
         "severity": diagnostic.severity.value,
         "message": diagnostic.message,
         "line": diagnostic.line,
+        "node": diagnostic.node_id,
     }
     if diagnostic.node_id is not None:
         payload["node_id"] = diagnostic.node_id
@@ -1134,10 +1136,12 @@ async def preview_pipeline(req: PreviewRequest):
         graph = parse_dot(req.flow_content)
     except DotParseError as exc:
         parse_diag = {
+            "rule": "parse_error",
             "rule_id": "parse_error",
             "severity": DiagnosticSeverity.ERROR.value,
             "message": str(exc),
             "line": getattr(exc, "line", 0),
+            "node": None,
         }
         return {
             "status": "parse_error",
@@ -1172,10 +1176,12 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
         RUNTIME.status = "validation_error"
         RUNTIME.last_error = str(exc)
         parse_diag = {
+            "rule": "parse_error",
             "rule_id": "parse_error",
             "severity": DiagnosticSeverity.ERROR.value,
             "message": str(exc),
             "line": getattr(exc, "line", 0),
+            "node": None,
         }
         if RUNTIME.last_run_id:
             await _publish_run_event(RUNTIME.last_run_id, {"type": "log", "msg": f"❌ Parse error: {exc}"})

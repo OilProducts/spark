@@ -316,7 +316,7 @@ Status key:
 ### 7.3 Validation API
 - [x] [7.3-01] Implement `validate(graph, extra_rules)` composition path.
 - [x] [7.3-02] Implement `validate_or_raise` with aggregated error raising.
-- [ ] [7.3-03] Add API endpoint coverage tests for error/warning payload shape.
+- [x] [7.3-03] Add API endpoint coverage tests for error/warning payload shape.
 
 ### 7.4 Custom Lint Rules
 - [ ] [7.4-01] Implement `LintRule` plugin registration and execution.
