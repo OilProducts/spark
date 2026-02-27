@@ -506,7 +506,6 @@ Status key:
 ---
 
 ## Release Gate Checklist
-- [ ] [RG-01] Every subsection above has at least one completed implementation task.
 - [ ] [RG-02] Every DoD matrix item (Section 11 + parity matrix) is linked to an automated test or explicit manual test record.
 - [ ] [RG-03] API contract matches Section 9.5 endpoints and SSE semantics.
 - [ ] [RG-04] Artifact directory and status file contract validations pass on integration smoke run.
@@ -565,3 +564,4 @@ Status key:
 - [ ] [10.3-02] Treat missing context keys as empty string. Deferred because `context.*` resolution already returns `""` for missing keys via `Context.get_context_path`, and existing condition tests cover missing-key behavior, so this is checklist state drift.
 - [ ] [10.5-01] Return true for empty condition. Deferred because `evaluate_condition` already returns true for empty strings in `attractor/engine/conditions.py`, and this is covered by `tests/engine/test_conditions.py::test_empty_condition_true`, so this is checklist state drift.
 - [ ] [10.5-02] Evaluate `!=` and `=` clauses correctly. Deferred because `evaluate_condition` already applies exact `=`/`!=` comparisons and evaluator tests cover both operators across outcome/context/quoted literals (`attractor/engine/conditions.py`, `tests/engine/test_conditions.py`), so this is checklist state drift.
+- [ ] [RG-01] Every subsection above has at least one completed implementation task. Deferred because this is an aggregate release-gate criterion that depends on remaining release-gate traceability closure, not a single independently implementable code/test task.
