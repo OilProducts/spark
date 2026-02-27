@@ -35,13 +35,13 @@ def test_retry_policy_object_uses_max_attempts_from_node_max_retries():
 
 
 @pytest.mark.parametrize(
-    ("preset", "max_attempts", "initial_delay_ms", "backoff_factor"),
+    ("preset", "max_attempts", "initial_delay_ms", "backoff_factor", "jitter"),
     [
-        ("none", 1, 0, 1.0),
-        ("standard", 5, 200, 2.0),
-        ("aggressive", 5, 500, 2.0),
-        ("linear", 3, 500, 1.0),
-        ("patient", 3, 2000, 3.0),
+        ("none", 1, 0, 1.0, False),
+        ("standard", 5, 200, 2.0, True),
+        ("aggressive", 5, 500, 2.0, True),
+        ("linear", 3, 500, 1.0, False),
+        ("patient", 3, 2000, 3.0, True),
     ],
 )
 def test_retry_policy_uses_named_presets(
@@ -49,6 +49,7 @@ def test_retry_policy_uses_named_presets(
     max_attempts: int,
     initial_delay_ms: int,
     backoff_factor: float,
+    jitter: bool,
 ):
     graph = parse_dot(
         f"""
@@ -69,6 +70,7 @@ def test_retry_policy_uses_named_presets(
     assert policy.max_attempts == max_attempts
     assert policy.backoff.initial_delay_ms == initial_delay_ms
     assert policy.backoff.backoff_factor == backoff_factor
+    assert policy.backoff.jitter is jitter
 
 
 def test_retry_policy_preset_overrides_max_retries_when_present():

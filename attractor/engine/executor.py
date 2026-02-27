@@ -91,7 +91,7 @@ _RETRY_POLICY_PRESETS: Dict[str, RetryPolicy] = {
     ),
     "linear": RetryPolicy(
         max_attempts=3,
-        backoff=BackoffConfig(initial_delay_ms=500, backoff_factor=1.0, max_delay_ms=60000, jitter=True),
+        backoff=BackoffConfig(initial_delay_ms=500, backoff_factor=1.0, max_delay_ms=60000, jitter=False),
     ),
     "patient": RetryPolicy(
         max_attempts=3,

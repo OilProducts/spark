@@ -441,7 +441,7 @@ Status key:
 - [x] [11.4-01] Convert each DoD bullet in spec 11.4 into goal-gate tests.
 
 ### 11.5 Retry Logic
-- [ ] [11.5-01] Convert each DoD bullet in spec 11.5 into retry-policy tests.
+- [x] [11.5-01] Convert each DoD bullet in spec 11.5 into retry-policy tests.
 
 ### 11.6 Node Handlers
 - [ ] [11.6-01] Convert each DoD bullet in spec 11.6 into per-handler contract tests.
