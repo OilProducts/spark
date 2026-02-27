@@ -4,6 +4,7 @@ import pytest
 
 from attractor.dsl import DotParseError, normalize_graph, parse_dot
 from attractor.dsl.models import DotValueType, Duration
+from attractor.transforms import ModelStylesheetTransform
 
 
 SIMPLE_LINEAR_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "simple_linear_workflow.dot"
@@ -599,3 +600,173 @@ line2"]
         normalized_expanded = normalize_graph(parse_dot(expanded))
 
         assert normalized_chained == normalized_expanded
+
+
+class TestDotParserDefinitionOfDone11_1:
+    def test_accepts_supported_dot_subset_with_graph_node_and_edge_blocks(self):
+        graph = parse_dot(
+            """
+            DIGRAPH G {
+                graph [goal="Ship"]
+                node [shape=box]
+                edge [weight=2]
+                start [shape=Mdiamond]
+                work [prompt="Do it"]
+                done [shape=Msquare]
+                start -> work -> done
+            }
+            """
+        )
+
+        assert graph.graph_id == "G"
+        assert graph.graph_attrs["goal"].value == "Ship"
+        assert graph.nodes["work"].attrs["shape"].value == "box"
+        assert [edge.attrs["weight"].value for edge in graph.edges] == [2, 2]
+
+    def test_extracts_goal_label_and_model_stylesheet_graph_attributes(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [goal="Ship release", label="Release Flow", model_stylesheet="* { llm_model: gpt-5; }"]
+            }
+            """
+        )
+
+        assert graph.graph_attrs["goal"].value == "Ship release"
+        assert graph.graph_attrs["label"].value == "Release Flow"
+        assert graph.graph_attrs["model_stylesheet"].value == "* { llm_model: gpt-5; }"
+
+    def test_parses_multiline_node_attribute_blocks(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [
+                    prompt="Write summary",
+                    timeout=45s,
+                    goal_gate=true
+                ]
+            }
+            """
+        )
+
+        attrs = graph.nodes["task"].attrs
+        assert attrs["prompt"].value == "Write summary"
+        assert attrs["timeout"].value.raw == "45s"
+        assert attrs["goal_gate"].value is True
+
+    def test_parses_edge_label_condition_and_weight_attributes(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                review -> fix [label="retry", condition="outcome=fail", weight=7]
+            }
+            """
+        )
+        edge = graph.edges[0]
+
+        assert edge.attrs["label"].value == "retry"
+        assert edge.attrs["condition"].value == "outcome=fail"
+        assert edge.attrs["weight"].value == 7
+
+    def test_expands_chained_edges_into_pairwise_edges(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                A -> B -> C
+            }
+            """
+        )
+
+        assert [(edge.source, edge.target) for edge in graph.edges] == [("A", "B"), ("B", "C")]
+
+    def test_node_and_edge_defaults_apply_to_subsequent_declarations(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                node [timeout=15m]
+                edge [weight=3]
+                alpha [prompt="a"]
+                beta [prompt="b"]
+                alpha -> beta
+            }
+            """
+        )
+
+        assert graph.nodes["alpha"].attrs["timeout"].value.raw == "15m"
+        assert graph.nodes["beta"].attrs["timeout"].value.raw == "15m"
+        assert graph.edges[0].attrs["weight"].value == 3
+
+    def test_subgraph_contents_are_flattened_into_top_level_graph(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                done [shape=Msquare]
+                subgraph cluster_loop {
+                    plan [prompt="Plan"]
+                    review [prompt="Review"]
+                    plan -> review
+                }
+                start -> plan
+                review -> done
+            }
+            """
+        )
+
+        assert set(graph.nodes.keys()) == {"start", "done", "plan", "review"}
+        assert {(edge.source, edge.target) for edge in graph.edges} == {
+            ("plan", "review"),
+            ("start", "plan"),
+            ("review", "done"),
+        }
+
+    def test_node_class_attribute_merges_stylesheet_attributes(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [model_stylesheet=".fast { llm_model: gpt-5-mini; llm_provider: openai; reasoning_effort: low; }"]
+                start [shape=Mdiamond]
+                task [shape=box, class="fast"]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """
+        )
+
+        ModelStylesheetTransform().apply(graph)
+        task_attrs = graph.nodes["task"].attrs
+        assert task_attrs["llm_model"].value == "gpt-5-mini"
+        assert task_attrs["llm_provider"].value == "openai"
+        assert task_attrs["reasoning_effort"].value == "low"
+
+    def test_accepts_quoted_and_unquoted_attribute_values(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [quoted="Ship", unquoted=Ship]
+            }
+            """
+        )
+
+        assert graph.nodes["task"].attrs["quoted"].value == "Ship"
+        assert graph.nodes["task"].attrs["quoted"].value_type == DotValueType.STRING
+        assert graph.nodes["task"].attrs["unquoted"].value == "Ship"
+        assert graph.nodes["task"].attrs["unquoted"].value_type == DotValueType.STRING
+
+    def test_strips_line_and_block_comments_before_parsing(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                // node declaration
+                start [shape=Mdiamond]
+                /* comment with invalid syntax that must be ignored:
+                   start -- bad
+                */
+                done [shape=Msquare]
+                start -> done
+            }
+            """
+        )
+
+        assert set(graph.nodes.keys()) == {"start", "done"}
+        assert [(edge.source, edge.target) for edge in graph.edges] == [("start", "done")]

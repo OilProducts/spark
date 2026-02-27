@@ -128,8 +128,10 @@ class _Parser:
             raise DotParseError("strict modifier is not supported", first.line)
         if first_lower == "graph":
             raise DotParseError("undirected graph declarations are not supported", first.line)
-
-        self.expect("IDENT", "digraph")
+        if first.kind == "IDENT" and first_lower == "digraph":
+            self.advance()
+        else:
+            self.expect("IDENT", "digraph")
         graph_id_tok = self.expect("IDENT")
         graph = DotGraph(graph_id=graph_id_tok.value)
         self.expect("LBRACE")
