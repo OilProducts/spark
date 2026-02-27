@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from attractor.dsl import parse_dot
 from attractor.dsl.models import DotAttribute, DotValueType
 from attractor.transforms import GoalVariableTransform, ModelStylesheetTransform, TransformPipeline
@@ -454,6 +456,23 @@ class TestTransforms:
         # Invalid selectors and malformed declarations must not apply.
         assert graph.nodes["task"].attrs["llm_model"].value == ""
         assert graph.nodes["task"].attrs["llm_provider"].value == ""
+
+    def test_stylesheet_spec_example_fixture_parses_documented_structure(self):
+        fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / "stylesheet_precedence_example.dot"
+        graph = parse_dot(fixture_path.read_text(encoding="utf-8"))
+
+        assert graph.graph_id == "Pipeline"
+        assert graph.graph_attrs["goal"].value == "Implement feature X"
+        assert "critical_review" in graph.nodes
+        assert graph.nodes["plan"].attrs["class"].value == "planning"
+        assert graph.nodes["implement"].attrs["class"].value == "code"
+        assert graph.nodes["critical_review"].attrs["class"].value == "code"
+        assert [(edge.source, edge.target) for edge in graph.edges] == [
+            ("start", "plan"),
+            ("plan", "implement"),
+            ("implement", "critical_review"),
+            ("critical_review", "exit"),
+        ]
 
     def test_transform_pipeline_order(self):
         graph = parse_dot(

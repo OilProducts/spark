@@ -1,0 +1,15 @@
+digraph Pipeline {
+    graph [
+        goal="Implement feature X",
+        model_stylesheet="\n            * { llm_model: claude-sonnet-4-5; llm_provider: anthropic; }\n            .code { llm_model: claude-opus-4-6; llm_provider: anthropic; }\n            #critical_review { llm_model: gpt-5.2; llm_provider: openai; reasoning_effort: high; }\n        "
+    ]
+
+    start [shape=Mdiamond]
+    exit  [shape=Msquare]
+
+    plan            [label="Plan", class="planning"]
+    implement       [label="Implement", class="code"]
+    critical_review [label="Critical Review", class="code"]
+
+    start -> plan -> implement -> critical_review -> exit
+}

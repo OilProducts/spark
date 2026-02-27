@@ -346,7 +346,7 @@ Status key:
 - [x] [8.5-03] Ensure transform only fills missing model-related attrs.
 
 ### 8.6 Example
-- [ ] [8.6-01] Add fixture that reproduces universal/class/id precedence exactly as documented example.
+- [x] [8.6-01] Add fixture that reproduces universal/class/id precedence exactly as documented example.
 - [ ] [8.6-02] Assert resolved model/provider/reasoning for `plan`, `implement`, and `critical_review`.
 
 ---
