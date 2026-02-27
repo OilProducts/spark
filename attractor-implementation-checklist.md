@@ -335,7 +335,6 @@ Status key:
 - [x] [8.2-03] Enforce class name format and declaration syntax validation.
 
 ### 8.3 Selectors and Specificity
-- [ ] [8.3-02] Implement specificity ordering and tie-break by later rule of equal specificity.
 
 ### 8.4 Recognized Properties
 - [ ] [8.4-01] Apply arbitrary string values for `llm_model`.
@@ -538,6 +537,7 @@ Status key:
 ---
 
 ## Deferred Tasks
+- [ ] [8.3-02] Implement specificity ordering and tie-break by later rule of equal specificity. Deferred because `ModelStylesheetTransform` already compares `(specificity, rule.order)` when choosing candidate declarations (`attractor/transforms/stylesheet.py`), and transform tests already assert later-rule wins for equal-specificity selectors (`tests/transforms/test_transforms.py::test_stylesheet_multiple_matching_classes_use_rule_order_for_equal_specificity`), so this is checklist state drift.
 - [ ] [8.3-01] Implement selector matching for `*`, `.class`, and `#node_id`. Deferred because `ModelStylesheetTransform` already matches universal/class/id selectors in `attractor/transforms/stylesheet.py::_selector_matches`, and transform tests cover each selector type (`tests/transforms/test_transforms.py`), so this is checklist state drift.
 - [ ] [8.1-01] Parse stylesheet from graph attribute and apply as defaults-only transform. Deferred because `ModelStylesheetTransform` already reads `graph.graph_attrs["model_stylesheet"]` and applies inferred model attrs as defaults-only (preserving explicit node attrs), and this is covered by `tests/transforms/test_transforms.py` stylesheet transform cases.
 - [ ] [7.2-03] Implement `reachability` rule. Deferred because `validate_graph` already emits `reachability` diagnostics for nodes outside the start-node traversal and this behavior is covered by validator tests (`tests/dsl/test_validator.py`), so this is checklist state drift.
