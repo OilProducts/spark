@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 import json
 from pathlib import Path
 import random
@@ -82,6 +83,12 @@ class RetryPolicy:
     max_attempts: int
     backoff: BackoffConfig = field(default_factory=BackoffConfig)
     should_retry: ShouldRetryFn = _default_should_retry_outcome
+
+
+class RuntimeErrorCategory(str, Enum):
+    RETRYABLE = "retryable"
+    TERMINAL = "terminal"
+    PIPELINE = "pipeline"
 
 
 _RETRY_POLICY_PRESETS: Dict[str, RetryPolicy] = {
@@ -1165,10 +1172,15 @@ class PipelineExecutor:
             if isinstance(exc, KeyboardInterrupt):
                 raise
             failure_reason = str(exc) or exc.__class__.__name__
+            category = (
+                _classify_runtime_error(exc)
+                if isinstance(exc, Exception)
+                else RuntimeErrorCategory.TERMINAL
+            )
             return Outcome(
                 status=OutcomeStatus.FAIL,
                 failure_reason=failure_reason,
-                retryable=_is_retryable_exception(exc) if isinstance(exc, Exception) else False,
+                retryable=category == RuntimeErrorCategory.RETRYABLE,
             )
         return self._normalize_outcome(node_id, raw_outcome)
 
@@ -1694,6 +1706,35 @@ def _edge_endpoint_text(edge: object | None, key: str) -> str:
 
 def _is_outcome_fail_condition(condition: str) -> bool:
     return "".join(condition.split()).lower() == "outcome=fail"
+
+
+def _classify_runtime_error(exc: Exception) -> RuntimeErrorCategory:
+    if _is_pipeline_error(exc):
+        return RuntimeErrorCategory.PIPELINE
+    if _is_retryable_exception(exc):
+        return RuntimeErrorCategory.RETRYABLE
+    return RuntimeErrorCategory.TERMINAL
+
+
+def _is_pipeline_error(exc: Exception) -> bool:
+    class_name = exc.__class__.__name__.strip().lower()
+    if any(token in class_name for token in ("validation", "syntax", "parse", "graph")):
+        return True
+
+    text = f"{exc.__class__.__name__} {exc}".strip().lower()
+    tokens = (
+        "no start node",
+        "ambiguous start node",
+        "invalid condition",
+        "condition syntax",
+        "unreachable",
+        "edge target",
+        "edge source",
+        "validation",
+        "parse",
+        "syntax",
+    )
+    return any(token in text for token in tokens)
 
 
 def _is_retryable_exception(exc: Exception) -> bool:

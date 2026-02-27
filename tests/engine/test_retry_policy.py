@@ -2,7 +2,14 @@ import pytest
 
 from attractor.dsl import parse_dot
 from attractor.engine.context import Context
-from attractor.engine.executor import BackoffConfig, PipelineExecutor, RetryPolicy, _is_retryable_exception
+from attractor.engine.executor import (
+    RuntimeErrorCategory,
+    BackoffConfig,
+    PipelineExecutor,
+    RetryPolicy,
+    _classify_runtime_error,
+    _is_retryable_exception,
+)
 from attractor.engine.outcome import Outcome, OutcomeStatus
 
 
@@ -216,3 +223,20 @@ class _ValidationError(RuntimeError):
 )
 def test_default_retryability_uses_error_class_and_status_code(error: Exception, expected: bool):
     assert _is_retryable_exception(error) is expected
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (_StatusCodeError(429), RuntimeErrorCategory.RETRYABLE),
+        (_StatusCodeError(401), RuntimeErrorCategory.TERMINAL),
+        (_ValidationError("invalid condition syntax"), RuntimeErrorCategory.PIPELINE),
+        (RuntimeError("No start node found"), RuntimeErrorCategory.PIPELINE),
+        (RuntimeError("invalid credentials"), RuntimeErrorCategory.TERMINAL),
+    ],
+)
+def test_runtime_error_classification_uses_retryable_terminal_and_pipeline_categories(
+    error: Exception,
+    expected: RuntimeErrorCategory,
+):
+    assert _classify_runtime_error(error) == expected

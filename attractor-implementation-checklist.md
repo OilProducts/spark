@@ -501,7 +501,7 @@ Status key:
 ---
 
 ## Appendix D: Error Categories
-- [ ] [D-01] Classify runtime errors into retryable/terminal/pipeline categories.
+- [x] [D-01] Classify runtime errors into retryable/terminal/pipeline categories.
 - [ ] [D-02] Route retryable errors through retry policy and backoff path.
 - [ ] [D-03] Route terminal errors immediately to fail routing (no retries).
 - [ ] [D-04] Surface pipeline structural errors during validation whenever possible.
