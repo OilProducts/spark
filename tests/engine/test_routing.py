@@ -72,6 +72,75 @@ class TestRouting:
         assert edge_when_false is not None
         assert edge_when_false.target == "fix"
 
+    def test_inequality_condition_routes_and_preferred_label_applies_when_condition_fails(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                a [shape=box]
+                iterate [shape=box]
+                approve [shape=box]
+                done [shape=Msquare]
+
+                start -> a
+                a -> iterate [condition="context.loop_state!=exhausted", label="Iterate"]
+                a -> approve [label="[A] Approve"]
+                iterate -> done
+                approve -> done
+            }
+            """
+        )
+        outcome = Outcome(status=OutcomeStatus.SUCCESS, preferred_label="Approve")
+
+        edge_when_not_exhausted = select_next_edge(
+            self._edges_from(graph, "a"),
+            outcome,
+            Context(values={"context.loop_state": "running"}),
+        )
+        assert edge_when_not_exhausted is not None
+        assert edge_when_not_exhausted.target == "iterate"
+
+        edge_when_exhausted = select_next_edge(
+            self._edges_from(graph, "a"),
+            outcome,
+            Context(values={"context.loop_state": "exhausted"}),
+        )
+        assert edge_when_exhausted is not None
+        assert edge_when_exhausted.target == "approve"
+
+    def test_preferred_label_condition_routes_matching_edge(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                gate [shape=diamond]
+                fix [shape=box]
+                done [shape=Msquare]
+
+                start -> gate
+                gate -> fix [condition="preferred_label=Fix"]
+                gate -> done [condition="preferred_label=Approve"]
+                fix -> done
+            }
+            """
+        )
+
+        edge_fix = select_next_edge(
+            self._edges_from(graph, "gate"),
+            Outcome(status=OutcomeStatus.SUCCESS, preferred_label="Fix"),
+            Context(),
+        )
+        assert edge_fix is not None
+        assert edge_fix.target == "fix"
+
+        edge_done = select_next_edge(
+            self._edges_from(graph, "gate"),
+            Outcome(status=OutcomeStatus.SUCCESS, preferred_label="Approve"),
+            Context(),
+        )
+        assert edge_done is not None
+        assert edge_done.target == "done"
+
     def test_preferred_label_then_suggested_ids(self):
         graph = parse_dot(
             """
