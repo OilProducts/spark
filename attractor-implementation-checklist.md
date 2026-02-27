@@ -319,7 +319,7 @@ Status key:
 - [x] [7.3-03] Add API endpoint coverage tests for error/warning payload shape.
 
 ### 7.4 Custom Lint Rules
-- [ ] [7.4-01] Implement `LintRule` plugin registration and execution.
+- [x] [7.4-01] Implement `LintRule` plugin registration and execution.
 - [ ] [7.4-02] Guarantee built-in rules run before custom rules.
 
 ---

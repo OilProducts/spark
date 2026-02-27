@@ -50,6 +50,9 @@ class LintRule(Protocol):
         ...
 
 
+_registered_lint_rules: List[LintRule] = []
+
+
 class ValidationError(Exception):
     def __init__(self, errors: List[Diagnostic]):
         self.errors = list(errors)
@@ -59,12 +62,23 @@ class ValidationError(Exception):
 
 def validate(graph: DotGraph, extra_rules: Iterable[LintRule] | None = None) -> List[Diagnostic]:
     diagnostics = validate_graph(graph)
+    for rule in _registered_lint_rules:
+        diagnostics.extend(rule.apply(graph))
+
     if extra_rules is None:
         return diagnostics
 
     for rule in extra_rules:
         diagnostics.extend(rule.apply(graph))
     return diagnostics
+
+
+def register_lint_rule(rule: LintRule) -> None:
+    _registered_lint_rules.append(rule)
+
+
+def clear_registered_lint_rules() -> None:
+    _registered_lint_rules.clear()
 
 
 def validate_or_raise(graph: DotGraph, extra_rules: Iterable[LintRule] | None = None) -> List[Diagnostic]:

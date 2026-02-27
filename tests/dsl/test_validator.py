@@ -1,11 +1,21 @@
 from pathlib import Path
 
+import pytest
+
 from attractor.dsl import ValidationError, parse_dot, validate, validate_graph, validate_or_raise
 from attractor.dsl.models import Diagnostic, DiagnosticSeverity
+from attractor.dsl.validator import clear_registered_lint_rules, register_lint_rule
 
 
 SIMPLE_LINEAR_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "simple_linear_workflow.dot"
 HUMAN_GATE_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "human_gate_workflow.dot"
+
+
+@pytest.fixture(autouse=True)
+def _clear_registered_lint_rules():
+    clear_registered_lint_rules()
+    yield
+    clear_registered_lint_rules()
 
 
 class TestDotValidator:
@@ -572,6 +582,34 @@ class TestDotValidator:
 
         assert diagnostics[: len(baseline)] == baseline
         assert diagnostics[len(baseline) :][-1].rule_id == "custom_rule"
+
+    def test_validate_runs_registered_lint_rules(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+
+            start -> done
+        }
+        """
+        graph = parse_dot(dot)
+
+        class _RegisteredRule:
+            def apply(self, current_graph):
+                assert current_graph is graph
+                return [
+                    Diagnostic(
+                        rule_id="registered_custom_rule",
+                        severity=DiagnosticSeverity.INFO,
+                        message="registered lint",
+                        line=1,
+                    )
+                ]
+
+        register_lint_rule(_RegisteredRule())
+        diagnostics = validate(graph)
+
+        assert diagnostics[-1].rule_id == "registered_custom_rule"
 
     def test_validate_or_raise_returns_diagnostics_when_only_warnings(self):
         dot = """
