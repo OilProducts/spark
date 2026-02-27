@@ -895,7 +895,8 @@ class PipelineExecutor:
         if run_root_checkpoint_path and run_root_checkpoint_path != self.checkpoint_path:
             save_checkpoint(run_root_checkpoint_path, checkpoint)
             persisted = True
-        self._emit_event("CheckpointSaved", node_id=current_node, persisted=persisted)
+        if persisted:
+            self._emit_event("CheckpointSaved", node_id=current_node, persisted=True)
 
     def _ensure_run_root_layout(self, *, current_node: str, context: Context) -> None:
         if not self.logs_root:

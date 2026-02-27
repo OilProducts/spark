@@ -1,3 +1,6 @@
+from pathlib import Path
+import tempfile
+
 import pytest
 
 from attractor.dsl import parse_dot
@@ -707,19 +710,28 @@ class TestRetryAndGoalGate:
                     return Outcome(status=OutcomeStatus.FAIL, failure_reason="needs fix")
             return Outcome(status=OutcomeStatus.SUCCESS)
 
-        result = PipelineExecutor(graph, runner, on_event=events.append).run_from("start", Context())
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_root = Path(tmp) / "logs"
+            result = PipelineExecutor(
+                graph,
+                runner,
+                logs_root=str(logs_root),
+                on_event=events.append,
+            ).run_from("start", Context())
 
-        assert result.status == "success"
-        stage_started_fix_index = next(
-            i for i, event in enumerate(events) if event["type"] == "StageStarted" and event.get("node_id") == "fix"
-        )
-        checkpoint_fix_indices = [
-            i
-            for i, event in enumerate(events)
-            if event["type"] == "CheckpointSaved" and event.get("node_id") == "fix"
-        ]
-        assert checkpoint_fix_indices
-        assert any(index < stage_started_fix_index for index in checkpoint_fix_indices)
+            assert result.status == "success"
+            stage_started_fix_index = next(
+                i
+                for i, event in enumerate(events)
+                if event["type"] == "StageStarted" and event.get("node_id") == "fix"
+            )
+            checkpoint_fix_indices = [
+                i
+                for i, event in enumerate(events)
+                if event["type"] == "CheckpointSaved" and event.get("node_id") == "fix"
+            ]
+            assert checkpoint_fix_indices
+            assert any(index < stage_started_fix_index for index in checkpoint_fix_indices)
 
     def test_non_goal_gate_fail_routing_ignores_graph_level_retry_target(self):
         graph = parse_dot(

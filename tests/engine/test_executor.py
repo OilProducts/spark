@@ -524,16 +524,46 @@ class TestExecutor:
         def runner(node_id: str, prompt: str, context: Context) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS)
 
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_root = Path(tmp) / "logs"
+            result = PipelineExecutor(
+                graph,
+                runner,
+                logs_root=str(logs_root),
+                on_event=events.append,
+            ).run(Context())
+
+            event_types = [event["type"] for event in events]
+            assert result.status == "success"
+            assert event_types[0] == "PipelineStarted"
+            assert event_types[-1] == "PipelineCompleted"
+            assert event_types.count("StageStarted") == 2
+            assert event_types.count("StageCompleted") == 2
+            assert event_types.count("CheckpointSaved") >= 1
+            assert all(isinstance(event, dict) and "type" in event for event in events)
+
+    def test_executor_does_not_emit_checkpoint_event_when_nothing_is_persisted(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                work [shape=box]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+        events: list[dict] = []
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
         result = PipelineExecutor(graph, runner, on_event=events.append).run(Context())
 
         event_types = [event["type"] for event in events]
         assert result.status == "success"
-        assert event_types[0] == "PipelineStarted"
-        assert event_types[-1] == "PipelineCompleted"
-        assert event_types.count("StageStarted") == 2
-        assert event_types.count("StageCompleted") == 2
-        assert event_types.count("CheckpointSaved") >= 1
-        assert all(isinstance(event, dict) and "type" in event for event in events)
+        assert "CheckpointSaved" not in event_types
 
     def test_pipeline_started_and_completed_events_include_lifecycle_payload(self):
         graph = parse_dot(
