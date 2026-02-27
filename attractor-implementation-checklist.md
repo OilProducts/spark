@@ -452,7 +452,6 @@ Status key:
 - [x] [11.8-01] Convert each DoD bullet in spec 11.8 into interviewer/human-gate tests.
 
 ### 11.9 Condition Expressions
-- [ ] [11.9-01] Convert each DoD bullet in spec 11.9 into evaluator tests.
 
 ### 11.10 Model Stylesheet
 - [ ] [11.10-01] Convert each DoD bullet in spec 11.10 into stylesheet transform tests.
@@ -521,6 +520,7 @@ Status key:
 ---
 
 ## Deferred Tasks
+- [ ] [11.9-01] Convert each DoD bullet in spec 11.9 into evaluator tests. Deferred because every spec 11.9 DoD bullet (`=`, `!=`, `&&`, `outcome`, `preferred_label`, `context.*` with missing-key empty string, and empty-condition true) is already covered in `tests/engine/test_conditions.py`, so this is checklist state drift.
 - [ ] [11.6-01] Convert each DoD bullet in spec 11.6 into per-handler contract tests. Deferred because spec 11.6 handler contracts are already covered by existing tests across `tests/handlers/test_handlers.py`, `tests/engine/test_executor.py`, and `tests/integration/test_parity_matrix.py`, so this is checklist state drift.
 - [ ] [11.3-02] Add deterministic edge-selection conformance tests. Deferred because deterministic edge-selection conformance is already covered by routing tests for the five-step priority and stable tie-breaking (`tests/engine/test_routing.py`), so this is checklist state drift.
 - [ ] [10.6-01] Add routing tests for `outcome=success` and `outcome=fail`. Deferred because success/fail edge-condition routing is already covered by engine execution tests (`tests/engine/test_retry_goal_gate.py`) and condition-evaluation tests (`tests/engine/test_conditions.py`), so this is checklist state drift.
