@@ -118,15 +118,27 @@ def validate_graph(graph: DotGraph) -> List[Diagnostic]:
                     )
                 )
 
-    if not exit_nodes:
-        diagnostics.append(
-            Diagnostic(
-                rule_id="terminal_node",
-                severity=DiagnosticSeverity.ERROR,
-                message="pipeline must have at least one terminal node, found 0",
-                line=0,
+    if len(exit_nodes) != 1:
+        if not exit_nodes:
+            diagnostics.append(
+                Diagnostic(
+                    rule_id="terminal_node",
+                    severity=DiagnosticSeverity.ERROR,
+                    message="pipeline must have exactly one exit node, found 0",
+                    line=0,
+                )
             )
-        )
+        else:
+            for node in exit_nodes:
+                diagnostics.append(
+                    Diagnostic(
+                        rule_id="terminal_node",
+                        severity=DiagnosticSeverity.ERROR,
+                        message=f"pipeline must have exactly one exit node, found {len(exit_nodes)}",
+                        line=node.line,
+                        node_id=node.node_id,
+                    )
+                )
 
     # Edge targets and start/exit in/out checks.
     in_degree: Dict[str, int] = {node_id: 0 for node_id in graph.nodes}

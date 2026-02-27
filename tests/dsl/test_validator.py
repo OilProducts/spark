@@ -97,6 +97,27 @@ class TestDotValidator:
         assert error.message == "edge target 'missing' does not reference an existing node"
         assert error.fix == "define node 'missing' or update the edge target"
 
+    def test_edge_source_exists_reports_missing_source(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+
+            start -> done
+            missing -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        source_errors = [
+            d for d in diagnostics if d.rule_id == "edge_source_exists" and d.severity == DiagnosticSeverity.ERROR
+        ]
+
+        assert len(source_errors) == 1
+        error = source_errors[0]
+        assert error.edge == ("missing", "done")
+        assert error.message == "edge source 'missing' does not reference an existing node"
+
     def test_non_exit_nodes_must_have_outgoing_edges(self):
         dot = """
         digraph G {
@@ -598,6 +619,21 @@ class TestDotValidator:
 
         assert "start_node" in error_rules
 
+    def test_start_rule_errors_when_no_start_nodes_exist(self):
+        dot = """
+        digraph G {
+            task [shape=box]
+            done [shape=Msquare]
+
+            task -> done
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "start_node" in error_rules
+
     def test_start_no_incoming_applies_even_with_multiple_start_nodes(self):
         dot = """
         digraph G {
@@ -638,7 +674,7 @@ class TestDotValidator:
         assert "terminal_node" not in error_rules
         assert "exit_no_outgoing" not in error_rules
 
-    def test_terminal_rule_allows_multiple_terminal_nodes(self):
+    def test_terminal_rule_errors_when_multiple_terminal_nodes_exist(self):
         dot = """
         digraph G {
             start [shape=Mdiamond]
@@ -655,7 +691,7 @@ class TestDotValidator:
         diagnostics = validate_graph(graph)
         error_rules = {d.rule_id for d in self._errors(diagnostics)}
 
-        assert "terminal_node" not in error_rules
+        assert "terminal_node" in error_rules
 
     def test_terminal_rule_errors_when_no_terminal_nodes_exist(self):
         dot = """
