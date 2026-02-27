@@ -183,6 +183,24 @@ class TestDotValidator:
 
         assert "condition_syntax" in error_rules
 
+    def test_condition_syntax_rejects_unsupported_or_operator(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            task [shape=box]
+            done [shape=Msquare]
+
+            start -> task
+            task -> done [condition="outcome=success || context.tests_passed=true"]
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        errors = [d for d in self._errors(diagnostics) if d.rule_id == "condition_syntax"]
+
+        assert errors
+        assert any("unsupported operator" in d.message for d in errors)
+
     def test_stylesheet_selector_and_property_restrictions(self):
         dot = """
         digraph G {

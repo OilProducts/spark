@@ -398,8 +398,7 @@ Status key:
 ## 10. Condition Expression Language
 
 ### 10.1 Overview
-- [ ] [10.1-01] Keep expression language minimal and deterministic for routing.
-- [ ] [10.1-02] Reject unsupported operators/syntax during validation.
+- [x] [10.1-02] Reject unsupported operators/syntax during validation.
 
 ### 10.2 Grammar
 - [ ] [10.2-01] Parse clauses joined by `&&`.
@@ -565,3 +564,4 @@ Status key:
 - [ ] [7.2-06] Implement `exit_no_outgoing` rule. Deferred because `validate_graph` already emits `exit_no_outgoing` diagnostics for terminal nodes with outgoing edges and validator coverage exists in `tests/dsl/test_validator.py::test_edge_target_exists_and_start_incoming_exit_outgoing`, so this is checklist state drift.
 - [ ] [7.2-10] Implement `fidelity_valid` warning rule. Deferred because fidelity warnings for graph/node/edge attrs are already implemented in `attractor/dsl/validator.py::_validate_fidelity_values` and covered by `tests/dsl/test_validator.py::test_retry_target_and_fidelity_warnings`, so this is checklist state drift.
 - [ ] [7.2-11] Implement `retry_target_exists` warning rule. Deferred because `validate_graph` already emits `retry_target_exists` diagnostics for graph/node retry targets that reference missing nodes (`attractor/dsl/validator.py::_validate_retry_targets`) and this behavior is covered in `tests/dsl/test_validator.py::test_retry_target_and_fidelity_warnings`, so this is checklist state drift.
+- [ ] [10.1-01] Keep expression language minimal and deterministic for routing. Deferred because this is an umbrella outcome that should be closed only after the concrete grammar/semantics/evaluation tasks in Sections 10.2-10.5 are completed.

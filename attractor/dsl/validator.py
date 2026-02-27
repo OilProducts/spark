@@ -313,6 +313,19 @@ def _validate_edge_condition(condition_attr, edge: DotEdge) -> List[Diagnostic]:
             )
             continue
 
+        unsupported_operator = _find_unsupported_condition_operator(clause)
+        if unsupported_operator:
+            diagnostics.append(
+                Diagnostic(
+                    rule_id="condition_syntax",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"unsupported operator '{unsupported_operator}' in condition clause '{clause}'",
+                    line=edge.line,
+                    edge=(edge.source, edge.target),
+                )
+            )
+            continue
+
         match = _CONDITION_RE.match(clause)
         if not match:
             diagnostics.append(
@@ -342,6 +355,42 @@ def _validate_edge_condition(condition_attr, edge: DotEdge) -> List[Diagnostic]:
         )
 
     return diagnostics
+
+
+def _find_unsupported_condition_operator(clause: str) -> str | None:
+    unquoted = _strip_quoted_segments(clause)
+    if "||" in unquoted:
+        return "||"
+
+    keyword_match = re.search(r"\s(contains|matches)\s", unquoted)
+    if keyword_match:
+        return keyword_match.group(1)
+
+    for symbol in (">=", "<=", ">", "<"):
+        if symbol in unquoted:
+            return symbol
+    return None
+
+
+def _strip_quoted_segments(text: str) -> str:
+    result_chars: List[str] = []
+    in_quotes = False
+    escaped = False
+
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            in_quotes = not in_quotes
+            continue
+        if not in_quotes:
+            result_chars.append(char)
+
+    return "".join(result_chars)
 
 
 def _validate_retry_targets(graph: DotGraph) -> List[Diagnostic]:
