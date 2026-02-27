@@ -457,7 +457,7 @@ Status key:
 - [x] [11.10-01] Convert each DoD bullet in spec 11.10 into stylesheet transform tests.
 
 ### 11.11 Transforms and Extensibility
-- [ ] [11.11-01] Convert each DoD bullet in spec 11.11 into transform/HTTP integration tests.
+- [x] [11.11-01] Convert each DoD bullet in spec 11.11 into transform/HTTP integration tests.
 
 ### 11.12 Cross-Feature Parity Matrix
 - [ ] [11.12-01] Execute the entire parity matrix and persist a pass/fail report artifact.

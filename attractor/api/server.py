@@ -581,6 +581,12 @@ class HumanAnswerRequest(BaseModel):
     selected_value: str
 
 
+class LegacyHumanAnswerRequest(BaseModel):
+    pipeline_id: str
+    question_id: str
+    selected_value: str
+
+
 DEFAULT_FLOW = """digraph SoftwareFactory {
     start [shape=Mdiamond, label="Start"];
     setup [shape=box, prompt="Initialize project"];
@@ -1427,6 +1433,11 @@ async def create_pipeline(req: PipelineStartRequest):
     return await _start_pipeline(req)
 
 
+@app.post("/run")
+async def run_pipeline(req: PipelineStartRequest):
+    return await _start_pipeline(req)
+
+
 @app.get("/pipelines/{pipeline_id}")
 async def get_pipeline(pipeline_id: str):
     checkpoint_current_node, checkpoint_completed_nodes = _read_checkpoint_progress(pipeline_id)
@@ -1572,6 +1583,15 @@ async def submit_pipeline_answer(pipeline_id: str, question_id: str, req: HumanA
     if not ok:
         raise HTTPException(status_code=404, detail="Unknown question for pipeline")
     return {"status": "accepted", "pipeline_id": pipeline_id, "question_id": question_id}
+
+
+@app.post("/answer")
+async def answer_pipeline(req: LegacyHumanAnswerRequest):
+    return await submit_pipeline_answer(
+        req.pipeline_id,
+        req.question_id,
+        HumanAnswerRequest(selected_value=req.selected_value),
+    )
 
 
 @app.post("/reset")
