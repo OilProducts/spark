@@ -122,6 +122,57 @@ class TestDotValidator:
         assert "condition_syntax" in rule_ids
         assert "stylesheet_syntax" in rule_ids
 
+    def test_condition_syntax_rejects_invalid_context_path(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            task [shape=box]
+            done [shape=Msquare]
+
+            start -> task
+            task -> done [condition="context..tests_passed=true"]
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "condition_syntax" in error_rules
+
+    def test_condition_syntax_accepts_valid_context_path(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            task [shape=box]
+            done [shape=Msquare]
+
+            start -> task
+            task -> done [condition="outcome=success && context.tests_passed=true"]
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        condition_errors = [d for d in self._errors(diagnostics) if d.rule_id == "condition_syntax"]
+
+        assert condition_errors == []
+
+    def test_condition_syntax_rejects_context_path_with_trailing_dot(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            task [shape=box]
+            done [shape=Msquare]
+
+            start -> task
+            task -> done [condition="context.tests_passed.=true"]
+        }
+        """
+        graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+        error_rules = {d.rule_id for d in self._errors(diagnostics)}
+
+        assert "condition_syntax" in error_rules
+
     def test_stylesheet_selector_and_property_restrictions(self):
         dot = """
         digraph G {

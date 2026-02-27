@@ -16,6 +16,7 @@ VALID_FIDELITY = {
 }
 
 _CONDITION_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)\s*(=|!=)\s*(.+)$")
+_CONTEXT_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _STYLESHEET_ALLOWED_PROPERTIES = {"llm_model", "llm_provider", "reasoning_effort"}
 _STYLESHEET_CLASS_RE = re.compile(r"^[a-z0-9-]+$")
 _STYLESHEET_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -250,16 +251,19 @@ def _validate_edge_condition(condition_attr, edge: DotEdge) -> List[Diagnostic]:
             continue
 
         key = match.group(1)
-        if key not in {"outcome", "preferred_label"} and not key.startswith("context."):
-            diagnostics.append(
-                Diagnostic(
-                    rule_id="condition_syntax",
-                    severity=DiagnosticSeverity.ERROR,
-                    message=f"invalid condition variable '{key}'",
-                    line=edge.line,
-                    edge=(edge.source, edge.target),
-                )
+        if key in {"outcome", "preferred_label"}:
+            continue
+        if key.startswith("context.") and _CONTEXT_PATH_RE.fullmatch(key[len("context.") :]):
+            continue
+        diagnostics.append(
+            Diagnostic(
+                rule_id="condition_syntax",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"invalid condition variable '{key}'",
+                line=edge.line,
+                edge=(edge.source, edge.target),
             )
+        )
 
     return diagnostics
 
