@@ -82,7 +82,7 @@ Status key:
 
 ### 5.1 Selection and Editing
 - [x] [5.1-01] Enforce single-select semantics for nodes/edges across canvas and inspector.
-- [ ] [5.1-02] Sync selection state bidirectionally between canvas and inspector.
+- [x] [5.1-02] Sync selection state bidirectionally between canvas and inspector.
 - [ ] [5.1-03] Reflect unsaved edits immediately in local graph model and diagnostics.
 
 ### 5.2 Editing Modalities

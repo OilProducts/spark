@@ -138,7 +138,7 @@ async function layoutWithElk(nodes: Node[], edges: Edge[]): Promise<Node[]> {
 }
 
 export function Editor() {
-    const { activeFlow, viewMode, setSelectedNodeId, setSelectedEdgeId } = useStore();
+    const { activeFlow, viewMode, selectedNodeId, selectedEdgeId, setSelectedNodeId, setSelectedEdgeId } = useStore();
     const nodeStatuses = useStore((state) => state.nodeStatuses);
     const graphAttrs = useStore((state) => state.graphAttrs);
     const uiDefaults = useStore((state) => state.uiDefaults);
@@ -489,6 +489,21 @@ export function Editor() {
             return { ...node, data: { ...node.data, status: nextStatus } };
         }));
     }, [nodeStatuses, setNodes]);
+
+    useEffect(() => {
+        setNodes((currentNodes) =>
+            currentNodes.map((node) => {
+                const shouldSelect = !selectedEdgeId && node.id === selectedNodeId;
+                return node.selected === shouldSelect ? node : { ...node, selected: shouldSelect };
+            })
+        );
+        setEdges((currentEdges) =>
+            currentEdges.map((edge) => {
+                const shouldSelect = edge.id === selectedEdgeId;
+                return edge.selected === shouldSelect ? edge : { ...edge, selected: shouldSelect };
+            })
+        );
+    }, [selectedNodeId, selectedEdgeId, setNodes, setEdges]);
 
     return (
         <div className="flow-surface w-full h-full relative">
