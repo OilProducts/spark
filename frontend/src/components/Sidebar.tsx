@@ -36,7 +36,6 @@ export function Sidebar() {
     const uiDefaults = useStore((state) => state.uiDefaults)
     const saveState = useStore((state) => state.saveState)
     const saveErrorMessage = useStore((state) => state.saveErrorMessage)
-    const setSuppressPreview = useStore((state) => state.setSuppressPreview)
     const [flows, setFlows] = useState<string[]>([])
     const [showAdvanced, setShowAdvanced] = useState(false)
     const { getNodes, setNodes, getEdges, setEdges } = useReactFlow()
@@ -44,8 +43,6 @@ export function Sidebar() {
     const edges = useReactFlowStore((state) => state.edges)
     const saveTimer = useRef<number | null>(null)
     const pendingSaveRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null)
-    const promptNodeRef = useRef<string | null>(null)
-    const promptRef = useRef<HTMLTextAreaElement | null>(null)
 
     const loadFlows = () => {
         fetch('/api/flows')
@@ -197,13 +194,6 @@ export function Sidebar() {
         }
     };
 
-    const commitPrompt = () => {
-        const nodeId = promptNodeRef.current ?? selectedNodeId
-        if (!nodeId) return
-        const value = promptRef.current?.value ?? ''
-        updateNodeProperty(nodeId, 'prompt', value)
-    }
-
     useEffect(() => {
         const handleBeforeUnload = () => {
             flushPendingSave()
@@ -332,17 +322,8 @@ export function Sidebar() {
                                     <div className="space-y-1.5 flex flex-col h-48">
                                         <label className="text-sm font-medium">Prompt Instruction</label>
                                         <textarea
-                                            key={selectedNodeId ?? 'prompt'}
-                                            ref={promptRef}
-                                            defaultValue={(selectedNode?.data?.prompt as string) || ''}
-                                            onFocus={() => {
-                                                setSuppressPreview(true)
-                                                promptNodeRef.current = selectedNodeId
-                                            }}
-                                            onBlur={() => {
-                                                setSuppressPreview(false)
-                                                commitPrompt()
-                                            }}
+                                            value={(selectedNode?.data?.prompt as string) || ''}
+                                            onChange={(e) => handlePropertyChange('prompt', e.target.value)}
                                             className="flex flex-1 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
                                             placeholder="Enter system prompt instructions..."
                                         />

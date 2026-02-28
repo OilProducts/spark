@@ -75,3 +75,63 @@ test("primary UI shells render and can be navigated", async ({ page }) => {
   await expect(page.getByTestId("canvas-workspace-primary")).toHaveCount(0)
   await page.screenshot({ path: screenshotPath("08-runs-panel.png"), fullPage: true })
 })
+
+test("prompt edits trigger live preview diagnostics before blur for item 5.1-03", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-live-${Date.now()}`
+  const promptToken = `live-prompt-${Date.now()}`
+  const diagnosticMessage = `Live prompt diagnostic ${Date.now()}`
+
+  await page.route("**/preview", async (route) => {
+    const body = route.request().postData() || ""
+    if (body.includes(promptToken)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "ok",
+          diagnostics: [
+            {
+              rule_id: "live_prompt",
+              severity: "warning",
+              message: diagnosticMessage,
+            },
+          ],
+        }),
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-editor").click()
+
+  const firstFlowButton = page.locator("button").filter({ hasText: ".dot" }).first()
+  await expect(firstFlowButton).toBeVisible()
+  await firstFlowButton.click()
+
+  await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
+  await page.getByRole("button", { name: "Add Node" }).click()
+
+  const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
+  await expect(newNode).toBeVisible()
+  await newNode.click()
+
+  const promptField = page.getByPlaceholder("Enter system prompt instructions...")
+  await expect(promptField).toBeVisible()
+
+  const previewRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes("/preview") &&
+      request.method() === "POST" &&
+      (request.postData() || "").includes(promptToken),
+  )
+
+  await promptField.fill(promptToken)
+  await expect(promptField).toBeFocused()
+  await previewRequest
+  await expect(page.getByText(diagnosticMessage)).toBeVisible()
+  await page.screenshot({ path: screenshotPath("09-live-prompt-diagnostics.png"), fullPage: true })
+})
