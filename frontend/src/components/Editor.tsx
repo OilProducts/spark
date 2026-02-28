@@ -154,6 +154,30 @@ export function Editor() {
     const pendingSaveRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
     const [isDragging, setIsDragging] = useState(false);
 
+    const enforceSingleSelectedNode = useCallback((nextNodes: Node[], selectedNodeId: string) => {
+        setEdges((currentEdges) =>
+            currentEdges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge))
+        );
+        setSelectedNodeId(selectedNodeId);
+        setSelectedEdgeId(null);
+        return nextNodes.map((node) => {
+            const shouldSelect = node.id === selectedNodeId;
+            return node.selected === shouldSelect ? node : { ...node, selected: shouldSelect };
+        });
+    }, [setEdges, setSelectedEdgeId, setSelectedNodeId]);
+
+    const enforceSingleSelectedEdge = useCallback((nextEdges: Edge[], selectedEdgeId: string) => {
+        setNodes((currentNodes) =>
+            currentNodes.map((node) => (node.selected ? { ...node, selected: false } : node))
+        );
+        setSelectedEdgeId(selectedEdgeId);
+        setSelectedNodeId(null);
+        return nextEdges.map((edge) => {
+            const shouldSelect = edge.id === selectedEdgeId;
+            return edge.selected === shouldSelect ? edge : { ...edge, selected: shouldSelect };
+        });
+    }, [setNodes, setSelectedEdgeId, setSelectedNodeId]);
+
     const saveFlow = useCallback((nextNodes: Node[], nextEdges: Edge[]) => {
         if (!activeFlow) return;
         const dot = generateDot(activeFlow, nextNodes, nextEdges, graphAttrs);
@@ -353,6 +377,13 @@ export function Editor() {
     const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
         setNodes((currentNodes) => {
             const updatedNodes = applyNodeChanges(changes, currentNodes);
+            const latestSelectedNodeChange = [...changes].reverse().find(
+                (change): change is NodeChange<Node> & { type: 'select'; id: string; selected: boolean } =>
+                    change.type === 'select' && change.selected === true
+            );
+            const nextNodes = latestSelectedNodeChange
+                ? enforceSingleSelectedNode(updatedNodes, latestSelectedNodeChange.id)
+                : updatedNodes;
             const draggingNow = changes.some(
                 (change) => change.type === 'position' && (change as { dragging?: boolean }).dragging
             );
@@ -377,22 +408,29 @@ export function Editor() {
             });
 
             if (shouldSave) {
-                scheduleSave(updatedNodes, edges);
+                scheduleSave(nextNodes, edges);
             }
-            return updatedNodes;
+            return nextNodes;
         });
-    }, [setNodes, scheduleSave, edges]);
+    }, [setNodes, scheduleSave, edges, enforceSingleSelectedNode]);
 
     const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
         setEdges((currentEdges) => {
             const updatedEdges = applyEdgeChanges(changes, currentEdges);
+            const latestSelectedEdgeChange = [...changes].reverse().find(
+                (change): change is EdgeChange<Edge> & { type: 'select'; id: string; selected: boolean } =>
+                    change.type === 'select' && change.selected === true
+            );
+            const nextEdges = latestSelectedEdgeChange
+                ? enforceSingleSelectedEdge(updatedEdges, latestSelectedEdgeChange.id)
+                : updatedEdges;
             const shouldSave = changes.some((change) => change.type !== 'select');
             if (shouldSave) {
-                scheduleSave(nodes, updatedEdges);
+                scheduleSave(nodes, nextEdges);
             }
-            return updatedEdges;
+            return nextEdges;
         });
-    }, [setEdges, scheduleSave, nodes]);
+    }, [setEdges, scheduleSave, nodes, enforceSingleSelectedEdge]);
 
     const onConnect = useCallback(
         (params: Connection | Edge) => {
