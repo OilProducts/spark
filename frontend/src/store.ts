@@ -243,6 +243,9 @@ interface AppState {
     setSelectedEdgeId: (id: string | null) => void
     selectedRunId: string | null
     setSelectedRunId: (id: string | null) => void
+    setConversationId: (id: string | null) => void
+    setSpecId: (id: string | null) => void
+    setPlanId: (id: string | null) => void
 
     logs: LogEntry[]
     addLog: (entry: LogEntry) => void
@@ -472,6 +475,51 @@ export const useStore = create<AppState>((set) => ({
             })
             return {
                 selectedRunId: id,
+                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+            }
+        }),
+    setConversationId: (id) =>
+        set((state) => {
+            if (!state.activeProjectPath) {
+                return {}
+            }
+            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
+            nextProjectScopedWorkspaces[state.activeProjectPath] = {
+                ...scoped,
+                conversationId: id,
+            }
+            return {
+                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+            }
+        }),
+    setSpecId: (id) =>
+        set((state) => {
+            if (!state.activeProjectPath) {
+                return {}
+            }
+            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
+            nextProjectScopedWorkspaces[state.activeProjectPath] = {
+                ...scoped,
+                specId: id,
+            }
+            return {
+                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+            }
+        }),
+    setPlanId: (id) =>
+        set((state) => {
+            if (!state.activeProjectPath) {
+                return {}
+            }
+            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
+            nextProjectScopedWorkspaces[state.activeProjectPath] = {
+                ...scoped,
+                planId: id,
+            }
+            return {
                 projectScopedWorkspaces: nextProjectScopedWorkspaces,
             }
         }),
