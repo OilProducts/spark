@@ -56,7 +56,7 @@ Status key:
 - [x] [4-03] Add route restoration behavior on refresh/reopen.
 
 ### 4.1 Global Regions
-- [ ] [4.1-01] Keep top navigation persistent across modes with active-project, active-flow, and run action context.
+- [x] [4.1-01] Keep top navigation persistent across modes with active-project, active-flow, and run action context.
 - [ ] [4.1-02] Keep canvas workspace as primary interaction zone in editor/execution modes.
 - [ ] [4.1-03] Keep inspector panel context-driven for graph/node/edge selection.
 - [ ] [4.1-04] Keep execution footer/stream visible and consistent during active runs.

@@ -3,9 +3,12 @@ import { Play, Settings2 } from "lucide-react"
 
 export function Navbar() {
     const { viewMode, setViewMode, activeFlow, setSelectedRunId } = useStore()
+    const activeProjectPath = useStore((state) => state.activeProjectPath)
     const model = useStore((state) => state.model)
     const workingDir = useStore((state) => state.workingDir)
     const hasValidationErrors = useStore((state) => state.hasValidationErrors)
+    const runtimeStatus = useStore((state) => state.runtimeStatus)
+    const selectedRunId = useStore((state) => state.selectedRunId)
 
     const runPipeline = async () => {
         if (!activeFlow || hasValidationErrors) return
@@ -47,6 +50,12 @@ export function Navbar() {
             window.alert('Failed to start pipeline run. Check backend logs for details.')
         }
     }
+
+    const projectLabel = activeProjectPath || "No active project"
+    const flowLabel = activeFlow || "No active flow"
+    const runContextLabel = selectedRunId
+        ? `${runtimeStatus} · ${selectedRunId}`
+        : `${runtimeStatus} · no run selected`
 
     return (
         <header data-testid="top-nav" className="h-14 border-b bg-background flex items-center justify-between px-6 shrink-0 z-50">
@@ -97,6 +106,18 @@ export function Navbar() {
                     >
                         Runs
                     </button>
+                </div>
+
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <div data-testid="top-nav-active-project" className="max-w-56 truncate rounded border border-border bg-muted/40 px-2 py-1">
+                        <span className="font-medium text-foreground">Project:</span> {projectLabel}
+                    </div>
+                    <div data-testid="top-nav-active-flow" className="max-w-48 truncate rounded border border-border bg-muted/40 px-2 py-1">
+                        <span className="font-medium text-foreground">Flow:</span> {flowLabel}
+                    </div>
+                    <div data-testid="top-nav-run-context" className="max-w-56 truncate rounded border border-border bg-muted/40 px-2 py-1">
+                        <span className="font-medium text-foreground">Runtime:</span> {runContextLabel}
+                    </div>
                 </div>
             </div>
 

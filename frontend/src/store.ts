@@ -99,12 +99,14 @@ const VIEW_MODES: ViewMode[] = ['projects', 'editor', 'execution', 'settings', '
 
 interface RouteState {
     viewMode: ViewMode
+    activeProjectPath: string | null
     activeFlow: string | null
     selectedRunId: string | null
 }
 
 const DEFAULT_ROUTE_STATE: RouteState = {
     viewMode: 'editor',
+    activeProjectPath: null,
     activeFlow: null,
     selectedRunId: null,
 }
@@ -120,6 +122,7 @@ const loadRouteState = (): RouteState => {
         const isValidViewMode = parsed.viewMode ? VIEW_MODES.includes(parsed.viewMode) : false
         return {
             viewMode: isValidViewMode ? parsed.viewMode! : DEFAULT_ROUTE_STATE.viewMode,
+            activeProjectPath: typeof parsed.activeProjectPath === "string" ? parsed.activeProjectPath : null,
             activeFlow: typeof parsed.activeFlow === "string" ? parsed.activeFlow : null,
             selectedRunId: typeof parsed.selectedRunId === "string" ? parsed.selectedRunId : null,
         }
@@ -166,6 +169,8 @@ const saveUiDefaults = (defaults: UiDefaults) => {
 interface AppState {
     viewMode: ViewMode
     setViewMode: (mode: ViewMode) => void
+    activeProjectPath: string | null
+    setActiveProjectPath: (projectPath: string | null) => void
     activeFlow: string | null
     setActiveFlow: (flow: string | null) => void
     selectedNodeId: string | null
@@ -227,16 +232,29 @@ export const useStore = create<AppState>((set) => ({
         set((state) => {
             saveRouteState({
                 viewMode: mode,
+                activeProjectPath: state.activeProjectPath,
                 activeFlow: state.activeFlow,
                 selectedRunId: state.selectedRunId,
             })
             return { viewMode: mode }
+        }),
+    activeProjectPath: restoredRouteState.activeProjectPath,
+    setActiveProjectPath: (projectPath) =>
+        set((state) => {
+            saveRouteState({
+                viewMode: state.viewMode,
+                activeProjectPath: projectPath,
+                activeFlow: state.activeFlow,
+                selectedRunId: state.selectedRunId,
+            })
+            return { activeProjectPath: projectPath }
         }),
     activeFlow: restoredRouteState.activeFlow,
     setActiveFlow: (flow) =>
         set((state) => {
             saveRouteState({
                 viewMode: state.viewMode,
+                activeProjectPath: state.activeProjectPath,
                 activeFlow: flow,
                 selectedRunId: state.selectedRunId,
             })
@@ -251,6 +269,7 @@ export const useStore = create<AppState>((set) => ({
         set((state) => {
             saveRouteState({
                 viewMode: state.viewMode,
+                activeProjectPath: state.activeProjectPath,
                 activeFlow: state.activeFlow,
                 selectedRunId: id,
             })
