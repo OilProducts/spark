@@ -86,7 +86,7 @@ Status key:
 - [x] [5.1-03] Reflect unsaved edits immediately in local graph model and diagnostics.
 
 ### 5.2 Editing Modalities
-- [ ] [5.2-01] Implement direct manipulation for node move/connect/select with persistence hooks.
+- [x] [5.2-01] Implement direct manipulation for node move/connect/select with persistence hooks.
 - [ ] [5.2-02] Implement structured form editing for graph/node/edge properties.
 - [ ] [5.2-03] Implement raw DOT mode with safe handoff back to structured editing.
 
