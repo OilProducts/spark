@@ -17,12 +17,15 @@ export function ProjectsPanel() {
     const projectScopedWorkspaces = useStore((state) => state.projectScopedWorkspaces)
     const projectRegistrationError = useStore((state) => state.projectRegistrationError)
     const registerProject = useStore((state) => state.registerProject)
+    const updateProjectPath = useStore((state) => state.updateProjectPath)
     const clearProjectRegistrationError = useStore((state) => state.clearProjectRegistrationError)
     const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
     const setConversationId = useStore((state) => state.setConversationId)
     const setSpecId = useStore((state) => state.setSpecId)
     const setPlanId = useStore((state) => state.setPlanId)
     const [directoryPathInput, setDirectoryPathInput] = useState("")
+    const [editingProjectPath, setEditingProjectPath] = useState<string | null>(null)
+    const [editingDirectoryPathInput, setEditingDirectoryPathInput] = useState("")
     const activeProjectScope = activeProjectPath ? projectScopedWorkspaces[activeProjectPath] : null
 
     const onRegisterProject = () => {
@@ -35,6 +38,18 @@ export function ProjectsPanel() {
     const onSubmitProjectRegistration = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault()
         onRegisterProject()
+    }
+
+    const onStartProjectPathEdit = (projectPath: string) => {
+        setEditingProjectPath(projectPath)
+        setEditingDirectoryPathInput(projectPath)
+        clearProjectRegistrationError()
+    }
+
+    const onCancelProjectPathEdit = () => {
+        setEditingProjectPath(null)
+        setEditingDirectoryPathInput("")
+        clearProjectRegistrationError()
     }
 
     const onOpenConversation = () => {
@@ -171,16 +186,68 @@ export function ProjectsPanel() {
                         ) : (
                             projects.map((project) => {
                                 const isActive = project.directoryPath === activeProjectPath
+                                const isEditing = editingProjectPath === project.directoryPath
                                 return (
-                                    <li key={project.directoryPath} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-                                        <span className="truncate text-sm">{project.directoryPath}</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveProjectPath(project.directoryPath)}
-                                            className="ml-3 rounded border border-border px-2 py-1 text-xs hover:bg-muted"
-                                        >
-                                            {isActive ? "Active" : "Set active"}
-                                        </button>
+                                    <li key={project.directoryPath} className="rounded-md border border-border px-3 py-2">
+                                        {isEditing ? (
+                                            <div className="space-y-2">
+                                                <input
+                                                    data-testid="project-edit-input"
+                                                    type="text"
+                                                    value={editingDirectoryPathInput}
+                                                    onChange={(event) => {
+                                                        setEditingDirectoryPathInput(event.target.value)
+                                                        clearProjectRegistrationError()
+                                                    }}
+                                                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                                                />
+                                                <div className="flex items-center justify-end gap-2">
+                                                    <button
+                                                        data-testid="project-edit-cancel-button"
+                                                        type="button"
+                                                        onClick={onCancelProjectPathEdit}
+                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                                    >
+                                                        Cancel
+                                                    </button>
+                                                    <button
+                                                        data-testid="project-edit-save-button"
+                                                        type="button"
+                                                        onClick={() => {
+                                                            const result = updateProjectPath(project.directoryPath, editingDirectoryPathInput)
+                                                            if (result.ok) {
+                                                                setEditingProjectPath(null)
+                                                                setEditingDirectoryPathInput("")
+                                                            }
+                                                        }}
+                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                                    >
+                                                        Save
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="flex items-center justify-between gap-3">
+                                                <span className="truncate text-sm">{project.directoryPath}</span>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setActiveProjectPath(project.directoryPath)}
+                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                                    >
+                                                        {isActive ? "Active" : "Set active"}
+                                                    </button>
+                                                    <button
+                                                        data-testid="project-edit-button"
+                                                        type="button"
+                                                        onClick={() => onStartProjectPathEdit(project.directoryPath)}
+                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                                    >
+                                                        Update path
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
                                     </li>
                                 )
                             })

@@ -235,6 +235,7 @@ interface AppState {
     projectScopedWorkspaces: Record<string, ProjectScopedWorkspace>
     projectRegistrationError: string | null
     registerProject: (directoryPath: string) => ProjectRegistrationResult
+    updateProjectPath: (currentDirectoryPath: string, nextDirectoryPath: string) => ProjectRegistrationResult
     clearProjectRegistrationError: () => void
     activeFlow: string | null
     setActiveFlow: (flow: string | null) => void
@@ -433,6 +434,96 @@ export const useStore = create<AppState>((set) => ({
                 activeFlow: state.activeProjectPath ? state.activeFlow : nextActiveProjectScope.activeFlow,
                 selectedRunId: state.activeProjectPath ? state.selectedRunId : nextActiveProjectScope.selectedRunId,
                 workingDir: state.activeProjectPath ? state.workingDir : nextActiveProjectScope.workingDir,
+            }
+        })
+        return result
+    },
+    updateProjectPath: (currentDirectoryPath, nextDirectoryPath) => {
+        let result: ProjectRegistrationResult = {
+            ok: false,
+            error: 'Project directory path is required.',
+        }
+        set((state) => {
+            const normalizedCurrentPath = normalizeProjectPath(currentDirectoryPath)
+            const normalizedNextPath = normalizeProjectPath(nextDirectoryPath)
+
+            if (!normalizedCurrentPath || !state.projectRegistry[normalizedCurrentPath]) {
+                result = {
+                    ok: false,
+                    error: 'Project must already be registered before updating path.',
+                }
+                return { projectRegistrationError: result.error }
+            }
+            if (!normalizedNextPath) {
+                result = {
+                    ok: false,
+                    error: 'Project directory path is required.',
+                }
+                return { projectRegistrationError: result.error }
+            }
+            if (!isAbsoluteProjectPath(normalizedNextPath)) {
+                result = {
+                    ok: false,
+                    normalizedPath: normalizedNextPath,
+                    error: 'Project directory path must be absolute.',
+                }
+                return { projectRegistrationError: result.error }
+            }
+            const duplicate = normalizedNextPath !== normalizedCurrentPath && Boolean(state.projectRegistry[normalizedNextPath])
+            if (duplicate) {
+                result = {
+                    ok: false,
+                    normalizedPath: normalizedNextPath,
+                    error: `Project already registered: ${normalizedNextPath}`,
+                }
+                return { projectRegistrationError: result.error }
+            }
+            if (normalizedNextPath === normalizedCurrentPath) {
+                result = {
+                    ok: true,
+                    normalizedPath: normalizedCurrentPath,
+                }
+                return { projectRegistrationError: null }
+            }
+
+            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const currentWorkspace = resolveProjectScopedWorkspace(
+                nextProjectScopedWorkspaces[normalizedCurrentPath],
+                normalizedCurrentPath
+            )
+            delete nextProjectScopedWorkspaces[normalizedCurrentPath]
+            nextProjectScopedWorkspaces[normalizedNextPath] = {
+                ...currentWorkspace,
+                workingDir: currentWorkspace.workingDir === normalizedCurrentPath
+                    ? normalizedNextPath
+                    : currentWorkspace.workingDir,
+            }
+
+            const nextProjectRegistry = { ...state.projectRegistry }
+            delete nextProjectRegistry[normalizedCurrentPath]
+            nextProjectRegistry[normalizedNextPath] = { directoryPath: normalizedNextPath }
+            const activeProjectWasUpdated = state.activeProjectPath === normalizedCurrentPath
+            const nextActiveProjectPath = activeProjectWasUpdated ? normalizedNextPath : state.activeProjectPath
+            const nextWorkingDir = activeProjectWasUpdated && state.workingDir === normalizedCurrentPath
+                ? normalizedNextPath
+                : state.workingDir
+
+            saveRouteState({
+                viewMode: state.viewMode,
+                activeProjectPath: nextActiveProjectPath,
+                activeFlow: state.activeFlow,
+                selectedRunId: state.selectedRunId,
+            })
+            result = {
+                ok: true,
+                normalizedPath: normalizedNextPath,
+            }
+            return {
+                projectRegistry: nextProjectRegistry,
+                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                activeProjectPath: nextActiveProjectPath,
+                workingDir: nextWorkingDir,
+                projectRegistrationError: null,
             }
         })
         return result

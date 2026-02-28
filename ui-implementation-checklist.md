@@ -70,7 +70,7 @@ Status key:
 
 ### 4.3 Projects Workspace Requirements
 - [x] [4.3-01] Implement create/register project UX from local directory path.
-- [ ] [4.3-02] Implement duplicate-path prevention on project create/update.
+- [x] [4.3-02] Implement duplicate-path prevention on project create/update.
 - [ ] [4.3-03] Implement Git verification UI with explicit initialize action path.
 - [ ] [4.3-04] Implement persistent active-project indicator in top navigation.
 - [ ] [4.3-05] Implement recent/favorite project switching UX.
