@@ -63,7 +63,7 @@ Status key:
 
 ### 4.2 Project Scope and Invariants
 - [x] [4.2-01] Implement project registry keyed by unique directory path and reject duplicate registrations.
-- [ ] [4.2-03] Enforce exactly one active project for authoring/execution actions.
+- [x] [4.2-03] Enforce exactly one active project for authoring/execution actions.
 - [ ] [4.2-04] Scope conversations/specs/plans/runs/artifacts to active project boundaries.
 - [ ] [4.2-05] Prevent cross-project context and file leakage across navigation and run transitions.
 - [ ] [4.2-06] Expose project-scoped conversation/spec/plan entry points in the Projects area.

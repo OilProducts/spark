@@ -20,12 +20,14 @@ test("primary UI shells render and can be navigated", async ({ page }) => {
   await expect(page.getByTestId("nav-mode-editor")).toBeVisible()
   await expect(page.getByTestId("nav-mode-settings")).toBeVisible()
   await expect(page.getByTestId("nav-mode-runs")).toBeVisible()
-  await expect(page.getByTestId("canvas-workspace-primary")).toBeVisible()
-  await page.screenshot({ path: screenshotPath("01-editor-shell.png"), fullPage: true })
-
-  await page.getByTestId("nav-mode-projects").click()
   await expect(page.getByTestId("projects-panel")).toBeVisible()
   await expect(page.getByTestId("canvas-workspace-primary")).toHaveCount(0)
+  await page.screenshot({ path: screenshotPath("01-projects-shell.png"), fullPage: true })
+
+  await page.getByTestId("project-path-input").fill("/tmp/ui-smoke-project")
+  await page.getByTestId("project-register-button").click()
+  await expect(page.getByTestId("project-registry-list").getByText("/tmp/ui-smoke-project")).toBeVisible()
+  await expect(page.getByTestId("top-nav-active-project")).toContainText("/tmp/ui-smoke-project")
   await page.screenshot({ path: screenshotPath("02-projects-panel.png"), fullPage: true })
 
   await page.getByTestId("nav-mode-editor").click()

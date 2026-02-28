@@ -106,6 +106,10 @@ const DEFAULT_UI_DEFAULTS: UiDefaults = {
 const UI_DEFAULTS_STORAGE_KEY = "sparkspawn.ui_defaults"
 const ROUTE_STATE_STORAGE_KEY = "sparkspawn.ui_route_state"
 const VIEW_MODES: ViewMode[] = ['projects', 'editor', 'execution', 'settings', 'runs']
+const modeRequiresActiveProject = (mode: ViewMode) => mode === 'editor' || mode === 'execution'
+const resolveViewModeForProjectScope = (mode: ViewMode, activeProjectPath: string | null): ViewMode => {
+    return modeRequiresActiveProject(mode) && !activeProjectPath ? 'projects' : mode
+}
 const normalizeProjectPath = (path: string) => {
     const trimmed = path.trim()
     if (!trimmed) return ""
@@ -122,7 +126,7 @@ interface RouteState {
 }
 
 const DEFAULT_ROUTE_STATE: RouteState = {
-    viewMode: 'editor',
+    viewMode: 'projects',
     activeProjectPath: null,
     activeFlow: null,
     selectedRunId: null,
@@ -137,11 +141,16 @@ const loadRouteState = (): RouteState => {
         if (!raw) return { ...DEFAULT_ROUTE_STATE }
         const parsed = JSON.parse(raw) as Partial<RouteState>
         const isValidViewMode = parsed.viewMode ? VIEW_MODES.includes(parsed.viewMode) : false
-        return {
-            viewMode: isValidViewMode ? parsed.viewMode! : DEFAULT_ROUTE_STATE.viewMode,
+        const requestedViewMode = isValidViewMode ? parsed.viewMode! : DEFAULT_ROUTE_STATE.viewMode
+        const parsedRouteState: RouteState = {
+            viewMode: requestedViewMode,
             activeProjectPath: typeof parsed.activeProjectPath === "string" ? parsed.activeProjectPath : null,
             activeFlow: typeof parsed.activeFlow === "string" ? parsed.activeFlow : null,
             selectedRunId: typeof parsed.selectedRunId === "string" ? parsed.selectedRunId : null,
+        }
+        return {
+            ...parsedRouteState,
+            viewMode: resolveViewModeForProjectScope(parsedRouteState.viewMode, parsedRouteState.activeProjectPath),
         }
     } catch {
         return { ...DEFAULT_ROUTE_STATE }
@@ -251,24 +260,29 @@ export const useStore = create<AppState>((set) => ({
     viewMode: restoredRouteState.viewMode,
     setViewMode: (mode) =>
         set((state) => {
+            const nextViewMode = resolveViewModeForProjectScope(mode, state.activeProjectPath)
             saveRouteState({
-                viewMode: mode,
+                viewMode: nextViewMode,
                 activeProjectPath: state.activeProjectPath,
                 activeFlow: state.activeFlow,
                 selectedRunId: state.selectedRunId,
             })
-            return { viewMode: mode }
+            return { viewMode: nextViewMode }
         }),
     activeProjectPath: restoredRouteState.activeProjectPath,
     setActiveProjectPath: (projectPath) =>
         set((state) => {
+            const nextViewMode = resolveViewModeForProjectScope(state.viewMode, projectPath)
             saveRouteState({
-                viewMode: state.viewMode,
+                viewMode: nextViewMode,
                 activeProjectPath: projectPath,
                 activeFlow: state.activeFlow,
                 selectedRunId: state.selectedRunId,
             })
-            return { activeProjectPath: projectPath }
+            return {
+                activeProjectPath: projectPath,
+                viewMode: nextViewMode,
+            }
         }),
     projectRegistry: {},
     projectRegistrationError: null,
