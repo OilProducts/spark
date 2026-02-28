@@ -550,3 +550,5 @@ Status key:
   Deferred because project onboarding and active-project workflow surfaces from `ui-spec.md` sections 4.2 and 4.3 are not yet implemented, so role smoke tests would be partial and misleading.
 - [ ] [3.2-01] Implement workflow guardrails from create/open to iterate/re-run as explicit state machine transitions.
   Deferred because the required project-scoped workflow surfaces (project registry/Git gating, conversation/spec loop, and spec->plan->build chain) are not yet implemented in the UI.
+- [ ] [3.2-02] Add test coverage for the full 12-step primary workflow sequence (project registration/selection through re-run).
+  Deferred because the project registration/Git gating and project-scoped conversation/spec/plan/run surfaces required by `ui-spec.md` section 3.2 are not yet implemented for behavioral end-to-end coverage.
