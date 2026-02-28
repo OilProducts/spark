@@ -46,7 +46,6 @@ Status key:
 - [x] [3.1-01] Capture author/operator/reviewer/project-owner persona scenarios with concrete UI success criteria. (See `ui-role-persona-scenarios.md`.)
 
 ### 3.2 Primary Workflows
-- [ ] [3.2-01] Implement workflow guardrails from create/open to iterate/re-run as explicit state machine transitions.
 - [ ] [3.2-02] Add test coverage for the full 12-step primary workflow sequence (project registration/selection through re-run).
 - [ ] [3.2-03] Ensure every step has a first-class UI surface (no hidden or CLI-only transition).
 - [ ] [3.2-04] Add explicit workflow coverage for project-scoped AI conversation -> spec refinement -> plan generation/approval -> build execution chain.
@@ -549,3 +548,5 @@ Status key:
   Deferred because the required full-journey UI surfaces (project registration/selection and project-scoped conversation/spec/plan flow) are not yet implemented, so a CI proof would be non-representative.
 - [ ] [3.1-02] Add role-oriented smoke tests (project onboarding, authoring, live operation, post-run audit).
   Deferred because project onboarding and active-project workflow surfaces from `ui-spec.md` sections 4.2 and 4.3 are not yet implemented, so role smoke tests would be partial and misleading.
+- [ ] [3.2-01] Implement workflow guardrails from create/open to iterate/re-run as explicit state machine transitions.
+  Deferred because the required project-scoped workflow surfaces (project registry/Git gating, conversation/spec loop, and spec->plan->build chain) are not yet implemented in the UI.
