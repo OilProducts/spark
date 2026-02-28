@@ -20,7 +20,6 @@ Status key:
 
 ### 1.2 Product Goal
 - [x] [1.2-01] Define the parity-complete user journey (project-select, author, execute, inspect) as an end-to-end acceptance script.
-- [ ] [1.2-02] Add CI acceptance checks proving the full journey works without raw DOT fallback.
 - [ ] [1.2-03] Add release criteria that fail when any required spec feature is unavailable in UI.
 
 ### 1.3 Non-Goals
@@ -542,3 +541,10 @@ Status key:
 - [ ] [C-01] Add a maintained story-to-spec-to-checklist trace matrix for all `US-*` IDs.
 - [ ] [C-02] Add acceptance tests that collectively cover every story cluster (project selection, conversation/spec, plan/build governance, traceability).
 - [ ] [C-03] Add CI gate failing when any `US-*` story lacks mapped implementation evidence.
+
+---
+
+## Deferred Tasks
+
+- [ ] [1.2-02] Add CI acceptance checks proving the full journey works without raw DOT fallback.
+  Deferred because the required full-journey UI surfaces (project registration/selection and project-scoped conversation/spec/plan flow) are not yet implemented, so a CI proof would be non-representative.
