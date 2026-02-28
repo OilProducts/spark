@@ -53,7 +53,6 @@ Status key:
 ## 4. Information Architecture
 
 - [x] [4-01] Ensure Projects, Editor, Execution, Runs, and Settings are first-class areas with stable navigation.
-- [ ] [4-02] Add deterministic deep-link state for active project/flow/run/conversation and panel selection.
 - [ ] [4-03] Add route restoration behavior on refresh/reopen.
 
 ### 4.1 Global Regions
@@ -554,3 +553,5 @@ Status key:
   Deferred because the required project-scoped conversation/spec/plan/build surfaces are not implemented yet, so the workflow still has unavoidable non-UI transitions.
 - [ ] [3.2-04] Add explicit workflow coverage for project-scoped AI conversation -> spec refinement -> plan generation/approval -> build execution chain.
   Deferred because the project-scoped conversation/spec/plan/build chain is not fully implemented, so coverage would only validate placeholders instead of the real workflow.
+- [ ] [4-02] Add deterministic deep-link state for active project/flow/run/conversation and panel selection.
+  Deferred because active-project identity and project-scoped conversation state are not implemented yet, so full deep-link determinism cannot be validated end-to-end.
