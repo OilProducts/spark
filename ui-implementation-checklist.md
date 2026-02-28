@@ -24,7 +24,7 @@ Status key:
 
 ### 1.3 Non-Goals
 - [x] [1.3-01] Document runtime/parser boundaries so UI work does not alter engine semantics.
-- [ ] [1.3-02] Add safeguards that prevent invalid DOT synthesis from form states.
+- [x] [1.3-02] Add safeguards that prevent invalid DOT synthesis from form states.
 - [ ] [1.3-03] Keep advanced feature access enabled (no simplified mode removing required spec controls).
 
 ---

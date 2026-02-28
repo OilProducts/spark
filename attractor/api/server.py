@@ -1625,6 +1625,44 @@ async def get_flow(name: str):
 
 @app.post("/api/flows")
 async def save_flow(req: SaveFlowRequest):
+    try:
+        graph = parse_dot(req.content)
+    except DotParseError as exc:
+        parse_diag = {
+            "rule": "parse_error",
+            "rule_id": "parse_error",
+            "severity": DiagnosticSeverity.ERROR.value,
+            "message": str(exc),
+            "line": getattr(exc, "line", 0),
+            "node": None,
+            "node_id": None,
+        }
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "parse_error",
+                "error": f"invalid DOT: {exc}",
+                "diagnostics": [parse_diag],
+                "errors": [parse_diag],
+            },
+        ) from exc
+
+    graph = _build_transform_pipeline().apply(graph)
+    diagnostics = validate_graph(graph)
+    errors = [d for d in diagnostics if d.severity == DiagnosticSeverity.ERROR]
+    if errors:
+        diagnostic_payloads = [_diagnostic_payload(d) for d in diagnostics]
+        error_payloads = [_diagnostic_payload(d) for d in errors]
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "validation_error",
+                "error": "validation errors prevent saving this flow",
+                "diagnostics": diagnostic_payloads,
+                "errors": error_payloads,
+            },
+        )
+
     flows_dir = Path("flows")
     flows_dir.mkdir(exist_ok=True)
     flow_path = flows_dir / req.name
