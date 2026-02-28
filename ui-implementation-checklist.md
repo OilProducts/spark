@@ -20,7 +20,7 @@ Status key:
 
 ### 1.2 Product Goal
 - [x] [1.2-01] Define the parity-complete user journey (project-select, author, execute, inspect) as an end-to-end acceptance script.
-- [ ] [1.2-03] Add release criteria that fail when any required spec feature is unavailable in UI.
+- [x] [1.2-03] Add release criteria that fail when any required spec feature is unavailable in UI.
 
 ### 1.3 Non-Goals
 - [ ] [1.3-01] Document runtime/parser boundaries so UI work does not alter engine semantics.
