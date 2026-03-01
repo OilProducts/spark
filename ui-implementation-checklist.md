@@ -129,7 +129,6 @@ Status key:
 - [x] [6.3-03] Add tests for edge attr serialization and execution-side effect visibility.
 
 ### 6.4 Subgraphs and Default Blocks
-- [ ] [6.4-01] Add subgraph creation, labeling, and membership editing UI.
 - [ ] [6.4-02] Add scoped `node[...]` and `edge[...]` defaults authoring controls.
 - [ ] [6.4-03] Visualize inherited vs explicit attrs at node/edge level.
 - [ ] [6.4-04] Add support for derived class behavior from subgraph labels.
@@ -558,3 +557,5 @@ Status key:
   Deferred because the frontend currently has no project Git verification/initialize API contract to drive real status checks or an explicit initialize action flow.
 - [ ] [5.4-02] Inject active project directory and repository metadata into AI conversation context.
   Deferred because the request pipeline for real AI conversation payloads is still not implemented, so there is no concrete backend-bound conversation context path to inject this metadata into yet.
+- [ ] [6.4-01] Add subgraph creation, labeling, and membership editing UI.
+  Deferred because the current frontend/API flow model only returns flattened nodes/edges and lacks subgraph/default-scope structures needed for first-class membership editing.
