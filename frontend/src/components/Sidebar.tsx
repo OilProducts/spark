@@ -32,7 +32,7 @@ function resolveInspectorScope({
 }
 
 export function Sidebar() {
-    const { viewMode, activeFlow, setActiveFlow, selectedNodeId, selectedEdgeId } = useStore()
+    const { viewMode, activeFlow, setActiveFlow, selectedNodeId, selectedEdgeId, setSelectedNodeId, setSelectedEdgeId } = useStore()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)
     const humanGate = useStore((state) => state.humanGate)
@@ -152,6 +152,11 @@ export function Sidebar() {
     const handlePropertyChange = (key: string, value: string | boolean) => {
         if (!selectedNodeId) return;
         updateNodeProperty(selectedNodeId, key, value)
+    }
+
+    const openGraphChildSettings = () => {
+        setSelectedEdgeId(null)
+        setSelectedNodeId(null)
     }
 
     const selectedNode = nodes.find(n => n.id === selectedNodeId);
@@ -454,6 +459,31 @@ export function Sidebar() {
                                                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 placeholder="observe,steer"
                                             />
+                                        </div>
+                                        <div
+                                            data-testid="manager-child-linkage"
+                                            className="space-y-2 rounded-md border border-border/80 bg-muted/20 px-3 py-2"
+                                        >
+                                            <div>
+                                                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                                    Child Pipeline Linkage
+                                                </p>
+                                                <p className="mt-1 text-[11px] text-muted-foreground">
+                                                    Manager loops use <code>stack.child_dotfile</code> and <code>stack.child_workdir</code> from graph attributes.
+                                                </p>
+                                            </div>
+                                            <div className="space-y-1 text-[11px] text-foreground">
+                                                <p><span className="font-mono">stack.child_dotfile</span>: {graphAttrs['stack.child_dotfile'] || '(unset)'}</p>
+                                                <p><span className="font-mono">stack.child_workdir</span>: {graphAttrs['stack.child_workdir'] || '(unset)'}</p>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                data-testid="manager-open-child-settings"
+                                                onClick={openGraphChildSettings}
+                                                className="rounded border border-border bg-background px-2 py-1 text-[11px] font-medium text-foreground hover:bg-muted"
+                                            >
+                                                Open Graph Child Settings
+                                            </button>
                                         </div>
                                     </>
                                 )}
