@@ -245,6 +245,23 @@ export function ProjectsPanel() {
         })
     }
 
+    const onRejectSpecEditProposal = () => {
+        if (!activeProjectPath || !activeProjectProposalPreview) {
+            return
+        }
+
+        appendConversationHistoryEntry({
+            role: "system",
+            content: `Rejected spec edit proposal ${activeProjectProposalPreview.id}.`,
+            timestamp: new Date().toISOString(),
+        })
+        setProjectSpecEditProposals((current) => {
+            const next = { ...current }
+            delete next[activeProjectPath]
+            return next
+        })
+    }
+
     return (
         <section data-testid="projects-panel" className="flex-1 overflow-auto p-6">
             <div className="mx-auto w-full max-w-3xl space-y-6">
@@ -485,8 +502,16 @@ export function ProjectsPanel() {
                                         >
                                             Apply proposal
                                         </button>
+                                        <button
+                                            data-testid="project-spec-edit-proposal-reject-button"
+                                            type="button"
+                                            onClick={onRejectSpecEditProposal}
+                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                        >
+                                            Reject proposal
+                                        </button>
                                         <p className="text-[11px] text-muted-foreground">
-                                            Applying proposed edits requires explicit confirmation.
+                                            Applying proposed edits requires explicit confirmation. Rejecting a proposal dismisses it without mutating spec files.
                                         </p>
                                     </div>
                                 </div>
