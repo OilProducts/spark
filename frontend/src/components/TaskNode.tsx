@@ -231,6 +231,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                 )}
                 {diagnosticsCount > 0 && (
                     <div
+                        data-testid="node-diagnostic-badge"
                         className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
                             hasDiagnosticError
                                 ? 'bg-destructive/15 text-destructive'

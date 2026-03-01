@@ -230,6 +230,80 @@ test("validation panel supports filter and sort controls for item 7.1-01", async
   await page.screenshot({ path: screenshotPath("13-validation-panel-filter-sort.png"), fullPage: true })
 })
 
+test("inline node and edge diagnostic badges render for item 7.1-02", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-inline-badges-${Date.now()}`
+  const promptToken = `inline-badges-${Date.now()}`
+  const nodeDiagnosticMessage = `Node diagnostic ${Date.now()}`
+  const edgeDiagnosticMessage = `Edge diagnostic ${Date.now()}`
+  let nodeId: string | null = null
+
+  await page.route("**/preview", async (route) => {
+    const body = route.request().postData() || ""
+    if (body.includes(promptToken) && nodeId) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "ok",
+          diagnostics: [
+            {
+              rule_id: "node_inline_badge",
+              severity: "warning",
+              message: nodeDiagnosticMessage,
+              node_id: nodeId,
+            },
+            {
+              rule_id: "edge_inline_badge",
+              severity: "error",
+              message: edgeDiagnosticMessage,
+              edge: ["start", "ingest_spec"],
+            },
+          ],
+        }),
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-editor").click()
+
+  const flowButton = page.getByRole("button", { name: "implement-spec.dot" })
+  await expect(flowButton).toBeVisible()
+  await flowButton.click()
+
+  await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
+  await page.getByRole("button", { name: "Add Node" }).click()
+
+  const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
+  await expect(newNode).toBeVisible()
+  await newNode.click()
+
+  nodeId = await newNode.getAttribute("data-id")
+  if (!nodeId) {
+    throw new Error("Expected the newly added node to expose a data-id for inline diagnostic badge test.")
+  }
+
+  const promptField = page.getByPlaceholder("Enter system prompt instructions...")
+  await expect(promptField).toBeVisible()
+  const previewRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes("/preview") &&
+      request.method() === "POST" &&
+      (request.postData() || "").includes(promptToken),
+  )
+
+  await promptField.fill(promptToken)
+  await previewRequest
+
+  await expect(page.getByTestId("node-diagnostic-badge")).toContainText("1 Warn")
+  await expect(page.getByTestId("edge-diagnostic-badge").first()).toContainText("1 Error")
+  await page.screenshot({ path: screenshotPath("14-inline-diagnostic-badges.png"), fullPage: true })
+})
+
 test("stylesheet parse diagnostics render in graph settings for item 6.5-02", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-stylesheet-${Date.now()}`
   const stylesheetToken = ".bad$class { llm_model: gpt-5; }"

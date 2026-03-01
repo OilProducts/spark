@@ -74,6 +74,7 @@ export function ValidationEdge({
                         }}
                     >
                         <div
+                            data-testid="edge-diagnostic-badge"
                             className={`rounded-full border border-border bg-background/95 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badgeClass}`}
                             title={diagnosticsForEdge.map((diag) => diag.message).join('\n')}
                         >
