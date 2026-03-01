@@ -33,6 +33,8 @@ const TRANSITION_HINTS: Record<string, string> = {
     canceled: 'Run canceled.',
 }
 
+const UNSUPPORTED_CONTROL_REASON = 'Pause/Resume is unavailable: backend runtime control API does not expose pause/resume.'
+
 export function ExecutionControls() {
     const viewMode = useStore((state) => state.viewMode)
     const runtimeStatus = useStore((state) => state.runtimeStatus)
@@ -98,6 +100,28 @@ export function ExecutionControls() {
                 <OctagonX className="h-3.5 w-3.5" />
                 {cancelActionLabel}
             </button>
+            <button
+                data-testid="execution-footer-pause-button"
+                disabled={true}
+                title={UNSUPPORTED_CONTROL_REASON}
+                className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+                Pause
+            </button>
+            <button
+                data-testid="execution-footer-resume-button"
+                disabled={true}
+                title={UNSUPPORTED_CONTROL_REASON}
+                className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+                Resume
+            </button>
+            <span
+                data-testid="execution-footer-unsupported-controls-reason"
+                className="max-w-xs text-xs text-muted-foreground"
+            >
+                {UNSUPPORTED_CONTROL_REASON}
+            </span>
         </div>
     )
 }

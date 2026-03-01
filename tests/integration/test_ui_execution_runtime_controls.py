@@ -30,3 +30,23 @@ def test_start_and_cancel_controls_are_present_for_supported_backend_behavior_it
     assert "const response = await fetch(`/pipelines/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })" in runs_panel_text
 
     assert "- [x] [8.2-01]" in checklist_text
+
+
+def test_unsupported_runtime_controls_show_disabled_reason_text_item_8_2_03() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    execution_controls_text = (repo_root / "frontend" / "src" / "components" / "ExecutionControls.tsx").read_text(
+        encoding="utf-8"
+    )
+    checklist_text = (repo_root / "ui-implementation-checklist.md").read_text(encoding="utf-8")
+
+    # Pause/resume controls are shown as disabled when backend runtime capability is unavailable.
+    assert "const UNSUPPORTED_CONTROL_REASON = 'Pause/Resume is unavailable: backend runtime control API does not expose pause/resume.'" in execution_controls_text
+    assert "data-testid=\"execution-footer-pause-button\"" in execution_controls_text
+    assert "data-testid=\"execution-footer-resume-button\"" in execution_controls_text
+    assert "disabled={true}" in execution_controls_text
+
+    # Unsupported control reason text is rendered visibly, not only as a hover tooltip.
+    assert "data-testid=\"execution-footer-unsupported-controls-reason\"" in execution_controls_text
+    assert "{UNSUPPORTED_CONTROL_REASON}" in execution_controls_text
+
+    assert "- [x] [8.2-03]" in checklist_text
