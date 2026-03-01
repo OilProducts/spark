@@ -188,7 +188,7 @@ Status key:
 ### 8.3 Live State Updates
 - [x] [8.3-01] Stream and render live node status transitions from runtime events.
 - [x] [8.3-02] Resolve event ordering/race handling for rapid transitions.
-- [ ] [8.3-03] Add tests for state reset and run switching behavior.
+- [x] [8.3-03] Add tests for state reset and run switching behavior.
 
 ### 8.4 Execution Footer
 - [ ] [8.4-01] Keep execution controls/status visible in canvas footer during active runs.

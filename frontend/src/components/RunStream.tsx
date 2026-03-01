@@ -92,9 +92,7 @@ export function RunStream() {
         resetNodeStatuses()
         clearHumanGate()
         clearLogs()
-        if (!selectedRunId) {
-            setRuntimeStatus('idle')
-        }
+        setRuntimeStatus('idle')
     }, [selectedRunId, resetNodeStatuses, clearHumanGate, clearLogs, setRuntimeStatus])
 
     useEffect(() => {
