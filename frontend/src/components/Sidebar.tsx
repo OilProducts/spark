@@ -474,9 +474,21 @@ export function Sidebar() {
                                         <input
                                             value={(selectedNode?.data?.type as string) || ''}
                                             onChange={(e) => handlePropertyChange('type', e.target.value)}
+                                            list="node-handler-type-options"
                                             className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             placeholder="optional override"
                                         />
+                                        <datalist id="node-handler-type-options">
+                                            <option value="start">start</option>
+                                            <option value="exit">exit</option>
+                                            <option value="codergen">codergen</option>
+                                            <option value="wait.human">wait.human</option>
+                                            <option value="conditional">conditional</option>
+                                            <option value="parallel">parallel</option>
+                                            <option value="parallel.fan_in">parallel.fan_in</option>
+                                            <option value="tool">tool</option>
+                                            <option value="stack.manager_loop">stack.manager_loop</option>
+                                        </datalist>
                                     </div>
                                 )}
                                 {visibility.showAdvanced && (

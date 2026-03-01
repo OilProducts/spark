@@ -144,7 +144,7 @@ Status key:
 - [x] [6.6-04] Add save/load tests for hook definitions.
 
 ### 6.7 Manager Loop Authoring
-- [ ] [6.7-01] Expose `house` shape and `stack.manager_loop` type as selectable options.
+- [x] [6.7-01] Expose `house` shape and `stack.manager_loop` type as selectable options.
 - [ ] [6.7-02] Add manager fields (`manager.poll_interval`, `manager.max_cycles`, `manager.stop_condition`, `manager.actions`).
 - [ ] [6.7-03] Link manager node config to `stack.child_*` graph attributes in UI workflow.
 - [ ] [6.7-04] Add fixtures and tests for manager-loop authoring round-trip.
