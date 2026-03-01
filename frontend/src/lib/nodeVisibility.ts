@@ -42,6 +42,7 @@ export function getNodeFieldVisibility(handlerType: HandlerType) {
     const showManagerOptions = handlerType === 'stack.manager_loop'
     const showHumanDefaultChoice = handlerType === 'wait.human'
     const showLlmSettings = handlerType === 'codergen' || handlerType === 'parallel.fan_in'
+    const showTypeOverride = true
 
     const showAdvanced = !(isStartOrExit || isHumanOrConditional)
     const showGeneralAdvanced = showAdvanced
@@ -52,6 +53,7 @@ export function getNodeFieldVisibility(handlerType: HandlerType) {
         showParallelOptions,
         showManagerOptions,
         showHumanDefaultChoice,
+        showTypeOverride,
         showAdvanced,
         showGeneralAdvanced,
         showLlmSettings,

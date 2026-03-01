@@ -406,6 +406,17 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                 />
                             </div>
                         )}
+                        {visibility.showTypeOverride && (
+                            <div className="space-y-1">
+                                <label className="text-xs font-medium text-foreground">Handler Type</label>
+                                <input
+                                    value={draftType}
+                                    onChange={(event) => setDraftType(event.target.value)}
+                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    placeholder="optional override"
+                                />
+                            </div>
+                        )}
                         {visibility.showAdvanced && (
                             <button
                                 onClick={() => setShowAdvanced((prev) => !prev)}
@@ -416,15 +427,6 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                         )}
                         {visibility.showAdvanced && showAdvanced && (
                             <div className="space-y-2 pt-1">
-                                <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Handler Type</label>
-                                    <input
-                                        value={draftType}
-                                        onChange={(event) => setDraftType(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        placeholder="optional override"
-                                    />
-                                </div>
                                 {visibility.showGeneralAdvanced && (
                                     <>
                                         <div className="grid grid-cols-2 gap-2">
