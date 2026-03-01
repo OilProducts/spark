@@ -159,7 +159,7 @@ Status key:
 - [x] [7.1-03] Implement field-level diagnostic mapping in inspectors.
 
 ### 7.2 Blocking Rules
-- [ ] [7.2-01] Block run start on error-level diagnostics.
+- [x] [7.2-01] Block run start on error-level diagnostics.
 - [ ] [7.2-02] Allow run start on warning-only state with explicit warning banner.
 - [ ] [7.2-03] Add tests for blocking/unblocking transitions as diagnostics change.
 
