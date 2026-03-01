@@ -50,3 +50,28 @@ def test_unsupported_runtime_controls_show_disabled_reason_text_item_8_2_03() ->
     assert "{UNSUPPORTED_CONTROL_REASON}" in execution_controls_text
 
     assert "- [x] [8.2-03]" in checklist_text
+
+
+def test_runtime_controls_expose_enable_disable_state_transitions_item_8_2_04() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    execution_controls_text = (repo_root / "frontend" / "src" / "components" / "ExecutionControls.tsx").read_text(
+        encoding="utf-8"
+    )
+    checklist_text = (repo_root / "ui-implementation-checklist.md").read_text(encoding="utf-8")
+
+    # Cancel is enabled only while a run is actively running and the selected run-id is hydrated.
+    assert "const canCancel = runtimeStatus === 'running' && Boolean(selectedRunId)" in execution_controls_text
+
+    # Transition-state disabled reasons are explicit for cancel-requested and terminal canceled states.
+    assert "const CANCEL_DISABLED_REASONS: Record<string, string> = {" in execution_controls_text
+    assert "cancel_requested: 'Cancel already requested for this run.'" in execution_controls_text
+    assert "abort_requested: 'Cancel already requested for this run.'" in execution_controls_text
+    assert "canceled: 'This run is already canceled.'" in execution_controls_text
+    assert "aborted: 'This run is already canceled.'" in execution_controls_text
+
+    # Disabled title text must resolve through transition-state reason wiring.
+    assert "const cancelDisabledReason = !selectedRunId" in execution_controls_text
+    assert "title={canCancel ? undefined : cancelDisabledReason}" in execution_controls_text
+    assert "data-testid=\"execution-footer-cancel-button\"" in execution_controls_text
+
+    assert "- [x] [8.2-04]" in checklist_text

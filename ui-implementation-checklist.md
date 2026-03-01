@@ -183,7 +183,7 @@ Status key:
 - [x] [8.2-01] Provide Start and Cancel controls for supported backend behavior.
 - Deferred to `Deferred Tasks` until backend runtime control API exposes pause/resume capability.
 - [x] [8.2-03] Show disabled reason text for unsupported controls.
-- [ ] [8.2-04] Add tests for control enable/disable state transitions.
+- [x] [8.2-04] Add tests for control enable/disable state transitions.
 
 ### 8.3 Live State Updates
 - [ ] [8.3-01] Stream and render live node status transitions from runtime events.

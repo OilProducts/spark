@@ -33,6 +33,15 @@ const TRANSITION_HINTS: Record<string, string> = {
     canceled: 'Run canceled.',
 }
 
+const CANCEL_DISABLED_REASONS: Record<string, string> = {
+    cancel_requested: 'Cancel already requested for this run.',
+    abort_requested: 'Cancel already requested for this run.',
+    canceled: 'This run is already canceled.',
+    aborted: 'This run is already canceled.',
+}
+
+const DEFAULT_CANCEL_DISABLED_REASON = 'Cancel is only available while the run is active.'
+
 const UNSUPPORTED_CONTROL_REASON = 'Pause/Resume is unavailable: backend runtime control API does not expose pause/resume.'
 
 export function ExecutionControls() {
@@ -49,6 +58,9 @@ export function ExecutionControls() {
     )
     const cancelActionLabel = CANCEL_ACTION_LABELS[runtimeStatus] || 'Cancel'
     const transitionHint = TRANSITION_HINTS[runtimeStatus] || null
+    const cancelDisabledReason = !selectedRunId
+        ? 'Run id is still loading.'
+        : CANCEL_DISABLED_REASONS[runtimeStatus] || transitionHint || DEFAULT_CANCEL_DISABLED_REASON
 
     if (!shouldShowFooter) return null
 
@@ -86,15 +98,10 @@ export function ExecutionControls() {
                 <span className="text-xs text-muted-foreground">{transitionHint}</span>
             )}
             <button
+                data-testid="execution-footer-cancel-button"
                 onClick={requestCancel}
                 disabled={!canCancel}
-                title={
-                    canCancel
-                        ? undefined
-                        : selectedRunId
-                            ? transitionHint || 'Cancel is only available while the run is active.'
-                            : 'Run id is still loading.'
-                }
+                title={canCancel ? undefined : cancelDisabledReason}
                 className="inline-flex h-8 items-center gap-2 rounded-md bg-destructive px-2 text-xs font-semibold uppercase tracking-wide text-destructive-foreground transition-colors hover:bg-destructive/90 disabled:pointer-events-none disabled:opacity-50"
             >
                 <OctagonX className="h-3.5 w-3.5" />
