@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def test_start_and_cancel_controls_are_present_for_supported_backend_behavior_item_8_2_01() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    navbar_text = (repo_root / "frontend" / "src" / "components" / "Navbar.tsx").read_text(encoding="utf-8")
+    execution_controls_text = (repo_root / "frontend" / "src" / "components" / "ExecutionControls.tsx").read_text(
+        encoding="utf-8"
+    )
+    runs_panel_text = (repo_root / "frontend" / "src" / "components" / "RunsPanel.tsx").read_text(encoding="utf-8")
+    checklist_text = (repo_root / "ui-implementation-checklist.md").read_text(encoding="utf-8")
+
+    # Start control is wired to the supported /pipelines run-start contract.
+    assert 'data-testid="execute-button"' in navbar_text
+    assert "onClick={runPipeline}" in navbar_text
+    assert "const runPipeline = async () => {" in navbar_text
+    assert "const runRes = await fetch('/pipelines', {" in navbar_text
+    assert "setViewMode('execution')" in navbar_text
+
+    # Cancel control is wired to supported backend cancellation endpoints.
+    assert 'data-testid="execution-footer-controls"' in execution_controls_text
+    assert "const canCancel = runtimeStatus === 'running' && Boolean(selectedRunId)" in execution_controls_text
+    assert "const response = await fetch(`/pipelines/${encodeURIComponent(selectedRunId)}/cancel`, { method: 'POST' })" in execution_controls_text
+    assert "window.confirm('Cancel this run? It will stop after the active node finishes.')" in execution_controls_text
+
+    # Run-history view also exposes cancel where supported.
+    assert "const canCancel = run.status === 'running'" in runs_panel_text
+    assert "const response = await fetch(`/pipelines/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })" in runs_panel_text
+
+    assert "- [x] [8.2-01]" in checklist_text

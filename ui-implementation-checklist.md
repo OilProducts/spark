@@ -180,7 +180,7 @@ Status key:
 - [x] [8.1-05] Add run-start policy gate/warning path for project Git-state violations.
 
 ### 8.2 Runtime Controls
-- [ ] [8.2-01] Provide Start and Cancel controls for supported backend behavior.
+- [x] [8.2-01] Provide Start and Cancel controls for supported backend behavior.
 - [ ] [8.2-02] Provide Pause/Resume controls when backend/API supports them.
 - [ ] [8.2-03] Show disabled reason text for unsupported controls.
 - [ ] [8.2-04] Add tests for control enable/disable state transitions.
