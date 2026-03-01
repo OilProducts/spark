@@ -50,3 +50,24 @@ def test_execution_footer_visibility_tracks_active_runtime_states_item_8_4_01() 
     assert "const shouldShowFooter = viewMode === 'execution' && (runIsActive || Boolean(selectedRunId))" in execution_controls_text
 
     assert "- [x] [8.4-01]" in checklist_text
+
+
+def test_execution_footer_reflects_run_identity_and_terminal_state_item_8_4_02() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    execution_controls_text = (repo_root / "frontend" / "src" / "components" / "ExecutionControls.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    # Footer exposes the currently selected run identity, including the loading fallback.
+    assert 'data-testid="execution-footer-run-identity"' in execution_controls_text
+    assert "const runIdentityLabel = selectedRunId ? `Run ${selectedRunId}` : 'Run id loading…'" in execution_controls_text
+
+    # Terminal states are explicitly recognized and reflected in footer copy.
+    assert "const TERMINAL_RUNTIME_STATUSES = new Set<RuntimeStatus>([" in execution_controls_text
+    assert "'success'" in execution_controls_text
+    assert "'failed'" in execution_controls_text
+    assert "'validation_error'" in execution_controls_text
+    assert "'canceled'" in execution_controls_text
+    assert "'aborted'" in execution_controls_text
+    assert 'data-testid="execution-footer-terminal-state"' in execution_controls_text
+    assert "const terminalStateLabel = isTerminalState ? `Terminal: ${statusLabel}` : null" in execution_controls_text

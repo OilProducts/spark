@@ -48,6 +48,13 @@ const ACTIVE_RUNTIME_STATUSES = new Set<RuntimeStatus>([
     'cancel_requested',
     'abort_requested',
 ])
+const TERMINAL_RUNTIME_STATUSES = new Set<RuntimeStatus>([
+    'success',
+    'failed',
+    'validation_error',
+    'canceled',
+    'aborted',
+])
 
 export function ExecutionControls() {
     const viewMode = useStore((state) => state.viewMode)
@@ -62,6 +69,9 @@ export function ExecutionControls() {
         () => STATUS_LABELS[runtimeStatus] || runtimeStatus,
         [runtimeStatus]
     )
+    const runIdentityLabel = selectedRunId ? `Run ${selectedRunId}` : 'Run id loading…'
+    const isTerminalState = TERMINAL_RUNTIME_STATUSES.has(runtimeStatus)
+    const terminalStateLabel = isTerminalState ? `Terminal: ${statusLabel}` : null
     const cancelActionLabel = CANCEL_ACTION_LABELS[runtimeStatus] || 'Cancel'
     const transitionHint = TRANSITION_HINTS[runtimeStatus] || null
     const cancelDisabledReason = !selectedRunId
@@ -99,6 +109,14 @@ export function ExecutionControls() {
             <span data-testid="execution-footer-run-status" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 {statusLabel}
             </span>
+            <span data-testid="execution-footer-run-identity" className="text-xs font-mono text-muted-foreground">
+                {runIdentityLabel}
+            </span>
+            {terminalStateLabel && (
+                <span data-testid="execution-footer-terminal-state" className="text-xs font-medium text-muted-foreground">
+                    {terminalStateLabel}
+                </span>
+            )}
             <div className="h-4 w-px bg-border" />
             {transitionHint && (
                 <span className="text-xs text-muted-foreground">{transitionHint}</span>

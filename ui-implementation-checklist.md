@@ -192,7 +192,7 @@ Status key:
 
 ### 8.4 Execution Footer
 - [x] [8.4-01] Keep execution controls/status visible in canvas footer during active runs.
-- [ ] [8.4-02] Ensure footer reflects current run identity and terminal state.
+- [x] [8.4-02] Ensure footer reflects current run identity and terminal state.
 
 ### 8.5 Spec -> Plan -> Build Workflow Orchestration
 - [ ] [8.5-01] Implement plan-generation workflow launch from approved project spec state.
