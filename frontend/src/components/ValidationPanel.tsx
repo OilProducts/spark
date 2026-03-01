@@ -119,6 +119,24 @@ export function ValidationPanel() {
         centerOnEdge(source, target);
     };
 
+    const hasDirectMapping = (diag: (typeof sortedDiagnostics)[number]) => {
+        if (diag.node_id && getNode(diag.node_id)) {
+            return true;
+        }
+        if (diag.edge && diag.edge.length === 2) {
+            return getEdges().some((edge) => edge.source === diag.edge?.[0] && edge.target === diag.edge?.[1]);
+        }
+        return false;
+    };
+
+    const handleUnmappedDiagnosticFallback = () => {
+        setSelectedNodeId(null);
+        setSelectedEdgeId(null);
+        setNodes((nodes) => nodes.map((node) => (node.selected ? { ...node, selected: false } : node)));
+        setEdges((edges) => edges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge)));
+        focusCanvasEntity('[data-testid="inspector-panel"]');
+    };
+
     return (
         <div
             data-testid="validation-panel"
@@ -167,13 +185,23 @@ export function ValidationPanel() {
                         key={`${diag.rule_id}-${index}`}
                         data-testid="validation-diagnostic-item"
                         onClick={() => {
-                            if (diag.node_id) {
+                            if (diag.node_id && getNode(diag.node_id)) {
                                 selectNode(diag.node_id);
-                            } else if (diag.edge && diag.edge.length === 2) {
+                            } else if (
+                                diag.edge &&
+                                diag.edge.length === 2 &&
+                                getEdges().some((edge) => edge.source === diag.edge?.[0] && edge.target === diag.edge?.[1])
+                            ) {
                                 selectEdge(diag.edge[0], diag.edge[1]);
+                            } else {
+                                handleUnmappedDiagnosticFallback();
                             }
                         }}
-                        className="w-full rounded-md border border-border/60 bg-background/85 px-2 py-1 text-left text-xs transition-colors hover:bg-muted"
+                        className={`w-full rounded-md border bg-background/85 px-2 py-1 text-left text-xs transition-colors ${
+                            hasDirectMapping(diag)
+                                ? 'border-border/60 hover:bg-muted'
+                                : 'border-dashed border-border/70 hover:bg-muted/60'
+                        }`}
                     >
                         <div className="flex items-start gap-2">
                             <span
@@ -189,6 +217,11 @@ export function ValidationPanel() {
                                     {diag.rule_id}
                                     {diag.line ? ` • line ${diag.line}` : ''}
                                 </div>
+                                {!hasDirectMapping(diag) ? (
+                                    <div data-testid="validation-diagnostic-fallback-hint" className="mt-1 text-[10px] text-muted-foreground">
+                                        No direct canvas target. Click to open graph-level review.
+                                    </div>
+                                ) : null}
                             </div>
                         </div>
                     </button>

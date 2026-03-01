@@ -165,7 +165,7 @@ Status key:
 
 ### 7.3 Navigability
 - [x] [7.3-01] Clicking a diagnostic must select and focus corresponding graph entity.
-- [ ] [7.3-02] Add fallback UX for diagnostics without direct element mapping.
+- [x] [7.3-02] Add fallback UX for diagnostics without direct element mapping.
 - [ ] [7.3-03] Add integration tests for diagnostic-to-canvas navigation.
 
 ---
