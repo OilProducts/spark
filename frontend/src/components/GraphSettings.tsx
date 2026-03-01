@@ -430,6 +430,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Tool Hooks Pre</label>
                                 <input
+                                    data-testid="graph-attr-input-tool_hooks.pre"
                                     value={graphAttrs['tool_hooks.pre'] || ''}
                                     onChange={(event) => updateGraphAttr('tool_hooks.pre', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -441,6 +442,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Tool Hooks Post</label>
                                 <input
+                                    data-testid="graph-attr-input-tool_hooks.post"
                                     value={graphAttrs['tool_hooks.post'] || ''}
                                     onChange={(event) => updateGraphAttr('tool_hooks.post', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
