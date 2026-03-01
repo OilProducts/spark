@@ -195,7 +195,7 @@ Status key:
 - [x] [8.4-02] Ensure footer reflects current run identity and terminal state.
 
 ### 8.5 Spec -> Plan -> Build Workflow Orchestration
-- [ ] [8.5-01] Implement plan-generation workflow launch from approved project spec state.
+- [x] [8.5-01] Implement plan-generation workflow launch from approved project spec state.
 - [ ] [8.5-02] Persist generated implementation plans to project files with visible status/provenance.
 - [ ] [8.5-03] Implement plan gate controls (`approve`, `reject`, `request-revision`) with clear state transitions.
 - [ ] [8.5-04] Enforce build workflow launch from approved plan state only.

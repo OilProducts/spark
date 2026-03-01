@@ -1,5 +1,6 @@
 import { type ConversationHistoryEntry, useStore } from "@/store"
 import { type FormEvent, useEffect, useState } from "react"
+import { buildPipelineStartPayload } from "@/lib/pipelineStartPayload"
 import {
     clearProjectSpecEditProposal,
     getProjectSpecEditProposal,
@@ -32,14 +33,22 @@ export function ProjectsPanel() {
     const setConversationId = useStore((state) => state.setConversationId)
     const appendConversationHistoryEntry = useStore((state) => state.appendConversationHistoryEntry)
     const setSpecId = useStore((state) => state.setSpecId)
+    const setSpecStatus = useStore((state) => state.setSpecStatus)
     const setPlanId = useStore((state) => state.setPlanId)
+    const activeFlow = useStore((state) => state.activeFlow)
+    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
+    const setViewMode = useStore((state) => state.setViewMode)
+    const workingDir = useStore((state) => state.workingDir)
+    const model = useStore((state) => state.model)
     const [directoryPathInput, setDirectoryPathInput] = useState("")
     const [editingProjectPath, setEditingProjectPath] = useState<string | null>(null)
     const [editingDirectoryPathInput, setEditingDirectoryPathInput] = useState("")
     const [projectBranches, setProjectBranches] = useState<Record<string, string | null>>({})
     const [projectSpecEditProposals, setProjectSpecEditProposals] = useState<ProjectSpecEditProposalMap>({})
+    const [planGenerationError, setPlanGenerationError] = useState<string | null>(null)
     const activeProjectScope = activeProjectPath ? projectScopedWorkspaces[activeProjectPath] : null
     const activeProjectProposalPreview = getProjectSpecEditProposal(projectSpecEditProposals, activeProjectPath)
+    const specIsApprovedForPlanning = activeProjectScope?.specStatus === 'approved'
     const favoriteProjects = projects.filter((project) => project.isFavorite)
     const recentProjects = recentProjectPaths
         .map((projectPath) => projectRegistry[projectPath])
@@ -164,6 +173,7 @@ export function ProjectsPanel() {
             return
         }
         setSpecId(activeProjectScope?.specId || buildProjectScopedArtifactId("spec", activeProjectPath))
+        setSpecStatus(activeProjectScope?.specId ? activeProjectScope.specStatus : 'draft')
     }
 
     const onOpenPlan = () => {
@@ -224,12 +234,77 @@ export function ProjectsPanel() {
 
         const specId = activeProjectScope?.specId || buildProjectScopedArtifactId("spec", activeProjectPath)
         setSpecId(specId)
+        setSpecStatus('draft')
         appendConversationHistoryEntry({
             role: "system",
             content: `Applied spec edit proposal ${activeProjectProposalPreview.id} to ${specId}.`,
             timestamp: new Date().toISOString(),
         })
         setProjectSpecEditProposals((current) => clearProjectSpecEditProposal(current, activeProjectPath))
+    }
+
+    const onApproveSpecForPlanning = () => {
+        if (!activeProjectPath || !activeProjectScope?.specId) {
+            return
+        }
+        setSpecStatus('approved')
+        setPlanGenerationError(null)
+        appendConversationHistoryEntry({
+            role: "system",
+            content: `Approved spec ${activeProjectScope.specId} for plan generation.`,
+            timestamp: new Date().toISOString(),
+        })
+    }
+
+    const onLaunchPlanGenerationWorkflow = async () => {
+        if (!activeProjectPath || !activeProjectScope?.specId || !specIsApprovedForPlanning) {
+            return
+        }
+        if (!activeFlow) {
+            setPlanGenerationError('Select a plan-generation flow before launching.')
+            return
+        }
+
+        setPlanGenerationError(null)
+        try {
+            const flowRes = await fetch(`/api/flows/${encodeURIComponent(activeFlow)}`)
+            if (!flowRes.ok) {
+                throw new Error(`Failed to load flow: ${activeFlow}`)
+            }
+            const flow = await flowRes.json()
+
+            const runInitiationForm = {
+                projectPath: activeProjectPath,
+                flowSource: activeFlow,
+                workingDirectory: workingDir.trim() || activeProjectPath,
+                backend: 'codex',
+                model: model.trim() || null,
+            }
+            const startPayload = buildPipelineStartPayload(runInitiationForm, flow.content)
+            const runRes = await fetch('/pipelines', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(startPayload),
+            })
+            if (!runRes.ok) {
+                throw new Error(`Plan-generation launch failed (${runRes.status})`)
+            }
+            const runData = await runRes.json()
+            if (typeof runData?.pipeline_id !== 'string') {
+                throw new Error('Plan-generation launch did not return a pipeline id.')
+            }
+
+            setSelectedRunId(runData.pipeline_id)
+            setPlanId(activeProjectScope.planId || buildProjectScopedArtifactId("plan", activeProjectPath))
+            appendConversationHistoryEntry({
+                role: "system",
+                content: `Launched plan-generation workflow from approved spec ${activeProjectScope.specId}.`,
+                timestamp: new Date().toISOString(),
+            })
+            setViewMode('execution')
+        } catch (error) {
+            setPlanGenerationError(error instanceof Error ? error.message : 'Failed to launch plan-generation workflow.')
+        }
     }
 
     const onRejectSpecEditProposal = () => {
@@ -501,6 +576,65 @@ export function ProjectsPanel() {
                             ) : (
                                 <p className="text-xs text-muted-foreground">No proposed spec edits for this project yet.</p>
                             )}
+                        </div>
+                    )}
+                </div>
+                <div data-testid="project-plan-generation-surface" className="rounded-md border border-border bg-card p-4 shadow-sm">
+                    <div className="mb-3 space-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">Spec to Plan Workflow Launch</h3>
+                        <p className="text-xs text-muted-foreground">
+                            Launch plan-generation workflows only after the active project spec is explicitly approved.
+                        </p>
+                    </div>
+                    {!activeProjectPath ? (
+                        <p className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
+                            Select an active project to approve a spec and launch plan generation.
+                        </p>
+                    ) : (
+                        <div className="space-y-3">
+                            <p className="text-xs text-muted-foreground">
+                                Spec status: <span className="font-medium text-foreground">{specIsApprovedForPlanning ? "approved" : "draft"}</span>
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                                Active flow source for plan-generation launch: <span className="font-mono text-foreground">{activeFlow || "none selected"}</span>
+                            </p>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                    data-testid="project-spec-approve-for-plan-button"
+                                    type="button"
+                                    onClick={onApproveSpecForPlanning}
+                                    disabled={!activeProjectScope?.specId}
+                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    Approve spec for planning
+                                </button>
+                                <button
+                                    data-testid="project-plan-generation-launch-button"
+                                    type="button"
+                                    onClick={() => {
+                                        void onLaunchPlanGenerationWorkflow()
+                                    }}
+                                    disabled={!activeProjectScope?.specId || !specIsApprovedForPlanning || !activeFlow}
+                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    Launch plan-generation workflow
+                                </button>
+                            </div>
+                            {!activeProjectScope?.specId ? (
+                                <p className="text-[11px] text-muted-foreground">
+                                    Create or open a project spec before approving and launching plan generation.
+                                </p>
+                            ) : null}
+                            {activeProjectScope?.specId && !specIsApprovedForPlanning ? (
+                                <p className="text-[11px] text-muted-foreground">
+                                    Approve the active spec before launching the plan-generation workflow.
+                                </p>
+                            ) : null}
+                            {planGenerationError ? (
+                                <p data-testid="project-plan-generation-error" className="text-[11px] text-destructive">
+                                    {planGenerationError}
+                                </p>
+                            ) : null}
                         </div>
                     )}
                 </div>

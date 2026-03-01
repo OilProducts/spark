@@ -246,6 +246,7 @@ interface ProjectScopedWorkspace {
     conversationId: string | null
     conversationHistory: ConversationHistoryEntry[]
     specId: string | null
+    specStatus: 'draft' | 'approved'
     planId: string | null
     artifactRunId: string | null
 }
@@ -265,6 +266,7 @@ const DEFAULT_PROJECT_SCOPED_WORKSPACE: ProjectScopedWorkspace = {
     conversationId: null,
     conversationHistory: [],
     specId: null,
+    specStatus: 'draft',
     planId: null,
     artifactRunId: null,
 }
@@ -448,6 +450,7 @@ interface AppState {
     setConversationId: (id: string | null) => void
     appendConversationHistoryEntry: (entry: ConversationHistoryEntry) => void
     setSpecId: (id: string | null) => void
+    setSpecStatus: (status: 'draft' | 'approved') => void
     setPlanId: (id: string | null) => void
 
     logs: LogEntry[]
@@ -884,6 +887,21 @@ export const useStore = create<AppState>((set) => ({
             nextProjectScopedWorkspaces[state.activeProjectPath] = {
                 ...scoped,
                 specId: id,
+            }
+            return {
+                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+            }
+        }),
+    setSpecStatus: (status) =>
+        set((state) => {
+            if (!state.activeProjectPath) {
+                return {}
+            }
+            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
+            nextProjectScopedWorkspaces[state.activeProjectPath] = {
+                ...scoped,
+                specStatus: status,
             }
             return {
                 projectScopedWorkspaces: nextProjectScopedWorkspaces,
