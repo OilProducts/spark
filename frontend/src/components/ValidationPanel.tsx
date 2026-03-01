@@ -92,11 +92,19 @@ export function ValidationPanel() {
         });
     };
 
+    const focusCanvasEntity = (selector: string) => {
+        const target = document.querySelector<HTMLElement>(selector);
+        if (!target) return;
+        target.tabIndex = -1;
+        target.focus({ preventScroll: true });
+    };
+
     const selectNode = (nodeId: string) => {
         setSelectedNodeId(nodeId);
         setSelectedEdgeId(null);
         setNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === nodeId })));
         setEdges((edges) => edges.map((edge) => ({ ...edge, selected: false })));
+        focusCanvasEntity(`.react-flow__node[data-id="${nodeId}"]`);
         centerOnNode(nodeId);
     };
 
@@ -107,6 +115,7 @@ export function ValidationPanel() {
         setSelectedEdgeId(edge.id);
         setEdges((edges) => edges.map((edgeItem) => ({ ...edgeItem, selected: edgeItem.id === edge.id })));
         setNodes((nodes) => nodes.map((node) => ({ ...node, selected: false })));
+        focusCanvasEntity(`.react-flow__edge[data-id="${edge.id}"]`);
         centerOnEdge(source, target);
     };
 
