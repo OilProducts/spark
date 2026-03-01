@@ -98,3 +98,24 @@ def test_run_initiation_payload_parity_with_pipelines_contract_item_8_1_02() -> 
         assert snippet in navbar_text, f"missing navbar payload builder usage snippet: {snippet}"
 
     assert "- [x] [8.1-02]" in checklist_text
+
+
+def test_run_start_rejection_surfaces_failure_handling_ui_item_8_1_03() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    navbar_text = (repo_root / "frontend" / "src" / "components" / "Navbar.tsx").read_text(encoding="utf-8")
+    checklist_text = (repo_root / "ui-implementation-checklist.md").read_text(encoding="utf-8")
+
+    required_snippets = [
+        "const [runStartError, setRunStartError] = useState<string | null>(null)",
+        "let reason = `Run request failed (${runRes.status})`",
+        "reason = detail.error.trim()",
+        "reason = detail.detail.trim()",
+        "throw new Error(`Run not started: ${reason}`)",
+        "setRunStartError(error instanceof Error ? error.message : 'Failed to start pipeline run.')",
+        "data-testid=\"run-start-error-banner\"",
+        "Failed to start run:",
+    ]
+    for snippet in required_snippets:
+        assert snippet in navbar_text, f"missing run start rejection failure UI snippet: {snippet}"
+
+    assert "- [x] [8.1-03]" in checklist_text

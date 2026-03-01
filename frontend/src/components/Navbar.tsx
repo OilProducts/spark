@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { useStore } from "@/store"
 import { buildPipelineStartPayload } from "@/lib/pipelineStartPayload"
 import { Play, Settings2 } from "lucide-react"
@@ -11,6 +12,7 @@ export function Navbar() {
     const hasValidationErrors = useStore((state) => state.hasValidationErrors)
     const hasValidationWarnings = diagnostics.some((diag) => diag.severity === 'warning')
     const showValidationWarningBanner = hasValidationWarnings && !hasValidationErrors
+    const [runStartError, setRunStartError] = useState<string | null>(null)
     const runtimeStatus = useStore((state) => state.runtimeStatus)
     const selectedRunId = useStore((state) => state.selectedRunId)
     const runInitiationForm = {
@@ -24,6 +26,7 @@ export function Navbar() {
     const runPipeline = async () => {
         if (!activeProjectPath || !activeFlow || hasValidationErrors) return
 
+        setRunStartError(null)
         try {
             const flowRes = await fetch(`/api/flows/${encodeURIComponent(runInitiationForm.flowSource)}`)
             if (!flowRes.ok) {
@@ -38,7 +41,20 @@ export function Navbar() {
                 body: JSON.stringify(startPayload),
             })
             if (!runRes.ok) {
-                throw new Error('Run request failed')
+                let reason = `Run request failed (${runRes.status})`
+                try {
+                    const detail = await runRes.json()
+                    if (detail && typeof detail === 'object') {
+                        if (typeof detail.error === 'string' && detail.error.trim()) {
+                            reason = detail.error.trim()
+                        } else if (typeof detail.detail === 'string' && detail.detail.trim()) {
+                            reason = detail.detail.trim()
+                        }
+                    }
+                } catch {
+                    // Keep the HTTP-based fallback reason when error details are unavailable.
+                }
+                throw new Error(reason)
             }
 
             const runData = await runRes.json()
@@ -53,7 +69,7 @@ export function Navbar() {
             setViewMode('execution')
         } catch (error) {
             console.error(error)
-            window.alert('Failed to start pipeline run. Check backend logs for details.')
+            setRunStartError(error instanceof Error ? error.message : 'Failed to start pipeline run.')
         }
     }
 
@@ -154,6 +170,14 @@ export function Navbar() {
                         className="rounded border border-amber-400 bg-amber-50 px-2 py-1 text-[11px] font-medium leading-none text-amber-900"
                     >
                         Warnings present; run allowed.
+                    </p>
+                ) : null}
+                {runStartError ? (
+                    <p
+                        data-testid="run-start-error-banner"
+                        className="max-w-sm truncate rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] font-medium leading-none text-destructive"
+                    >
+                        Failed to start run: {runStartError}
                     </p>
                 ) : null}
                 <button

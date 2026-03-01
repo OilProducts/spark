@@ -175,7 +175,7 @@ Status key:
 ### 8.1 Run Initiation
 - [x] [8.1-01] Ensure run form captures active project identity, flow source, working directory, backend/model.
 - [x] [8.1-02] Ensure payload parity with `/pipelines` request contract.
-- [ ] [8.1-03] Add failure handling UI for rejected run start requests.
+- [x] [8.1-03] Add failure handling UI for rejected run start requests.
 - [ ] [8.1-04] Default working directory to active project directory unless user overrides.
 - [ ] [8.1-05] Add run-start policy gate/warning path for project Git-state violations.
 
