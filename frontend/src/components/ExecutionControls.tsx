@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { OctagonX } from 'lucide-react'
-import { useStore } from '@/store'
+import { useStore, type RuntimeStatus } from '@/store'
 
 const STATUS_LABELS: Record<string, string> = {
     running: 'Running',
@@ -43,6 +43,11 @@ const CANCEL_DISABLED_REASONS: Record<string, string> = {
 const DEFAULT_CANCEL_DISABLED_REASON = 'Cancel is only available while the run is active.'
 
 const UNSUPPORTED_CONTROL_REASON = 'Pause/Resume is unavailable: backend runtime control API does not expose pause/resume.'
+const ACTIVE_RUNTIME_STATUSES = new Set<RuntimeStatus>([
+    'running',
+    'cancel_requested',
+    'abort_requested',
+])
 
 export function ExecutionControls() {
     const viewMode = useStore((state) => state.viewMode)
@@ -50,7 +55,8 @@ export function ExecutionControls() {
     const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
     const selectedRunId = useStore((state) => state.selectedRunId)
 
-    const shouldShowFooter = viewMode === 'execution' && (selectedRunId || runtimeStatus !== 'idle')
+    const runIsActive = ACTIVE_RUNTIME_STATUSES.has(runtimeStatus)
+    const shouldShowFooter = viewMode === 'execution' && (runIsActive || Boolean(selectedRunId))
     const canCancel = runtimeStatus === 'running' && Boolean(selectedRunId)
     const statusLabel = useMemo(
         () => STATUS_LABELS[runtimeStatus] || runtimeStatus,

@@ -18,7 +18,8 @@ def test_execution_footer_and_stream_regions_remain_consistent_during_active_run
     assert 'data-testid="execution-footer-terminal-clear"' in terminal_text
 
     # Footer controls remain visible for active runs, even if run-id hydration lags briefly.
-    assert "const shouldShowFooter = viewMode === 'execution' && (selectedRunId || runtimeStatus !== 'idle')" in execution_controls_text
+    assert "const runIsActive = ACTIVE_RUNTIME_STATUSES.has(runtimeStatus)" in execution_controls_text
+    assert "const shouldShowFooter = viewMode === 'execution' && (runIsActive || Boolean(selectedRunId))" in execution_controls_text
     assert 'data-testid="execution-footer-controls"' in execution_controls_text
     assert 'data-testid="execution-footer-run-status"' in execution_controls_text
 
@@ -31,3 +32,21 @@ def test_checklist_marks_item_4_1_04_complete() -> None:
     checklist_text = (repo_root / "ui-implementation-checklist.md").read_text(encoding="utf-8")
 
     assert "- [x] [4.1-04]" in checklist_text
+
+
+def test_execution_footer_visibility_tracks_active_runtime_states_item_8_4_01() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    execution_controls_text = (repo_root / "frontend" / "src" / "components" / "ExecutionControls.tsx").read_text(
+        encoding="utf-8"
+    )
+    checklist_text = (repo_root / "ui-implementation-checklist.md").read_text(encoding="utf-8")
+
+    # Active-run state handling is explicit and drives execution-footer visibility.
+    assert "const ACTIVE_RUNTIME_STATUSES = new Set<RuntimeStatus>([" in execution_controls_text
+    assert "'running'" in execution_controls_text
+    assert "'cancel_requested'" in execution_controls_text
+    assert "'abort_requested'" in execution_controls_text
+    assert "const runIsActive = ACTIVE_RUNTIME_STATUSES.has(runtimeStatus)" in execution_controls_text
+    assert "const shouldShowFooter = viewMode === 'execution' && (runIsActive || Boolean(selectedRunId))" in execution_controls_text
+
+    assert "- [x] [8.4-01]" in checklist_text

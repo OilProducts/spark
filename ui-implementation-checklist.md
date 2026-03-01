@@ -191,7 +191,7 @@ Status key:
 - [x] [8.3-03] Add tests for state reset and run switching behavior.
 
 ### 8.4 Execution Footer
-- [ ] [8.4-01] Keep execution controls/status visible in canvas footer during active runs.
+- [x] [8.4-01] Keep execution controls/status visible in canvas footer during active runs.
 - [ ] [8.4-02] Ensure footer reflects current run identity and terminal state.
 
 ### 8.5 Spec -> Plan -> Build Workflow Orchestration
