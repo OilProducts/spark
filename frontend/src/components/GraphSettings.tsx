@@ -31,6 +31,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [showAdvancedGraphAttrs, setShowAdvancedGraphAttrs] = useState(false)
     const activeFlow = useStore((state) => state.activeFlow)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
+    const diagnostics = useStore((state) => state.diagnostics)
     const graphAttrs = useStore((state) => state.graphAttrs)
     const graphAttrErrors = useStore((state) => state.graphAttrErrors)
     const updateGraphAttr = useStore((state) => state.updateGraphAttr)
@@ -45,6 +46,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const hasPendingSave = useRef(false)
     const flowProviderFallback = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
     const canApplyDefaults = !!activeProjectPath && !!activeFlow && viewMode === 'editor'
+    const stylesheetDiagnostics = diagnostics.filter((diag) => diag.rule_id === 'stylesheet_syntax')
+    const hasStylesheetValue = Boolean(graphAttrs.model_stylesheet?.trim())
+    const showStylesheetFeedback = hasStylesheetValue || stylesheetDiagnostics.length > 0
 
     const flushPendingSave = useCallback(() => {
         if (!activeProjectPath || !activeFlow || !hasPendingSave.current) return
@@ -240,6 +244,43 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 <p data-testid="graph-attr-help-model_stylesheet" className="text-[11px] text-muted-foreground">
                                     {GRAPH_ATTR_HELP.model_stylesheet}
                                 </p>
+                                <p
+                                    data-testid="graph-model-stylesheet-selector-guidance"
+                                    className="text-[11px] text-muted-foreground"
+                                >
+                                    Supported selectors: `*`, `.class`, `#id`. End each declaration with `;`.
+                                </p>
+                                {showStylesheetFeedback && (
+                                    <div
+                                        data-testid="graph-model-stylesheet-diagnostics"
+                                        className="rounded-md border border-border/70 bg-muted/20 px-2 py-1"
+                                    >
+                                        {stylesheetDiagnostics.length > 0 ? (
+                                            <div className="space-y-1">
+                                                {stylesheetDiagnostics.map((diag, index) => {
+                                                    const severityClassName = diag.severity === 'error'
+                                                        ? 'text-destructive'
+                                                        : diag.severity === 'warning'
+                                                            ? 'text-amber-700'
+                                                            : 'text-sky-700'
+                                                    return (
+                                                        <p
+                                                            key={`${diag.rule_id}-${diag.line ?? 'line'}-${index}`}
+                                                            className={`text-[11px] ${severityClassName}`}
+                                                        >
+                                                            {diag.message}
+                                                            {diag.line ? ` (line ${diag.line})` : ''}
+                                                        </p>
+                                                    )
+                                                })}
+                                            </div>
+                                        ) : (
+                                            <p className="text-[11px] text-emerald-700">
+                                                Stylesheet parse and selector lint checks passed in preview.
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Retry Target</label>
