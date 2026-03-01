@@ -1,5 +1,12 @@
 import { type ConversationHistoryEntry, useStore } from "@/store"
 import { type FormEvent, useEffect, useState } from "react"
+import {
+    clearProjectSpecEditProposal,
+    getProjectSpecEditProposal,
+    type ProjectSpecEditProposalMap,
+    type SpecEditProposalPreview,
+    upsertProjectSpecEditProposal,
+} from "@/lib/projectSpecProposals"
 
 const buildProjectScopedArtifactId = (artifactType: "conversation" | "spec" | "plan", projectPath: string) => {
     const normalizedProjectKey = projectPath
@@ -8,19 +15,6 @@ const buildProjectScopedArtifactId = (artifactType: "conversation" | "spec" | "p
         .replace(/(^-|-$)/g, "")
     const suffix = normalizedProjectKey || "project"
     return `${artifactType}-${suffix}-${Date.now()}`
-}
-
-interface SpecEditProposalChange {
-    path: string
-    before: string
-    after: string
-}
-
-interface SpecEditProposalPreview {
-    id: string
-    createdAt: string
-    summary: string
-    changes: SpecEditProposalChange[]
 }
 
 export function ProjectsPanel() {
@@ -43,9 +37,9 @@ export function ProjectsPanel() {
     const [editingProjectPath, setEditingProjectPath] = useState<string | null>(null)
     const [editingDirectoryPathInput, setEditingDirectoryPathInput] = useState("")
     const [projectBranches, setProjectBranches] = useState<Record<string, string | null>>({})
-    const [projectSpecEditProposals, setProjectSpecEditProposals] = useState<Record<string, SpecEditProposalPreview>>({})
+    const [projectSpecEditProposals, setProjectSpecEditProposals] = useState<ProjectSpecEditProposalMap>({})
     const activeProjectScope = activeProjectPath ? projectScopedWorkspaces[activeProjectPath] : null
-    const activeProjectProposalPreview = activeProjectPath ? projectSpecEditProposals[activeProjectPath] || null : null
+    const activeProjectProposalPreview = getProjectSpecEditProposal(projectSpecEditProposals, activeProjectPath)
     const favoriteProjects = projects.filter((project) => project.isFavorite)
     const recentProjects = recentProjectPaths
         .map((projectPath) => projectRegistry[projectPath])
@@ -217,10 +211,7 @@ export function ProjectsPanel() {
                 },
             ],
         }
-        setProjectSpecEditProposals((current) => ({
-            ...current,
-            [activeProjectPath]: proposal,
-        }))
+        setProjectSpecEditProposals((current) => upsertProjectSpecEditProposal(current, activeProjectPath, proposal))
     }
 
     const onApplySpecEditProposal = () => {
@@ -238,11 +229,7 @@ export function ProjectsPanel() {
             content: `Applied spec edit proposal ${activeProjectProposalPreview.id} to ${specId}.`,
             timestamp: new Date().toISOString(),
         })
-        setProjectSpecEditProposals((current) => {
-            const next = { ...current }
-            delete next[activeProjectPath]
-            return next
-        })
+        setProjectSpecEditProposals((current) => clearProjectSpecEditProposal(current, activeProjectPath))
     }
 
     const onRejectSpecEditProposal = () => {
@@ -255,11 +242,7 @@ export function ProjectsPanel() {
             content: `Rejected spec edit proposal ${activeProjectProposalPreview.id}.`,
             timestamp: new Date().toISOString(),
         })
-        setProjectSpecEditProposals((current) => {
-            const next = { ...current }
-            delete next[activeProjectPath]
-            return next
-        })
+        setProjectSpecEditProposals((current) => clearProjectSpecEditProposal(current, activeProjectPath))
     }
 
     return (

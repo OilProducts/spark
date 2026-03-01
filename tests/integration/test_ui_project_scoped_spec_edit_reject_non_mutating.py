@@ -18,7 +18,9 @@ def test_projects_panel_reject_action_discards_proposal_without_spec_mutation_it
 
     reject_handler_body = reject_handler_match.group("body")
     assert "setSpecId" not in reject_handler_body, "reject action must not mutate spec artifact selection"
-    assert "delete next[activeProjectPath]" in reject_handler_body, "reject action must clear the active proposal preview"
+    assert "clearProjectSpecEditProposal(current, activeProjectPath)" in reject_handler_body, (
+        "reject action must clear the active proposal preview"
+    )
 
 
 def test_checklist_marks_item_5_5_05_complete() -> None:

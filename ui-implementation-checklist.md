@@ -105,7 +105,7 @@ Status key:
 - [x] [5.5-03] Implement explicit proposal UX for AI-generated spec edits (preview before apply).
 - [x] [5.5-04] Require explicit user confirmation before applying proposed spec edits.
 - [x] [5.5-05] Ensure reject actions do not mutate spec files.
-- [ ] [5.5-06] Add tests proving proposal artifacts and conversation context remain project-isolated.
+- [x] [5.5-06] Add tests proving proposal artifacts and conversation context remain project-isolated.
 
 ---
 
