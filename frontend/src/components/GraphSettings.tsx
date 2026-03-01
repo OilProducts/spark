@@ -11,6 +11,20 @@ interface GraphSettingsProps {
     inline?: boolean
 }
 
+const GRAPH_ATTR_HELP: Record<string, string> = {
+    goal: 'Primary graph intent used by handlers that read graph-level goal context.',
+    label: 'Display label for graph metadata; does not override node labels.',
+    default_max_retry: 'Used only when a node omits max_retries. Node max_retries takes precedence.',
+    default_fidelity: 'Default fidelity when node/edge fidelity is not set explicitly.',
+    model_stylesheet: 'Selector-based model defaults. Explicit node attrs override stylesheet matches.',
+    retry_target: 'Global retry target fallback when nodes do not define retry_target.',
+    fallback_retry_target: 'Second fallback when retry_target is unset at node and graph scope.',
+    'stack.child_dotfile': 'Child flow DOT path used by manager-loop/stack handlers when relevant.',
+    'stack.child_workdir': 'Working directory for child flow execution when stack handlers invoke child runs.',
+    'tool_hooks.pre': 'Command run before tool execution unless runtime/node-level override replaces it.',
+    'tool_hooks.post': 'Command run after tool execution unless runtime/node-level override replaces it.',
+}
+
 export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [isOpen, setIsOpen] = useState(false)
     const [showAdvancedGraphAttrs, setShowAdvancedGraphAttrs] = useState(false)
@@ -130,6 +144,13 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     Graph Attributes
                 </div>
                 <div className="mt-3 space-y-3">
+                    <div
+                        data-testid="graph-attrs-help"
+                        className="rounded-md border border-border/80 bg-muted/20 px-2 py-1 text-[11px] text-muted-foreground"
+                    >
+                        <p>Graph attributes are baseline defaults. Explicit node and edge attrs win when both are set.</p>
+                        <p>Leave blank to omit this attr from DOT output.</p>
+                    </div>
                     <div className="space-y-1">
                         <label className="text-xs font-medium text-foreground">Goal</label>
                         <input
@@ -137,6 +158,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                             onChange={(event) => updateGraphAttr('goal', event.target.value)}
                             className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         />
+                        <p data-testid="graph-attr-help-goal" className="text-[11px] text-muted-foreground">
+                            {GRAPH_ATTR_HELP.goal}
+                        </p>
                     </div>
                     <div className="space-y-1">
                         <label className="text-xs font-medium text-foreground">Label</label>
@@ -145,6 +169,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                             onChange={(event) => updateGraphAttr('label', event.target.value)}
                             className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         />
+                        <p data-testid="graph-attr-help-label" className="text-[11px] text-muted-foreground">
+                            {GRAPH_ATTR_HELP.label}
+                        </p>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
@@ -158,6 +185,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 inputMode="numeric"
                                 className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             />
+                            <p data-testid="graph-attr-help-default_max_retry" className="text-[11px] text-muted-foreground">
+                                {GRAPH_ATTR_HELP.default_max_retry}
+                            </p>
                             {graphAttrErrors.default_max_retry && (
                                 <p className="text-[11px] text-destructive">
                                     {graphAttrErrors.default_max_retry}
@@ -178,6 +208,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     <option key={option} value={option} />
                                 ))}
                             </datalist>
+                            <p data-testid="graph-attr-help-default_fidelity" className="text-[11px] text-muted-foreground">
+                                {GRAPH_ATTR_HELP.default_fidelity}
+                            </p>
                             {graphAttrErrors.default_fidelity && (
                                 <p className="text-[11px] text-destructive">
                                     {graphAttrErrors.default_fidelity}
@@ -202,6 +235,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     onChange={(event) => updateGraphAttr('model_stylesheet', event.target.value)}
                                     className="h-20 w-full resize-none rounded-md border border-input bg-background px-2 py-1 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
+                                <p data-testid="graph-attr-help-model_stylesheet" className="text-[11px] text-muted-foreground">
+                                    {GRAPH_ATTR_HELP.model_stylesheet}
+                                </p>
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Retry Target</label>
@@ -210,6 +246,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     onChange={(event) => updateGraphAttr('retry_target', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
+                                <p data-testid="graph-attr-help-retry_target" className="text-[11px] text-muted-foreground">
+                                    {GRAPH_ATTR_HELP.retry_target}
+                                </p>
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Fallback Retry Target</label>
@@ -218,6 +257,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     onChange={(event) => updateGraphAttr('fallback_retry_target', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
+                                <p data-testid="graph-attr-help-fallback_retry_target" className="text-[11px] text-muted-foreground">
+                                    {GRAPH_ATTR_HELP.fallback_retry_target}
+                                </p>
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Stack Child Dotfile</label>
@@ -227,6 +269,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     placeholder="child/flow.dot"
                                 />
+                                <p data-testid="graph-attr-help-stack.child_dotfile" className="text-[11px] text-muted-foreground">
+                                    {GRAPH_ATTR_HELP['stack.child_dotfile']}
+                                </p>
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Stack Child Workdir</label>
@@ -236,6 +281,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     placeholder="/abs/path/to/child"
                                 />
+                                <p data-testid="graph-attr-help-stack.child_workdir" className="text-[11px] text-muted-foreground">
+                                    {GRAPH_ATTR_HELP['stack.child_workdir']}
+                                </p>
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Tool Hooks Pre</label>
@@ -244,6 +292,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     onChange={(event) => updateGraphAttr('tool_hooks.pre', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
+                                <p data-testid="graph-attr-help-tool_hooks.pre" className="text-[11px] text-muted-foreground">
+                                    {GRAPH_ATTR_HELP['tool_hooks.pre']}
+                                </p>
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Tool Hooks Post</label>
@@ -252,6 +303,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     onChange={(event) => updateGraphAttr('tool_hooks.post', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
+                                <p data-testid="graph-attr-help-tool_hooks.post" className="text-[11px] text-muted-foreground">
+                                    {GRAPH_ATTR_HELP['tool_hooks.post']}
+                                </p>
                             </div>
                         </div>
                     )}
