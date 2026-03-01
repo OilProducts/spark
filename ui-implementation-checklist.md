@@ -113,7 +113,7 @@ Status key:
 
 ### 6.1 Graph-Level Attribute Editing
 - [x] [6.1-01] Add graph editor fields for all required graph attrs (including `stack.child_*`, `tool_hooks.*`).
-- [ ] [6.1-02] Add type-aware validation and normalization for graph attrs.
+- [x] [6.1-02] Add type-aware validation and normalization for graph attrs.
 - [ ] [6.1-03] Add inline help and precedence notes for graph attrs.
 - [ ] [6.1-04] Add tests that graph-level edits serialize correctly to DOT and rehydrate cleanly.
 

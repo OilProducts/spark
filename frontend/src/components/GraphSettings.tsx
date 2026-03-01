@@ -3,6 +3,7 @@ import { useReactFlow } from '@xyflow/react'
 import { useStore } from '@/store'
 import { generateDot } from '@/lib/dotUtils'
 import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
+import { GRAPH_FIDELITY_OPTIONS } from '@/lib/graphAttrValidation'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { InspectorScaffold } from './InspectorScaffold'
 
@@ -16,6 +17,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const activeFlow = useStore((state) => state.activeFlow)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const graphAttrs = useStore((state) => state.graphAttrs)
+    const graphAttrErrors = useStore((state) => state.graphAttrErrors)
     const updateGraphAttr = useStore((state) => state.updateGraphAttr)
     const model = useStore((state) => state.model)
     const setModel = useStore((state) => state.setModel)
@@ -150,17 +152,37 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                             <input
                                 value={graphAttrs.default_max_retry ?? ''}
                                 onChange={(event) => updateGraphAttr('default_max_retry', event.target.value)}
+                                type="number"
+                                min={0}
+                                step={1}
+                                inputMode="numeric"
                                 className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             />
+                            {graphAttrErrors.default_max_retry && (
+                                <p className="text-[11px] text-destructive">
+                                    {graphAttrErrors.default_max_retry}
+                                </p>
+                            )}
                         </div>
                         <div className="space-y-1">
                             <label className="text-xs font-medium text-foreground">Default Fidelity</label>
                             <input
                                 value={graphAttrs.default_fidelity || ''}
                                 onChange={(event) => updateGraphAttr('default_fidelity', event.target.value)}
+                                list="graph-fidelity-options"
                                 className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 placeholder="full"
                             />
+                            <datalist id="graph-fidelity-options">
+                                {GRAPH_FIDELITY_OPTIONS.map((option) => (
+                                    <option key={option} value={option} />
+                                ))}
+                            </datalist>
+                            {graphAttrErrors.default_fidelity && (
+                                <p className="text-[11px] text-destructive">
+                                    {graphAttrErrors.default_fidelity}
+                                </p>
+                            )}
                         </div>
                     </div>
                     <button

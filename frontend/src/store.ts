@@ -53,6 +53,8 @@ export interface GraphAttrs {
     ui_default_reasoning_effort?: string
 }
 
+export type GraphAttrErrors = Partial<Record<keyof GraphAttrs, string>>
+
 export interface RegisteredProject {
     directoryPath: string
     isFavorite: boolean
@@ -140,6 +142,94 @@ const pushRecentProjectPath = (recentProjectPaths: string[], projectPath: string
     }
     const deduped = [projectPath, ...recentProjectPaths.filter((path) => path !== projectPath)]
     return deduped.slice(0, RECENT_PROJECT_LIMIT)
+}
+
+const GRAPH_FIDELITY_OPTION_SET = new Set<string>([
+    'full',
+    'truncate',
+    'compact',
+    'summary:low',
+    'summary:medium',
+    'summary:high',
+])
+
+const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
+    'goal',
+    'label',
+    'retry_target',
+    'fallback_retry_target',
+    'default_fidelity',
+    'stack.child_dotfile',
+    'stack.child_workdir',
+    'tool_hooks.pre',
+    'tool_hooks.post',
+    'ui_default_llm_model',
+    'ui_default_llm_provider',
+    'ui_default_reasoning_effort',
+]
+
+const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): string => {
+    if (key === 'model_stylesheet') {
+        return value
+    }
+    if (key === 'default_max_retry') {
+        const trimmed = value.trim()
+        if (!trimmed) return ''
+        if (!/^\d+$/.test(trimmed)) return trimmed
+        return `${Math.max(0, parseInt(trimmed, 10))}`
+    }
+    if (key === 'default_fidelity') {
+        return value.trim().toLowerCase()
+    }
+    if (STRING_GRAPH_ATTR_KEYS.includes(key)) {
+        return value.trim()
+    }
+    return value
+}
+
+const validateGraphAttrValue = (key: keyof GraphAttrs, value: string): string | null => {
+    if (key === 'default_max_retry') {
+        if (!value) return null
+        if (!/^\d+$/.test(value)) {
+            return 'Default max retry must be a non-negative integer.'
+        }
+        return null
+    }
+    if (key === 'default_fidelity') {
+        if (!value) return null
+        if (!GRAPH_FIDELITY_OPTION_SET.has(value)) {
+            return 'Default fidelity must be one of: full, truncate, compact, summary:low, summary:medium, summary:high.'
+        }
+        return null
+    }
+    return null
+}
+
+const normalizeGraphAttrs = (attrs: GraphAttrs): GraphAttrs => {
+    const normalized: GraphAttrs = {}
+    const entries = Object.entries(attrs) as [keyof GraphAttrs, GraphAttrs[keyof GraphAttrs]][]
+    entries.forEach(([key, rawValue]) => {
+        if (rawValue === undefined || rawValue === null) {
+            return
+        }
+        const value = normalizeGraphAttrValue(key, String(rawValue))
+        normalized[key] = value
+    })
+    return normalized
+}
+
+const deriveGraphAttrErrors = (attrs: GraphAttrs): GraphAttrErrors => {
+    const errors: GraphAttrErrors = {}
+    const entries = Object.entries(attrs) as [keyof GraphAttrs, GraphAttrs[keyof GraphAttrs]][]
+    entries.forEach(([key, rawValue]) => {
+        const value = rawValue === undefined || rawValue === null ? '' : String(rawValue)
+        const normalizedValue = normalizeGraphAttrValue(key, value)
+        const error = validateGraphAttrValue(key, normalizedValue)
+        if (error) {
+            errors[key] = error
+        }
+    })
+    return errors
 }
 
 interface RouteState {
@@ -381,6 +471,7 @@ interface AppState {
     setModel: (value: string) => void
 
     graphAttrs: GraphAttrs
+    graphAttrErrors: GraphAttrErrors
     setGraphAttrs: (attrs: GraphAttrs) => void
     updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
 
@@ -489,6 +580,7 @@ export const useStore = create<AppState>((set) => ({
                 selectedNodeId: isProjectSwitch ? null : state.selectedNodeId,
                 selectedEdgeId: isProjectSwitch ? null : state.selectedEdgeId,
                 graphAttrs: isProjectSwitch ? {} : state.graphAttrs,
+                graphAttrErrors: isProjectSwitch ? {} : state.graphAttrErrors,
                 diagnostics: isProjectSwitch ? [] : state.diagnostics,
                 nodeDiagnostics: isProjectSwitch ? {} : state.nodeDiagnostics,
                 edgeDiagnostics: isProjectSwitch ? {} : state.edgeDiagnostics,
@@ -849,14 +941,34 @@ export const useStore = create<AppState>((set) => ({
     setModel: (value) => set({ model: value }),
 
     graphAttrs: {},
-    setGraphAttrs: (attrs) => set({ graphAttrs: attrs }),
+    graphAttrErrors: {},
+    setGraphAttrs: (attrs) => {
+        const normalizedAttrs = normalizeGraphAttrs(attrs)
+        set({
+            graphAttrs: normalizedAttrs,
+            graphAttrErrors: deriveGraphAttrErrors(normalizedAttrs),
+        })
+    },
     updateGraphAttr: (key, value) =>
-        set((state) => ({
-            graphAttrs: {
-                ...state.graphAttrs,
-                [key]: value,
-            },
-        })),
+        set((state) => {
+            const normalizedValue = normalizeGraphAttrValue(key, value)
+            const error = validateGraphAttrValue(key, normalizedValue)
+            const graphAttrErrors = {
+                ...state.graphAttrErrors,
+            }
+            if (error) {
+                graphAttrErrors[key] = error
+            } else {
+                delete graphAttrErrors[key]
+            }
+            return {
+                graphAttrs: {
+                    ...state.graphAttrs,
+                    [key]: normalizedValue,
+                },
+                graphAttrErrors,
+            }
+        }),
 
     diagnostics: [],
     setDiagnostics: (diagnostics) =>
