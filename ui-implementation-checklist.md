@@ -161,7 +161,7 @@ Status key:
 ### 7.2 Blocking Rules
 - [x] [7.2-01] Block run start on error-level diagnostics.
 - [x] [7.2-02] Allow run start on warning-only state with explicit warning banner.
-- [ ] [7.2-03] Add tests for blocking/unblocking transitions as diagnostics change.
+- [x] [7.2-03] Add tests for blocking/unblocking transitions as diagnostics change.
 
 ### 7.3 Navigability
 - [ ] [7.3-01] Clicking a diagnostic must select and focus corresponding graph entity.

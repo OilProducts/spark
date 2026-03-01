@@ -465,6 +465,116 @@ test("warning-only diagnostics still allow execute with explicit banner for item
   await page.screenshot({ path: screenshotPath("16-warning-only-execute-banner.png"), fullPage: true })
 })
 
+test("diagnostics transitions toggle execute blocking and warning state for item 7.2-03", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-diagnostic-transition-${Date.now()}`
+  const errorToken = `diagnostic-error-${Date.now()}`
+  const warningToken = `diagnostic-warning-${Date.now()}`
+  const cleanToken = `diagnostic-clean-${Date.now()}`
+
+  await page.route("**/preview", async (route) => {
+    const body = route.request().postData() || ""
+    if (body.includes(errorToken)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "ok",
+          diagnostics: [
+            {
+              rule_id: "blocking_error_transition",
+              severity: "error",
+              message: "Transition error diagnostic",
+            },
+            {
+              rule_id: "warning_with_error_transition",
+              severity: "warning",
+              message: "Transition warning diagnostic",
+            },
+          ],
+        }),
+      })
+      return
+    }
+    if (body.includes(warningToken)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "ok",
+          diagnostics: [
+            {
+              rule_id: "warning_only_transition",
+              severity: "warning",
+              message: "Transition warning diagnostic",
+            },
+          ],
+        }),
+      })
+      return
+    }
+    if (body.includes(cleanToken)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "ok",
+          diagnostics: [],
+        }),
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-editor").click()
+
+  const flowButton = page.getByRole("button", { name: "implement-spec.dot" })
+  await expect(flowButton).toBeVisible()
+  await flowButton.click()
+
+  const promptNode = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Extract Testable Declarations" })
+    .first()
+  await expect(promptNode).toBeVisible()
+  await promptNode.click()
+
+  const promptField = page.getByPlaceholder("Enter system prompt instructions...")
+  await expect(promptField).toBeVisible()
+
+  const waitForPreviewToken = (token: string) =>
+    page.waitForRequest(
+      (request) =>
+        request.url().includes("/preview") &&
+        request.method() === "POST" &&
+        (request.postData() || "").includes(token),
+    )
+
+  const errorPreviewRequest = waitForPreviewToken(errorToken)
+  await promptField.fill(errorToken)
+  await errorPreviewRequest
+  await expect(page.getByTestId("execute-button")).toBeDisabled()
+  await expect(page.getByTestId("execute-button")).toHaveAttribute("title", "Fix validation errors before running.")
+  await expect(page.getByTestId("execute-warning-banner")).toHaveCount(0)
+
+  const warningPreviewRequest = waitForPreviewToken(warningToken)
+  await promptField.fill(warningToken)
+  await warningPreviewRequest
+  await expect(page.getByTestId("execute-button")).toBeEnabled()
+  await expect(page.getByTestId("execute-warning-banner")).toBeVisible()
+  await expect(page.getByTestId("execute-warning-banner")).toContainText("Warnings present; run allowed.")
+  await page.screenshot({ path: screenshotPath("17-diagnostic-transition-execute-state.png"), fullPage: true })
+
+  const cleanPreviewRequest = waitForPreviewToken(cleanToken)
+  await promptField.fill(cleanToken)
+  await cleanPreviewRequest
+  await expect(page.getByTestId("execute-button")).toBeEnabled()
+  await expect(page.getByTestId("execute-warning-banner")).toHaveCount(0)
+})
+
 test("stylesheet parse diagnostics render in graph settings for item 6.5-02", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-stylesheet-${Date.now()}`
   const stylesheetToken = ".bad$class { llm_model: gpt-5; }"
