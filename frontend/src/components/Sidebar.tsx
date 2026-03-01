@@ -1,11 +1,12 @@
-import { useStore } from "@/store"
+import { useStore, type DiagnosticEntry } from "@/store"
 import { FilePlus, Trash2 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
 import { generateDot, sanitizeGraphId } from "@/lib/dotUtils"
 import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from "@/lib/llmSuggestions"
 import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
+import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
 import { retryLastSaveContent, saveFlowContent } from "@/lib/flowPersistence"
 import { resolveSaveRemediation } from "@/lib/saveRemediation"
 import { InspectorScaffold, InspectorEmptyState } from './InspectorScaffold'
@@ -34,6 +35,7 @@ function resolveInspectorScope({
 export function Sidebar() {
     const { viewMode, activeFlow, setActiveFlow, selectedNodeId, selectedEdgeId, setSelectedNodeId, setSelectedEdgeId } = useStore()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
+    const diagnostics = useStore((state) => state.diagnostics)
     const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)
     const humanGate = useStore((state) => state.humanGate)
     const graphAttrs = useStore((state) => state.graphAttrs)
@@ -175,6 +177,18 @@ export function Sidebar() {
     const visibility = getNodeFieldVisibility(handlerType)
     const selectedNodeToolHookPreWarning = getToolHookCommandWarning((selectedNode?.data?.["tool_hooks.pre"] as string) || "")
     const selectedNodeToolHookPostWarning = getToolHookCommandWarning((selectedNode?.data?.["tool_hooks.post"] as string) || "")
+    const nodeFieldDiagnostics = useMemo(() => {
+        if (!selectedNodeId) {
+            return {}
+        }
+        return resolveNodeFieldDiagnostics(diagnostics, selectedNodeId)
+    }, [diagnostics, selectedNodeId])
+    const edgeFieldDiagnostics = useMemo(() => {
+        if (!selectedEdge) {
+            return {}
+        }
+        return resolveEdgeFieldDiagnostics(diagnostics, selectedEdge.source, selectedEdge.target)
+    }, [diagnostics, selectedEdge])
     const activeInspectorScope = resolveInspectorScope({
         viewMode,
         activeFlow,
@@ -220,6 +234,37 @@ export function Sidebar() {
             scheduleSave(getNodes(), newEdges);
         }
     };
+
+    const renderFieldDiagnostics = (
+        scope: 'node' | 'edge',
+        field: string,
+        fieldDiagnostics: Record<string, DiagnosticEntry[]>,
+        testId: string,
+    ) => {
+        const diagnosticsForField = fieldDiagnostics[field] || []
+        if (diagnosticsForField.length === 0) {
+            return null
+        }
+        return (
+            <div
+                data-testid={testId}
+                className="space-y-1 rounded-md border border-border/80 bg-muted/20 px-3 py-2"
+            >
+                {diagnosticsForField.map((diag, index) => {
+                    const severityClassName = diag.severity === 'error'
+                        ? 'text-destructive'
+                        : diag.severity === 'warning'
+                            ? 'text-amber-700'
+                            : 'text-sky-700'
+                    return (
+                        <p key={`${scope}-${field}-${diag.rule_id}-${index}`} className={`text-[11px] ${severityClassName}`}>
+                            {diag.message}
+                        </p>
+                    )
+                })}
+            </div>
+        )
+    }
 
     useEffect(() => {
         const handleBeforeUnload = () => {
@@ -372,6 +417,7 @@ export function Sidebar() {
                                             className="flex flex-1 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
                                             placeholder="Enter system prompt instructions..."
                                         />
+                                        {renderFieldDiagnostics('node', 'prompt', nodeFieldDiagnostics, 'node-field-diagnostics-prompt')}
                                     </div>
                                 )}
                                 {visibility.showToolCommand && (
@@ -519,6 +565,7 @@ export function Sidebar() {
                                             <option value="tool">tool</option>
                                             <option value="stack.manager_loop">stack.manager_loop</option>
                                         </datalist>
+                                        {renderFieldDiagnostics('node', 'type', nodeFieldDiagnostics, 'node-field-diagnostics-type')}
                                     </div>
                                 )}
                                 {visibility.showAdvanced && (
@@ -564,6 +611,7 @@ export function Sidebar() {
                                                         Goal Gate
                                                     </label>
                                                 </div>
+                                                {renderFieldDiagnostics('node', 'goal_gate', nodeFieldDiagnostics, 'node-field-diagnostics-goal_gate')}
                                                 <div className="space-y-1.5">
                                                     <label className="text-sm font-medium">Retry Target</label>
                                                     <input
@@ -571,6 +619,7 @@ export function Sidebar() {
                                                         onChange={(e) => handlePropertyChange('retry_target', e.target.value)}
                                                         className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                     />
+                                                    {renderFieldDiagnostics('node', 'retry_target', nodeFieldDiagnostics, 'node-field-diagnostics-retry_target')}
                                                 </div>
                                                 <div className="space-y-1.5">
                                                     <label className="text-sm font-medium">Fallback Retry Target</label>
@@ -579,6 +628,7 @@ export function Sidebar() {
                                                         onChange={(e) => handlePropertyChange('fallback_retry_target', e.target.value)}
                                                         className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                     />
+                                                    {renderFieldDiagnostics('node', 'fallback_retry_target', nodeFieldDiagnostics, 'node-field-diagnostics-fallback_retry_target')}
                                                 </div>
                                                 {visibility.showToolCommand && (
                                                     <>
@@ -623,6 +673,7 @@ export function Sidebar() {
                                                             className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                             placeholder="full"
                                                         />
+                                                        {renderFieldDiagnostics('node', 'fidelity', nodeFieldDiagnostics, 'node-field-diagnostics-fidelity')}
                                                     </div>
                                                     <div className="space-y-1.5">
                                                         <label className="text-sm font-medium">Thread ID</label>
@@ -751,6 +802,7 @@ export function Sidebar() {
                                         <p>{'Supported keys: outcome, preferred_label, context.<path>'}</p>
                                         <p>Operators: = or !=</p>
                                     </div>
+                                    {renderFieldDiagnostics('edge', 'condition', edgeFieldDiagnostics, 'edge-field-diagnostics-condition')}
                                     <div
                                         data-testid="edge-condition-preview-feedback"
                                         className={`rounded-md border px-3 py-2 text-[11px] ${
@@ -789,6 +841,7 @@ export function Sidebar() {
                                         className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         placeholder="full | truncate | compact | summary:low"
                                     />
+                                    {renderFieldDiagnostics('edge', 'fidelity', edgeFieldDiagnostics, 'edge-field-diagnostics-fidelity')}
                                 </div>
                                 <div className="space-y-1.5">
                                     <label className="text-sm font-medium">Thread ID</label>

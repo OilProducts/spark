@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
-import { useStore } from '@/store'
+import { useStore, type DiagnosticEntry } from '@/store'
 import { generateDot } from '@/lib/dotUtils'
 import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
 import { GRAPH_FIDELITY_OPTIONS, getToolHookCommandWarning } from '@/lib/graphAttrValidation'
+import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { resolveModelStylesheetPreview, type ModelValueSource } from '@/lib/modelStylesheetPreview'
 import { InspectorScaffold } from './InspectorScaffold'
@@ -60,6 +61,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const stylesheetDiagnostics = diagnostics.filter((diag) => diag.rule_id === 'stylesheet_syntax')
     const hasStylesheetValue = Boolean(graphAttrs.model_stylesheet?.trim())
     const showStylesheetFeedback = hasStylesheetValue || stylesheetDiagnostics.length > 0
+    const graphFieldDiagnostics = useMemo(() => resolveGraphFieldDiagnostics(diagnostics), [diagnostics])
     const stylesheetPreview = useMemo(() => {
         return resolveModelStylesheetPreview(
             graphAttrs.model_stylesheet || '',
@@ -148,6 +150,34 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
             flushPendingSave()
         }
     }, [flushPendingSave])
+
+    const renderFieldDiagnostics = (field: string, testId: string) => {
+        const diagnosticsForField = graphFieldDiagnostics[field] || []
+        if (diagnosticsForField.length === 0) {
+            return null
+        }
+        return (
+            <div
+                data-testid={testId}
+                className="rounded-md border border-border/80 bg-muted/20 px-2 py-1"
+            >
+                <div className="space-y-1">
+                    {diagnosticsForField.map((diag: DiagnosticEntry, index: number) => {
+                        const severityClassName = diag.severity === 'error'
+                            ? 'text-destructive'
+                            : diag.severity === 'warning'
+                                ? 'text-amber-700'
+                                : 'text-sky-700'
+                        return (
+                            <p key={`${field}-${diag.rule_id}-${index}`} className={`text-[11px] ${severityClassName}`}>
+                                {diag.message}
+                            </p>
+                        )
+                    })}
+                </div>
+            </div>
+        )
+    }
 
     const inspectorContent = (
         <InspectorScaffold
@@ -258,6 +288,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     {graphAttrErrors.default_fidelity}
                                 </p>
                             )}
+                            {renderFieldDiagnostics('default_fidelity', 'graph-field-diagnostics-default_fidelity')}
                         </div>
                     </div>
                     <button
@@ -393,6 +424,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 <p data-testid="graph-attr-help-retry_target" className="text-[11px] text-muted-foreground">
                                     {GRAPH_ATTR_HELP.retry_target}
                                 </p>
+                                {renderFieldDiagnostics('retry_target', 'graph-field-diagnostics-retry_target')}
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Fallback Retry Target</label>
@@ -404,6 +436,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 <p data-testid="graph-attr-help-fallback_retry_target" className="text-[11px] text-muted-foreground">
                                     {GRAPH_ATTR_HELP.fallback_retry_target}
                                 </p>
+                                {renderFieldDiagnostics('fallback_retry_target', 'graph-field-diagnostics-fallback_retry_target')}
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Stack Child Dotfile</label>

@@ -156,7 +156,7 @@ Status key:
 ### 7.1 Diagnostic Surfaces
 - [x] [7.1-01] Implement centralized validation panel with filtering/sorting.
 - [x] [7.1-02] Implement inline node and edge diagnostic badges.
-- [ ] [7.1-03] Implement field-level diagnostic mapping in inspectors.
+- [x] [7.1-03] Implement field-level diagnostic mapping in inspectors.
 
 ### 7.2 Blocking Rules
 - [ ] [7.2-01] Block run start on error-level diagnostics.
