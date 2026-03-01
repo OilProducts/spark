@@ -132,7 +132,7 @@ Status key:
 - Deferred to `Deferred Tasks` until subgraph/default-scope structures are represented in the frontend flow model and DOT serializer.
 
 ### 6.5 Stylesheet Authoring
-- [ ] [6.5-01] Implement stylesheet editor with syntax highlighting.
+- [x] [6.5-01] Implement stylesheet editor with syntax highlighting.
 - [ ] [6.5-02] Add parse/lint diagnostics for stylesheet grammar and selectors.
 - [ ] [6.5-03] Add selector matching preview and effective per-node value preview.
 - [ ] [6.5-04] Add tests for precedence rendering (node attr > stylesheet > graph default).

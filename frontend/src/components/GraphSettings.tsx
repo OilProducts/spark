@@ -6,6 +6,7 @@ import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
 import { GRAPH_FIDELITY_OPTIONS } from '@/lib/graphAttrValidation'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { InspectorScaffold } from './InspectorScaffold'
+import { StylesheetEditor } from './StylesheetEditor'
 
 interface GraphSettingsProps {
     inline?: boolean
@@ -230,11 +231,12 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                         <div className="space-y-3 rounded-md border border-border/80 bg-background/40 p-3">
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Model Stylesheet</label>
-                                <textarea
-                                    value={graphAttrs.model_stylesheet || ''}
-                                    onChange={(event) => updateGraphAttr('model_stylesheet', event.target.value)}
-                                    className="h-20 w-full resize-none rounded-md border border-input bg-background px-2 py-1 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                />
+                                <div data-testid="graph-model-stylesheet-editor">
+                                    <StylesheetEditor
+                                        value={graphAttrs.model_stylesheet || ''}
+                                        onChange={(value) => updateGraphAttr('model_stylesheet', value)}
+                                    />
+                                </div>
                                 <p data-testid="graph-attr-help-model_stylesheet" className="text-[11px] text-muted-foreground">
                                     {GRAPH_ATTR_HELP.model_stylesheet}
                                 </p>
