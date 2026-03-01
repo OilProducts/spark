@@ -129,7 +129,7 @@ Status key:
 - [x] [6.3-03] Add tests for edge attr serialization and execution-side effect visibility.
 
 ### 6.4 Subgraphs and Default Blocks
-- [ ] [6.4-05] Add round-trip tests preserving subgraph/default-block semantics.
+- Deferred to `Deferred Tasks` until subgraph/default-scope structures are represented in the frontend flow model and DOT serializer.
 
 ### 6.5 Stylesheet Authoring
 - [ ] [6.5-01] Implement stylesheet editor with syntax highlighting.
@@ -562,3 +562,5 @@ Status key:
   Deferred because inherited-versus-explicit visualization depends on subgraph membership and scoped defaults that are currently flattened out by the frontend/API model and serializer.
 - [ ] [6.4-04] Add support for derived class behavior from subgraph labels.
   Deferred because derived class behavior depends on subgraph creation/membership and scoped default infrastructure (`6.4-01` to `6.4-03`) that is not yet modeled in the frontend.
+- [ ] [6.4-05] Add round-trip tests preserving subgraph/default-block semantics.
+  Deferred because the current frontend/API model and serializer flatten subgraph/default scopes, so the test would fail on known model loss instead of catching regressions.
