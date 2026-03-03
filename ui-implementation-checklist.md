@@ -200,6 +200,7 @@ Status key:
 - [x] [8.5-03] Implement plan gate controls (`approve`, `reject`, `request-revision`) with clear state transitions.
 - [x] [8.5-04] Enforce build workflow launch from approved plan state only.
 - [ ] [8.5-05] Implement planning/build failure diagnostics with rerun affordances.
+  - Blocker: Evaluator marked this `needs-human` because current tests and screenshots do not yet prove rendered failure-state diagnostics and rerun interaction behavior.
 - [ ] [8.5-06] Ensure live status/log/artifact surfaces support both planning and build workflows.
 
 ---

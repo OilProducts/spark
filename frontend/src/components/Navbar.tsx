@@ -3,6 +3,12 @@ import { useStore } from "@/store"
 import { buildPipelineStartPayload } from "@/lib/pipelineStartPayload"
 import { Play, Settings2 } from "lucide-react"
 
+type WorkflowFailureDiagnostics = {
+    message: string
+    failedAt: string
+    flowSource: string | null
+}
+
 export function Navbar() {
     const { viewMode, setViewMode, activeFlow, setSelectedRunId } = useStore()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -16,6 +22,7 @@ export function Navbar() {
     const hasValidationWarnings = diagnostics.some((diag) => diag.severity === 'warning')
     const showValidationWarningBanner = hasValidationWarnings && !hasValidationErrors
     const [runStartError, setRunStartError] = useState<string | null>(null)
+    const [lastBuildWorkflowFailure, setLastBuildWorkflowFailure] = useState<WorkflowFailureDiagnostics | null>(null)
     const [runStartGitPolicyWarning, setRunStartGitPolicyWarning] = useState<string | null>(null)
     const runtimeStatus = useStore((state) => state.runtimeStatus)
     const selectedRunId = useStore((state) => state.selectedRunId)
@@ -112,10 +119,16 @@ export function Navbar() {
                 setSelectedRunId(runData.pipeline_id)
             }
 
+            setLastBuildWorkflowFailure(null)
             setViewMode('execution')
         } catch (error) {
             console.error(error)
             setRunStartError(error instanceof Error ? error.message : 'Failed to start pipeline run.')
+            setLastBuildWorkflowFailure({
+                message: error instanceof Error ? error.message : 'Failed to start pipeline run.',
+                failedAt: new Date().toISOString(),
+                flowSource: runInitiationForm.flowSource || null,
+            })
         }
     }
 
@@ -233,6 +246,31 @@ export function Navbar() {
                     >
                         Failed to start run: {runStartError}
                     </p>
+                ) : null}
+                {lastBuildWorkflowFailure ? (
+                    <div
+                        data-testid="build-workflow-failure-diagnostics"
+                        className="max-w-sm rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+                    >
+                        <p className="font-medium">Last build launch failure</p>
+                        <p data-testid="build-workflow-failure-message" className="truncate">
+                            {lastBuildWorkflowFailure.message}
+                        </p>
+                        <p className="truncate">
+                            Flow source: <span className="font-mono">{lastBuildWorkflowFailure.flowSource || 'none'}</span>
+                        </p>
+                        <p>Failed at: {new Date(lastBuildWorkflowFailure.failedAt).toLocaleString()}</p>
+                        <button
+                            data-testid="build-workflow-rerun-button"
+                            onClick={() => {
+                                void runPipeline()
+                            }}
+                            disabled={!activeProjectPath || !activeFlow || hasValidationErrors}
+                            className="mt-1 rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                            Rerun build workflow
+                        </button>
+                    </div>
                 ) : null}
                 <button
                     data-testid="execute-button"

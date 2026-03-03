@@ -28,6 +28,12 @@ const PLAN_STATUS_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {
 const canTransitionPlanStatus = (from: PlanStatus, to: PlanStatus) =>
     from !== to && PLAN_STATUS_TRANSITIONS[from].includes(to)
 
+type WorkflowFailureDiagnostics = {
+    message: string
+    failedAt: string
+    flowSource: string | null
+}
+
 export function ProjectsPanel() {
     const projectRegistry = useStore((state) => state.projectRegistry)
     const projects = Object.values(projectRegistry)
@@ -57,6 +63,7 @@ export function ProjectsPanel() {
     const [projectBranches, setProjectBranches] = useState<Record<string, string | null>>({})
     const [projectSpecEditProposals, setProjectSpecEditProposals] = useState<ProjectSpecEditProposalMap>({})
     const [planGenerationError, setPlanGenerationError] = useState<string | null>(null)
+    const [lastPlanGenerationFailure, setLastPlanGenerationFailure] = useState<WorkflowFailureDiagnostics | null>(null)
     const activeProjectScope = activeProjectPath ? projectScopedWorkspaces[activeProjectPath] : null
     const activeProjectProposalPreview = getProjectSpecEditProposal(projectSpecEditProposals, activeProjectPath)
     const specIsApprovedForPlanning = activeProjectScope?.specStatus === 'approved'
@@ -314,9 +321,16 @@ export function ProjectsPanel() {
                 content: `Launched plan-generation workflow from approved spec ${activeProjectScope.specId}.`,
                 timestamp: new Date().toISOString(),
             })
+            setLastPlanGenerationFailure(null)
             setViewMode('execution')
         } catch (error) {
-            setPlanGenerationError(error instanceof Error ? error.message : 'Failed to launch plan-generation workflow.')
+            const message = error instanceof Error ? error.message : 'Failed to launch plan-generation workflow.'
+            setPlanGenerationError(message)
+            setLastPlanGenerationFailure({
+                message,
+                failedAt: new Date().toISOString(),
+                flowSource: activeFlow || null,
+            })
         }
     }
 
@@ -707,6 +721,34 @@ export function ProjectsPanel() {
                                 <p data-testid="project-plan-generation-error" className="text-[11px] text-destructive">
                                     {planGenerationError}
                                 </p>
+                            ) : null}
+                            {lastPlanGenerationFailure ? (
+                                <div data-testid="project-plan-failure-diagnostics" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+                                    <p className="font-medium">Last planning launch failure</p>
+                                    <p data-testid="project-plan-failure-message">{lastPlanGenerationFailure.message}</p>
+                                    <p>
+                                        Flow source: <span className="font-mono">{lastPlanGenerationFailure.flowSource || "none selected"}</span>
+                                    </p>
+                                    <p>
+                                        Failed at: {formatConversationTimestamp(lastPlanGenerationFailure.failedAt)}
+                                    </p>
+                                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                                        <button
+                                            data-testid="project-plan-generation-rerun-button"
+                                            type="button"
+                                            onClick={() => {
+                                                void onLaunchPlanGenerationWorkflow()
+                                            }}
+                                            disabled={!activeProjectScope?.specId || !specIsApprovedForPlanning || !activeFlow}
+                                            className="rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                            Retry plan-generation workflow
+                                        </button>
+                                        <p className="text-[11px] text-destructive/90">
+                                            Review the launch error, then rerun with the same project-scoped workflow inputs.
+                                        </p>
+                                    </div>
+                                </div>
                             ) : null}
                         </div>
                     )}
