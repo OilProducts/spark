@@ -241,7 +241,8 @@ Status key:
   - Evidence (2026-03-03): Evaluator `pass`; added replay/live-append timeline smoke scenario with count/order assertions and screenshot `frontend/artifacts/ui-smoke/08l-runs-panel-event-timeline-replay-live-append.png`, plus guard coverage in `tests/integration/test_ui_run_event_timeline_panel.py`.
 
 ### 9.5 Artifact Browser
-- [ ] [9.5-01] Add artifact listing and file viewer/download actions for run outputs.
+- [x] [9.5-01] Add artifact listing and file viewer/download actions for run outputs.
+  - Evidence (2026-03-03): Evaluator `pass`; added backend artifact list/file endpoints with traversal guards, plus `RunsPanel` artifact table + view/download UX, covered by `tests/api/test_pipeline_artifact_endpoints.py`, `tests/integration/test_ui_run_artifact_panel.py`, and UI-smoke visual QA `frontend/artifacts/ui-smoke/08m-runs-panel-artifact-browser.png`.
 - [ ] [9.5-02] Add Graphviz render viewer for `/pipelines/{id}/graph`.
 - [ ] [9.5-03] Add graceful handling for missing artifact files and partial runs.
 

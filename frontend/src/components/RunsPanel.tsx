@@ -33,12 +33,29 @@ interface ContextResponse {
     context: Record<string, unknown>
 }
 
+interface ArtifactListEntry {
+    path: string
+    size_bytes: number
+    media_type: string
+    viewable: boolean
+}
+
+interface ArtifactListResponse {
+    pipeline_id: string
+    artifacts: ArtifactListEntry[]
+}
+
 interface CheckpointErrorState {
     message: string
     help: string
 }
 
 interface ContextErrorState {
+    message: string
+    help: string
+}
+
+interface ArtifactErrorState {
     message: string
     help: string
 }
@@ -188,6 +205,25 @@ const contextErrorFromResponse = (status: number, detail: string | null): Contex
         help: detail ? `Backend returned: ${detail}.` : 'Retry, and check backend availability if this keeps failing.',
     }
 }
+
+const artifactErrorFromResponse = (status: number, detail: string | null): ArtifactErrorState => {
+    const normalizedDetail = detail?.toLowerCase()
+    if (status === 404 && normalizedDetail === 'unknown pipeline') {
+        return {
+            message: 'Run is no longer available.',
+            help: 'The selected run could not be found. Refresh run history and pick a different run.',
+        }
+    }
+    return {
+        message: `Unable to load artifacts (HTTP ${status}).`,
+        help: detail ? `Backend returned: ${detail}.` : 'Retry, and check backend availability if this keeps failing.',
+    }
+}
+
+const encodeArtifactPath = (artifactPath: string): string => artifactPath
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
 
 const formatContextValue = (value: unknown): FormattedContextValue => {
     if (value === null) {
@@ -527,6 +563,13 @@ export function RunsPanel() {
     const [contextError, setContextError] = useState<ContextErrorState | null>(null)
     const [contextSearchQuery, setContextSearchQuery] = useState('')
     const [contextCopyStatus, setContextCopyStatus] = useState('')
+    const [artifactData, setArtifactData] = useState<ArtifactListResponse | null>(null)
+    const [isArtifactLoading, setIsArtifactLoading] = useState(false)
+    const [artifactError, setArtifactError] = useState<ArtifactErrorState | null>(null)
+    const [selectedArtifactPath, setSelectedArtifactPath] = useState<string | null>(null)
+    const [artifactViewerPayload, setArtifactViewerPayload] = useState('')
+    const [artifactViewerError, setArtifactViewerError] = useState<string | null>(null)
+    const [isArtifactViewerLoading, setIsArtifactViewerLoading] = useState(false)
     const [timelineEvents, setTimelineEvents] = useState<TimelineEventEntry[]>([])
     const [timelineError, setTimelineError] = useState<string | null>(null)
     const [isTimelineLive, setIsTimelineLive] = useState(false)
@@ -698,6 +741,62 @@ export function RunsPanel() {
         }
     }, [selectedRunSummary])
 
+    const fetchArtifacts = useCallback(async () => {
+        if (!selectedRunSummary) {
+            setArtifactData(null)
+            setArtifactError(null)
+            setIsArtifactLoading(false)
+            return
+        }
+        setIsArtifactLoading(true)
+        setArtifactError(null)
+        try {
+            const res = await fetch(`/pipelines/${encodeURIComponent(selectedRunSummary.run_id)}/artifacts`)
+            if (!res.ok) {
+                let detail: string | null = null
+                try {
+                    const errorBody = await res.json()
+                    detail = asErrorDetail(errorBody)
+                } catch {
+                    detail = null
+                }
+                setArtifactData(null)
+                setArtifactError(artifactErrorFromResponse(res.status, detail))
+                return
+            }
+            const payload = await res.json() as ArtifactListResponse
+            const artifacts = Array.isArray(payload.artifacts)
+                ? payload.artifacts
+                    .map((entry) => {
+                        if (!entry || typeof entry !== 'object') return null
+                        const candidate = entry as Partial<ArtifactListEntry>
+                        const artifactPath = typeof candidate.path === 'string' ? candidate.path.trim() : ''
+                        if (!artifactPath) return null
+                        return {
+                            path: artifactPath,
+                            size_bytes: typeof candidate.size_bytes === 'number' ? candidate.size_bytes : 0,
+                            media_type: typeof candidate.media_type === 'string' ? candidate.media_type : 'application/octet-stream',
+                            viewable: candidate.viewable === true,
+                        } satisfies ArtifactListEntry
+                    })
+                    .filter((entry): entry is ArtifactListEntry => entry !== null)
+                : []
+            setArtifactData({
+                pipeline_id: payload.pipeline_id,
+                artifacts,
+            })
+        } catch (err) {
+            console.error(err)
+            setArtifactData(null)
+            setArtifactError({
+                message: 'Unable to load artifacts.',
+                help: 'Check your network/backend connection and retry.',
+            })
+        } finally {
+            setIsArtifactLoading(false)
+        }
+    }, [selectedRunSummary])
+
     useEffect(() => {
         if (viewMode !== 'runs' || !selectedRunSummary) {
             setCheckpointData(null)
@@ -721,6 +820,24 @@ export function RunsPanel() {
         setContextCopyStatus('')
         void fetchContext()
     }, [viewMode, selectedRunSummary, fetchContext])
+
+    useEffect(() => {
+        if (viewMode !== 'runs' || !selectedRunSummary) {
+            setArtifactData(null)
+            setArtifactError(null)
+            setIsArtifactLoading(false)
+            setSelectedArtifactPath(null)
+            setArtifactViewerPayload('')
+            setArtifactViewerError(null)
+            setIsArtifactViewerLoading(false)
+            return
+        }
+        setSelectedArtifactPath(null)
+        setArtifactViewerPayload('')
+        setArtifactViewerError(null)
+        setIsArtifactViewerLoading(false)
+        void fetchArtifacts()
+    }, [viewMode, selectedRunSummary, fetchArtifacts])
 
     const selectedRunTimelineId = selectedRunSummary?.run_id ?? null
 
@@ -842,6 +959,57 @@ export function RunsPanel() {
             setContextCopyStatus('Copy failed. Clipboard access is unavailable.')
         }
     }, [contextExportPayload, filteredContextRows])
+    const artifactEntries = useMemo(() => {
+        return artifactData?.artifacts || []
+    }, [artifactData])
+    const selectedArtifactEntry = useMemo(() => {
+        if (!selectedArtifactPath) return null
+        return artifactEntries.find((entry) => entry.path === selectedArtifactPath) || null
+    }, [artifactEntries, selectedArtifactPath])
+    const viewArtifact = useCallback(async (entry: ArtifactListEntry) => {
+        if (!selectedRunSummary) {
+            return
+        }
+        setSelectedArtifactPath(entry.path)
+        setArtifactViewerPayload('')
+        setArtifactViewerError(null)
+        if (!entry.viewable) {
+            setArtifactViewerError('Preview unavailable for this artifact type. Use download action.')
+            return
+        }
+        setIsArtifactViewerLoading(true)
+        try {
+            const encodedPath = encodeArtifactPath(entry.path)
+            const res = await fetch(`/pipelines/${encodeURIComponent(selectedRunSummary.run_id)}/artifacts/${encodedPath}`)
+            if (!res.ok) {
+                let detail: string | null = null
+                try {
+                    const errorBody = await res.json()
+                    detail = asErrorDetail(errorBody)
+                } catch {
+                    detail = null
+                }
+                setArtifactViewerError(
+                    detail
+                        ? `Unable to load artifact preview (HTTP ${res.status}): ${detail}.`
+                        : `Unable to load artifact preview (HTTP ${res.status}).`
+                )
+                return
+            }
+            const payload = await res.text()
+            setArtifactViewerPayload(payload)
+        } catch (error) {
+            console.error(error)
+            setArtifactViewerError('Unable to load artifact preview. Check your network/backend connection and retry.')
+        } finally {
+            setIsArtifactViewerLoading(false)
+        }
+    }, [selectedRunSummary])
+    const artifactDownloadHref = useCallback((artifactPath: string) => {
+        if (!selectedRunSummary) return ''
+        const encodedPath = encodeArtifactPath(artifactPath)
+        return `/pipelines/${encodeURIComponent(selectedRunSummary.run_id)}/artifacts/${encodedPath}?download=1`
+    }, [selectedRunSummary])
     const timelineTypeOptions = useMemo(() => {
         return Array.from(new Set(timelineEvents.map((event) => event.type))).sort((left, right) => left.localeCompare(right))
     }, [timelineEvents])
@@ -1176,6 +1344,107 @@ export function RunsPanel() {
                                         )}
                                     </tbody>
                                 </table>
+                            </div>
+                        )}
+                    </div>
+                )}
+                {selectedRunSummary && (
+                    <div data-testid="run-artifact-panel" className="rounded-md border border-border bg-card p-4 shadow-sm">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Artifacts</h3>
+                            <button
+                                onClick={() => {
+                                    void fetchArtifacts()
+                                }}
+                                data-testid="run-artifact-refresh-button"
+                                className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                            >
+                                {isArtifactLoading ? 'Refreshing…' : 'Refresh'}
+                            </button>
+                        </div>
+                        {artifactError && (
+                            <div className="space-y-1 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                                <div data-testid="run-artifact-error">{artifactError.message}</div>
+                                <div data-testid="run-artifact-error-help" className="text-xs text-destructive/90">
+                                    {artifactError.help}
+                                </div>
+                            </div>
+                        )}
+                        {!artifactError && (
+                            <div className="space-y-3">
+                                <div className="overflow-hidden rounded-md border border-border/80">
+                                    <table data-testid="run-artifact-table" className="w-full table-fixed border-collapse text-sm">
+                                        <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                                            <tr>
+                                                <th className="w-1/2 px-3 py-2 font-semibold">Path</th>
+                                                <th className="w-28 px-3 py-2 font-semibold">Type</th>
+                                                <th className="w-28 px-3 py-2 font-semibold">Size</th>
+                                                <th className="px-3 py-2 font-semibold">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {artifactEntries.length > 0 ? (
+                                                artifactEntries.map((artifact) => (
+                                                    <tr key={artifact.path} data-testid="run-artifact-row" className="border-t border-border/70 align-top">
+                                                        <td className="break-all px-3 py-2 font-mono text-xs text-foreground">{artifact.path}</td>
+                                                        <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{artifact.media_type}</td>
+                                                        <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{artifact.size_bytes.toLocaleString()}</td>
+                                                        <td className="px-3 py-2">
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    type="button"
+                                                                    data-testid="run-artifact-view-button"
+                                                                    disabled={!artifact.viewable}
+                                                                    onClick={() => void viewArtifact(artifact)}
+                                                                    className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                                                                >
+                                                                    View
+                                                                </button>
+                                                                <a
+                                                                    data-testid="run-artifact-download-link"
+                                                                    href={artifactDownloadHref(artifact.path) || undefined}
+                                                                    download={artifact.path.split('/').pop() || 'artifact'}
+                                                                    className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                                                                >
+                                                                    Download
+                                                                </a>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                ))
+                                            ) : (
+                                                <tr>
+                                                    <td data-testid="run-artifact-empty" colSpan={4} className="px-3 py-4 text-sm text-muted-foreground">
+                                                        No run artifacts are available yet.
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div data-testid="run-artifact-viewer" className="rounded-md border border-border/80 bg-muted/30 p-3">
+                                    <div className="mb-2 text-xs text-muted-foreground">
+                                        {selectedArtifactEntry ? `Preview: ${selectedArtifactEntry.path}` : 'Select a viewable artifact to preview.'}
+                                    </div>
+                                    {isArtifactViewerLoading && (
+                                        <div data-testid="run-artifact-viewer-loading" className="text-xs text-muted-foreground">
+                                            Loading artifact preview...
+                                        </div>
+                                    )}
+                                    {!isArtifactViewerLoading && artifactViewerError && (
+                                        <div data-testid="run-artifact-viewer-error" className="text-xs text-destructive">
+                                            {artifactViewerError}
+                                        </div>
+                                    )}
+                                    {!isArtifactViewerLoading && !artifactViewerError && artifactViewerPayload && (
+                                        <pre
+                                            data-testid="run-artifact-viewer-payload"
+                                            className="max-h-60 overflow-auto whitespace-pre-wrap rounded border border-border/70 bg-background px-2 py-2 font-mono text-xs text-foreground"
+                                        >
+                                            {artifactViewerPayload}
+                                        </pre>
+                                    )}
+                                </div>
                             </div>
                         )}
                     </div>

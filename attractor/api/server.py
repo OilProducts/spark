@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 from dataclasses import dataclass, field
 import threading
 import uuid
@@ -475,6 +476,86 @@ def _extract_token_usage(run_id: str) -> Optional[int]:
                 index += 1
         index += 1
     return total if total > 0 else None
+
+
+def _ensure_known_pipeline(pipeline_id: str) -> None:
+    active = _get_active_run(pipeline_id)
+    if not active and not _read_run_meta(_run_meta_path(pipeline_id)):
+        raise HTTPException(status_code=404, detail="Unknown pipeline")
+
+
+def _artifact_media_type(path: Path) -> str:
+    guessed, _ = mimetypes.guess_type(path.name)
+    return guessed or "application/octet-stream"
+
+
+def _artifact_is_viewable(*, media_type: str, path: Path) -> bool:
+    if media_type.startswith("text/"):
+        return True
+    if media_type in {"application/json", "application/xml", "image/svg+xml"}:
+        return True
+    return path.suffix.lower() in {".json", ".txt", ".md", ".log", ".dot", ".yaml", ".yml", ".csv"}
+
+
+def _resolve_artifact_path(run_root: Path, artifact_path: str) -> Path:
+    normalized = artifact_path.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Invalid artifact path")
+
+    candidate = Path(normalized)
+    if candidate.is_absolute():
+        raise HTTPException(status_code=400, detail="Invalid artifact path")
+
+    resolved_run_root = run_root.resolve()
+    resolved_target = (resolved_run_root / candidate).resolve()
+    try:
+        resolved_target.relative_to(resolved_run_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid artifact path") from exc
+    return resolved_target
+
+
+def _list_run_output_artifacts(run_root: Path) -> List[Dict[str, object]]:
+    files: Dict[str, Path] = {}
+
+    def _add_file(path: Path) -> None:
+        if not path.is_file():
+            return
+        try:
+            relative_path = path.relative_to(run_root).as_posix()
+        except ValueError:
+            return
+        files[relative_path] = path
+
+    _add_file(run_root / "manifest.json")
+    _add_file(run_root / "checkpoint.json")
+
+    if run_root.exists():
+        for child in run_root.iterdir():
+            if not child.is_dir() or child.name == "artifacts":
+                continue
+            _add_file(child / "prompt.md")
+            _add_file(child / "response.md")
+            _add_file(child / "status.json")
+
+    artifacts_root = run_root / "artifacts"
+    if artifacts_root.exists():
+        for file_path in artifacts_root.rglob("*"):
+            _add_file(file_path)
+
+    entries: List[Dict[str, object]] = []
+    for relative_path in sorted(files):
+        absolute_path = files[relative_path]
+        media_type = _artifact_media_type(absolute_path)
+        entries.append(
+            {
+                "path": relative_path,
+                "size_bytes": absolute_path.stat().st_size,
+                "media_type": media_type,
+                "viewable": _artifact_is_viewable(media_type=media_type, path=absolute_path),
+            }
+        )
+    return entries
 
 
 def _record_run_end(run_id: str, working_directory: str, status: str, last_error: str = "") -> None:
@@ -1510,9 +1591,7 @@ async def get_pipeline(pipeline_id: str):
 
 @app.get("/pipelines/{pipeline_id}/checkpoint")
 async def get_pipeline_checkpoint(pipeline_id: str):
-    active = _get_active_run(pipeline_id)
-    if not active and not _read_run_meta(_run_meta_path(pipeline_id)):
-        raise HTTPException(status_code=404, detail="Unknown pipeline")
+    _ensure_known_pipeline(pipeline_id)
 
     checkpoint = load_checkpoint(_run_root(pipeline_id) / "state.json")
     if checkpoint is None:
@@ -1526,9 +1605,7 @@ async def get_pipeline_checkpoint(pipeline_id: str):
 
 @app.get("/pipelines/{pipeline_id}/context")
 async def get_pipeline_context(pipeline_id: str):
-    active = _get_active_run(pipeline_id)
-    if not active and not _read_run_meta(_run_meta_path(pipeline_id)):
-        raise HTTPException(status_code=404, detail="Unknown pipeline")
+    _ensure_known_pipeline(pipeline_id)
 
     checkpoint = load_checkpoint(_run_root(pipeline_id) / "state.json")
     if checkpoint is None:
@@ -1538,6 +1615,34 @@ async def get_pipeline_context(pipeline_id: str):
         "pipeline_id": pipeline_id,
         "context": dict(checkpoint.context),
     }
+
+
+@app.get("/pipelines/{pipeline_id}/artifacts")
+async def list_pipeline_artifacts(pipeline_id: str):
+    _ensure_known_pipeline(pipeline_id)
+    run_root = _run_root(pipeline_id)
+    return {
+        "pipeline_id": pipeline_id,
+        "artifacts": _list_run_output_artifacts(run_root),
+    }
+
+
+@app.get("/pipelines/{pipeline_id}/artifacts/{artifact_path:path}")
+async def get_pipeline_artifact_file(pipeline_id: str, artifact_path: str, download: bool = False):
+    _ensure_known_pipeline(pipeline_id)
+    run_root = _run_root(pipeline_id)
+    resolved_artifact_path = _resolve_artifact_path(run_root, artifact_path)
+    if not resolved_artifact_path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    media_type = _artifact_media_type(resolved_artifact_path)
+    if download:
+        return FileResponse(
+            resolved_artifact_path,
+            media_type=media_type,
+            filename=resolved_artifact_path.name,
+        )
+    return FileResponse(resolved_artifact_path, media_type=media_type)
 
 
 @app.get("/pipelines/{pipeline_id}/events")

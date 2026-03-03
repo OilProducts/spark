@@ -1106,6 +1106,140 @@ test("run event timeline replays stream history and appends live events for item
   await timelinePanel.screenshot({ path: screenshotPath("08l-runs-panel-event-timeline-replay-live-append.png") })
 })
 
+test("run artifact browser lists run outputs and supports view/download for item 9.5-01", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-artifacts-${Date.now()}`
+  const runId = `run-artifacts-${Date.now()}`
+
+  await page.route("**/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "ArtifactFlow",
+            status: "success",
+            result: "success",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "main",
+            git_commit: "art9501",
+            model: "gpt-5",
+            started_at: "2026-03-03T15:00:00Z",
+            ended_at: "2026-03-03T15:01:00Z",
+            last_error: "",
+            token_usage: 18,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/checkpoint`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        checkpoint: {
+          current_node: "done",
+          completed_nodes: ["start", "plan"],
+          retry_counts: {},
+        },
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/context`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        context: {
+          "graph.goal": "Artifact browser smoke",
+        },
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/artifacts`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        artifacts: [
+          {
+            path: "manifest.json",
+            size_bytes: 120,
+            media_type: "application/json",
+            viewable: true,
+          },
+          {
+            path: "plan/prompt.md",
+            size_bytes: 80,
+            media_type: "text/markdown",
+            viewable: true,
+          },
+          {
+            path: "artifacts/tool_output.bin",
+            size_bytes: 1024,
+            media_type: "application/octet-stream",
+            viewable: false,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/artifacts/**`, async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith(`/pipelines/${runId}/artifacts`)) {
+      await route.fallback()
+      return
+    }
+    if (url.pathname.endsWith("/manifest.json")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ graph_id: "artifact-flow", started_at: "2026-03-03T15:00:00Z" }, null, 2),
+      })
+      return
+    }
+    if (url.pathname.endsWith("/prompt.md")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/markdown",
+        body: "# Prompt\n\nDo the work.",
+      })
+      return
+    }
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Artifact not found" }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  await expect(page.getByTestId("run-artifact-panel")).toBeVisible()
+  await expect(page.getByTestId("run-artifact-row")).toHaveCount(3)
+  const manifestRow = page.getByTestId("run-artifact-row").filter({ hasText: "manifest.json" }).first()
+  await manifestRow.getByTestId("run-artifact-view-button").click()
+  await expect(page.getByTestId("run-artifact-viewer-payload")).toContainText("\"graph_id\": \"artifact-flow\"")
+  await expect(manifestRow.getByTestId("run-artifact-download-link")).toHaveAttribute("href", /download=1/)
+
+  const artifactPanel = page.getByTestId("run-artifact-panel")
+  await artifactPanel.scrollIntoViewIfNeeded()
+  await artifactPanel.screenshot({ path: screenshotPath("08m-runs-panel-artifact-browser.png") })
+})
+
 test("semantic-equivalence save blocks mismatch and confirms no-op round-trip for item 5.3-03", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-semantic-equivalence-${Date.now()}`
   const semanticSaveBodies: string[] = []
