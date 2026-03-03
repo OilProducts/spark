@@ -199,8 +199,8 @@ Status key:
 - Deferred to `Deferred Tasks` until project-scoped plan artifact persistence/retrieval APIs exist.
 - [x] [8.5-03] Implement plan gate controls (`approve`, `reject`, `request-revision`) with clear state transitions.
 - [x] [8.5-04] Enforce build workflow launch from approved plan state only.
-- [ ] [8.5-05] Implement planning/build failure diagnostics with rerun affordances.
-  - Blocker: Evaluator marked this `needs-human` because evidence is still snippet-based and current UI-smoke screenshots do not capture planning/build failure diagnostics with rerun interaction states.
+- [x] [8.5-05] Implement planning/build failure diagnostics with rerun affordances.
+  - Evidence: Evaluator marked this `pass` with UI-smoke visual QA covering enabled/disabled rerun states for planning and build failures (`20a`-`20d` screenshots).
 - [ ] [8.5-06] Ensure live status/log/artifact surfaces support both planning and build workflows.
 
 ---

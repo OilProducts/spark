@@ -39,3 +39,25 @@ def test_navbar_exposes_build_failure_diagnostics_with_rerun_affordance_item_8_5
 
     for snippet in required_snippets:
         assert snippet in navbar_text, f"missing build workflow failure diagnostics/rerun snippet: {snippet}"
+
+
+def test_ui_smoke_covers_planning_and_build_failure_rerun_states_item_8_5_05() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    ui_smoke_text = (repo_root / "frontend" / "e2e" / "ui-smoke.spec.ts").read_text(encoding="utf-8")
+
+    required_snippets = [
+        "planning/build failures show diagnostics and rerun affordances for item 8.5-05",
+        "project-plan-failure-diagnostics",
+        "project-plan-generation-rerun-button",
+        "project-plan-generation-rerun-disabled-reason",
+        "build-workflow-failure-diagnostics",
+        "build-workflow-rerun-button",
+        "build-workflow-rerun-disabled-reason",
+        "20a-plan-failure-rerun-enabled.png",
+        "20b-plan-failure-rerun-disabled.png",
+        "20c-build-failure-rerun-enabled.png",
+        "20d-build-failure-rerun-disabled.png",
+    ]
+
+    for snippet in required_snippets:
+        assert snippet in ui_smoke_text, f"missing item 8.5-05 UI smoke snippet: {snippet}"

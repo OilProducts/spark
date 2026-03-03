@@ -883,3 +883,71 @@ test("stylesheet selector/effective previews render in graph settings for item 6
     .screenshot({ path: screenshotPath("12-stylesheet-precedence-rendering.png") })
   await page.screenshot({ path: screenshotPath("11-stylesheet-selector-effective-preview.png"), fullPage: true })
 })
+
+test("planning/build failures show diagnostics and rerun affordances for item 8.5-05", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-workflow-failure-${Date.now()}`
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+
+  await page.getByTestId("nav-mode-editor").click()
+  const firstFlowButton = page.locator("button").filter({ hasText: ".dot" }).first()
+  await expect(firstFlowButton).toBeVisible()
+  await firstFlowButton.click()
+  await expect(page.getByTestId("top-nav-active-flow")).not.toContainText("No active flow")
+
+  await page.getByTestId("nav-mode-projects").click()
+
+  const specEntrypoint = page.getByTestId("project-spec-entrypoint")
+  await specEntrypoint.getByRole("button").click()
+  await page.getByTestId("project-spec-approve-for-plan-button").click()
+  await expect(page.getByText("Spec status:")).toContainText("approved")
+
+  await page.route("**/api/projects/metadata?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ branch: "main" }),
+    })
+  })
+  await page.route("**/api/flows/*", async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "forced smoke launch failure" }),
+    })
+  })
+
+  await page.getByTestId("project-plan-generation-launch-button").click()
+  await expect(page.getByTestId("project-plan-failure-diagnostics")).toBeVisible()
+  await expect(page.getByTestId("project-plan-failure-message")).toBeVisible()
+  await expect(page.getByTestId("project-plan-generation-rerun-button")).toBeEnabled()
+  await page.screenshot({ path: screenshotPath("20a-plan-failure-rerun-enabled.png"), fullPage: true })
+
+  await page.getByTestId("project-spec-edit-proposal-preview-button").click()
+  await expect(page.getByTestId("project-spec-edit-proposal-preview")).toBeVisible()
+  page.once("dialog", async (dialog) => {
+    await dialog.accept()
+  })
+  await page.getByTestId("project-spec-edit-proposal-apply-button").click()
+  await expect(page.getByText("Spec status:")).toContainText("draft")
+  await expect(page.getByTestId("project-plan-generation-rerun-button")).toBeDisabled()
+  await expect(page.getByTestId("project-plan-generation-rerun-disabled-reason")).toBeVisible()
+  await page.screenshot({ path: screenshotPath("20b-plan-failure-rerun-disabled.png"), fullPage: true })
+
+  const planEntrypoint = page.getByTestId("project-plan-entrypoint")
+  await planEntrypoint.getByRole("button").click()
+  await page.getByTestId("project-plan-approve-button").click()
+
+  await page.getByTestId("execute-button").click()
+  await expect(page.getByTestId("build-workflow-failure-diagnostics")).toBeVisible()
+  await expect(page.getByTestId("build-workflow-failure-message")).toBeVisible()
+  await expect(page.getByTestId("build-workflow-rerun-button")).toBeEnabled()
+  await page.screenshot({ path: screenshotPath("20c-build-failure-rerun-enabled.png"), fullPage: true })
+
+  await page.getByTestId("project-plan-reject-button").click()
+  await expect(page.getByTestId("build-workflow-rerun-button")).toBeDisabled()
+  await expect(page.getByTestId("build-workflow-rerun-disabled-reason")).toBeVisible()
+  await page.screenshot({ path: screenshotPath("20d-build-failure-rerun-disabled.png"), fullPage: true })
+})
