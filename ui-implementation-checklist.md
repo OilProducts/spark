@@ -215,7 +215,8 @@ Status key:
   - Evidence (2026-03-03): Evaluator `pass`; `RunsPanel` now surfaces freshness/stale indicators with refresh wiring, covered by helper + panel integration tests and UI-smoke scenario `08c-runs-panel-refresh-stale-indicator.png`.
 
 ### 9.2 Checkpoint View
-- [ ] [9.2-01] Add checkpoint viewer backed by `/pipelines/{id}/checkpoint`.
+- [x] [9.2-01] Add checkpoint viewer backed by `/pipelines/{id}/checkpoint`.
+  - Evidence (2026-03-03): Evaluator `pass`; `RunsPanel` now fetches and renders checkpoint payloads with refresh control, covered by integration guard tests and UI-smoke screenshot `frontend/artifacts/ui-smoke/08d-runs-panel-checkpoint-viewer.png`.
 - [ ] [9.2-02] Render current node, completed nodes, retry counters, and raw checkpoint payload.
 - [ ] [9.2-03] Add missing/unavailable checkpoint error handling UX.
 

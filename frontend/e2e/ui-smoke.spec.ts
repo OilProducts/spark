@@ -195,6 +195,69 @@ test("run summary metadata refresh and stale-state indicator for item 9.1-02", a
   await page.screenshot({ path: screenshotPath("08c-runs-panel-refresh-stale-indicator.png"), fullPage: true })
 })
 
+test("run checkpoint viewer fetches checkpoint payload for item 9.2-01", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-checkpoint-${Date.now()}`
+  const runId = `run-checkpoint-${Date.now()}`
+  let checkpointFetchCount = 0
+
+  await page.route("**/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "CheckpointFlow",
+            status: "success",
+            result: "success",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "main",
+            git_commit: "cafe123",
+            model: "gpt-5",
+            started_at: "2026-03-03T12:00:00Z",
+            ended_at: "2026-03-03T12:02:00Z",
+            last_error: "",
+            token_usage: 12,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/checkpoint`, async (route) => {
+    checkpointFetchCount += 1
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        checkpoint: {
+          current_node: "implement",
+          completed_nodes: ["start", "plan"],
+          retry_counts: { implement: 1 },
+          timestamp: "2026-03-03T12:01:30Z",
+        },
+      }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  await expect(page.getByTestId("run-checkpoint-panel")).toBeVisible()
+  await expect(page.getByTestId("run-checkpoint-payload")).toContainText("\"pipeline_id\":")
+  await expect(page.getByTestId("run-checkpoint-payload")).toContainText("\"current_node\": \"implement\"")
+  await expect.poll(() => checkpointFetchCount).toBeGreaterThanOrEqual(1)
+
+  await page.getByTestId("run-checkpoint-refresh-button").click()
+  await expect.poll(() => checkpointFetchCount).toBeGreaterThanOrEqual(2)
+  await page.screenshot({ path: screenshotPath("08d-runs-panel-checkpoint-viewer.png"), fullPage: true })
+})
+
 test("semantic-equivalence save blocks mismatch and confirms no-op round-trip for item 5.3-03", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-semantic-equivalence-${Date.now()}`
   const semanticSaveBodies: string[] = []

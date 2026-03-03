@@ -23,6 +23,11 @@ interface RunRecord {
     token_usage?: number | null
 }
 
+interface CheckpointResponse {
+    pipeline_id: string
+    checkpoint: Record<string, unknown>
+}
+
 const STATUS_STYLES: Record<string, string> = {
     running: 'bg-sky-500/15 text-sky-700',
     success: 'bg-green-500/15 text-green-700',
@@ -123,6 +128,9 @@ export function RunsPanel() {
     const [error, setError] = useState<string | null>(null)
     const [now, setNow] = useState(() => Date.now())
     const [lastFetchedAtMs, setLastFetchedAtMs] = useState<number | null>(null)
+    const [checkpointData, setCheckpointData] = useState<CheckpointResponse | null>(null)
+    const [isCheckpointLoading, setIsCheckpointLoading] = useState(false)
+    const [checkpointError, setCheckpointError] = useState<string | null>(null)
     const [metadataStaleAfterMs] = useState(() => {
         const override = (globalThis as typeof globalThis & { __RUNS_METADATA_STALE_AFTER_MS__?: unknown })
             .__RUNS_METADATA_STALE_AFTER_MS__
@@ -211,6 +219,41 @@ export function RunsPanel() {
             : metadataFreshness === 'fresh'
                 ? 'border-green-500/40 bg-green-500/10 text-green-700'
                 : 'border-border bg-muted text-muted-foreground'
+
+    const fetchCheckpoint = useCallback(async () => {
+        if (!selectedRunSummary) {
+            setCheckpointData(null)
+            setCheckpointError(null)
+            setIsCheckpointLoading(false)
+            return
+        }
+        setIsCheckpointLoading(true)
+        setCheckpointError(null)
+        try {
+            const res = await fetch(`/pipelines/${encodeURIComponent(selectedRunSummary.run_id)}/checkpoint`)
+            if (!res.ok) {
+                throw new Error(`failed to load checkpoint: HTTP ${res.status}`)
+            }
+            const payload = await res.json() as CheckpointResponse
+            setCheckpointData(payload)
+        } catch (err) {
+            console.error(err)
+            setCheckpointData(null)
+            setCheckpointError('Unable to load checkpoint')
+        } finally {
+            setIsCheckpointLoading(false)
+        }
+    }, [selectedRunSummary])
+
+    useEffect(() => {
+        if (viewMode !== 'runs' || !selectedRunSummary) {
+            setCheckpointData(null)
+            setCheckpointError(null)
+            setIsCheckpointLoading(false)
+            return
+        }
+        void fetchCheckpoint()
+    }, [viewMode, selectedRunSummary, fetchCheckpoint])
 
     const openRun = (run: RunRecord) => {
         setSelectedRunId(run.run_id)
@@ -320,6 +363,33 @@ export function RunsPanel() {
                             <div data-testid="run-summary-last-error" className="break-all"><span className="font-medium">Last Error:</span> {selectedRunSummary.last_error || '—'}</div>
                             <div data-testid="run-summary-token-usage"><span className="font-medium">Tokens:</span> {typeof selectedRunSummary.token_usage === 'number' ? selectedRunSummary.token_usage.toLocaleString() : '—'}</div>
                         </div>
+                    </div>
+                )}
+                {selectedRunSummary && (
+                    <div data-testid="run-checkpoint-panel" className="rounded-md border border-border bg-card p-4 shadow-sm">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Checkpoint</h3>
+                            <button
+                                onClick={() => void fetchCheckpoint()}
+                                data-testid="run-checkpoint-refresh-button"
+                                className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                            >
+                                {isCheckpointLoading ? 'Refreshing…' : 'Refresh'}
+                            </button>
+                        </div>
+                        {checkpointError && (
+                            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                                {checkpointError}
+                            </div>
+                        )}
+                        {!checkpointError && checkpointData && (
+                            <pre
+                                data-testid="run-checkpoint-payload"
+                                className="max-h-60 overflow-auto rounded-md border border-border/80 bg-muted/40 p-3 text-xs text-foreground"
+                            >
+                                {JSON.stringify(checkpointData, null, 2)}
+                            </pre>
+                        )}
                     </div>
                 )}
 
