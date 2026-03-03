@@ -201,7 +201,8 @@ Status key:
 - [x] [8.5-04] Enforce build workflow launch from approved plan state only.
 - [x] [8.5-05] Implement planning/build failure diagnostics with rerun affordances.
   - Evidence: Evaluator marked this `pass` with UI-smoke visual QA covering enabled/disabled rerun states for planning and build failures (`20a`-`20d` screenshots).
-- [ ] [8.5-06] Ensure live status/log/artifact surfaces support both planning and build workflows.
+- [x] [8.5-06] Ensure live status/log/artifact surfaces support both planning and build workflows.
+  - Evidence: Shared execution-footer status/log/artifact surfaces now serve planning + build launches (`tests/integration/test_ui_plan_build_live_surfaces.py`), with UI-smoke visual evidence in `frontend/artifacts/ui-smoke/06-execution-panel.png`.
 
 ---
 
