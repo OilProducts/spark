@@ -6,6 +6,9 @@ import { Play, Settings2 } from "lucide-react"
 export function Navbar() {
     const { viewMode, setViewMode, activeFlow, setSelectedRunId } = useStore()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
+    const activeProjectScope = useStore((state) =>
+        state.activeProjectPath ? state.projectScopedWorkspaces[state.activeProjectPath] : null
+    )
     const model = useStore((state) => state.model)
     const workingDir = useStore((state) => state.workingDir)
     const diagnostics = useStore((state) => state.diagnostics)
@@ -23,6 +26,7 @@ export function Navbar() {
         backend: 'codex',
         model: model.trim() || null,
     }
+    const buildWorkflowLaunchReady = Boolean(activeProjectScope?.planId) && activeProjectScope?.planStatus === 'approved'
 
     const confirmGitPolicyGate = async () => {
         try {
@@ -58,6 +62,10 @@ export function Navbar() {
         if (!activeProjectPath || !activeFlow || hasValidationErrors) return
 
         setRunStartError(null)
+        if (!buildWorkflowLaunchReady) {
+            setRunStartError('Build workflow launch requires an approved plan state.')
+            return
+        }
         try {
             const gitPolicyGateAllowed = await confirmGitPolicyGate()
             if (!gitPolicyGateAllowed) {
