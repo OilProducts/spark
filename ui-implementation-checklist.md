@@ -223,8 +223,8 @@ Status key:
   - Evidence (2026-03-03): Evaluator `pass`; `RunsPanel` now renders explicit degraded-state UX for missing/unavailable checkpoints with refresh retry, covered by `tests/integration/test_ui_run_checkpoint_panel.py::test_runs_panel_adds_checkpoint_unavailable_error_handling_item_9_2_03` and UI-smoke screenshot `frontend/artifacts/ui-smoke/08e-runs-panel-checkpoint-unavailable.png`.
 
 ### 9.3 Context View
-- [ ] [9.3-01] Add searchable context key/value inspector backed by `/pipelines/{id}/context`.
-  - Blocker (2026-03-03): Evaluator verdict is `fail` because current evidence does not yet prove searchable table row/empty-state visibility and type-aware value rendering coverage in runtime-focused tests.
+- [x] [9.3-01] Add searchable context key/value inspector backed by `/pipelines/{id}/context`.
+  - Evidence (2026-03-03): Evaluator `pass`; context table now exposes searchable key/value rows with runtime-tested type-aware rendering hooks (`run-context-row-type`/`run-context-row-value`) covered by `tests/integration/test_ui_run_context_panel.py` and UI smoke scenario/screenshot `frontend/artifacts/ui-smoke/08f-runs-panel-context-viewer.png`.
 - [ ] [9.3-02] Add typed rendering for scalar and structured values.
 - [ ] [9.3-03] Add copy/export actions for context inspection.
 

@@ -12,6 +12,8 @@ def test_runs_panel_adds_context_viewer_backed_by_context_endpoint_item_9_3_01()
         "data-testid=\"run-context-panel\"",
         "data-testid=\"run-context-search-input\"",
         "data-testid=\"run-context-table\"",
+        "data-testid=\"run-context-row-type\"",
+        "data-testid=\"run-context-row-value\"",
         "data-testid=\"run-context-empty\"",
     ]
 
@@ -25,3 +27,6 @@ def test_ui_smoke_includes_context_viewer_visual_qa_item_9_3_01() -> None:
 
     assert "run context viewer supports searchable key/value inspection for item 9.3-01" in ui_smoke_text
     assert "08f-runs-panel-context-viewer.png" in ui_smoke_text
+    assert "run-context-row-type" in ui_smoke_text
+    assert "run-context-row-value" in ui_smoke_text
+    assert "No context entries match the current search." in ui_smoke_text

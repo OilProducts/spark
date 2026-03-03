@@ -425,10 +425,13 @@ export function RunsPanel() {
         return Object.entries(contextSnapshot)
             .map(([key, value]) => {
                 let renderedValue = ''
+                let valueType = 'object'
                 if (value === null) {
                     renderedValue = 'null'
+                    valueType = 'null'
                 } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
                     renderedValue = String(value)
+                    valueType = typeof value
                 } else {
                     try {
                         renderedValue = JSON.stringify(value) ?? String(value)
@@ -436,7 +439,7 @@ export function RunsPanel() {
                         renderedValue = String(value)
                     }
                 }
-                return { key, renderedValue }
+                return { key, renderedValue, valueType }
             })
             .sort((a, b) => a.key.localeCompare(b.key))
     }, [contextSnapshot])
@@ -645,7 +648,15 @@ export function RunsPanel() {
                                             filteredContextRows.map((row) => (
                                                 <tr key={row.key} data-testid="run-context-row" className="border-t border-border/70 align-top">
                                                     <td className="px-3 py-2 font-mono text-xs text-foreground">{row.key}</td>
-                                                    <td className="px-3 py-2 font-mono text-xs text-foreground break-all">{row.renderedValue}</td>
+                                                    <td className="space-x-2 px-3 py-2 font-mono text-xs text-foreground break-all">
+                                                        <span
+                                                            data-testid="run-context-row-type"
+                                                            className="inline-flex rounded border border-border/80 bg-muted/50 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground"
+                                                        >
+                                                            {row.valueType}
+                                                        </span>
+                                                        <span data-testid="run-context-row-value">{row.renderedValue}</span>
+                                                    </td>
                                                 </tr>
                                             ))
                                         ) : (
