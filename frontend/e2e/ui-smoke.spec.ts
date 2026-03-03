@@ -1,12 +1,42 @@
 import { mkdirSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 
 const testDir = path.dirname(fileURLToPath(import.meta.url))
 const screenshotDir = path.resolve(testDir, "..", "artifacts", "ui-smoke")
+const IMPLEMENT_SPEC_FLOW = "implement-spec.dot"
 
 const screenshotPath = (name: string) => path.join(screenshotDir, name)
+
+async function cloneFlowForSmokeTest(page: Page, clonePrefix: string): Promise<string> {
+  const cloneName = `${clonePrefix}-${Date.now()}.dot`
+  const sourceResponse = await page.request.get(`/api/flows/${encodeURIComponent(IMPLEMENT_SPEC_FLOW)}`)
+  if (!sourceResponse.ok()) {
+    throw new Error(
+      `Failed to load ${IMPLEMENT_SPEC_FLOW} for smoke clone: HTTP ${sourceResponse.status()}`,
+    )
+  }
+
+  const sourcePayload = (await sourceResponse.json()) as { content?: unknown }
+  if (typeof sourcePayload.content !== "string" || sourcePayload.content.length === 0) {
+    throw new Error(`Source flow ${IMPLEMENT_SPEC_FLOW} returned empty content for smoke clone.`)
+  }
+
+  const saveResponse = await page.request.post("/api/flows", {
+    data: { name: cloneName, content: sourcePayload.content },
+  })
+  if (!saveResponse.ok()) {
+    throw new Error(
+      `Failed to persist smoke clone ${cloneName}: HTTP ${saveResponse.status()}`,
+    )
+  }
+  return cloneName
+}
+
+async function deleteFlowAfterSmoke(page: Page, flowName: string): Promise<void> {
+  await page.request.delete(`/api/flows/${encodeURIComponent(flowName)}`)
+}
 
 test.beforeAll(() => {
   mkdirSync(screenshotDir, { recursive: true })
@@ -1822,73 +1852,78 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
   const promptToken = `inline-badges-${Date.now()}`
   const nodeDiagnosticMessage = `Node diagnostic ${Date.now()}`
   const edgeDiagnosticMessage = `Edge diagnostic ${Date.now()}`
+  const flowName = await cloneFlowForSmokeTest(page, "ui-smoke-inline-badges")
   let nodeId: string | null = null
 
-  await page.route("**/preview", async (route) => {
-    const body = route.request().postData() || ""
-    if (body.includes(promptToken) && nodeId) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          status: "ok",
-          diagnostics: [
-            {
-              rule_id: "node_inline_badge",
-              severity: "warning",
-              message: nodeDiagnosticMessage,
-              node_id: nodeId,
-            },
-            {
-              rule_id: "edge_inline_badge",
-              severity: "error",
-              message: edgeDiagnosticMessage,
-              edge: ["start", "ingest_spec"],
-            },
-          ],
-        }),
-      })
-      return
+  try {
+    await page.route("**/preview", async (route) => {
+      const body = route.request().postData() || ""
+      if (body.includes(promptToken) && nodeId) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            status: "ok",
+            diagnostics: [
+              {
+                rule_id: "node_inline_badge",
+                severity: "warning",
+                message: nodeDiagnosticMessage,
+                node_id: nodeId,
+              },
+              {
+                rule_id: "edge_inline_badge",
+                severity: "error",
+                message: edgeDiagnosticMessage,
+                edge: ["start", "ingest_spec"],
+              },
+            ],
+          }),
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    await page.goto("/")
+    await page.getByTestId("project-path-input").fill(projectPath)
+    await page.getByTestId("project-register-button").click()
+    await page.getByTestId("nav-mode-editor").click()
+
+    const flowButton = page.getByRole("button", { name: flowName })
+    await expect(flowButton).toBeVisible()
+    await flowButton.click()
+
+    await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
+    await page.getByRole("button", { name: "Add Node" }).click()
+
+    const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
+    await expect(newNode).toBeVisible()
+    await newNode.click()
+
+    nodeId = await newNode.getAttribute("data-id")
+    if (!nodeId) {
+      throw new Error("Expected the newly added node to expose a data-id for inline diagnostic badge test.")
     }
-    await route.continue()
-  })
 
-  await page.goto("/")
-  await page.getByTestId("project-path-input").fill(projectPath)
-  await page.getByTestId("project-register-button").click()
-  await page.getByTestId("nav-mode-editor").click()
+    const promptField = page.getByPlaceholder("Enter system prompt instructions...")
+    await expect(promptField).toBeVisible()
+    const previewRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/preview") &&
+        request.method() === "POST" &&
+        (request.postData() || "").includes(promptToken),
+    )
 
-  const flowButton = page.getByRole("button", { name: "implement-spec.dot" })
-  await expect(flowButton).toBeVisible()
-  await flowButton.click()
+    await promptField.fill(promptToken)
+    await previewRequest
 
-  await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
-  await page.getByRole("button", { name: "Add Node" }).click()
-
-  const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
-  await expect(newNode).toBeVisible()
-  await newNode.click()
-
-  nodeId = await newNode.getAttribute("data-id")
-  if (!nodeId) {
-    throw new Error("Expected the newly added node to expose a data-id for inline diagnostic badge test.")
+    await expect(page.getByTestId("node-diagnostic-badge")).toContainText("1 Warn")
+    await expect(page.getByTestId("edge-diagnostic-badge").first()).toContainText("1 Error")
+    await page.screenshot({ path: screenshotPath("14-inline-diagnostic-badges.png"), fullPage: true })
+  } finally {
+    await deleteFlowAfterSmoke(page, flowName)
   }
-
-  const promptField = page.getByPlaceholder("Enter system prompt instructions...")
-  await expect(promptField).toBeVisible()
-  const previewRequest = page.waitForRequest(
-    (request) =>
-      request.url().includes("/preview") &&
-      request.method() === "POST" &&
-      (request.postData() || "").includes(promptToken),
-  )
-
-  await promptField.fill(promptToken)
-  await previewRequest
-
-  await expect(page.getByTestId("node-diagnostic-badge")).toContainText("1 Warn")
-  await expect(page.getByTestId("edge-diagnostic-badge").first()).toContainText("1 Error")
-  await page.screenshot({ path: screenshotPath("14-inline-diagnostic-badges.png"), fullPage: true })
 })
 
 test("inspector field-level diagnostics map to matching fields for item 7.1-03", async ({ page }) => {
@@ -1898,96 +1933,101 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
   const edgeDiagnosticMessage = `Condition syntax is invalid ${Date.now()}`
   const nodeFallbackDiagnosticMessage = `Fallback retry target missing ${Date.now()}`
   const edgeFidelityDiagnosticMessage = `Edge fidelity value not recognized ${Date.now()}`
+  const flowName = await cloneFlowForSmokeTest(page, "ui-smoke-field-diags")
   let selectedNodeId: string | null = null
   const selectedEdgeSource = "audit_human_gate"
   const selectedEdgeTarget = "audit_rework"
 
-  await page.route("**/preview", async (route) => {
-    const body = route.request().postData() || ""
-    if (body.includes(promptToken) && selectedNodeId) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          status: "ok",
-          diagnostics: [
-            {
-              rule_id: "prompt_on_llm_nodes",
-              severity: "warning",
-              message: nodeDiagnosticMessage,
-              node_id: selectedNodeId,
-            },
-            {
-              rule_id: "condition_syntax",
-              severity: "error",
-              message: edgeDiagnosticMessage,
-              edge: [selectedEdgeSource, selectedEdgeTarget],
-            },
-            {
-              rule_id: "retry_target_exists",
-              severity: "warning",
-              message: `node '${selectedNodeId}' fallback_retry_target references missing node '${nodeFallbackDiagnosticMessage}'`,
-              node_id: selectedNodeId,
-            },
-            {
-              rule_id: "fidelity_valid",
-              severity: "warning",
-              message: `edge ${selectedEdgeSource}->${selectedEdgeTarget} fidelity '${edgeFidelityDiagnosticMessage}' is not a recognized mode`,
-              edge: [selectedEdgeSource, selectedEdgeTarget],
-            },
-          ],
-        }),
-      })
-      return
+  try {
+    await page.route("**/preview", async (route) => {
+      const body = route.request().postData() || ""
+      if (body.includes(promptToken) && selectedNodeId) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            status: "ok",
+            diagnostics: [
+              {
+                rule_id: "prompt_on_llm_nodes",
+                severity: "warning",
+                message: nodeDiagnosticMessage,
+                node_id: selectedNodeId,
+              },
+              {
+                rule_id: "condition_syntax",
+                severity: "error",
+                message: edgeDiagnosticMessage,
+                edge: [selectedEdgeSource, selectedEdgeTarget],
+              },
+              {
+                rule_id: "retry_target_exists",
+                severity: "warning",
+                message: `node '${selectedNodeId}' fallback_retry_target references missing node '${nodeFallbackDiagnosticMessage}'`,
+                node_id: selectedNodeId,
+              },
+              {
+                rule_id: "fidelity_valid",
+                severity: "warning",
+                message: `edge ${selectedEdgeSource}->${selectedEdgeTarget} fidelity '${edgeFidelityDiagnosticMessage}' is not a recognized mode`,
+                edge: [selectedEdgeSource, selectedEdgeTarget],
+              },
+            ],
+          }),
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    await page.goto("/")
+    await page.getByTestId("project-path-input").fill(projectPath)
+    await page.getByTestId("project-register-button").click()
+    await page.getByTestId("nav-mode-editor").click()
+
+    const flowButton = page.getByRole("button", { name: flowName })
+    await expect(flowButton).toBeVisible()
+    await flowButton.click()
+
+    const promptNode = page
+      .locator(".react-flow__node")
+      .filter({ hasText: "Extract Testable Declarations" })
+      .first()
+    await expect(promptNode).toBeVisible()
+    await promptNode.click()
+    selectedNodeId = await promptNode.getAttribute("data-id")
+    if (!selectedNodeId) {
+      throw new Error("Expected selected node to expose data-id for field diagnostics mapping smoke test.")
     }
-    await route.continue()
-  })
 
-  await page.goto("/")
-  await page.getByTestId("project-path-input").fill(projectPath)
-  await page.getByTestId("project-register-button").click()
-  await page.getByTestId("nav-mode-editor").click()
+    const promptField = page.getByPlaceholder("Enter system prompt instructions...")
+    await expect(promptField).toBeVisible()
 
-  const flowButton = page.getByRole("button", { name: "implement-spec.dot" })
-  await expect(flowButton).toBeVisible()
-  await flowButton.click()
+    const previewRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/preview") &&
+        request.method() === "POST" &&
+        (request.postData() || "").includes(promptToken),
+    )
 
-  const promptNode = page
-    .locator(".react-flow__node")
-    .filter({ hasText: "Extract Testable Declarations" })
-    .first()
-  await expect(promptNode).toBeVisible()
-  await promptNode.click()
-  selectedNodeId = await promptNode.getAttribute("data-id")
-  if (!selectedNodeId) {
-    throw new Error("Expected selected node to expose data-id for field diagnostics mapping smoke test.")
+    await promptField.fill(promptToken)
+    await previewRequest
+
+    await expect(page.getByTestId("node-field-diagnostics-prompt")).toContainText(nodeDiagnosticMessage)
+    await page.getByRole("button", { name: "Show Advanced" }).click()
+    await expect(page.getByTestId("node-field-diagnostics-fallback_retry_target")).toContainText(
+      nodeFallbackDiagnosticMessage,
+    )
+
+    await page
+      .getByRole("group", { name: "Edge from audit_human_gate to audit_rework" })
+      .click({ force: true })
+    await expect(page.getByTestId("edge-field-diagnostics-condition")).toContainText(edgeDiagnosticMessage)
+    await expect(page.getByTestId("edge-field-diagnostics-fidelity")).toContainText(edgeFidelityDiagnosticMessage)
+    await page.screenshot({ path: screenshotPath("15-inspector-field-level-diagnostics.png"), fullPage: true })
+  } finally {
+    await deleteFlowAfterSmoke(page, flowName)
   }
-
-  const promptField = page.getByPlaceholder("Enter system prompt instructions...")
-  await expect(promptField).toBeVisible()
-
-  const previewRequest = page.waitForRequest(
-    (request) =>
-      request.url().includes("/preview") &&
-      request.method() === "POST" &&
-      (request.postData() || "").includes(promptToken),
-  )
-
-  await promptField.fill(promptToken)
-  await previewRequest
-
-  await expect(page.getByTestId("node-field-diagnostics-prompt")).toContainText(nodeDiagnosticMessage)
-  await page.getByRole("button", { name: "Show Advanced" }).click()
-  await expect(page.getByTestId("node-field-diagnostics-fallback_retry_target")).toContainText(
-    nodeFallbackDiagnosticMessage,
-  )
-
-  await page
-    .getByRole("group", { name: "Edge from audit_human_gate to audit_rework" })
-    .click({ force: true })
-  await expect(page.getByTestId("edge-field-diagnostics-condition")).toContainText(edgeDiagnosticMessage)
-  await expect(page.getByTestId("edge-field-diagnostics-fidelity")).toContainText(edgeFidelityDiagnosticMessage)
-  await page.screenshot({ path: screenshotPath("15-inspector-field-level-diagnostics.png"), fullPage: true })
 })
 
 test("validation diagnostics navigate to matching canvas entities for item 7.3-03", async ({ page }) => {
@@ -1997,144 +2037,154 @@ test("validation diagnostics navigate to matching canvas entities for item 7.3-0
   const edgeDiagnosticMessage = `Edge navigation diagnostic ${Date.now()}`
   const edgeSource = "audit_human_gate"
   const edgeTarget = "audit_rework"
+  const flowName = await cloneFlowForSmokeTest(page, "ui-smoke-diagnostic-nav")
   let selectedNodeId: string | null = null
 
-  await page.route("**/preview", async (route) => {
-    const body = route.request().postData() || ""
-    if (body.includes(promptToken) && selectedNodeId) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          status: "ok",
-          diagnostics: [
-            {
-              rule_id: "node_navigation",
-              severity: "warning",
-              message: nodeDiagnosticMessage,
-              node_id: selectedNodeId,
-            },
-            {
-              rule_id: "edge_navigation",
-              severity: "error",
-              message: edgeDiagnosticMessage,
-              edge: [edgeSource, edgeTarget],
-            },
-          ],
-        }),
-      })
-      return
+  try {
+    await page.route("**/preview", async (route) => {
+      const body = route.request().postData() || ""
+      if (body.includes(promptToken) && selectedNodeId) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            status: "ok",
+            diagnostics: [
+              {
+                rule_id: "node_navigation",
+                severity: "warning",
+                message: nodeDiagnosticMessage,
+                node_id: selectedNodeId,
+              },
+              {
+                rule_id: "edge_navigation",
+                severity: "error",
+                message: edgeDiagnosticMessage,
+                edge: [edgeSource, edgeTarget],
+              },
+            ],
+          }),
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    await page.goto("/")
+    await page.getByTestId("project-path-input").fill(projectPath)
+    await page.getByTestId("project-register-button").click()
+    await page.getByTestId("nav-mode-editor").click()
+
+    const flowButton = page.getByRole("button", { name: flowName })
+    await expect(flowButton).toBeVisible()
+    await flowButton.click()
+
+    const promptNode = page
+      .locator(".react-flow__node")
+      .filter({ hasText: "Extract Testable Declarations" })
+      .first()
+    await expect(promptNode).toBeVisible()
+    await promptNode.click()
+    selectedNodeId = await promptNode.getAttribute("data-id")
+    if (!selectedNodeId) {
+      throw new Error("Expected selected node to expose data-id for diagnostic navigation smoke test.")
     }
-    await route.continue()
-  })
 
-  await page.goto("/")
-  await page.getByTestId("project-path-input").fill(projectPath)
-  await page.getByTestId("project-register-button").click()
-  await page.getByTestId("nav-mode-editor").click()
+    const promptField = page.getByPlaceholder("Enter system prompt instructions...")
+    await expect(promptField).toBeVisible()
+    const previewRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/preview") &&
+        request.method() === "POST" &&
+        (request.postData() || "").includes(promptToken),
+    )
+    await promptField.fill(promptToken)
+    await previewRequest
 
-  const flowButton = page.getByRole("button", { name: "implement-spec.dot" })
-  await expect(flowButton).toBeVisible()
-  await flowButton.click()
+    const diagnostics = page.getByTestId("validation-diagnostic-item")
+    await expect(diagnostics.filter({ hasText: nodeDiagnosticMessage })).toHaveCount(1)
+    await expect(diagnostics.filter({ hasText: edgeDiagnosticMessage })).toHaveCount(1)
 
-  const promptNode = page
-    .locator(".react-flow__node")
-    .filter({ hasText: "Extract Testable Declarations" })
-    .first()
-  await expect(promptNode).toBeVisible()
-  await promptNode.click()
-  selectedNodeId = await promptNode.getAttribute("data-id")
-  if (!selectedNodeId) {
-    throw new Error("Expected selected node to expose data-id for diagnostic navigation smoke test.")
+    await diagnostics.filter({ hasText: nodeDiagnosticMessage }).first().click()
+    await expect(page.locator(".react-flow__node.selected")).toHaveCount(1)
+    await expect(page.locator(`.react-flow__node[data-id="${selectedNodeId}"]`)).toHaveClass(/selected/)
+    await expect(page.locator('[data-inspector-scope="node"]')).toBeVisible()
+
+    await diagnostics.filter({ hasText: edgeDiagnosticMessage }).first().click()
+    await expect(page.locator(".react-flow__edge.selected")).toHaveCount(1)
+    await expect(page.locator('[data-inspector-scope="edge"]')).toBeVisible()
+
+    await page.screenshot({ path: screenshotPath("18-diagnostic-navigation-to-canvas.png"), fullPage: true })
+  } finally {
+    await deleteFlowAfterSmoke(page, flowName)
   }
-
-  const promptField = page.getByPlaceholder("Enter system prompt instructions...")
-  await expect(promptField).toBeVisible()
-  const previewRequest = page.waitForRequest(
-    (request) =>
-      request.url().includes("/preview") &&
-      request.method() === "POST" &&
-      (request.postData() || "").includes(promptToken),
-  )
-  await promptField.fill(promptToken)
-  await previewRequest
-
-  const diagnostics = page.getByTestId("validation-diagnostic-item")
-  await expect(diagnostics.filter({ hasText: nodeDiagnosticMessage })).toHaveCount(1)
-  await expect(diagnostics.filter({ hasText: edgeDiagnosticMessage })).toHaveCount(1)
-
-  await diagnostics.filter({ hasText: nodeDiagnosticMessage }).first().click()
-  await expect(page.locator(".react-flow__node.selected")).toHaveCount(1)
-  await expect(page.locator(`.react-flow__node[data-id="${selectedNodeId}"]`)).toHaveClass(/selected/)
-  await expect(page.locator('[data-inspector-scope="node"]')).toBeVisible()
-
-  await diagnostics.filter({ hasText: edgeDiagnosticMessage }).first().click()
-  await expect(page.locator(".react-flow__edge.selected")).toHaveCount(1)
-  await expect(page.locator('[data-inspector-scope="edge"]')).toBeVisible()
-
-  await page.screenshot({ path: screenshotPath("18-diagnostic-navigation-to-canvas.png"), fullPage: true })
 })
 
 test("warning-only diagnostics still allow execute with explicit banner for item 7.2-02", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-warning-only-${Date.now()}`
   const promptToken = `warning-only-${Date.now()}`
   const warningMessage = `Warning-only diagnostic ${Date.now()}`
+  const flowName = await cloneFlowForSmokeTest(page, "ui-smoke-warning-only")
 
-  await page.route("**/preview", async (route) => {
-    const body = route.request().postData() || ""
-    if (body.includes(promptToken)) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          status: "ok",
-          diagnostics: [
-            {
-              rule_id: "warning_only_state",
-              severity: "warning",
-              message: warningMessage,
-            },
-          ],
-        }),
-      })
-      return
-    }
-    await route.continue()
-  })
+  try {
+    await page.route("**/preview", async (route) => {
+      const body = route.request().postData() || ""
+      if (body.includes(promptToken)) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            status: "ok",
+            diagnostics: [
+              {
+                rule_id: "warning_only_state",
+                severity: "warning",
+                message: warningMessage,
+              },
+            ],
+          }),
+        })
+        return
+      }
+      await route.continue()
+    })
 
-  await page.goto("/")
-  await page.getByTestId("project-path-input").fill(projectPath)
-  await page.getByTestId("project-register-button").click()
-  await page.getByTestId("nav-mode-editor").click()
+    await page.goto("/")
+    await page.getByTestId("project-path-input").fill(projectPath)
+    await page.getByTestId("project-register-button").click()
+    await page.getByTestId("nav-mode-editor").click()
 
-  const flowButton = page.getByRole("button", { name: "implement-spec.dot" })
-  await expect(flowButton).toBeVisible()
-  await flowButton.click()
+    const flowButton = page.getByRole("button", { name: flowName })
+    await expect(flowButton).toBeVisible()
+    await flowButton.click()
 
-  const promptNode = page
-    .locator(".react-flow__node")
-    .filter({ hasText: "Extract Testable Declarations" })
-    .first()
-  await expect(promptNode).toBeVisible()
-  await promptNode.click()
+    const promptNode = page
+      .locator(".react-flow__node")
+      .filter({ hasText: "Extract Testable Declarations" })
+      .first()
+    await expect(promptNode).toBeVisible()
+    await promptNode.click()
 
-  const promptField = page.getByPlaceholder("Enter system prompt instructions...")
-  await expect(promptField).toBeVisible()
+    const promptField = page.getByPlaceholder("Enter system prompt instructions...")
+    await expect(promptField).toBeVisible()
 
-  const previewRequest = page.waitForRequest(
-    (request) =>
-      request.url().includes("/preview") &&
-      request.method() === "POST" &&
-      (request.postData() || "").includes(promptToken),
-  )
+    const previewRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/preview") &&
+        request.method() === "POST" &&
+        (request.postData() || "").includes(promptToken),
+    )
 
-  await promptField.fill(promptToken)
-  await previewRequest
+    await promptField.fill(promptToken)
+    await previewRequest
 
-  await expect(page.getByTestId("execute-button")).toBeEnabled()
-  await expect(page.getByTestId("execute-warning-banner")).toBeVisible()
-  await expect(page.getByTestId("execute-warning-banner")).toContainText("Warnings present; run allowed.")
-  await page.screenshot({ path: screenshotPath("16-warning-only-execute-banner.png"), fullPage: true })
+    await expect(page.getByTestId("execute-button")).toBeEnabled()
+    await expect(page.getByTestId("execute-warning-banner")).toBeVisible()
+    await expect(page.getByTestId("execute-warning-banner")).toContainText("Warnings present; run allowed.")
+    await page.screenshot({ path: screenshotPath("16-warning-only-execute-banner.png"), fullPage: true })
+  } finally {
+    await deleteFlowAfterSmoke(page, flowName)
+  }
 })
 
 test("diagnostics transitions toggle execute blocking and warning state for item 7.2-03", async ({ page }) => {
@@ -2142,109 +2192,114 @@ test("diagnostics transitions toggle execute blocking and warning state for item
   const errorToken = `diagnostic-error-${Date.now()}`
   const warningToken = `diagnostic-warning-${Date.now()}`
   const cleanToken = `diagnostic-clean-${Date.now()}`
+  const flowName = await cloneFlowForSmokeTest(page, "ui-smoke-diagnostic-transition")
 
-  await page.route("**/preview", async (route) => {
-    const body = route.request().postData() || ""
-    if (body.includes(errorToken)) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          status: "ok",
-          diagnostics: [
-            {
-              rule_id: "blocking_error_transition",
-              severity: "error",
-              message: "Transition error diagnostic",
-            },
-            {
-              rule_id: "warning_with_error_transition",
-              severity: "warning",
-              message: "Transition warning diagnostic",
-            },
-          ],
-        }),
-      })
-      return
-    }
-    if (body.includes(warningToken)) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          status: "ok",
-          diagnostics: [
-            {
-              rule_id: "warning_only_transition",
-              severity: "warning",
-              message: "Transition warning diagnostic",
-            },
-          ],
-        }),
-      })
-      return
-    }
-    if (body.includes(cleanToken)) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          status: "ok",
-          diagnostics: [],
-        }),
-      })
-      return
-    }
-    await route.continue()
-  })
+  try {
+    await page.route("**/preview", async (route) => {
+      const body = route.request().postData() || ""
+      if (body.includes(errorToken)) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            status: "ok",
+            diagnostics: [
+              {
+                rule_id: "blocking_error_transition",
+                severity: "error",
+                message: "Transition error diagnostic",
+              },
+              {
+                rule_id: "warning_with_error_transition",
+                severity: "warning",
+                message: "Transition warning diagnostic",
+              },
+            ],
+          }),
+        })
+        return
+      }
+      if (body.includes(warningToken)) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            status: "ok",
+            diagnostics: [
+              {
+                rule_id: "warning_only_transition",
+                severity: "warning",
+                message: "Transition warning diagnostic",
+              },
+            ],
+          }),
+        })
+        return
+      }
+      if (body.includes(cleanToken)) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            status: "ok",
+            diagnostics: [],
+          }),
+        })
+        return
+      }
+      await route.continue()
+    })
 
-  await page.goto("/")
-  await page.getByTestId("project-path-input").fill(projectPath)
-  await page.getByTestId("project-register-button").click()
-  await page.getByTestId("nav-mode-editor").click()
+    await page.goto("/")
+    await page.getByTestId("project-path-input").fill(projectPath)
+    await page.getByTestId("project-register-button").click()
+    await page.getByTestId("nav-mode-editor").click()
 
-  const flowButton = page.getByRole("button", { name: "implement-spec.dot" })
-  await expect(flowButton).toBeVisible()
-  await flowButton.click()
+    const flowButton = page.getByRole("button", { name: flowName })
+    await expect(flowButton).toBeVisible()
+    await flowButton.click()
 
-  const promptNode = page
-    .locator(".react-flow__node")
-    .filter({ hasText: "Extract Testable Declarations" })
-    .first()
-  await expect(promptNode).toBeVisible()
-  await promptNode.click()
+    const promptNode = page
+      .locator(".react-flow__node")
+      .filter({ hasText: "Extract Testable Declarations" })
+      .first()
+    await expect(promptNode).toBeVisible()
+    await promptNode.click()
 
-  const promptField = page.getByPlaceholder("Enter system prompt instructions...")
-  await expect(promptField).toBeVisible()
+    const promptField = page.getByPlaceholder("Enter system prompt instructions...")
+    await expect(promptField).toBeVisible()
 
-  const waitForPreviewToken = (token: string) =>
-    page.waitForRequest(
-      (request) =>
-        request.url().includes("/preview") &&
-        request.method() === "POST" &&
-        (request.postData() || "").includes(token),
-    )
+    const waitForPreviewToken = (token: string) =>
+      page.waitForRequest(
+        (request) =>
+          request.url().includes("/preview") &&
+          request.method() === "POST" &&
+          (request.postData() || "").includes(token),
+      )
 
-  const errorPreviewRequest = waitForPreviewToken(errorToken)
-  await promptField.fill(errorToken)
-  await errorPreviewRequest
-  await expect(page.getByTestId("execute-button")).toBeDisabled()
-  await expect(page.getByTestId("execute-button")).toHaveAttribute("title", "Fix validation errors before running.")
-  await expect(page.getByTestId("execute-warning-banner")).toHaveCount(0)
+    const errorPreviewRequest = waitForPreviewToken(errorToken)
+    await promptField.fill(errorToken)
+    await errorPreviewRequest
+    await expect(page.getByTestId("execute-button")).toBeDisabled()
+    await expect(page.getByTestId("execute-button")).toHaveAttribute("title", "Fix validation errors before running.")
+    await expect(page.getByTestId("execute-warning-banner")).toHaveCount(0)
 
-  const warningPreviewRequest = waitForPreviewToken(warningToken)
-  await promptField.fill(warningToken)
-  await warningPreviewRequest
-  await expect(page.getByTestId("execute-button")).toBeEnabled()
-  await expect(page.getByTestId("execute-warning-banner")).toBeVisible()
-  await expect(page.getByTestId("execute-warning-banner")).toContainText("Warnings present; run allowed.")
-  await page.screenshot({ path: screenshotPath("17-diagnostic-transition-execute-state.png"), fullPage: true })
+    const warningPreviewRequest = waitForPreviewToken(warningToken)
+    await promptField.fill(warningToken)
+    await warningPreviewRequest
+    await expect(page.getByTestId("execute-button")).toBeEnabled()
+    await expect(page.getByTestId("execute-warning-banner")).toBeVisible()
+    await expect(page.getByTestId("execute-warning-banner")).toContainText("Warnings present; run allowed.")
+    await page.screenshot({ path: screenshotPath("17-diagnostic-transition-execute-state.png"), fullPage: true })
 
-  const cleanPreviewRequest = waitForPreviewToken(cleanToken)
-  await promptField.fill(cleanToken)
-  await cleanPreviewRequest
-  await expect(page.getByTestId("execute-button")).toBeEnabled()
-  await expect(page.getByTestId("execute-warning-banner")).toHaveCount(0)
+    const cleanPreviewRequest = waitForPreviewToken(cleanToken)
+    await promptField.fill(cleanToken)
+    await cleanPreviewRequest
+    await expect(page.getByTestId("execute-button")).toBeEnabled()
+    await expect(page.getByTestId("execute-warning-banner")).toHaveCount(0)
+  } finally {
+    await deleteFlowAfterSmoke(page, flowName)
+  }
 })
 
 test("stylesheet parse diagnostics render in graph settings for item 6.5-02", async ({ page }) => {
