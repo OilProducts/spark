@@ -73,6 +73,7 @@ export function ProjectsPanel() {
         .filter((project): project is (typeof projects)[number] => Boolean(project))
     const activeConversationHistory = activeProjectScope?.conversationHistory || []
     const activePlanStatus: PlanStatus = activeProjectScope?.planStatus || 'draft'
+    const canRerunPlanGeneration = Boolean(activeProjectScope?.specId) && specIsApprovedForPlanning && Boolean(activeFlow)
 
     useEffect(() => {
         const projectPathsToFetch = projects
@@ -739,11 +740,16 @@ export function ProjectsPanel() {
                                             onClick={() => {
                                                 void onLaunchPlanGenerationWorkflow()
                                             }}
-                                            disabled={!activeProjectScope?.specId || !specIsApprovedForPlanning || !activeFlow}
+                                            disabled={!canRerunPlanGeneration}
                                             className="rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             Retry plan-generation workflow
                                         </button>
+                                        {!canRerunPlanGeneration ? (
+                                            <p data-testid="project-plan-generation-rerun-disabled-reason" className="text-[11px] text-destructive/90">
+                                                Fix launch prerequisites to enable rerun.
+                                            </p>
+                                        ) : null}
                                         <p className="text-[11px] text-destructive/90">
                                             Review the launch error, then rerun with the same project-scoped workflow inputs.
                                         </p>

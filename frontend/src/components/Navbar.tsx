@@ -34,6 +34,8 @@ export function Navbar() {
         model: model.trim() || null,
     }
     const buildWorkflowLaunchReady = Boolean(activeProjectScope?.planId) && activeProjectScope?.planStatus === 'approved'
+    const canRerunBuildWorkflow =
+        Boolean(activeProjectPath) && Boolean(activeFlow) && !hasValidationErrors && buildWorkflowLaunchReady
 
     const confirmGitPolicyGate = async () => {
         try {
@@ -265,11 +267,16 @@ export function Navbar() {
                             onClick={() => {
                                 void runPipeline()
                             }}
-                            disabled={!activeProjectPath || !activeFlow || hasValidationErrors}
+                            disabled={!canRerunBuildWorkflow}
                             className="mt-1 rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                             Rerun build workflow
                         </button>
+                        {!canRerunBuildWorkflow ? (
+                            <p data-testid="build-workflow-rerun-disabled-reason" className="mt-1">
+                                Resolve launch blockers to rerun build.
+                            </p>
+                        ) : null}
                     </div>
                 ) : null}
                 <button

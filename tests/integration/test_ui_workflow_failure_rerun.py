@@ -13,6 +13,8 @@ def test_projects_panel_exposes_plan_failure_diagnostics_with_rerun_affordance_i
         "data-testid=\"project-plan-failure-diagnostics\"",
         "data-testid=\"project-plan-failure-message\"",
         "data-testid=\"project-plan-generation-rerun-button\"",
+        "data-testid=\"project-plan-generation-rerun-disabled-reason\"",
+        "Fix launch prerequisites to enable rerun.",
         "Retry plan-generation workflow",
     ]
 
@@ -30,6 +32,8 @@ def test_navbar_exposes_build_failure_diagnostics_with_rerun_affordance_item_8_5
         "data-testid=\"build-workflow-failure-diagnostics\"",
         "data-testid=\"build-workflow-failure-message\"",
         "data-testid=\"build-workflow-rerun-button\"",
+        "data-testid=\"build-workflow-rerun-disabled-reason\"",
+        "Resolve launch blockers to rerun build.",
         "Rerun build workflow",
     ]
 
