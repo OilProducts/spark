@@ -323,6 +323,9 @@ class RunRecord:
     model: str
     started_at: str
     ended_at: Optional[str] = None
+    project_path: str = ""
+    git_branch: Optional[str] = None
+    git_commit: Optional[str] = None
     last_error: str = ""
     token_usage: Optional[int] = None
 
@@ -336,6 +339,9 @@ class RunRecord:
             "model": self.model,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
+            "project_path": self.project_path,
+            "git_branch": self.git_branch,
+            "git_commit": self.git_commit,
             "last_error": self.last_error,
             "token_usage": self.token_usage,
         }
@@ -351,6 +357,9 @@ class RunRecord:
             model=str(data.get("model", "")),
             started_at=str(data.get("started_at", "")),
             ended_at=data.get("ended_at") if data.get("ended_at") is not None else None,
+            project_path=str(data.get("project_path", "")),
+            git_branch=str(data.get("git_branch")) if data.get("git_branch") is not None else None,
+            git_commit=str(data.get("git_commit")) if data.get("git_commit") is not None else None,
             last_error=str(data.get("last_error", "")),
             token_usage=int(data["token_usage"]) if data.get("token_usage") is not None else None,
         )
@@ -423,6 +432,7 @@ def _normalize_run_status(status: str) -> str:
 
 
 def _record_run_start(run_id: str, flow_name: str, working_directory: str, model: str) -> None:
+    project_path, git_branch, git_commit = _resolve_run_project_git_metadata(working_directory)
     record = RunRecord(
         run_id=run_id,
         flow_name=flow_name,
@@ -431,6 +441,9 @@ def _record_run_start(run_id: str, flow_name: str, working_directory: str, model
         working_directory=working_directory,
         model=model,
         started_at=datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        project_path=project_path,
+        git_branch=git_branch,
+        git_commit=git_commit,
     )
     with RUN_HISTORY_LOCK:
         _write_run_meta(record)
@@ -477,6 +490,7 @@ def _record_run_end(run_id: str, working_directory: str, status: str, last_error
                 working_directory=working_directory,
                 model="",
                 started_at="",
+                project_path=working_directory,
             )
         record.status = normalized_status
         record.result = normalized_status
@@ -1642,6 +1656,42 @@ def _resolve_project_git_branch(directory_path: Path) -> Optional[str]:
 
     branch = completed.stdout.strip()
     return branch or None
+
+
+def _resolve_project_git_commit(directory_path: Path) -> Optional[str]:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(directory_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+    commit = completed.stdout.strip()
+    return commit or None
+
+
+def _resolve_run_project_git_metadata(working_directory: str) -> tuple[str, Optional[str], Optional[str]]:
+    normalized_working_dir = str(Path(working_directory).resolve())
+    try:
+        completed = subprocess.run(
+            ["git", "-C", normalized_working_dir, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return normalized_working_dir, None, None
+
+    project_path = completed.stdout.strip() or normalized_working_dir
+    project_directory = Path(project_path)
+    return (
+        project_path,
+        _resolve_project_git_branch(project_directory),
+        _resolve_project_git_commit(project_directory),
+    )
 
 
 @app.get("/api/projects/metadata")

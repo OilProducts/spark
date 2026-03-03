@@ -8,6 +8,9 @@ interface RunRecord {
     status: string
     result?: string | null
     working_directory: string
+    project_path?: string
+    git_branch?: string | null
+    git_commit?: string | null
     model: string
     started_at: string
     ended_at?: string | null
@@ -157,6 +160,11 @@ export function RunsPanel() {
         return { total, running }
     }, [scopedRuns])
 
+    const selectedRunSummary = useMemo(() => {
+        if (scopedRuns.length === 0) return null
+        return scopedRuns.find((run) => run.run_id === selectedRunId) || scopedRuns[0]
+    }, [scopedRuns, selectedRunId])
+
     const openRun = (run: RunRecord) => {
         setSelectedRunId(run.run_id)
         if (run.flow_name) {
@@ -225,6 +233,28 @@ export function RunsPanel() {
                 {!activeProjectPath && (
                     <div className="rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
                         Select an active project to view run history for that project.
+                    </div>
+                )}
+                {selectedRunSummary && (
+                    <div data-testid="run-summary-panel" className="rounded-md border border-border bg-card p-4 shadow-sm">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Run Summary</h3>
+                            <span className="text-xs text-muted-foreground">{selectedRunSummary.run_id}</span>
+                        </div>
+                        <div className="grid gap-x-6 gap-y-2 text-sm md:grid-cols-2">
+                            <div data-testid="run-summary-status"><span className="font-medium">Status:</span> {STATUS_LABELS[selectedRunSummary.status] || selectedRunSummary.status}</div>
+                            <div data-testid="run-summary-result"><span className="font-medium">Result:</span> {selectedRunSummary.result || '—'}</div>
+                            <div data-testid="run-summary-started-at"><span className="font-medium">Started:</span> {formatTimestamp(selectedRunSummary.started_at)}</div>
+                            <div data-testid="run-summary-ended-at"><span className="font-medium">Ended:</span> {formatTimestamp(selectedRunSummary.ended_at)}</div>
+                            <div data-testid="run-summary-duration"><span className="font-medium">Duration:</span> {formatDuration(selectedRunSummary.started_at, selectedRunSummary.ended_at, selectedRunSummary.status, now)}</div>
+                            <div data-testid="run-summary-model"><span className="font-medium">Model:</span> {selectedRunSummary.model || 'default model'}</div>
+                            <div data-testid="run-summary-working-directory" className="break-all"><span className="font-medium">Working Dir:</span> {selectedRunSummary.working_directory || '—'}</div>
+                            <div data-testid="run-summary-project-path" className="break-all"><span className="font-medium">Project Path:</span> {selectedRunSummary.project_path || selectedRunSummary.working_directory || activeProjectPath || '—'}</div>
+                            <div data-testid="run-summary-git-branch"><span className="font-medium">Git Branch:</span> {selectedRunSummary.git_branch || '—'}</div>
+                            <div data-testid="run-summary-git-commit"><span className="font-medium">Git Commit:</span> {selectedRunSummary.git_commit || '—'}</div>
+                            <div data-testid="run-summary-last-error" className="break-all"><span className="font-medium">Last Error:</span> {selectedRunSummary.last_error || '—'}</div>
+                            <div data-testid="run-summary-token-usage"><span className="font-medium">Tokens:</span> {typeof selectedRunSummary.token_usage === 'number' ? selectedRunSummary.token_usage.toLocaleString() : '—'}</div>
+                        </div>
                     </div>
                 )}
 
