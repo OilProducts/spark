@@ -217,7 +217,8 @@ Status key:
 ### 9.2 Checkpoint View
 - [x] [9.2-01] Add checkpoint viewer backed by `/pipelines/{id}/checkpoint`.
   - Evidence (2026-03-03): Evaluator `pass`; `RunsPanel` now fetches and renders checkpoint payloads with refresh control, covered by integration guard tests and UI-smoke screenshot `frontend/artifacts/ui-smoke/08d-runs-panel-checkpoint-viewer.png`.
-- [ ] [9.2-02] Render current node, completed nodes, retry counters, and raw checkpoint payload.
+- [x] [9.2-02] Render current node, completed nodes, retry counters, and raw checkpoint payload.
+  - Evidence (2026-03-03): Evaluator `pass`; `RunsPanel` now renders checkpoint progress fields (`current_node`, `completed_nodes`, `retry_counts`) above raw payload JSON, covered by integration guard test `test_runs_panel_renders_checkpoint_progress_fields_item_9_2_02` and UI-smoke visual QA in `frontend/artifacts/ui-smoke/08d-runs-panel-checkpoint-viewer.png`.
 - [ ] [9.2-03] Add missing/unavailable checkpoint error handling UX.
 
 ### 9.3 Context View

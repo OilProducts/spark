@@ -28,6 +28,13 @@ interface CheckpointResponse {
     checkpoint: Record<string, unknown>
 }
 
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null
+    }
+    return value as Record<string, unknown>
+}
+
 const STATUS_STYLES: Record<string, string> = {
     running: 'bg-sky-500/15 text-sky-700',
     success: 'bg-green-500/15 text-green-700',
@@ -255,6 +262,32 @@ export function RunsPanel() {
         void fetchCheckpoint()
     }, [viewMode, selectedRunSummary, fetchCheckpoint])
 
+    const checkpointSnapshot = useMemo(() => asRecord(checkpointData?.checkpoint), [checkpointData])
+    const checkpointCurrentNode = useMemo(() => {
+        const currentNode = checkpointSnapshot?.current_node
+        return typeof currentNode === 'string' && currentNode.trim().length > 0 ? currentNode : '—'
+    }, [checkpointSnapshot])
+    const checkpointCompletedNodes = useMemo(() => {
+        const completedNodes = checkpointSnapshot?.completed_nodes
+        if (!Array.isArray(completedNodes)) return '—'
+        const normalized = completedNodes
+            .map((value) => (typeof value === 'string' ? value.trim() : ''))
+            .filter((value) => value.length > 0)
+        return normalized.length > 0 ? normalized.join(', ') : '—'
+    }, [checkpointSnapshot])
+    const checkpointRetryCounters = useMemo(() => {
+        const retryCounts = asRecord(checkpointSnapshot?.retry_counts)
+        if (!retryCounts) return '—'
+        const pairs = Object.entries(retryCounts)
+            .filter(([key]) => key.trim().length > 0)
+            .map(([key, value]) => {
+                if (typeof value === 'number' && Number.isFinite(value)) return `${key}: ${value}`
+                if (typeof value === 'string' || typeof value === 'boolean') return `${key}: ${String(value)}`
+                return `${key}: ${JSON.stringify(value)}`
+            })
+        return pairs.length > 0 ? pairs.join(', ') : '—'
+    }, [checkpointSnapshot])
+
     const openRun = (run: RunRecord) => {
         setSelectedRunId(run.run_id)
         if (run.flow_name) {
@@ -383,12 +416,25 @@ export function RunsPanel() {
                             </div>
                         )}
                         {!checkpointError && checkpointData && (
-                            <pre
-                                data-testid="run-checkpoint-payload"
-                                className="max-h-60 overflow-auto rounded-md border border-border/80 bg-muted/40 p-3 text-xs text-foreground"
-                            >
-                                {JSON.stringify(checkpointData, null, 2)}
-                            </pre>
+                            <div className="space-y-3">
+                                <div className="grid gap-x-6 gap-y-2 text-sm md:grid-cols-3">
+                                    <div data-testid="run-checkpoint-current-node">
+                                        <span className="font-medium">Current Node:</span> {checkpointCurrentNode}
+                                    </div>
+                                    <div data-testid="run-checkpoint-completed-nodes">
+                                        <span className="font-medium">Completed Nodes:</span> {checkpointCompletedNodes}
+                                    </div>
+                                    <div data-testid="run-checkpoint-retry-counters">
+                                        <span className="font-medium">Retry Counters:</span> {checkpointRetryCounters}
+                                    </div>
+                                </div>
+                                <pre
+                                    data-testid="run-checkpoint-payload"
+                                    className="max-h-60 overflow-auto rounded-md border border-border/80 bg-muted/40 p-3 text-xs text-foreground"
+                                >
+                                    {JSON.stringify(checkpointData, null, 2)}
+                                </pre>
+                            </div>
                         )}
                     </div>
                 )}
