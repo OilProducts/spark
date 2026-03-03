@@ -49,6 +49,11 @@ interface FormattedContextValue {
     renderKind: 'scalar' | 'structured'
 }
 
+interface ContextExportEntry {
+    key: string
+    value: unknown
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | null => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
         return null
@@ -147,6 +152,19 @@ const formatContextValue = (value: unknown): FormattedContextValue => {
         renderKind: 'structured',
     }
 }
+
+const buildContextExportPayload = (
+    runId: string,
+    contextEntries: ContextExportEntry[]
+) => JSON.stringify(
+    {
+        pipeline_id: runId,
+        exported_at: new Date().toISOString(),
+        context: Object.fromEntries(contextEntries.map((entry) => [entry.key, entry.value])),
+    },
+    null,
+    2
+)
 
 const STATUS_STYLES: Record<string, string> = {
     running: 'bg-sky-500/15 text-sky-700',
@@ -255,6 +273,7 @@ export function RunsPanel() {
     const [isContextLoading, setIsContextLoading] = useState(false)
     const [contextError, setContextError] = useState<ContextErrorState | null>(null)
     const [contextSearchQuery, setContextSearchQuery] = useState('')
+    const [contextCopyStatus, setContextCopyStatus] = useState('')
     const [metadataStaleAfterMs] = useState(() => {
         const override = (globalThis as typeof globalThis & { __RUNS_METADATA_STALE_AFTER_MS__?: unknown })
             .__RUNS_METADATA_STALE_AFTER_MS__
@@ -434,9 +453,11 @@ export function RunsPanel() {
             setContextError(null)
             setIsContextLoading(false)
             setContextSearchQuery('')
+            setContextCopyStatus('')
             return
         }
         setContextSearchQuery('')
+        setContextCopyStatus('')
         void fetchContext()
     }, [viewMode, selectedRunSummary, fetchContext])
 
@@ -471,7 +492,7 @@ export function RunsPanel() {
         return Object.entries(contextSnapshot)
             .map(([key, value]) => {
                 const formatted = formatContextValue(value)
-                return { key, ...formatted }
+                return { key, rawValue: value, ...formatted }
             })
             .sort((a, b) => a.key.localeCompare(b.key))
     }, [contextSnapshot])
@@ -483,6 +504,30 @@ export function RunsPanel() {
             || row.renderedValue.toLowerCase().includes(normalizedQuery)
         ))
     }, [contextRows, contextSearchQuery])
+    const contextExportPayload = useMemo(() => {
+        if (!selectedRunSummary) return ''
+        return buildContextExportPayload(
+            selectedRunSummary.run_id,
+            filteredContextRows.map((row) => ({ key: row.key, value: row.rawValue }))
+        )
+    }, [selectedRunSummary, filteredContextRows])
+    const contextExportHref = useMemo(() => {
+        if (!contextExportPayload) return ''
+        return `data:application/json;charset=utf-8,${encodeURIComponent(contextExportPayload)}`
+    }, [contextExportPayload])
+    const copyContextToClipboard = useCallback(async () => {
+        if (!contextExportPayload || filteredContextRows.length === 0) {
+            setContextCopyStatus('No context entries available to copy.')
+            return
+        }
+        try {
+            await window.navigator.clipboard.writeText(contextExportPayload)
+            setContextCopyStatus('Filtered context copied.')
+        } catch (error) {
+            console.error(error)
+            setContextCopyStatus('Copy failed. Clipboard access is unavailable.')
+        }
+    }, [contextExportPayload, filteredContextRows])
 
     const openRun = (run: RunRecord) => {
         setSelectedRunId(run.run_id)
@@ -641,14 +686,49 @@ export function RunsPanel() {
                     <div data-testid="run-context-panel" className="rounded-md border border-border bg-card p-4 shadow-sm">
                         <div className="mb-3 flex items-center justify-between gap-3">
                             <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Context</h3>
-                            <button
-                                onClick={() => void fetchContext()}
-                                data-testid="run-context-refresh-button"
-                                className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
-                            >
-                                {isContextLoading ? 'Refreshing…' : 'Refresh'}
-                            </button>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => {
+                                        setContextCopyStatus('')
+                                        void fetchContext()
+                                    }}
+                                    data-testid="run-context-refresh-button"
+                                    className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                                >
+                                    {isContextLoading ? 'Refreshing…' : 'Refresh'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void copyContextToClipboard()}
+                                    data-testid="run-context-copy-button"
+                                    className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                                >
+                                    Copy JSON
+                                </button>
+                                <a
+                                    data-testid="run-context-export-button"
+                                    href={contextExportHref || undefined}
+                                    download={`run-context-${selectedRunSummary.run_id}.json`}
+                                    onClick={(event) => {
+                                        if (!contextExportHref) {
+                                            event.preventDefault()
+                                        }
+                                    }}
+                                    className={`inline-flex h-7 items-center rounded-md border px-2 text-[11px] font-medium ${
+                                        contextExportHref
+                                            ? 'border-border text-muted-foreground hover:text-foreground'
+                                            : 'cursor-not-allowed border-border/60 text-muted-foreground/50'
+                                    }`}
+                                >
+                                    Export JSON
+                                </a>
+                            </div>
                         </div>
+                        {contextCopyStatus && (
+                            <div data-testid="run-context-copy-status" className="mb-3 text-xs text-muted-foreground">
+                                {contextCopyStatus}
+                            </div>
+                        )}
                         <div className="mb-3">
                             <input
                                 value={contextSearchQuery}

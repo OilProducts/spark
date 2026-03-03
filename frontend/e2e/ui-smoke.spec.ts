@@ -499,6 +499,98 @@ test("run context viewer renders typed scalar and structured values for item 9.3
   await page.screenshot({ path: screenshotPath("08g-runs-panel-context-typed-rendering.png"), fullPage: true })
 })
 
+test("run context viewer exposes copy/export actions for item 9.3-03", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-context-copy-export-${Date.now()}`
+  const runId = `run-context-copy-export-${Date.now()}`
+
+  await page.route("**/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "ContextCopyExportFlow",
+            status: "success",
+            result: "success",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "main",
+            git_commit: "copy777",
+            model: "gpt-5",
+            started_at: "2026-03-03T12:30:00Z",
+            ended_at: "2026-03-03T12:31:00Z",
+            last_error: "",
+            token_usage: 31,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/checkpoint`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        checkpoint: {
+          current_node: "context_export",
+          completed_nodes: ["start", "inspect"],
+          retry_counts: {},
+        },
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/context`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        context: {
+          "graph.goal": "Ship copy export",
+          owner: "reviewer",
+          retries: 1,
+        },
+      }),
+    })
+  })
+
+  await page.goto("/")
+  await page.evaluate(() => {
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          ;(globalThis as typeof globalThis & { __copied_context_payload__?: string }).__copied_context_payload__ = value
+        },
+      },
+    })
+  })
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  await expect(page.getByTestId("run-context-panel")).toBeVisible()
+  await expect(page.getByTestId("run-context-copy-button")).toBeVisible()
+  await expect(page.getByTestId("run-context-export-button")).toBeVisible()
+
+  await page.getByTestId("run-context-copy-button").click()
+  await expect(page.getByTestId("run-context-copy-status")).toContainText("Filtered context copied.")
+  await expect
+    .poll(() => page.evaluate(() => (globalThis as typeof globalThis & { __copied_context_payload__?: string }).__copied_context_payload__ || ""))
+    .toContain(`"pipeline_id": "${runId}"`)
+
+  const downloadPromise = page.waitForEvent("download")
+  await page.getByTestId("run-context-export-button").click()
+  const download = await downloadPromise
+  await expect(download.suggestedFilename()).toBe(`run-context-${runId}.json`)
+  await page.screenshot({ path: screenshotPath("08h-runs-panel-context-copy-export.png"), fullPage: true })
+})
+
 test("semantic-equivalence save blocks mismatch and confirms no-op round-trip for item 5.3-03", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-semantic-equivalence-${Date.now()}`
   const semanticSaveBodies: string[] = []
