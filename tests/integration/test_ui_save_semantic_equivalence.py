@@ -14,3 +14,7 @@ def test_ui_no_op_save_paths_enforce_semantic_equivalence_item_5_3_03() -> None:
     assert "expect_semantic_equivalence" in flow_persistence_text
     assert "status === 'semantic_mismatch'" in flow_persistence_text
     assert "{ expectSemanticEquivalence: true }" in editor_text
+    assert "const shouldExpectSemanticEquivalence = nonSelectChanges.length > 0" in editor_text
+    assert "scheduleSave(nextNodes, edges, { expectSemanticEquivalence: true });" in editor_text
+    assert "const expectSemanticEquivalence = rawDotEntryDraftRef.current === rawDotDraft;" in editor_text
+    assert "const saveOptions = expectSemanticEquivalence ? { expectSemanticEquivalence: true } : undefined;" in editor_text

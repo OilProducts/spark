@@ -94,7 +94,7 @@ Status key:
 - [x] [5.3-01] Implement explicit save state indicator (saved/saving/error/conflict).
 - [x] [5.3-02] Surface save failures with actionable remediation and no silent drop.
 - [ ] [5.3-03] Add semantic-equivalence checks for output DOT where user behavior did not change.
-  Blocked: semantic-equivalence enforcement is only wired for legacy normalization saves and lacks generalized no-op save detection with behavioral UI coverage.
+  Blocked: semantic-equivalence checks now cover legacy normalization, position/resize autosaves, and unchanged raw-mode handoff, but behavioral UI tests proving generalized no-op detection across all no-behavior-change save paths are still missing.
 
 ### 5.4 Project-Scoped Context and Isolation
 - [x] [5.4-01] Require an active project for mutating flow edits and run start actions.

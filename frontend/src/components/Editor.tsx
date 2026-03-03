@@ -114,6 +114,9 @@ interface PreviewResponse {
 }
 
 type EditorMode = 'structured' | 'raw'
+type SaveFlowOptions = {
+    expectSemanticEquivalence?: boolean
+}
 
 function normalizeLegacyDot(content: string): string {
     return content.replace(/\blabel=label=/g, 'label=');
@@ -167,7 +170,8 @@ export function Editor() {
     const hydratedRef = useRef(false);
     const previewTimer = useRef<number | null>(null);
     const saveTimer = useRef<number | null>(null);
-    const pendingSaveRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
+    const pendingSaveRef = useRef<{ nodes: Node[]; edges: Edge[]; options?: SaveFlowOptions } | null>(null);
+    const rawDotEntryDraftRef = useRef<string>('');
     const [isDragging, setIsDragging] = useState(false);
     const [editorMode, setEditorMode] = useState<EditorMode>('structured');
     const [rawDotDraft, setRawDotDraft] = useState('');
@@ -197,21 +201,25 @@ export function Editor() {
         });
     }, [setNodes, setSelectedEdgeId, setSelectedNodeId]);
 
-    const saveFlow = useCallback((nextNodes: Node[], nextEdges: Edge[]) => {
+    const saveFlow = useCallback((nextNodes: Node[], nextEdges: Edge[], options?: SaveFlowOptions) => {
         if (!activeProjectPath || !activeFlow) return;
         const dot = generateDot(activeFlow, nextNodes, nextEdges, graphAttrs);
+        if (options) {
+            void saveFlowContent(activeFlow, dot, options);
+            return;
+        }
         void saveFlowContent(activeFlow, dot);
     }, [activeProjectPath, activeFlow, graphAttrs]);
 
-    const scheduleSave = useCallback((nextNodes: Node[], nextEdges: Edge[]) => {
+    const scheduleSave = useCallback((nextNodes: Node[], nextEdges: Edge[], options?: SaveFlowOptions) => {
         if (!activeProjectPath || !activeFlow) return;
-        pendingSaveRef.current = { nodes: nextNodes, edges: nextEdges };
+        pendingSaveRef.current = { nodes: nextNodes, edges: nextEdges, options };
         if (saveTimer.current) {
             window.clearTimeout(saveTimer.current);
         }
         saveTimer.current = window.setTimeout(() => {
             pendingSaveRef.current = null;
-            saveFlow(nextNodes, nextEdges);
+            saveFlow(nextNodes, nextEdges, options);
         }, 250);
     }, [activeProjectPath, activeFlow, saveFlow]);
 
@@ -223,7 +231,7 @@ export function Editor() {
         }
         const pending = pendingSaveRef.current;
         pendingSaveRef.current = null;
-        saveFlow(pending.nodes, pending.edges);
+        saveFlow(pending.nodes, pending.edges, pending.options);
     }, [activeProjectPath, activeFlow, saveFlow]);
 
     const hydrateFromPreview = useCallback(async (preview: PreviewResponse) => {
@@ -344,11 +352,13 @@ export function Editor() {
             setRawDotDraft('');
             setRawHandoffError(null);
             setEditorMode('structured');
+            rawDotEntryDraftRef.current = '';
             return;
         }
         clearDiagnostics();
         setRawHandoffError(null);
         setEditorMode('structured');
+        rawDotEntryDraftRef.current = '';
 
         fetch(`/api/flows/${activeFlow}`)
             .then((res) => res.json())
@@ -442,7 +452,16 @@ export function Editor() {
             });
 
             if (shouldSave) {
-                scheduleSave(nextNodes, edges);
+                const nonSelectChanges = changes.filter((change) => change.type !== 'select');
+                const shouldExpectSemanticEquivalence = nonSelectChanges.length > 0
+                    && nonSelectChanges.every(
+                        (change) => change.type === 'position' || change.type === 'dimensions'
+                    );
+                if (shouldExpectSemanticEquivalence) {
+                    scheduleSave(nextNodes, edges, { expectSemanticEquivalence: true });
+                } else {
+                    scheduleSave(nextNodes, edges);
+                }
             }
             return nextNodes;
         });
@@ -512,6 +531,7 @@ export function Editor() {
         if (editorMode === 'raw') return;
         flushPendingSave();
         const dot = generateDot(activeFlow, nodes, edges, graphAttrs);
+        rawDotEntryDraftRef.current = dot;
         setRawDotDraft(dot);
         setRawHandoffError(null);
         setEditorMode('raw');
@@ -519,7 +539,9 @@ export function Editor() {
 
     const returnToStructuredMode = useCallback(async () => {
         if (!activeProjectPath || !activeFlow) return;
-        const saved = await saveFlowContent(activeFlow, rawDotDraft);
+        const expectSemanticEquivalence = rawDotEntryDraftRef.current === rawDotDraft;
+        const saveOptions = expectSemanticEquivalence ? { expectSemanticEquivalence: true } : undefined;
+        const saved = await saveFlowContent(activeFlow, rawDotDraft, saveOptions);
         if (!saved) {
             setRawHandoffError(`Safe handoff requires valid DOT. ${saveErrorMessage || 'Fix parse or validation errors before switching modes.'}`);
             return;
@@ -533,6 +555,7 @@ export function Editor() {
                 return;
             }
             setRawHandoffError(null);
+            rawDotEntryDraftRef.current = '';
             setEditorMode('structured');
         } catch {
             setRawHandoffError('Safe handoff requires valid DOT. Failed to parse DOT preview for structured mode.');
