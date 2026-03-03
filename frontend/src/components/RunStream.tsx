@@ -122,6 +122,13 @@ export function RunStream() {
         fetch(`/pipelines/${encodeURIComponent(selectedRunId)}`)
             .then((res) => (res.ok ? res.json() : null))
             .then((data) => {
+                const selectedRunWorkingDirectory = typeof data?.working_directory === 'string' ? data.working_directory : ''
+                const selectedRunInScope = runBelongsToProjectScope(selectedRunWorkingDirectory, activeProjectPath)
+                if (!selectedRunInScope) {
+                    setSelectedRunId(null)
+                    setRuntimeStatus('idle')
+                    return
+                }
                 if (data?.status) {
                     setRuntimeStatus(data.status)
                 }
@@ -245,7 +252,7 @@ export function RunStream() {
         return () => {
             source.close()
         }
-    }, [selectedRunId, addLog, setNodeStatus, clearHumanGate, resetNodeStatuses, setHumanGate, setRuntimeStatus])
+    }, [selectedRunId, activeProjectPath, addLog, setNodeStatus, clearHumanGate, resetNodeStatuses, setHumanGate, setRuntimeStatus, setSelectedRunId])
 
     return (
         <div data-testid="execution-runtime-stream-indicator" className="pointer-events-none fixed right-4 top-16 z-[70]">

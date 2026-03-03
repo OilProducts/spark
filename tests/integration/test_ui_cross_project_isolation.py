@@ -161,3 +161,19 @@ def test_store_canonicalizes_project_paths_to_prevent_scope_alias_leakage_item_4
     assert probe["activeProjectPath"] == "/tmp"
     assert probe["projectRegistryKeys"] == ["/tmp"]
 
+
+def test_run_stream_rejects_selected_run_metadata_outside_active_project_scope_item_4_2_05() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    run_stream_text = (repo_root / "frontend" / "src" / "components" / "RunStream.tsx").read_text(encoding="utf-8")
+
+    required_snippets = [
+        "const selectedRunWorkingDirectory = typeof data?.working_directory === 'string' ? data.working_directory : ''",
+        "const selectedRunInScope = runBelongsToProjectScope(selectedRunWorkingDirectory, activeProjectPath)",
+        "if (!selectedRunInScope) {",
+        "setSelectedRunId(null)",
+        "setRuntimeStatus('idle')",
+        "}, [selectedRunId, activeProjectPath, addLog, setNodeStatus, clearHumanGate, resetNodeStatuses, setHumanGate, setRuntimeStatus, setSelectedRunId])",
+    ]
+
+    for snippet in required_snippets:
+        assert snippet in run_stream_text, f"missing run-stream selected-run scope-guard snippet: {snippet}"
