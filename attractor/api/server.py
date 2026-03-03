@@ -432,6 +432,50 @@ def _normalize_run_status(status: str) -> str:
     return status
 
 
+def _normalize_scope_path(value: str) -> str:
+    trimmed = value.strip()
+    if not trimmed:
+        return ""
+    slash_normalized = re.sub(r"/{2,}", "/", trimmed.replace("\\", "/"))
+    prefix = "/" if slash_normalized.startswith("/") else ""
+    raw_body = slash_normalized[1:] if prefix else slash_normalized
+    parts = [part for part in raw_body.split("/") if part]
+    segments: List[str] = []
+    for part in parts:
+        if part == ".":
+            continue
+        if part == "..":
+            if segments:
+                segments.pop()
+            continue
+        segments.append(part)
+    normalized_body = "/".join(segments)
+    if not normalized_body and prefix:
+        return prefix
+    return f"{prefix}{normalized_body}"
+
+
+def _path_in_scope(candidate_path: str, project_scope_path: str) -> bool:
+    if not candidate_path or not project_scope_path:
+        return False
+    if candidate_path == project_scope_path:
+        return True
+    if project_scope_path == "/":
+        return candidate_path.startswith("/")
+    return candidate_path.startswith(f"{project_scope_path}/")
+
+
+def _run_matches_project_scope(record: RunRecord, project_path: str) -> bool:
+    normalized_scope = _normalize_scope_path(project_path)
+    if not normalized_scope:
+        return True
+    candidate_paths = [
+        _normalize_scope_path(record.project_path),
+        _normalize_scope_path(record.working_directory),
+    ]
+    return any(_path_in_scope(candidate_path, normalized_scope) for candidate_path in candidate_paths)
+
+
 def _record_run_start(run_id: str, flow_name: str, working_directory: str, model: str) -> None:
     project_path, git_branch, git_commit = _resolve_run_project_git_metadata(working_directory)
     record = RunRecord(
@@ -1140,7 +1184,7 @@ async def get_status():
 
 
 @app.get("/runs")
-async def list_runs():
+async def list_runs(project_path: Optional[str] = None):
     if not RUNS_ROOT.exists():
         return {"runs": []}
 
@@ -1200,6 +1244,9 @@ async def list_runs():
 
     def _sort_key(item: RunRecord) -> str:
         return item.started_at or item.ended_at or ""
+
+    if project_path:
+        records = [record for record in records if _run_matches_project_scope(record, project_path)]
 
     records.sort(key=_sort_key, reverse=True)
     return {"runs": [record.to_dict() for record in records]}
