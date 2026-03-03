@@ -35,7 +35,18 @@ SECTION_11_AUTOMATED_LINKS: Dict[str, Tuple[TraceabilityLink, ...]] = {
     "11.3": _automated_links("tests/engine/test_executor.py", "tests/engine/test_routing.py"),
     "11.4": _automated_links("tests/engine/test_retry_goal_gate.py"),
     "11.5": _automated_links("tests/engine/test_retry_policy.py", "tests/engine/test_retry_goal_gate.py"),
-    "11.6": _automated_links("tests/handlers/test_handlers.py"),
+    "11.6": _automated_links(
+        "tests/handlers/test_protocol_contracts.py",
+        "tests/handlers/test_registry_resolution.py",
+        "tests/handlers/test_manager_loop_handler.py",
+        "tests/handlers/test_codergen_handler.py",
+        "tests/handlers/test_wait_human_handler.py",
+        "tests/handlers/test_tool_handler.py",
+        "tests/handlers/test_handler_runner_contracts.py",
+        "tests/handlers/test_parallel_handler.py",
+        "tests/handlers/test_fan_in_handler.py",
+        "tests/handlers/test_builtin_noop_handlers.py",
+    ),
     "11.7": _automated_links(
         "tests/engine/test_context.py",
         "tests/engine/test_checkpointing.py",
@@ -105,4 +116,3 @@ def build_release_gate_traceability_records(spec_text: str) -> Tuple[Traceabilit
         )
 
     return tuple(records)
-

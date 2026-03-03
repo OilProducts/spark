@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
-
-import attractor.api.server as server
-from tests.contracts.frontend.frontend_behavior_runner import assert_frontend_behavior_test_passed
+from tests.contracts.frontend._support.behavior_bridge import assert_frontend_behavior_test_passed
+from tests.contracts.frontend._support.preview_api import preview_pipeline
 
 
 INVALID_STYLESHEET_FLOW = '''
@@ -30,7 +28,7 @@ def test_graph_settings_exposes_stylesheet_parse_lint_feedback_item_6_5_02() -> 
 
 
 def test_preview_exposes_stylesheet_syntax_diagnostics_item_6_5_02() -> None:
-    payload = asyncio.run(server.preview_pipeline(server.PreviewRequest(flow_content=INVALID_STYLESHEET_FLOW)))
+    payload = preview_pipeline(INVALID_STYLESHEET_FLOW)
     diagnostics = payload["diagnostics"]
 
     stylesheet_diags = [diag for diag in diagnostics if diag["rule_id"] == "stylesheet_syntax"]
@@ -39,10 +37,9 @@ def test_preview_exposes_stylesheet_syntax_diagnostics_item_6_5_02() -> None:
 
 
 def test_preview_exposes_stylesheet_syntax_diagnostics_for_whitespace_stylesheet_item_6_5_02() -> None:
-    payload = asyncio.run(server.preview_pipeline(server.PreviewRequest(flow_content=WHITESPACE_STYLESHEET_FLOW)))
+    payload = preview_pipeline(WHITESPACE_STYLESHEET_FLOW)
     diagnostics = payload["diagnostics"]
 
     stylesheet_diags = [diag for diag in diagnostics if diag["rule_id"] == "stylesheet_syntax"]
     assert stylesheet_diags, "whitespace stylesheet should surface stylesheet_syntax diagnostics"
     assert any(diag["severity"] == "error" for diag in stylesheet_diags)
-
