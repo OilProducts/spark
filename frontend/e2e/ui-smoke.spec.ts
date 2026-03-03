@@ -86,6 +86,96 @@ test("primary UI shells render and can be navigated", async ({ page }) => {
   await page.screenshot({ path: screenshotPath("08-runs-panel.png"), fullPage: true })
 })
 
+test("no-op semantic-equivalence save paths send guarded requests for item 5.3-03", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-semantic-equivalence-${Date.now()}`
+  const semanticSaveBodies: string[] = []
+
+  await page.route("**/api/flows", async (route) => {
+    const request = route.request()
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(["semantic.dot"]),
+      })
+      return
+    }
+
+    if (request.method() === "POST") {
+      const body = request.postData() || ""
+      if (body.includes('"expect_semantic_equivalence":true')) {
+        semanticSaveBodies.push(body)
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "saved", name: "semantic.dot" }),
+      })
+      return
+    }
+
+    await route.continue()
+  })
+
+  await page.route("**/api/flows/semantic.dot", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue()
+      return
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        name: "semantic.dot",
+        content: [
+          "digraph semantic {",
+          '  start [shape=Mdiamond, label=label="Start"];',
+          '  done [shape=Msquare, label="Done"];',
+          "  start -> done;",
+          "}",
+        ].join("\n"),
+      }),
+    })
+  })
+
+  await page.route("**/preview", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ok",
+        graph: {
+          nodes: [
+            { id: "start", shape: "Mdiamond", label: "Start" },
+            { id: "done", shape: "Msquare", label: "Done" },
+          ],
+          edges: [{ from: "start", to: "done" }],
+        },
+        diagnostics: [],
+      }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-editor").click()
+
+  const flowButton = page.getByRole("button", { name: "semantic.dot" })
+  await expect(flowButton).toBeVisible()
+  await flowButton.click()
+  await expect(page.getByTestId("canvas-workspace-primary")).toBeVisible()
+  await expect.poll(() => semanticSaveBodies.length).toBeGreaterThanOrEqual(1)
+
+  await page.getByRole("button", { name: "Raw DOT" }).click()
+  await expect(page.getByTestId("raw-dot-editor")).toBeVisible()
+  await page.getByRole("button", { name: "Structured" }).click()
+  await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
+  await expect.poll(() => semanticSaveBodies.length).toBeGreaterThanOrEqual(2)
+  await page.screenshot({ path: screenshotPath("19-semantic-equivalence-noop-save.png"), fullPage: true })
+})
+
 test("prompt edits trigger live preview diagnostics before blur for item 5.1-03", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-live-${Date.now()}`
   const promptToken = `live-prompt-${Date.now()}`

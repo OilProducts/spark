@@ -25,3 +25,12 @@ def test_ui_no_op_save_paths_enforce_semantic_equivalence_item_5_3_03() -> None:
     assert "const save = expectSemanticEquivalence ? saveFlowContentExpectingSemanticEquivalence : saveFlowContent;" in (
         editor_text
     )
+
+
+def test_ui_smoke_exercises_runtime_semantic_equivalence_noop_paths_item_5_3_03() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    smoke_text = (repo_root / "frontend" / "e2e" / "ui-smoke.spec.ts").read_text(encoding="utf-8")
+
+    assert "no-op semantic-equivalence save paths send guarded requests for item 5.3-03" in smoke_text
+    assert '"expect_semantic_equivalence":true' in smoke_text
+    assert "19-semantic-equivalence-noop-save.png" in smoke_text
