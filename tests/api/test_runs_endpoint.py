@@ -42,6 +42,39 @@ def test_list_runs_includes_project_and_git_metadata_fields(
     assert run_payload["git_commit"] == "abc123"
 
 
+def test_list_runs_includes_spec_and_plan_artifact_links_when_available_item_9_6_03(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    run_id = "run-with-artifact-links"
+    runs_root = tmp_path / "runs"
+    monkeypatch.setattr(server, "RUNS_ROOT", runs_root)
+
+    server._write_run_meta(
+        server.RunRecord(
+            run_id=run_id,
+            flow_name="Flow",
+            status="success",
+            result="success",
+            working_directory=str(tmp_path / "work"),
+            model="test-model",
+            started_at="2026-01-01T00:00:00Z",
+            ended_at="2026-01-01T00:01:00Z",
+            project_path=str(tmp_path / "project"),
+            git_branch="main",
+            git_commit="abc123",
+            spec_id="spec-project-1700000000",
+            plan_id="plan-project-1700000000",
+        )
+    )
+
+    payload = asyncio.run(server.list_runs())
+
+    assert len(payload["runs"]) == 1
+    run_payload = payload["runs"][0]
+    assert run_payload["spec_id"] == "spec-project-1700000000"
+    assert run_payload["plan_id"] == "plan-project-1700000000"
+
+
 def test_list_runs_filters_durable_history_by_project_item_9_6_01(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

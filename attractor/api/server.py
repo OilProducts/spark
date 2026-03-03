@@ -327,6 +327,8 @@ class RunRecord:
     project_path: str = ""
     git_branch: Optional[str] = None
     git_commit: Optional[str] = None
+    spec_id: Optional[str] = None
+    plan_id: Optional[str] = None
     last_error: str = ""
     token_usage: Optional[int] = None
 
@@ -343,6 +345,8 @@ class RunRecord:
             "project_path": self.project_path,
             "git_branch": self.git_branch,
             "git_commit": self.git_commit,
+            "spec_id": self.spec_id,
+            "plan_id": self.plan_id,
             "last_error": self.last_error,
             "token_usage": self.token_usage,
         }
@@ -361,6 +365,8 @@ class RunRecord:
             project_path=str(data.get("project_path", "")),
             git_branch=str(data.get("git_branch")) if data.get("git_branch") is not None else None,
             git_commit=str(data.get("git_commit")) if data.get("git_commit") is not None else None,
+            spec_id=str(data.get("spec_id")) if data.get("spec_id") is not None else None,
+            plan_id=str(data.get("plan_id")) if data.get("plan_id") is not None else None,
             last_error=str(data.get("last_error", "")),
             token_usage=int(data["token_usage"]) if data.get("token_usage") is not None else None,
         )
@@ -476,7 +482,14 @@ def _run_matches_project_scope(record: RunRecord, project_path: str) -> bool:
     return any(_path_in_scope(candidate_path, normalized_scope) for candidate_path in candidate_paths)
 
 
-def _record_run_start(run_id: str, flow_name: str, working_directory: str, model: str) -> None:
+def _record_run_start(
+    run_id: str,
+    flow_name: str,
+    working_directory: str,
+    model: str,
+    spec_id: Optional[str] = None,
+    plan_id: Optional[str] = None,
+) -> None:
     project_path, git_branch, git_commit = _resolve_run_project_git_metadata(working_directory)
     record = RunRecord(
         run_id=run_id,
@@ -489,6 +502,8 @@ def _record_run_start(run_id: str, flow_name: str, working_directory: str, model
         project_path=project_path,
         git_branch=git_branch,
         git_commit=git_commit,
+        spec_id=spec_id,
+        plan_id=plan_id,
     )
     with RUN_HISTORY_LOCK:
         _write_run_meta(record)
@@ -710,6 +725,8 @@ class PipelineStartRequest(BaseModel):
     backend: str = "codex"
     model: Optional[str] = None
     flow_name: Optional[str] = None
+    spec_id: Optional[str] = None
+    plan_id: Optional[str] = None
 
 
 class PreviewRequest(BaseModel):
@@ -1506,7 +1523,14 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
     RUNTIME.last_flow_name = flow_name
     RUNTIME.last_run_id = run_id
 
-    _record_run_start(run_id, flow_name, working_dir, display_model)
+    _record_run_start(
+        run_id,
+        flow_name,
+        working_dir,
+        display_model,
+        spec_id=(req.spec_id or "").strip() or None,
+        plan_id=(req.plan_id or "").strip() or None,
+    )
 
     await _publish_run_event(run_id, {"type": "runtime", "status": RUNTIME.status})
 

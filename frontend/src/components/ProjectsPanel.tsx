@@ -299,6 +299,8 @@ export function ProjectsPanel() {
                 workingDirectory: workingDir.trim() || activeProjectPath,
                 backend: 'codex',
                 model: model.trim() || null,
+                specArtifactId: activeProjectScope?.specId || null,
+                planArtifactId: activeProjectScope?.planId || null,
             }
             const startPayload = buildPipelineStartPayload(runInitiationForm, flow.content)
             const runRes = await fetch('/pipelines', {

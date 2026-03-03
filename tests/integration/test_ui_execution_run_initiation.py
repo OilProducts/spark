@@ -147,3 +147,36 @@ def test_run_start_surfaces_git_policy_warning_path_item_8_1_05() -> None:
         assert snippet in navbar_text, f"missing git policy warning run-start snippet: {snippet}"
 
 
+def test_run_initiation_payload_carries_project_spec_plan_linkage_for_traceability_item_9_6_03() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    server_text = (repo_root / "attractor" / "api" / "server.py").read_text(encoding="utf-8")
+    navbar_text = (repo_root / "frontend" / "src" / "components" / "Navbar.tsx").read_text(encoding="utf-8")
+    projects_panel_text = (repo_root / "frontend" / "src" / "components" / "ProjectsPanel.tsx").read_text(encoding="utf-8")
+    payload_builder_text = (repo_root / "frontend" / "src" / "lib" / "pipelineStartPayload.ts").read_text(
+        encoding="utf-8"
+    )
+
+    server_contract_snippets = [
+        "spec_id: Optional[str] = None",
+        "plan_id: Optional[str] = None",
+    ]
+    for snippet in server_contract_snippets:
+        assert snippet in server_text, f"missing traceability request contract snippet: {snippet}"
+
+    payload_builder_snippets = [
+        "specArtifactId: string | null",
+        "planArtifactId: string | null",
+        "spec_id: form.specArtifactId,",
+        "plan_id: form.planArtifactId,",
+    ]
+    for snippet in payload_builder_snippets:
+        assert snippet in payload_builder_text, f"missing payload traceability snippet: {snippet}"
+
+    launcher_snippets = [
+        "specArtifactId: activeProjectScope?.specId || null,",
+        "planArtifactId: activeProjectScope?.planId || null,",
+    ]
+    for snippet in launcher_snippets:
+        assert snippet in navbar_text, f"missing navbar traceability launch snippet: {snippet}"
+        assert snippet in projects_panel_text, f"missing projects traceability launch snippet: {snippet}"
+

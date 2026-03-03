@@ -236,6 +236,48 @@ test("run history rows include project identity and git metadata for item 9.6-02
   await page.screenshot({ path: screenshotPath("08p-runs-panel-run-history-traceability.png"), fullPage: true })
 })
 
+test("run history rows link associated spec and plan artifacts when available for item 9.6-03", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-artifact-links-${Date.now()}`
+  const runId = `run-artifact-links-${Date.now()}`
+
+  await page.route("**/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "TraceabilityLinksFlow",
+            status: "success",
+            result: "success",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "feature/traceability-links",
+            git_commit: "0123456789abcdef",
+            spec_id: "spec-project-1700000000",
+            plan_id: "plan-project-1700000000",
+            model: "gpt-5",
+            started_at: "2026-03-03T12:10:00Z",
+            ended_at: "2026-03-03T12:11:00Z",
+            last_error: "",
+            token_usage: 19,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  await expect(page.getByTestId("run-history-row-spec-artifact-link").first()).toContainText("Spec artifact: spec-project-1700000000")
+  await expect(page.getByTestId("run-history-row-plan-artifact-link").first()).toContainText("Plan artifact: plan-project-1700000000")
+  await page.screenshot({ path: screenshotPath("08q-runs-panel-run-history-spec-plan-links.png"), fullPage: true })
+})
+
 test("run checkpoint viewer fetches checkpoint payload for item 9.2-01", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-runs-checkpoint-${Date.now()}`
   const runId = `run-checkpoint-${Date.now()}`

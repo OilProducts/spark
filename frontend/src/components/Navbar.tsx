@@ -32,6 +32,8 @@ export function Navbar() {
         workingDirectory: workingDir,
         backend: 'codex',
         model: model.trim() || null,
+        specArtifactId: activeProjectScope?.specId || null,
+        planArtifactId: activeProjectScope?.planId || null,
     }
     const buildWorkflowLaunchReady = Boolean(activeProjectScope?.planId) && activeProjectScope?.planStatus === 'approved'
     const canRerunBuildWorkflow =

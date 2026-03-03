@@ -16,6 +16,8 @@ interface RunRecord {
     project_path?: string
     git_branch?: string | null
     git_commit?: string | null
+    spec_id?: string | null
+    plan_id?: string | null
     model: string
     started_at: string
     ended_at?: string | null
@@ -590,6 +592,9 @@ export function RunsPanel() {
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const setViewMode = useStore((state) => state.setViewMode)
     const setActiveFlow = useStore((state) => state.setActiveFlow)
+    const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
+    const setSpecId = useStore((state) => state.setSpecId)
+    const setPlanId = useStore((state) => state.setPlanId)
     const [runs, setRuns] = useState<RunRecord[]>([])
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -1185,6 +1190,22 @@ export function RunsPanel() {
             setActiveFlow(run.flow_name)
         }
         setViewMode('execution')
+    }
+
+    const openRunArtifact = (run: RunRecord, artifactType: 'spec' | 'plan') => {
+        const artifactId = artifactType === 'spec' ? run.spec_id : run.plan_id
+        if (!artifactId) {
+            return
+        }
+        if (run.project_path) {
+            setActiveProjectPath(run.project_path)
+        }
+        if (artifactType === 'spec') {
+            setSpecId(artifactId)
+        } else {
+            setPlanId(artifactId)
+        }
+        setViewMode('projects')
     }
 
     const requestCancel = async (runId: string, currentStatus: string) => {
@@ -1825,6 +1846,28 @@ export function RunsPanel() {
                                                     </span>
                                                     <span data-testid="run-history-row-git-commit">
                                                         Commit: {run.git_commit || '—'}
+                                                    </span>
+                                                    <span data-testid="run-history-row-spec-artifact-link">
+                                                        Spec artifact: {run.spec_id ? (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => openRunArtifact(run, 'spec')}
+                                                                className="font-mono text-primary underline-offset-2 hover:underline"
+                                                            >
+                                                                {run.spec_id}
+                                                            </button>
+                                                        ) : '—'}
+                                                    </span>
+                                                    <span data-testid="run-history-row-plan-artifact-link">
+                                                        Plan artifact: {run.plan_id ? (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => openRunArtifact(run, 'plan')}
+                                                                className="font-mono text-primary underline-offset-2 hover:underline"
+                                                            >
+                                                                {run.plan_id}
+                                                            </button>
+                                                        ) : '—'}
                                                     </span>
                                                 </div>
                                             </div>

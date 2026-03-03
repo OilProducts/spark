@@ -253,7 +253,8 @@ Status key:
   - Evidence (2026-03-03): Evaluator `pass`; `/runs` now supports project-scoped filtering via `project_path` with normalized scope matching against durable run metadata (`project_path`/`working_directory`), covered by `tests/api/test_runs_endpoint.py::test_list_runs_filters_durable_history_by_project_item_9_6_01`.
 - [x] [9.6-02] Include project identity and available Git metadata on run records.
   - Evidence (2026-03-03): Evaluator `pass`; `RunsPanel` run-history rows now render per-record `Project`, `Branch`, and `Commit` metadata with dedicated test hooks, covered by `tests/integration/test_ui_run_history_traceability.py` and UI-smoke visual QA screenshot `frontend/artifacts/ui-smoke/08p-runs-panel-run-history-traceability.png`.
-- [ ] [9.6-03] Link run records to associated spec/plan artifacts when available.
+- [x] [9.6-03] Link run records to associated spec/plan artifacts when available.
+  - Evidence (2026-03-03): Evaluator `pass`; run-start payload and durable run metadata now carry `spec_id`/`plan_id`, and `RunsPanel` run-history rows render clickable spec/plan artifact links, covered by `tests/api/test_runs_endpoint.py`, `tests/integration/test_ui_execution_run_initiation.py`, `tests/integration/test_ui_run_history_traceability.py`, and ui-smoke screenshot `frontend/artifacts/ui-smoke/08q-runs-panel-run-history-spec-plan-links.png`.
 - [ ] [9.6-04] Add audit-focused tests for timestamp completeness and historical reconstruction.
 
 ---

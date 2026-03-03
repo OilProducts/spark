@@ -4,6 +4,8 @@ export interface RunInitiationFormState {
     workingDirectory: string
     backend: string
     model: string | null
+    specArtifactId: string | null
+    planArtifactId: string | null
 }
 
 export interface PipelineStartPayload {
@@ -12,6 +14,8 @@ export interface PipelineStartPayload {
     backend: string
     model: string | null
     flow_name: string | null
+    spec_id: string | null
+    plan_id: string | null
 }
 
 export function buildPipelineStartPayload(
@@ -24,5 +28,7 @@ export function buildPipelineStartPayload(
         backend: form.backend,
         model: form.model,
         flow_name: form.flowSource || null,
+        spec_id: form.specArtifactId,
+        plan_id: form.planArtifactId,
     }
 }
