@@ -1816,6 +1816,17 @@ export function RunsPanel() {
                                                 <div className="text-[11px] text-muted-foreground">
                                                     {run.model || 'default model'} · {run.run_id}
                                                 </div>
+                                                <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                                                    <span data-testid="run-history-row-project-path">
+                                                        Project: {run.project_path || '—'}
+                                                    </span>
+                                                    <span data-testid="run-history-row-git-branch">
+                                                        Branch: {run.git_branch || '—'}
+                                                    </span>
+                                                    <span data-testid="run-history-row-git-commit">
+                                                        Commit: {run.git_commit || '—'}
+                                                    </span>
+                                                </div>
                                             </div>
                                             <span className="text-xs text-muted-foreground">
                                                 {formatTimestamp(run.started_at)}

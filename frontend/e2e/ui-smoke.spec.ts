@@ -195,6 +195,47 @@ test("run summary metadata refresh and stale-state indicator for item 9.1-02", a
   await page.screenshot({ path: screenshotPath("08c-runs-panel-refresh-stale-indicator.png"), fullPage: true })
 })
 
+test("run history rows include project identity and git metadata for item 9.6-02", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-traceability-${Date.now()}`
+  const runId = `run-traceability-${Date.now()}`
+
+  await page.route("**/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "TraceabilityFlow",
+            status: "success",
+            result: "success",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "feature/traceability",
+            git_commit: "fedcba9876543210",
+            model: "gpt-5",
+            started_at: "2026-03-03T12:00:00Z",
+            ended_at: "2026-03-03T12:01:00Z",
+            last_error: "",
+            token_usage: 21,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  await expect(page.getByTestId("run-history-row-project-path").first()).toContainText(`Project: ${projectPath}`)
+  await expect(page.getByTestId("run-history-row-git-branch").first()).toContainText("Branch: feature/traceability")
+  await expect(page.getByTestId("run-history-row-git-commit").first()).toContainText("Commit: fedcba9876543210")
+  await page.screenshot({ path: screenshotPath("08p-runs-panel-run-history-traceability.png"), fullPage: true })
+})
+
 test("run checkpoint viewer fetches checkpoint payload for item 9.2-01", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-runs-checkpoint-${Date.now()}`
   const runId = `run-checkpoint-${Date.now()}`

@@ -251,7 +251,8 @@ Status key:
 ### 9.6 Project Run History and Traceability
 - [x] [9.6-01] Implement durable run history listing filterable by project.
   - Evidence (2026-03-03): Evaluator `pass`; `/runs` now supports project-scoped filtering via `project_path` with normalized scope matching against durable run metadata (`project_path`/`working_directory`), covered by `tests/api/test_runs_endpoint.py::test_list_runs_filters_durable_history_by_project_item_9_6_01`.
-- [ ] [9.6-02] Include project identity and available Git metadata on run records.
+- [x] [9.6-02] Include project identity and available Git metadata on run records.
+  - Evidence (2026-03-03): Evaluator `pass`; `RunsPanel` run-history rows now render per-record `Project`, `Branch`, and `Commit` metadata with dedicated test hooks, covered by `tests/integration/test_ui_run_history_traceability.py` and UI-smoke visual QA screenshot `frontend/artifacts/ui-smoke/08p-runs-panel-run-history-traceability.png`.
 - [ ] [9.6-03] Link run records to associated spec/plan artifacts when available.
 - [ ] [9.6-04] Add audit-focused tests for timestamp completeness and historical reconstruction.
 
