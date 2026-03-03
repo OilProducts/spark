@@ -1,6 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Eye, OctagonX, RefreshCcw } from 'lucide-react'
 import { useStore } from '@/store'
+import {
+    computeRunMetadataFreshness,
+    formatRunMetadataLastUpdated,
+    RUN_METADATA_STALE_AFTER_MS,
+} from '@/lib/runMetadataFreshness'
 
 interface RunRecord {
     run_id: string
@@ -117,8 +122,19 @@ export function RunsPanel() {
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [now, setNow] = useState(() => Date.now())
+    const [lastFetchedAtMs, setLastFetchedAtMs] = useState<number | null>(null)
+    const [metadataStaleAfterMs] = useState(() => {
+        const override = (globalThis as typeof globalThis & { __RUNS_METADATA_STALE_AFTER_MS__?: unknown })
+            .__RUNS_METADATA_STALE_AFTER_MS__
+        return typeof override === 'number' && Number.isFinite(override) && override > 0
+            ? override
+            : RUN_METADATA_STALE_AFTER_MS
+    })
+    const isFetchingRef = useRef(false)
 
-    const fetchRuns = async () => {
+    const fetchRuns = useCallback(async () => {
+        if (isFetchingRef.current) return
+        isFetchingRef.current = true
         setIsLoading(true)
         setError(null)
         try {
@@ -128,18 +144,28 @@ export function RunsPanel() {
             }
             const data = await res.json()
             setRuns(Array.isArray(data?.runs) ? data.runs : [])
+            setLastFetchedAtMs(Date.now())
         } catch (err) {
             console.error(err)
             setError('Unable to load runs')
         } finally {
+            isFetchingRef.current = false
             setIsLoading(false)
         }
-    }
+    }, [])
 
     useEffect(() => {
         if (viewMode !== 'runs') return
-        fetchRuns()
-    }, [viewMode])
+        void fetchRuns()
+    }, [viewMode, fetchRuns])
+
+    useEffect(() => {
+        if (viewMode !== 'runs') return
+        const refreshInterval = window.setInterval(() => {
+            void fetchRuns()
+        }, 15_000)
+        return () => window.clearInterval(refreshInterval)
+    }, [viewMode, fetchRuns])
 
     useEffect(() => {
         if (viewMode !== 'runs') return
@@ -164,6 +190,27 @@ export function RunsPanel() {
         if (scopedRuns.length === 0) return null
         return scopedRuns.find((run) => run.run_id === selectedRunId) || scopedRuns[0]
     }, [scopedRuns, selectedRunId])
+
+    const metadataFreshness = computeRunMetadataFreshness({
+        isLoading,
+        lastFetchedAtMs,
+        nowMs: now,
+        staleAfterMs: metadataStaleAfterMs,
+    })
+    const metadataFreshnessLabel =
+        metadataFreshness === 'refreshing'
+            ? 'Refreshing'
+            : metadataFreshness === 'stale'
+                ? 'Stale'
+                : metadataFreshness === 'fresh'
+                    ? 'Fresh'
+                    : 'Never'
+    const metadataFreshnessStyle =
+        metadataFreshness === 'stale'
+            ? 'border-amber-500/40 bg-amber-500/10 text-amber-700'
+            : metadataFreshness === 'fresh'
+                ? 'border-green-500/40 bg-green-500/10 text-green-700'
+                : 'border-border bg-muted text-muted-foreground'
 
     const openRun = (run: RunRecord) => {
         setSelectedRunId(run.run_id)
@@ -217,13 +264,30 @@ export function RunsPanel() {
                         </p>
                     </div>
                     <button
-                        onClick={fetchRuns}
+                        onClick={() => void fetchRuns()}
+                        data-testid="runs-refresh-button"
                         className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
                     >
                         <RefreshCcw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
                         Refresh
                     </button>
                 </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span
+                        data-testid="run-metadata-freshness-indicator"
+                        className={`inline-flex items-center rounded-md border px-2 py-1 font-semibold uppercase tracking-wide ${metadataFreshnessStyle}`}
+                    >
+                        {metadataFreshnessLabel}
+                    </span>
+                    <span data-testid="run-metadata-last-updated" className="text-muted-foreground">
+                        {formatRunMetadataLastUpdated({ lastFetchedAtMs, nowMs: now })}
+                    </span>
+                </div>
+                {metadataFreshness === 'stale' && (
+                    <div data-testid="run-metadata-stale-indicator" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                        Run metadata may be stale. Refresh to load the latest run status.
+                    </div>
+                )}
 
                 {error && (
                     <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">

@@ -211,7 +211,8 @@ Status key:
 ### 9.1 Summary
 - [x] [9.1-01] Build run summary panel with status/result/time/model/working-dir/project/git-metadata/error/tokens.
   - Evidence (2026-03-03): Evaluator `pass`; populated summary runtime assertions added in UI smoke and visual QA captured in `frontend/artifacts/ui-smoke/08b-runs-panel-populated-summary.png`.
-- [ ] [9.1-02] Add run metadata refresh behavior and stale-state indicators.
+- [x] [9.1-02] Add run metadata refresh behavior and stale-state indicators.
+  - Evidence (2026-03-03): Evaluator `pass`; `RunsPanel` now surfaces freshness/stale indicators with refresh wiring, covered by helper + panel integration tests and UI-smoke scenario `08c-runs-panel-refresh-stale-indicator.png`.
 
 ### 9.2 Checkpoint View
 - [ ] [9.2-01] Add checkpoint viewer backed by `/pipelines/{id}/checkpoint`.

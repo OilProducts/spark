@@ -136,6 +136,65 @@ test("run summary panel renders populated metadata for item 9.1-01", async ({ pa
   await page.screenshot({ path: screenshotPath("08b-runs-panel-populated-summary.png"), fullPage: true })
 })
 
+test("run summary metadata refresh and stale-state indicator for item 9.1-02", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-refresh-${Date.now()}`
+  const runId = `run-refresh-${Date.now()}`
+  let refreshCount = 0
+
+  await page.addInitScript(() => {
+    ;(globalThis as typeof globalThis & { __RUNS_METADATA_STALE_AFTER_MS__?: number }).__RUNS_METADATA_STALE_AFTER_MS__ = 250
+  })
+
+  await page.route("**/runs", async (route) => {
+    refreshCount += 1
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "RefreshFlow",
+            status: refreshCount >= 2 ? "success" : "running",
+            result: refreshCount >= 2 ? "success" : "running",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "main",
+            git_commit: "def5678",
+            model: "gpt-5",
+            started_at: "2026-03-03T12:00:00Z",
+            ended_at: refreshCount >= 2 ? "2026-03-03T12:00:10Z" : null,
+            last_error: "none",
+            token_usage: refreshCount >= 2 ? 108 : 7,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  await expect(page.getByTestId("run-summary-panel")).toBeVisible()
+  await expect(page.getByTestId("run-summary-token-usage")).toContainText("7")
+  await expect(page.getByTestId("run-metadata-freshness-indicator")).toContainText("Fresh")
+  await expect(page.getByTestId("run-metadata-last-updated")).toContainText("Updated")
+
+  await page.waitForTimeout(1300)
+  await expect(page.getByTestId("run-metadata-freshness-indicator")).toContainText("Stale")
+  await expect(page.getByTestId("run-metadata-stale-indicator")).toContainText(
+    "Run metadata may be stale. Refresh to load the latest run status."
+  )
+
+  await page.getByTestId("runs-refresh-button").click()
+  await expect(page.getByTestId("run-summary-token-usage")).toContainText("108")
+  await expect(page.getByTestId("run-metadata-freshness-indicator")).toContainText("Fresh")
+  await expect(page.getByTestId("run-metadata-stale-indicator")).toHaveCount(0)
+  await page.screenshot({ path: screenshotPath("08c-runs-panel-refresh-stale-indicator.png"), fullPage: true })
+})
+
 test("semantic-equivalence save blocks mismatch and confirms no-op round-trip for item 5.3-03", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-semantic-equivalence-${Date.now()}`
   const semanticSaveBodies: string[] = []
