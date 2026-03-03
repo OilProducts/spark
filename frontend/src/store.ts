@@ -15,6 +15,7 @@ export type RuntimeStatus =
     | 'success'
 export type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict'
 export type SaveErrorKind = 'parse_error' | 'validation_error' | 'conflict' | 'network' | 'http' | 'unknown'
+export type PlanStatus = 'draft' | 'approved' | 'rejected' | 'revision-requested'
 
 export interface HumanGateOption {
     label: string
@@ -271,6 +272,7 @@ interface ProjectScopedWorkspace {
     specId: string | null
     specStatus: 'draft' | 'approved'
     planId: string | null
+    planStatus: PlanStatus
     artifactRunId: string | null
 }
 
@@ -291,6 +293,7 @@ const DEFAULT_PROJECT_SCOPED_WORKSPACE: ProjectScopedWorkspace = {
     specId: null,
     specStatus: 'draft',
     planId: null,
+    planStatus: 'draft',
     artifactRunId: null,
 }
 
@@ -475,6 +478,7 @@ interface AppState {
     setSpecId: (id: string | null) => void
     setSpecStatus: (status: 'draft' | 'approved') => void
     setPlanId: (id: string | null) => void
+    setPlanStatus: (status: PlanStatus) => void
 
     logs: LogEntry[]
     addLog: (entry: LogEntry) => void
@@ -940,6 +944,21 @@ export const useStore = create<AppState>((set) => ({
             nextProjectScopedWorkspaces[state.activeProjectPath] = {
                 ...scoped,
                 planId: id,
+            }
+            return {
+                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+            }
+        }),
+    setPlanStatus: (status) =>
+        set((state) => {
+            if (!state.activeProjectPath) {
+                return {}
+            }
+            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
+            nextProjectScopedWorkspaces[state.activeProjectPath] = {
+                ...scoped,
+                planStatus: status,
             }
             return {
                 projectScopedWorkspaces: nextProjectScopedWorkspaces,

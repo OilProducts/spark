@@ -1,4 +1,4 @@
-import { type ConversationHistoryEntry, useStore } from "@/store"
+import { type ConversationHistoryEntry, type PlanStatus, useStore } from "@/store"
 import { type FormEvent, useEffect, useState } from "react"
 import { buildPipelineStartPayload } from "@/lib/pipelineStartPayload"
 import {
@@ -18,6 +18,16 @@ const buildProjectScopedArtifactId = (artifactType: "conversation" | "spec" | "p
     return `${artifactType}-${suffix}-${Date.now()}`
 }
 
+const PLAN_STATUS_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {
+    draft: ['approved', 'rejected', 'revision-requested'],
+    approved: ['rejected', 'revision-requested'],
+    rejected: ['revision-requested', 'approved'],
+    'revision-requested': ['approved', 'rejected'],
+}
+
+const canTransitionPlanStatus = (from: PlanStatus, to: PlanStatus) =>
+    from === to || PLAN_STATUS_TRANSITIONS[from].includes(to)
+
 export function ProjectsPanel() {
     const projectRegistry = useStore((state) => state.projectRegistry)
     const projects = Object.values(projectRegistry)
@@ -35,6 +45,7 @@ export function ProjectsPanel() {
     const setSpecId = useStore((state) => state.setSpecId)
     const setSpecStatus = useStore((state) => state.setSpecStatus)
     const setPlanId = useStore((state) => state.setPlanId)
+    const setPlanStatus = useStore((state) => state.setPlanStatus)
     const activeFlow = useStore((state) => state.activeFlow)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const setViewMode = useStore((state) => state.setViewMode)
@@ -54,6 +65,7 @@ export function ProjectsPanel() {
         .map((projectPath) => projectRegistry[projectPath])
         .filter((project): project is (typeof projects)[number] => Boolean(project))
     const activeConversationHistory = activeProjectScope?.conversationHistory || []
+    const activePlanStatus: PlanStatus = activeProjectScope?.planStatus || 'draft'
 
     useEffect(() => {
         const projectPathsToFetch = projects
@@ -296,6 +308,7 @@ export function ProjectsPanel() {
 
             setSelectedRunId(runData.pipeline_id)
             setPlanId(activeProjectScope.planId || buildProjectScopedArtifactId("plan", activeProjectPath))
+            setPlanStatus('draft')
             appendConversationHistoryEntry({
                 role: "system",
                 content: `Launched plan-generation workflow from approved spec ${activeProjectScope.specId}.`,
@@ -305,6 +318,26 @@ export function ProjectsPanel() {
         } catch (error) {
             setPlanGenerationError(error instanceof Error ? error.message : 'Failed to launch plan-generation workflow.')
         }
+    }
+
+    const onPlanGateTransition = (nextStatus: PlanStatus) => {
+        if (!activeProjectPath || !activeProjectScope?.planId) {
+            setPlanGenerationError('Create or open a plan before using plan gate controls.')
+            return
+        }
+        if (!canTransitionPlanStatus(activeProjectScope.planStatus, nextStatus)) {
+            setPlanGenerationError(
+                `Cannot transition plan status from ${activeProjectScope.planStatus} to ${nextStatus}.`
+            )
+            return
+        }
+        setPlanGenerationError(null)
+        setPlanStatus(nextStatus)
+        appendConversationHistoryEntry({
+            role: "system",
+            content: `Updated plan ${activeProjectScope.planId} status from ${activeProjectScope.planStatus} to ${nextStatus}.`,
+            timestamp: new Date().toISOString(),
+        })
     }
 
     const onRejectSpecEditProposal = () => {
@@ -630,6 +663,46 @@ export function ProjectsPanel() {
                                     Approve the active spec before launching the plan-generation workflow.
                                 </p>
                             ) : null}
+                            <div data-testid="project-plan-gate-surface" className="rounded-md border border-border px-3 py-2">
+                                <p className="text-xs font-medium text-foreground">Plan gate controls</p>
+                                <p className="text-[11px] text-muted-foreground">
+                                    Plan status: <span className="font-medium text-foreground">{activePlanStatus}</span>
+                                </p>
+                                {!activeProjectScope?.planId ? (
+                                    <p className="text-[11px] text-muted-foreground">
+                                        Generate or open a plan artifact before applying plan gate actions.
+                                    </p>
+                                ) : null}
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                    <button
+                                        data-testid="project-plan-approve-button"
+                                        type="button"
+                                        onClick={() => onPlanGateTransition('approved')}
+                                        disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'approved')}
+                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                        Approve plan
+                                    </button>
+                                    <button
+                                        data-testid="project-plan-reject-button"
+                                        type="button"
+                                        onClick={() => onPlanGateTransition('rejected')}
+                                        disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'rejected')}
+                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                        Reject plan
+                                    </button>
+                                    <button
+                                        data-testid="project-plan-request-revision-button"
+                                        type="button"
+                                        onClick={() => onPlanGateTransition('revision-requested')}
+                                        disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'revision-requested')}
+                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                        Request revision
+                                    </button>
+                                </div>
+                            </div>
                             {planGenerationError ? (
                                 <p data-testid="project-plan-generation-error" className="text-[11px] text-destructive">
                                     {planGenerationError}
