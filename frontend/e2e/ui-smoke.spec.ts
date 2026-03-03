@@ -1337,6 +1337,127 @@ test("run graphviz viewer renders /pipelines/{id}/graph output for item 9.5-02",
   await graphvizPanel.screenshot({ path: screenshotPath("08n-runs-panel-graphviz-viewer.png") })
 })
 
+test("run artifact browser handles missing files and partial run states for item 9.5-03", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-artifacts-missing-${Date.now()}`
+  const runId = `run-artifacts-missing-${Date.now()}`
+
+  await page.route("**/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "ArtifactMissingFlow",
+            status: "failed",
+            result: "failed",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "main",
+            git_commit: "art9503",
+            model: "gpt-5",
+            started_at: "2026-03-03T15:10:00Z",
+            ended_at: "2026-03-03T15:11:00Z",
+            last_error: "stage artifact missing",
+            token_usage: 9,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/checkpoint`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        checkpoint: {
+          current_node: "plan",
+          completed_nodes: ["start"],
+          retry_counts: {},
+        },
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/context`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        context: {
+          "graph.goal": "Missing artifact handling smoke",
+        },
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/artifacts`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        artifacts: [
+          {
+            path: "plan/prompt.md",
+            size_bytes: 80,
+            media_type: "text/markdown",
+            viewable: true,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/artifacts/**`, async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith(`/pipelines/${runId}/artifacts`)) {
+      await route.fallback()
+      return
+    }
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Artifact not found" }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/graph`, async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Graph visualization unavailable" }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  const artifactPanel = page.getByTestId("run-artifact-panel")
+  await expect(artifactPanel).toBeVisible()
+  await expect(page.getByTestId("run-artifact-partial-run-note")).toContainText(
+    "This run may be partial or artifacts may have been pruned."
+  )
+  await expect(page.getByTestId("run-artifact-partial-run-note")).toContainText(
+    "Missing expected files: manifest.json, checkpoint.json."
+  )
+
+  const promptRow = page.getByTestId("run-artifact-row").filter({ hasText: "plan/prompt.md" }).first()
+  await promptRow.getByTestId("run-artifact-view-button").click()
+  await expect(page.getByTestId("run-artifact-viewer-error")).toContainText(
+    "Artifact preview unavailable because the file was not found for this run."
+  )
+
+  await artifactPanel.scrollIntoViewIfNeeded()
+  await artifactPanel.screenshot({ path: screenshotPath("08o-runs-panel-artifact-missing-partial.png") })
+})
+
 test("semantic-equivalence save blocks mismatch and confirms no-op round-trip for item 5.3-03", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-semantic-equivalence-${Date.now()}`
   const semanticSaveBodies: string[] = []

@@ -55,3 +55,26 @@ def test_ui_smoke_includes_graphviz_render_viewer_visual_qa_item_9_5_02() -> Non
     assert "run graphviz viewer renders /pipelines/{id}/graph output for item 9.5-02" in ui_smoke_text
     assert "08n-runs-panel-graphviz-viewer.png" in ui_smoke_text
     assert "run-graphviz-viewer-image" in ui_smoke_text
+
+
+def test_runs_panel_adds_graceful_missing_artifact_and_partial_run_states_item_9_5_03() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    runs_panel_text = (repo_root / "frontend" / "src" / "components" / "RunsPanel.tsx").read_text(encoding="utf-8")
+
+    required_snippets = [
+        "data-testid=\"run-artifact-partial-run-note\"",
+        "Artifact preview unavailable because the file was not found for this run.",
+        "This run may be partial or artifacts may have been pruned.",
+    ]
+
+    for snippet in required_snippets:
+        assert snippet in runs_panel_text, f"missing graceful artifact handling snippet: {snippet}"
+
+
+def test_ui_smoke_includes_missing_artifact_and_partial_run_visual_qa_item_9_5_03() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    ui_smoke_text = (repo_root / "frontend" / "e2e" / "ui-smoke.spec.ts").read_text(encoding="utf-8")
+
+    assert "run artifact browser handles missing files and partial run states for item 9.5-03" in ui_smoke_text
+    assert "08o-runs-panel-artifact-missing-partial.png" in ui_smoke_text
+    assert "run-artifact-partial-run-note" in ui_smoke_text

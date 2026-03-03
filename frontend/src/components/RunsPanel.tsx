@@ -225,6 +225,19 @@ const artifactErrorFromResponse = (status: number, detail: string | null): Artif
     }
 }
 
+const artifactPreviewErrorFromResponse = (status: number, detail: string | null): string => {
+    const normalizedDetail = detail?.toLowerCase()
+    if (status === 404 && normalizedDetail === 'artifact not found') {
+        return 'Artifact preview unavailable because the file was not found for this run. This run may be partial or artifacts may have been pruned.'
+    }
+    if (status === 404 && normalizedDetail === 'unknown pipeline') {
+        return 'Artifact preview unavailable because this run is no longer available. Refresh run history and pick a different run.'
+    }
+    return detail
+        ? `Unable to load artifact preview (HTTP ${status}): ${detail}.`
+        : `Unable to load artifact preview (HTTP ${status}).`
+}
+
 const graphvizErrorFromResponse = (status: number, detail: string | null): GraphvizErrorState => {
     const normalizedDetail = detail?.toLowerCase()
     if (status === 404 && normalizedDetail === 'unknown pipeline') {
@@ -249,6 +262,8 @@ const encodeArtifactPath = (artifactPath: string): string => artifactPath
     .split('/')
     .map((segment) => encodeURIComponent(segment))
     .join('/')
+
+const EXPECTED_CORE_ARTIFACT_PATHS = ['manifest.json', 'checkpoint.json']
 
 const formatContextValue = (value: unknown): FormattedContextValue => {
     if (value === null) {
@@ -1040,6 +1055,12 @@ export function RunsPanel() {
     const artifactEntries = useMemo(() => {
         return artifactData?.artifacts || []
     }, [artifactData])
+    const missingCoreArtifacts = useMemo(() => {
+        if (artifactEntries.length === 0) return []
+        const available = new Set(artifactEntries.map((entry) => entry.path))
+        return EXPECTED_CORE_ARTIFACT_PATHS.filter((path) => !available.has(path))
+    }, [artifactEntries])
+    const showPartialRunArtifactNote = artifactEntries.length === 0 || missingCoreArtifacts.length > 0
     const selectedArtifactEntry = useMemo(() => {
         if (!selectedArtifactPath) return null
         return artifactEntries.find((entry) => entry.path === selectedArtifactPath) || null
@@ -1067,11 +1088,7 @@ export function RunsPanel() {
                 } catch {
                     detail = null
                 }
-                setArtifactViewerError(
-                    detail
-                        ? `Unable to load artifact preview (HTTP ${res.status}): ${detail}.`
-                        : `Unable to load artifact preview (HTTP ${res.status}).`
-                )
+                setArtifactViewerError(artifactPreviewErrorFromResponse(res.status, detail))
                 return
             }
             const payload = await res.text()
@@ -1454,6 +1471,19 @@ export function RunsPanel() {
                         )}
                         {!artifactError && (
                             <div className="space-y-3">
+                                {showPartialRunArtifactNote && (
+                                    <div
+                                        data-testid="run-artifact-partial-run-note"
+                                        className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
+                                    >
+                                        <div>This run may be partial or artifacts may have been pruned.</div>
+                                        {missingCoreArtifacts.length > 0 && (
+                                            <div className="mt-1">
+                                                Missing expected files: {missingCoreArtifacts.join(', ')}.
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
                                 <div className="overflow-hidden rounded-md border border-border/80">
                                     <table data-testid="run-artifact-table" className="w-full table-fixed border-collapse text-sm">
                                         <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
