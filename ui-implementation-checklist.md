@@ -31,7 +31,7 @@ Status key:
 
 ## 2. Design Principles
 
-- [ ] [2-01] Implement spec-first behavior mapping for each UI control with direct spec references. (See `ui-spec-first-behavior-map.md`.) Blocker: evaluator found the current map/test only prove partial control coverage and do not yet enforce full spec-surface mapping.
+- [x] [2-01] Implement spec-first behavior mapping for each UI control with direct spec references. (See `ui-spec-first-behavior-map.md`.)
 - [x] [2-02] Add no-silent-loss save protections and user-visible failure states.
 - [x] [2-03] Ensure progressive disclosure for advanced fields while preserving full editability.
 - [x] [2-04] Add explainability views for routing, retry, and failure decisions.

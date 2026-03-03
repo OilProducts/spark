@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -26,12 +27,27 @@ def test_spec_first_behavior_mapping_doc_exists_with_required_control_coverage()
         "Validation panel entries",
         "Canvas controls (pan/zoom/fit/minimap)",
         "Run history refresh/open/cancel actions",
+        "Run initiation payload and policy banners",
         "Execution footer cancel control",
+        "Execution footer unsupported pause/resume reason",
         "Terminal clear action",
         "Projects workspace controls",
+        "Project AI conversation controls",
+        "Project spec proposal review controls",
+        "Project plan generation controls",
         "Explainability panel controls",
         "Run stream panel controls",
         "Stylesheet editor controls",
+        "Subgraph/default block controls",
+        "Run checkpoint viewer controls",
+        "Run context inspector controls",
+        "Run artifact browser controls",
+        "Human prompt question-type controls",
+        "Grouped multi-question/inform controls",
+        "Raw DOT mode toggle and handoff diagnostics",
+        "Inspector empty state scaffold",
+        "Validation edge diagnostic badge",
+        "Human default choice controls",
         "Spec references",
     ]
 
@@ -53,12 +69,51 @@ def test_spec_first_behavior_mapping_doc_exists_with_required_control_coverage()
         "frontend/src/components/ExplainabilityPanel.tsx",
         "frontend/src/components/RunStream.tsx",
         "frontend/src/components/StylesheetEditor.tsx",
+        "frontend/src/components/InspectorScaffold.tsx",
+        "frontend/src/components/ValidationEdge.tsx",
     ]
     for component_path in required_component_paths:
         assert component_path in doc_text, f"missing mapped control coverage for component: {component_path}"
 
+    required_ui_spec_sections = [
+        "4.1",
+        "4.2",
+        "4.3",
+        "5.1",
+        "5.2",
+        "5.3",
+        "5.4",
+        "5.5",
+        "6.1",
+        "6.2",
+        "6.3",
+        "6.4",
+        "6.5",
+        "6.6",
+        "6.7",
+        "7.1",
+        "7.2",
+        "7.3",
+        "8.1",
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5",
+        "9.1",
+        "9.2",
+        "9.3",
+        "9.4",
+        "9.5",
+        "9.6",
+        "10.1",
+        "10.2",
+        "10.3",
+        "10.4",
+    ]
+    for section_reference in required_ui_spec_sections:
+        pattern = rf"`ui-spec\.md`\s+[^\n|]*\b{re.escape(section_reference)}\b"
+        assert re.search(pattern, doc_text), f"missing ui-spec section mapping coverage: {section_reference}"
+
     # Require a broad mapping table so the checklist item does not pass with a minimal subset.
     map_lines = [line for line in doc_text.splitlines() if line.startswith("| ") and " | " in line]
-    assert len(map_lines) >= 22, "control mapping is too narrow for item 2-01"
-
-
+    assert len(map_lines) >= 30, "control mapping is too narrow for item 2-01"
