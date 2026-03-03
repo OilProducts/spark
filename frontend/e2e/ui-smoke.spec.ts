@@ -405,11 +405,98 @@ test("run context viewer supports searchable key/value inspection for item 9.3-0
   await page.getByTestId("run-context-search-input").fill("ops")
   await expect(page.getByTestId("run-context-row")).toHaveCount(1)
   await expect(page.getByTestId("run-context-row-type").first()).toContainText("object")
-  await expect(page.getByTestId("run-context-row-value").first()).toContainText("\"owner\":\"ops\"")
+  await expect(page.getByTestId("run-context-row-value").first()).toContainText("\"owner\": \"ops\"")
 
   await page.getByTestId("run-context-search-input").fill("missing-key")
   await expect(page.getByTestId("run-context-empty")).toContainText("No context entries match the current search.")
   await page.screenshot({ path: screenshotPath("08f-runs-panel-context-viewer.png"), fullPage: true })
+})
+
+test("run context viewer renders typed scalar and structured values for item 9.3-02", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-context-typed-${Date.now()}`
+  const runId = `run-context-typed-${Date.now()}`
+
+  await page.route("**/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "ContextTypedFlow",
+            status: "success",
+            result: "success",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "main",
+            git_commit: "type321",
+            model: "gpt-5",
+            started_at: "2026-03-03T12:20:00Z",
+            ended_at: "2026-03-03T12:21:00Z",
+            last_error: "",
+            token_usage: 28,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/checkpoint`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        checkpoint: {
+          current_node: "typed_render",
+          completed_nodes: ["start"],
+          retry_counts: {},
+        },
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/context`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        context: {
+          plain_string: "review notes",
+          build_number: 17,
+          approved: false,
+          summary: {
+            stage: "build",
+            retries: 1,
+          },
+          tags: ["ui", "typed"],
+        },
+      }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  await expect(page.getByTestId("run-context-panel")).toBeVisible()
+  await expect(page.getByTestId("run-context-row")).toHaveCount(5)
+  await expect(page.getByTestId("run-context-table")).toContainText("string")
+  await expect(page.getByTestId("run-context-table")).toContainText("number")
+  await expect(page.getByTestId("run-context-table")).toContainText("boolean")
+  await expect(page.getByTestId("run-context-table")).toContainText("object")
+  await expect(page.getByTestId("run-context-table")).toContainText("array")
+  await expect(page.getByTestId("run-context-row-value-scalar")).toHaveCount(3)
+  await expect(page.getByTestId("run-context-row-value-structured")).toHaveCount(2)
+  await expect(page.getByTestId("run-context-table")).toContainText('"review notes"')
+  await expect(page.getByTestId("run-context-table")).toContainText("17")
+  await expect(page.getByTestId("run-context-table")).toContainText("false")
+  await expect(page.getByTestId("run-context-table")).toContainText("\"stage\": \"build\"")
+  await expect(page.getByTestId("run-context-table")).toContainText("\"ui\"")
+  await page.screenshot({ path: screenshotPath("08g-runs-panel-context-typed-rendering.png"), fullPage: true })
 })
 
 test("semantic-equivalence save blocks mismatch and confirms no-op round-trip for item 5.3-03", async ({ page }) => {

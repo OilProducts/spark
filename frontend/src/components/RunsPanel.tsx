@@ -43,6 +43,12 @@ interface ContextErrorState {
     help: string
 }
 
+interface FormattedContextValue {
+    renderedValue: string
+    valueType: string
+    renderKind: 'scalar' | 'structured'
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | null => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
         return null
@@ -99,6 +105,46 @@ const contextErrorFromResponse = (status: number, detail: string | null): Contex
     return {
         message: `Unable to load context (HTTP ${status}).`,
         help: detail ? `Backend returned: ${detail}.` : 'Retry, and check backend availability if this keeps failing.',
+    }
+}
+
+const formatContextValue = (value: unknown): FormattedContextValue => {
+    if (value === null) {
+        return {
+            renderedValue: 'null',
+            valueType: 'null',
+            renderKind: 'scalar',
+        }
+    }
+
+    if (typeof value === 'string') {
+        return {
+            renderedValue: JSON.stringify(value),
+            valueType: 'string',
+            renderKind: 'scalar',
+        }
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean') {
+        return {
+            renderedValue: String(value),
+            valueType: typeof value,
+            renderKind: 'scalar',
+        }
+    }
+
+    const valueType = Array.isArray(value) ? 'array' : 'object'
+    let renderedValue = ''
+    try {
+        renderedValue = JSON.stringify(value, null, 2) ?? String(value)
+    } catch {
+        renderedValue = String(value)
+    }
+
+    return {
+        renderedValue,
+        valueType,
+        renderKind: 'structured',
     }
 }
 
@@ -424,22 +470,8 @@ export function RunsPanel() {
         if (!contextSnapshot) return []
         return Object.entries(contextSnapshot)
             .map(([key, value]) => {
-                let renderedValue = ''
-                let valueType = 'object'
-                if (value === null) {
-                    renderedValue = 'null'
-                    valueType = 'null'
-                } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-                    renderedValue = String(value)
-                    valueType = typeof value
-                } else {
-                    try {
-                        renderedValue = JSON.stringify(value) ?? String(value)
-                    } catch {
-                        renderedValue = String(value)
-                    }
-                }
-                return { key, renderedValue, valueType }
+                const formatted = formatContextValue(value)
+                return { key, ...formatted }
             })
             .sort((a, b) => a.key.localeCompare(b.key))
     }, [contextSnapshot])
@@ -655,7 +687,20 @@ export function RunsPanel() {
                                                         >
                                                             {row.valueType}
                                                         </span>
-                                                        <span data-testid="run-context-row-value">{row.renderedValue}</span>
+                                                        {row.renderKind === 'structured' ? (
+                                                            <div data-testid="run-context-row-value">
+                                                                <pre
+                                                                    data-testid="run-context-row-value-structured"
+                                                                    className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border/70 bg-muted/40 px-2 py-1"
+                                                                >
+                                                                    {row.renderedValue}
+                                                                </pre>
+                                                            </div>
+                                                        ) : (
+                                                            <span data-testid="run-context-row-value">
+                                                                <span data-testid="run-context-row-value-scalar">{row.renderedValue}</span>
+                                                            </span>
+                                                        )}
                                                     </td>
                                                 </tr>
                                             ))

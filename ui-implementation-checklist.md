@@ -225,7 +225,8 @@ Status key:
 ### 9.3 Context View
 - [x] [9.3-01] Add searchable context key/value inspector backed by `/pipelines/{id}/context`.
   - Evidence (2026-03-03): Evaluator `pass`; context table now exposes searchable key/value rows with runtime-tested type-aware rendering hooks (`run-context-row-type`/`run-context-row-value`) covered by `tests/integration/test_ui_run_context_panel.py` and UI smoke scenario/screenshot `frontend/artifacts/ui-smoke/08f-runs-panel-context-viewer.png`.
-- [ ] [9.3-02] Add typed rendering for scalar and structured values.
+- [x] [9.3-02] Add typed rendering for scalar and structured values.
+  - Evidence (2026-03-03): Evaluator `pass`; `RunsPanel` now formats context values into scalar (`string`/`number`/`boolean`/`null`) and structured (`object`/`array`) render paths with dedicated test hooks (`run-context-row-value-scalar` and `run-context-row-value-structured`), covered by `tests/integration/test_ui_run_context_panel.py` and UI smoke scenario/screenshot `frontend/artifacts/ui-smoke/08g-runs-panel-context-typed-rendering.png`.
 - [ ] [9.3-03] Add copy/export actions for context inspection.
 
 ### 9.4 Event Timeline
