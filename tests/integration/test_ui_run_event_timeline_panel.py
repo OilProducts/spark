@@ -59,7 +59,7 @@ def test_runs_panel_adds_timeline_filters_for_type_node_stage_and_severity_item_
         "data-testid=\"run-event-timeline-filter-severity\"",
         "data-testid=\"run-event-timeline-row-severity\"",
         "filteredTimelineEvents.length === 0",
-        "filteredTimelineEvents.map((event) => (",
+        "groupedTimelineEntries.map((entry) => (",
     ]
 
     for snippet in required_snippets:
@@ -76,3 +76,31 @@ def test_ui_smoke_includes_event_timeline_filter_visual_qa_item_9_4_02() -> None
     assert "run-event-timeline-filter-category" in ui_smoke_text
     assert "run-event-timeline-filter-severity" in ui_smoke_text
     assert "08j-runs-panel-event-timeline-filters.png" in ui_smoke_text
+
+
+def test_runs_panel_groups_and_correlates_retry_and_interview_sequences_item_9_4_03() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    runs_panel_text = (repo_root / "frontend" / "src" / "components" / "RunsPanel.tsx").read_text(encoding="utf-8")
+
+    required_snippets = [
+        "type TimelineCorrelationKind = 'retry' | 'interview'",
+        "const timelineCorrelationDescriptorFromEvent = (",
+        "const groupedTimelineEntries = useMemo(() => {",
+        "data-testid=\"run-event-timeline-group\"",
+        "data-testid=\"run-event-timeline-group-label\"",
+        "data-testid=\"run-event-timeline-row-correlation\"",
+    ]
+
+    for snippet in required_snippets:
+        assert snippet in runs_panel_text, f"missing timeline grouping/correlation snippet: {snippet}"
+
+
+def test_ui_smoke_includes_timeline_grouping_visual_qa_item_9_4_03() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    ui_smoke_text = (repo_root / "frontend" / "e2e" / "ui-smoke.spec.ts").read_text(encoding="utf-8")
+
+    assert "run event timeline groups and correlates retry and interview sequences for item 9.4-03" in ui_smoke_text
+    assert "run-event-timeline-group" in ui_smoke_text
+    assert "run-event-timeline-group-label" in ui_smoke_text
+    assert "run-event-timeline-row-correlation" in ui_smoke_text
+    assert "08k-runs-panel-event-timeline-grouping-correlation.png" in ui_smoke_text

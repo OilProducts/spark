@@ -56,6 +56,7 @@ interface ContextExportEntry {
 
 type TimelineEventCategory = 'lifecycle' | 'stage' | 'parallel' | 'interview' | 'checkpoint'
 type TimelineSeverity = 'info' | 'warning' | 'error'
+type TimelineCorrelationKind = 'retry' | 'interview'
 
 interface TimelineEventEntry {
     id: string
@@ -67,6 +68,18 @@ interface TimelineEventEntry {
     summary: string
     receivedAt: string
     payload: Record<string, unknown>
+}
+
+interface TimelineCorrelationDescriptor {
+    key: string
+    kind: TimelineCorrelationKind
+    label: string
+}
+
+interface GroupedTimelineEntry {
+    id: string
+    correlation: TimelineCorrelationDescriptor | null
+    events: TimelineEventEntry[]
 }
 
 const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
@@ -108,6 +121,7 @@ const TIMELINE_SEVERITY_STYLES: Record<TimelineSeverity, string> = {
 }
 
 const TIMELINE_MAX_ITEMS = 200
+const RETRY_CORRELATION_EVENT_TYPES = new Set(['StageStarted', 'StageFailed', 'StageRetrying', 'StageCompleted'])
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -366,6 +380,43 @@ const toTimelineEvent = (value: unknown, sequence: number): TimelineEventEntry |
         receivedAt: new Date().toISOString(),
         payload,
     }
+}
+
+const timelineEntityKey = (event: TimelineEventEntry): string | null => {
+    if (!event.nodeId && event.stageIndex === null) {
+        return null
+    }
+    return `${event.nodeId ?? 'unknown'}::${event.stageIndex !== null ? String(event.stageIndex) : 'na'}`
+}
+
+const timelineCorrelationDescriptorFromEvent = (
+    event: TimelineEventEntry,
+    retryEntityKeys: ReadonlySet<string>
+): TimelineCorrelationDescriptor | null => {
+    const entityKey = timelineEntityKey(event)
+    if (!entityKey) {
+        return null
+    }
+    const stageSuffix = event.stageIndex !== null ? ` (index ${event.stageIndex})` : ''
+    const subject = event.nodeId ?? 'unknown'
+
+    if (event.category === 'interview') {
+        return {
+            key: `interview:${entityKey}`,
+            kind: 'interview',
+            label: `Interview sequence for ${subject}${stageSuffix}`,
+        }
+    }
+
+    if (event.category === 'stage' && RETRY_CORRELATION_EVENT_TYPES.has(event.type) && retryEntityKeys.has(entityKey)) {
+        return {
+            key: `retry:${entityKey}`,
+            kind: 'retry',
+            label: `Retry sequence for ${subject}${stageSuffix}`,
+        }
+    }
+
+    return null
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -816,6 +867,50 @@ export function RunsPanel() {
             return nodeIdMatch || stageIndexMatch
         })
     }, [timelineCategoryFilter, timelineEvents, timelineNodeStageFilter, timelineSeverityFilter, timelineTypeFilter])
+    const retryCorrelationEntityKeys = useMemo(() => {
+        const keys = new Set<string>()
+        for (const event of timelineEvents) {
+            const entityKey = timelineEntityKey(event)
+            if (!entityKey) {
+                continue
+            }
+            if (event.type === 'StageRetrying' || asFiniteNumber(event.payload.attempt) !== null) {
+                keys.add(entityKey)
+            }
+        }
+        return keys
+    }, [timelineEvents])
+    const groupedTimelineEntries = useMemo(() => {
+        const entries: GroupedTimelineEntry[] = []
+        const groupedEntryIndex = new Map<string, number>()
+
+        for (const event of filteredTimelineEvents) {
+            const correlation = timelineCorrelationDescriptorFromEvent(event, retryCorrelationEntityKeys)
+            if (!correlation) {
+                entries.push({
+                    id: event.id,
+                    correlation: null,
+                    events: [event],
+                })
+                continue
+            }
+
+            const existingIndex = groupedEntryIndex.get(correlation.key)
+            if (existingIndex === undefined) {
+                groupedEntryIndex.set(correlation.key, entries.length)
+                entries.push({
+                    id: `group-${correlation.key}`,
+                    correlation,
+                    events: [event],
+                })
+                continue
+            }
+
+            entries[existingIndex].events.push(event)
+        }
+
+        return entries
+    }, [filteredTimelineEvents, retryCorrelationEntityKeys])
 
     const openRun = (run: RunRecord) => {
         setSelectedRunId(run.run_id)
@@ -1170,47 +1265,73 @@ export function RunsPanel() {
                                 No timeline events match the current filters.
                             </div>
                         )}
-                        {filteredTimelineEvents.length > 0 && (
+                        {groupedTimelineEntries.length > 0 && (
                             <div data-testid="run-event-timeline-list" className="max-h-80 space-y-2 overflow-auto pr-1">
-                                {filteredTimelineEvents.map((event) => (
-                                    <article
-                                        key={event.id}
-                                        data-testid="run-event-timeline-row"
-                                        className="rounded-md border border-border/70 bg-muted/30 px-3 py-2"
+                                {groupedTimelineEntries.map((entry) => (
+                                    <section
+                                        key={entry.id}
+                                        data-testid="run-event-timeline-group"
+                                        className="space-y-2 rounded-md border border-border/60 bg-background/50 p-2"
                                     >
-                                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                                            <span
-                                                data-testid="run-event-timeline-row-type"
-                                                className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 font-semibold uppercase tracking-wide text-foreground"
-                                            >
-                                                {event.type}
-                                            </span>
-                                            <span
-                                                data-testid="run-event-timeline-row-category"
-                                                className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 uppercase tracking-wide text-muted-foreground"
-                                            >
-                                                {TIMELINE_CATEGORY_LABELS[event.category]}
-                                            </span>
-                                            <span
-                                                data-testid="run-event-timeline-row-severity"
-                                                className={`inline-flex rounded border px-1.5 py-0.5 uppercase tracking-wide ${TIMELINE_SEVERITY_STYLES[event.severity]}`}
-                                            >
-                                                {TIMELINE_SEVERITY_LABELS[event.severity]}
-                                            </span>
-                                            <span data-testid="run-event-timeline-row-time" className="text-muted-foreground">
-                                                {formatTimestamp(event.receivedAt)}
-                                            </span>
-                                        </div>
-                                        <p data-testid="run-event-timeline-row-summary" className="mt-1 text-sm text-foreground">
-                                            {event.summary}
-                                        </p>
-                                        {event.nodeId && (
-                                            <p data-testid="run-event-timeline-row-node" className="text-xs text-muted-foreground">
-                                                Node: {event.nodeId}
-                                                {event.stageIndex !== null ? ` (index ${event.stageIndex})` : ''}
-                                            </p>
+                                        {entry.correlation && (
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <span
+                                                    data-testid="run-event-timeline-group-label"
+                                                    className="inline-flex rounded border border-border/80 bg-background px-2 py-0.5 text-[11px] uppercase tracking-wide text-muted-foreground"
+                                                >
+                                                    {entry.correlation.label}
+                                                </span>
+                                                <span className="text-[11px] text-muted-foreground">
+                                                    {entry.events.length} event{entry.events.length === 1 ? '' : 's'}
+                                                </span>
+                                            </div>
                                         )}
-                                    </article>
+                                        {entry.events.map((event) => (
+                                            <article
+                                                key={event.id}
+                                                data-testid="run-event-timeline-row"
+                                                className="rounded-md border border-border/70 bg-muted/30 px-3 py-2"
+                                            >
+                                                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                                    <span
+                                                        data-testid="run-event-timeline-row-type"
+                                                        className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 font-semibold uppercase tracking-wide text-foreground"
+                                                    >
+                                                        {event.type}
+                                                    </span>
+                                                    <span
+                                                        data-testid="run-event-timeline-row-category"
+                                                        className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 uppercase tracking-wide text-muted-foreground"
+                                                    >
+                                                        {TIMELINE_CATEGORY_LABELS[event.category]}
+                                                    </span>
+                                                    <span
+                                                        data-testid="run-event-timeline-row-severity"
+                                                        className={`inline-flex rounded border px-1.5 py-0.5 uppercase tracking-wide ${TIMELINE_SEVERITY_STYLES[event.severity]}`}
+                                                    >
+                                                        {TIMELINE_SEVERITY_LABELS[event.severity]}
+                                                    </span>
+                                                    <span data-testid="run-event-timeline-row-time" className="text-muted-foreground">
+                                                        {formatTimestamp(event.receivedAt)}
+                                                    </span>
+                                                </div>
+                                                {entry.correlation && (
+                                                    <p data-testid="run-event-timeline-row-correlation" className="mt-1 text-xs text-muted-foreground">
+                                                        {entry.correlation.kind === 'retry' ? 'Retry correlation' : 'Interview correlation'}: {entry.correlation.label}
+                                                    </p>
+                                                )}
+                                                <p data-testid="run-event-timeline-row-summary" className="mt-1 text-sm text-foreground">
+                                                    {event.summary}
+                                                </p>
+                                                {event.nodeId && (
+                                                    <p data-testid="run-event-timeline-row-node" className="text-xs text-muted-foreground">
+                                                        Node: {event.nodeId}
+                                                        {event.stageIndex !== null ? ` (index ${event.stageIndex})` : ''}
+                                                    </p>
+                                                )}
+                                            </article>
+                                        ))}
+                                    </section>
                                 ))}
                             </div>
                         )}
