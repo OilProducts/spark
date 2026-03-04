@@ -74,6 +74,12 @@ export interface ConversationHistoryEntry {
     timestamp: string
 }
 
+export interface ArtifactProvenanceReference {
+    source: string
+    referenceId: string
+    capturedAt: string
+}
+
 export interface DiagnosticEntry {
     rule_id: string
     severity: DiagnosticSeverity
@@ -286,8 +292,10 @@ interface ProjectScopedWorkspace {
     conversationHistory: ConversationHistoryEntry[]
     specId: string | null
     specStatus: 'draft' | 'approved'
+    specProvenance?: ArtifactProvenanceReference | null
     planId: string | null
     planStatus: PlanStatus
+    planProvenance?: ArtifactProvenanceReference | null
     artifactRunId: string | null
 }
 
@@ -298,8 +306,10 @@ type PersistedProjectWorkspaceState = Record<
         conversationHistory: ConversationHistoryEntry[]
         specId: string | null
         specStatus: 'draft' | 'approved'
+        specProvenance?: ArtifactProvenanceReference | null
         planId: string | null
         planStatus: PlanStatus
+        planProvenance?: ArtifactProvenanceReference | null
     }
 >
 
@@ -320,8 +330,10 @@ const DEFAULT_PROJECT_SCOPED_WORKSPACE: ProjectScopedWorkspace = {
     conversationHistory: [],
     specId: null,
     specStatus: 'draft',
+    specProvenance: null,
     planId: null,
     planStatus: 'draft',
+    planProvenance: null,
     artifactRunId: null,
 }
 
@@ -339,6 +351,28 @@ const coerceConversationHistoryEntry = (value: unknown): ConversationHistoryEntr
             role: candidate.role,
             content: candidate.content,
             timestamp: candidate.timestamp,
+        }
+    }
+    return null
+}
+
+const coerceArtifactProvenanceReference = (value: unknown): ArtifactProvenanceReference | null => {
+    if (!value || typeof value !== "object") {
+        return null
+    }
+    const candidate = value as Partial<ArtifactProvenanceReference>
+    if (
+        typeof candidate.source === "string"
+        && candidate.source.trim().length > 0
+        && typeof candidate.referenceId === "string"
+        && candidate.referenceId.trim().length > 0
+        && typeof candidate.capturedAt === "string"
+        && candidate.capturedAt.trim().length > 0
+    ) {
+        return {
+            source: candidate.source,
+            referenceId: candidate.referenceId,
+            capturedAt: candidate.capturedAt,
         }
     }
     return null
@@ -368,25 +402,31 @@ const loadProjectConversationState = (): PersistedProjectWorkspaceState => {
                 conversationHistory?: unknown
                 specId?: unknown
                 specStatus?: unknown
+                specProvenance?: unknown
                 planId?: unknown
                 planStatus?: unknown
+                planProvenance?: unknown
             }
             const history = Array.isArray(scope.conversationHistory)
                 ? scope.conversationHistory
                     .map(coerceConversationHistoryEntry)
                     .filter((entry): entry is ConversationHistoryEntry => entry !== null)
                 : []
+            const specProvenance = coerceArtifactProvenanceReference(scope.specProvenance)
+            const planProvenance = coerceArtifactProvenanceReference(scope.planProvenance)
             restored[normalizedProjectPath] = {
                 conversationId: typeof scope.conversationId === "string" ? scope.conversationId : null,
                 conversationHistory: history,
                 specId: typeof scope.specId === "string" ? scope.specId : null,
                 specStatus: scope.specStatus === "approved" ? "approved" : "draft",
+                specProvenance,
                 planId: typeof scope.planId === "string" ? scope.planId : null,
                 planStatus: scope.planStatus === "approved"
                     || scope.planStatus === "rejected"
                     || scope.planStatus === "revision-requested"
                     ? scope.planStatus
                     : "draft",
+                planProvenance,
             }
         })
         return restored
@@ -407,8 +447,10 @@ const saveProjectConversationState = (projectScopedWorkspaces: Record<string, Pr
                 conversationHistory: workspace.conversationHistory,
                 specId: workspace.specId,
                 specStatus: workspace.specStatus,
+                specProvenance: workspace.specProvenance || null,
                 planId: workspace.planId,
                 planStatus: workspace.planStatus,
+                planProvenance: workspace.planProvenance || null,
             }
         })
         window.localStorage.setItem(PROJECT_CONVERSATION_STATE_STORAGE_KEY, JSON.stringify(persisted))
@@ -592,8 +634,10 @@ interface AppState {
     appendConversationHistoryEntry: (entry: ConversationHistoryEntry) => void
     setSpecId: (id: string | null) => void
     setSpecStatus: (status: 'draft' | 'approved') => void
+    setSpecProvenance: (provenance: ArtifactProvenanceReference | null) => void
     setPlanId: (id: string | null) => void
     setPlanStatus: (status: PlanStatus) => void
+    setPlanProvenance: (provenance: ArtifactProvenanceReference | null) => void
 
     logs: LogEntry[]
     addLog: (entry: LogEntry) => void
@@ -1065,6 +1109,22 @@ export const useStore = create<AppState>((set) => ({
                 projectScopedWorkspaces: nextProjectScopedWorkspaces,
             }
         }),
+    setSpecProvenance: (provenance) =>
+        set((state) => {
+            if (!state.activeProjectPath) {
+                return {}
+            }
+            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
+            nextProjectScopedWorkspaces[state.activeProjectPath] = {
+                ...scoped,
+                specProvenance: provenance,
+            }
+            saveProjectConversationState(nextProjectScopedWorkspaces)
+            return {
+                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+            }
+        }),
     setPlanId: (id) =>
         set((state) => {
             if (!state.activeProjectPath) {
@@ -1091,6 +1151,22 @@ export const useStore = create<AppState>((set) => ({
             nextProjectScopedWorkspaces[state.activeProjectPath] = {
                 ...scoped,
                 planStatus: status,
+            }
+            saveProjectConversationState(nextProjectScopedWorkspaces)
+            return {
+                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+            }
+        }),
+    setPlanProvenance: (provenance) =>
+        set((state) => {
+            if (!state.activeProjectPath) {
+                return {}
+            }
+            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
+            nextProjectScopedWorkspaces[state.activeProjectPath] = {
+                ...scoped,
+                planProvenance: provenance,
             }
             saveProjectConversationState(nextProjectScopedWorkspaces)
             return {

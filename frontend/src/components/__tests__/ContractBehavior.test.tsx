@@ -2938,4 +2938,113 @@ digraph contract_behavior {
     expect(restoredState.projectScopedWorkspaces).toEqual({})
     expect(restoredState.projectRegistry['/tmp/persisted-project']).toBeDefined()
   })
+
+  it('[CID:11.6.01] persists and restores spec/plan provenance references for workflow-generated artifacts', async () => {
+    vi.resetModules()
+    const storage = new Map<string, string>()
+    const localStorageMock = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value)
+      },
+      removeItem: (key: string) => {
+        storage.delete(key)
+      },
+      clear: () => {
+        storage.clear()
+      },
+    }
+    vi.stubGlobal('localStorage', localStorageMock)
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: localStorageMock,
+    })
+
+    localStorageMock.setItem(
+      'sparkspawn.project_registry_state',
+      JSON.stringify({
+        '/tmp/persisted-project': {
+          directoryPath: '/tmp/persisted-project',
+          isFavorite: false,
+          lastAccessedAt: '2026-03-04T00:00:00.000Z',
+        },
+      }),
+    )
+    localStorageMock.setItem(
+      'sparkspawn.ui_route_state',
+      JSON.stringify({
+        viewMode: 'projects',
+        activeProjectPath: '/tmp/persisted-project',
+        activeFlow: null,
+        selectedRunId: null,
+      }),
+    )
+    localStorageMock.setItem(
+      'sparkspawn.project_conversation_state',
+      JSON.stringify({
+        '/tmp/persisted-project': {
+          conversationId: 'conversation-persisted-project',
+          conversationHistory: [],
+          specId: 'spec-persisted-project',
+          specStatus: 'approved',
+          specProvenance: {
+            source: 'spec-edit-proposal',
+            referenceId: 'proposal-123',
+            capturedAt: '2026-03-04T00:05:00.000Z',
+          },
+          planId: 'plan-persisted-project',
+          planStatus: 'draft',
+          planProvenance: {
+            source: 'plan-generation-workflow',
+            referenceId: 'run-plan-123',
+            capturedAt: '2026-03-04T00:10:00.000Z',
+          },
+        },
+      }),
+    )
+
+    const { useStore: restoredStore } = await import('@/store')
+    const restoredScope = restoredStore.getState().projectScopedWorkspaces['/tmp/persisted-project']
+    expect(restoredScope.specProvenance).toEqual({
+      source: 'spec-edit-proposal',
+      referenceId: 'proposal-123',
+      capturedAt: '2026-03-04T00:05:00.000Z',
+    })
+    expect(restoredScope.planProvenance).toEqual({
+      source: 'plan-generation-workflow',
+      referenceId: 'run-plan-123',
+      capturedAt: '2026-03-04T00:10:00.000Z',
+    })
+
+    restoredStore.getState().setSpecProvenance({
+      source: 'spec-edit-proposal',
+      referenceId: 'proposal-456',
+      capturedAt: '2026-03-04T00:15:00.000Z',
+    })
+    restoredStore.getState().setPlanProvenance({
+      source: 'plan-generation-workflow',
+      referenceId: 'run-plan-456',
+      capturedAt: '2026-03-04T00:20:00.000Z',
+    })
+
+    const persistedConversationStateRaw = localStorageMock.getItem('sparkspawn.project_conversation_state')
+    expect(persistedConversationStateRaw).toBeTruthy()
+    const persistedConversationState = JSON.parse(String(persistedConversationStateRaw)) as Record<
+      string,
+      {
+        specProvenance?: { source?: string; referenceId?: string; capturedAt?: string }
+        planProvenance?: { source?: string; referenceId?: string; capturedAt?: string }
+      }
+    >
+    expect(persistedConversationState['/tmp/persisted-project']?.specProvenance).toEqual({
+      source: 'spec-edit-proposal',
+      referenceId: 'proposal-456',
+      capturedAt: '2026-03-04T00:15:00.000Z',
+    })
+    expect(persistedConversationState['/tmp/persisted-project']?.planProvenance).toEqual({
+      source: 'plan-generation-workflow',
+      referenceId: 'run-plan-456',
+      capturedAt: '2026-03-04T00:20:00.000Z',
+    })
+  })
 })

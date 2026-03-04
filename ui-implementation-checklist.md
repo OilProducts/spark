@@ -337,7 +337,8 @@ Status key:
   - Evidence (2026-03-04): Evaluator `pass`; route-state hydration now clears persisted `activeFlow`/`selectedRunId` unless `activeProjectPath` is a valid absolute path (`frontend/src/store.ts`), covered by frontend contract `CID:11.5.03` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_project_workspace_persistence_contracts.py`) with screenshot-based visual QA on `frontend/artifacts/ui-smoke/01-projects-shell.png`, `frontend/artifacts/ui-smoke/02-projects-panel.png`, and `frontend/artifacts/ui-smoke/01-editor-shell.png`.
 
 ### 11.6 Spec and Plan Artifact Provenance
-- [ ] [11.6-01] Store spec/plan provenance metadata or references for workflow-generated artifacts.
+- [x] [11.6-01] Store spec/plan provenance metadata or references for workflow-generated artifacts.
+  - Evidence (2026-03-04): Evaluator `pass`; project-scoped workspace persistence now stores/restores `specProvenance` and `planProvenance` references in `frontend/src/store.ts`, with workflow-origin provenance stamping on spec proposal apply and plan-generation launch in `frontend/src/components/ProjectsPanel.tsx`, covered by frontend contract `CID:11.6.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_project_workspace_persistence_contracts.py`).
 - [ ] [11.6-02] Ensure provenance captures run linkage and timestamps, plus branch/commit when available.
 - [ ] [11.6-03] Persist and restore plan status lifecycle (`draft`, `approved`, `rejected`, `revision-requested`).
 

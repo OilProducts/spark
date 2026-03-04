@@ -50,8 +50,10 @@ export function ProjectsPanel() {
     const appendConversationHistoryEntry = useStore((state) => state.appendConversationHistoryEntry)
     const setSpecId = useStore((state) => state.setSpecId)
     const setSpecStatus = useStore((state) => state.setSpecStatus)
+    const setSpecProvenance = useStore((state) => state.setSpecProvenance)
     const setPlanId = useStore((state) => state.setPlanId)
     const setPlanStatus = useStore((state) => state.setPlanStatus)
+    const setPlanProvenance = useStore((state) => state.setPlanProvenance)
     const activeFlow = useStore((state) => state.activeFlow)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const setViewMode = useStore((state) => state.setViewMode)
@@ -255,6 +257,11 @@ export function ProjectsPanel() {
         const specId = activeProjectScope?.specId || buildProjectScopedArtifactId("spec", activeProjectPath)
         setSpecId(specId)
         setSpecStatus('draft')
+        setSpecProvenance({
+            source: "spec-edit-proposal",
+            referenceId: activeProjectProposalPreview.id,
+            capturedAt: new Date().toISOString(),
+        })
         appendConversationHistoryEntry({
             role: "system",
             content: `Applied spec edit proposal ${activeProjectProposalPreview.id} to ${specId}.`,
@@ -319,6 +326,11 @@ export function ProjectsPanel() {
             setSelectedRunId(runData.pipeline_id)
             setPlanId(activeProjectScope.planId || buildProjectScopedArtifactId("plan", activeProjectPath))
             setPlanStatus('draft')
+            setPlanProvenance({
+                source: "plan-generation-workflow",
+                referenceId: runData.pipeline_id,
+                capturedAt: new Date().toISOString(),
+            })
             appendConversationHistoryEntry({
                 role: "system",
                 content: `Launched plan-generation workflow from approved spec ${activeProjectScope.specId}.`,
