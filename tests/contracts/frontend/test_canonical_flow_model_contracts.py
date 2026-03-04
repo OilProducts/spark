@@ -16,6 +16,50 @@ const previewGraph = {
     goal: 'Ship release',
     'ext.graph_flag': 'true'
   },
+  defaults: {
+    node: {
+      timeout: '5m',
+      'ext.node_default': 'keep'
+    },
+    edge: {
+      weight: 3,
+      'ext.edge_default': 'keep'
+    }
+  },
+  subgraphs: [
+    {
+      id: 'cluster_review',
+      attrs: {
+        label: 'Review',
+        'ext.scope_flag': 'loop'
+      },
+      node_ids: ['author'],
+      defaults: {
+        node: {
+          thread_id: 'review-thread'
+        },
+        edge: {
+          weight: 7
+        }
+      },
+      subgraphs: [
+        {
+          id: 'cluster_inner',
+          attrs: {
+            label: 'Inner'
+          },
+          node_ids: ['author'],
+          defaults: {
+            node: {
+              timeout: '45s'
+            },
+            edge: {}
+          },
+          subgraphs: []
+        }
+      ]
+    }
+  ],
   nodes: [
     {
       id: 'author',
@@ -115,8 +159,16 @@ def test_canonical_flow_model_captures_preview_and_editor_state_item_11_1_01() -
     assert from_preview["nodes"][0]["attrs"]["ext.node_flag"] == "retain-me"
     assert from_preview["edges"][0]["attrs"]["ext.edge_flag"] == "retain-me"
     assert from_preview["rawDot"] == "digraph flow_model_probe { author -> approve }"
-    assert from_preview["defaults"] == {"node": {}, "edge": {}}
-    assert from_preview["subgraphs"] == []
+    assert from_preview["defaults"]["node"]["timeout"] == "5m"
+    assert from_preview["defaults"]["node"]["ext.node_default"] == "keep"
+    assert from_preview["defaults"]["edge"]["weight"] == 3
+    assert from_preview["defaults"]["edge"]["ext.edge_default"] == "keep"
+    assert from_preview["subgraphs"][0]["id"] == "cluster_review"
+    assert from_preview["subgraphs"][0]["attrs"]["ext.scope_flag"] == "loop"
+    assert from_preview["subgraphs"][0]["nodeIds"] == ["author"]
+    assert from_preview["subgraphs"][0]["defaults"]["node"]["thread_id"] == "review-thread"
+    assert from_preview["subgraphs"][0]["subgraphs"][0]["id"] == "cluster_inner"
+    assert from_preview["subgraphs"][0]["subgraphs"][0]["defaults"]["node"]["timeout"] == "45s"
 
     assert from_editor["graphAttrs"]["ext.graph_scope"] == "custom"
     assert from_editor["nodes"][0]["attrs"]["ext.node_scope"] == "custom"

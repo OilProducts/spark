@@ -257,6 +257,53 @@ line2"]
         assert plan.attrs["thread_id"].value == "loop-a"
         assert plan.attrs["timeout"].value.raw == "15m"
 
+    def test_retains_subgraph_and_default_scope_metadata_item_11_1_02(self):
+        dot = """
+        digraph ScopedMetadata {
+            node [timeout=5m]
+            edge [weight=2]
+
+            subgraph cluster_loop {
+                graph [label="Loop A", ui_extension.scope="loop"]
+                node [thread_id="loop-a"]
+                edge [weight=9]
+                plan [prompt="p"]
+                review [prompt="r", custom.node_behavior="retain"]
+
+                subgraph cluster_inner {
+                    node [timeout=45s]
+                    audit [prompt="a"]
+                    review -> audit [custom.edge_hint="check"]
+                }
+            }
+
+            start [shape=Mdiamond]
+            done [shape=Msquare]
+            start -> plan
+            audit -> done
+        }
+        """
+        graph = parse_dot(dot)
+
+        assert graph.defaults.node["timeout"].value.raw == "5m"
+        assert graph.defaults.edge["weight"].value == 2
+        assert len(graph.subgraphs) == 1
+
+        loop_scope = graph.subgraphs[0]
+        assert loop_scope.id == "cluster_loop"
+        assert loop_scope.attrs["label"].value == "Loop A"
+        assert loop_scope.attrs["ui_extension.scope"].value == "loop"
+        assert set(loop_scope.node_ids) == {"plan", "review", "audit"}
+        assert loop_scope.defaults.node["thread_id"].value == "loop-a"
+        assert loop_scope.defaults.edge["weight"].value == 9
+        assert len(loop_scope.subgraphs) == 1
+
+        inner_scope = loop_scope.subgraphs[0]
+        assert inner_scope.id == "cluster_inner"
+        assert set(inner_scope.node_ids) == {"audit"}
+        assert inner_scope.defaults.node["timeout"].value.raw == "45s"
+        assert inner_scope.defaults.edge["weight"].value == 9
+
     def test_node_defaults_apply_per_subsequent_declaration_without_aliasing(self):
         dot = """
         digraph ScopedDefaults {

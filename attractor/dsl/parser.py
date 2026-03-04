@@ -11,6 +11,8 @@ from .models import (
     DotEdge,
     DotGraph,
     DotNode,
+    DotScopeDefaults,
+    DotSubgraphScope,
     DotValueType,
     Duration,
     parse_typed_value,
@@ -48,9 +50,17 @@ class _Scope:
 
 @dataclass
 class _SubgraphState:
-    node_ids: set[str] = field(default_factory=set)
-    label_value: Optional[object] = None
-    label_line: int = 0
+    subgraph_id: Optional[str]
+    attrs: Dict[str, DotAttribute] = field(default_factory=dict)
+    node_ids: List[str] = field(default_factory=list)
+    node_id_set: set[str] = field(default_factory=set)
+    subgraphs: List[DotSubgraphScope] = field(default_factory=list)
+
+    def add_node_id(self, node_id: str) -> None:
+        if node_id in self.node_id_set:
+            return
+        self.node_id_set.add(node_id)
+        self.node_ids.append(node_id)
 
 
 def parse_dot(source: str) -> DotGraph:
@@ -83,6 +93,23 @@ def normalize_graph(graph: DotGraph) -> DotGraph:
         edge.line = 0
         for attr in edge.attrs.values():
             attr.line = 0
+
+    for attr in normalized.defaults.node.values():
+        attr.line = 0
+    for attr in normalized.defaults.edge.values():
+        attr.line = 0
+
+    def _normalize_subgraphs(subgraphs: List[DotSubgraphScope]) -> None:
+        for subgraph in subgraphs:
+            for attr in subgraph.attrs.values():
+                attr.line = 0
+            for attr in subgraph.defaults.node.values():
+                attr.line = 0
+            for attr in subgraph.defaults.edge.values():
+                attr.line = 0
+            _normalize_subgraphs(subgraph.subgraphs)
+
+    _normalize_subgraphs(normalized.subgraphs)
 
     return normalized
 
@@ -146,6 +173,7 @@ class _Parser:
             while self.accept("SEMI"):
                 pass
 
+        graph.defaults = _scope_defaults_from_scope(scope)
         return graph
 
     def parse_statement(
@@ -160,12 +188,12 @@ class _Parser:
 
         if tok.kind == "IDENT" and tok.value == "subgraph":
             self.advance()
-            # Optional subgraph id.
+            subgraph_id: Optional[str] = None
             if self.current().kind == "IDENT":
-                self.advance()
+                subgraph_id = self.advance().value
             self.expect("LBRACE")
             child_scope = scope.child()
-            child_subgraph = _SubgraphState()
+            child_subgraph = _SubgraphState(subgraph_id=subgraph_id)
             while True:
                 while self.accept("SEMI"):
                     pass
@@ -175,15 +203,28 @@ class _Parser:
                 while self.accept("SEMI"):
                     pass
 
-            derived_class = _derive_subgraph_class(child_subgraph.label_value)
+            label_attr = child_subgraph.attrs.get("label")
+            derived_class = _derive_subgraph_class(label_attr.value if label_attr else None)
             if derived_class:
                 for node_id in child_subgraph.node_ids:
                     node = graph.nodes.get(node_id)
                     if node:
-                        _append_class(node, derived_class, child_subgraph.label_line)
+                        _append_class(node, derived_class, label_attr.line if label_attr else 0)
+
+            subgraph_scope = DotSubgraphScope(
+                id=child_subgraph.subgraph_id,
+                attrs=_clone_attrs(child_subgraph.attrs),
+                node_ids=list(child_subgraph.node_ids),
+                defaults=_scope_defaults_from_scope(child_scope),
+                subgraphs=copy.deepcopy(child_subgraph.subgraphs),
+            )
 
             if subgraph_state is not None:
-                subgraph_state.node_ids.update(child_subgraph.node_ids)
+                for node_id in child_subgraph.node_ids:
+                    subgraph_state.add_node_id(node_id)
+                subgraph_state.subgraphs.append(subgraph_scope)
+            else:
+                graph.subgraphs.append(subgraph_scope)
             return
 
         if tok.kind == "IDENT" and tok.value == "graph" and self.peek().kind == "LBRACKET":
@@ -191,10 +232,8 @@ class _Parser:
             attrs = self.parse_attr_block()
             if not in_subgraph:
                 graph.graph_attrs.update(attrs)
-            elif subgraph_state is not None and "label" in attrs:
-                label_attr = attrs["label"]
-                subgraph_state.label_value = label_attr.value
-                subgraph_state.label_line = label_attr.line
+            elif subgraph_state is not None:
+                subgraph_state.attrs.update(attrs)
             return
 
         if tok.kind == "IDENT" and tok.value == "node" and self.peek().kind == "LBRACKET":
@@ -220,9 +259,13 @@ class _Parser:
                     value_type=value_type,
                     line=line,
                 )
-            elif subgraph_state is not None and key_tok.value == "label":
-                subgraph_state.label_value = value
-                subgraph_state.label_line = line
+            elif subgraph_state is not None:
+                subgraph_state.attrs[key_tok.value] = DotAttribute(
+                    key=key_tok.value,
+                    value=value,
+                    value_type=value_type,
+                    line=line,
+                )
             return
 
         if tok.kind == "IDENT":
@@ -290,7 +333,7 @@ class _Parser:
             existing.attrs = merged
             existing.explicit_attr_keys.update(stmt_attrs.keys())
             if subgraph_state is not None:
-                subgraph_state.node_ids.add(first.value)
+                subgraph_state.add_node_id(first.value)
             return
 
         graph.nodes[first.value] = DotNode(
@@ -300,7 +343,7 @@ class _Parser:
             explicit_attr_keys=set(stmt_attrs.keys()),
         )
         if subgraph_state is not None:
-            subgraph_state.node_ids.add(first.value)
+            subgraph_state.add_node_id(first.value)
 
     def parse_attr_block(self) -> Dict[str, DotAttribute]:
         self.expect("LBRACKET")
@@ -609,6 +652,13 @@ def _clone_attrs(attrs: Dict[str, DotAttribute]) -> Dict[str, DotAttribute]:
         )
         for key, attr in attrs.items()
     }
+
+
+def _scope_defaults_from_scope(scope: _Scope) -> DotScopeDefaults:
+    return DotScopeDefaults(
+        node=_clone_attrs(scope.node_defaults),
+        edge=_clone_attrs(scope.edge_defaults),
+    )
 
 
 def _derive_subgraph_class(label_value: Optional[object]) -> str:

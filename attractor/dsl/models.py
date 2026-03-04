@@ -48,11 +48,28 @@ class DotEdge:
 
 
 @dataclass
+class DotScopeDefaults:
+    node: Dict[str, DotAttribute] = field(default_factory=dict)
+    edge: Dict[str, DotAttribute] = field(default_factory=dict)
+
+
+@dataclass
+class DotSubgraphScope:
+    id: Optional[str]
+    attrs: Dict[str, DotAttribute] = field(default_factory=dict)
+    node_ids: List[str] = field(default_factory=list)
+    defaults: DotScopeDefaults = field(default_factory=DotScopeDefaults)
+    subgraphs: List["DotSubgraphScope"] = field(default_factory=list)
+
+
+@dataclass
 class DotGraph:
     graph_id: str
     graph_attrs: Dict[str, DotAttribute] = field(default_factory=dict)
     nodes: Dict[str, DotNode] = field(default_factory=dict)
     edges: List[DotEdge] = field(default_factory=list)
+    defaults: DotScopeDefaults = field(default_factory=DotScopeDefaults)
+    subgraphs: List[DotSubgraphScope] = field(default_factory=list)
 
     @property
     def goal(self) -> str:

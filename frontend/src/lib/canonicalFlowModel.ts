@@ -43,6 +43,8 @@ export interface CanonicalPreviewGraphPayload {
     nodes: Array<Record<string, unknown>>
     edges: Array<Record<string, unknown>>
     graph_attrs?: Record<string, unknown> | null
+    defaults?: Record<string, unknown> | null
+    subgraphs?: unknown[] | null
 }
 
 export interface CanonicalModelBuildOptions {
@@ -100,6 +102,50 @@ function cloneDefaultsScope(defaults?: Partial<CanonicalDefaultsScope>): Canonic
     }
 }
 
+function parseDefaultsScope(defaults: unknown): CanonicalDefaultsScope {
+    const defaultsRecord = asRecord(defaults)
+    return {
+        node: cloneCanonicalAttrMap(asRecord(defaultsRecord?.node)),
+        edge: cloneCanonicalAttrMap(asRecord(defaultsRecord?.edge)),
+    }
+}
+
+function parseNodeIds(nodeIdsValue: unknown): string[] {
+    if (!Array.isArray(nodeIdsValue)) {
+        return []
+    }
+    return nodeIdsValue.filter((nodeId): nodeId is string => typeof nodeId === 'string')
+}
+
+function parseCanonicalSubgraph(subgraphValue: unknown): CanonicalSubgraph | null {
+    const record = asRecord(subgraphValue)
+    if (!record) {
+        return null
+    }
+
+    const nestedValues = Array.isArray(record.subgraphs) ? record.subgraphs : []
+    const nestedSubgraphs = nestedValues
+        .map((nestedSubgraphValue) => parseCanonicalSubgraph(nestedSubgraphValue))
+        .filter((subgraph): subgraph is CanonicalSubgraph => subgraph !== null)
+
+    return {
+        id: typeof record.id === 'string' ? record.id : null,
+        attrs: cloneCanonicalAttrMap(asRecord(record.attrs)),
+        nodeIds: parseNodeIds(record.nodeIds ?? record.node_ids),
+        defaults: parseDefaultsScope(record.defaults),
+        subgraphs: nestedSubgraphs,
+    }
+}
+
+function parseCanonicalSubgraphs(subgraphsValue: unknown): CanonicalSubgraph[] {
+    if (!Array.isArray(subgraphsValue)) {
+        return []
+    }
+    return subgraphsValue
+        .map((subgraphValue) => parseCanonicalSubgraph(subgraphValue))
+        .filter((subgraph): subgraph is CanonicalSubgraph => subgraph !== null)
+}
+
 function cloneSubgraph(subgraph: CanonicalSubgraph): CanonicalSubgraph {
     return {
         id: subgraph.id,
@@ -152,8 +198,8 @@ export function buildCanonicalFlowModelFromPreviewGraph(
         graphAttrs: cloneCanonicalAttrMap(graph.graph_attrs),
         nodes,
         edges,
-        defaults: cloneDefaultsScope(options?.defaults),
-        subgraphs: (options?.subgraphs ?? []).map(cloneSubgraph),
+        defaults: cloneDefaultsScope(options?.defaults ?? parseDefaultsScope(graph.defaults)),
+        subgraphs: (options?.subgraphs ?? parseCanonicalSubgraphs(graph.subgraphs)).map(cloneSubgraph),
         rawDot: options?.rawDot ?? null,
     }
 }

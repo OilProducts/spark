@@ -1345,9 +1345,34 @@ def _graph_payload(graph) -> dict:
             return value.raw
         return value
 
+    def _all_attrs_payload(attrs: Dict[str, object]) -> Dict[str, object]:
+        return {key: _attr_value(attrs, key) for key in attrs}
+
+    def _merge_extension_attrs(payload: Dict[str, object], attrs: Dict[str, object]) -> Dict[str, object]:
+        merged = dict(payload)
+        for key, value in _all_attrs_payload(attrs).items():
+            if key not in merged:
+                merged[key] = value
+        return merged
+
+    def _defaults_payload(scope) -> dict:
+        return {
+            "node": _all_attrs_payload(scope.node),
+            "edge": _all_attrs_payload(scope.edge),
+        }
+
+    def _subgraph_payload(scope) -> dict:
+        return {
+            "id": scope.id,
+            "attrs": _all_attrs_payload(scope.attrs),
+            "node_ids": list(scope.node_ids),
+            "defaults": _defaults_payload(scope.defaults),
+            "subgraphs": [_subgraph_payload(child) for child in scope.subgraphs],
+        }
+
     return {
         "nodes": [
-            {
+            _merge_extension_attrs({
                 "id": n.node_id,
                 "label": _attr_value(n.attrs, "label", n.node_id),
                 "shape": _attr_value(n.attrs, "shape"),
@@ -1377,10 +1402,10 @@ def _graph_payload(graph) -> dict:
                 "manager.stop_condition": _attr_value(n.attrs, "manager.stop_condition"),
                 "manager.actions": _attr_value(n.attrs, "manager.actions"),
                 "human.default_choice": _attr_value(n.attrs, "human.default_choice"),
-            }
+            }, n.attrs)
             for n in graph.nodes.values()
         ],
-        "graph_attrs": {
+        "graph_attrs": _merge_extension_attrs({
             "goal": _attr_value(graph.graph_attrs, "goal"),
             "label": _attr_value(graph.graph_attrs, "label", ""),
             "model_stylesheet": _attr_value(graph.graph_attrs, "model_stylesheet"),
@@ -1395,9 +1420,9 @@ def _graph_payload(graph) -> dict:
             "ui_default_llm_model": _attr_value(graph.graph_attrs, "ui_default_llm_model"),
             "ui_default_llm_provider": _attr_value(graph.graph_attrs, "ui_default_llm_provider"),
             "ui_default_reasoning_effort": _attr_value(graph.graph_attrs, "ui_default_reasoning_effort"),
-        },
+        }, graph.graph_attrs),
         "edges": [
-            {
+            _merge_extension_attrs({
                 "from": e.source,
                 "to": e.target,
                 "label": _attr_value(e.attrs, "label"),
@@ -1406,9 +1431,11 @@ def _graph_payload(graph) -> dict:
                 "fidelity": _attr_value(e.attrs, "fidelity"),
                 "thread_id": _attr_value(e.attrs, "thread_id"),
                 "loop_restart": _attr_value(e.attrs, "loop_restart"),
-            }
+            }, e.attrs)
             for e in graph.edges
         ],
+        "defaults": _defaults_payload(graph.defaults),
+        "subgraphs": [_subgraph_payload(subgraph) for subgraph in graph.subgraphs],
     }
 
 
