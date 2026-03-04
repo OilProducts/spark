@@ -111,6 +111,11 @@ interface PendingInterviewGate {
     nodeId: string | null
     stageIndex: number | null
     prompt: string
+    questionId: string | null
+    options: Array<{
+        label: string
+        value: string
+    }>
 }
 
 const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
@@ -601,6 +606,37 @@ const runBelongsToProjectScope = (run: RunRecord, projectPath: string) => {
     return runWorkingDirectory.startsWith(`${normalizedProjectPath}/`)
 }
 
+const asStringOption = (value: unknown): { label: string; value: string } | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null
+    }
+    const candidate = value as Record<string, unknown>
+    const rawLabel = typeof candidate.label === 'string' ? candidate.label.trim() : ''
+    const rawValue = typeof candidate.value === 'string' ? candidate.value.trim() : ''
+    if (!rawLabel || !rawValue) {
+        return null
+    }
+    return {
+        label: rawLabel,
+        value: rawValue,
+    }
+}
+
+const pendingGateOptionsFromPayload = (payload: Record<string, unknown>) => {
+    const rawOptions = Array.isArray(payload.options) ? payload.options : []
+    const seenValues = new Set<string>()
+    const options: Array<{ label: string; value: string }> = []
+    for (const rawOption of rawOptions) {
+        const option = asStringOption(rawOption)
+        if (!option || seenValues.has(option.value)) {
+            continue
+        }
+        seenValues.add(option.value)
+        options.push(option)
+    }
+    return options
+}
+
 export function RunsPanel() {
     const viewMode = useStore((state) => state.viewMode)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -641,6 +677,9 @@ export function RunsPanel() {
     const [timelineNodeStageFilter, setTimelineNodeStageFilter] = useState('')
     const [timelineCategoryFilter, setTimelineCategoryFilter] = useState<'all' | TimelineEventCategory>('all')
     const [timelineSeverityFilter, setTimelineSeverityFilter] = useState<'all' | TimelineSeverity>('all')
+    const [pendingGateActionError, setPendingGateActionError] = useState<string | null>(null)
+    const [submittingGateIds, setSubmittingGateIds] = useState<Record<string, boolean>>({})
+    const [answeredGateIds, setAnsweredGateIds] = useState<Record<string, boolean>>({})
     const timelineSequenceRef = useRef(0)
     const [metadataStaleAfterMs] = useState(() => {
         const override = (globalThis as typeof globalThis & { __RUNS_METADATA_STALE_AFTER_MS__?: unknown })
@@ -956,6 +995,12 @@ export function RunsPanel() {
     const selectedRunTimelineId = selectedRunSummary?.run_id ?? null
 
     useEffect(() => {
+        setPendingGateActionError(null)
+        setSubmittingGateIds({})
+        setAnsweredGateIds({})
+    }, [selectedRunTimelineId])
+
+    useEffect(() => {
         if (viewMode !== 'runs' || !selectedRunTimelineId) {
             timelineSequenceRef.current = 0
             setTimelineEvents([])
@@ -1207,13 +1252,20 @@ export function RunsPanel() {
                 continue
             }
             const entityKey = timelineEntityKey(event) || `event:${event.id}`
-            latestInterviewEventByEntity.set(entityKey, event)
+            if (!latestInterviewEventByEntity.has(entityKey)) {
+                latestInterviewEventByEntity.set(entityKey, event)
+            }
         }
 
         const pendingGates: PendingInterviewGate[] = []
         const pendingGateKeys = new Set<string>()
         for (const event of latestInterviewEventByEntity.values()) {
             if (event.type === 'InterviewStarted' || event.type === 'human_gate') {
+                const questionIdValue = event.payload.question_id
+                const questionId = typeof questionIdValue === 'string' && questionIdValue.trim().length > 0
+                    ? questionIdValue.trim()
+                    : null
+                const options = pendingGateOptionsFromPayload(event.payload)
                 const questionPrompt = event.payload.question
                 const gatePrompt = event.payload.prompt
                 const prompt = typeof questionPrompt === 'string' && questionPrompt.trim().length > 0
@@ -1231,11 +1283,66 @@ export function RunsPanel() {
                     nodeId: event.nodeId,
                     stageIndex: event.stageIndex,
                     prompt,
+                    questionId,
+                    options,
                 })
             }
         }
         return pendingGates
     }, [timelineEvents])
+    const visiblePendingInterviewGates = useMemo(
+        () => pendingInterviewGates.filter((gate) => !gate.questionId || !answeredGateIds[gate.questionId]),
+        [pendingInterviewGates, answeredGateIds]
+    )
+
+    const submitPendingGateAnswer = useCallback(async (gate: PendingInterviewGate, selectedValue: string) => {
+        if (!selectedRunTimelineId || !gate.questionId || !selectedValue.trim()) {
+            return
+        }
+        setPendingGateActionError(null)
+        setSubmittingGateIds((previous) => ({
+            ...previous,
+            [gate.questionId!]: true,
+        }))
+        try {
+            const res = await fetch(
+                `/pipelines/${encodeURIComponent(selectedRunTimelineId)}/questions/${encodeURIComponent(gate.questionId)}/answer`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        question_id: gate.questionId,
+                        selected_value: selectedValue,
+                    }),
+                }
+            )
+            if (!res.ok) {
+                let detail: string | null = null
+                try {
+                    const errorBody = await res.json()
+                    detail = asErrorDetail(errorBody)
+                } catch {
+                    detail = null
+                }
+                const detailSuffix = detail ? `: ${detail}` : ''
+                setPendingGateActionError(`Unable to submit answer (HTTP ${res.status})${detailSuffix}.`)
+                return
+            }
+            setAnsweredGateIds((previous) => ({
+                ...previous,
+                [gate.questionId!]: true,
+            }))
+        } catch (err) {
+            console.error(err)
+            setPendingGateActionError('Unable to submit answer. Check connection/backend and retry.')
+        } finally {
+            setSubmittingGateIds((previous) => {
+                const next = { ...previous }
+                delete next[gate.questionId!]
+                return next
+            })
+        }
+    }, [selectedRunTimelineId])
 
     const openRun = (run: RunRecord) => {
         setSelectedRunId(run.run_id)
@@ -1693,16 +1800,44 @@ export function RunsPanel() {
                                 {timelineError}
                             </div>
                         )}
-                        {!timelineError && pendingInterviewGates.length > 0 && (
+                        {!timelineError && visiblePendingInterviewGates.length > 0 && (
                             <div data-testid="run-pending-human-gates-panel" className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
                                 <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">
                                     Pending Human Gates
                                 </div>
+                                {pendingGateActionError && (
+                                    <div
+                                        data-testid="run-pending-human-gate-answer-error"
+                                        className="mt-2 rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive"
+                                    >
+                                        {pendingGateActionError}
+                                    </div>
+                                )}
                                 <ul className="mt-2 space-y-1">
-                                    {pendingInterviewGates.map((gate) => (
+                                    {visiblePendingInterviewGates.map((gate) => (
                                         <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-xs text-amber-900">
-                                            {gate.prompt}
-                                            {gate.nodeId ? ` (${gate.nodeId}${gate.stageIndex !== null ? `, index ${gate.stageIndex}` : ''})` : ''}
+                                            <div>
+                                                {gate.prompt}
+                                                {gate.nodeId ? ` (${gate.nodeId}${gate.stageIndex !== null ? `, index ${gate.stageIndex}` : ''})` : ''}
+                                            </div>
+                                            {gate.questionId && gate.options.length > 0 && (
+                                                <div className="mt-1 flex flex-wrap gap-1.5">
+                                                    {gate.options.map((option) => (
+                                                        <button
+                                                            key={option.value}
+                                                            type="button"
+                                                            data-testid={`run-pending-human-gate-answer-${option.value}`}
+                                                            onClick={() => {
+                                                                void submitPendingGateAnswer(gate, option.value)
+                                                            }}
+                                                            disabled={submittingGateIds[gate.questionId!] === true}
+                                                            className="inline-flex h-6 items-center rounded border border-amber-500/50 bg-white px-2 text-[11px] font-medium text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                                        >
+                                                            {option.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
                                         </li>
                                     ))}
                                 </ul>

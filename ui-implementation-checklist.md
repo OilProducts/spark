@@ -265,7 +265,8 @@ Status key:
 ### 10.1 Prompt Handling
 - [x] [10.1-01] Ensure pending human gates are discoverable in execution and run views.
   - Evidence (2026-03-04): Evaluator `pass`; `RunsPanel` now surfaces pending gates from both `InterviewStarted` and `human_gate` events with duplicate suppression, covered by frontend contract `CID:10.1.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) and UI smoke visual QA screenshots `frontend/artifacts/ui-smoke/10a-human-gate-discoverability.png` and `frontend/artifacts/ui-smoke/10b-human-gate-discoverability-runs.png`.
-- [ ] [10.1-02] Ensure operator can answer prompts without leaving UI.
+- [x] [10.1-02] Ensure operator can answer prompts without leaving UI.
+  - Evidence (2026-03-04): Evaluator `pass`; `RunsPanel` now renders in-panel answer actions for pending human gates and submits selections to `/pipelines/{id}/questions/{question_id}/answer`, covered by frontend contract `CID:10.1.02` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) and UI smoke visual QA screenshot `frontend/artifacts/ui-smoke/10b-human-gate-discoverability-runs.png`.
 
 ### 10.2 Question Types
 - [ ] [10.2-01] Render `MULTIPLE_CHOICE` interactions with option metadata.

@@ -603,4 +603,145 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('execution-pending-human-gate-banner')).toHaveTextContent('Pending human gate')
     expect(screen.getByTestId('execution-pending-human-gate-banner')).toHaveTextContent(pendingPrompt)
   })
+
+  it('[CID:10.1.02] lets operator answer pending human gates from runs view controls', async () => {
+    const runId = 'run-contract-human-gate-answer'
+    const gateId = 'gate-approve'
+    const pendingPrompt = 'Approve production deploy?'
+    const runApiPath = `/pipelines/${encodeURIComponent(runId)}`
+    const answerPath = `${runApiPath}/questions/${encodeURIComponent(gateId)}/answer`
+    const runRecord = {
+      run_id: runId,
+      flow_name: 'contract-behavior.dot',
+      status: 'running',
+      result: 'running',
+      working_directory: '/tmp/project-contract-behavior/workspace',
+      project_path: '/tmp/project-contract-behavior',
+      git_branch: 'main',
+      git_commit: 'abc1234',
+      model: 'gpt-5',
+      started_at: '2026-03-04T01:00:00Z',
+      ended_at: null,
+      last_error: '',
+      token_usage: 0,
+    }
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input)
+      if (url.endsWith('/runs')) {
+        return jsonResponse({ runs: [runRecord] })
+      }
+      if (url.endsWith(`${runApiPath}/checkpoint`)) {
+        return jsonResponse({
+          pipeline_id: runId,
+          checkpoint: {
+            current_node: 'review_gate',
+            completed_nodes: ['start'],
+            retry_counts: {},
+          },
+        })
+      }
+      if (url.endsWith(`${runApiPath}/context`)) {
+        return jsonResponse({
+          pipeline_id: runId,
+          context: { 'graph.goal': 'Human gate answerability contract' },
+        })
+      }
+      if (url.endsWith(`${runApiPath}/artifacts`)) {
+        return jsonResponse({
+          pipeline_id: runId,
+          artifacts: [],
+        })
+      }
+      if (url.endsWith(`${runApiPath}/graph`)) {
+        return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
+          status: 200,
+          headers: { 'Content-Type': 'image/svg+xml' },
+        })
+      }
+      if (url.endsWith(answerPath)) {
+        return jsonResponse({ status: 'accepted', pipeline_id: runId, question_id: gateId })
+      }
+      return jsonResponse({}, { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    class MockEventSource {
+      url: string
+      withCredentials = false
+      readyState = 1
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      constructor(url: string) {
+        this.url = url
+        if (!url.includes(`${runApiPath}/events`)) {
+          return
+        }
+        setTimeout(() => {
+          this.onopen?.(new Event('open'))
+          this.onmessage?.(new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'human_gate',
+              question_id: gateId,
+              node_id: 'review_gate',
+              prompt: pendingPrompt,
+              options: [
+                { label: 'Approve', value: 'approve' },
+                { label: 'Reject', value: 'reject' },
+              ],
+            }),
+          }))
+        }, 0)
+      }
+
+      close() {
+        this.readyState = 2
+      }
+
+      addEventListener() {}
+
+      removeEventListener() {}
+
+      dispatchEvent() {
+        return false
+      }
+    }
+
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        viewMode: 'runs',
+        selectedRunId: runId,
+        runtimeStatus: 'running',
+      }))
+    })
+
+    render(<RunsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
+    })
+
+    const answerButton = screen.getByTestId('run-pending-human-gate-answer-approve')
+    fireEvent.click(answerButton)
+
+    await waitFor(() => {
+      const submissionCall = fetchMock.mock.calls.find(([input]) => requestUrl(input as RequestInfo | URL).endsWith(answerPath))
+      expect(submissionCall).toBeTruthy()
+      const [, init] = submissionCall as [RequestInfo | URL, RequestInit | undefined]
+      expect(init?.method).toBe('POST')
+      expect(init?.body).toBe(JSON.stringify({
+        question_id: gateId,
+        selected_value: 'approve',
+      }))
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-pending-human-gate-item')).not.toBeInTheDocument()
+    })
+  })
 })
