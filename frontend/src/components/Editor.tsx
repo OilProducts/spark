@@ -596,6 +596,12 @@ export function Editor() {
 
             try {
                 const preview = await requestPreview(rawDotDraft);
+                if (preview.status === 'validation_error' || (preview.errors?.length ?? 0) > 0) {
+                    setRawHandoffError(
+                        'Raw DOT edit conflicts with structured mode assumptions. Resolve validation errors before switching modes.',
+                    );
+                    return;
+                }
                 const hydrated = await hydrateFromPreview(preview, rawDotDraft);
                 if (!hydrated) {
                     setRawHandoffError('Safe handoff requires valid DOT. Preview response did not include a graph.');

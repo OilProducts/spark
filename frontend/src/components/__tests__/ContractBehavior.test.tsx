@@ -2350,6 +2350,106 @@ digraph contract_behavior {
     expect(rawHandoffSave).toContain('x_unsurfaced_edge="keep-edge"')
   })
 
+  it('[CID:11.3.03] blocks raw-to-structured handoff when raw edits conflict with structured assumptions', async () => {
+    const initialDot = 'digraph contract_behavior { start [label="Start"]; }'
+    const previewOkPayload = {
+      status: 'ok',
+      graph: {
+        graph_attrs: {},
+        defaults: {
+          node: {},
+          edge: {},
+        },
+        subgraphs: [],
+        nodes: [
+          {
+            id: 'start',
+            label: 'Start',
+            shape: 'box',
+          },
+        ],
+        edges: [],
+      },
+      diagnostics: [],
+      errors: [],
+    }
+    const previewConflictPayload = {
+      status: 'validation_error',
+      graph: {
+        graph_attrs: {},
+        defaults: {
+          node: {},
+          edge: {},
+        },
+        subgraphs: [],
+        nodes: [
+          {
+            id: 'start',
+            label: 'Start',
+            shape: 'box',
+          },
+        ],
+        edges: [
+          {
+            from: 'start',
+            to: 'missing',
+          },
+        ],
+      },
+      diagnostics: [
+        {
+          rule_id: 'edge_target_exists',
+          severity: 'error',
+          message: 'edge target does not exist',
+          edge: ['start', 'missing'],
+        },
+      ],
+      errors: [
+        {
+          rule_id: 'edge_target_exists',
+          severity: 'error',
+          message: 'edge target does not exist',
+          edge: ['start', 'missing'],
+        },
+      ],
+    }
+    let previewRequestCount = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input)
+      if (url.endsWith('/api/flows/contract-behavior.dot')) {
+        return jsonResponse({ content: initialDot })
+      }
+      if (url.endsWith('/preview')) {
+        const payload = previewRequestCount === 0 ? previewOkPayload : previewConflictPayload
+        previewRequestCount += 1
+        return jsonResponse(payload)
+      }
+      if (url.endsWith('/api/flows') && init?.method === 'POST') {
+        return jsonResponse({ status: 'saved' })
+      }
+      return jsonResponse({}, { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const user = userEvent.setup()
+    renderWithFlowProvider(<Editor />)
+
+    await screen.findByTestId('editor-mode-toggle')
+    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
+    const rawEditor = await screen.findByTestId('raw-dot-editor')
+    fireEvent.change(rawEditor, { target: { value: 'digraph contract_behavior { start; start -> missing; }' } })
+
+    await user.click(screen.getByRole('button', { name: 'Structured' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('raw-dot-editor')).toBeVisible()
+    })
+    expect(screen.getByTestId('raw-dot-handoff-error')).toHaveTextContent(
+      'Raw DOT edit conflicts with structured mode assumptions.',
+    )
+    expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled()
+  })
+
   it('[CID:10.3.01] exposes human.default_choice authoring and timeout-default visibility in node inspector', async () => {
     act(() => {
       useStore.getState().setSelectedNodeId('gate')
