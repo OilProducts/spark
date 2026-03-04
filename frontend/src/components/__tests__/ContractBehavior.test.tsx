@@ -82,26 +82,7 @@ const TaskNodeHarness = ({ nodes, edges = [] }: { nodes: Node[]; edges?: Edge[] 
 const renderTaskNode = (node: Node) => renderWithFlowProvider(<TaskNodeHarness nodes={[node]} />)
 
 describe('Frontend contract behavior', () => {
-  beforeEach(() => {
-    resetContractState()
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        new Response(JSON.stringify(['contract-behavior.dot']), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
-    )
-  })
-
-  afterEach(() => {
-    cleanup()
-    vi.restoreAllMocks()
-    vi.unstubAllGlobals()
-  })
-
-  it('renders edge inspector controls and updates condition preview feedback from diagnostics', async () => {
+  const renderSelectedEdgeSidebar = () => {
     act(() => {
       useStore.getState().setSelectedNodeId(null)
       useStore.getState().setSelectedEdgeId('edge-start-task')
@@ -128,7 +109,57 @@ describe('Frontend contract behavior', () => {
     ]
 
     renderSidebar(nodes, edges)
+  }
 
+  const renderManagerSidebarInspector = () => {
+    act(() => {
+      useStore.getState().setSelectedNodeId('manager')
+      useStore.getState().setSelectedEdgeId(null)
+      useStore.getState().setGraphAttrs({
+        'stack.child_dotfile': 'child/flow.dot',
+        'stack.child_workdir': '/tmp/child',
+      })
+    })
+
+    const nodes: Node[] = [
+      {
+        id: 'manager',
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Manager',
+          shape: 'house',
+          type: 'stack.manager_loop',
+          'manager.poll_interval': '25ms',
+          'manager.max_cycles': 3,
+          'manager.stop_condition': 'child.status == "success"',
+          'manager.actions': 'observe,steer',
+        },
+      },
+    ]
+    renderSidebar(nodes, [])
+  }
+
+  beforeEach(() => {
+    resetContractState()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify(['contract-behavior.dot']), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
+    renderSelectedEdgeSidebar()
     const edgeForm = await screen.findByTestId('edge-structured-form')
     expect(edgeForm).toBeVisible()
     expect(within(edgeForm).getByPlaceholderText('e.g. Approve')).toBeVisible()
@@ -136,6 +167,12 @@ describe('Frontend contract behavior', () => {
     expect(within(edgeForm).getByPlaceholderText('0')).toBeVisible()
     expect(within(edgeForm).getByPlaceholderText('full | truncate | compact | summary:low')).toBeVisible()
     expect(within(edgeForm).getByLabelText('Loop Restart')).toBeVisible()
+  })
+
+  it('[CID:6.3.02] renders edge condition syntax hints and diagnostics preview feedback', async () => {
+    renderSelectedEdgeSidebar()
+    await screen.findByTestId('edge-structured-form')
+
     expect(screen.getByTestId('edge-condition-syntax-hints')).toHaveTextContent('Use && to join clauses')
     expect(screen.getByTestId('edge-condition-syntax-hints')).toHaveTextContent(
       'Supported keys: outcome, preferred_label, context.<path>',
@@ -163,7 +200,7 @@ describe('Frontend contract behavior', () => {
     })
   })
 
-  it('renders advanced node controls for codergen and wait.human in sidebar inspector', async () => {
+  it('[CID:6.2.02] renders advanced node controls for codergen and wait.human in sidebar inspector', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().setSelectedNodeId('task')
@@ -209,42 +246,26 @@ describe('Frontend contract behavior', () => {
     })
   })
 
-  it('renders manager-loop authoring controls and child-linkage affordance in sidebar inspector', async () => {
-    act(() => {
-      useStore.getState().setSelectedNodeId('manager')
-      useStore.getState().setSelectedEdgeId(null)
-      useStore.getState().setGraphAttrs({
-        'stack.child_dotfile': 'child/flow.dot',
-        'stack.child_workdir': '/tmp/child',
-      })
-    })
+  it('[CID:6.2.01] renders manager-loop authoring controls in sidebar inspector', async () => {
+    renderManagerSidebarInspector()
+    expect(await screen.findByText('Manager Poll Interval')).toBeVisible()
+    expect(screen.getByRole('option', { name: 'Manager Loop' })).toBeInTheDocument()
+    expect(document.querySelector('#node-handler-type-options option[value="stack.manager_loop"]')).toBeTruthy()
+  })
 
-    const nodes: Node[] = [
-      {
-        id: 'manager',
-        position: { x: 0, y: 0 },
-        data: {
-          label: 'Manager',
-          shape: 'house',
-          type: 'stack.manager_loop',
-          'manager.poll_interval': '25ms',
-          'manager.max_cycles': 3,
-          'manager.stop_condition': 'child.status == "success"',
-          'manager.actions': 'observe,steer',
-        },
-      },
-    ]
-
-    renderSidebar(nodes, [])
-
+  it('[CID:6.7.02] renders manager-loop control fields in sidebar inspector', async () => {
+    renderManagerSidebarInspector()
     expect(await screen.findByText('Manager Poll Interval')).toBeVisible()
     expect(screen.getByText('Manager Max Cycles')).toBeVisible()
     expect(screen.getByText('Manager Stop Condition')).toBeVisible()
     expect(screen.getByText('Manager Actions')).toBeVisible()
-    expect(screen.getByRole('option', { name: 'Manager Loop' })).toBeInTheDocument()
-    expect(document.querySelector('#node-handler-type-options option[value="stack.manager_loop"]')).toBeTruthy()
+  })
+
+  it('[CID:6.7.03] renders manager-loop child-linkage affordance in sidebar inspector', async () => {
+    renderManagerSidebarInspector()
 
     const childLinkage = screen.getByTestId('manager-child-linkage')
+    expect(await screen.findByText('Manager Poll Interval')).toBeVisible()
     expect(childLinkage).toHaveTextContent('Child Pipeline Linkage')
     expect(childLinkage).toHaveTextContent('stack.child_dotfile')
     expect(childLinkage).toHaveTextContent('child/flow.dot')
@@ -256,23 +277,11 @@ describe('Frontend contract behavior', () => {
     expect(useStore.getState().selectedEdgeId).toBeNull()
   })
 
-  it('renders graph settings feedback for stylesheet diagnostics and tool hook warnings', async () => {
+  it('[CID:6.5.02] renders stylesheet diagnostics feedback in graph settings', async () => {
     const user = userEvent.setup()
     renderWithFlowProvider(<GraphSettings inline />)
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
-    const preHookInput = screen.getByTestId('graph-attr-input-tool_hooks.pre')
-    const postHookInput = screen.getByTestId('graph-attr-input-tool_hooks.post')
-    expect(preHookInput).toBeVisible()
-    expect(postHookInput).toBeVisible()
-
-    fireEvent.change(preHookInput, { target: { value: "echo 'unterminated" } })
-    fireEvent.change(postHookInput, { target: { value: 'echo "unterminated' } })
-
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-attr-warning-tool_hooks.pre')).toHaveTextContent('single quote')
-      expect(screen.getByTestId('graph-attr-warning-tool_hooks.post')).toHaveTextContent('double quote')
-    })
     expect(screen.getByTestId('graph-model-stylesheet-selector-guidance')).toBeVisible()
 
     act(() => {
@@ -291,9 +300,78 @@ describe('Frontend contract behavior', () => {
     )
   })
 
-  it('renders node-level tool hook override controls and warnings in sidebar and node toolbar', async () => {
+  it('[CID:6.6.01] renders graph-scope tool hook fields in graph settings', async () => {
+    const user = userEvent.setup()
+    renderWithFlowProvider(<GraphSettings inline />)
+
+    await user.click(screen.getByTestId('graph-advanced-toggle'))
+    const preHookInput = screen.getByTestId('graph-attr-input-tool_hooks.pre')
+    const postHookInput = screen.getByTestId('graph-attr-input-tool_hooks.post')
+    expect(preHookInput).toBeVisible()
+    expect(postHookInput).toBeVisible()
+  })
+
+  it('[CID:6.6.02] renders node-level tool hook override controls in sidebar and node toolbar', async () => {
     const user = userEvent.setup()
     act(() => {
+      useStore.getState().setSelectedNodeId('tool_node')
+      useStore.getState().setSelectedEdgeId(null)
+    })
+
+    const toolNodeData = {
+      label: 'Tool',
+      shape: 'parallelogram',
+      type: 'tool',
+      tool_command: 'echo run',
+      'tool_hooks.pre': 'echo node pre',
+      'tool_hooks.post': 'echo node post',
+    }
+    renderSidebar([
+      {
+        id: 'tool_node',
+        position: { x: 0, y: 0 },
+        data: toolNodeData,
+      },
+    ], [])
+
+    await user.click(await screen.findByRole('button', { name: 'Show Advanced' }))
+    expect(screen.getByTestId('node-attr-input-tool_hooks.pre')).toBeVisible()
+    expect(screen.getByTestId('node-attr-input-tool_hooks.post')).toBeVisible()
+
+    cleanup()
+    act(() => {
+      resetContractState()
+    })
+    renderTaskNode({
+      id: 'tool_node',
+      type: 'task',
+      position: { x: 0, y: 0 },
+      selected: true,
+      data: toolNodeData,
+    })
+
+    fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
+    fireEvent.click(screen.getByText('Show Advanced', { selector: 'button' }))
+
+    expect(screen.getByTestId('node-toolbar-attr-input-tool_hooks.pre')).toBeVisible()
+    expect(screen.getByTestId('node-toolbar-attr-input-tool_hooks.post')).toBeVisible()
+  })
+
+  it('[CID:6.6.03] renders tool hook warning surfaces in graph settings and node editors', async () => {
+    const user = userEvent.setup()
+    renderWithFlowProvider(<GraphSettings inline />)
+
+    await user.click(screen.getByTestId('graph-advanced-toggle'))
+    fireEvent.change(screen.getByTestId('graph-attr-input-tool_hooks.pre'), { target: { value: "echo 'unterminated" } })
+    fireEvent.change(screen.getByTestId('graph-attr-input-tool_hooks.post'), { target: { value: 'echo "unterminated' } })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('graph-attr-warning-tool_hooks.pre')).toHaveTextContent('single quote')
+      expect(screen.getByTestId('graph-attr-warning-tool_hooks.post')).toHaveTextContent('double quote')
+    })
+    act(() => {
+      cleanup()
+      resetContractState()
       useStore.getState().setSelectedNodeId('tool_node')
       useStore.getState().setSelectedEdgeId(null)
     })
@@ -306,19 +384,15 @@ describe('Frontend contract behavior', () => {
       'tool_hooks.pre': 'echo hi\necho there',
       'tool_hooks.post': "echo 'unterminated",
     }
-
-    const sidebarNodes: Node[] = [
+    renderSidebar([
       {
         id: 'tool_node',
         position: { x: 0, y: 0 },
         data: toolNodeData,
       },
-    ]
-    renderSidebar(sidebarNodes, [])
+    ], [])
 
     await user.click(await screen.findByRole('button', { name: 'Show Advanced' }))
-    expect(screen.getByTestId('node-attr-input-tool_hooks.pre')).toBeVisible()
-    expect(screen.getByTestId('node-attr-input-tool_hooks.post')).toBeVisible()
     expect(screen.getByTestId('node-attr-warning-tool_hooks.pre')).toHaveTextContent('single line')
     expect(screen.getByTestId('node-attr-warning-tool_hooks.post')).toHaveTextContent('single quote')
 
@@ -343,7 +417,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('node-toolbar-attr-warning-tool_hooks.post')).toHaveTextContent('single quote')
   })
 
-  it('renders manager-loop shape and type options in task node toolbar', () => {
+  it('[CID:6.7.01] renders manager-loop shape and type options in task node toolbar', () => {
     resetContractState()
     renderTaskNode({
       id: 'manager',

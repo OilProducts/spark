@@ -7,24 +7,45 @@ from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 
+FLOW = """
+digraph G {
+    start [shape=Mdiamond]
+    done [shape=Msquare]
+    start -> done
+}
+"""
 
-def _seed_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, run_id: str) -> Path:
+
+def _close_task_immediately(coro):
+    coro.close()
+
+    class _DummyTask:
+        pass
+
+    return _DummyTask()
+
+
+def _seed_run(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> tuple[str, Path]:
     runs_root = tmp_path / "runs"
     monkeypatch.setattr(server, "RUNS_ROOT", runs_root)
-
-    server._write_run_meta(
-        server.RunRecord(
-            run_id=run_id,
-            flow_name="Flow",
-            status="success",
-            result="success",
-            working_directory=str(tmp_path / "work"),
-            model="test-model",
-            started_at="2026-01-01T00:00:00Z",
-            ended_at="2026-01-01T00:01:00Z",
-        )
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
+    response = api_client.post(
+        "/pipelines",
+        json={
+            "flow_content": FLOW,
+            "working_directory": str(tmp_path / "work"),
+            "backend": "codex",
+        },
     )
-    return runs_root / run_id
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "started"
+    run_id = str(payload["pipeline_id"])
+    return run_id, runs_root / run_id
 
 
 def test_list_pipeline_artifacts_returns_run_outputs_for_known_pipeline(
@@ -32,8 +53,7 @@ def test_list_pipeline_artifacts_returns_run_outputs_for_known_pipeline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-artifacts-list"
-    run_root = _seed_run(monkeypatch, tmp_path, run_id)
+    run_id, run_root = _seed_run(api_client, monkeypatch, tmp_path)
 
     (run_root / "manifest.json").write_text("{}", encoding="utf-8")
     (run_root / "checkpoint.json").write_text("{}", encoding="utf-8")
@@ -57,14 +77,15 @@ def test_list_pipeline_artifacts_returns_run_outputs_for_known_pipeline(
     payload = response.json()
     assert payload["pipeline_id"] == run_id
     paths = [item["path"] for item in payload["artifacts"]]
-    assert paths == [
+    for expected in (
         "artifacts/logs/output.txt",
         "checkpoint.json",
         "manifest.json",
         "plan/prompt.md",
         "plan/response.md",
         "plan/status.json",
-    ]
+    ):
+        assert expected in paths
     assert "state.json" not in paths
 
 
@@ -73,8 +94,7 @@ def test_get_pipeline_artifact_file_returns_file_for_known_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-artifacts-file"
-    run_root = _seed_run(monkeypatch, tmp_path, run_id)
+    run_id, run_root = _seed_run(api_client, monkeypatch, tmp_path)
 
     artifact_path = run_root / "plan" / "prompt.md"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,8 +112,7 @@ def test_get_pipeline_artifact_file_rejects_parent_traversal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-artifacts-traversal"
-    _seed_run(monkeypatch, tmp_path, run_id)
+    run_id, _ = _seed_run(api_client, monkeypatch, tmp_path)
 
     response = api_client.get(f"/pipelines/{run_id}/artifacts/%2E%2E/run.json")
 
@@ -106,8 +125,7 @@ def test_get_pipeline_artifact_file_returns_404_when_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-artifacts-missing"
-    _seed_run(monkeypatch, tmp_path, run_id)
+    run_id, _ = _seed_run(api_client, monkeypatch, tmp_path)
 
     response = api_client.get(f"/pipelines/{run_id}/artifacts/plan/missing.md")
 

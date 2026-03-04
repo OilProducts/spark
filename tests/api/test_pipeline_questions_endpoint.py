@@ -7,6 +7,38 @@ from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 
+FLOW = """
+digraph G {
+    start [shape=Mdiamond]
+    done [shape=Msquare]
+    start -> done
+}
+"""
+
+
+def _close_task_immediately(coro):
+    coro.close()
+
+    class _DummyTask:
+        pass
+
+    return _DummyTask()
+
+
+def _start_pipeline(api_client: TestClient, working_directory: Path) -> str:
+    response = api_client.post(
+        "/pipelines",
+        json={
+            "flow_content": FLOW,
+            "working_directory": str(working_directory),
+            "backend": "codex",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "started"
+    return str(payload["pipeline_id"])
+
 
 def test_list_pipeline_questions_returns_404_for_unknown_pipeline(
     api_client: TestClient,
@@ -26,20 +58,9 @@ def test_list_pipeline_questions_returns_only_pending_questions_for_requested_ru
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-with-questions"
     monkeypatch.setattr(server, "RUNS_ROOT", tmp_path / "runs")
-
-    server._write_run_meta(
-        server.RunRecord(
-            run_id=run_id,
-            flow_name="Flow",
-            status="running",
-            result=None,
-            working_directory=str(tmp_path / "work"),
-            model="test-model",
-            started_at="2026-01-01T00:00:00Z",
-        )
-    )
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
+    run_id = _start_pipeline(api_client, tmp_path / "work")
 
     broker = server.HumanGateBroker()
     with broker._lock:
@@ -86,20 +107,9 @@ def test_list_pipeline_questions_excludes_answered_questions_for_requested_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-with-questions"
     monkeypatch.setattr(server, "RUNS_ROOT", tmp_path / "runs")
-
-    server._write_run_meta(
-        server.RunRecord(
-            run_id=run_id,
-            flow_name="Flow",
-            status="running",
-            result=None,
-            working_directory=str(tmp_path / "work"),
-            model="test-model",
-            started_at="2026-01-01T00:00:00Z",
-        )
-    )
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
+    run_id = _start_pipeline(api_client, tmp_path / "work")
 
     broker = server.HumanGateBroker()
     with broker._lock:
@@ -163,20 +173,9 @@ def test_submit_pipeline_answer_accepts_pending_question_for_pipeline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-with-questions"
     monkeypatch.setattr(server, "RUNS_ROOT", tmp_path / "runs")
-
-    server._write_run_meta(
-        server.RunRecord(
-            run_id=run_id,
-            flow_name="Flow",
-            status="running",
-            result=None,
-            working_directory=str(tmp_path / "work"),
-            model="test-model",
-            started_at="2026-01-01T00:00:00Z",
-        )
-    )
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
+    run_id = _start_pipeline(api_client, tmp_path / "work")
 
     broker = server.HumanGateBroker()
     with broker._lock:
@@ -208,22 +207,10 @@ def test_submit_pipeline_answer_rejects_question_owned_by_other_pipeline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_a = "run-a"
-    run_b = "run-b"
     monkeypatch.setattr(server, "RUNS_ROOT", tmp_path / "runs")
-
-    for run_id in (run_a, run_b):
-        server._write_run_meta(
-            server.RunRecord(
-                run_id=run_id,
-                flow_name="Flow",
-                status="running",
-                result=None,
-                working_directory=str(tmp_path / "work"),
-                model="test-model",
-                started_at="2026-01-01T00:00:00Z",
-            )
-        )
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
+    run_a = _start_pipeline(api_client, tmp_path / "work-a")
+    run_b = _start_pipeline(api_client, tmp_path / "work-b")
 
     broker = server.HumanGateBroker()
     with broker._lock:

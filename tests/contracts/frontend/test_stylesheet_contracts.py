@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.contracts.frontend._support.behavior_bridge import assert_frontend_behavior_test_passed
+from tests.contracts.frontend._support.behavior_bridge import assert_frontend_behavior_contract_passed
 from tests.contracts.frontend._support.preview_api import preview_pipeline
 
 
@@ -24,7 +24,7 @@ digraph stylesheet_probe_whitespace {
 
 
 def test_graph_settings_exposes_stylesheet_parse_lint_feedback_item_6_5_02() -> None:
-    assert_frontend_behavior_test_passed("renders graph settings feedback for stylesheet diagnostics and tool hook warnings")
+    assert_frontend_behavior_contract_passed("6.5.02")
 
 
 def test_preview_exposes_stylesheet_syntax_diagnostics_item_6_5_02() -> None:

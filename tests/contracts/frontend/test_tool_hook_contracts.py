@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import json
 
-from tests.contracts.frontend._support.behavior_bridge import assert_frontend_behavior_test_passed
+from tests.contracts.frontend._support.behavior_bridge import assert_frontend_behavior_contract_passed
 from tests.contracts.frontend._support.dot_probe import run_dot_utils_probe, run_graph_attr_validation_probe
 from tests.contracts.frontend._support.preview_api import preview_pipeline
 
 
 def test_graph_settings_exposes_graph_scope_tool_hook_fields_item_6_6_01() -> None:
-    assert_frontend_behavior_test_passed(
-        "renders graph settings feedback for stylesheet diagnostics and tool hook warnings"
-    )
+    assert_frontend_behavior_contract_passed("6.6.01")
 
 
 def _generate_dot_with_node_tool_hook_overrides() -> str:
@@ -52,18 +50,11 @@ console.log(dot)
 
 
 def test_node_tool_hook_override_controls_present_item_6_6_02() -> None:
-    assert_frontend_behavior_test_passed(
-        "renders node-level tool hook override controls and warnings in sidebar and node toolbar"
-    )
+    assert_frontend_behavior_contract_passed("6.6.02")
 
 
 def test_tool_hook_warning_surfaces_present_item_6_6_03() -> None:
-    assert_frontend_behavior_test_passed(
-        "renders graph settings feedback for stylesheet diagnostics and tool hook warnings"
-    )
-    assert_frontend_behavior_test_passed(
-        "renders node-level tool hook override controls and warnings in sidebar and node toolbar"
-    )
+    assert_frontend_behavior_contract_passed("6.6.03")
 
 
 def _probe_tool_hook_command_warning() -> dict[str, str | None]:

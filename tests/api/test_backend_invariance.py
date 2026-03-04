@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
+import time
 from typing import List
 
 import pytest
+from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 from attractor.engine import Context, load_checkpoint
@@ -29,77 +30,83 @@ def _close_task_immediately(coro):
     return _DummyTask()
 
 
+def _start_pipeline_via_http(api_client: TestClient, payload: dict) -> dict:
+    response = api_client.post("/pipelines", json=payload)
+    assert response.status_code == 200
+    return response.json()
+
+
+def _wait_for_pipeline_completion(api_client: TestClient, pipeline_id: str) -> dict:
+    for _ in range(400):
+        response = api_client.get(f"/pipelines/{pipeline_id}")
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["status"] != "running":
+            return payload
+        time.sleep(0.01)
+    raise AssertionError("timed out waiting for pipeline completion")
+
+
 def test_pipeline_start_request_accepts_dot_source_alias(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(server, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
 
-    request = server.PipelineStartRequest.model_validate(
+    payload = _start_pipeline_via_http(
+        api_client,
         {
             "dot_source": FLOW,
             "working_directory": str(tmp_path / "work"),
             "backend": "codex",
-        }
+        },
     )
-
-    payload = asyncio.run(server._start_pipeline(request))
     assert payload["status"] == "started"
-
-    pipeline_id = payload["pipeline_id"]
-    server._pop_active_run(pipeline_id)
 
 
 @pytest.mark.parametrize("backend", ["codex", "codex-cli"])
 def test_pipeline_definition_is_backend_invariant_for_backend_selection(
-    backend: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    api_client: TestClient,
+    backend: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(server, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
 
-    payload = asyncio.run(
-        server._start_pipeline(
-            server.PipelineStartRequest(
-                flow_content=FLOW,
-                working_directory=str(tmp_path / "work"),
-                backend=backend,
-            )
-        )
+    payload = _start_pipeline_via_http(
+        api_client,
+        {
+            "flow_content": FLOW,
+            "working_directory": str(tmp_path / "work"),
+            "backend": backend,
+        },
     )
     assert payload["status"] == "started"
     assert payload["working_directory"] == str((tmp_path / "work").resolve())
 
-    pipeline_id = payload["pipeline_id"]
-    server._pop_active_run(pipeline_id)
-
 
 def test_pipeline_emits_lifecycle_phases_in_spec_order(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(server, "RUNS_ROOT", tmp_path / "runs")
 
-    async def _start_and_wait() -> str:
-        payload = await server._start_pipeline(
-            server.PipelineStartRequest(
-                flow_content=FLOW,
-                working_directory=str(tmp_path / "work"),
-                backend="codex",
-            )
-        )
-        assert payload["status"] == "started"
-        run_id = payload["run_id"]
+    payload = _start_pipeline_via_http(
+        api_client,
+        {
+            "flow_content": FLOW,
+            "working_directory": str(tmp_path / "work"),
+            "backend": "codex",
+        },
+    )
+    assert payload["status"] == "started"
+    run_id = payload["run_id"]
+    _wait_for_pipeline_completion(api_client, run_id)
 
-        for _ in range(400):
-            record = server._read_run_meta(server._run_meta_path(run_id))
-            if record and record.status != "running":
-                break
-            await asyncio.sleep(0.01)
-        else:
-            raise AssertionError("timed out waiting for pipeline completion")
-
-        return run_id
-
-    run_id = asyncio.run(_start_and_wait())
     lifecycle_phases = [
         str(event.get("phase"))
         for event in server.EVENT_HUB.history(run_id)
@@ -110,32 +117,24 @@ def test_pipeline_emits_lifecycle_phases_in_spec_order(
 
 
 def test_pipeline_stream_includes_executor_typed_runtime_events(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(server, "RUNS_ROOT", tmp_path / "runs")
 
-    async def _start_and_wait() -> str:
-        payload = await server._start_pipeline(
-            server.PipelineStartRequest(
-                flow_content=FLOW,
-                working_directory=str(tmp_path / "work"),
-                backend="codex",
-            )
-        )
-        assert payload["status"] == "started"
-        run_id = payload["run_id"]
+    payload = _start_pipeline_via_http(
+        api_client,
+        {
+            "flow_content": FLOW,
+            "working_directory": str(tmp_path / "work"),
+            "backend": "codex",
+        },
+    )
+    assert payload["status"] == "started"
+    run_id = payload["run_id"]
+    _wait_for_pipeline_completion(api_client, run_id)
 
-        for _ in range(400):
-            record = server._read_run_meta(server._run_meta_path(run_id))
-            if record and record.status != "running":
-                break
-            await asyncio.sleep(0.01)
-        else:
-            raise AssertionError("timed out waiting for pipeline completion")
-
-        return run_id
-
-    run_id = asyncio.run(_start_and_wait())
     event_types = [str(event.get("type")) for event in server.EVENT_HUB.history(run_id)]
 
     assert "PipelineStarted" in event_types
@@ -146,7 +145,9 @@ def test_pipeline_stream_includes_executor_typed_runtime_events(
 
 
 def test_initialize_creates_run_dir_and_seed_checkpoint_with_transformed_graph(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(server, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
@@ -161,18 +162,17 @@ def test_initialize_creates_run_dir_and_seed_checkpoint_with_transformed_graph(
     }
     """
 
-    payload = asyncio.run(
-        server._start_pipeline(
-            server.PipelineStartRequest(
-                flow_content=flow,
-                working_directory=str(tmp_path / "work"),
-                backend="codex",
-            )
-        )
+    payload = _start_pipeline_via_http(
+        api_client,
+        {
+            "flow_content": flow,
+            "working_directory": str(tmp_path / "work"),
+            "backend": "codex",
+        },
     )
     assert payload["status"] == "started"
     run_id = payload["run_id"]
-    run_root = server._run_root(run_id)
+    run_root = tmp_path / "runs" / run_id
     assert run_root.exists()
 
     checkpoint = load_checkpoint(run_root / "state.json")
@@ -195,8 +195,6 @@ def test_initialize_creates_run_dir_and_seed_checkpoint_with_transformed_graph(
     nodes_by_id = {str(node["id"]): node for node in graph_event["nodes"]}
     assert nodes_by_id["plan"]["prompt"] == "Plan for Ship API"
     assert nodes_by_id["plan"]["llm_model"] == "fast-model"
-
-    server._pop_active_run(run_id)
 
 
 @pytest.mark.parametrize(

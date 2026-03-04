@@ -4,7 +4,7 @@ from attractor.dsl import parse_dot
 from attractor.engine.context import Context
 from attractor.engine.executor import PipelineExecutor
 from attractor.engine.outcome import Outcome, OutcomeStatus
-from tests.contracts.frontend._support.behavior_bridge import assert_frontend_behavior_test_passed
+from tests.contracts.frontend._support.behavior_bridge import assert_frontend_behavior_contract_passed
 from tests.contracts.frontend._support.dot_probe import run_dot_utils_probe
 from tests.contracts.frontend._support.preview_api import preview_pipeline
 
@@ -90,9 +90,7 @@ console.log(dot)
 
 
 def test_edge_editor_exposes_all_required_edge_attrs_item_6_3_01() -> None:
-    assert_frontend_behavior_test_passed(
-        "renders edge inspector controls and updates condition preview feedback from diagnostics"
-    )
+    assert_frontend_behavior_contract_passed("6.3.01")
 
 
 def test_edge_attrs_round_trip_through_preview_item_6_3_01() -> None:
@@ -111,9 +109,7 @@ def test_edge_attrs_round_trip_through_preview_item_6_3_01() -> None:
 
 
 def test_edge_condition_field_exposes_syntax_hints_and_preview_feedback_item_6_3_02() -> None:
-    assert_frontend_behavior_test_passed(
-        "renders edge inspector controls and updates condition preview feedback from diagnostics"
-    )
+    assert_frontend_behavior_contract_passed("6.3.02")
 
 
 def test_edge_attr_serialization_and_execution_side_effect_visibility_item_6_3_03() -> None:

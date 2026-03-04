@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.contracts.frontend._support.behavior_bridge import assert_frontend_behavior_test_passed
+from tests.contracts.frontend._support.behavior_bridge import assert_frontend_behavior_contract_passed
 from tests.contracts.frontend._support.dot_probe import run_dot_utils_probe
 from tests.contracts.frontend._support.preview_api import preview_pipeline
 
@@ -63,9 +63,7 @@ console.log(dot)
 
 
 def test_node_advanced_attr_controls_present_item_6_2_02() -> None:
-    assert_frontend_behavior_test_passed(
-        "renders advanced node controls for codergen and wait.human in sidebar inspector"
-    )
+    assert_frontend_behavior_contract_passed("6.2.02")
 
 
 def test_node_advanced_attrs_round_trip_through_preview_item_6_2_02() -> None:

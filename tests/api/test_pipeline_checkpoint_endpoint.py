@@ -8,6 +8,38 @@ from fastapi.testclient import TestClient
 import attractor.api.server as server
 from attractor.engine import Checkpoint, save_checkpoint
 
+FLOW = """
+digraph G {
+    start [shape=Mdiamond]
+    done [shape=Msquare]
+    start -> done
+}
+"""
+
+
+def _close_task_immediately(coro):
+    coro.close()
+
+    class _DummyTask:
+        pass
+
+    return _DummyTask()
+
+
+def _start_pipeline(api_client: TestClient, working_directory: Path) -> dict:
+    response = api_client.post(
+        "/pipelines",
+        json={
+            "flow_content": FLOW,
+            "working_directory": str(working_directory),
+            "backend": "codex",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "started"
+    return payload
+
 
 def test_get_pipeline_checkpoint_returns_404_for_unknown_pipeline(
     api_client: TestClient,
@@ -27,11 +59,13 @@ def test_get_pipeline_checkpoint_returns_current_state_for_known_pipeline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-with-checkpoint"
     runs_root = tmp_path / "runs"
-    run_root = runs_root / run_id
-    run_root.mkdir(parents=True)
     monkeypatch.setattr(server, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
+
+    start_payload = _start_pipeline(api_client, tmp_path / "work")
+    run_id = str(start_payload["pipeline_id"])
+    run_root = runs_root / run_id
 
     checkpoint = Checkpoint(
         timestamp="2026-01-01T00:00:00Z",
@@ -42,18 +76,6 @@ def test_get_pipeline_checkpoint_returns_current_state_for_known_pipeline(
         logs=["started", "implemented"],
     )
     save_checkpoint(run_root / "state.json", checkpoint)
-
-    server._write_run_meta(
-        server.RunRecord(
-            run_id=run_id,
-            flow_name="Flow",
-            status="running",
-            result=None,
-            working_directory=str(tmp_path / "work"),
-            model="test-model",
-            started_at="2026-01-01T00:00:00Z",
-        )
-    )
 
     response = api_client.get(f"/pipelines/{run_id}/checkpoint")
 

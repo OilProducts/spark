@@ -1,12 +1,57 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 from attractor.engine import Checkpoint, save_checkpoint
+
+
+FLOW = """
+digraph G {
+    start [shape=Mdiamond]
+    done [shape=Msquare]
+    start -> done
+}
+"""
+
+
+def _close_task_immediately(coro):
+    coro.close()
+
+    class _DummyTask:
+        pass
+
+    return _DummyTask()
+
+
+def _start_pipeline(api_client: TestClient, working_directory: Path) -> dict:
+    response = api_client.post(
+        "/pipelines",
+        json={
+            "flow_content": FLOW,
+            "working_directory": str(working_directory),
+            "backend": "codex",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "started"
+    return payload
+
+
+def _wait_for_pipeline_terminal_status(api_client: TestClient, pipeline_id: str) -> str:
+    for _ in range(400):
+        response = api_client.get(f"/pipelines/{pipeline_id}")
+        assert response.status_code == 200
+        status = str(response.json()["status"])
+        if status != "running":
+            return status
+        time.sleep(0.01)
+    raise AssertionError("timed out waiting for pipeline completion")
 
 
 def _write_checkpoint(run_root: Path, current_node: str, completed_nodes: list[str]) -> None:
@@ -26,39 +71,16 @@ def test_get_pipeline_returns_progress_for_active_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-active"
     runs_root = tmp_path / "runs"
-    run_root = runs_root / run_id
-    run_root.mkdir(parents=True)
     monkeypatch.setattr(server, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
 
+    start_payload = _start_pipeline(api_client, tmp_path / "work")
+    run_id = str(start_payload["pipeline_id"])
+    run_root = runs_root / run_id
     _write_checkpoint(run_root, current_node="plan", completed_nodes=["start"])
-    server._write_run_meta(
-        server.RunRecord(
-            run_id=run_id,
-            flow_name="Flow",
-            status="running",
-            result=None,
-            working_directory=str(tmp_path / "work"),
-            model="test-model",
-            started_at="2026-01-01T00:00:00Z",
-        )
-    )
 
-    with server.ACTIVE_RUNS_LOCK:
-        server.ACTIVE_RUNS[run_id] = server.ActiveRun(
-            run_id=run_id,
-            flow_name="Flow",
-            working_directory=str(tmp_path / "work"),
-            model="test-model",
-            status="running",
-            completed_nodes=["start"],
-        )
-
-    try:
-        response = api_client.get(f"/pipelines/{run_id}")
-    finally:
-        server._pop_active_run(run_id)
+    response = api_client.get(f"/pipelines/{run_id}")
 
     assert response.status_code == 200
     payload = response.json()
@@ -76,25 +98,16 @@ def test_get_pipeline_uses_checkpoint_progress_for_persisted_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-finished"
     runs_root = tmp_path / "runs"
-    run_root = runs_root / run_id
-    run_root.mkdir(parents=True)
     monkeypatch.setattr(server, "RUNS_ROOT", runs_root)
 
+    start_payload = _start_pipeline(api_client, tmp_path / "work")
+    run_id = str(start_payload["pipeline_id"])
+    final_status = _wait_for_pipeline_terminal_status(api_client, run_id)
+    assert final_status == "success"
+
+    run_root = runs_root / run_id
     _write_checkpoint(run_root, current_node="done", completed_nodes=["start", "plan"])
-    server._write_run_meta(
-        server.RunRecord(
-            run_id=run_id,
-            flow_name="Flow",
-            status="success",
-            result="success",
-            working_directory=str(tmp_path / "work"),
-            model="test-model",
-            started_at="2026-01-01T00:00:00Z",
-            ended_at="2026-01-01T00:01:00Z",
-        )
-    )
 
     response = api_client.get(f"/pipelines/{run_id}")
 
