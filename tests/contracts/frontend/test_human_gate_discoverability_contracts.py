@@ -13,3 +13,7 @@ def test_operator_can_answer_human_gate_prompts_without_leaving_ui_item_10_1_02(
 
 def test_multiple_choice_human_gate_options_render_with_metadata_item_10_2_01() -> None:
     assert_frontend_behavior_contract_passed("10.2.01")
+
+
+def test_yes_no_and_confirmation_human_gate_types_render_with_explicit_semantics_item_10_2_02() -> None:
+    assert_frontend_behavior_contract_passed("10.2.02")

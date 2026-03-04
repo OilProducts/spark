@@ -671,6 +671,24 @@ const pendingGateQuestionTypeFromPayload = (
     return rawOptions.length > 0 ? 'MULTIPLE_CHOICE' : null
 }
 
+const pendingGateSemanticFallbackOptions = (
+    questionType: 'MULTIPLE_CHOICE' | 'YES_NO' | 'CONFIRMATION' | 'FREEFORM' | null
+): Array<{ label: string; value: string; key: string | null; description: string | null }> => {
+    if (questionType === 'YES_NO') {
+        return [
+            { label: 'Yes', value: 'YES', key: 'Y', description: null },
+            { label: 'No', value: 'NO', key: 'N', description: null },
+        ]
+    }
+    if (questionType === 'CONFIRMATION') {
+        return [
+            { label: 'Confirm', value: 'YES', key: 'Y', description: null },
+            { label: 'Cancel', value: 'NO', key: 'N', description: null },
+        ]
+    }
+    return []
+}
+
 export function RunsPanel() {
     const viewMode = useStore((state) => state.viewMode)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -1299,7 +1317,10 @@ export function RunsPanel() {
                     ? questionIdValue.trim()
                     : null
                 const questionType = pendingGateQuestionTypeFromPayload(event.payload)
-                const options = pendingGateOptionsFromPayload(event.payload)
+                const payloadOptions = pendingGateOptionsFromPayload(event.payload)
+                const options = payloadOptions.length > 0
+                    ? payloadOptions
+                    : pendingGateSemanticFallbackOptions(questionType)
                 const questionPrompt = event.payload.question
                 const gatePrompt = event.payload.prompt
                 const prompt = typeof questionPrompt === 'string' && questionPrompt.trim().length > 0

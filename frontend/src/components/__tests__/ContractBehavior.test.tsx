@@ -882,4 +882,148 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('run-pending-human-gate-option-metadata-rework')).toHaveTextContent('[R]')
     expect(screen.getByTestId('run-pending-human-gate-option-metadata-rework')).toHaveTextContent('Send build back for revision.')
   })
+
+  it('[CID:10.2.02] renders YES_NO and CONFIRMATION pending gates with explicit yes/no and confirm/cancel semantics', async () => {
+    const runId = 'run-contract-human-gate-semantic-types'
+    const yesNoGateId = 'gate-yes-no'
+    const confirmationGateId = 'gate-confirmation'
+    const yesNoPrompt = 'Continue rollout?'
+    const confirmationPrompt = 'Finalize release promotion?'
+    const runApiPath = `/pipelines/${encodeURIComponent(runId)}`
+    const runRecord = {
+      run_id: runId,
+      flow_name: 'contract-behavior.dot',
+      status: 'running',
+      result: 'running',
+      working_directory: '/tmp/project-contract-behavior/workspace',
+      project_path: '/tmp/project-contract-behavior',
+      git_branch: 'main',
+      git_commit: 'abc1234',
+      model: 'gpt-5',
+      started_at: '2026-03-04T01:00:00Z',
+      ended_at: null,
+      last_error: '',
+      token_usage: 0,
+    }
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = requestUrl(input)
+        if (url.endsWith('/runs')) {
+          return jsonResponse({ runs: [runRecord] })
+        }
+        if (url.endsWith(`${runApiPath}/checkpoint`)) {
+          return jsonResponse({
+            pipeline_id: runId,
+            checkpoint: {
+              current_node: 'review_gate',
+              completed_nodes: ['start'],
+              retry_counts: {},
+            },
+          })
+        }
+        if (url.endsWith(`${runApiPath}/context`)) {
+          return jsonResponse({
+            pipeline_id: runId,
+            context: { 'graph.goal': 'Human gate semantic question-type contract' },
+          })
+        }
+        if (url.endsWith(`${runApiPath}/artifacts`)) {
+          return jsonResponse({
+            pipeline_id: runId,
+            artifacts: [],
+          })
+        }
+        if (url.endsWith(`${runApiPath}/graph`)) {
+          return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
+            status: 200,
+            headers: { 'Content-Type': 'image/svg+xml' },
+          })
+        }
+        return jsonResponse({}, { status: 404 })
+      }),
+    )
+
+    class MockEventSource {
+      url: string
+      withCredentials = false
+      readyState = 1
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      constructor(url: string) {
+        this.url = url
+        if (!url.includes(`${runApiPath}/events`)) {
+          return
+        }
+        setTimeout(() => {
+          this.onopen?.(new Event('open'))
+          this.onmessage?.(new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'human_gate',
+              question_id: yesNoGateId,
+              question_type: 'YES_NO',
+              node_id: 'review_gate',
+              prompt: yesNoPrompt,
+            }),
+          }))
+          this.onmessage?.(new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'human_gate',
+              question_id: confirmationGateId,
+              question_type: 'CONFIRMATION',
+              node_id: 'release_gate',
+              prompt: confirmationPrompt,
+            }),
+          }))
+        }, 0)
+      }
+
+      close() {
+        this.readyState = 2
+      }
+
+      addEventListener() {}
+
+      removeEventListener() {}
+
+      dispatchEvent() {
+        return false
+      }
+    }
+
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        viewMode: 'runs',
+        selectedRunId: runId,
+        runtimeStatus: 'running',
+      }))
+    })
+
+    render(<RunsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
+    })
+
+    const pendingItems = screen.getAllByTestId('run-pending-human-gate-item')
+    const yesNoItem = pendingItems.find((item) => item.textContent?.includes(yesNoPrompt))
+    const confirmationItem = pendingItems.find((item) => item.textContent?.includes(confirmationPrompt))
+
+    expect(yesNoItem).toBeTruthy()
+    expect(confirmationItem).toBeTruthy()
+
+    const yesNoScope = within(yesNoItem as HTMLElement)
+    expect(yesNoScope.getByRole('button', { name: 'Yes' })).toBeVisible()
+    expect(yesNoScope.getByRole('button', { name: 'No' })).toBeVisible()
+
+    const confirmationScope = within(confirmationItem as HTMLElement)
+    expect(confirmationScope.getByRole('button', { name: 'Confirm' })).toBeVisible()
+    expect(confirmationScope.getByRole('button', { name: 'Cancel' })).toBeVisible()
+  })
 })
