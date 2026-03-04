@@ -27,3 +27,7 @@ def test_save_paths_remain_non_destructive_during_api_contract_drift_item_12_2_0
 
 def test_project_selection_and_active_project_identity_persist_in_ui_client_state_item_12_3_01() -> None:
     assert_frontend_behavior_contract_passed("12.3.01")
+
+
+def test_execution_payload_project_identity_resolves_to_working_directory_context_item_12_3_02() -> None:
+    assert_frontend_behavior_contract_passed("12.3.02")

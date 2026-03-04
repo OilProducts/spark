@@ -28,6 +28,7 @@ import {
   parsePreviewResponse,
   parseRuntimeStatusResponse,
 } from '@/lib/apiClient'
+import { buildPipelineStartPayload } from '@/lib/pipelineStartPayload'
 import { useStore } from '@/store'
 import { ReactFlow, ReactFlowProvider, type Edge, type Node } from '@xyflow/react'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
@@ -796,6 +797,38 @@ describe('Frontend contract behavior', () => {
     expect(persistedRouteStateRaw).toBeTruthy()
     const persistedRouteState = JSON.parse(String(persistedRouteStateRaw)) as { activeProjectPath: string | null }
     expect(persistedRouteState.activeProjectPath).toBe('/tmp/project-contract-behavior')
+  })
+
+  it('[CID:12.3.02] resolves execution payload working directory to concrete project-scoped path', () => {
+    const relativeWorkingDirectoryPayload = buildPipelineStartPayload(
+      {
+        projectPath: '/tmp/project-contract-behavior',
+        flowSource: 'contract-behavior.dot',
+        workingDirectory: ' ./workspace/../build ',
+        backend: 'codex',
+        model: null,
+        specArtifactId: null,
+        planArtifactId: null,
+      },
+      'digraph G { start -> done }',
+    )
+
+    expect(relativeWorkingDirectoryPayload.working_directory).toBe('/tmp/project-contract-behavior/build')
+
+    const blankWorkingDirectoryPayload = buildPipelineStartPayload(
+      {
+        projectPath: '/tmp/project-contract-behavior',
+        flowSource: 'contract-behavior.dot',
+        workingDirectory: '   ',
+        backend: 'codex',
+        model: null,
+        specArtifactId: null,
+        planArtifactId: null,
+      },
+      'digraph G { start -> done }',
+    )
+
+    expect(blankWorkingDirectoryPayload.working_directory).toBe('/tmp/project-contract-behavior')
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {

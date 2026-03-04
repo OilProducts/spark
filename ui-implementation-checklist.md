@@ -367,7 +367,8 @@ Status key:
 ### 12.3 Project Scope Contract
 - [x] [12.3-01] Persist and restore active-project identity in UI client state.
   - Evidence (2026-03-04): Evaluator `pass`; active-project selection now canonicalizes/validates project paths before state + route persistence (`frontend/src/store.ts`), covered by frontend contract `CID:12.3.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_api_integration_contracts.py`) and screenshot-based visual QA references `frontend/artifacts/ui-smoke/01-projects-shell.png`, `frontend/artifacts/ui-smoke/02-projects-panel.png`, and `frontend/artifacts/ui-smoke/01-editor-shell.png` (ui-smoke command reported unrelated backend `ECONNREFUSED`/HTTP 500 failures in other scenarios).
-- [ ] [12.3-02] Ensure execution payload/project identity resolves to concrete working-directory context.
+- [x] [12.3-02] Ensure execution payload/project identity resolves to concrete working-directory context.
+  - Evidence (2026-03-04): Evaluator `pass`; execution payload generation now resolves blank/relative working-directory input to concrete project-scoped paths via `resolveExecutionWorkingDirectory` in `frontend/src/lib/pipelineStartPayload.ts`, covered by frontend contract `CID:12.3.02` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_api_integration_contracts.py`) with screenshot-based visual QA references `frontend/artifacts/ui-smoke/01-editor-shell.png`, `frontend/artifacts/ui-smoke/06-execution-panel.png`, and `frontend/artifacts/ui-smoke/20c-build-failure-rerun-enabled.png` (`just ui-smoke` reported unrelated backend `ECONNREFUSED`/HTTP 500 failures in other scenarios).
 - [ ] [12.3-03] Ensure conversation/spec/plan retrieval is keyed by project identity.
 
 ### 12.4 Workflow Orchestration Contract
