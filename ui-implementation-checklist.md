@@ -269,7 +269,8 @@ Status key:
   - Evidence (2026-03-04): Evaluator `pass`; `RunsPanel` now renders in-panel answer actions for pending human gates and submits selections to `/pipelines/{id}/questions/{question_id}/answer`, covered by frontend contract `CID:10.1.02` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) and UI smoke visual QA screenshot `frontend/artifacts/ui-smoke/10b-human-gate-discoverability-runs.png`.
 
 ### 10.2 Question Types
-- [ ] [10.2-01] Render `MULTIPLE_CHOICE` interactions with option metadata.
+- [x] [10.2-01] Render `MULTIPLE_CHOICE` interactions with option metadata.
+  - Evidence (2026-03-04): Evaluator `pass`; `RunsPanel` now parses/render `MULTIPLE_CHOICE` option metadata (`key`/`description`) for pending human gates, covered by frontend contract `CID:10.2.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) and UI smoke visual QA screenshot `frontend/artifacts/ui-smoke/10b-human-gate-discoverability-runs.png`.
 - [ ] [10.2-02] Render `YES_NO` and `CONFIRMATION` interactions with explicit semantics.
 - [ ] [10.2-03] Render `FREEFORM` input interactions when backend exposes them.
 - [ ] [10.2-04] Add contract tests for each supported question type.

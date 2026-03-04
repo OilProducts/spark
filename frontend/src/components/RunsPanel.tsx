@@ -112,9 +112,12 @@ interface PendingInterviewGate {
     stageIndex: number | null
     prompt: string
     questionId: string | null
+    questionType: 'MULTIPLE_CHOICE' | 'YES_NO' | 'CONFIRMATION' | 'FREEFORM' | null
     options: Array<{
         label: string
         value: string
+        key: string | null
+        description: string | null
     }>
 }
 
@@ -606,7 +609,9 @@ const runBelongsToProjectScope = (run: RunRecord, projectPath: string) => {
     return runWorkingDirectory.startsWith(`${normalizedProjectPath}/`)
 }
 
-const asStringOption = (value: unknown): { label: string; value: string } | null => {
+const asStringOption = (
+    value: unknown
+): { label: string; value: string; key: string | null; description: string | null } | null => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
         return null
     }
@@ -616,16 +621,24 @@ const asStringOption = (value: unknown): { label: string; value: string } | null
     if (!rawLabel || !rawValue) {
         return null
     }
+    const rawKey = typeof candidate.key === 'string' ? candidate.key.trim() : ''
+    const metadata = asRecord(candidate.metadata)
+    const rawMetadataDescription = metadata && typeof metadata.description === 'string'
+        ? metadata.description.trim()
+        : ''
+    const rawDescription = typeof candidate.description === 'string' ? candidate.description.trim() : ''
     return {
         label: rawLabel,
         value: rawValue,
+        key: rawKey || null,
+        description: rawDescription || rawMetadataDescription || null,
     }
 }
 
 const pendingGateOptionsFromPayload = (payload: Record<string, unknown>) => {
     const rawOptions = Array.isArray(payload.options) ? payload.options : []
     const seenValues = new Set<string>()
-    const options: Array<{ label: string; value: string }> = []
+    const options: Array<{ label: string; value: string; key: string | null; description: string | null }> = []
     for (const rawOption of rawOptions) {
         const option = asStringOption(rawOption)
         if (!option || seenValues.has(option.value)) {
@@ -635,6 +648,27 @@ const pendingGateOptionsFromPayload = (payload: Record<string, unknown>) => {
         options.push(option)
     }
     return options
+}
+
+const pendingGateQuestionTypeFromPayload = (
+    payload: Record<string, unknown>
+): 'MULTIPLE_CHOICE' | 'YES_NO' | 'CONFIRMATION' | 'FREEFORM' | null => {
+    const candidateValue = typeof payload.question_type === 'string'
+        ? payload.question_type
+        : typeof payload.questionType === 'string'
+            ? payload.questionType
+            : ''
+    const normalized = candidateValue.trim().toUpperCase()
+    if (
+        normalized === 'MULTIPLE_CHOICE'
+        || normalized === 'YES_NO'
+        || normalized === 'CONFIRMATION'
+        || normalized === 'FREEFORM'
+    ) {
+        return normalized
+    }
+    const rawOptions = Array.isArray(payload.options) ? payload.options : []
+    return rawOptions.length > 0 ? 'MULTIPLE_CHOICE' : null
 }
 
 export function RunsPanel() {
@@ -1246,8 +1280,7 @@ export function RunsPanel() {
     }, [filteredTimelineEvents, retryCorrelationEntityKeys])
     const pendingInterviewGates = useMemo(() => {
         const latestInterviewEventByEntity = new Map<string, TimelineEventEntry>()
-        for (let index = timelineEvents.length - 1; index >= 0; index -= 1) {
-            const event = timelineEvents[index]
+        for (const event of timelineEvents) {
             if (event.category !== 'interview') {
                 continue
             }
@@ -1265,6 +1298,7 @@ export function RunsPanel() {
                 const questionId = typeof questionIdValue === 'string' && questionIdValue.trim().length > 0
                     ? questionIdValue.trim()
                     : null
+                const questionType = pendingGateQuestionTypeFromPayload(event.payload)
                 const options = pendingGateOptionsFromPayload(event.payload)
                 const questionPrompt = event.payload.question
                 const gatePrompt = event.payload.prompt
@@ -1284,6 +1318,7 @@ export function RunsPanel() {
                     stageIndex: event.stageIndex,
                     prompt,
                     questionId,
+                    questionType,
                     options,
                 })
             }
@@ -1823,18 +1858,28 @@ export function RunsPanel() {
                                             {gate.questionId && gate.options.length > 0 && (
                                                 <div className="mt-1 flex flex-wrap gap-1.5">
                                                     {gate.options.map((option) => (
-                                                        <button
-                                                            key={option.value}
-                                                            type="button"
-                                                            data-testid={`run-pending-human-gate-answer-${option.value}`}
-                                                            onClick={() => {
-                                                                void submitPendingGateAnswer(gate, option.value)
-                                                            }}
-                                                            disabled={submittingGateIds[gate.questionId!] === true}
-                                                            className="inline-flex h-6 items-center rounded border border-amber-500/50 bg-white px-2 text-[11px] font-medium text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                                        >
-                                                            {option.label}
-                                                        </button>
+                                                        <div key={option.value} className="space-y-1">
+                                                            <button
+                                                                type="button"
+                                                                data-testid={`run-pending-human-gate-answer-${option.value}`}
+                                                                onClick={() => {
+                                                                    void submitPendingGateAnswer(gate, option.value)
+                                                                }}
+                                                                disabled={submittingGateIds[gate.questionId!] === true}
+                                                                className="inline-flex h-6 items-center rounded border border-amber-500/50 bg-white px-2 text-[11px] font-medium text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                                            >
+                                                                {option.label}
+                                                            </button>
+                                                            {gate.questionType === 'MULTIPLE_CHOICE' && (option.key || option.description) && (
+                                                                <div
+                                                                    data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
+                                                                    className="flex items-center gap-1 text-[10px] text-amber-900/90"
+                                                                >
+                                                                    {option.key && <span className="font-mono">[{option.key}]</span>}
+                                                                    {option.description && <span>{option.description}</span>}
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     ))}
                                                 </div>
                                             )}

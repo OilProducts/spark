@@ -9,3 +9,7 @@ def test_pending_human_gates_discoverable_in_execution_and_runs_views_item_10_1_
 
 def test_operator_can_answer_human_gate_prompts_without_leaving_ui_item_10_1_02() -> None:
     assert_frontend_behavior_contract_passed("10.1.02")
+
+
+def test_multiple_choice_human_gate_options_render_with_metadata_item_10_2_01() -> None:
+    assert_frontend_behavior_contract_passed("10.2.01")

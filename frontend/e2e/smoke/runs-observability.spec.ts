@@ -625,9 +625,13 @@ test("pending human gates are discoverable in execution and runs views for item 
           emit({
             type: "human_gate",
             question_id: "gate-1",
+            question_type: "MULTIPLE_CHOICE",
             node_id: "review_gate",
             prompt: questionPrompt,
-            options: [{ label: "Approve", value: "approve" }],
+            options: [
+              { key: "A", label: "Approve", value: "approve", description: "Ship now to production." },
+              { key: "R", label: "Request Rework", value: "rework", description: "Send build back for revision." },
+            ],
           })
         }, 0)
       }
@@ -722,6 +726,8 @@ test("pending human gates are discoverable in execution and runs views for item 
   const pendingGatesPanel = page.getByTestId("run-pending-human-gates-panel")
   await expect(pendingGatesPanel).toBeVisible()
   await expect(page.getByTestId("run-pending-human-gate-item")).toContainText(pendingPrompt)
+  await expect(page.getByTestId("run-pending-human-gate-option-metadata-approve")).toContainText("[A]")
+  await expect(page.getByTestId("run-pending-human-gate-option-metadata-approve")).toContainText("Ship now to production.")
   await pendingGatesPanel.scrollIntoViewIfNeeded()
   await pendingGatesPanel.screenshot({ path: screenshotPath("10b-human-gate-discoverability-runs.png") })
 
