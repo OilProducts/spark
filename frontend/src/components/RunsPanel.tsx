@@ -84,6 +84,7 @@ type TimelineCorrelationKind = 'retry' | 'interview'
 
 interface TimelineEventEntry {
     id: string
+    sequence: number
     type: string
     category: TimelineEventCategory
     severity: TimelineSeverity
@@ -108,6 +109,8 @@ interface GroupedTimelineEntry {
 
 interface PendingInterviewGate {
     eventId: string
+    sequence: number
+    receivedAt: string
     nodeId: string | null
     stageIndex: number | null
     prompt: string
@@ -552,6 +555,7 @@ const toTimelineEvent = (value: unknown, sequence: number): TimelineEventEntry |
     const stageIndex = asFiniteNumber(payload.index)
     return {
         id: `${type}-${sequence}`,
+        sequence,
         type,
         category,
         severity: timelineSeverityFromEvent(type, payload),
@@ -1435,6 +1439,8 @@ export function RunsPanel() {
             pendingGateKeys.add(dedupeKey)
             pendingGates.push({
                 eventId: event.id,
+                sequence: event.sequence,
+                receivedAt: event.receivedAt,
                 nodeId: event.nodeId,
                 stageIndex: event.stageIndex,
                 prompt,
@@ -1464,7 +1470,19 @@ export function RunsPanel() {
             }
             grouped.get(key)?.gates.push(gate)
         }
-        return Array.from(grouped.values())
+        const sortedGroups = Array.from(grouped.values()).map((group) => ({
+            ...group,
+            gates: [...group.gates].sort((left, right) => left.sequence - right.sequence),
+        }))
+        sortedGroups.sort((left, right) => {
+            const leftSequence = left.gates[0]?.sequence ?? Number.MAX_SAFE_INTEGER
+            const rightSequence = right.gates[0]?.sequence ?? Number.MAX_SAFE_INTEGER
+            if (leftSequence !== rightSequence) {
+                return leftSequence - rightSequence
+            }
+            return left.key.localeCompare(right.key)
+        })
+        return sortedGroups
     }, [visiblePendingInterviewGates])
 
     const submitPendingGateAnswer = useCallback(async (gate: PendingInterviewGate, selectedValue: string) => {
@@ -2011,6 +2029,14 @@ export function RunsPanel() {
                                                     return (
                                                         <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-xs text-amber-900">
                                                             <div>{gate.prompt}</div>
+                                                            <div
+                                                                data-testid="run-pending-human-gate-item-audit"
+                                                                className="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-amber-900/80"
+                                                            >
+                                                                <span className="font-mono">Order #{gate.sequence + 1}</span>
+                                                                <span>Question ID: {gate.questionId ?? '—'}</span>
+                                                                <span>Received: {formatTimestamp(gate.receivedAt)}</span>
+                                                            </div>
                                                             {gate.questionId && gate.questionType === 'FREEFORM' && (
                                                                 <div className="mt-1 flex flex-wrap items-center gap-2">
                                                                     <input
