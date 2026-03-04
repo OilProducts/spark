@@ -349,7 +349,8 @@ Status key:
 ## 12. API Integration Contract
 
 ### 12.1 Required Endpoints
-- [ ] [12.1-01] Verify UI coverage for all required endpoints listed in UI spec section 12.1.
+- [x] [12.1-01] Verify UI coverage for all required endpoints listed in UI spec section 12.1.
+  - Evidence (2026-03-04): Evaluator `pass`; added frontend contract `CID:12.1.01` that asserts runtime coverage for every `ui-spec.md` section 12.1 endpoint in `frontend/src/components/__tests__/ContractBehavior.test.tsx`, bridged by `tests/contracts/frontend/test_api_integration_contracts.py`, plus runtime `GET /pipelines/{id}/questions` integration in `frontend/src/components/RunsPanel.tsx` with screenshot-based visual QA references `frontend/artifacts/ui-smoke/01-editor-shell.png`, `frontend/artifacts/ui-smoke/06-execution-panel.png`, `frontend/artifacts/ui-smoke/08-runs-panel.png`, `frontend/artifacts/ui-smoke/10a-human-gate-discoverability.png`, and `frontend/artifacts/ui-smoke/10b-human-gate-discoverability-runs.png`.
 - [ ] [12.1-02] Add typed client adapters and runtime schema validation for endpoint responses.
 - [ ] [12.1-03] Add endpoint-level integration tests for happy path and common error cases.
 

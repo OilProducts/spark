@@ -124,6 +124,19 @@ interface PendingInterviewGate {
     }>
 }
 
+interface PendingQuestionSnapshot {
+    questionId: string
+    nodeId: string | null
+    prompt: string
+    questionType: 'MULTIPLE_CHOICE' | 'YES_NO' | 'CONFIRMATION' | 'FREEFORM' | null
+    options: Array<{
+        label: string
+        value: string
+        key: string | null
+        description: string | null
+    }>
+}
+
 interface PendingInterviewGateGroup {
     key: string
     heading: string
@@ -172,6 +185,7 @@ const TIMELINE_SEVERITY_STYLES: Record<TimelineSeverity, string> = {
 
 const TIMELINE_MAX_ITEMS = 200
 const RETRY_CORRELATION_EVENT_TYPES = new Set(['StageStarted', 'StageFailed', 'StageRetrying', 'StageCompleted'])
+const PENDING_GATE_FALLBACK_RECEIVED_AT = '1970-01-01T00:00:00Z'
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -785,6 +799,45 @@ const pendingGateSemanticHint = (
     return null
 }
 
+const asPendingQuestionSnapshot = (value: unknown): PendingQuestionSnapshot | null => {
+    const payload = asRecord(value)
+    if (!payload) {
+        return null
+    }
+    const questionIdValue = payload.question_id
+    const questionId = typeof questionIdValue === 'string' ? questionIdValue.trim() : ''
+    if (!questionId) {
+        return null
+    }
+
+    const promptValue = payload.prompt
+    const questionPromptValue = payload.question
+    const messageValue = payload.message
+    const prompt = typeof promptValue === 'string' && promptValue.trim().length > 0
+        ? promptValue.trim()
+        : typeof questionPromptValue === 'string' && questionPromptValue.trim().length > 0
+            ? questionPromptValue.trim()
+            : typeof messageValue === 'string' && messageValue.trim().length > 0
+                ? messageValue.trim()
+                : `Question ${questionId}`
+
+    const nodeIdValue = payload.node_id
+    const nodeId = typeof nodeIdValue === 'string' && nodeIdValue.trim().length > 0 ? nodeIdValue.trim() : null
+    const questionType = pendingGateQuestionTypeFromPayload(payload)
+    const payloadOptions = pendingGateOptionsFromPayload(payload)
+    const options = payloadOptions.length > 0
+        ? payloadOptions
+        : pendingGateSemanticFallbackOptions(questionType)
+
+    return {
+        questionId,
+        nodeId,
+        prompt,
+        questionType,
+        options,
+    }
+}
+
 export function RunsPanel() {
     const viewMode = useStore((state) => state.viewMode)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -828,6 +881,7 @@ export function RunsPanel() {
     const [pendingGateActionError, setPendingGateActionError] = useState<string | null>(null)
     const [submittingGateIds, setSubmittingGateIds] = useState<Record<string, boolean>>({})
     const [answeredGateIds, setAnsweredGateIds] = useState<Record<string, boolean>>({})
+    const [pendingQuestionSnapshots, setPendingQuestionSnapshots] = useState<PendingQuestionSnapshot[]>([])
     const [freeformAnswersByGateId, setFreeformAnswersByGateId] = useState<Record<string, string>>({})
     const timelineSequenceRef = useRef(0)
     const [metadataStaleAfterMs] = useState(() => {
@@ -1086,6 +1140,29 @@ export function RunsPanel() {
         }
     }, [selectedRunSummary])
 
+    const fetchPendingQuestions = useCallback(async () => {
+        if (!selectedRunSummary) {
+            setPendingQuestionSnapshots([])
+            return
+        }
+        try {
+            const res = await fetch(`/pipelines/${encodeURIComponent(selectedRunSummary.run_id)}/questions`)
+            if (!res.ok) {
+                setPendingQuestionSnapshots([])
+                return
+            }
+            const payload = await res.json() as { questions?: unknown }
+            const rawQuestions = Array.isArray(payload.questions) ? payload.questions : []
+            const parsedQuestions = rawQuestions
+                .map((question) => asPendingQuestionSnapshot(question))
+                .filter((question): question is PendingQuestionSnapshot => question !== null)
+            setPendingQuestionSnapshots(parsedQuestions)
+        } catch (err) {
+            console.error(err)
+            setPendingQuestionSnapshots([])
+        }
+    }, [selectedRunSummary])
+
     useEffect(() => {
         if (viewMode !== 'runs' || !selectedRunSummary) {
             setCheckpointData(null)
@@ -1141,12 +1218,21 @@ export function RunsPanel() {
         void fetchGraphviz()
     }, [viewMode, selectedRunSummary, fetchGraphviz])
 
+    useEffect(() => {
+        if (viewMode !== 'runs' || !selectedRunSummary) {
+            setPendingQuestionSnapshots([])
+            return
+        }
+        void fetchPendingQuestions()
+    }, [viewMode, selectedRunSummary, fetchPendingQuestions])
+
     const selectedRunTimelineId = selectedRunSummary?.run_id ?? null
 
     useEffect(() => {
         setPendingGateActionError(null)
         setSubmittingGateIds({})
         setAnsweredGateIds({})
+        setPendingQuestionSnapshots([])
     }, [selectedRunTimelineId])
 
     useEffect(() => {
@@ -1449,8 +1535,32 @@ export function RunsPanel() {
                 options,
             })
         }
+        let nextSequence = pendingGates.reduce((maxSequence, gate) => Math.max(maxSequence, gate.sequence), 0) + 1
+        for (const question of pendingQuestionSnapshots) {
+            const questionIdMatch = pendingGates.some((gate) => gate.questionId === question.questionId)
+            if (questionIdMatch) {
+                continue
+            }
+            const dedupeKey = `${question.nodeId ?? ''}::${question.prompt.toLowerCase()}`
+            if (pendingGateKeys.has(dedupeKey)) {
+                continue
+            }
+            pendingGateKeys.add(dedupeKey)
+            pendingGates.push({
+                eventId: `question:${question.questionId}`,
+                sequence: nextSequence,
+                receivedAt: PENDING_GATE_FALLBACK_RECEIVED_AT,
+                nodeId: question.nodeId,
+                stageIndex: null,
+                prompt: question.prompt,
+                questionId: question.questionId,
+                questionType: question.questionType,
+                options: question.options,
+            })
+            nextSequence += 1
+        }
         return pendingGates
-    }, [timelineEvents])
+    }, [pendingQuestionSnapshots, timelineEvents])
     const visiblePendingInterviewGates = useMemo(
         () => pendingInterviewGates.filter((gate) => !gate.questionId || !answeredGateIds[gate.questionId]),
         [pendingInterviewGates, answeredGateIds]

@@ -6,6 +6,8 @@ import { Sidebar } from '@/components/Sidebar'
 import { TaskNode } from '@/components/TaskNode'
 import { useStore } from '@/store'
 import { ReactFlow, ReactFlowProvider, type Edge, type Node } from '@xyflow/react'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
@@ -28,6 +30,54 @@ const requestUrl = (input: RequestInfo | URL): string => {
     return input.toString()
   }
   return input.url
+}
+
+const collectRuntimeSourceFiles = (directoryPath: string): string[] => {
+  const entries = readdirSync(directoryPath, { withFileTypes: true })
+  const files: string[] = []
+  for (const entry of entries) {
+    if (entry.name === '__tests__' || entry.name === 'test') {
+      continue
+    }
+    const entryPath = join(directoryPath, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...collectRuntimeSourceFiles(entryPath))
+      continue
+    }
+    if (!entry.isFile()) {
+      continue
+    }
+    if (!entry.name.endsWith('.ts') && !entry.name.endsWith('.tsx')) {
+      continue
+    }
+    files.push(entryPath)
+  }
+  return files
+}
+
+const resolveFrontendSrcRoot = (): string => {
+  const currentWorkingDirectory = process.cwd()
+  const directSrcPath = join(currentWorkingDirectory, 'src')
+  if (existsSync(directSrcPath)) {
+    return directSrcPath
+  }
+  const nestedSrcPath = join(currentWorkingDirectory, 'frontend', 'src')
+  if (existsSync(nestedSrcPath)) {
+    return nestedSrcPath
+  }
+  throw new Error(`Unable to locate frontend src directory from cwd: ${currentWorkingDirectory}`)
+}
+
+const readRuntimeUiSource = (): string => {
+  const srcRoot = resolveFrontendSrcRoot()
+  const files = [
+    ...collectRuntimeSourceFiles(join(srcRoot, 'components')),
+    ...collectRuntimeSourceFiles(join(srcRoot, 'lib')),
+  ]
+  return files
+    .sort((left, right) => left.localeCompare(right))
+    .map((filePath) => readFileSync(filePath, 'utf-8'))
+    .join('\n')
 }
 
 const resetContractState = () => {
@@ -188,6 +238,32 @@ describe('Frontend contract behavior', () => {
     cleanup()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('[CID:12.1.01] verifies runtime UI code covers every required API endpoint from ui-spec section 12.1', () => {
+    const runtimeSource = readRuntimeUiSource()
+    const requiredEndpointPatterns: Array<{ endpoint: string; pattern: RegExp }> = [
+      { endpoint: '/api/flows', pattern: /fetch\(\s*['"]\/api\/flows['"]/ },
+      { endpoint: '/api/flows/{name}', pattern: /fetch\(\s*`\/api\/flows\/\$\{encodeURIComponent\([^)]+\)\}`/ },
+      { endpoint: '/preview', pattern: /fetch\(\s*['"]\/preview['"]/ },
+      { endpoint: '/pipelines', pattern: /fetch\(\s*['"]\/pipelines['"]/ },
+      { endpoint: '/pipelines/{id}', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}`\s*(?:,|\))/ },
+      { endpoint: '/pipelines/{id}/events', pattern: /new EventSource\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/events`/ },
+      { endpoint: '/pipelines/{id}/cancel', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/cancel`\s*,\s*\{\s*method:\s*['"]POST['"]/ },
+      { endpoint: '/pipelines/{id}/graph', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/graph`/ },
+      { endpoint: '/pipelines/{id}/questions', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/questions`\s*(?:,|\))/ },
+      { endpoint: '/pipelines/{id}/questions/{qid}/answer', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/questions\/\$\{encodeURIComponent\([^)]+\)\}\/answer`/ },
+      { endpoint: '/pipelines/{id}/checkpoint', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/checkpoint`/ },
+      { endpoint: '/pipelines/{id}/context', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/context`/ },
+      { endpoint: '/runs', pattern: /fetch\(\s*['"]\/runs['"]/ },
+      { endpoint: '/status', pattern: /fetch\(\s*['"]\/status['"]/ },
+    ]
+
+    const missingEndpoints = requiredEndpointPatterns
+      .filter(({ pattern }) => !pattern.test(runtimeSource))
+      .map(({ endpoint }) => endpoint)
+
+    expect(missingEndpoints).toEqual([])
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
