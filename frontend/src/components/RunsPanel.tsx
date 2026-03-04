@@ -745,6 +745,7 @@ export function RunsPanel() {
     const [pendingGateActionError, setPendingGateActionError] = useState<string | null>(null)
     const [submittingGateIds, setSubmittingGateIds] = useState<Record<string, boolean>>({})
     const [answeredGateIds, setAnsweredGateIds] = useState<Record<string, boolean>>({})
+    const [freeformAnswersByGateId, setFreeformAnswersByGateId] = useState<Record<string, string>>({})
     const timelineSequenceRef = useRef(0)
     const [metadataStaleAfterMs] = useState(() => {
         const override = (globalThis as typeof globalThis & { __RUNS_METADATA_STALE_AFTER_MS__?: unknown })
@@ -1401,6 +1402,11 @@ export function RunsPanel() {
                 ...previous,
                 [gate.questionId!]: true,
             }))
+            setFreeformAnswersByGateId((previous) => {
+                const next = { ...previous }
+                delete next[gate.questionId!]
+                return next
+            })
         } catch (err) {
             console.error(err)
             setPendingGateActionError('Unable to submit answer. Check connection/backend and retry.')
@@ -1883,51 +1889,86 @@ export function RunsPanel() {
                                     </div>
                                 )}
                                 <ul className="mt-2 space-y-1">
-                                    {visiblePendingInterviewGates.map((gate) => (
-                                        <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-xs text-amber-900">
-                                            <div>
-                                                {gate.prompt}
-                                                {gate.nodeId ? ` (${gate.nodeId}${gate.stageIndex !== null ? `, index ${gate.stageIndex}` : ''})` : ''}
-                                            </div>
-                                            {gate.questionId && gate.options.length > 0 && (
-                                                <div className="mt-1 flex flex-wrap gap-1.5">
-                                                    {gate.options.map((option) => (
-                                                        <div key={option.value} className="space-y-1">
-                                                            <button
-                                                                type="button"
-                                                                data-testid={`run-pending-human-gate-answer-${option.value}`}
-                                                                onClick={() => {
-                                                                    void submitPendingGateAnswer(gate, option.value)
-                                                                }}
-                                                                disabled={submittingGateIds[gate.questionId!] === true}
-                                                                className="inline-flex h-6 items-center rounded border border-amber-500/50 bg-white px-2 text-[11px] font-medium text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                                            >
-                                                                {option.label}
-                                                            </button>
-                                                            {(() => {
-                                                                const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
-                                                                const showMultipleChoiceMetadata = gate.questionType === 'MULTIPLE_CHOICE'
-                                                                    && (option.key || option.description)
-                                                                if (!showMultipleChoiceMetadata && !semanticHint) {
-                                                                    return null
-                                                                }
-                                                                return (
-                                                                    <div
-                                                                        data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
-                                                                        className="flex items-center gap-1 text-[10px] text-amber-900/90"
-                                                                    >
-                                                                        {showMultipleChoiceMetadata && option.key && <span className="font-mono">[{option.key}]</span>}
-                                                                        {showMultipleChoiceMetadata && option.description && <span>{option.description}</span>}
-                                                                        {semanticHint && <span>{semanticHint}</span>}
-                                                                    </div>
-                                                                )
-                                                            })()}
-                                                        </div>
-                                                    ))}
+                                    {visiblePendingInterviewGates.map((gate) => {
+                                        const freeformAnswer = gate.questionId
+                                            ? freeformAnswersByGateId[gate.questionId] ?? ''
+                                            : ''
+                                        return (
+                                            <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-xs text-amber-900">
+                                                <div>
+                                                    {gate.prompt}
+                                                    {gate.nodeId ? ` (${gate.nodeId}${gate.stageIndex !== null ? `, index ${gate.stageIndex}` : ''})` : ''}
                                                 </div>
-                                            )}
-                                        </li>
-                                    ))}
+                                                {gate.questionId && gate.questionType === 'FREEFORM' && (
+                                                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                        <input
+                                                            type="text"
+                                                            data-testid={`run-pending-human-gate-freeform-input-${gate.questionId}`}
+                                                            value={freeformAnswer}
+                                                            onChange={(event) => {
+                                                                const nextValue = event.target.value
+                                                                setFreeformAnswersByGateId((previous) => ({
+                                                                    ...previous,
+                                                                    [gate.questionId!]: nextValue,
+                                                                }))
+                                                            }}
+                                                            disabled={submittingGateIds[gate.questionId] === true}
+                                                            placeholder="Type answer..."
+                                                            className="h-7 min-w-[18rem] rounded border border-amber-500/40 bg-white px-2 text-[11px] text-amber-900 shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-amber-500/40 disabled:cursor-not-allowed disabled:opacity-70"
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            data-testid={`run-pending-human-gate-freeform-submit-${gate.questionId}`}
+                                                            onClick={() => {
+                                                                void submitPendingGateAnswer(gate, freeformAnswer)
+                                                            }}
+                                                            disabled={submittingGateIds[gate.questionId] === true || freeformAnswer.trim().length === 0}
+                                                            className="inline-flex h-7 items-center rounded border border-amber-500/50 bg-white px-2 text-[11px] font-medium text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                                        >
+                                                            Submit
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {gate.questionId && gate.questionType !== 'FREEFORM' && gate.options.length > 0 && (
+                                                    <div className="mt-1 flex flex-wrap gap-1.5">
+                                                        {gate.options.map((option) => (
+                                                            <div key={option.value} className="space-y-1">
+                                                                <button
+                                                                    type="button"
+                                                                    data-testid={`run-pending-human-gate-answer-${option.value}`}
+                                                                    onClick={() => {
+                                                                        void submitPendingGateAnswer(gate, option.value)
+                                                                    }}
+                                                                    disabled={submittingGateIds[gate.questionId!] === true}
+                                                                    className="inline-flex h-6 items-center rounded border border-amber-500/50 bg-white px-2 text-[11px] font-medium text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                                                >
+                                                                    {option.label}
+                                                                </button>
+                                                                {(() => {
+                                                                    const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
+                                                                    const showMultipleChoiceMetadata = gate.questionType === 'MULTIPLE_CHOICE'
+                                                                        && (option.key || option.description)
+                                                                    if (!showMultipleChoiceMetadata && !semanticHint) {
+                                                                        return null
+                                                                    }
+                                                                    return (
+                                                                        <div
+                                                                            data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
+                                                                            className="flex items-center gap-1 text-[10px] text-amber-900/90"
+                                                                        >
+                                                                            {showMultipleChoiceMetadata && option.key && <span className="font-mono">[{option.key}]</span>}
+                                                                            {showMultipleChoiceMetadata && option.description && <span>{option.description}</span>}
+                                                                            {semanticHint && <span>{semanticHint}</span>}
+                                                                        </div>
+                                                                    )
+                                                                })()}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </li>
+                                        )
+                                    })}
                                 </ul>
                             </div>
                         )}

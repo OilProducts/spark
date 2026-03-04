@@ -906,6 +906,180 @@ test("pending human gates render YES_NO and CONFIRMATION semantics for item 10.2
   await pendingGatesPanel.screenshot({ path: screenshotPath("10c-human-gate-yes-no-confirmation-semantics.png") })
 })
 
+test("pending human gates render FREEFORM interaction and submit text answers for item 10.2-03", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-human-gate-freeform-${Date.now()}`
+  const runId = `run-human-gate-freeform-${Date.now()}`
+  const questionId = "gate-freeform"
+  const freeformPrompt = "Provide release-notes rationale before promotion."
+  const freeformAnswer = "Need one more staging verification pass before promoting."
+  let submittedSelectedValue: string | null = null
+
+  await page.addInitScript(
+    ({
+      targetRunId,
+      targetQuestionId,
+      prompt,
+    }: {
+      targetRunId: string
+      targetQuestionId: string
+      prompt: string
+    }) => {
+      class MockEventSource {
+        url: string
+        withCredentials = false
+        readyState = 1
+        onopen: ((event: Event) => void) | null = null
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: ((event: Event) => void) | null = null
+
+        constructor(url: string) {
+          this.url = url
+          const expectedPath = `/pipelines/${encodeURIComponent(targetRunId)}/events`
+          if (!url.includes(expectedPath)) {
+            return
+          }
+
+          const emit = (payload: Record<string, unknown>) => {
+            this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(payload) }))
+          }
+
+          setTimeout(() => {
+            this.onopen?.(new Event("open"))
+            emit({ type: "PipelineStarted", current_node: "start" })
+            emit({
+              type: "human_gate",
+              question_id: targetQuestionId,
+              question_type: "FREEFORM",
+              node_id: "review_gate",
+              prompt,
+            })
+          }, 0)
+        }
+
+        close() {
+          this.readyState = 2
+        }
+
+        addEventListener() {}
+
+        removeEventListener() {}
+
+        dispatchEvent() {
+          return false
+        }
+      }
+
+      ;(window as typeof window & { EventSource: typeof EventSource }).EventSource =
+        MockEventSource as unknown as typeof EventSource
+    },
+    {
+      targetRunId: runId,
+      targetQuestionId: questionId,
+      prompt: freeformPrompt,
+    },
+  )
+
+  await page.route("**/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "HumanGateFreeformFlow",
+            status: "running",
+            result: "running",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "main",
+            git_commit: "human103",
+            model: "gpt-5",
+            started_at: "2026-03-04T15:00:00Z",
+            ended_at: null,
+            last_error: "",
+            token_usage: 10,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: runId,
+        status: "running",
+        working_directory: `${projectPath}/workspace`,
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/checkpoint`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        checkpoint: {
+          current_node: "review_gate",
+          completed_nodes: ["start"],
+          retry_counts: {},
+        },
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/context`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        context: {
+          "graph.goal": "Human gate freeform smoke",
+        },
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/questions/${questionId}/answer`, async (route) => {
+    const payload = route.request().postDataJSON()
+    submittedSelectedValue = typeof payload?.selected_value === "string" ? payload.selected_value : null
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "accepted",
+        pipeline_id: runId,
+        question_id: questionId,
+      }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  const pendingGatesPanel = page.getByTestId("run-pending-human-gates-panel")
+  await expect(pendingGatesPanel).toBeVisible()
+  await expect(page.getByTestId("run-pending-human-gate-item")).toContainText(freeformPrompt)
+  const freeformInput = page.getByTestId(`run-pending-human-gate-freeform-input-${questionId}`)
+  const submitButton = page.getByTestId(`run-pending-human-gate-freeform-submit-${questionId}`)
+  await expect(submitButton).toBeDisabled()
+  await freeformInput.fill(freeformAnswer)
+  await expect(submitButton).toBeEnabled()
+  await pendingGatesPanel.scrollIntoViewIfNeeded()
+  await pendingGatesPanel.screenshot({ path: screenshotPath("10d-human-gate-freeform-interaction.png") })
+  await submitButton.click()
+
+  await expect(page.getByTestId("run-pending-human-gate-item")).toHaveCount(0)
+  await expect.poll(() => submittedSelectedValue).toBe(freeformAnswer)
+})
+
 test("run event timeline renders typed lifecycle and runtime events for item 9.4-01", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-runs-event-timeline-${Date.now()}`
   const runId = `run-event-timeline-${Date.now()}`

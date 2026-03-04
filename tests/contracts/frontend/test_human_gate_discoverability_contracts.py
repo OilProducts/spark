@@ -17,3 +17,7 @@ def test_multiple_choice_human_gate_options_render_with_metadata_item_10_2_01() 
 
 def test_yes_no_and_confirmation_human_gate_types_render_with_explicit_semantics_item_10_2_02() -> None:
     assert_frontend_behavior_contract_passed("10.2.02")
+
+
+def test_freeform_human_gate_inputs_render_and_submit_item_10_2_03() -> None:
+    assert_frontend_behavior_contract_passed("10.2.03")

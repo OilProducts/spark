@@ -273,7 +273,8 @@ Status key:
   - Evidence (2026-03-04): Evaluator `pass`; `RunsPanel` now parses/render `MULTIPLE_CHOICE` option metadata (`key`/`description`) for pending human gates, covered by frontend contract `CID:10.2.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) and UI smoke visual QA screenshot `frontend/artifacts/ui-smoke/10b-human-gate-discoverability-runs.png`.
 - [x] [10.2-02] Render `YES_NO` and `CONFIRMATION` interactions with explicit semantics.
   - Evidence (2026-03-04): Evaluator `pass`; `RunsPanel` now renders explicit `Sends YES/NO` semantics for `YES_NO` and `CONFIRMATION` gate options, covered by frontend contract `CID:10.2.02` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) and UI-smoke visual QA screenshot `frontend/artifacts/ui-smoke/10c-human-gate-yes-no-confirmation-semantics.png`.
-- [ ] [10.2-03] Render `FREEFORM` input interactions when backend exposes them.
+- [x] [10.2-03] Render `FREEFORM` input interactions when backend exposes them.
+  - Evidence (2026-03-04): Evaluator `pass`; `RunsPanel` now renders FREEFORM text-input + submit interactions for pending human gates and posts typed answers through `/pipelines/{id}/questions/{question_id}/answer`, covered by frontend contract `CID:10.2.03` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) and UI-smoke visual QA screenshot `frontend/artifacts/ui-smoke/10d-human-gate-freeform-interaction.png`.
 - [ ] [10.2-04] Add contract tests for each supported question type.
 
 ### 10.3 Timeout/Default Semantics

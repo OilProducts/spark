@@ -1030,4 +1030,150 @@ describe('Frontend contract behavior', () => {
     expect(confirmationScope.getByText('Sends YES')).toBeVisible()
     expect(confirmationScope.getByText('Sends NO')).toBeVisible()
   })
+
+  it('[CID:10.2.03] renders FREEFORM pending gates with text input and submit action', async () => {
+    const runId = 'run-contract-human-gate-freeform'
+    const gateId = 'gate-freeform'
+    const pendingPrompt = 'Provide release notes for this deployment gate.'
+    const freeformAnswer = 'Need one more staging pass before production rollout.'
+    const runApiPath = `/pipelines/${encodeURIComponent(runId)}`
+    const answerPath = `${runApiPath}/questions/${encodeURIComponent(gateId)}/answer`
+    const runRecord = {
+      run_id: runId,
+      flow_name: 'contract-behavior.dot',
+      status: 'running',
+      result: 'running',
+      working_directory: '/tmp/project-contract-behavior/workspace',
+      project_path: '/tmp/project-contract-behavior',
+      git_branch: 'main',
+      git_commit: 'abc1234',
+      model: 'gpt-5',
+      started_at: '2026-03-04T01:00:00Z',
+      ended_at: null,
+      last_error: '',
+      token_usage: 0,
+    }
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input)
+      if (url.endsWith('/runs')) {
+        return jsonResponse({ runs: [runRecord] })
+      }
+      if (url.endsWith(`${runApiPath}/checkpoint`)) {
+        return jsonResponse({
+          pipeline_id: runId,
+          checkpoint: {
+            current_node: 'review_gate',
+            completed_nodes: ['start'],
+            retry_counts: {},
+          },
+        })
+      }
+      if (url.endsWith(`${runApiPath}/context`)) {
+        return jsonResponse({
+          pipeline_id: runId,
+          context: { 'graph.goal': 'Human gate freeform contract' },
+        })
+      }
+      if (url.endsWith(`${runApiPath}/artifacts`)) {
+        return jsonResponse({
+          pipeline_id: runId,
+          artifacts: [],
+        })
+      }
+      if (url.endsWith(`${runApiPath}/graph`)) {
+        return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
+          status: 200,
+          headers: { 'Content-Type': 'image/svg+xml' },
+        })
+      }
+      if (url.endsWith(answerPath)) {
+        return jsonResponse({ status: 'accepted', pipeline_id: runId, question_id: gateId })
+      }
+      return jsonResponse({}, { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    class MockEventSource {
+      url: string
+      withCredentials = false
+      readyState = 1
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      constructor(url: string) {
+        this.url = url
+        if (!url.includes(`${runApiPath}/events`)) {
+          return
+        }
+        setTimeout(() => {
+          this.onopen?.(new Event('open'))
+          this.onmessage?.(new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'human_gate',
+              question_id: gateId,
+              question_type: 'FREEFORM',
+              node_id: 'review_gate',
+              prompt: pendingPrompt,
+            }),
+          }))
+        }, 0)
+      }
+
+      close() {
+        this.readyState = 2
+      }
+
+      addEventListener() {}
+
+      removeEventListener() {}
+
+      dispatchEvent() {
+        return false
+      }
+    }
+
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        viewMode: 'runs',
+        selectedRunId: runId,
+        runtimeStatus: 'running',
+      }))
+    })
+
+    render(<RunsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
+    })
+
+    expect(screen.getByTestId('run-pending-human-gate-item')).toHaveTextContent(pendingPrompt)
+    const input = screen.getByTestId(`run-pending-human-gate-freeform-input-${gateId}`) as HTMLInputElement
+    const submitButton = screen.getByTestId(`run-pending-human-gate-freeform-submit-${gateId}`)
+    expect(submitButton).toBeDisabled()
+
+    fireEvent.change(input, { target: { value: freeformAnswer } })
+    expect(input.value).toBe(freeformAnswer)
+    expect(submitButton).toBeEnabled()
+    fireEvent.click(submitButton)
+
+    await waitFor(() => {
+      const submissionCall = fetchMock.mock.calls.find(([inputArg]) => requestUrl(inputArg as RequestInfo | URL).endsWith(answerPath))
+      expect(submissionCall).toBeTruthy()
+      const [, init] = submissionCall as [RequestInfo | URL, RequestInit | undefined]
+      expect(init?.method).toBe('POST')
+      expect(init?.body).toBe(JSON.stringify({
+        question_id: gateId,
+        selected_value: freeformAnswer,
+      }))
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-pending-human-gate-item')).not.toBeInTheDocument()
+    })
+  })
 })
