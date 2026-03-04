@@ -689,6 +689,19 @@ const pendingGateSemanticFallbackOptions = (
     return []
 }
 
+const pendingGateSemanticHint = (
+    questionType: 'MULTIPLE_CHOICE' | 'YES_NO' | 'CONFIRMATION' | 'FREEFORM' | null,
+    optionValue: string
+): string | null => {
+    if (questionType !== 'YES_NO' && questionType !== 'CONFIRMATION') {
+        return null
+    }
+    if (optionValue === 'YES' || optionValue === 'NO') {
+        return `Sends ${optionValue}`
+    }
+    return null
+}
+
 export function RunsPanel() {
     const viewMode = useStore((state) => state.viewMode)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -1891,15 +1904,24 @@ export function RunsPanel() {
                                                             >
                                                                 {option.label}
                                                             </button>
-                                                            {gate.questionType === 'MULTIPLE_CHOICE' && (option.key || option.description) && (
-                                                                <div
-                                                                    data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
-                                                                    className="flex items-center gap-1 text-[10px] text-amber-900/90"
-                                                                >
-                                                                    {option.key && <span className="font-mono">[{option.key}]</span>}
-                                                                    {option.description && <span>{option.description}</span>}
-                                                                </div>
-                                                            )}
+                                                            {(() => {
+                                                                const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
+                                                                const showMultipleChoiceMetadata = gate.questionType === 'MULTIPLE_CHOICE'
+                                                                    && (option.key || option.description)
+                                                                if (!showMultipleChoiceMetadata && !semanticHint) {
+                                                                    return null
+                                                                }
+                                                                return (
+                                                                    <div
+                                                                        data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
+                                                                        className="flex items-center gap-1 text-[10px] text-amber-900/90"
+                                                                    >
+                                                                        {showMultipleChoiceMetadata && option.key && <span className="font-mono">[{option.key}]</span>}
+                                                                        {showMultipleChoiceMetadata && option.description && <span>{option.description}</span>}
+                                                                        {semanticHint && <span>{semanticHint}</span>}
+                                                                    </div>
+                                                                )
+                                                            })()}
                                                         </div>
                                                     ))}
                                                 </div>

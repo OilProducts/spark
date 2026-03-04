@@ -738,6 +738,174 @@ test("pending human gates are discoverable in execution and runs views for item 
   await page.screenshot({ path: screenshotPath("10a-human-gate-discoverability.png"), fullPage: true })
 })
 
+test("pending human gates render YES_NO and CONFIRMATION semantics for item 10.2-02", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-human-gate-semantic-types-${Date.now()}`
+  const runId = `run-human-gate-semantic-types-${Date.now()}`
+  const yesNoPrompt = "Continue rollout?"
+  const confirmationPrompt = "Finalize release promotion?"
+
+  await page.addInitScript(
+    ({
+      targetRunId,
+      yesNoQuestionPrompt,
+      confirmationQuestionPrompt,
+    }: {
+      targetRunId: string
+      yesNoQuestionPrompt: string
+      confirmationQuestionPrompt: string
+    }) => {
+      class MockEventSource {
+        url: string
+        withCredentials = false
+        readyState = 1
+        onopen: ((event: Event) => void) | null = null
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: ((event: Event) => void) | null = null
+
+        constructor(url: string) {
+          this.url = url
+          const expectedPath = `/pipelines/${encodeURIComponent(targetRunId)}/events`
+          if (!url.includes(expectedPath)) {
+            return
+          }
+
+          const emit = (payload: Record<string, unknown>) => {
+            this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(payload) }))
+          }
+
+          setTimeout(() => {
+            this.onopen?.(new Event("open"))
+            emit({ type: "PipelineStarted", current_node: "start" })
+            emit({
+              type: "human_gate",
+              question_id: "gate-yes-no",
+              question_type: "YES_NO",
+              node_id: "review_gate",
+              prompt: yesNoQuestionPrompt,
+            })
+            emit({
+              type: "human_gate",
+              question_id: "gate-confirmation",
+              question_type: "CONFIRMATION",
+              node_id: "release_gate",
+              prompt: confirmationQuestionPrompt,
+            })
+          }, 0)
+        }
+
+        close() {
+          this.readyState = 2
+        }
+
+        addEventListener() {}
+
+        removeEventListener() {}
+
+        dispatchEvent() {
+          return false
+        }
+      }
+
+      ;(window as typeof window & { EventSource: typeof EventSource }).EventSource =
+        MockEventSource as unknown as typeof EventSource
+    },
+    {
+      targetRunId: runId,
+      yesNoQuestionPrompt: yesNoPrompt,
+      confirmationQuestionPrompt: confirmationPrompt,
+    },
+  )
+
+  await page.route("**/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: runId,
+            flow_name: "HumanGateSemanticTypesFlow",
+            status: "running",
+            result: "running",
+            working_directory: `${projectPath}/workspace`,
+            project_path: projectPath,
+            git_branch: "main",
+            git_commit: "human102",
+            model: "gpt-5",
+            started_at: "2026-03-04T14:30:00Z",
+            ended_at: null,
+            last_error: "",
+            token_usage: 8,
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: runId,
+        status: "running",
+        working_directory: `${projectPath}/workspace`,
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/checkpoint`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        checkpoint: {
+          current_node: "review_gate",
+          completed_nodes: ["start", "plan"],
+          retry_counts: {},
+        },
+      }),
+    })
+  })
+
+  await page.route(`**/pipelines/${runId}/context`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pipeline_id: runId,
+        context: {
+          "graph.goal": "Human gate semantic type smoke",
+        },
+      }),
+    })
+  })
+
+  await page.goto("/")
+  await page.getByTestId("project-path-input").fill(projectPath)
+  await page.getByTestId("project-register-button").click()
+  await page.getByTestId("nav-mode-runs").click()
+
+  const pendingGatesPanel = page.getByTestId("run-pending-human-gates-panel")
+  await expect(pendingGatesPanel).toBeVisible()
+
+  const yesNoItem = page.getByTestId("run-pending-human-gate-item").filter({ hasText: yesNoPrompt })
+  await expect(yesNoItem.getByRole("button", { name: "Yes" })).toBeVisible()
+  await expect(yesNoItem.getByRole("button", { name: "No" })).toBeVisible()
+  await expect(yesNoItem.getByText("Sends YES")).toBeVisible()
+  await expect(yesNoItem.getByText("Sends NO")).toBeVisible()
+
+  const confirmationItem = page.getByTestId("run-pending-human-gate-item").filter({ hasText: confirmationPrompt })
+  await expect(confirmationItem.getByRole("button", { name: "Confirm" })).toBeVisible()
+  await expect(confirmationItem.getByRole("button", { name: "Cancel" })).toBeVisible()
+  await expect(confirmationItem.getByText("Sends YES")).toBeVisible()
+  await expect(confirmationItem.getByText("Sends NO")).toBeVisible()
+
+  await pendingGatesPanel.scrollIntoViewIfNeeded()
+  await pendingGatesPanel.screenshot({ path: screenshotPath("10c-human-gate-yes-no-confirmation-semantics.png") })
+})
+
 test("run event timeline renders typed lifecycle and runtime events for item 9.4-01", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-runs-event-timeline-${Date.now()}`
   const runId = `run-event-timeline-${Date.now()}`

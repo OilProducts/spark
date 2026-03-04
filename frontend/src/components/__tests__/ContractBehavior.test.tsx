@@ -1021,9 +1021,13 @@ describe('Frontend contract behavior', () => {
     const yesNoScope = within(yesNoItem as HTMLElement)
     expect(yesNoScope.getByRole('button', { name: 'Yes' })).toBeVisible()
     expect(yesNoScope.getByRole('button', { name: 'No' })).toBeVisible()
+    expect(yesNoScope.getByText('Sends YES')).toBeVisible()
+    expect(yesNoScope.getByText('Sends NO')).toBeVisible()
 
     const confirmationScope = within(confirmationItem as HTMLElement)
     expect(confirmationScope.getByRole('button', { name: 'Confirm' })).toBeVisible()
     expect(confirmationScope.getByRole('button', { name: 'Cancel' })).toBeVisible()
+    expect(confirmationScope.getByText('Sends YES')).toBeVisible()
+    expect(confirmationScope.getByText('Sends NO')).toBeVisible()
   })
 })
