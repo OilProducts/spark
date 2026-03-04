@@ -23,3 +23,7 @@ def test_non_dependent_ui_surfaces_remain_functional_under_partial_api_failure_i
 
 def test_save_paths_remain_non_destructive_during_api_contract_drift_item_12_2_03() -> None:
     assert_frontend_behavior_contract_passed("12.2.03")
+
+
+def test_project_selection_and_active_project_identity_persist_in_ui_client_state_item_12_3_01() -> None:
+    assert_frontend_behavior_contract_passed("12.3.01")

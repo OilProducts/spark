@@ -743,6 +743,61 @@ describe('Frontend contract behavior', () => {
     expect(previewRequestCount).toBe(1)
   })
 
+  it('[CID:12.3.01] persists canonical active-project identity in UI client state', async () => {
+    vi.resetModules()
+    const storage = new Map<string, string>()
+    const localStorageMock = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value)
+      },
+      removeItem: (key: string) => {
+        storage.delete(key)
+      },
+      clear: () => {
+        storage.clear()
+      },
+    }
+    vi.stubGlobal('localStorage', localStorageMock)
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: localStorageMock,
+    })
+
+    localStorageMock.setItem(
+      'sparkspawn.project_registry_state',
+      JSON.stringify({
+        '/tmp/project-contract-behavior': {
+          directoryPath: '/tmp/project-contract-behavior',
+          isFavorite: false,
+          lastAccessedAt: null,
+        },
+      }),
+    )
+    localStorageMock.setItem(
+      'sparkspawn.ui_route_state',
+      JSON.stringify({
+        viewMode: 'projects',
+        activeProjectPath: '/tmp/project-contract-behavior',
+        activeFlow: null,
+        selectedRunId: null,
+      }),
+    )
+
+    const { useStore: restoredStore } = await import('@/store')
+    restoredStore.getState().setActiveProjectPath('/tmp/project-contract-behavior/./')
+
+    const nextState = restoredStore.getState()
+    expect(nextState.activeProjectPath).toBe('/tmp/project-contract-behavior')
+    expect(nextState.projectScopedWorkspaces['/tmp/project-contract-behavior']).toBeDefined()
+    expect(nextState.projectScopedWorkspaces['/tmp/project-contract-behavior/./']).toBeUndefined()
+
+    const persistedRouteStateRaw = localStorageMock.getItem('sparkspawn.ui_route_state')
+    expect(persistedRouteStateRaw).toBeTruthy()
+    const persistedRouteState = JSON.parse(String(persistedRouteStateRaw)) as { activeProjectPath: string | null }
+    expect(persistedRouteState.activeProjectPath).toBe('/tmp/project-contract-behavior')
+  })
+
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
     renderSelectedEdgeSidebar()
     const edgeForm = await screen.findByTestId('edge-structured-form')

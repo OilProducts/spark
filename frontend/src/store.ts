@@ -747,7 +747,13 @@ export const useStore = create<AppState>((set) => ({
     recentProjectPaths: restoredRouteState.activeProjectPath ? [restoredRouteState.activeProjectPath] : [],
     setActiveProjectPath: (projectPath) =>
         set((state) => {
-            const isProjectSwitch = projectPath !== state.activeProjectPath
+            const normalizedProjectPath =
+                typeof projectPath === "string" ? normalizeProjectPath(projectPath) : null
+            if (projectPath !== null && (!normalizedProjectPath || !isAbsoluteProjectPath(normalizedProjectPath))) {
+                return state
+            }
+            const nextProjectPath = normalizedProjectPath
+            const isProjectSwitch = nextProjectPath !== state.activeProjectPath
             const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
             const nextProjectRegistry = { ...state.projectRegistry }
             const currentScope = state.activeProjectPath
@@ -760,33 +766,35 @@ export const useStore = create<AppState>((set) => ({
                     workingDir: state.workingDir,
                 }
             }
-            const nextProjectScope = projectPath ? resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[projectPath], projectPath) : null
-            if (projectPath && nextProjectScope) {
-                nextProjectScopedWorkspaces[projectPath] = nextProjectScope
+            const nextProjectScope = nextProjectPath
+                ? resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[nextProjectPath], nextProjectPath)
+                : null
+            if (nextProjectPath && nextProjectScope) {
+                nextProjectScopedWorkspaces[nextProjectPath] = nextProjectScope
             }
-            if (projectPath && nextProjectRegistry[projectPath]) {
-                nextProjectRegistry[projectPath] = {
-                    ...nextProjectRegistry[projectPath],
+            if (nextProjectPath && nextProjectRegistry[nextProjectPath]) {
+                nextProjectRegistry[nextProjectPath] = {
+                    ...nextProjectRegistry[nextProjectPath],
                     lastAccessedAt: new Date().toISOString(),
                 }
             }
             saveProjectRegistryState(nextProjectRegistry)
-            const nextViewMode = resolveViewModeForProjectScope(state.viewMode, projectPath)
+            const nextViewMode = resolveViewModeForProjectScope(state.viewMode, nextProjectPath)
             saveRouteState({
                 viewMode: nextViewMode,
-                activeProjectPath: projectPath,
-                activeFlow: projectPath ? nextProjectScope.activeFlow : null,
-                selectedRunId: projectPath ? nextProjectScope.selectedRunId : null,
+                activeProjectPath: nextProjectPath,
+                activeFlow: nextProjectPath ? nextProjectScope.activeFlow : null,
+                selectedRunId: nextProjectPath ? nextProjectScope.selectedRunId : null,
             })
             return {
-                activeProjectPath: projectPath,
+                activeProjectPath: nextProjectPath,
                 viewMode: nextViewMode,
                 projectRegistry: nextProjectRegistry,
                 projectScopedWorkspaces: nextProjectScopedWorkspaces,
-                recentProjectPaths: pushRecentProjectPath(state.recentProjectPaths, projectPath),
-                activeFlow: projectPath ? nextProjectScope.activeFlow : null,
-                selectedRunId: projectPath ? nextProjectScope.selectedRunId : null,
-                workingDir: projectPath ? nextProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
+                recentProjectPaths: pushRecentProjectPath(state.recentProjectPaths, nextProjectPath),
+                activeFlow: nextProjectPath ? nextProjectScope.activeFlow : null,
+                selectedRunId: nextProjectPath ? nextProjectScope.selectedRunId : null,
+                workingDir: nextProjectPath ? nextProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
                 runtimeStatus: isProjectSwitch ? 'idle' : state.runtimeStatus,
                 nodeStatuses: isProjectSwitch ? {} : state.nodeStatuses,
                 humanGate: isProjectSwitch ? null : state.humanGate,
