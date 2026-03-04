@@ -173,7 +173,7 @@ function extractNodeIdsWithExplicitLabels(rawDot?: string | null): Set<string> {
     }
 
     const nodeIdsWithExplicitLabels = new Set<string>()
-    const nodeStatementPattern = /(^|[\r\n])\s*("(?:[^"\\]|\\.)+"|[A-Za-z_][A-Za-z0-9_]*)\s*\[([\s\S]*?)\]\s*;/g
+    const nodeStatementPattern = /(^|[\r\n])\s*("(?:[^"\\]|\\.)+"|[A-Za-z_][A-Za-z0-9_]*)\s*\[([\s\S]*?)\][^\S\r\n]*;?/g
     let match = nodeStatementPattern.exec(rawDot)
     while (match !== null) {
         const nodeId = normalizeDotId(match[2])
