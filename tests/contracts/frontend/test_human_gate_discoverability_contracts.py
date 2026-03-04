@@ -25,3 +25,7 @@ def test_freeform_human_gate_inputs_render_and_submit_item_10_2_03() -> None:
 
 def test_supported_human_gate_question_types_have_contract_coverage_item_10_2_04() -> None:
     assert_frontend_behavior_contract_passed("10.2.04")
+
+
+def test_human_default_choice_is_authorable_and_visible_in_node_inspector_item_10_3_01() -> None:
+    assert_frontend_behavior_contract_passed("10.3.01")

@@ -543,6 +543,12 @@ export function Sidebar() {
                                             className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             placeholder="target node id"
                                         />
+                                        <p
+                                            data-testid="human-default-choice-timeout-guidance"
+                                            className="text-xs text-muted-foreground"
+                                        >
+                                            Used when this gate times out without an explicit answer.
+                                        </p>
                                     </div>
                                 )}
                                 {visibility.showTypeOverride && (

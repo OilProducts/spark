@@ -279,7 +279,8 @@ Status key:
   - Evidence (2026-03-04): Evaluator `pass`; added frontend contract `CID:10.2.04` plus contract bridge coverage so `MULTIPLE_CHOICE`, `YES_NO`, `CONFIRMATION`, and `FREEFORM` each have explicit behavioral assertions (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) with screenshot-based visual QA references `frontend/artifacts/ui-smoke/10b-human-gate-discoverability-runs.png`, `frontend/artifacts/ui-smoke/10c-human-gate-yes-no-confirmation-semantics.png`, and `frontend/artifacts/ui-smoke/10d-human-gate-freeform-interaction.png`.
 
 ### 10.3 Timeout/Default Semantics
-- [ ] [10.3-01] Expose `human.default_choice` authoring and visibility in node inspector.
+- [x] [10.3-01] Expose `human.default_choice` authoring and visibility in node inspector.
+  - Evidence (2026-03-04): Evaluator `pass`; node inspector now shows explicit timeout-default guidance for `human.default_choice` on `wait.human` nodes in `frontend/src/components/Sidebar.tsx`, with frontend contract `CID:10.3.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) and screenshot-based visual QA review using `frontend/artifacts/ui-smoke/10a-human-gate-discoverability.png`, `frontend/artifacts/ui-smoke/10b-human-gate-discoverability-runs.png`, `frontend/artifacts/ui-smoke/10c-human-gate-yes-no-confirmation-semantics.png`, and `frontend/artifacts/ui-smoke/10d-human-gate-freeform-interaction.png`.
 - [ ] [10.3-02] Display timeout/default-applied/skipped outcome provenance in run timeline.
 - [ ] [10.3-03] Add tests for timeout fallback and explicit answer branches.
 

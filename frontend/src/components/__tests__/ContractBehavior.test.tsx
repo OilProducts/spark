@@ -1378,4 +1378,54 @@ describe('Frontend contract behavior', () => {
     expect(freeformInput).toBeVisible()
     expect(freeformSubmit).toBeDisabled()
   })
+
+  it('[CID:10.3.01] exposes human.default_choice authoring and timeout-default visibility in node inspector', async () => {
+    act(() => {
+      useStore.getState().setSelectedNodeId('gate')
+      useStore.getState().setSelectedEdgeId(null)
+    })
+
+    const nodes: Node[] = [
+      {
+        id: 'task',
+        position: { x: 0, y: 0 },
+        data: { label: 'Task', shape: 'box', type: 'codergen', prompt: 'Do work' },
+      },
+      {
+        id: 'gate',
+        position: { x: 150, y: 0 },
+        data: {
+          label: 'Gate',
+          shape: 'hexagon',
+          type: 'wait.human',
+          prompt: 'Choose path',
+          'human.default_choice': 'fix',
+        },
+      },
+    ]
+
+    renderSidebar(nodes, [])
+
+    const defaultChoiceInput = await screen.findByDisplayValue('fix')
+    expect(defaultChoiceInput).toBeVisible()
+    expect(defaultChoiceInput).toHaveAttribute('placeholder', 'target node id')
+    expect(defaultChoiceInput).toBeEnabled()
+    expect(screen.getByText('Used when this gate times out without an explicit answer.')).toBeVisible()
+
+    act(() => {
+      useStore.getState().setSelectedNodeId('task')
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText('Human Default Choice')).not.toBeInTheDocument()
+    })
+
+    act(() => {
+      useStore.getState().setSelectedNodeId('gate')
+    })
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('fix')).toBeVisible()
+    })
+  })
 })
