@@ -121,6 +121,7 @@ const DEFAULT_UI_DEFAULTS: UiDefaults = {
 
 const UI_DEFAULTS_STORAGE_KEY = "sparkspawn.ui_defaults"
 const ROUTE_STATE_STORAGE_KEY = "sparkspawn.ui_route_state"
+const PROJECT_REGISTRY_STATE_STORAGE_KEY = "sparkspawn.project_registry_state"
 const PROJECT_CONVERSATION_STATE_STORAGE_KEY = "sparkspawn.project_conversation_state"
 const DEFAULT_WORKING_DIRECTORY = "./test-app"
 const RECENT_PROJECT_LIMIT = 5
@@ -302,6 +303,15 @@ type PersistedProjectWorkspaceState = Record<
     }
 >
 
+type PersistedProjectRegistryState = Record<
+    string,
+    {
+        directoryPath?: unknown
+        isFavorite?: unknown
+        lastAccessedAt?: unknown
+    }
+>
+
 const DEFAULT_PROJECT_SCOPED_WORKSPACE: ProjectScopedWorkspace = {
     activeFlow: null,
     selectedRunId: null,
@@ -405,6 +415,64 @@ const saveProjectConversationState = (projectScopedWorkspaces: Record<string, Pr
 
 const restoredProjectConversationState = loadProjectConversationState()
 
+const loadProjectRegistryState = (): Record<string, RegisteredProject> => {
+    if (typeof window === "undefined") {
+        return {}
+    }
+    try {
+        const raw = window.localStorage.getItem(PROJECT_REGISTRY_STATE_STORAGE_KEY)
+        if (!raw) {
+            return {}
+        }
+        const parsed = JSON.parse(raw) as PersistedProjectRegistryState
+        const restored: Record<string, RegisteredProject> = {}
+        Object.entries(parsed).forEach(([projectPath, value]) => {
+            if (!value || typeof value !== "object") {
+                return
+            }
+            const candidate = value as PersistedProjectRegistryState[string]
+            const rawDirectoryPath = typeof candidate.directoryPath === "string" ? candidate.directoryPath : projectPath
+            const normalizedPath = normalizeProjectPath(rawDirectoryPath)
+            if (!normalizedPath || !isAbsoluteProjectPath(normalizedPath)) {
+                return
+            }
+            const existing = restored[normalizedPath]
+            restored[normalizedPath] = {
+                directoryPath: normalizedPath,
+                isFavorite: Boolean(existing?.isFavorite) || candidate.isFavorite === true,
+                lastAccessedAt: existing?.lastAccessedAt
+                    || (typeof candidate.lastAccessedAt === "string" ? candidate.lastAccessedAt : null),
+            }
+        })
+        return restored
+    } catch {
+        return {}
+    }
+}
+
+const saveProjectRegistryState = (projectRegistry: Record<string, RegisteredProject>) => {
+    if (typeof window === "undefined") {
+        return
+    }
+    try {
+        const persisted: Record<string, RegisteredProject> = {}
+        Object.entries(projectRegistry).forEach(([projectPath, value]) => {
+            const normalizedPath = normalizeProjectPath(value.directoryPath || projectPath)
+            if (!normalizedPath || !isAbsoluteProjectPath(normalizedPath)) {
+                return
+            }
+            persisted[normalizedPath] = {
+                directoryPath: normalizedPath,
+                isFavorite: value.isFavorite === true,
+                lastAccessedAt: typeof value.lastAccessedAt === "string" ? value.lastAccessedAt : null,
+            }
+        })
+        window.localStorage.setItem(PROJECT_REGISTRY_STATE_STORAGE_KEY, JSON.stringify(persisted))
+    } catch {
+        // Ignore storage failures (private mode, quota, etc.)
+    }
+}
+
 const resolveProjectScopedWorkspace = (
     workspace: Partial<ProjectScopedWorkspace> | undefined,
     projectPath: string | null
@@ -436,9 +504,15 @@ const loadRouteState = (): RouteState => {
         const parsed = JSON.parse(raw) as Partial<RouteState>
         const isValidViewMode = parsed.viewMode ? VIEW_MODES.includes(parsed.viewMode) : false
         const requestedViewMode = isValidViewMode ? parsed.viewMode! : DEFAULT_ROUTE_STATE.viewMode
+        const parsedActiveProjectPath = typeof parsed.activeProjectPath === "string"
+            ? normalizeProjectPath(parsed.activeProjectPath)
+            : null
         const parsedRouteState: RouteState = {
             viewMode: requestedViewMode,
-            activeProjectPath: typeof parsed.activeProjectPath === "string" ? parsed.activeProjectPath : null,
+            activeProjectPath:
+                parsedActiveProjectPath && isAbsoluteProjectPath(parsedActiveProjectPath)
+                    ? parsedActiveProjectPath
+                    : null,
             activeFlow: typeof parsed.activeFlow === "string" ? parsed.activeFlow : null,
             selectedRunId: typeof parsed.selectedRunId === "string" ? parsed.selectedRunId : null,
         }
@@ -562,6 +636,15 @@ interface AppState {
 }
 
 const restoredRouteState = loadRouteState()
+const restoredProjectRegistryState = loadProjectRegistryState()
+const initialProjectRegistry: Record<string, RegisteredProject> = { ...restoredProjectRegistryState }
+if (restoredRouteState.activeProjectPath && !initialProjectRegistry[restoredRouteState.activeProjectPath]) {
+    initialProjectRegistry[restoredRouteState.activeProjectPath] = {
+        directoryPath: restoredRouteState.activeProjectPath,
+        isFavorite: false,
+        lastAccessedAt: null,
+    }
+}
 const initialProjectScopedWorkspaces: Record<string, ProjectScopedWorkspace> = restoredRouteState.activeProjectPath
     ? {
         [restoredRouteState.activeProjectPath]: resolveProjectScopedWorkspace(
@@ -621,6 +704,7 @@ export const useStore = create<AppState>((set) => ({
                     lastAccessedAt: new Date().toISOString(),
                 }
             }
+            saveProjectRegistryState(nextProjectRegistry)
             const nextViewMode = resolveViewModeForProjectScope(state.viewMode, projectPath)
             saveRouteState({
                 viewMode: nextViewMode,
@@ -654,7 +738,7 @@ export const useStore = create<AppState>((set) => ({
                 saveErrorKind: isProjectSwitch ? null : state.saveErrorKind,
             }
         }),
-    projectRegistry: {},
+    projectRegistry: initialProjectRegistry,
     projectRegistrationError: null,
     registerProject: (directoryPath) => {
         let result: ProjectRegistrationResult = {
@@ -693,6 +777,14 @@ export const useStore = create<AppState>((set) => ({
             const shouldActivateNewProject = !state.activeProjectPath
             const nowIso = shouldActivateNewProject ? new Date().toISOString() : null
             const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const nextProjectRegistry = {
+                ...state.projectRegistry,
+                [normalizedPath]: {
+                    directoryPath: normalizedPath,
+                    isFavorite: false,
+                    lastAccessedAt: nowIso,
+                },
+            }
             nextProjectScopedWorkspaces[normalizedPath] = resolveProjectScopedWorkspace(
                 nextProjectScopedWorkspaces[normalizedPath],
                 normalizedPath
@@ -707,20 +799,13 @@ export const useStore = create<AppState>((set) => ({
                 activeFlow: state.activeProjectPath ? state.activeFlow : nextActiveProjectScope.activeFlow,
                 selectedRunId: state.activeProjectPath ? state.selectedRunId : nextActiveProjectScope.selectedRunId,
             })
+            saveProjectRegistryState(nextProjectRegistry)
             result = {
                 ok: true,
                 normalizedPath,
             }
             return {
-                projectRegistry: {
-                    ...state.projectRegistry,
-                    // [normalizedPath]: { directoryPath: normalizedPath },
-                    [normalizedPath]: {
-                        directoryPath: normalizedPath,
-                        isFavorite: false,
-                        lastAccessedAt: nowIso,
-                    },
-                },
+                projectRegistry: nextProjectRegistry,
                 recentProjectPaths: shouldActivateNewProject
                     ? pushRecentProjectPath(state.recentProjectPaths, normalizedPath)
                     : state.recentProjectPaths,
@@ -816,6 +901,7 @@ export const useStore = create<AppState>((set) => ({
                 activeFlow: state.activeFlow,
                 selectedRunId: state.selectedRunId,
             })
+            saveProjectRegistryState(nextProjectRegistry)
             saveProjectConversationState(nextProjectScopedWorkspaces)
             result = {
                 ok: true,
@@ -839,14 +925,16 @@ export const useStore = create<AppState>((set) => ({
             if (!project) {
                 return state
             }
-            return {
-                projectRegistry: {
-                    ...state.projectRegistry,
-                    [normalizedPath]: {
-                        ...project,
-                        isFavorite: !project.isFavorite,
-                    },
+            const nextProjectRegistry = {
+                ...state.projectRegistry,
+                [normalizedPath]: {
+                    ...project,
+                    isFavorite: !project.isFavorite,
                 },
+            }
+            saveProjectRegistryState(nextProjectRegistry)
+            return {
+                projectRegistry: nextProjectRegistry,
             }
         }),
     clearProjectRegistrationError: () => set({ projectRegistrationError: null }),

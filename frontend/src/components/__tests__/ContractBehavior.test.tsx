@@ -2720,4 +2720,69 @@ digraph contract_behavior {
       expect(screen.getByDisplayValue('fix')).toBeVisible()
     })
   })
+
+  it('[CID:11.5.01] restores persisted project registry across sessions and keeps unique-directory enforcement active', async () => {
+    vi.resetModules()
+    const storage = new Map<string, string>()
+    const localStorageMock = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value)
+      },
+      removeItem: (key: string) => {
+        storage.delete(key)
+      },
+      clear: () => {
+        storage.clear()
+      },
+    }
+    vi.stubGlobal('localStorage', localStorageMock)
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: localStorageMock,
+    })
+
+    localStorageMock.setItem(
+      'sparkspawn.project_registry_state',
+      JSON.stringify({
+        '/tmp/persisted-project': {
+          directoryPath: '/tmp/persisted-project',
+          isFavorite: true,
+          lastAccessedAt: '2026-03-04T00:00:00.000Z',
+        },
+      }),
+    )
+    localStorageMock.setItem(
+      'sparkspawn.ui_route_state',
+      JSON.stringify({
+        viewMode: 'projects',
+        activeProjectPath: '/tmp/persisted-project',
+        activeFlow: null,
+        selectedRunId: null,
+      }),
+    )
+
+    const { useStore: restoredStore } = await import('@/store')
+    const restoredState = restoredStore.getState()
+
+    expect(restoredState.projectRegistry).toEqual({
+      '/tmp/persisted-project': {
+        directoryPath: '/tmp/persisted-project',
+        isFavorite: true,
+        lastAccessedAt: '2026-03-04T00:00:00.000Z',
+      },
+    })
+
+    const duplicateResult = restoredState.registerProject('/tmp/persisted-project')
+    expect(duplicateResult.ok).toBe(false)
+    expect(duplicateResult.error).toBe('Project already registered: /tmp/persisted-project')
+
+    const newProjectResult = restoredState.registerProject('/tmp/new-project')
+    expect(newProjectResult.ok).toBe(true)
+    const persistedRegistryRaw = localStorageMock.getItem('sparkspawn.project_registry_state')
+    expect(persistedRegistryRaw).toBeTruthy()
+    const persistedRegistry = JSON.parse(String(persistedRegistryRaw)) as Record<string, { directoryPath: string }>
+    expect(persistedRegistry['/tmp/persisted-project']?.directoryPath).toBe('/tmp/persisted-project')
+    expect(persistedRegistry['/tmp/new-project']?.directoryPath).toBe('/tmp/new-project')
+  })
 })

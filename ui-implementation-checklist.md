@@ -329,7 +329,8 @@ Status key:
   - Evidence (2026-03-04): Evaluator `pass`; added frontend contract `CID:11.4.03` proving graph/node/edge numeric extension attrs remain stable across repeated structured edits (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_extension_attribute_editor_contracts.py`) and fixed graph-attr normalization to preserve unknown extension primitive types through saves (`frontend/src/store.ts`), validated by `just test` and screenshot-based visual QA references `frontend/artifacts/ui-smoke/02-graph-inspector.png`, `frontend/artifacts/ui-smoke/03-node-inspector.png`, `frontend/artifacts/ui-smoke/04-edge-inspector.png`, `frontend/artifacts/ui-smoke/19-semantic-equivalence-noop-save.png`, and `frontend/artifacts/ui-smoke/19b-semantic-equivalence-round-trip-saved.png`.
 
 ### 11.5 Project Workspace Persistence
-- [ ] [11.5-01] Persist project registry across sessions with unique-directory enforcement.
+- [x] [11.5-01] Persist project registry across sessions with unique-directory enforcement.
+  - Evidence (2026-03-04): Evaluator `pass`; added persisted project-registry load/save hydration (`sparkspawn.project_registry_state`) with normalized absolute-path dedupe and duplicate-directory enforcement retained in `frontend/src/store.ts`, covered by frontend contract `CID:11.5.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_project_workspace_persistence_contracts.py`) and screenshot-based visual QA references `frontend/artifacts/ui-smoke/01-projects-shell.png`, `frontend/artifacts/ui-smoke/02-projects-panel.png`, and `frontend/artifacts/ui-smoke/01-editor-shell.png`.
 - [ ] [11.5-02] Persist and restore project-scoped conversation/spec/plan linkage.
 - [ ] [11.5-03] Rehydrate last active project context safely on reopen.
 
