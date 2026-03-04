@@ -6,6 +6,7 @@ import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
 import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility';
 import { getToolHookCommandWarning } from '@/lib/graphAttrValidation';
 import { saveFlowContent } from '@/lib/flowPersistence';
+import { fetchPipelineAnswerValidated } from '@/lib/apiClient';
 
 export function TaskNode({ id, data, selected }: NodeProps) {
     const { activeFlow, viewMode } = useStore();
@@ -664,14 +665,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                     key={option.value}
                                     onClick={() => {
                                         if (!humanGate.runId) return
-                                        fetch(`/pipelines/${encodeURIComponent(humanGate.runId)}/questions/${encodeURIComponent(humanGate.id)}/answer`, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({
-                                                question_id: humanGate.id,
-                                                selected_value: option.value,
-                                            }),
-                                        }).catch(console.error)
+                                        fetchPipelineAnswerValidated(humanGate.runId, humanGate.id, option.value).catch(console.error)
                                     }}
                                     disabled={!humanGate.runId || !selectedRunId}
                                     className="rounded-md border border-amber-200 bg-white px-2 py-1 text-left text-xs font-medium text-amber-900 hover:bg-amber-100"

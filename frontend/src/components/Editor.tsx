@@ -22,6 +22,11 @@ import { ExecutionControls } from './ExecutionControls';
 import { clearDotSerializationContext, generateDot, setDotSerializationContext } from '@/lib/dotUtils';
 import { buildCanonicalFlowModelFromPreviewGraph } from '@/lib/canonicalFlowModel';
 import {
+    fetchFlowPayloadValidated,
+    fetchPreviewValidated,
+    type PreviewResponsePayload,
+} from '@/lib/apiClient';
+import {
     EXPECT_SEMANTIC_EQUIVALENCE_OPTIONS,
     saveFlowContent,
     saveFlowContentExpectingSemanticEquivalence,
@@ -49,74 +54,7 @@ const ELK_OPTIONS = {
     'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
 };
 
-interface PreviewNode {
-    id: string
-    label?: string
-    shape?: string
-    prompt?: string
-    tool_command?: string
-    'tool_hooks.pre'?: string
-    'tool_hooks.post'?: string
-    join_policy?: string
-    error_policy?: string
-    max_parallel?: number | string
-    type?: string
-    max_retries?: number | string
-    goal_gate?: boolean | string
-    retry_target?: string
-    fallback_retry_target?: string
-    fidelity?: string
-    thread_id?: string
-    class?: string
-    timeout?: string
-    llm_model?: string
-    llm_provider?: string
-    reasoning_effort?: string
-    auto_status?: boolean | string
-    allow_partial?: boolean | string
-    'manager.poll_interval'?: string
-    'manager.max_cycles'?: number | string
-    'manager.stop_condition'?: string
-    'manager.actions'?: string
-    'human.default_choice'?: string
-}
-
-interface PreviewEdge {
-    from: string
-    to: string
-    label?: string
-    condition?: string
-    weight?: number | string
-    fidelity?: string
-    thread_id?: string
-    loop_restart?: boolean | string
-}
-
-interface PreviewResponse {
-    status?: string
-    graph?: {
-        nodes: PreviewNode[]
-        edges: PreviewEdge[]
-        graph_attrs?: {
-            goal?: string
-            label?: string
-            model_stylesheet?: string
-            default_max_retry?: number | string
-            retry_target?: string
-            fallback_retry_target?: string
-            default_fidelity?: string
-            'stack.child_dotfile'?: string
-            'stack.child_workdir'?: string
-            'tool_hooks.pre'?: string
-            'tool_hooks.post'?: string
-            ui_default_llm_model?: string
-            ui_default_llm_provider?: string
-            ui_default_reasoning_effort?: string
-        }
-    }
-    diagnostics?: DiagnosticEntry[]
-    errors?: DiagnosticEntry[]
-}
+type PreviewResponse = PreviewResponsePayload
 
 type EditorMode = 'structured' | 'raw'
 type SaveFlowOptions = {
@@ -360,12 +298,7 @@ export function Editor() {
     ]);
 
     const requestPreview = useCallback(async (dot: string): Promise<PreviewResponse> => {
-        const response = await fetch('/preview', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ flow_content: dot }),
-        });
-        const preview = (await response.json()) as PreviewResponse;
+        const preview = await fetchPreviewValidated(dot)
         if (preview.diagnostics) {
             setDiagnostics(preview.diagnostics);
         } else {
@@ -398,8 +331,7 @@ export function Editor() {
         setEditorMode('structured');
         rawDotEntryDraftRef.current = '';
 
-        fetch(`/api/flows/${activeFlow}`)
-            .then((res) => res.json())
+        fetchFlowPayloadValidated(activeFlow)
             .then((data) => {
                 const normalizedContent = normalizeLegacyDot(data.content);
                 setRawDotDraft(normalizedContent);

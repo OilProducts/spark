@@ -4,6 +4,15 @@ import { GraphSettings } from '@/components/GraphSettings'
 import { RunsPanel } from '@/components/RunsPanel'
 import { Sidebar } from '@/components/Sidebar'
 import { TaskNode } from '@/components/TaskNode'
+import {
+  ApiSchemaError,
+  parseFlowListResponse,
+  parseFlowPayloadResponse,
+  parsePipelineGraphResponse,
+  parsePipelineStatusResponse,
+  parsePreviewResponse,
+  parseRuntimeStatusResponse,
+} from '@/lib/apiClient'
 import { useStore } from '@/store'
 import { ReactFlow, ReactFlowProvider, type Edge, type Node } from '@xyflow/react'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
@@ -243,20 +252,20 @@ describe('Frontend contract behavior', () => {
   it('[CID:12.1.01] verifies runtime UI code covers every required API endpoint from ui-spec section 12.1', () => {
     const runtimeSource = readRuntimeUiSource()
     const requiredEndpointPatterns: Array<{ endpoint: string; pattern: RegExp }> = [
-      { endpoint: '/api/flows', pattern: /fetch\(\s*['"]\/api\/flows['"]/ },
-      { endpoint: '/api/flows/{name}', pattern: /fetch\(\s*`\/api\/flows\/\$\{encodeURIComponent\([^)]+\)\}`/ },
-      { endpoint: '/preview', pattern: /fetch\(\s*['"]\/preview['"]/ },
-      { endpoint: '/pipelines', pattern: /fetch\(\s*['"]\/pipelines['"]/ },
-      { endpoint: '/pipelines/{id}', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}`\s*(?:,|\))/ },
+      { endpoint: '/api/flows', pattern: /fetch\(\s*['"]\/api\/flows['"]|fetchFlowListValidated\(/ },
+      { endpoint: '/api/flows/{name}', pattern: /fetch\(\s*`\/api\/flows\/\$\{encodeURIComponent\([^)]+\)\}`|fetchFlowPayloadValidated\(/ },
+      { endpoint: '/preview', pattern: /fetch\(\s*['"]\/preview['"]|fetchPreviewValidated\(/ },
+      { endpoint: '/pipelines', pattern: /fetch\(\s*['"]\/pipelines['"]|fetchPipelineStartValidated\(/ },
+      { endpoint: '/pipelines/{id}', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}`\s*(?:,|\))|fetchPipelineStatusValidated\(/ },
       { endpoint: '/pipelines/{id}/events', pattern: /new EventSource\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/events`/ },
-      { endpoint: '/pipelines/{id}/cancel', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/cancel`\s*,\s*\{\s*method:\s*['"]POST['"]/ },
-      { endpoint: '/pipelines/{id}/graph', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/graph`/ },
-      { endpoint: '/pipelines/{id}/questions', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/questions`\s*(?:,|\))/ },
-      { endpoint: '/pipelines/{id}/questions/{qid}/answer', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/questions\/\$\{encodeURIComponent\([^)]+\)\}\/answer`/ },
-      { endpoint: '/pipelines/{id}/checkpoint', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/checkpoint`/ },
-      { endpoint: '/pipelines/{id}/context', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/context`/ },
-      { endpoint: '/runs', pattern: /fetch\(\s*['"]\/runs['"]/ },
-      { endpoint: '/status', pattern: /fetch\(\s*['"]\/status['"]/ },
+      { endpoint: '/pipelines/{id}/cancel', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/cancel`\s*,\s*\{\s*method:\s*['"]POST['"]|fetchPipelineCancelValidated\(/ },
+      { endpoint: '/pipelines/{id}/graph', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/graph`|fetchPipelineGraphValidated\(/ },
+      { endpoint: '/pipelines/{id}/questions', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/questions`\s*(?:,|\))|fetchPipelineQuestionsValidated\(/ },
+      { endpoint: '/pipelines/{id}/questions/{qid}/answer', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/questions\/\$\{encodeURIComponent\([^)]+\)\}\/answer`|fetchPipelineAnswerValidated\(/ },
+      { endpoint: '/pipelines/{id}/checkpoint', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/checkpoint`|fetchPipelineCheckpointValidated\(/ },
+      { endpoint: '/pipelines/{id}/context', pattern: /fetch\(\s*`\/pipelines\/\$\{encodeURIComponent\([^)]+\)\}\/context`|fetchPipelineContextValidated\(/ },
+      { endpoint: '/runs', pattern: /fetch\(\s*['"]\/runs['"]|fetchRunsListValidated\(/ },
+      { endpoint: '/status', pattern: /fetch\(\s*['"]\/status['"]|fetchRuntimeStatusValidated\(/ },
     ]
 
     const missingEndpoints = requiredEndpointPatterns
@@ -264,6 +273,59 @@ describe('Frontend contract behavior', () => {
       .map(({ endpoint }) => endpoint)
 
     expect(missingEndpoints).toEqual([])
+  })
+
+  it('[CID:12.1.02] provides typed endpoint adapters with runtime schema validation for required JSON responses', () => {
+    const runtimeSource = readRuntimeUiSource()
+    const requiredPatterns: Array<{ requirement: string; pattern: RegExp }> = [
+      { requirement: 'API schema error type', pattern: /class\s+ApiSchemaError\s+extends\s+Error/ },
+      { requirement: 'schema assertion helper', pattern: /function\s+expectObjectRecord\s*\(/ },
+      { requirement: 'flows list response validator', pattern: /function\s+parseFlowListResponse\s*\(/ },
+      { requirement: 'flow payload response validator', pattern: /function\s+parseFlowPayloadResponse\s*\(/ },
+      { requirement: 'preview response validator', pattern: /function\s+parsePreviewResponse\s*\(/ },
+      { requirement: 'pipeline start response validator', pattern: /function\s+parsePipelineStartResponse\s*\(/ },
+      { requirement: 'pipeline status response validator', pattern: /function\s+parsePipelineStatusResponse\s*\(/ },
+      { requirement: 'pipeline cancel response validator', pattern: /function\s+parsePipelineCancelResponse\s*\(/ },
+      { requirement: 'pipeline checkpoint response validator', pattern: /function\s+parsePipelineCheckpointResponse\s*\(/ },
+      { requirement: 'pipeline context response validator', pattern: /function\s+parsePipelineContextResponse\s*\(/ },
+      { requirement: 'pipeline questions response validator', pattern: /function\s+parsePipelineQuestionsResponse\s*\(/ },
+      { requirement: 'pipeline answer response validator', pattern: /function\s+parsePipelineAnswerResponse\s*\(/ },
+      { requirement: 'pipeline graph response validator', pattern: /function\s+parsePipelineGraphResponse\s*\(/ },
+      { requirement: 'runs list response validator', pattern: /function\s+parseRunsListResponse\s*\(/ },
+      { requirement: 'runtime status response validator', pattern: /function\s+parseRuntimeStatusResponse\s*\(/ },
+      { requirement: 'validated flows adapter', pattern: /function\s+fetchFlowListValidated\s*\(/ },
+      { requirement: 'validated flow adapter', pattern: /function\s+fetchFlowPayloadValidated\s*\(/ },
+      { requirement: 'validated preview adapter', pattern: /function\s+fetchPreviewValidated\s*\(/ },
+      { requirement: 'validated pipeline start adapter', pattern: /function\s+fetchPipelineStartValidated\s*\(/ },
+      { requirement: 'validated pipeline status adapter', pattern: /function\s+fetchPipelineStatusValidated\s*\(/ },
+      { requirement: 'validated pipeline cancel adapter', pattern: /function\s+fetchPipelineCancelValidated\s*\(/ },
+      { requirement: 'validated pipeline checkpoint adapter', pattern: /function\s+fetchPipelineCheckpointValidated\s*\(/ },
+      { requirement: 'validated pipeline context adapter', pattern: /function\s+fetchPipelineContextValidated\s*\(/ },
+      { requirement: 'validated pipeline questions adapter', pattern: /function\s+fetchPipelineQuestionsValidated\s*\(/ },
+      { requirement: 'validated pipeline answer adapter', pattern: /function\s+fetchPipelineAnswerValidated\s*\(/ },
+      { requirement: 'validated pipeline graph adapter', pattern: /function\s+fetchPipelineGraphValidated\s*\(/ },
+      { requirement: 'validated runs list adapter', pattern: /function\s+fetchRunsListValidated\s*\(/ },
+      { requirement: 'validated runtime status adapter', pattern: /function\s+fetchRuntimeStatusValidated\s*\(/ },
+    ]
+
+    const missingRequirements = requiredPatterns
+      .filter(({ pattern }) => !pattern.test(runtimeSource))
+      .map(({ requirement }) => requirement)
+
+    expect(missingRequirements).toEqual([])
+
+    expect(parseFlowListResponse(['a.dot', 'b.dot'])).toEqual(['a.dot', 'b.dot'])
+    expect(() => parseFlowListResponse({})).toThrow(ApiSchemaError)
+    expect(parseFlowPayloadResponse({ content: 'digraph G {}' })).toEqual({ name: '', content: 'digraph G {}' })
+    expect(() => parseFlowPayloadResponse({})).toThrow(ApiSchemaError)
+    expect(parsePreviewResponse({ graph: { nodes: [], edges: [] } }).status).toBe('ok')
+    expect(() => parsePreviewResponse({ graph: { nodes: {} } })).toThrow(ApiSchemaError)
+    expect(parsePipelineStatusResponse({ pipeline_id: 'run-1', status: 'running' }).pipeline_id).toBe('run-1')
+    expect(() => parsePipelineStatusResponse({ status: 'running' })).toThrow(ApiSchemaError)
+    expect(parseRuntimeStatusResponse({ status: 'idle' }).status).toBe('idle')
+    expect(() => parseRuntimeStatusResponse({})).toThrow(ApiSchemaError)
+    expect(parsePipelineGraphResponse('<svg></svg>')).toContain('<svg')
+    expect(() => parsePipelineGraphResponse('')).toThrow(ApiSchemaError)
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {

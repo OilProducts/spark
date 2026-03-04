@@ -1,4 +1,5 @@
 import { useStore } from "@/store"
+import { ApiHttpError, fetchPipelineGraphValidated } from '@/lib/apiClient'
 import { TerminalSquare } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { ExplainabilityPanel } from "./ExplainabilityPanel"
@@ -30,18 +31,16 @@ export function Terminal() {
         const probeGraphArtifact = async () => {
             setGraphArtifactAvailability((current) => (current === "available" ? current : "checking"))
             try {
-                const response = await fetch(`/pipelines/${encodeURIComponent(selectedRunId)}/graph`)
                 if (isCancelled) {
                     return
                 }
-                if (response.ok) {
-                    setGraphArtifactAvailability("available")
-                } else if (response.status === 404) {
+                await fetchPipelineGraphValidated(selectedRunId)
+                setGraphArtifactAvailability("available")
+            } catch (error) {
+                if (error instanceof ApiHttpError && error.status === 404) {
                     setGraphArtifactAvailability("missing")
-                } else {
-                    setGraphArtifactAvailability("error")
+                    return
                 }
-            } catch {
                 if (!isCancelled) {
                     setGraphArtifactAvailability("error")
                 }

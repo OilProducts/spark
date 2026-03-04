@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useStore } from '@/store'
+import { fetchPipelineStatusValidated, fetchRuntimeStatusValidated } from '@/lib/apiClient'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { resolveSelectedRunScopePreflight, resolveStatusHydrationDecision } from '@/lib/runScope'
 
@@ -97,8 +98,7 @@ export function RunStream() {
     }, [selectedRunId, resetNodeStatuses, clearHumanGate, clearLogs, setRuntimeStatus])
 
     useEffect(() => {
-        fetch('/status')
-            .then((res) => res.json())
+        fetchRuntimeStatusValidated()
             .then((data) => {
                 const runId = typeof data?.last_run_id === 'string' ? data.last_run_id : null
                 const lastWorkingDirectory = typeof data?.last_working_directory === 'string' ? data.last_working_directory : ''
@@ -253,10 +253,9 @@ export function RunStream() {
         }
 
         const startScopedStream = async () => {
-            const response = await fetch(`/pipelines/${encodeURIComponent(selectedRunId)}`, {
-                signal: metadataAbort.signal,
-            })
-            const data = response.ok ? await response.json() : null
+            const data = metadataAbort.signal.aborted
+                ? null
+                : await fetchPipelineStatusValidated(selectedRunId).catch(() => null)
             if (metadataAbort.signal.aborted) return
 
             const selectedRunWorkingDirectory = typeof data?.working_directory === 'string' ? data.working_directory : ''

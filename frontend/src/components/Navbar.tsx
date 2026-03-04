@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { useStore } from "@/store"
 import { buildPipelineStartPayload } from "@/lib/pipelineStartPayload"
+import { ApiHttpError, fetchFlowPayloadValidated, fetchPipelineStartValidated } from '@/lib/apiClient'
 import { Play, Settings2 } from "lucide-react"
 
 type WorkflowFailureDiagnostics = {
@@ -83,38 +84,11 @@ export function Navbar() {
                 return
             }
 
-            const flowRes = await fetch(`/api/flows/${encodeURIComponent(runInitiationForm.flowSource)}`)
-            if (!flowRes.ok) {
-                throw new Error(`Failed to load flow: ${runInitiationForm.flowSource}`)
-            }
-
-            const flow = await flowRes.json()
+            const flow = await fetchFlowPayloadValidated(runInitiationForm.flowSource)
             const resolvedWorkingDirectory = runInitiationForm.workingDirectory.trim() || runInitiationForm.projectPath
             runInitiationForm.workingDirectory = resolvedWorkingDirectory
             const startPayload = buildPipelineStartPayload(runInitiationForm, flow.content)
-            const runRes = await fetch('/pipelines', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(startPayload),
-            })
-            if (!runRes.ok) {
-                let reason = `Run request failed (${runRes.status})`
-                try {
-                    const detail = await runRes.json()
-                    if (detail && typeof detail === 'object') {
-                        if (typeof detail.error === 'string' && detail.error.trim()) {
-                            reason = detail.error.trim()
-                        } else if (typeof detail.detail === 'string' && detail.detail.trim()) {
-                            reason = detail.detail.trim()
-                        }
-                    }
-                } catch {
-                    // Keep the HTTP-based fallback reason when error details are unavailable.
-                }
-                throw new Error(reason)
-            }
-
-            const runData = await runRes.json()
+            const runData = await fetchPipelineStartValidated(startPayload as Record<string, unknown>)
             if (runData?.status !== 'started') {
                 const reason = runData?.error || runData?.status || 'Unknown run error'
                 throw new Error(`Run not started: ${reason}`)
@@ -127,9 +101,14 @@ export function Navbar() {
             setViewMode('execution')
         } catch (error) {
             console.error(error)
-            setRunStartError(error instanceof Error ? error.message : 'Failed to start pipeline run.')
+            const errorMessage = error instanceof ApiHttpError && error.detail
+                ? error.detail
+                : error instanceof Error
+                    ? error.message
+                    : 'Failed to start pipeline run.'
+            setRunStartError(errorMessage)
             setLastBuildWorkflowFailure({
-                message: error instanceof Error ? error.message : 'Failed to start pipeline run.',
+                message: errorMessage,
                 failedAt: new Date().toISOString(),
                 flowSource: runInitiationForm.flowSource || null,
             })

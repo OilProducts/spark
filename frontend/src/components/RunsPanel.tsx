@@ -6,6 +6,16 @@ import {
     formatRunMetadataLastUpdated,
     RUN_METADATA_STALE_AFTER_MS,
 } from '@/lib/runMetadataFreshness'
+import {
+    ApiHttpError,
+    fetchPipelineAnswerValidated,
+    fetchPipelineCancelValidated,
+    fetchPipelineCheckpointValidated,
+    fetchPipelineContextValidated,
+    fetchPipelineGraphValidated,
+    fetchPipelineQuestionsValidated,
+    fetchRunsListValidated,
+} from '@/lib/apiClient'
 
 interface RunRecord {
     run_id: string
@@ -899,12 +909,8 @@ export function RunsPanel() {
         setIsLoading(true)
         setError(null)
         try {
-            const res = await fetch('/runs')
-            if (!res.ok) {
-                throw new Error('Failed to load runs')
-            }
-            const data = await res.json()
-            setRuns(Array.isArray(data?.runs) ? data.runs : [])
+            const data = await fetchRunsListValidated()
+            setRuns(data.runs)
             setLastFetchedAtMs(Date.now())
         } catch (err) {
             console.error(err)
@@ -983,24 +989,15 @@ export function RunsPanel() {
         setIsCheckpointLoading(true)
         setCheckpointError(null)
         try {
-            const res = await fetch(`/pipelines/${encodeURIComponent(selectedRunSummary.run_id)}/checkpoint`)
-            if (!res.ok) {
-                let detail: string | null = null
-                try {
-                    const errorBody = await res.json()
-                    detail = asErrorDetail(errorBody)
-                } catch {
-                    detail = null
-                }
-                setCheckpointData(null)
-                setCheckpointError(checkpointErrorFromResponse(res.status, detail))
-                return
-            }
-            const payload = await res.json() as CheckpointResponse
+            const payload = await fetchPipelineCheckpointValidated(selectedRunSummary.run_id) as CheckpointResponse
             setCheckpointData(payload)
         } catch (err) {
             console.error(err)
             setCheckpointData(null)
+            if (err instanceof ApiHttpError) {
+                setCheckpointError(checkpointErrorFromResponse(err.status, err.detail))
+                return
+            }
             setCheckpointError({
                 message: 'Unable to load checkpoint.',
                 help: 'Check your network/backend connection and retry.',
@@ -1020,24 +1017,15 @@ export function RunsPanel() {
         setIsContextLoading(true)
         setContextError(null)
         try {
-            const res = await fetch(`/pipelines/${encodeURIComponent(selectedRunSummary.run_id)}/context`)
-            if (!res.ok) {
-                let detail: string | null = null
-                try {
-                    const errorBody = await res.json()
-                    detail = asErrorDetail(errorBody)
-                } catch {
-                    detail = null
-                }
-                setContextData(null)
-                setContextError(contextErrorFromResponse(res.status, detail))
-                return
-            }
-            const payload = await res.json() as ContextResponse
+            const payload = await fetchPipelineContextValidated(selectedRunSummary.run_id) as ContextResponse
             setContextData(payload)
         } catch (err) {
             console.error(err)
             setContextData(null)
+            if (err instanceof ApiHttpError) {
+                setContextError(contextErrorFromResponse(err.status, err.detail))
+                return
+            }
             setContextError({
                 message: 'Unable to load context.',
                 help: 'Check your network/backend connection and retry.',
@@ -1113,24 +1101,15 @@ export function RunsPanel() {
         setIsGraphvizLoading(true)
         setGraphvizError(null)
         try {
-            const res = await fetch(`/pipelines/${encodeURIComponent(selectedRunSummary.run_id)}/graph`)
-            if (!res.ok) {
-                let detail: string | null = null
-                try {
-                    const errorBody = await res.json()
-                    detail = asErrorDetail(errorBody)
-                } catch {
-                    detail = null
-                }
-                setGraphvizMarkup('')
-                setGraphvizError(graphvizErrorFromResponse(res.status, detail))
-                return
-            }
-            const svgMarkup = await res.text()
+            const svgMarkup = await fetchPipelineGraphValidated(selectedRunSummary.run_id)
             setGraphvizMarkup(svgMarkup)
         } catch (err) {
             console.error(err)
             setGraphvizMarkup('')
+            if (err instanceof ApiHttpError) {
+                setGraphvizError(graphvizErrorFromResponse(err.status, err.detail))
+                return
+            }
             setGraphvizError({
                 message: 'Unable to load graph visualization.',
                 help: 'Check your network/backend connection and retry.',
@@ -1146,13 +1125,8 @@ export function RunsPanel() {
             return
         }
         try {
-            const res = await fetch(`/pipelines/${encodeURIComponent(selectedRunSummary.run_id)}/questions`)
-            if (!res.ok) {
-                setPendingQuestionSnapshots([])
-                return
-            }
-            const payload = await res.json() as { questions?: unknown }
-            const rawQuestions = Array.isArray(payload.questions) ? payload.questions : []
+            const payload = await fetchPipelineQuestionsValidated(selectedRunSummary.run_id)
+            const rawQuestions = payload.questions
             const parsedQuestions = rawQuestions
                 .map((question) => asPendingQuestionSnapshot(question))
                 .filter((question): question is PendingQuestionSnapshot => question !== null)
@@ -1605,29 +1579,7 @@ export function RunsPanel() {
             [gate.questionId!]: true,
         }))
         try {
-            const res = await fetch(
-                `/pipelines/${encodeURIComponent(selectedRunTimelineId)}/questions/${encodeURIComponent(gate.questionId)}/answer`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        question_id: gate.questionId,
-                        selected_value: selectedValue,
-                    }),
-                }
-            )
-            if (!res.ok) {
-                let detail: string | null = null
-                try {
-                    const errorBody = await res.json()
-                    detail = asErrorDetail(errorBody)
-                } catch {
-                    detail = null
-                }
-                const detailSuffix = detail ? `: ${detail}` : ''
-                setPendingGateActionError(`Unable to submit answer (HTTP ${res.status})${detailSuffix}.`)
-                return
-            }
+            await fetchPipelineAnswerValidated(selectedRunTimelineId, gate.questionId, selectedValue)
             setAnsweredGateIds((previous) => ({
                 ...previous,
                 [gate.questionId!]: true,
@@ -1639,7 +1591,12 @@ export function RunsPanel() {
             })
         } catch (err) {
             console.error(err)
-            setPendingGateActionError('Unable to submit answer. Check connection/backend and retry.')
+            if (err instanceof ApiHttpError) {
+                const detailSuffix = err.detail ? `: ${err.detail}` : ''
+                setPendingGateActionError(`Unable to submit answer (HTTP ${err.status})${detailSuffix}.`)
+            } else {
+                setPendingGateActionError('Unable to submit answer. Check connection/backend and retry.')
+            }
         } finally {
             setSubmittingGateIds((previous) => {
                 const next = { ...previous }
@@ -1688,11 +1645,8 @@ export function RunsPanel() {
             ))
         )
         try {
-            const response = await fetch(`/pipelines/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })
-            if (!response.ok) {
-                throw new Error(`cancel failed with HTTP ${response.status}`)
-            }
-            fetchRuns()
+            await fetchPipelineCancelValidated(runId)
+            void fetchRuns()
         } catch (err) {
             console.error(err)
             setRuns((current) =>

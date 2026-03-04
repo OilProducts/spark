@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { OctagonX } from 'lucide-react'
 import { useStore, type RuntimeStatus } from '@/store'
+import { fetchPipelineCancelValidated } from '@/lib/apiClient'
 
 const STATUS_LABELS: Record<string, string> = {
     running: 'Running',
@@ -91,10 +92,7 @@ export function ExecutionControls() {
         }
         setRuntimeStatus('cancel_requested')
         try {
-            const response = await fetch(`/pipelines/${encodeURIComponent(selectedRunId)}/cancel`, { method: 'POST' })
-            if (!response.ok) {
-                throw new Error(`cancel failed with HTTP ${response.status}`)
-            }
+            await fetchPipelineCancelValidated(selectedRunId)
         } catch (error) {
             console.error(error)
             setRuntimeStatus('running')

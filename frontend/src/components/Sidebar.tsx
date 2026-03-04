@@ -9,6 +9,7 @@ import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
 import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
 import { toExtensionAttrEntries } from "@/lib/extensionAttrs"
 import { retryLastSaveContent, saveFlowContent } from "@/lib/flowPersistence"
+import { fetchFlowListValidated } from '@/lib/apiClient'
 import { resolveSaveRemediation } from "@/lib/saveRemediation"
 import { InspectorScaffold, InspectorEmptyState } from './InspectorScaffold'
 import { GraphSettings } from './GraphSettings'
@@ -93,15 +94,17 @@ export function Sidebar() {
     const saveTimer = useRef<number | null>(null)
     const pendingSaveRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null)
 
-    const loadFlows = () => {
-        fetch('/api/flows')
-            .then(res => res.json())
-            .then(data => setFlows(data))
-            .catch(console.error)
+    const loadFlows = async () => {
+        try {
+            const data = await fetchFlowListValidated()
+            setFlows(data)
+        } catch (error) {
+            console.error(error)
+        }
     }
 
     useEffect(() => {
-        loadFlows()
+        void loadFlows()
     }, [])
 
     const createNewFlow = async () => {

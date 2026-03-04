@@ -1,6 +1,7 @@
 import { type ConversationHistoryEntry, type PlanStatus, useStore } from "@/store"
 import { type FormEvent, useEffect, useState } from "react"
 import { buildPipelineStartPayload } from "@/lib/pipelineStartPayload"
+import { ApiHttpError, fetchFlowPayloadValidated, fetchPipelineStartValidated } from '@/lib/apiClient'
 import {
     clearProjectSpecEditProposal,
     getProjectSpecEditProposal,
@@ -324,11 +325,7 @@ export function ProjectsPanel() {
 
         setPlanGenerationError(null)
         try {
-            const flowRes = await fetch(`/api/flows/${encodeURIComponent(activeFlow)}`)
-            if (!flowRes.ok) {
-                throw new Error(`Failed to load flow: ${activeFlow}`)
-            }
-            const flow = await flowRes.json()
+            const flow = await fetchFlowPayloadValidated(activeFlow)
 
             const runInitiationForm = {
                 projectPath: activeProjectPath,
@@ -340,15 +337,7 @@ export function ProjectsPanel() {
                 planArtifactId: activeProjectScope?.planId || null,
             }
             const startPayload = buildPipelineStartPayload(runInitiationForm, flow.content)
-            const runRes = await fetch('/pipelines', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(startPayload),
-            })
-            if (!runRes.ok) {
-                throw new Error(`Plan-generation launch failed (${runRes.status})`)
-            }
-            const runData = await runRes.json()
+            const runData = await fetchPipelineStartValidated(startPayload as Record<string, unknown>)
             if (typeof runData?.pipeline_id !== 'string') {
                 throw new Error('Plan-generation launch did not return a pipeline id.')
             }
@@ -372,7 +361,11 @@ export function ProjectsPanel() {
             setLastPlanGenerationFailure(null)
             setViewMode('execution')
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to launch plan-generation workflow.'
+            const message = error instanceof ApiHttpError && error.detail
+                ? error.detail
+                : error instanceof Error
+                    ? error.message
+                    : 'Failed to launch plan-generation workflow.'
             setPlanGenerationError(message)
             setLastPlanGenerationFailure({
                 message,
