@@ -321,7 +321,8 @@ Status key:
   - Evidence (2026-03-04): Evaluator `pass`; raw→structured handoff now blocks when preview reports validation/conflict payloads (`status=validation_error` or non-empty `errors`) and keeps the editor in raw mode with explicit handoff guidance in `frontend/src/components/Editor.tsx`, covered by frontend contract `CID:11.3.03` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_mixed_mode_editing_contracts.py`) and screenshot-based visual QA references `frontend/artifacts/ui-smoke/19a-semantic-equivalence-mismatch-blocked.png`, `frontend/artifacts/ui-smoke/19b-semantic-equivalence-round-trip-saved.png`, and `frontend/artifacts/ui-smoke/01-projects-shell.png`.
 
 ### 11.4 Extension Attributes
-- [ ] [11.4-01] Implement generic advanced key/value editor for non-core attributes.
+- [x] [11.4-01] Implement generic advanced key/value editor for non-core attributes.
+  - Evidence (2026-03-04): Evaluator `pass`; added reusable non-core key/value editor component (`frontend/src/components/AdvancedKeyValueEditor.tsx`) wired into graph/node/edge inspectors (`frontend/src/components/GraphSettings.tsx`, `frontend/src/components/Sidebar.tsx`) with extension-attr filtering helper (`frontend/src/lib/extensionAttrs.ts`), covered by frontend contract `CID:11.4.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_extension_attribute_editor_contracts.py`) and validated by `just test`.
 - [ ] [11.4-02] Preserve unknown-valid attributes during all save operations.
 - [ ] [11.4-03] Add tests proving extension attribute stability across edits.
 

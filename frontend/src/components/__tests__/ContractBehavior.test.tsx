@@ -2450,6 +2450,78 @@ digraph contract_behavior {
     expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled()
   })
 
+  it('[CID:11.4.01] renders generic extension key/value editors for non-core graph, node, and edge attrs', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().setGraphAttrs({
+        goal: 'Release',
+        x_graph_extension: 'graph-extra',
+      } as never)
+      useStore.getState().setSelectedNodeId('task')
+      useStore.getState().setSelectedEdgeId(null)
+    })
+
+    const nodes: Node[] = [
+      {
+        id: 'start',
+        position: { x: 0, y: 0 },
+        data: { label: 'Start', shape: 'Mdiamond' },
+      },
+      {
+        id: 'task',
+        position: { x: 150, y: 0 },
+        data: {
+          label: 'Task',
+          shape: 'box',
+          prompt: 'Do work',
+          x_node_extension: 'node-extra',
+        },
+      },
+    ]
+    const edges: Edge[] = [
+      {
+        id: 'edge-start-task',
+        source: 'start',
+        target: 'task',
+        data: {
+          label: 'next',
+          x_edge_extension: 'edge-extra',
+        },
+      },
+    ]
+
+    renderSidebar(nodes, edges)
+
+    const nodeEditor = await screen.findByTestId('node-extension-attrs-editor')
+    expect(within(nodeEditor).getByDisplayValue('x_node_extension')).toBeVisible()
+    expect(within(nodeEditor).getByTestId('node-extension-attr-value-0')).toBeVisible()
+    expect(within(nodeEditor).getByTestId('node-extension-attr-new-key')).toBeVisible()
+    expect(within(nodeEditor).getByTestId('node-extension-attr-new-value')).toBeVisible()
+    expect(within(nodeEditor).getByRole('button', { name: 'Add Attribute' })).toBeVisible()
+
+    act(() => {
+      useStore.getState().setSelectedNodeId(null)
+      useStore.getState().setSelectedEdgeId('edge-start-task')
+    })
+
+    const edgeEditor = await screen.findByTestId('edge-extension-attrs-editor')
+    expect(within(edgeEditor).getByDisplayValue('x_edge_extension')).toBeVisible()
+
+    cleanup()
+    act(() => {
+      resetContractState()
+      useStore.getState().setGraphAttrs({
+        goal: 'Release',
+        x_graph_extension: 'graph-extra',
+      } as never)
+    })
+
+    renderWithFlowProvider(<GraphSettings inline />)
+    await user.click(screen.getByTestId('graph-advanced-toggle'))
+    const graphEditor = await screen.findByTestId('graph-extension-attrs-editor')
+    expect(within(graphEditor).getByDisplayValue('x_graph_extension')).toBeVisible()
+  })
+
   it('[CID:10.3.01] exposes human.default_choice authoring and timeout-default visibility in node inspector', async () => {
     act(() => {
       useStore.getState().setSelectedNodeId('gate')

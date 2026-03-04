@@ -7,13 +7,54 @@ import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from "@/lib/llmSuggestions"
 import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
 import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
+import { toExtensionAttrEntries } from "@/lib/extensionAttrs"
 import { retryLastSaveContent, saveFlowContent } from "@/lib/flowPersistence"
 import { resolveSaveRemediation } from "@/lib/saveRemediation"
 import { InspectorScaffold, InspectorEmptyState } from './InspectorScaffold'
 import { GraphSettings } from './GraphSettings'
+import { AdvancedKeyValueEditor } from './AdvancedKeyValueEditor'
 
 type InspectorScope = 'none' | 'graph' | 'node' | 'edge'
 const INSPECTOR_SAVE_DEBOUNCE_MS = 600
+const CORE_NODE_ATTR_KEYS = new Set<string>([
+    'label',
+    'shape',
+    'prompt',
+    'tool_command',
+    'tool_hooks.pre',
+    'tool_hooks.post',
+    'join_policy',
+    'error_policy',
+    'max_parallel',
+    'type',
+    'max_retries',
+    'goal_gate',
+    'retry_target',
+    'fallback_retry_target',
+    'fidelity',
+    'thread_id',
+    'class',
+    'timeout',
+    'llm_model',
+    'llm_provider',
+    'reasoning_effort',
+    'auto_status',
+    'allow_partial',
+    'manager.poll_interval',
+    'manager.max_cycles',
+    'manager.stop_condition',
+    'manager.actions',
+    'human.default_choice',
+])
+const CORE_EDGE_ATTR_KEYS = new Set<string>([
+    'label',
+    'condition',
+    'weight',
+    'fidelity',
+    'thread_id',
+    'loop_restart',
+])
+const EXCLUDED_NODE_EXTENSION_ATTR_KEYS = new Set<string>(['status'])
 
 function resolveInspectorScope({
     viewMode,
@@ -164,6 +205,21 @@ export function Sidebar() {
 
     const selectedNode = nodes.find(n => n.id === selectedNodeId);
     const selectedEdge = edges.find(e => e.id === selectedEdgeId);
+    const selectedNodeExtensionEntries = useMemo(
+        () => toExtensionAttrEntries(
+            (selectedNode?.data ?? {}) as Record<string, unknown>,
+            CORE_NODE_ATTR_KEYS,
+            EXCLUDED_NODE_EXTENSION_ATTR_KEYS,
+        ),
+        [selectedNode?.data],
+    )
+    const selectedEdgeExtensionEntries = useMemo(
+        () => toExtensionAttrEntries(
+            (selectedEdge?.data ?? {}) as Record<string, unknown>,
+            CORE_EDGE_ATTR_KEYS,
+        ),
+        [selectedEdge?.data],
+    )
     const selectedEdgeDiagnosticKey = selectedEdge ? `${selectedEdge.source}->${selectedEdge.target}` : null
     const selectedEdgeConditionDiagnostics = selectedEdgeDiagnosticKey
         ? (edgeDiagnostics[selectedEdgeDiagnosticKey] || []).filter((diag) => diag.rule_id === 'condition_syntax')
@@ -235,6 +291,95 @@ export function Sidebar() {
             scheduleSave(getNodes(), newEdges);
         }
     };
+
+    const updateSelectedNodeAttrs = (transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
+        if (!activeProjectPath || !activeFlow || !selectedNodeId) {
+            return
+        }
+        let newNodes: Node[] = []
+        setNodes((currentNodes) => {
+            newNodes = currentNodes.map((node) => {
+                if (node.id !== selectedNodeId) {
+                    return node
+                }
+                const nextData = transform({ ...((node.data || {}) as Record<string, unknown>) })
+                return {
+                    ...node,
+                    data: nextData,
+                }
+            })
+            return newNodes
+        })
+        if (newNodes.length > 0) {
+            scheduleSave(newNodes, getEdges())
+        }
+    }
+
+    const handleNodeExtensionValueChange = (key: string, value: string) => {
+        updateSelectedNodeAttrs((attrs) => ({
+            ...attrs,
+            [key]: value,
+        }))
+    }
+
+    const handleNodeExtensionRemove = (key: string) => {
+        updateSelectedNodeAttrs((attrs) => {
+            delete attrs[key]
+            return attrs
+        })
+    }
+
+    const handleNodeExtensionAdd = (key: string, value: string) => {
+        updateSelectedNodeAttrs((attrs) => ({
+            ...attrs,
+            [key]: value,
+        }))
+    }
+
+    const updateSelectedEdgeAttrs = (transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
+        if (!activeProjectPath || !activeFlow || !selectedEdgeId) {
+            return
+        }
+        let newEdges: Edge[] = []
+        setEdges((currentEdges) => {
+            newEdges = currentEdges.map((edge) => {
+                if (edge.id !== selectedEdgeId) {
+                    return edge
+                }
+                const nextData = transform({ ...((edge.data || {}) as Record<string, unknown>) })
+                return {
+                    ...edge,
+                    data: nextData,
+                    label: typeof nextData.label === 'string' ? nextData.label : edge.label,
+                }
+            })
+            return newEdges
+        })
+        if (newEdges.length > 0) {
+            scheduleSave(getNodes(), newEdges)
+        }
+    }
+
+    const handleEdgeExtensionValueChange = (key: string, value: string) => {
+        updateSelectedEdgeAttrs((attrs) => ({
+            ...attrs,
+            [key]: value,
+        }))
+    }
+
+    const handleEdgeExtensionRemove = (key: string) => {
+        updateSelectedEdgeAttrs((attrs) => {
+            delete attrs[key]
+            return attrs
+        })
+    }
+
+    const handleEdgeExtensionAdd = (key: string, value: string) => {
+        updateSelectedEdgeAttrs((attrs) => ({
+            ...attrs,
+            [key]: value,
+        }))
+    }
 
     const renderFieldDiagnostics = (
         scope: 'node' | 'edge',
@@ -768,6 +913,14 @@ export function Sidebar() {
                                         )}
                                     </div>
                                 )}
+                                <AdvancedKeyValueEditor
+                                    testIdPrefix="node"
+                                    entries={selectedNodeExtensionEntries}
+                                    onValueChange={handleNodeExtensionValueChange}
+                                    onRemove={handleNodeExtensionRemove}
+                                    onAdd={handleNodeExtensionAdd}
+                                    reservedKeys={CORE_NODE_ATTR_KEYS}
+                                />
                             </div>
                         )}
                     </InspectorScaffold>
@@ -870,6 +1023,14 @@ export function Sidebar() {
                                         Loop Restart
                                     </label>
                                 </div>
+                                <AdvancedKeyValueEditor
+                                    testIdPrefix="edge"
+                                    entries={selectedEdgeExtensionEntries}
+                                    onValueChange={handleEdgeExtensionValueChange}
+                                    onRemove={handleEdgeExtensionRemove}
+                                    onAdd={handleEdgeExtensionAdd}
+                                    reservedKeys={CORE_EDGE_ATTR_KEYS}
+                                />
                             </div>
                         )}
                     </InspectorScaffold>

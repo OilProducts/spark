@@ -7,8 +7,10 @@ import { GRAPH_FIDELITY_OPTIONS, getToolHookCommandWarning } from '@/lib/graphAt
 import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { resolveModelStylesheetPreview, type ModelValueSource } from '@/lib/modelStylesheetPreview'
+import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
 import { InspectorScaffold } from './InspectorScaffold'
 import { StylesheetEditor } from './StylesheetEditor'
+import { AdvancedKeyValueEditor } from './AdvancedKeyValueEditor'
 
 interface GraphSettingsProps {
     inline?: boolean
@@ -35,6 +37,23 @@ const MODEL_VALUE_SOURCE_LABEL: Record<ModelValueSource, string> = {
     system_default: 'system default',
 }
 
+const CORE_GRAPH_ATTR_KEYS = new Set<string>([
+    'goal',
+    'label',
+    'model_stylesheet',
+    'default_max_retry',
+    'retry_target',
+    'fallback_retry_target',
+    'default_fidelity',
+    'stack.child_dotfile',
+    'stack.child_workdir',
+    'tool_hooks.pre',
+    'tool_hooks.post',
+    'ui_default_llm_model',
+    'ui_default_llm_provider',
+    'ui_default_reasoning_effort',
+])
+
 export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [isOpen, setIsOpen] = useState(false)
     const [showAdvancedGraphAttrs, setShowAdvancedGraphAttrs] = useState(false)
@@ -43,6 +62,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const diagnostics = useStore((state) => state.diagnostics)
     const graphAttrs = useStore((state) => state.graphAttrs)
     const graphAttrErrors = useStore((state) => state.graphAttrErrors)
+    const setGraphAttrs = useStore((state) => state.setGraphAttrs)
     const updateGraphAttr = useStore((state) => state.updateGraphAttr)
     const model = useStore((state) => state.model)
     const setModel = useStore((state) => state.setModel)
@@ -62,6 +82,10 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const hasStylesheetValue = Boolean(graphAttrs.model_stylesheet?.trim())
     const showStylesheetFeedback = hasStylesheetValue || stylesheetDiagnostics.length > 0
     const graphFieldDiagnostics = useMemo(() => resolveGraphFieldDiagnostics(diagnostics), [diagnostics])
+    const graphExtensionEntries = useMemo(
+        () => toExtensionAttrEntries(graphAttrs as Record<string, unknown>, CORE_GRAPH_ATTR_KEYS),
+        [graphAttrs],
+    )
     const stylesheetPreview = useMemo(() => {
         return resolveModelStylesheetPreview(
             graphAttrs.model_stylesheet || '',
@@ -177,6 +201,26 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 </div>
             </div>
         )
+    }
+
+    const handleGraphExtensionValueChange = (key: string, value: string) => {
+        setGraphAttrs({
+            ...graphAttrs,
+            [key]: value,
+        })
+    }
+
+    const handleGraphExtensionRemove = (key: string) => {
+        const nextGraphAttrs = { ...graphAttrs } as Record<string, unknown>
+        delete nextGraphAttrs[key]
+        setGraphAttrs(nextGraphAttrs)
+    }
+
+    const handleGraphExtensionAdd = (key: string, value: string) => {
+        setGraphAttrs({
+            ...graphAttrs,
+            [key]: value,
+        })
     }
 
     const inspectorContent = (
@@ -496,6 +540,14 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     </p>
                                 )}
                             </div>
+                            <AdvancedKeyValueEditor
+                                testIdPrefix="graph"
+                                entries={graphExtensionEntries}
+                                onValueChange={handleGraphExtensionValueChange}
+                                onRemove={handleGraphExtensionRemove}
+                                onAdd={handleGraphExtensionAdd}
+                                reservedKeys={CORE_GRAPH_ATTR_KEYS}
+                            />
                         </div>
                     )}
                 </div>
