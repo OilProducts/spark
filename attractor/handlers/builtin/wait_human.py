@@ -50,8 +50,17 @@ class WaitHumanHandler:
         answer = self.interviewer.ask(question)
         duration = time.perf_counter() - started_at
         if _is_timeout(answer):
-            runtime.emit("InterviewTimeout", question=question.prompt, stage=runtime.node_id, duration=duration)
             default_choice = _default_choice(runtime.node_attrs, choices)
+            timeout_payload = {
+                "question": question.prompt,
+                "stage": runtime.node_id,
+                "duration": duration,
+                "outcome_provenance": "timeout_default_applied" if default_choice else "timeout_no_default",
+            }
+            if default_choice is not None:
+                timeout_payload["default_choice_target"] = default_choice.target
+                timeout_payload["default_choice_label"] = default_choice.label
+            runtime.emit("InterviewTimeout", **timeout_payload)
             if default_choice is None:
                 return Outcome(status=OutcomeStatus.RETRY, failure_reason="human gate timeout, no default")
             return Outcome(
@@ -70,6 +79,7 @@ class WaitHumanHandler:
                 question=question.prompt,
                 answer=answer.value,
                 duration=duration,
+                outcome_provenance="skipped",
             )
             return Outcome(status=OutcomeStatus.FAIL, failure_reason="human skipped interaction")
 
@@ -80,6 +90,7 @@ class WaitHumanHandler:
             question=question.prompt,
             answer=emitted_answer,
             duration=duration,
+            outcome_provenance="accepted" if selected is not None else "skipped",
         )
         if selected is None:
             return Outcome(status=OutcomeStatus.FAIL, failure_reason="human skipped interaction")

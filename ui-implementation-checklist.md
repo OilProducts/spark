@@ -281,7 +281,8 @@ Status key:
 ### 10.3 Timeout/Default Semantics
 - [x] [10.3-01] Expose `human.default_choice` authoring and visibility in node inspector.
   - Evidence (2026-03-04): Evaluator `pass`; node inspector now shows explicit timeout-default guidance for `human.default_choice` on `wait.human` nodes in `frontend/src/components/Sidebar.tsx`, with frontend contract `CID:10.3.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_human_gate_discoverability_contracts.py`) and screenshot-based visual QA review using `frontend/artifacts/ui-smoke/10a-human-gate-discoverability.png`, `frontend/artifacts/ui-smoke/10b-human-gate-discoverability-runs.png`, `frontend/artifacts/ui-smoke/10c-human-gate-yes-no-confirmation-semantics.png`, and `frontend/artifacts/ui-smoke/10d-human-gate-freeform-interaction.png`.
-- [ ] [10.3-02] Display timeout/default-applied/skipped outcome provenance in run timeline.
+- [x] [10.3-02] Display timeout/default-applied/skipped outcome provenance in run timeline.
+  - Evidence (2026-03-04): Evaluator `pass`; `RunsPanel` now renders provenance-aware interview timeline summaries (`accepted`, `skipped`, `timeout_default_applied`, `timeout_no_default`) sourced from runtime event payloads, with frontend contract `CID:10.3.02` and backend handler coverage in `tests/handlers/test_wait_human_handler.py`, plus screenshot-based visual QA review of run timeline surfaces in `frontend/artifacts/ui-smoke/08i-runs-panel-event-timeline.png`, `frontend/artifacts/ui-smoke/08j-runs-panel-event-timeline-filters.png`, and `frontend/artifacts/ui-smoke/08k-runs-panel-event-timeline-grouping-correlation.png`.
 - [ ] [10.3-03] Add tests for timeout fallback and explicit answer branches.
 
 ### 10.4 Multi-Question and Inform Messages

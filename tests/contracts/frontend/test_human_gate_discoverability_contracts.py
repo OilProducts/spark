@@ -29,3 +29,7 @@ def test_supported_human_gate_question_types_have_contract_coverage_item_10_2_04
 
 def test_human_default_choice_is_authorable_and_visible_in_node_inspector_item_10_3_01() -> None:
     assert_frontend_behavior_contract_passed("10.3.01")
+
+
+def test_run_timeline_displays_human_gate_timeout_default_and_skip_provenance_item_10_3_02() -> None:
+    assert_frontend_behavior_contract_passed("10.3.02")

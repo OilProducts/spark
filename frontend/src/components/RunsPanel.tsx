@@ -366,6 +366,46 @@ const timelineSeverityFromEvent = (type: string, payload: Record<string, unknown
     return 'info'
 }
 
+type InterviewOutcomeProvenance = 'accepted' | 'skipped' | 'timeout_default_applied' | 'timeout_no_default' | null
+
+const asTrimmedString = (value: unknown): string | null => {
+    if (typeof value !== 'string') {
+        return null
+    }
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+}
+
+const interviewOutcomeProvenanceFromPayload = (
+    type: string,
+    payload: Record<string, unknown>
+): InterviewOutcomeProvenance => {
+    const rawProvenance = asTrimmedString(payload.outcome_provenance) ?? asTrimmedString(payload.provenance)
+    const normalizedProvenance = rawProvenance?.toLowerCase()
+    if (
+        normalizedProvenance === 'accepted'
+        || normalizedProvenance === 'skipped'
+        || normalizedProvenance === 'timeout_default_applied'
+        || normalizedProvenance === 'timeout_no_default'
+    ) {
+        return normalizedProvenance
+    }
+
+    if (type === 'InterviewCompleted') {
+        const answer = asTrimmedString(payload.answer)
+        if (!answer) {
+            return null
+        }
+        return answer.toLowerCase() === 'skipped' ? 'skipped' : 'accepted'
+    }
+    return null
+}
+
+const interviewDefaultChoiceLabelFromPayload = (payload: Record<string, unknown>): string | null => (
+    asTrimmedString(payload.default_choice_label)
+    ?? asTrimmedString(payload.default_choice_target)
+)
+
 const timelineSummaryFromEvent = (type: string, payload: Record<string, unknown>, nodeId: string | null): string => {
     if (type === 'PipelineStarted') {
         return `Pipeline started at ${nodeId || 'start'}`
@@ -435,14 +475,31 @@ const timelineSummaryFromEvent = (type: string, payload: Record<string, unknown>
         return `Interview started for ${nodeId || 'human gate'}`
     }
     if (type === 'InterviewCompleted') {
-        const answer = typeof payload.answer === 'string' && payload.answer.trim().length > 0
-            ? payload.answer.trim()
-            : null
+        const answer = asTrimmedString(payload.answer)
+        const provenance = interviewOutcomeProvenanceFromPayload(type, payload)
+        if (provenance === 'skipped') {
+            return `Interview completed for ${nodeId || 'human gate'} (skipped)`
+        }
+        if (provenance === 'accepted') {
+            return answer
+                ? `Interview completed for ${nodeId || 'human gate'} (accepted answer: ${answer})`
+                : `Interview completed for ${nodeId || 'human gate'} (accepted answer)`
+        }
         return answer
             ? `Interview completed for ${nodeId || 'human gate'} (${answer})`
             : `Interview completed for ${nodeId || 'human gate'}`
     }
     if (type === 'InterviewTimeout') {
+        const provenance = interviewOutcomeProvenanceFromPayload(type, payload)
+        if (provenance === 'timeout_default_applied') {
+            const defaultChoiceLabel = interviewDefaultChoiceLabelFromPayload(payload)
+            return defaultChoiceLabel
+                ? `Interview timed out for ${nodeId || 'human gate'} (default applied: ${defaultChoiceLabel})`
+                : `Interview timed out for ${nodeId || 'human gate'} (default applied)`
+        }
+        if (provenance === 'timeout_no_default') {
+            return `Interview timed out for ${nodeId || 'human gate'} (no default applied)`
+        }
         return `Interview timed out for ${nodeId || 'human gate'}`
     }
     if (type === 'human_gate') {

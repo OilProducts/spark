@@ -213,6 +213,38 @@ class TestWaitHumanHandler:
             "human.gate.label": "Fix",
         }
 
+    def test_wait_human_timeout_emits_default_applied_provenance(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                gate [shape=hexagon, prompt="Choose", human.default_choice="fix"]
+                ship [shape=box]
+                fix [shape=box]
+                gate -> ship [label="Approve"]
+                gate -> fix [label="Fix"]
+            }
+            """
+        )
+        events = []
+
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            interviewer=QueueInterviewer([Answer(value="TIMEOUT")]),
+        )
+        runner = HandlerRunner(graph, registry)
+        outcome = runner.run_with_events(
+            "gate",
+            "Choose",
+            Context(),
+            lambda event_type, **payload: events.append({"type": event_type, **payload}),
+        )
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        timeout_event = next(event for event in events if event["type"] == "InterviewTimeout")
+        assert timeout_event["outcome_provenance"] == "timeout_default_applied"
+        assert timeout_event["default_choice_label"] == "Fix"
+        assert timeout_event["default_choice_target"] == "fix"
+
     def test_wait_human_timeout_without_default_returns_retry(self):
         graph = parse_dot(
             """
@@ -283,3 +315,34 @@ class TestWaitHumanHandler:
             "human.gate.selected": "A",
             "human.gate.label": "Approve",
         }
+
+    def test_wait_human_completed_event_includes_outcome_provenance(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                gate [shape=hexagon, prompt="Choose"]
+                pass [shape=box]
+                fail [shape=box]
+                gate -> pass [label="Approve"]
+                gate -> fail [label="Fix"]
+            }
+            """
+        )
+        events = []
+
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            interviewer=QueueInterviewer([Answer(selected_values=["Approve"])]),
+        )
+        runner = HandlerRunner(graph, registry)
+        outcome = runner.run_with_events(
+            "gate",
+            "Choose",
+            Context(),
+            lambda event_type, **payload: events.append({"type": event_type, **payload}),
+        )
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        completed_event = next(event for event in events if event["type"] == "InterviewCompleted")
+        assert completed_event["answer"] == "Approve"
+        assert completed_event["outcome_provenance"] == "accepted"
