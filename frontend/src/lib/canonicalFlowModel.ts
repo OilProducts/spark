@@ -297,6 +297,126 @@ export function sanitizeGraphId(flowName: string): string {
     return `_${normalized}`
 }
 
+const KNOWN_GRAPH_ATTR_KEYS = new Set<string>([
+    'goal',
+    'label',
+    'model_stylesheet',
+    'default_max_retry',
+    'retry_target',
+    'fallback_retry_target',
+    'default_fidelity',
+    'stack.child_dotfile',
+    'stack.child_workdir',
+    'tool_hooks.pre',
+    'tool_hooks.post',
+    'ui_default_llm_model',
+    'ui_default_llm_provider',
+    'ui_default_reasoning_effort',
+])
+
+const KNOWN_NODE_ATTR_KEYS = new Set<string>([
+    'label',
+    'shape',
+    'prompt',
+    'tool_command',
+    'tool_hooks.pre',
+    'tool_hooks.post',
+    'join_policy',
+    'error_policy',
+    'max_parallel',
+    'type',
+    'max_retries',
+    'goal_gate',
+    'retry_target',
+    'fallback_retry_target',
+    'fidelity',
+    'thread_id',
+    'class',
+    'timeout',
+    'llm_model',
+    'llm_provider',
+    'reasoning_effort',
+    'auto_status',
+    'allow_partial',
+    'manager.poll_interval',
+    'manager.max_cycles',
+    'manager.stop_condition',
+    'manager.actions',
+    'human.default_choice',
+])
+
+const KNOWN_EDGE_ATTR_KEYS = new Set<string>([
+    'label',
+    'condition',
+    'weight',
+    'fidelity',
+    'thread_id',
+    'loop_restart',
+])
+
+function formatCanonicalAttrEntry(key: string, value: CanonicalAttrValue): string {
+    if (value === null) {
+        return ''
+    }
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value)) {
+            return ''
+        }
+        return `${key}=${value}`
+    }
+    if (typeof value === 'boolean') {
+        return `${key}=${value ? 'true' : 'false'}`
+    }
+    return `${key}=${formatAttrValue(value)}`
+}
+
+function formatCanonicalAttrEntries(attrs: CanonicalAttrMap, excludedKeys?: Set<string>): string[] {
+    return Object.entries(attrs)
+        .filter(([key, value]) => value !== null && !excludedKeys?.has(key))
+        .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+        .map(([key, value]) => formatCanonicalAttrEntry(key, value))
+        .filter((entry) => entry !== '')
+}
+
+function appendDefaultsScopeDot(dot: string, defaults: CanonicalDefaultsScope, indent = '  '): string {
+    const nodeDefaults = formatCanonicalAttrEntries(defaults.node)
+    const edgeDefaults = formatCanonicalAttrEntries(defaults.edge)
+
+    if (nodeDefaults.length > 0) {
+        dot += `${indent}node [${nodeDefaults.join(', ')}];\n`
+    }
+    if (edgeDefaults.length > 0) {
+        dot += `${indent}edge [${edgeDefaults.join(', ')}];\n`
+    }
+    return dot
+}
+
+function appendSubgraphDot(dot: string, subgraph: CanonicalSubgraph, indent = '  '): string {
+    const innerIndent = `${indent}  `
+    const header = subgraph.id ? `subgraph ${subgraph.id}` : 'subgraph'
+    dot += `${indent}${header} {\n`
+
+    const subgraphAttrs = formatCanonicalAttrEntries(subgraph.attrs)
+    if (subgraphAttrs.length > 0) {
+        dot += `${innerIndent}graph [${subgraphAttrs.join(', ')}];\n`
+    }
+
+    dot = appendDefaultsScopeDot(dot, subgraph.defaults, innerIndent)
+
+    subgraph.nodeIds.forEach((nodeId) => {
+        if (nodeId.trim().length > 0) {
+            dot += `${innerIndent}${nodeId};\n`
+        }
+    })
+
+    subgraph.subgraphs.forEach((nestedSubgraph) => {
+        dot = appendSubgraphDot(dot, nestedSubgraph, innerIndent)
+    })
+
+    dot += `${indent}}\n`
+    return dot
+}
+
 export function generateDotFromCanonicalFlowModel(flowName: string, model: CanonicalFlowModel): string {
     const graphAttrs = model.graphAttrs
     let dot = `digraph ${sanitizeGraphId(flowName)} {\n`
@@ -316,11 +436,14 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         formatGraphAttr('ui_default_llm_model', readStringAttr(graphAttrs, 'ui_default_llm_model')),
         formatGraphAttr('ui_default_llm_provider', readStringAttr(graphAttrs, 'ui_default_llm_provider')),
         formatGraphAttr('ui_default_reasoning_effort', readStringAttr(graphAttrs, 'ui_default_reasoning_effort')),
+        ...formatCanonicalAttrEntries(graphAttrs, KNOWN_GRAPH_ATTR_KEYS),
     ].filter(Boolean)
 
     if (graphAttrLines.length > 0) {
         dot += `  graph [${graphAttrLines.join(', ')}];\n`
     }
+
+    dot = appendDefaultsScopeDot(dot, model.defaults)
 
     model.nodes.forEach((node) => {
         const attrs = node.attrs
@@ -392,6 +515,7 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
             managerStopConditionValue ? `manager.stop_condition="${escapeDotString(managerStopConditionValue)}"` : '',
             managerActionsValue ? `manager.actions="${escapeDotString(managerActionsValue)}"` : '',
             humanDefaultChoiceValue ? `human.default_choice=${formatAttrValue(humanDefaultChoiceValue)}` : '',
+            ...formatCanonicalAttrEntries(attrs, KNOWN_NODE_ATTR_KEYS),
         ].filter(Boolean).join(', ')
 
         dot += `  ${node.id} [${nodeAttrs}];\n`
@@ -413,6 +537,7 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
             fidelityValue ? `fidelity=${formatAttrValue(fidelityValue)}` : '',
             threadIdValue ? `thread_id="${escapeDotString(threadIdValue)}"` : '',
             loopRestartValue ? 'loop_restart=true' : '',
+            ...formatCanonicalAttrEntries(attrs, KNOWN_EDGE_ATTR_KEYS),
         ].filter(Boolean).join(', ')
 
         if (edgeAttrs) {
@@ -420,6 +545,10 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         } else {
             dot += `  ${edge.source} -> ${edge.target};\n`
         }
+    })
+
+    model.subgraphs.forEach((subgraph) => {
+        dot = appendSubgraphDot(dot, subgraph)
     })
 
     dot += '}\n'

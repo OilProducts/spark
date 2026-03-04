@@ -117,22 +117,49 @@ const fromEditor = mod.buildCanonicalFlowModelFromEditorState('flow_model_probe'
   ],
   defaults: {
     node: {
-      prompt: 'default prompt'
+      prompt: 'default prompt',
+      'ext.node_default_scope': 'custom'
     },
     edge: {
-      weight: 1
+      weight: 1,
+      'ext.edge_default_scope': 'custom'
     }
   },
   subgraphs: [
     {
       id: 'cluster_review',
-      attrs: { label: 'Review' },
+      attrs: {
+        label: 'Review',
+        'ui_extension.scope': 'review'
+      },
       nodeIds: ['author'],
       defaults: {
-        node: { timeout: '45s' },
-        edge: {}
+        node: {
+          timeout: '45s',
+          'ext.node_default_scope': 'review'
+        },
+        edge: {
+          weight: 8,
+          'ext.edge_default_scope': 'review'
+        }
       },
-      subgraphs: []
+      subgraphs: [
+        {
+          id: 'cluster_inner',
+          attrs: {
+            label: 'Inner',
+            'ui_extension.scope': 'inner'
+          },
+          nodeIds: ['author'],
+          defaults: {
+            node: {
+              timeout: '15s'
+            },
+            edge: {}
+          },
+          subgraphs: []
+        }
+      ]
     }
   ]
 })
@@ -198,3 +225,37 @@ def test_canonical_flow_model_serializes_editor_state_without_losing_core_attrs_
     assert edge["label"] == "submit"
     assert edge["condition"] == "ready=true"
     assert edge["weight"] == 2
+
+
+def test_canonical_flow_model_serializes_scopes_and_extension_attrs_item_11_1_02() -> None:
+    probe = _probe_canonical_flow_model_mapping()
+    payload = preview_pipeline(probe["dot"])
+    graph = payload["graph"]
+    nodes_by_id = {node["id"]: node for node in graph["nodes"]}
+    edge = graph["edges"][0]
+
+    assert graph["graph_attrs"]["ext.graph_scope"] == "custom"
+
+    assert graph["defaults"]["node"]["prompt"] == "default prompt"
+    assert graph["defaults"]["node"]["ext.node_default_scope"] == "custom"
+    assert graph["defaults"]["edge"]["weight"] == 1
+    assert graph["defaults"]["edge"]["ext.edge_default_scope"] == "custom"
+
+    assert nodes_by_id["author"]["ext.node_scope"] == "custom"
+    assert edge["ext.edge_scope"] == "custom"
+
+    assert len(graph["subgraphs"]) == 1
+    review_scope = graph["subgraphs"][0]
+    assert review_scope["id"] == "cluster_review"
+    assert review_scope["attrs"]["ui_extension.scope"] == "review"
+    assert review_scope["defaults"]["node"]["timeout"] == "45s"
+    assert review_scope["defaults"]["node"]["ext.node_default_scope"] == "review"
+    assert review_scope["defaults"]["edge"]["weight"] == 8
+    assert review_scope["defaults"]["edge"]["ext.edge_default_scope"] == "review"
+    assert review_scope["node_ids"] == ["author"]
+
+    assert len(review_scope["subgraphs"]) == 1
+    inner_scope = review_scope["subgraphs"][0]
+    assert inner_scope["id"] == "cluster_inner"
+    assert inner_scope["attrs"]["ui_extension.scope"] == "inner"
+    assert inner_scope["defaults"]["node"]["timeout"] == "15s"
