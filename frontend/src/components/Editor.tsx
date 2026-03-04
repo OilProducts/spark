@@ -103,7 +103,6 @@ export function Editor() {
     const nodeStatuses = useStore((state) => state.nodeStatuses);
     const graphAttrs = useStore((state) => state.graphAttrs);
     const uiDefaults = useStore((state) => state.uiDefaults);
-    const saveErrorMessage = useStore((state) => state.saveErrorMessage);
     const setGraphAttrs = useStore((state) => state.setGraphAttrs);
     const setDiagnostics = useStore((state) => state.setDiagnostics);
     const clearDiagnostics = useStore((state) => state.clearDiagnostics);
@@ -522,7 +521,10 @@ export function Editor() {
             const save = expectSemanticEquivalence ? saveFlowContentExpectingSemanticEquivalence : saveFlowContent;
             const saved = await save(activeFlow, rawDotDraft);
             if (!saved) {
-                setRawHandoffError(`Safe handoff requires valid DOT. ${saveErrorMessage || 'Fix parse or validation errors before switching modes.'}`);
+                const latestSaveErrorMessage = useStore.getState().saveErrorMessage;
+                setRawHandoffError(
+                    `Safe handoff requires valid DOT. ${latestSaveErrorMessage || 'Fix parse or validation errors before switching modes.'}`,
+                );
                 return;
             }
 
@@ -549,7 +551,7 @@ export function Editor() {
             rawHandoffInFlightRef.current = false;
             setIsRawHandoffInFlight(false);
         }
-    }, [activeProjectPath, activeFlow, hydrateFromPreview, rawDotDraft, requestPreview, saveErrorMessage]);
+    }, [activeProjectPath, activeFlow, hydrateFromPreview, rawDotDraft, requestPreview]);
 
     const onSelectionChange = useCallback(({ nodes, edges }: OnSelectionChangeParams) => {
         const selectedNode = nodes.find(n => n.selected);

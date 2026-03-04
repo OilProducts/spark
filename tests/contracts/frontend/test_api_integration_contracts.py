@@ -19,3 +19,7 @@ def test_degraded_state_ux_when_endpoint_unavailable_or_incompatible_item_12_2_0
 
 def test_non_dependent_ui_surfaces_remain_functional_under_partial_api_failure_item_12_2_02() -> None:
     assert_frontend_behavior_contract_passed("12.2.02")
+
+
+def test_save_paths_remain_non_destructive_during_api_contract_drift_item_12_2_03() -> None:
+    assert_frontend_behavior_contract_passed("12.2.03")

@@ -674,6 +674,75 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('run-artifact-refresh-button')).toBeEnabled()
   })
 
+  it('[CID:12.2.03] keeps save paths non-destructive when save response shape drifts', async () => {
+    const initialDot = 'digraph contract_behavior { start [label="Start"]; }'
+    const editedDot = 'digraph contract_behavior { start [label="Start"]; start -> end; end [label="End"]; }'
+    const previewPayload = {
+      status: 'ok',
+      graph: {
+        graph_attrs: {},
+        defaults: {
+          node: {},
+          edge: {},
+        },
+        subgraphs: [],
+        nodes: [
+          {
+            id: 'start',
+            label: 'Start',
+            shape: 'box',
+          },
+        ],
+        edges: [],
+      },
+      diagnostics: [],
+      errors: [],
+    }
+    let previewRequestCount = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input)
+      if (url.endsWith('/api/flows/contract-behavior.dot')) {
+        return jsonResponse({ content: initialDot })
+      }
+      if (url.endsWith('/preview')) {
+        previewRequestCount += 1
+        return jsonResponse(previewPayload)
+      }
+      if (url.endsWith('/api/flows') && init?.method === 'POST') {
+        return jsonResponse({ saved: true })
+      }
+      return jsonResponse({}, { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        suppressPreview: true,
+      }))
+    })
+
+    const user = userEvent.setup()
+    renderWithFlowProvider(<Editor />)
+
+    await screen.findByTestId('editor-mode-toggle')
+    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
+    const rawEditor = await screen.findByTestId('raw-dot-editor')
+    fireEvent.change(rawEditor, { target: { value: editedDot } })
+
+    await user.click(screen.getByRole('button', { name: 'Structured' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('raw-dot-editor')).toBeVisible()
+    })
+    expect((screen.getByTestId('raw-dot-editor') as HTMLTextAreaElement).value).toBe(editedDot)
+    expect(screen.getByTestId('raw-dot-handoff-error')).toHaveTextContent(
+      'Flow save failed before confirmation from backend.',
+    )
+    expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled()
+    expect(previewRequestCount).toBe(1)
+  })
+
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
     renderSelectedEdgeSidebar()
     const edgeForm = await screen.findByTestId('edge-structured-form')
