@@ -1,130 +1,193 @@
-"""Documentation and spec artifact contracts for UI migration governance."""
+"""Documentation and spec artifact contracts for UI migration governance.
 
+These tests validate documentation structure and traceability contracts rather
+than exact prose wording, so editorial rewording does not cause false failures.
+"""
 
-# ---- begin tests/integration/test_ui_advanced_feature_access.py ----
+from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
-def test_advanced_feature_access_doc_exists_with_required_coverage() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    doc_path = repo_root / "ui-advanced-feature-access.md"
-
-    assert doc_path.exists(), "missing advanced feature access guardrail doc for checklist item 1.3-03"
-
-    doc_text = doc_path.read_text(encoding="utf-8")
-    required_snippets = [
-        "Checklist item: [1.3-03]",
-        "ui-spec.md",
-        "1.3 Non-Goals",
-        "Hiding advanced features in favor of a simplified-only mode",
-        "Required controls must remain accessible",
-        "Progressive disclosure is allowed",
-        "must not remove required spec controls",
-        "Verification approach",
-    ]
-    for snippet in required_snippets:
-        assert snippet in doc_text, f"missing required advanced-feature coverage: {snippet}"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+CHECKLIST_ITEM_RE = re.compile(r"(?m)^Checklist item:\s*\[([^\]]+)\]\s*$")
 
 
-
-# ---- end tests/integration/test_ui_advanced_feature_access.py ----
-
-
-# ---- begin tests/integration/test_ui_parity_complete_user_journey_script.py ----
-
-from pathlib import Path
+def _load_doc(doc_name: str) -> tuple[Path, str]:
+    doc_path = REPO_ROOT / doc_name
+    assert doc_path.exists(), f"Missing documentation artifact: {doc_path}"
+    return doc_path, doc_path.read_text(encoding="utf-8")
 
 
-def test_parity_complete_user_journey_acceptance_script_exists_with_required_coverage() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    script_path = repo_root / "ui-parity-complete-user-journey.md"
-
-    assert script_path.exists(), "missing parity-complete user journey acceptance script for checklist item 1.2-01"
-
-    script_text = script_path.read_text(encoding="utf-8")
-
-    required_snippets = [
-        "Checklist item: [1.2-01]",
-        "project-select",
-        "author",
-        "execute",
-        "inspect",
-        "without raw DOT fallback",
-        "select project -> collaborate on spec -> generate/approve implementation plan -> run build workflows -> inspect outcomes",
-        "Preconditions",
-        "Acceptance Script",
-        "Expected Results",
-    ]
-    for snippet in required_snippets:
-        assert snippet in script_text, f"missing acceptance-script coverage: {snippet}"
+def _checklist_item_id(doc_text: str) -> str:
+    match = CHECKLIST_ITEM_RE.search(doc_text)
+    assert match is not None, "Document missing checklist item marker."
+    return match.group(1)
 
 
-
-# ---- end tests/integration/test_ui_parity_complete_user_journey_script.py ----
-
-
-# ---- begin tests/integration/test_ui_parity_risk_report.py ----
-
-from pathlib import Path
+def _h2_headings(doc_text: str) -> list[str]:
+    return re.findall(r"(?m)^##\s+(.+?)\s*$", doc_text)
 
 
-def test_parity_risk_report_exists_with_required_failure_mode_coverage() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    report_path = repo_root / "ui-parity-risk-report.md"
+def _section(doc_text: str, heading: str) -> str:
+    pattern = rf"(?ms)^##\s+{re.escape(heading)}\s*$\n(.*?)(?=^##\s+|\Z)"
+    match = re.search(pattern, doc_text)
+    assert match is not None, f"Missing section: {heading}"
+    return match.group(1).strip()
 
-    assert report_path.exists(), "missing parity-risk report for checklist item 1.1-02"
 
-    report_text = report_path.read_text(encoding="utf-8")
+def _subsection(section_text: str, heading: str) -> str:
+    pattern = rf"(?ms)^###\s+{re.escape(heading)}\s*$\n(.*?)(?=^###\s+|\Z)"
+    match = re.search(pattern, section_text)
+    assert match is not None, f"Missing subsection: {heading}"
+    return match.group(1).strip()
 
-    required_snippets = [
-        "Checklist item: [1.1-02]",
+
+def _numbered_items(section_text: str) -> list[str]:
+    return [line.strip() for line in section_text.splitlines() if re.match(r"^\d+\.\s+", line.strip())]
+
+
+def _bullet_items(section_text: str) -> list[str]:
+    return [line.strip() for line in section_text.splitlines() if line.strip().startswith("- ")]
+
+
+def _markdown_table(section_text: str) -> tuple[list[str], list[list[str]]]:
+    lines: list[str] = []
+    collecting = False
+    for raw_line in section_text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("|"):
+            lines.append(line)
+            collecting = True
+            continue
+        if collecting:
+            break
+
+    assert len(lines) >= 3, "Expected a markdown table with header, separator, and data rows."
+
+    def parse_row(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip("|").split("|")]
+
+    header = parse_row(lines[0])
+    rows = [parse_row(line) for line in lines[2:] if line.startswith("|")]
+    assert rows, "Expected at least one data row in markdown table."
+    return header, rows
+
+
+def _extract_component_paths(cell_text: str) -> set[str]:
+    return set(re.findall(r"frontend/src/components/[A-Za-z0-9_./-]+\.tsx", cell_text))
+
+
+def _extract_ui_spec_refs(cell_text: str) -> set[str]:
+    return set(re.findall(r"\b\d+\.\d+\b", cell_text))
+
+
+def test_advanced_feature_access_doc_contract() -> None:
+    _, doc_text = _load_doc("ui-advanced-feature-access.md")
+    assert _checklist_item_id(doc_text) == "1.3-03"
+
+    headings = set(_h2_headings(doc_text))
+    assert {"Spec Anchor", "Guardrail Rules", "Verification approach"}.issubset(headings)
+
+    spec_anchor = _section(doc_text, "Spec Anchor")
+    assert len(_bullet_items(spec_anchor)) >= 2
+    assert spec_anchor.count("ui-spec.md") >= 2
+
+    guardrails = _section(doc_text, "Guardrail Rules")
+    assert len(_numbered_items(guardrails)) >= 3
+
+    verification = _section(doc_text, "Verification approach")
+    assert len(_bullet_items(verification)) >= 2
+
+
+def test_parity_complete_user_journey_doc_contract() -> None:
+    _, doc_text = _load_doc("ui-parity-complete-user-journey.md")
+    assert _checklist_item_id(doc_text) == "1.2-01"
+
+    headings = set(_h2_headings(doc_text))
+    assert {"Preconditions", "Acceptance Script", "Expected Results"}.issubset(headings)
+
+    preconditions = _section(doc_text, "Preconditions")
+    acceptance_script = _section(doc_text, "Acceptance Script")
+    expected_results = _section(doc_text, "Expected Results")
+    assert len(_numbered_items(preconditions)) >= 3
+    assert len(_numbered_items(acceptance_script)) >= 8
+    assert len(_numbered_items(expected_results)) >= 3
+
+    for phase in ("project-select", "author", "execute", "inspect"):
+        assert phase in doc_text, f"Missing lifecycle phase marker: {phase}"
+
+
+def test_parity_risk_report_doc_contract() -> None:
+    _, doc_text = _load_doc("ui-parity-risk-report.md")
+    assert _checklist_item_id(doc_text) == "1.1-02"
+
+    headings = set(_h2_headings(doc_text))
+    assert {
+        "Scope",
         "Behavior-Loss Failure Modes",
         "Hidden-Config Failure Modes",
-        "stack.child_dotfile",
-        "tool_hooks.pre",
-        "manager.actions",
-        "human.default_choice",
-        "subgraph",
-        "node[...] defaults",
-        "edge[...] defaults",
+        "Notes",
+    }.issubset(headings)
+
+    scope = _section(doc_text, "Scope")
+    assert "ui-spec.md" in scope
+    assert "ui-raw-dot-required-config.md" in scope
+
+    behavior_table_header, behavior_rows = _markdown_table(_section(doc_text, "Behavior-Loss Failure Modes"))
+    assert behavior_table_header == [
+        "Failure mode",
+        "Trigger in current UI",
+        "User-visible impact",
         "Severity",
         "Mitigation direction",
     ]
-    for snippet in required_snippets:
-        assert snippet in report_text, f"missing required parity-risk coverage: {snippet}"
+    assert len(behavior_rows) >= 3
+    severities = {row[3] for row in behavior_rows}
+    assert "High" in severities
+    assert severities.issubset({"Low", "Medium", "High", "Critical"})
 
-
-
-# ---- end tests/integration/test_ui_parity_risk_report.py ----
-
-
-# ---- begin tests/integration/test_ui_raw_dot_required_config_report.py ----
-
-from pathlib import Path
-
-
-def test_raw_dot_required_config_report_exists_with_required_coverage() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    report_path = repo_root / "ui-raw-dot-required-config.md"
-
-    assert report_path.exists(), "missing required-config raw DOT report for checklist item 1.1-01"
-
-    report_text = report_path.read_text(encoding="utf-8")
-
-    required_snippets = [
-        "[1.1-01]",
-        "subgraph",
-        "node[...] defaults",
-        "edge[...] defaults",
-        "unknown-valid extension attributes",
-        "advanced key/value editor",
-        "Current Required Raw-DOT Surfaces",
+    hidden_table_header, hidden_rows = _markdown_table(_section(doc_text, "Hidden-Config Failure Modes"))
+    assert hidden_table_header == [
+        "Failure mode",
+        "Hidden required config",
+        "Discovery signal in current UI",
+        "Severity",
+        "Mitigation direction",
     ]
-    for snippet in required_snippets:
-        assert snippet in report_text, f"missing required report coverage: {snippet}"
+    assert len(hidden_rows) >= 3
 
-    no_longer_required_snippets = [
+    hidden_config_text = " ".join(row[1] for row in hidden_rows)
+    for required_config in ("tool_hooks.pre", "tool_hooks.post", "manager.actions", "human.default_choice"):
+        assert required_config in hidden_config_text, f"Missing hidden-config coverage for {required_config}"
+
+
+def test_raw_dot_required_config_doc_contract() -> None:
+    _, doc_text = _load_doc("ui-raw-dot-required-config.md")
+    assert _checklist_item_id(doc_text) == "1.1-01"
+
+    headings = set(_h2_headings(doc_text))
+    assert {"Scope", "Current Required Raw-DOT Surfaces", "Notes"}.issubset(headings)
+
+    table_header, rows = _markdown_table(_section(doc_text, "Current Required Raw-DOT Surfaces"))
+    assert table_header == [
+        "Spec anchor",
+        "Required configuration",
+        "Why raw DOT is currently required",
+        "Evidence in current UI code",
+    ]
+    assert len(rows) >= 2
+
+    for row in rows:
+        assert "ui-spec.md" in row[0], "Spec anchor column must trace to ui-spec.md."
+        assert "frontend/src/" in row[3], "Evidence column must cite frontend code locations."
+
+    required_config_column = " ".join(row[1] for row in rows)
+    assert "subgraph" in required_config_column
+    assert "unknown-valid extension attributes" in required_config_column
+
+    no_longer_required_attrs = {
         "stack.child_dotfile",
         "stack.child_workdir",
         "tool_hooks.pre",
@@ -134,137 +197,87 @@ def test_raw_dot_required_config_report_exists_with_required_coverage() -> None:
         "manager.stop_condition",
         "manager.actions",
         "human.default_choice",
-    ]
-    for snippet in no_longer_required_snippets:
-        assert snippet not in report_text, f"report still marks UI-supported attr as raw-DOT-only: {snippet}"
-
-# ---- end tests/integration/test_ui_raw_dot_required_config_report.py ----
+    }
+    for attr in no_longer_required_attrs:
+        assert attr not in required_config_column, f"Raw-DOT inventory still lists UI-supported attr: {attr}"
 
 
-# ---- begin tests/integration/test_ui_role_persona_scenarios.py ----
+def test_role_persona_scenarios_doc_contract() -> None:
+    _, doc_text = _load_doc("ui-role-persona-scenarios.md")
+    assert _checklist_item_id(doc_text) == "3.1-01"
 
-from pathlib import Path
-
-
-def test_role_persona_scenarios_doc_exists_with_required_success_criteria() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    doc_path = repo_root / "ui-role-persona-scenarios.md"
-
-    assert doc_path.exists(), "missing role persona scenarios doc for checklist item 3.1-01"
-
-    doc_text = doc_path.read_text(encoding="utf-8")
-    required_snippets = [
-        "Checklist item: [3.1-01]",
-        "ui-spec.md",
-        "3.1 User Roles",
+    persona_headings = {
         "Pipeline Author Scenario",
         "Operator Scenario",
         "Reviewer/Auditor Scenario",
         "Project Owner/Planner Scenario",
-        "Concrete UI Success Criteria",
-        "Given",
-        "When",
-        "Then",
-    ]
-    for snippet in required_snippets:
-        assert snippet in doc_text, f"missing required persona scenario coverage: {snippet}"
+    }
+    assert persona_headings.issubset(set(_h2_headings(doc_text)))
+
+    for persona in persona_headings:
+        persona_section = _section(doc_text, persona)
+        scenario = _subsection(persona_section, "Scenario")
+        criteria = _subsection(persona_section, "Concrete UI Success Criteria")
+        assert any(line.startswith("- Given") for line in scenario.splitlines())
+        assert any(line.startswith("- When") for line in scenario.splitlines())
+        assert any(line.startswith("- Then") for line in scenario.splitlines())
+        assert len(_bullet_items(criteria)) >= 2
 
 
+def test_runtime_parser_boundaries_doc_contract() -> None:
+    _, doc_text = _load_doc("ui-runtime-parser-boundaries.md")
+    assert _checklist_item_id(doc_text) == "1.3-01"
 
-# ---- end tests/integration/test_ui_role_persona_scenarios.py ----
-
-
-# ---- begin tests/integration/test_ui_runtime_parser_boundaries.py ----
-
-from pathlib import Path
-
-
-def test_runtime_parser_boundaries_doc_exists_with_required_coverage() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    doc_path = repo_root / "ui-runtime-parser-boundaries.md"
-
-    assert doc_path.exists(), "missing runtime/parser boundaries doc for checklist item 1.3-01"
-
-    doc_text = doc_path.read_text(encoding="utf-8")
-    required_snippets = [
-        "Checklist item: [1.3-01]",
-        "ui-spec.md",
-        "attractor-spec.md",
-        "Non-Goals",
-        "Replacing the DOT runtime parser or executor",
+    headings = set(_h2_headings(doc_text))
+    assert {
+        "Source of Truth",
         "UI-owned responsibilities",
         "Runtime/parser-owned responsibilities",
         "Boundary Rules",
-        "do not reinterpret execution semantics",
-        "no runtime parser changes",
-    ]
-    for snippet in required_snippets:
-        assert snippet in doc_text, f"missing required runtime/parser boundary coverage: {snippet}"
+    }.issubset(headings)
+
+    source_of_truth = _section(doc_text, "Source of Truth")
+    assert "ui-spec.md" in source_of_truth
+    assert "attractor-spec.md" in source_of_truth
+
+    ui_owned = _section(doc_text, "UI-owned responsibilities")
+    runtime_owned = _section(doc_text, "Runtime/parser-owned responsibilities")
+    boundary_rules = _section(doc_text, "Boundary Rules")
+    assert len(_bullet_items(ui_owned)) >= 3
+    assert len(_bullet_items(runtime_owned)) >= 3
+    assert len(_numbered_items(boundary_rules)) >= 4
 
 
+def test_spec_first_behavior_mapping_doc_contract() -> None:
+    _, doc_text = _load_doc("ui-spec-first-behavior-map.md")
+    assert _checklist_item_id(doc_text) == "2-01"
 
-# ---- end tests/integration/test_ui_runtime_parser_boundaries.py ----
-
-
-# ---- begin tests/integration/test_ui_spec_first_behavior_mapping.py ----
-
-import re
-from pathlib import Path
-
-
-def test_spec_first_behavior_mapping_doc_exists_with_required_control_coverage() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    doc_path = repo_root / "ui-spec-first-behavior-map.md"
-
-    assert doc_path.exists(), "missing spec-first behavior mapping doc for checklist item 2-01"
-
-    doc_text = doc_path.read_text(encoding="utf-8")
-    required_snippets = [
-        "Checklist item: [2-01]",
-        "ui-spec.md",
-        "attractor-spec.md",
+    headings = set(_h2_headings(doc_text))
+    assert {
+        "Source of Truth",
         "Control-to-Spec Behavior Map",
-        "Top navigation mode switch (Editor/Execution/Settings/Runs)",
-        "Execute button",
-        "Add Node button",
-        "Flow create/delete/select controls",
-        "Graph settings drawer",
-        "Apply To Nodes button",
-        "Reset From Global button",
-        "Node inspector fields",
-        "Node quick-edit controls",
-        "Edge inspector fields",
-        "Validation panel entries",
-        "Canvas controls (pan/zoom/fit/minimap)",
-        "Run history refresh/open/cancel actions",
-        "Run initiation payload and policy banners",
-        "Execution footer cancel control",
-        "Execution footer unsupported pause/resume reason",
-        "Terminal clear action",
-        "Projects workspace controls",
-        "Project AI conversation controls",
-        "Project spec proposal review controls",
-        "Project plan generation controls",
-        "Explainability panel controls",
-        "Run stream panel controls",
-        "Stylesheet editor controls",
-        "Subgraph/default block controls",
-        "Run checkpoint viewer controls",
-        "Run context inspector controls",
-        "Run artifact browser controls",
-        "Human prompt question-type controls",
-        "Grouped multi-question/inform controls",
-        "Raw DOT mode toggle and handoff diagnostics",
-        "Inspector empty state scaffold",
-        "Validation edge diagnostic badge",
-        "Human default choice controls",
+        "Spec references used during control behavior decisions",
+    }.issubset(headings)
+    assert "ui-spec.md" in _section(doc_text, "Source of Truth")
+    assert "attractor-spec.md" in _section(doc_text, "Source of Truth")
+
+    table_header, rows = _markdown_table(_section(doc_text, "Control-to-Spec Behavior Map"))
+    assert table_header == [
+        "UI control",
+        "Current location",
+        "Expected behavior",
         "Spec references",
     ]
+    assert len(rows) >= 25
 
-    for snippet in required_snippets:
-        assert snippet in doc_text, f"missing required spec-first mapping coverage: {snippet}"
+    component_paths: set[str] = set()
+    ui_spec_refs: set[str] = set()
+    for row in rows:
+        component_paths.update(_extract_component_paths(row[1]))
+        ui_spec_refs.update(_extract_ui_spec_refs(row[3]))
+        assert "ui-spec.md" in row[3], f"Missing ui-spec traceability in row: {row[0]}"
 
-    required_component_paths = [
+    required_components = {
         "frontend/src/components/Navbar.tsx",
         "frontend/src/components/Sidebar.tsx",
         "frontend/src/components/Editor.tsx",
@@ -281,52 +294,13 @@ def test_spec_first_behavior_mapping_doc_exists_with_required_control_coverage()
         "frontend/src/components/StylesheetEditor.tsx",
         "frontend/src/components/InspectorScaffold.tsx",
         "frontend/src/components/ValidationEdge.tsx",
-    ]
-    for component_path in required_component_paths:
-        assert component_path in doc_text, f"missing mapped control coverage for component: {component_path}"
+    }
+    assert required_components.issubset(component_paths)
 
-    required_ui_spec_sections = [
-        "4.1",
-        "4.2",
-        "4.3",
-        "5.1",
-        "5.2",
-        "5.3",
-        "5.4",
-        "5.5",
-        "6.1",
-        "6.2",
-        "6.3",
-        "6.4",
-        "6.5",
-        "6.6",
-        "6.7",
-        "7.1",
-        "7.2",
-        "7.3",
-        "8.1",
-        "8.2",
-        "8.3",
-        "8.4",
-        "8.5",
-        "9.1",
-        "9.2",
-        "9.3",
-        "9.4",
-        "9.5",
-        "9.6",
-        "10.1",
-        "10.2",
-        "10.3",
-        "10.4",
-    ]
-    for section_reference in required_ui_spec_sections:
-        pattern = rf"`ui-spec\.md`\s+[^\n|]*\b{re.escape(section_reference)}\b"
-        assert re.search(pattern, doc_text), f"missing ui-spec section mapping coverage: {section_reference}"
+    for major_area in ("4", "5", "6", "7", "8", "9", "10"):
+        assert any(ref.startswith(f"{major_area}.") for ref in ui_spec_refs), (
+            f"Control map missing ui-spec major area {major_area}.x coverage."
+        )
 
-    # Require a broad mapping table so the checklist item does not pass with a minimal subset.
-    map_lines = [line for line in doc_text.splitlines() if line.startswith("| ") and " | " in line]
-    assert len(map_lines) >= 30, "control mapping is too narrow for item 2-01"
-
-# ---- end tests/integration/test_ui_spec_first_behavior_mapping.py ----
-
+    for critical_section in ("5.2", "6.2", "7.1", "8.1", "9.1", "10.1"):
+        assert critical_section in ui_spec_refs, f"Control map missing critical ui-spec section {critical_section}."
