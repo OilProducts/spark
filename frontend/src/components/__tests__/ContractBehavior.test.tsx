@@ -2222,6 +2222,134 @@ describe('Frontend contract behavior', () => {
     })
   })
 
+  it('[CID:11.3.02] preserves unsurfaced canonical data through structured and raw edit paths', async () => {
+    const initialDot = `
+digraph contract_behavior {
+  graph [goal="Ship release", x_unsurfaced_graph="keep-graph"];
+  node [x_unsurfaced_node_default="keep-node-default"];
+  edge [x_unsurfaced_edge_default="keep-edge-default"];
+  subgraph cluster_review {
+    graph [x_unsurfaced_scope="keep-scope"];
+    start;
+  }
+  start [label="Start", shape=box, prompt="Plan release", x_unsurfaced_node="keep-node"];
+  end [label="End", shape=Msquare];
+  start -> end [label="next", x_unsurfaced_edge="keep-edge"];
+}
+`.trim()
+    const previewPayload = {
+      graph: {
+        graph_attrs: {
+          goal: 'Ship release',
+          x_unsurfaced_graph: 'keep-graph',
+        },
+        defaults: {
+          node: {
+            x_unsurfaced_node_default: 'keep-node-default',
+          },
+          edge: {
+            x_unsurfaced_edge_default: 'keep-edge-default',
+          },
+        },
+        subgraphs: [
+          {
+            id: 'cluster_review',
+            attrs: {
+              x_unsurfaced_scope: 'keep-scope',
+            },
+            node_ids: ['start'],
+            defaults: {
+              node: {},
+              edge: {},
+            },
+            subgraphs: [],
+          },
+        ],
+        nodes: [
+          {
+            id: 'start',
+            label: 'Start',
+            shape: 'box',
+            prompt: 'Plan release',
+            x_unsurfaced_node: 'keep-node',
+          },
+          {
+            id: 'end',
+            label: 'End',
+            shape: 'Msquare',
+          },
+        ],
+        edges: [
+          {
+            from: 'start',
+            to: 'end',
+            label: 'next',
+            x_unsurfaced_edge: 'keep-edge',
+          },
+        ],
+      },
+      diagnostics: [],
+    }
+    const savedPayloads: Array<{ name: string; content: string }> = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input)
+      if (url.endsWith('/api/flows/contract-behavior.dot')) {
+        return jsonResponse({ content: initialDot })
+      }
+      if (url.endsWith('/preview')) {
+        return jsonResponse(previewPayload)
+      }
+      if (url.endsWith('/api/flows') && init?.method === 'POST') {
+        const payload = JSON.parse(String(init.body)) as { name: string; content: string }
+        savedPayloads.push(payload)
+        return jsonResponse({ status: 'saved' })
+      }
+      return jsonResponse({}, { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const user = userEvent.setup()
+    renderWithFlowProvider(<Editor />)
+
+    await screen.findByTestId('editor-mode-toggle')
+    await screen.findByText('Start')
+    await user.click(screen.getByRole('button', { name: 'Add Node' }))
+
+    await waitFor(() => {
+      expect(savedPayloads.length).toBeGreaterThanOrEqual(1)
+    })
+
+    const structuredSave = savedPayloads[0].content
+    expect(structuredSave).toContain('x_unsurfaced_graph="keep-graph"')
+    expect(structuredSave).toContain('x_unsurfaced_node_default="keep-node-default"')
+    expect(structuredSave).toContain('x_unsurfaced_edge_default="keep-edge-default"')
+    expect(structuredSave).toContain('subgraph cluster_review {')
+    expect(structuredSave).toContain('x_unsurfaced_scope="keep-scope"')
+    expect(structuredSave).toContain('x_unsurfaced_node="keep-node"')
+    expect(structuredSave).toContain('x_unsurfaced_edge="keep-edge"')
+
+    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
+    const rawEditor = await screen.findByTestId('raw-dot-editor')
+    const rawDraftValue = (rawEditor as HTMLTextAreaElement).value
+    expect(rawDraftValue).toContain('x_unsurfaced_node_default="keep-node-default"')
+    expect(rawDraftValue).toContain('x_unsurfaced_edge_default="keep-edge-default"')
+    expect(rawDraftValue).toContain('subgraph cluster_review {')
+    expect(rawDraftValue).toContain('x_unsurfaced_node="keep-node"')
+    expect(rawDraftValue).toContain('x_unsurfaced_edge="keep-edge"')
+
+    await user.click(screen.getByRole('button', { name: 'Structured' }))
+    await waitFor(() => {
+      expect(savedPayloads.length).toBeGreaterThanOrEqual(2)
+    })
+
+    const rawHandoffSave = savedPayloads[savedPayloads.length - 1].content
+    expect(rawHandoffSave).toContain('x_unsurfaced_node_default="keep-node-default"')
+    expect(rawHandoffSave).toContain('x_unsurfaced_edge_default="keep-edge-default"')
+    expect(rawHandoffSave).toContain('subgraph cluster_review {')
+    expect(rawHandoffSave).toContain('x_unsurfaced_node="keep-node"')
+    expect(rawHandoffSave).toContain('x_unsurfaced_edge="keep-edge"')
+  })
+
   it('[CID:10.3.01] exposes human.default_choice authoring and timeout-default visibility in node inspector', async () => {
     act(() => {
       useStore.getState().setSelectedNodeId('gate')

@@ -19,7 +19,7 @@ import { TaskNode } from './TaskNode';
 import { ValidationEdge } from './ValidationEdge';
 import { ValidationPanel } from './ValidationPanel';
 import { ExecutionControls } from './ExecutionControls';
-import { generateDot } from '@/lib/dotUtils';
+import { clearDotSerializationContext, generateDot, setDotSerializationContext } from '@/lib/dotUtils';
 import { buildCanonicalFlowModelFromPreviewGraph } from '@/lib/canonicalFlowModel';
 import {
     EXPECT_SEMANTIC_EQUIVALENCE_OPTIONS,
@@ -248,6 +248,10 @@ export function Editor() {
             preview.graph,
             sourceDot !== undefined ? { rawDot: sourceDot } : undefined,
         )
+        setDotSerializationContext({
+            defaults: canonicalModel.defaults,
+            subgraphs: canonicalModel.subgraphs,
+        })
 
         if (preview.graph.graph_attrs) {
             const nextGraphAttrs: GraphAttrs = { ...canonicalModel.graphAttrs }
@@ -270,6 +274,7 @@ export function Editor() {
             type: 'customTask',
             position: { x: 250, y: i * 150 },
             data: {
+                ...n.attrs,
                 label: typeof n.attrs.label === 'string' ? n.attrs.label : n.id,
                 shape: typeof n.attrs.shape === 'string' ? n.attrs.shape : 'box',
                 prompt: typeof n.attrs.prompt === 'string' ? n.attrs.prompt : '',
@@ -324,6 +329,7 @@ export function Editor() {
             interactionWidth: EDGE_INTERACTION_WIDTH,
             label: typeof e.attrs.label === 'string' ? e.attrs.label : undefined,
             data: {
+                ...e.attrs,
                 label: typeof e.attrs.label === 'string' ? e.attrs.label : '',
                 condition: typeof e.attrs.condition === 'string' ? e.attrs.condition : '',
                 weight: typeof e.attrs.weight === 'number' || typeof e.attrs.weight === 'string' ? e.attrs.weight : '',
@@ -372,6 +378,7 @@ export function Editor() {
     useEffect(() => {
         hydratedRef.current = false;
         if (!activeFlow) {
+            clearDotSerializationContext();
             setNodes([]);
             setEdges([]);
             clearDiagnostics();
@@ -383,6 +390,7 @@ export function Editor() {
             rawDotEntryDraftRef.current = '';
             return;
         }
+        clearDotSerializationContext();
         clearDiagnostics();
         setRawHandoffError(null);
         rawHandoffInFlightRef.current = false;

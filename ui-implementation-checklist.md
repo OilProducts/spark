@@ -315,7 +315,8 @@ Status key:
 ### 11.3 Mixed-Mode Editing
 - [x] [11.3-01] Implement robust transitions between raw DOT and structured UI modes.
   - Evidence (2026-03-04): Evaluator `pass`; `Editor` now enforces single-flight raw→structured handoff (re-entry guard + disabled Structured toggle while handoff is in-flight) in `frontend/src/components/Editor.tsx`, with contract coverage `CID:11.3.01` in `frontend/src/components/__tests__/ContractBehavior.test.tsx` bridged by `tests/contracts/frontend/test_mixed_mode_editing_contracts.py`, and screenshot-based visual QA references `frontend/artifacts/ui-smoke/19a-semantic-equivalence-mismatch-blocked.png` and `frontend/artifacts/ui-smoke/19b-semantic-equivalence-round-trip-saved.png`.
-- [ ] [11.3-02] Preserve unsurfaced data through both editing paths.
+- [x] [11.3-02] Preserve unsurfaced data through both editing paths.
+  - Evidence (2026-03-04): Evaluator `pass`; frontend contract `CID:11.3.02` now proves unknown graph/default/subgraph/node/edge attrs survive structured saves, raw-mode drafts, and raw→structured handoff saves (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_mixed_mode_editing_contracts.py`), implemented via canonical context carry-through and hydrated attribute passthrough in `frontend/src/lib/dotUtils.ts` and `frontend/src/components/Editor.tsx`, with screenshot-based visual QA on `frontend/artifacts/ui-smoke/01-editor-shell.png`, `frontend/artifacts/ui-smoke/19-semantic-equivalence-noop-save.png`, `frontend/artifacts/ui-smoke/19a-semantic-equivalence-mismatch-blocked.png`, and `frontend/artifacts/ui-smoke/19b-semantic-equivalence-round-trip-saved.png`.
 - [ ] [11.3-03] Add conflict handling when raw edit invalidates structured assumptions.
 
 ### 11.4 Extension Attributes
