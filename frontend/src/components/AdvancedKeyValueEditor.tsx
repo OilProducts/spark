@@ -72,7 +72,7 @@ export function AdvancedKeyValueEditor({
                                     data-testid={`${testIdPrefix}-extension-attr-key-${index}`}
                                     value={entry.key}
                                     readOnly
-                                    className="h-8 w-full rounded-md border border-input bg-muted/30 px-2 font-mono text-[11px] text-foreground"
+                                    className="h-8 w-full rounded-md border border-input bg-muted/30 px-2 font-mono text-[11px] text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
                             </label>
                             <label className="space-y-1">
@@ -88,7 +88,7 @@ export function AdvancedKeyValueEditor({
                                 type="button"
                                 data-testid={`${testIdPrefix}-extension-attr-remove-${index}`}
                                 onClick={() => onRemove(entry.key)}
-                                className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             >
                                 Remove
                             </button>
@@ -122,7 +122,7 @@ export function AdvancedKeyValueEditor({
                     type="button"
                     onClick={handleAdd}
                     disabled={!canAdd}
-                    className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                    className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
                 >
                     Add Attribute
                 </button>

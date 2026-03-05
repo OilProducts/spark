@@ -466,7 +466,7 @@ export function ProjectsPanel() {
                                                 <button
                                                     type="button"
                                                     onClick={() => setActiveProjectPath(projectPath)}
-                                                    className="w-full rounded border border-border px-3 py-2 text-left text-xs hover:bg-muted"
+                                                    className="w-full rounded border border-border px-3 py-2 text-left text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 >
                                                     {projectPath}
                                                 </button>
@@ -491,7 +491,7 @@ export function ProjectsPanel() {
                                                 <button
                                                     type="button"
                                                     onClick={() => setActiveProjectPath(projectPath)}
-                                                    className="w-full rounded border border-border px-3 py-2 text-left text-xs hover:bg-muted"
+                                                    className="w-full rounded border border-border px-3 py-2 text-left text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 >
                                                     {projectPath}
                                                 </button>
@@ -522,7 +522,7 @@ export function ProjectsPanel() {
                                     <button
                                         type="button"
                                         onClick={onOpenConversation}
-                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     >
                                         {activeProjectScope?.conversationId ? "Open conversation" : "Start conversation"}
                                     </button>
@@ -537,7 +537,7 @@ export function ProjectsPanel() {
                                     <button
                                         type="button"
                                         onClick={onOpenSpec}
-                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     >
                                         {activeProjectScope?.specId ? "Open spec" : "Create spec"}
                                     </button>
@@ -552,7 +552,7 @@ export function ProjectsPanel() {
                                     <button
                                         type="button"
                                         onClick={onOpenPlan}
-                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     >
                                         {activeProjectScope?.planId ? "Open plan" : "Create plan"}
                                     </button>
@@ -585,7 +585,7 @@ export function ProjectsPanel() {
                                     data-testid="project-ai-conversation-start-button"
                                     type="button"
                                     onClick={onStartConversation}
-                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 >
                                     Start conversation
                                 </button>
@@ -594,7 +594,7 @@ export function ProjectsPanel() {
                                     type="button"
                                     onClick={onContinueConversation}
                                     disabled={!activeProjectScope?.conversationId}
-                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     Continue conversation
                                 </button>
@@ -640,7 +640,7 @@ export function ProjectsPanel() {
                                     data-testid="project-spec-edit-proposal-preview-button"
                                     type="button"
                                     onClick={onPreviewSpecEditProposal}
-                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 >
                                     Preview proposed spec edits
                                 </button>
@@ -669,7 +669,7 @@ export function ProjectsPanel() {
                                             data-testid="project-spec-edit-proposal-apply-button"
                                             type="button"
                                             onClick={onApplySpecEditProposal}
-                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         >
                                             Apply proposal
                                         </button>
@@ -677,7 +677,7 @@ export function ProjectsPanel() {
                                             data-testid="project-spec-edit-proposal-reject-button"
                                             type="button"
                                             onClick={onRejectSpecEditProposal}
-                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         >
                                             Reject proposal
                                         </button>
@@ -717,7 +717,7 @@ export function ProjectsPanel() {
                                     type="button"
                                     onClick={onApproveSpecForPlanning}
                                     disabled={!activeProjectScope?.specId}
-                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     Approve spec for planning
                                 </button>
@@ -728,7 +728,7 @@ export function ProjectsPanel() {
                                         void onLaunchPlanGenerationWorkflow()
                                     }}
                                     disabled={!activeProjectScope?.specId || !specIsApprovedForPlanning || !activeFlow}
-                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     Launch plan-generation workflow
                                 </button>
@@ -759,7 +759,7 @@ export function ProjectsPanel() {
                                         type="button"
                                         onClick={() => onPlanGateTransition('approved')}
                                         disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'approved')}
-                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                     >
                                         Approve plan
                                     </button>
@@ -768,7 +768,7 @@ export function ProjectsPanel() {
                                         type="button"
                                         onClick={() => onPlanGateTransition('rejected')}
                                         disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'rejected')}
-                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                     >
                                         Reject plan
                                     </button>
@@ -777,7 +777,7 @@ export function ProjectsPanel() {
                                         type="button"
                                         onClick={() => onPlanGateTransition('revision-requested')}
                                         disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'revision-requested')}
-                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                     >
                                         Request revision
                                     </button>
@@ -811,7 +811,7 @@ export function ProjectsPanel() {
                                                 void onLaunchPlanGenerationWorkflow()
                                             }}
                                             disabled={!canRerunPlanGeneration}
-                                            className="rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 disabled:cursor-not-allowed disabled:opacity-60"
+                                            className="rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             Retry plan-generation workflow
                                         </button>
@@ -845,12 +845,12 @@ export function ProjectsPanel() {
                                     clearProjectRegistrationError()
                                 }}
                                 placeholder="/absolute/path/to/project"
-                                className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+                                className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             />
                             <button
                                 data-testid="project-register-button"
                                 type="submit"
-                                className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                                className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             >
                                 Register
                             </button>
@@ -876,20 +876,21 @@ export function ProjectsPanel() {
                                             <div className="space-y-2">
                                                 <input
                                                     data-testid="project-edit-input"
+                                                    aria-label="Edit project directory path"
                                                     type="text"
                                                     value={editingDirectoryPathInput}
                                                     onChange={(event) => {
                                                         setEditingDirectoryPathInput(event.target.value)
                                                         clearProjectRegistrationError()
                                                     }}
-                                                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                                                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 />
                                                 <div className="flex items-center justify-end gap-2">
                                                     <button
                                                         data-testid="project-edit-cancel-button"
                                                         type="button"
                                                         onClick={onCancelProjectPathEdit}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                     >
                                                         Cancel
                                                     </button>
@@ -903,7 +904,7 @@ export function ProjectsPanel() {
                                                                 setEditingDirectoryPathInput("")
                                                             }
                                                         }}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                     >
                                                         Save
                                                     </button>
@@ -940,14 +941,14 @@ export function ProjectsPanel() {
                                                         data-testid="favorite-toggle-button"
                                                         type="button"
                                                         onClick={() => toggleProjectFavorite(project.directoryPath)}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                     >
                                                         {project.isFavorite ? "Unfavorite" : "Favorite"}
                                                     </button>
                                                     <button
                                                         type="button"
                                                         onClick={() => setActiveProjectPath(project.directoryPath)}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                     >
                                                         {isActive ? "Active" : "Set active"}
                                                     </button>
@@ -955,7 +956,7 @@ export function ProjectsPanel() {
                                                         data-testid="project-edit-button"
                                                         type="button"
                                                         onClick={() => onStartProjectPathEdit(project.directoryPath)}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                     >
                                                         Update path
                                                     </button>

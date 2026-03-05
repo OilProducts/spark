@@ -1204,6 +1204,53 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('execution-footer-cancel-button').className).toContain('focus-visible')
     expect(screen.getByTestId('execution-footer-pause-button').className).toContain('focus-visible')
     expect(screen.getByTestId('execution-footer-resume-button').className).toContain('focus-visible')
+
+    cleanup()
+    act(() => {
+      resetContractState()
+    })
+    render(<ProjectsPanel />)
+
+    expect(screen.getByLabelText('Project directory path')).toBeVisible()
+    expect(screen.getByTestId('project-path-input').className).toContain('focus-visible')
+    expect(screen.getByTestId('project-register-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('favorite-toggle-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('project-edit-button').className).toContain('focus-visible')
+
+    fireEvent.click(screen.getByTestId('project-edit-button'))
+    expect(screen.getByLabelText('Edit project directory path')).toBeVisible()
+    expect(screen.getByTestId('project-edit-input').className).toContain('focus-visible')
+    expect(screen.getByTestId('project-edit-cancel-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('project-edit-save-button').className).toContain('focus-visible')
+
+    cleanup()
+    act(() => {
+      resetContractState()
+      useStore.getState().setSelectedNodeId('task')
+      useStore.getState().setSelectedEdgeId(null)
+    })
+
+    const nodes: Node[] = [
+      {
+        id: 'task',
+        position: { x: 150, y: 0 },
+        data: {
+          label: 'Task',
+          shape: 'box',
+          prompt: 'Do work',
+          x_node_extension: 'node-extra',
+        },
+      },
+    ]
+    renderSidebar(nodes, [])
+
+    const nodeEditor = screen.getByTestId('node-extension-attrs-editor')
+    expect(within(nodeEditor).getByLabelText('Key')).toBeVisible()
+    expect(within(nodeEditor).getByLabelText('Value').className).toContain('focus-visible')
+    expect(within(nodeEditor).getByLabelText('New Key').className).toContain('focus-visible')
+    expect(within(nodeEditor).getByLabelText('New Value').className).toContain('focus-visible')
+    expect(within(nodeEditor).getByRole('button', { name: 'Remove' }).className).toContain('focus-visible')
+    expect(within(nodeEditor).getByRole('button', { name: 'Add Attribute' }).className).toContain('focus-visible')
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
