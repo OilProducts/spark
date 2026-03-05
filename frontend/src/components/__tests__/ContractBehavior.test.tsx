@@ -293,6 +293,19 @@ const setViewportWidth = (width: number) => {
   window.dispatchEvent(new Event('resize'))
 }
 
+const buildDirectoryPickerFile = (absoluteFilePath: string, relativeFilePath: string) => {
+  const selectedFile = new File(['console.log("project")'], 'main.ts', { type: 'text/plain' })
+  Object.defineProperty(selectedFile, 'path', {
+    configurable: true,
+    value: absoluteFilePath,
+  })
+  Object.defineProperty(selectedFile, 'webkitRelativePath', {
+    configurable: true,
+    value: relativeFilePath,
+  })
+  return selectedFile
+}
+
 describe('Frontend contract behavior', () => {
   const renderSelectedEdgeSidebar = () => {
     act(() => {
@@ -1324,17 +1337,12 @@ describe('Frontend contract behavior', () => {
     })
     render(<ProjectsPanel />)
 
-    expect(screen.getByLabelText('Project directory path')).toBeVisible()
-    expect(screen.getByTestId('project-path-input').className).toContain('focus-visible')
-    expect(screen.getByTestId('project-register-button').className).toContain('focus-visible')
-    expect(screen.getByTestId('favorite-toggle-button').className).toContain('focus-visible')
-    expect(screen.getByTestId('project-edit-button').className).toContain('focus-visible')
-
-    fireEvent.click(screen.getByTestId('project-edit-button'))
-    expect(screen.getByLabelText('Edit project directory path')).toBeVisible()
-    expect(screen.getByTestId('project-edit-input').className).toContain('focus-visible')
-    expect(screen.getByTestId('project-edit-cancel-button').className).toContain('focus-visible')
-    expect(screen.getByTestId('project-edit-save-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('quick-switch-new-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('quick-switch-new-button')).toHaveTextContent('New')
+    const recentActiveProjectButton = within(screen.getByTestId('recent-projects-list')).getByRole('button', {
+      name: /project-contract-behavior/i,
+    })
+    expect(recentActiveProjectButton.className).toContain('focus-visible')
 
     cleanup()
     act(() => {
@@ -1534,10 +1542,8 @@ describe('Frontend contract behavior', () => {
       render(<ProjectsPanel />)
 
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('project-register-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getAllByTestId('project-row-actions')[0]).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('project-register-button')).toBeVisible()
-      expect(screen.getByTestId('favorite-toggle-button')).toBeVisible()
+      expect(screen.getByTestId('quick-switch-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('quick-switch-new-button')).toBeVisible()
 
       cleanup()
       act(() => {
@@ -1598,8 +1604,7 @@ describe('Frontend contract behavior', () => {
       })
       render(<ProjectsPanel />)
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')
-      expect(screen.getByTestId('project-register-controls')).toHaveAttribute('data-responsive-layout', 'inline')
-      expect(screen.getAllByTestId('project-row-actions')[0]).toHaveAttribute('data-responsive-layout', 'inline')
+      expect(screen.getByTestId('quick-switch-controls')).toHaveAttribute('data-responsive-layout', 'inline')
 
       cleanup()
       setViewportWidth(760)
@@ -1624,8 +1629,7 @@ describe('Frontend contract behavior', () => {
       })
       render(<ProjectsPanel />)
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('project-register-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getAllByTestId('project-row-actions')[0]).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('quick-switch-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
 
       cleanup()
       setViewportWidth(1280)
@@ -2005,12 +2009,9 @@ describe('Frontend contract behavior', () => {
 
     const favoritesList = screen.getByTestId('favorite-projects-list')
     const recentsList = screen.getByTestId('recent-projects-list')
-    const registryList = screen.getByTestId('project-registry-list')
     const favoriteActiveButton = within(favoritesList).getByRole('button', { name: /project-alpha/i })
     const recentActiveButton = within(recentsList).getByRole('button', { name: /project-alpha/i })
     const recentInactiveButton = within(recentsList).getByRole('button', { name: /project-beta/i })
-    const registryActiveButton = within(registryList).getByRole('button', { name: /^Active$/i })
-    const registryInactiveButton = within(registryList).getByRole('button', { name: /Set active/i })
 
     expect(favoriteActiveButton).toHaveAttribute('aria-current', 'true')
     expect(recentActiveButton).toHaveAttribute('aria-current', 'true')
@@ -2018,8 +2019,6 @@ describe('Frontend contract behavior', () => {
 
     expect(within(favoriteActiveButton).getByText('Active')).toBeVisible()
     expect(within(recentActiveButton).getByText('Active')).toBeVisible()
-    expect(registryActiveButton).toHaveAttribute('aria-current', 'true')
-    expect(registryInactiveButton).not.toHaveAttribute('aria-current')
   })
 
   it('[CID:14.0.02] enforces unique project directories and Git-repo registration invariants', async () => {
@@ -2049,17 +2048,32 @@ describe('Frontend contract behavior', () => {
 
     render(<ProjectsPanel />)
 
-    await user.clear(screen.getByTestId('project-path-input'))
-    await user.type(screen.getByTestId('project-path-input'), '/tmp/project-contract-behavior')
-    await user.click(screen.getByTestId('project-register-button'))
+    const pickerInput = screen.getByTestId('project-directory-picker-input') as HTMLInputElement
+    fireEvent.change(pickerInput, {
+      target: {
+        files: [
+          buildDirectoryPickerFile(
+            '/tmp/project-contract-behavior/src/main.ts',
+            'project-contract-behavior/src/main.ts',
+          ),
+        ],
+      },
+    })
 
     expect(screen.getByTestId('project-registration-error')).toHaveTextContent(
       'Project already registered: /tmp/project-contract-behavior',
     )
 
-    await user.clear(screen.getByTestId('project-path-input'))
-    await user.type(screen.getByTestId('project-path-input'), '/tmp/non-git-project')
-    await user.click(screen.getByTestId('project-register-button'))
+    fireEvent.change(pickerInput, {
+      target: {
+        files: [
+          buildDirectoryPickerFile(
+            '/tmp/non-git-project/src/main.ts',
+            'non-git-project/src/main.ts',
+          ),
+        ],
+      },
+    })
 
     await waitFor(() => {
       expect(screen.getByTestId('project-registration-error')).toHaveTextContent(
@@ -2068,18 +2082,32 @@ describe('Frontend contract behavior', () => {
     })
     expect(useStore.getState().projectRegistry['/tmp/non-git-project']).toBeUndefined()
 
-    await user.clear(screen.getByTestId('project-path-input'))
-    await user.type(screen.getByTestId('project-path-input'), '/tmp/detached-git-project')
-    await user.click(screen.getByTestId('project-register-button'))
+    fireEvent.change(pickerInput, {
+      target: {
+        files: [
+          buildDirectoryPickerFile(
+            '/tmp/detached-git-project/src/main.ts',
+            'detached-git-project/src/main.ts',
+          ),
+        ],
+      },
+    })
 
     await waitFor(() => {
       expect(useStore.getState().projectRegistry['/tmp/detached-git-project']).toBeDefined()
     })
     expect(screen.queryByTestId('project-registration-error')).not.toBeInTheDocument()
 
-    await user.clear(screen.getByTestId('project-path-input'))
-    await user.type(screen.getByTestId('project-path-input'), '/tmp/git-project')
-    await user.click(screen.getByTestId('project-register-button'))
+    fireEvent.change(pickerInput, {
+      target: {
+        files: [
+          buildDirectoryPickerFile(
+            '/tmp/git-project/src/main.ts',
+            'git-project/src/main.ts',
+          ),
+        ],
+      },
+    })
 
     await waitFor(() => {
       expect(useStore.getState().projectRegistry['/tmp/git-project']).toBeDefined()
@@ -2096,15 +2124,13 @@ describe('Frontend contract behavior', () => {
             lastAccessedAt: null,
           },
         },
+        recentProjectPaths: ['/tmp/non-git-existing', ...state.recentProjectPaths],
       }))
     })
 
-    const registryList = screen.getByTestId('project-registry-list')
-    const nonGitRow = within(registryList)
-      .getByText('Directory: /tmp/non-git-existing')
-      .closest('li')
-    expect(nonGitRow).not.toBeNull()
-    await user.click(within(nonGitRow as HTMLElement).getByRole('button', { name: /set active/i }))
+    await user.click(
+      within(screen.getByTestId('recent-projects-list')).getByRole('button', { name: /non-git-existing/i }),
+    )
 
     await waitFor(() => {
       expect(screen.getByTestId('project-registration-error')).toHaveTextContent(
@@ -2112,20 +2138,6 @@ describe('Frontend contract behavior', () => {
       )
     })
     expect(useStore.getState().activeProjectPath).toBe('/tmp/project-contract-behavior')
-
-    const editButtons = within(registryList).getAllByTestId('project-edit-button')
-    await user.click(editButtons[0])
-    await user.clear(screen.getByTestId('project-edit-input'))
-    await user.type(screen.getByTestId('project-edit-input'), '/tmp/non-git-update')
-    await user.click(screen.getByTestId('project-edit-save-button'))
-
-    await waitFor(() => {
-      expect(screen.getByTestId('project-registration-error')).toHaveTextContent(
-        'Project directory must be a Git repository.',
-      )
-    })
-    expect(useStore.getState().projectRegistry['/tmp/project-contract-behavior']).toBeDefined()
-    expect(useStore.getState().projectRegistry['/tmp/non-git-update']).toBeUndefined()
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {

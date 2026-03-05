@@ -186,8 +186,6 @@ export function HomePanel() {
     const projectScopedWorkspaces = useStore((state) => state.projectScopedWorkspaces)
     const projectRegistrationError = useStore((state) => state.projectRegistrationError)
     const registerProject = useStore((state) => state.registerProject)
-    const updateProjectPath = useStore((state) => state.updateProjectPath)
-    const toggleProjectFavorite = useStore((state) => state.toggleProjectFavorite)
     const setProjectRegistrationError = useStore((state) => state.setProjectRegistrationError)
     const clearProjectRegistrationError = useStore((state) => state.clearProjectRegistrationError)
     const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
@@ -204,9 +202,6 @@ export function HomePanel() {
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const workingDir = useStore((state) => state.workingDir)
     const model = useStore((state) => state.model)
-    const [directoryPathInput, setDirectoryPathInput] = useState("")
-    const [editingProjectPath, setEditingProjectPath] = useState<string | null>(null)
-    const [editingDirectoryPathInput, setEditingDirectoryPathInput] = useState("")
     const [projectGitMetadata, setProjectGitMetadata] = useState<Record<string, ProjectGitMetadata>>({})
     const [projectSpecEditProposals, setProjectSpecEditProposals] = useState<ProjectSpecEditProposalMap>({})
     const [planGenerationError, setPlanGenerationError] = useState<string | null>(null)
@@ -301,7 +296,7 @@ export function HomePanel() {
         projectDirectoryPickerInputRef.current.setAttribute("directory", "")
     }, [])
 
-    const resolveProjectPathValidation = (rawPath: string, currentPath?: string | null): ProjectRegistrationResult => {
+    const resolveProjectPathValidation = (rawPath: string): ProjectRegistrationResult => {
         const normalizedPath = normalizeProjectPath(rawPath)
         if (!normalizedPath) {
             return { ok: false, error: 'Project directory path is required.' }
@@ -313,8 +308,7 @@ export function HomePanel() {
                 error: 'Project directory path must be absolute.',
             }
         }
-        const normalizedCurrent = currentPath ? normalizeProjectPath(currentPath) : null
-        const duplicate = Boolean(projectRegistry[normalizedPath]) && normalizedPath !== normalizedCurrent
+        const duplicate = Boolean(projectRegistry[normalizedPath])
         if (duplicate) {
             return {
                 ok: false,
@@ -371,17 +365,6 @@ export function HomePanel() {
         return metadata
     }
 
-    const formatLastActivity = (value: string | null) => {
-        if (!value) {
-            return "No activity yet"
-        }
-        const parsed = new Date(value)
-        if (Number.isNaN(parsed.getTime())) {
-            return "Unknown activity time"
-        }
-        return parsed.toLocaleString()
-    }
-
     const registerProjectFromPath = async (rawProjectPath: string) => {
         const validation = resolveProjectPathValidation(rawProjectPath)
         if (!validation.ok || !validation.normalizedPath) {
@@ -394,18 +377,8 @@ export function HomePanel() {
         }
         const result = registerProject(validation.normalizedPath)
         if (result.ok) {
-            setDirectoryPathInput("")
             setProjectRegistrationError(null)
         }
-    }
-
-    const onRegisterProject = async () => {
-        await registerProjectFromPath(directoryPathInput)
-    }
-
-    const onSubmitProjectRegistration = (event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault()
-        void onRegisterProject()
     }
 
     const onOpenProjectDirectoryChooser = () => {
@@ -427,44 +400,7 @@ export function HomePanel() {
             )
             return
         }
-        setDirectoryPathInput(selectedProjectPath)
         void registerProjectFromPath(selectedProjectPath)
-    }
-
-    const onSaveProjectPathEdit = async (projectPath: string) => {
-        const validation = resolveProjectPathValidation(editingDirectoryPathInput, projectPath)
-        if (!validation.ok || !validation.normalizedPath) {
-            setProjectRegistrationError(validation.error ?? 'Project directory path is required.')
-            return
-        }
-        const normalizedCurrentPath = normalizeProjectPath(projectPath)
-        let nextGitMetadata: ProjectGitMetadata | null = null
-        if (validation.normalizedPath !== normalizedCurrentPath) {
-            nextGitMetadata = await ensureProjectGitRepository(validation.normalizedPath)
-            if (!nextGitMetadata) {
-                return
-            }
-        }
-        const result = updateProjectPath(projectPath, validation.normalizedPath)
-        if (result.ok) {
-            setEditingProjectPath(null)
-            setEditingDirectoryPathInput("")
-            setProjectRegistrationError(null)
-            if (validation.normalizedPath !== normalizedCurrentPath && nextGitMetadata) {
-                setProjectGitMetadata((current) => {
-                    const next = { ...current }
-                    delete next[normalizedCurrentPath]
-                    next[validation.normalizedPath as string] = nextGitMetadata
-                    return next
-                })
-            }
-        }
-    }
-
-    const onStartProjectPathEdit = (projectPath: string) => {
-        setEditingProjectPath(projectPath)
-        setEditingDirectoryPathInput(projectPath)
-        clearProjectRegistrationError()
     }
 
     const onActivateProject = async (projectPath: string) => {
@@ -481,12 +417,6 @@ export function HomePanel() {
         }
         setProjectRegistrationError(null)
         setActiveProjectPath(projectPath)
-    }
-
-    const onCancelProjectPathEdit = () => {
-        setEditingProjectPath(null)
-        setEditingDirectoryPathInput("")
-        clearProjectRegistrationError()
     }
 
     const ensureConversationId = () => {
@@ -772,7 +702,11 @@ export function HomePanel() {
                     <HomeProjectSidebar>
                         <div className="rounded-md border border-border bg-card p-4 shadow-sm">
                     <div className="mb-3 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
+                        <div
+                            data-testid="quick-switch-controls"
+                            data-responsive-layout={isNarrowViewport ? "stacked" : "inline"}
+                            className={`items-start justify-between gap-2 ${isNarrowViewport ? "flex flex-col" : "flex"}`}
+                        >
                             <h3 className="text-sm font-semibold text-foreground">Quick Switch</h3>
                             <button
                                 data-testid="quick-switch-new-button"
@@ -794,6 +728,11 @@ export function HomePanel() {
                             tabIndex={-1}
                             aria-hidden="true"
                         />
+                        {projectRegistrationError ? (
+                            <p data-testid="project-registration-error" className="text-xs text-destructive">
+                                {projectRegistrationError}
+                            </p>
+                        ) : null}
                     </div>
                     <div className="grid gap-4">
                         <div className="space-y-2">
@@ -1205,163 +1144,6 @@ export function HomePanel() {
                     )}
                 </div>
                     </HomeWorkspace>
-                </div>
-                <div className="rounded-md border border-border bg-card p-4 shadow-sm">
-                    <form data-testid="project-register-form" onSubmit={onSubmitProjectRegistration}>
-                        <label htmlFor="project-path-input" className="mb-2 block text-xs font-medium text-foreground">
-                            Project directory path
-                        </label>
-                        <div
-                            data-testid="project-register-controls"
-                            data-responsive-layout={isNarrowViewport ? "stacked" : "inline"}
-                            className={`mb-3 ${isNarrowViewport ? "flex flex-col gap-2" : "flex gap-2"}`}
-                        >
-                            <input
-                                id="project-path-input"
-                                data-testid="project-path-input"
-                                type="text"
-                                value={directoryPathInput}
-                                onChange={(event) => {
-                                    setDirectoryPathInput(event.target.value)
-                                    clearProjectRegistrationError()
-                                }}
-                                placeholder="/absolute/path/to/project"
-                                className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            />
-                            <button
-                                data-testid="project-register-button"
-                                type="submit"
-                                className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            >
-                                Register
-                            </button>
-                        </div>
-                    </form>
-                    {projectRegistrationError ? (
-                        <p data-testid="project-registration-error" className="mb-3 text-sm text-destructive">
-                            {projectRegistrationError}
-                        </p>
-                    ) : null}
-                    <ul data-testid="project-registry-list" className="space-y-2">
-                        {projects.length === 0 ? (
-                            <li className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
-                                No projects registered yet.
-                            </li>
-                        ) : (
-                            projects.map((project) => {
-                                const isActive = project.directoryPath === activeProjectPath
-                                const isEditing = editingProjectPath === project.directoryPath
-                                return (
-                                    <li key={project.directoryPath} className="rounded-md border border-border px-3 py-2">
-                                        {isEditing ? (
-                                            <div className="space-y-2">
-                                                <input
-                                                    data-testid="project-edit-input"
-                                                    aria-label="Edit project directory path"
-                                                    type="text"
-                                                    value={editingDirectoryPathInput}
-                                                    onChange={(event) => {
-                                                        setEditingDirectoryPathInput(event.target.value)
-                                                        clearProjectRegistrationError()
-                                                    }}
-                                                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                />
-                                                <div className="flex items-center justify-end gap-2">
-                                                    <button
-                                                        data-testid="project-edit-cancel-button"
-                                                        type="button"
-                                                        onClick={onCancelProjectPathEdit}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                    >
-                                                        Cancel
-                                                    </button>
-                                                    <button
-                                                        data-testid="project-edit-save-button"
-                                                        type="button"
-                                                        onClick={() => {
-                                                            void onSaveProjectPathEdit(project.directoryPath)
-                                                        }}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                    >
-                                                        Save
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <div
-                                                className={
-                                                    isNarrowViewport
-                                                        ? "flex flex-col items-start gap-3"
-                                                        : "flex items-center justify-between gap-3"
-                                                }
-                                            >
-                                                <div className="min-w-0 flex-1 space-y-1">
-                                                    {(() => {
-                                                        const projectName = project.directoryPath.split('/').filter(Boolean).pop() || project.directoryPath
-                                                        const branchLabel =
-                                                            projectGitMetadata[project.directoryPath]?.branch || "Unknown branch"
-                                                        const lastActivityLabel = formatLastActivity(project.lastAccessedAt)
-                                                        return (
-                                                            <>
-                                                                <p data-testid="project-metadata-name" className="truncate text-sm font-medium text-foreground">
-                                                                    Name: {projectName}
-                                                                </p>
-                                                                <p data-testid="project-metadata-directory" className="truncate text-xs text-muted-foreground">
-                                                                    Directory: {project.directoryPath}
-                                                                </p>
-                                                                <p data-testid="project-metadata-branch" className="truncate text-xs text-muted-foreground">
-                                                                    Branch: {branchLabel}
-                                                                </p>
-                                                                <p data-testid="project-metadata-last-activity" className="truncate text-xs text-muted-foreground">
-                                                                    Last activity: {lastActivityLabel}
-                                                                </p>
-                                                            </>
-                                                        )
-                                                    })()}
-                                                </div>
-                                                <div
-                                                    data-testid="project-row-actions"
-                                                    data-responsive-layout={isNarrowViewport ? "stacked" : "inline"}
-                                                    className={
-                                                        isNarrowViewport
-                                                            ? "flex w-full flex-col items-stretch gap-2"
-                                                            : "flex items-center gap-2"
-                                                    }
-                                                >
-                                                    <button
-                                                        data-testid="favorite-toggle-button"
-                                                        type="button"
-                                                        onClick={() => toggleProjectFavorite(project.directoryPath)}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                    >
-                                                        {project.isFavorite ? "Unfavorite" : "Favorite"}
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            void onActivateProject(project.directoryPath)
-                                                        }}
-                                                        aria-current={isActive ? "true" : undefined}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                    >
-                                                        {isActive ? "Active" : "Set active"}
-                                                    </button>
-                                                    <button
-                                                        data-testid="project-edit-button"
-                                                        type="button"
-                                                        onClick={() => onStartProjectPathEdit(project.directoryPath)}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                    >
-                                                        Update path
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </li>
-                                )
-                            })
-                        )}
-                    </ul>
                 </div>
             </div>
         </section>
