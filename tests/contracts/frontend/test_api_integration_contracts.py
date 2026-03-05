@@ -43,3 +43,7 @@ def test_plan_generation_invocation_status_contract_with_degraded_state_item_12_
 
 def test_plan_approval_rejection_revision_transition_contract_item_12_4_04() -> None:
     assert_frontend_behavior_contract_passed("12.4.04")
+
+
+def test_build_invocation_from_approved_plan_contract_and_error_paths_item_12_4_05() -> None:
+    assert_frontend_behavior_contract_passed("12.4.05")

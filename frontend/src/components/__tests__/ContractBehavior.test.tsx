@@ -1,6 +1,7 @@
 import { ExecutionControls } from '@/components/ExecutionControls'
 import { Editor } from '@/components/Editor'
 import { GraphSettings } from '@/components/GraphSettings'
+import { Navbar } from '@/components/Navbar'
 import { ProjectsPanel } from '@/components/ProjectsPanel'
 import { RunStream } from '@/components/RunStream'
 import { RunsPanel } from '@/components/RunsPanel'
@@ -1040,6 +1041,85 @@ describe('Frontend contract behavior', () => {
         'Requested revision for plan plan-contract-behavior (rejected -> revision-requested).',
       ]),
     )
+  })
+
+  it('[CID:12.4.05] integrates build invocation-from-approved-plan contract and error paths', async () => {
+    const buildLaunchFailureMessage = 'build launch contract failure'
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input)
+      if (url.includes('/api/projects/metadata')) {
+        return jsonResponse({ branch: 'main', commit: 'abc123def456' })
+      }
+      if (url.endsWith('/api/flows/contract-behavior.dot')) {
+        return jsonResponse({ content: 'digraph BuildContract { start -> end }' })
+      }
+      if (url.endsWith('/pipelines') && init?.method === 'POST') {
+        return jsonResponse({ detail: buildLaunchFailureMessage }, { status: 503 })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        viewMode: 'editor',
+        activeProjectPath: '/tmp/project-contract-behavior',
+        activeFlow: 'contract-behavior.dot',
+        projectScopedWorkspaces: {
+          ...state.projectScopedWorkspaces,
+          '/tmp/project-contract-behavior': {
+            ...state.projectScopedWorkspaces['/tmp/project-contract-behavior'],
+            planId: 'plan-contract-behavior',
+            planStatus: 'draft',
+          },
+        },
+      }))
+    })
+
+    const user = userEvent.setup()
+    render(<Navbar />)
+
+    await user.click(screen.getByTestId('execute-button'))
+
+    expect(screen.getByTestId('run-start-error-banner')).toHaveTextContent(
+      'Build workflow launch requires an approved plan state.',
+    )
+    expect(screen.getByTestId('build-workflow-failure-diagnostics')).toHaveTextContent(
+      'Build workflow launch requires an approved plan state.',
+    )
+    expect(screen.getByTestId('build-workflow-rerun-button')).toBeDisabled()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        projectScopedWorkspaces: {
+          ...state.projectScopedWorkspaces,
+          '/tmp/project-contract-behavior': {
+            ...state.projectScopedWorkspaces['/tmp/project-contract-behavior'],
+            planStatus: 'approved',
+          },
+        },
+      }))
+    })
+
+    await user.click(screen.getByTestId('execute-button'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-start-error-banner')).toHaveTextContent(buildLaunchFailureMessage)
+    })
+    expect(screen.getByTestId('build-workflow-failure-message')).toHaveTextContent(buildLaunchFailureMessage)
+    expect(screen.getByTestId('build-workflow-rerun-button')).toBeEnabled()
+
+    const pipelineCall = fetchMock.mock.calls.find(
+      ([request, init]) => requestUrl(request as RequestInfo | URL).endsWith('/pipelines') && init?.method === 'POST',
+    )
+    expect(pipelineCall).toBeDefined()
+    const pipelinePayload = JSON.parse((pipelineCall?.[1] as RequestInit).body as string) as {
+      plan_id?: string | null
+    }
+    expect(pipelinePayload.plan_id).toBe('plan-contract-behavior')
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {

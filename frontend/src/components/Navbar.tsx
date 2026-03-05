@@ -75,7 +75,13 @@ export function Navbar() {
 
         setRunStartError(null)
         if (!buildWorkflowLaunchReady) {
-            setRunStartError('Build workflow launch requires an approved plan state.')
+            const launchGateMessage = 'Build workflow launch requires an approved plan state.'
+            setRunStartError(launchGateMessage)
+            setLastBuildWorkflowFailure({
+                message: launchGateMessage,
+                failedAt: new Date().toISOString(),
+                flowSource: runInitiationForm.flowSource || null,
+            })
             return
         }
         try {
