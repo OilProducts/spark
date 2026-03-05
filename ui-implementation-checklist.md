@@ -405,15 +405,16 @@ Status key:
   - Evidence (2026-03-05): Evaluator `pass`; defined shared UI performance budget constants (`frontend/src/lib/performanceBudgets.ts`) and surfaced explicit canvas (`16ms`) and timeline (`50ms`) budget indicators in `frontend/src/components/Editor.tsx` and `frontend/src/components/RunsPanel.tsx`, covered by frontend contract `CID:13.3.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_accessibility_contracts.py`) with screenshot-based visual QA references `frontend/artifacts/ui-smoke/08i-runs-panel-event-timeline.png`, `frontend/artifacts/ui-smoke/08j-runs-panel-event-timeline-filters.png`, `frontend/artifacts/ui-smoke/19a-semantic-equivalence-mismatch-blocked.png`, and `frontend/artifacts/ui-smoke/19b-semantic-equivalence-round-trip-saved.png` (`just ui-smoke` reported unrelated backend `ECONNREFUSED`/HTTP 500 failures in other scenarios).
 - [x] [13.3-02] Add profiling and optimization pass for medium-sized graphs.
   - Evidence (2026-03-05): Medium-graph optimizations now surface in the editor performance profile (`frontend/src/components/Editor.tsx`), covered by frontend contract `CID:13.3.02` and UI-smoke visual capture `frontend/artifacts/ui-smoke/13e-medium-graph-performance-profile.png`.
-- [ ] [13.3-03] Add stress tests for sustained SSE event throughput.
-  - Blocker: Needs UI-level sustained SSE timeline rendering/performance verification; current coverage is backend-only.
+- [x] [13.3-03] Add stress tests for sustained SSE event throughput.
+  - Evidence (2026-03-05): Added frontend contract `CID:13.3.03` to simulate sustained SSE timeline updates, assert capped timeline rows, and surface throughput/dropped-event notice; covered by `frontend/src/components/__tests__/ContractBehavior.test.tsx` and `tests/contracts/frontend/test_accessibility_contracts.py` (UI smoke attempted; unrelated failures prevented new captures).
 
 ---
 
 ## 14. Parity Program Breakdown
 
 ### 14.0 E0 - Project Workspace Foundation (P0)
-- [ ] [14.0-01] Implement Projects area, registration, and active-project selection UX.
+- [x] [14.0-01] Implement Projects area, registration, and active-project selection UX.
+  - Evidence (2026-03-05): Evaluator `pass`; Projects registry active button now exposes `aria-current` and contract coverage (`frontend/src/components/ProjectsPanel.tsx`, `frontend/src/components/__tests__/ContractBehavior.test.tsx`), with UI-smoke visual QA in `frontend/artifacts/ui-smoke/01-projects-shell.png`, `frontend/artifacts/ui-smoke/02-projects-panel.png`, `frontend/artifacts/ui-smoke/13a-mobile-projects-operations.png`, and `frontend/artifacts/ui-smoke/13c-desktop-projects-operations.png`.
 - [ ] [14.0-02] Implement unique-directory + Git-repo invariant enforcement and tests.
 - [ ] [14.0-03] Implement project-scoped conversation/session state and deep-linking.
 - [ ] [14.0-04] Add isolation tests proving no cross-project context/file leakage.

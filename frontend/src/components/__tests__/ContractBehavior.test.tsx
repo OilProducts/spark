@@ -1994,9 +1994,12 @@ describe('Frontend contract behavior', () => {
 
     const favoritesList = screen.getByTestId('favorite-projects-list')
     const recentsList = screen.getByTestId('recent-projects-list')
+    const registryList = screen.getByTestId('project-registry-list')
     const favoriteActiveButton = within(favoritesList).getByRole('button', { name: /project-alpha/i })
     const recentActiveButton = within(recentsList).getByRole('button', { name: /project-alpha/i })
     const recentInactiveButton = within(recentsList).getByRole('button', { name: /project-beta/i })
+    const registryActiveButton = within(registryList).getByRole('button', { name: /^Active$/i })
+    const registryInactiveButton = within(registryList).getByRole('button', { name: /Set active/i })
 
     expect(favoriteActiveButton).toHaveAttribute('aria-current', 'true')
     expect(recentActiveButton).toHaveAttribute('aria-current', 'true')
@@ -2004,6 +2007,8 @@ describe('Frontend contract behavior', () => {
 
     expect(within(favoriteActiveButton).getByText('Active')).toBeVisible()
     expect(within(recentActiveButton).getByText('Active')).toBeVisible()
+    expect(registryActiveButton).toHaveAttribute('aria-current', 'true')
+    expect(registryInactiveButton).not.toHaveAttribute('aria-current')
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {

@@ -996,6 +996,7 @@ export function ProjectsPanel() {
                                                     <button
                                                         type="button"
                                                         onClick={() => setActiveProjectPath(project.directoryPath)}
+                                                        aria-current={isActive ? "true" : undefined}
                                                         className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                     >
                                                         {isActive ? "Active" : "Set active"}
