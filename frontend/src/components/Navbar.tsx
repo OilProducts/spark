@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { useStore } from "@/store"
+import { useState, type KeyboardEvent } from "react"
+import { useStore, type ViewMode } from "@/store"
 import { buildPipelineStartPayload } from "@/lib/pipelineStartPayload"
 import { ApiHttpError, fetchFlowPayloadValidated, fetchPipelineStartValidated } from '@/lib/apiClient'
 import { Play, Settings2 } from "lucide-react"
@@ -9,6 +9,9 @@ type WorkflowFailureDiagnostics = {
     failedAt: string
     flowSource: string | null
 }
+
+const NAV_MODE_ORDER: ViewMode[] = ['projects', 'editor', 'execution', 'settings', 'runs']
+const NAV_MODES_REQUIRING_ACTIVE_PROJECT = new Set<ViewMode>(['editor', 'execution'])
 
 export function Navbar() {
     const { viewMode, setViewMode, activeFlow, setSelectedRunId } = useStore()
@@ -39,6 +42,31 @@ export function Navbar() {
     const buildWorkflowLaunchReady = Boolean(activeProjectScope?.planId) && activeProjectScope?.planStatus === 'approved'
     const canRerunBuildWorkflow =
         Boolean(activeProjectPath) && Boolean(activeFlow) && !hasValidationErrors && buildWorkflowLaunchReady
+
+    const resolveNextKeyboardMode = (mode: ViewMode, direction: -1 | 1): ViewMode => {
+        const selectableModes = NAV_MODE_ORDER.filter(
+            (candidate) => activeProjectPath || !NAV_MODES_REQUIRING_ACTIVE_PROJECT.has(candidate)
+        )
+        const modeCycle = selectableModes.length > 0 ? selectableModes : ['projects']
+        const currentIndex = modeCycle.indexOf(mode)
+        const startIndex = currentIndex >= 0 ? currentIndex : 0
+        const nextIndex = (startIndex + direction + modeCycle.length) % modeCycle.length
+        return modeCycle[nextIndex]
+    }
+
+    const focusModeButton = (mode: ViewMode) => {
+        document.querySelector<HTMLButtonElement>(`[data-testid="nav-mode-${mode}"]`)?.focus()
+    }
+
+    const onViewModeKeyDown = (event: KeyboardEvent<HTMLButtonElement>, mode: ViewMode) => {
+        if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') {
+            return
+        }
+        event.preventDefault()
+        const nextMode = resolveNextKeyboardMode(mode, event.key === 'ArrowRight' ? 1 : -1)
+        setViewMode(nextMode)
+        focusModeButton(nextMode)
+    }
 
     const confirmGitPolicyGate = async () => {
         try {
@@ -139,6 +167,7 @@ export function Navbar() {
                     <button
                         data-testid="nav-mode-projects"
                         onClick={() => setViewMode('projects')}
+                        onKeyDown={(event) => onViewModeKeyDown(event, 'projects')}
                         className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 flex-1 ${viewMode === 'projects' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'
                             }`}
                     >
@@ -147,6 +176,7 @@ export function Navbar() {
                     <button
                         data-testid="nav-mode-editor"
                         onClick={() => setViewMode('editor')}
+                        onKeyDown={(event) => onViewModeKeyDown(event, 'editor')}
                         className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 flex-1 ${viewMode === 'editor' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'
                             }`}
                     >
@@ -155,6 +185,7 @@ export function Navbar() {
                     <button
                         data-testid="nav-mode-execution"
                         onClick={() => setViewMode('execution')}
+                        onKeyDown={(event) => onViewModeKeyDown(event, 'execution')}
                         className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 flex-1 ${viewMode === 'execution' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'
                             }`}
                     >
@@ -163,6 +194,7 @@ export function Navbar() {
                     <button
                         data-testid="nav-mode-settings"
                         onClick={() => setViewMode('settings')}
+                        onKeyDown={(event) => onViewModeKeyDown(event, 'settings')}
                         className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 flex-1 ${viewMode === 'settings' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'
                             }`}
                     >
@@ -171,6 +203,7 @@ export function Navbar() {
                     <button
                         data-testid="nav-mode-runs"
                         onClick={() => setViewMode('runs')}
+                        onKeyDown={(event) => onViewModeKeyDown(event, 'runs')}
                         className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 flex-1 ${viewMode === 'runs' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'
                             }`}
                     >

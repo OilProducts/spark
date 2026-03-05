@@ -1,0 +1,5 @@
+from tests.contracts.frontend.frontend_behavior_runner import assert_frontend_behavior_contract_passed
+
+
+def test_keyboard_navigation_covers_projects_authoring_and_execution_flows_item_13_1_01() -> None:
+    assert_frontend_behavior_contract_passed("13.1.01")

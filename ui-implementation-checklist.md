@@ -385,7 +385,8 @@ Status key:
 ## 13. Accessibility, Responsiveness, and Performance
 
 ### 13.1 Accessibility
-- [ ] [13.1-01] Add keyboard navigation coverage for core project-management/authoring/execution flows.
+- [x] [13.1-01] Add keyboard navigation coverage for core project-management/authoring/execution flows.
+  - Evidence (2026-03-05): Evaluator `pass`; added keyboard arrow navigation between top-level Projects/Editor/Execution mode tabs in `frontend/src/components/Navbar.tsx`, covered by frontend contract `CID:13.1.01` (`frontend/src/components/__tests__/ContractBehavior.test.tsx`, `tests/contracts/frontend/test_accessibility_contracts.py`) with screenshot-based visual QA references `frontend/artifacts/ui-smoke/01-projects-shell.png`, `frontend/artifacts/ui-smoke/01-editor-shell.png`, and `frontend/artifacts/ui-smoke/06-execution-panel.png` (`just ui-smoke` reported unrelated backend `ECONNREFUSED`/HTTP 500 failures in other scenarios).
 - [ ] [13.1-02] Add focus-visible and semantic label audit across interactive controls.
 - [ ] [13.1-03] Verify diagnostic/status color contrast against accessibility standards.
 

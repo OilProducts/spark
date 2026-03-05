@@ -1122,6 +1122,38 @@ describe('Frontend contract behavior', () => {
     expect(pipelinePayload.plan_id).toBe('plan-contract-behavior')
   })
 
+  it('[CID:13.1.01] supports keyboard navigation across projects, authoring, and execution mode tabs', async () => {
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        viewMode: 'projects',
+      }))
+    })
+
+    const user = userEvent.setup()
+    render(<Navbar />)
+
+    const projectsTab = screen.getByTestId('nav-mode-projects')
+    const editorTab = screen.getByTestId('nav-mode-editor')
+    const executionTab = screen.getByTestId('nav-mode-execution')
+
+    projectsTab.focus()
+    expect(projectsTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('projects')
+
+    await user.keyboard('{ArrowRight}')
+    expect(editorTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('editor')
+
+    await user.keyboard('{ArrowRight}')
+    expect(executionTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('execution')
+
+    await user.keyboard('{ArrowLeft}')
+    expect(editorTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('editor')
+  })
+
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
     renderSelectedEdgeSidebar()
     const edgeForm = await screen.findByTestId('edge-structured-form')
