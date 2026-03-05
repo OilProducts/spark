@@ -108,6 +108,85 @@ const readRuntimeUiSource = (): string => {
     .join('\n')
 }
 
+const readFrontendIndexCss = (): string => {
+  const srcRoot = resolveFrontendSrcRoot()
+  const indexCssPath = join(srcRoot, 'index.css')
+  if (!existsSync(indexCssPath)) {
+    throw new Error(`Unable to locate frontend index.css at ${indexCssPath}`)
+  }
+  return readFileSync(indexCssPath, 'utf-8')
+}
+
+const parseRootHslToken = (cssSource: string, tokenName: string): [number, number, number] => {
+  const tokenPattern = new RegExp(`--${tokenName}:\\s*([\\d.]+)\\s+([\\d.]+)%\\s+([\\d.]+)%\\s*;`)
+  const tokenMatch = cssSource.match(tokenPattern)
+  if (!tokenMatch) {
+    throw new Error(`Unable to find --${tokenName} token in frontend index.css`)
+  }
+  return [Number(tokenMatch[1]), Number(tokenMatch[2]), Number(tokenMatch[3])]
+}
+
+const hslToRgb = ([h, s, l]: [number, number, number]): [number, number, number] => {
+  const hue = ((h % 360) + 360) % 360
+  const saturation = Math.max(0, Math.min(100, s)) / 100
+  const lightness = Math.max(0, Math.min(100, l)) / 100
+  const chroma = (1 - Math.abs((2 * lightness) - 1)) * saturation
+  const hueSegment = hue / 60
+  const secondary = chroma * (1 - Math.abs((hueSegment % 2) - 1))
+  let redPrime = 0
+  let greenPrime = 0
+  let bluePrime = 0
+
+  if (hueSegment >= 0 && hueSegment < 1) {
+    redPrime = chroma
+    greenPrime = secondary
+  } else if (hueSegment >= 1 && hueSegment < 2) {
+    redPrime = secondary
+    greenPrime = chroma
+  } else if (hueSegment >= 2 && hueSegment < 3) {
+    greenPrime = chroma
+    bluePrime = secondary
+  } else if (hueSegment >= 3 && hueSegment < 4) {
+    greenPrime = secondary
+    bluePrime = chroma
+  } else if (hueSegment >= 4 && hueSegment < 5) {
+    redPrime = secondary
+    bluePrime = chroma
+  } else {
+    redPrime = chroma
+    bluePrime = secondary
+  }
+
+  const match = lightness - chroma / 2
+  const toByte = (channel: number): number => Math.round((channel + match) * 255)
+  return [toByte(redPrime), toByte(greenPrime), toByte(bluePrime)]
+}
+
+const blendOnWhite = (
+  [red, green, blue]: [number, number, number],
+  alpha: number,
+): [number, number, number] => {
+  const normalizedAlpha = Math.max(0, Math.min(1, alpha))
+  const blendChannel = (channel: number): number =>
+    Math.round((normalizedAlpha * channel) + ((1 - normalizedAlpha) * 255))
+  return [blendChannel(red), blendChannel(green), blendChannel(blue)]
+}
+
+const contrastRatio = (
+  [redA, greenA, blueA]: [number, number, number],
+  [redB, greenB, blueB]: [number, number, number],
+): number => {
+  const toLinear = (channel: number): number => {
+    const srgb = channel / 255
+    return srgb <= 0.03928 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4
+  }
+  const luminance = ([red, green, blue]: [number, number, number]): number =>
+    (0.2126 * toLinear(red)) + (0.7152 * toLinear(green)) + (0.0722 * toLinear(blue))
+  const lighter = Math.max(luminance([redA, greenA, blueA]), luminance([redB, greenB, blueB]))
+  const darker = Math.min(luminance([redA, greenA, blueA]), luminance([redB, greenB, blueB]))
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
 const resetContractState = () => {
   useStore.setState((state) => ({
     ...state,
@@ -1251,6 +1330,44 @@ describe('Frontend contract behavior', () => {
     expect(within(nodeEditor).getByLabelText('New Value').className).toContain('focus-visible')
     expect(within(nodeEditor).getByRole('button', { name: 'Remove' }).className).toContain('focus-visible')
     expect(within(nodeEditor).getByRole('button', { name: 'Add Attribute' }).className).toContain('focus-visible')
+  })
+
+  it('[CID:13.1.03] verifies diagnostic and status color contrast meets WCAG-oriented thresholds', () => {
+    const indexCss = readFrontendIndexCss()
+    const destructiveTokenRgb = hslToRgb(parseRootHslToken(indexCss, 'destructive'))
+    const white: [number, number, number] = [255, 255, 255]
+
+    const warningText: [number, number, number] = [146, 64, 14] // tailwind amber-800
+    const warningBackgroundBase: [number, number, number] = [245, 158, 11] // tailwind amber-500
+    const infoText: [number, number, number] = [3, 105, 161] // tailwind sky-700
+    const infoBackgroundBase: [number, number, number] = [14, 165, 233] // tailwind sky-500
+    const successText: [number, number, number] = [22, 101, 52] // tailwind green-800
+    const successBackgroundBase: [number, number, number] = [34, 197, 94] // tailwind green-500
+
+    const samples: Array<{ name: string; ratio: number }> = [
+      { name: 'error text on base surface', ratio: contrastRatio(destructiveTokenRgb, white) },
+      { name: 'error text on diagnostic badge /10', ratio: contrastRatio(destructiveTokenRgb, blendOnWhite(destructiveTokenRgb, 0.1)) },
+      { name: 'error text on diagnostic badge /15', ratio: contrastRatio(destructiveTokenRgb, blendOnWhite(destructiveTokenRgb, 0.15)) },
+      { name: 'error text on status badge /20', ratio: contrastRatio(destructiveTokenRgb, blendOnWhite(destructiveTokenRgb, 0.2)) },
+      { name: 'warning text on base surface', ratio: contrastRatio(warningText, white) },
+      { name: 'warning text on diagnostic badge /10', ratio: contrastRatio(warningText, blendOnWhite(warningBackgroundBase, 0.1)) },
+      { name: 'warning text on diagnostic badge /15', ratio: contrastRatio(warningText, blendOnWhite(warningBackgroundBase, 0.15)) },
+      { name: 'warning text on status badge /20', ratio: contrastRatio(warningText, blendOnWhite(warningBackgroundBase, 0.2)) },
+      { name: 'info text on base surface', ratio: contrastRatio(infoText, white) },
+      { name: 'info text on diagnostic badge /10', ratio: contrastRatio(infoText, blendOnWhite(infoBackgroundBase, 0.1)) },
+      { name: 'info text on diagnostic badge /15', ratio: contrastRatio(infoText, blendOnWhite(infoBackgroundBase, 0.15)) },
+      { name: 'info text on status badge /20', ratio: contrastRatio(infoText, blendOnWhite(infoBackgroundBase, 0.2)) },
+      { name: 'success text on base surface', ratio: contrastRatio(successText, white) },
+      { name: 'success text on status badge /10', ratio: contrastRatio(successText, blendOnWhite(successBackgroundBase, 0.1)) },
+      { name: 'success text on status badge /15', ratio: contrastRatio(successText, blendOnWhite(successBackgroundBase, 0.15)) },
+      { name: 'success text on status badge /20', ratio: contrastRatio(successText, blendOnWhite(successBackgroundBase, 0.2)) },
+    ]
+
+    for (const sample of samples) {
+      if (sample.ratio < 4.5) {
+        throw new Error(`${sample.name} contrast ratio ${sample.ratio.toFixed(2)} is below 4.50`)
+      }
+    }
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {

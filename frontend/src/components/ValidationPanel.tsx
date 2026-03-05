@@ -4,7 +4,7 @@ import { useStore } from '@/store';
 
 const severityStyles: Record<string, string> = {
     error: 'bg-destructive/15 text-destructive',
-    warning: 'bg-amber-500/15 text-amber-700',
+    warning: 'bg-amber-500/15 text-amber-800',
     info: 'bg-sky-500/15 text-sky-700',
 };
 

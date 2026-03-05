@@ -331,7 +331,7 @@ export function RunStream() {
                     saveState === 'error'
                         ? 'border-destructive/50 bg-destructive/10 text-destructive'
                         : saveState === 'conflict'
-                            ? 'border-amber-500/50 bg-amber-500/10 text-amber-700'
+                            ? 'border-amber-500/50 bg-amber-500/10 text-amber-800'
                         : saveState === 'saved'
                             ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
                             : 'border-border bg-background/95 text-muted-foreground'
@@ -341,7 +341,7 @@ export function RunStream() {
                 <span>{saveStateLabel}</span>
                 {saveErrorMessage ? <span className="ml-1">- {saveErrorMessage}</span> : null}
                 {runtimeApiDegradedMessage ? (
-                    <p data-testid="runtime-api-degraded-banner" className="mt-1 text-[10px] font-normal leading-4 text-amber-700">
+                    <p data-testid="runtime-api-degraded-banner" className="mt-1 text-[10px] font-normal leading-4 text-amber-800">
                         {runtimeApiDegradedMessage}
                     </p>
                 ) : null}

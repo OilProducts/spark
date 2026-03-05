@@ -7,3 +7,7 @@ def test_keyboard_navigation_covers_projects_authoring_and_execution_flows_item_
 
 def test_focus_visible_and_semantic_label_audit_across_interactive_controls_item_13_1_02() -> None:
     assert_frontend_behavior_contract_passed("13.1.02")
+
+
+def test_diagnostic_status_color_contrast_meets_accessibility_thresholds_item_13_1_03() -> None:
+    assert_frontend_behavior_contract_passed("13.1.03")

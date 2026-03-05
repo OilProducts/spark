@@ -789,7 +789,7 @@ export function ProjectsPanel() {
                                 </p>
                             ) : null}
                             {planGenerationStatusDegraded ? (
-                                <p data-testid="project-plan-generation-status-degraded" className="text-[11px] text-amber-700">
+                                <p data-testid="project-plan-generation-status-degraded" className="text-[11px] text-amber-800">
                                     {planGenerationStatusDegraded}
                                 </p>
                             ) : null}

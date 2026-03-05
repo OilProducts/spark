@@ -128,12 +128,12 @@ export function AdvancedKeyValueEditor({
                 </button>
             </div>
             {hasDuplicateKey ? (
-                <p className="text-[11px] text-amber-700">
+                <p className="text-[11px] text-amber-800">
                     Key already exists.
                 </p>
             ) : null}
             {hasReservedKey ? (
-                <p className="text-[11px] text-amber-700">
+                <p className="text-[11px] text-amber-800">
                     Core attributes belong in dedicated controls.
                 </p>
             ) : null}

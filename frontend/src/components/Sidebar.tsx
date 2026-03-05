@@ -403,7 +403,7 @@ export function Sidebar() {
                     const severityClassName = diag.severity === 'error'
                         ? 'text-destructive'
                         : diag.severity === 'warning'
-                            ? 'text-amber-700'
+                            ? 'text-amber-800'
                             : 'text-sky-700'
                     return (
                         <p key={`${scope}-${field}-${diag.rule_id}-${index}`} className={`text-[11px] ${severityClassName}`}>
@@ -443,7 +443,7 @@ export function Sidebar() {
                         saveState === 'error'
                             ? 'border-destructive/50 bg-destructive/10 text-destructive'
                             : saveState === 'conflict'
-                                ? 'border-amber-500/50 bg-amber-500/10 text-amber-700'
+                                ? 'border-amber-500/50 bg-amber-500/10 text-amber-800'
                             : saveState === 'saved'
                                 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
                                 : 'border-border bg-muted/30 text-muted-foreground'
@@ -797,7 +797,7 @@ export function Sidebar() {
                                                                 placeholder="e.g. ./hooks/pre.sh"
                                                             />
                                                             {selectedNodeToolHookPreWarning && (
-                                                                <p data-testid="node-attr-warning-tool_hooks.pre" className="text-xs text-amber-700">
+                                                                <p data-testid="node-attr-warning-tool_hooks.pre" className="text-xs text-amber-800">
                                                                     {selectedNodeToolHookPreWarning}
                                                                 </p>
                                                             )}
@@ -812,7 +812,7 @@ export function Sidebar() {
                                                                 placeholder="e.g. ./hooks/post.sh"
                                                             />
                                                             {selectedNodeToolHookPostWarning && (
-                                                                <p data-testid="node-attr-warning-tool_hooks.post" className="text-xs text-amber-700">
+                                                                <p data-testid="node-attr-warning-tool_hooks.post" className="text-xs text-amber-800">
                                                                     {selectedNodeToolHookPostWarning}
                                                                 </p>
                                                             )}
@@ -972,7 +972,7 @@ export function Sidebar() {
                                             conditionPreviewHasError
                                                 ? 'border-destructive/40 bg-destructive/10 text-destructive'
                                                 : conditionPreviewHasWarning
-                                                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-700'
+                                                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-800'
                                                     : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
                                         }`}
                                     >

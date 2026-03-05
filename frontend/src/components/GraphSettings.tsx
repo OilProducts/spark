@@ -199,7 +199,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                         const severityClassName = diag.severity === 'error'
                             ? 'text-destructive'
                             : diag.severity === 'warning'
-                                ? 'text-amber-700'
+                                ? 'text-amber-800'
                                 : 'text-sky-700'
                         return (
                             <p key={`${field}-${diag.rule_id}-${index}`} className={`text-[11px] ${severityClassName}`}>
@@ -404,7 +404,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                                     const severityClassName = diag.severity === 'error'
                                                         ? 'text-destructive'
                                                         : diag.severity === 'warning'
-                                                            ? 'text-amber-700'
+                                                            ? 'text-amber-800'
                                                             : 'text-sky-700'
                                                     return (
                                                         <p
@@ -564,7 +564,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     {GRAPH_ATTR_HELP['tool_hooks.pre']}
                                 </p>
                                 {toolHookPreWarning && (
-                                    <p data-testid="graph-attr-warning-tool_hooks.pre" className="text-[11px] text-amber-700">
+                                    <p data-testid="graph-attr-warning-tool_hooks.pre" className="text-[11px] text-amber-800">
                                         {toolHookPreWarning}
                                     </p>
                                 )}
@@ -584,7 +584,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                     {GRAPH_ATTR_HELP['tool_hooks.post']}
                                 </p>
                                 {toolHookPostWarning && (
-                                    <p data-testid="graph-attr-warning-tool_hooks.post" className="text-[11px] text-amber-700">
+                                    <p data-testid="graph-attr-warning-tool_hooks.post" className="text-[11px] text-amber-800">
                                         {toolHookPostWarning}
                                     </p>
                                 )}

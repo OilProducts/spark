@@ -108,7 +108,7 @@ export function ExecutionControls() {
             {humanGate && (
                 <div
                     data-testid="execution-pending-human-gate-banner"
-                    className="inline-flex items-center rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-700"
+                    className="inline-flex items-center rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-800"
                 >
                     Pending human gate: {humanGate.prompt || humanGate.nodeId}
                 </div>

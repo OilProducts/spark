@@ -237,7 +237,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                             hasDiagnosticError
                                 ? 'bg-destructive/15 text-destructive'
                                 : hasDiagnosticWarning
-                                    ? 'bg-amber-500/15 text-amber-700'
+                                    ? 'bg-amber-500/15 text-amber-800'
                                     : 'bg-sky-500/15 text-sky-700'
                         }`}
                         title={diagnosticsForNode.map((diag) => diag.message).join('\n')}
@@ -247,7 +247,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                 )}
             </div>
             {isWaiting && (
-                <div className="absolute left-2 top-2 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                <div className="absolute left-2 top-2 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
                     Needs Input
                 </div>
             )}
@@ -511,7 +511,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                                         placeholder="e.g. ./hooks/pre.sh"
                                                     />
                                                     {draftToolHooksPreWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool_hooks.pre" className="text-[11px] text-amber-700">
+                                                        <p data-testid="node-toolbar-attr-warning-tool_hooks.pre" className="text-[11px] text-amber-800">
                                                             {draftToolHooksPreWarning}
                                                         </p>
                                                     )}
@@ -526,7 +526,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                                         placeholder="e.g. ./hooks/post.sh"
                                                     />
                                                     {draftToolHooksPostWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool_hooks.post" className="text-[11px] text-amber-700">
+                                                        <p data-testid="node-toolbar-attr-warning-tool_hooks.post" className="text-[11px] text-amber-800">
                                                             {draftToolHooksPostWarning}
                                                         </p>
                                                     )}
@@ -653,7 +653,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                     className="nodrag nopan"
                 >
                     <div className="mt-2 w-72 rounded-md border border-amber-200 bg-amber-50 p-3 shadow-lg">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">
                             Human Input Required
                         </div>
                         <div className="mt-2 text-sm text-foreground">

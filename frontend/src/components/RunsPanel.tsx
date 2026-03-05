@@ -189,7 +189,7 @@ const TIMELINE_SEVERITY_LABELS: Record<TimelineSeverity, string> = {
 
 const TIMELINE_SEVERITY_STYLES: Record<TimelineSeverity, string> = {
     info: 'border-border/80 bg-background text-muted-foreground',
-    warning: 'border-amber-500/40 bg-amber-500/10 text-amber-700',
+    warning: 'border-amber-500/40 bg-amber-500/10 text-amber-800',
     error: 'border-destructive/40 bg-destructive/10 text-destructive',
 }
 
@@ -630,15 +630,15 @@ const timelineCorrelationDescriptorFromEvent = (
 
 const STATUS_STYLES: Record<string, string> = {
     running: 'bg-sky-500/15 text-sky-700',
-    success: 'bg-green-500/15 text-green-700',
+    success: 'bg-green-500/15 text-green-800',
     failed: 'bg-destructive/15 text-destructive',
     fail: 'bg-destructive/15 text-destructive',
-    aborted: 'bg-amber-500/15 text-amber-700',
-    canceled: 'bg-amber-500/15 text-amber-700',
-    paused: 'bg-amber-500/15 text-amber-700',
-    pause_requested: 'bg-amber-500/15 text-amber-700',
-    abort_requested: 'bg-amber-500/15 text-amber-700',
-    cancel_requested: 'bg-amber-500/15 text-amber-700',
+    aborted: 'bg-amber-500/15 text-amber-800',
+    canceled: 'bg-amber-500/15 text-amber-800',
+    paused: 'bg-amber-500/15 text-amber-800',
+    pause_requested: 'bg-amber-500/15 text-amber-800',
+    abort_requested: 'bg-amber-500/15 text-amber-800',
+    cancel_requested: 'bg-amber-500/15 text-amber-800',
     validation_error: 'bg-destructive/15 text-destructive',
 }
 
@@ -993,9 +993,9 @@ export function RunsPanel() {
                     : 'Never'
     const metadataFreshnessStyle =
         metadataFreshness === 'stale'
-            ? 'border-amber-500/40 bg-amber-500/10 text-amber-700'
+            ? 'border-amber-500/40 bg-amber-500/10 text-amber-800'
             : metadataFreshness === 'fresh'
-                ? 'border-green-500/40 bg-green-500/10 text-green-700'
+                ? 'border-green-500/40 bg-green-500/10 text-green-800'
                 : 'border-border bg-muted text-muted-foreground'
 
     const fetchCheckpoint = useCallback(async () => {
@@ -1710,7 +1710,7 @@ export function RunsPanel() {
                     </span>
                 </div>
                 {metadataFreshness === 'stale' && (
-                    <div data-testid="run-metadata-stale-indicator" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                    <div data-testid="run-metadata-stale-indicator" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800">
                         Run metadata may be stale. Refresh to load the latest run status.
                     </div>
                 )}
@@ -1751,7 +1751,7 @@ export function RunsPanel() {
                 {selectedRunSummary && degradedDetailPanels.length > 0 && (
                     <div
                         data-testid="run-partial-api-failure-banner"
-                        className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700"
+                        className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800"
                     >
                         Some run detail endpoints are unavailable. Non-dependent panels remain functional.
                         <span className="ml-1 text-xs">
@@ -1944,7 +1944,7 @@ export function RunsPanel() {
                                 {showPartialRunArtifactNote && (
                                     <div
                                         data-testid="run-artifact-partial-run-note"
-                                        className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
+                                        className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800"
                                     >
                                         <div>This run may be partial or artifacts may have been pruned.</div>
                                         {missingCoreArtifacts.length > 0 && (
@@ -2091,7 +2091,7 @@ export function RunsPanel() {
                         )}
                         {!timelineError && visiblePendingInterviewGates.length > 0 && (
                             <div data-testid="run-pending-human-gates-panel" className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-                                <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">
                                     Pending Human Gates
                                 </div>
                                 {pendingGateActionError && (
@@ -2111,7 +2111,7 @@ export function RunsPanel() {
                                         >
                                             <div
                                                 data-testid="run-pending-human-gate-group-heading"
-                                                className="text-[11px] font-semibold uppercase tracking-wide text-amber-700"
+                                                className="text-[11px] font-semibold uppercase tracking-wide text-amber-800"
                                             >
                                                 {group.heading}
                                             </div>
