@@ -133,7 +133,7 @@ export function ExecutionControls() {
                 onClick={requestCancel}
                 disabled={!canCancel}
                 title={canCancel ? undefined : cancelDisabledReason}
-                className="inline-flex h-8 items-center gap-2 rounded-md bg-destructive px-2 text-xs font-semibold uppercase tracking-wide text-destructive-foreground transition-colors hover:bg-destructive/90 disabled:pointer-events-none disabled:opacity-50"
+                className="inline-flex h-8 items-center gap-2 rounded-md bg-destructive px-2 text-xs font-semibold uppercase tracking-wide text-destructive-foreground transition-colors hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
             >
                 <OctagonX className="h-3.5 w-3.5" />
                 {cancelActionLabel}
@@ -142,7 +142,7 @@ export function ExecutionControls() {
                 data-testid="execution-footer-pause-button"
                 disabled={true}
                 title={UNSUPPORTED_CONTROL_REASON}
-                className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground disabled:pointer-events-none disabled:opacity-50"
+                className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
             >
                 Pause
             </button>
@@ -150,7 +150,7 @@ export function ExecutionControls() {
                 data-testid="execution-footer-resume-button"
                 disabled={true}
                 title={UNSUPPORTED_CONTROL_REASON}
-                className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground disabled:pointer-events-none disabled:opacity-50"
+                className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
             >
                 Resume
             </button>

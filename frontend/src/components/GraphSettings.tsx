@@ -245,8 +245,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
             </div>
             <div className="mt-3 space-y-3">
                 <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground">Model</label>
+                    <label htmlFor="graph-run-model" className="text-xs font-medium text-foreground">
+                        Model
+                    </label>
                     <input
+                        id="graph-run-model"
                         value={model}
                         onChange={(event) => setModel(event.target.value)}
                         className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -254,8 +257,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     />
                 </div>
                 <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground">Working Directory</label>
+                    <label htmlFor="graph-run-working-directory" className="text-xs font-medium text-foreground">
+                        Working Directory
+                    </label>
                     <input
+                        id="graph-run-working-directory"
                         value={workingDir}
                         onChange={(event) => setWorkingDir(event.target.value)}
                         className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -277,8 +283,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                         <p>Leave blank to omit this attr from DOT output.</p>
                     </div>
                     <div className="space-y-1">
-                        <label className="text-xs font-medium text-foreground">Goal</label>
+                        <label htmlFor="graph-attr-goal" className="text-xs font-medium text-foreground">
+                            Goal
+                        </label>
                         <input
+                            id="graph-attr-goal"
                             value={graphAttrs.goal || ''}
                             onChange={(event) => updateGraphAttr('goal', event.target.value)}
                             className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -288,8 +297,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                         </p>
                     </div>
                     <div className="space-y-1">
-                        <label className="text-xs font-medium text-foreground">Label</label>
+                        <label htmlFor="graph-attr-label" className="text-xs font-medium text-foreground">
+                            Label
+                        </label>
                         <input
+                            id="graph-attr-label"
                             value={graphAttrs.label || ''}
                             onChange={(event) => updateGraphAttr('label', event.target.value)}
                             className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -300,8 +312,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default Max Retry</label>
+                            <label htmlFor="graph-attr-default-max-retry" className="text-xs font-medium text-foreground">
+                                Default Max Retry
+                            </label>
                             <input
+                                id="graph-attr-default-max-retry"
                                 value={graphAttrs.default_max_retry ?? ''}
                                 onChange={(event) => updateGraphAttr('default_max_retry', event.target.value)}
                                 type="number"
@@ -320,8 +335,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                             )}
                         </div>
                         <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default Fidelity</label>
+                            <label htmlFor="graph-attr-default-fidelity" className="text-xs font-medium text-foreground">
+                                Default Fidelity
+                            </label>
                             <input
+                                id="graph-attr-default-fidelity"
                                 value={graphAttrs.default_fidelity || ''}
                                 onChange={(event) => updateGraphAttr('default_fidelity', event.target.value)}
                                 list="graph-fidelity-options"
@@ -348,18 +366,22 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                         type="button"
                         data-testid="graph-advanced-toggle"
                         onClick={() => setShowAdvancedGraphAttrs((current) => !current)}
-                        className="h-8 w-full rounded-md border border-border bg-background px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                        className="h-8 w-full rounded-md border border-border bg-background px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                         {showAdvancedGraphAttrs ? 'Hide Advanced Fields' : 'Show Advanced Fields'}
                     </button>
                     {showAdvancedGraphAttrs && (
                         <div className="space-y-3 rounded-md border border-border/80 bg-background/40 p-3">
                             <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Model Stylesheet</label>
+                                <label htmlFor="graph-model-stylesheet" className="text-xs font-medium text-foreground">
+                                    Model Stylesheet
+                                </label>
                                 <div data-testid="graph-model-stylesheet-editor">
                                     <StylesheetEditor
+                                        id="graph-model-stylesheet"
                                         value={graphAttrs.model_stylesheet || ''}
                                         onChange={(value) => updateGraphAttr('model_stylesheet', value)}
+                                        ariaLabel="Model Stylesheet"
                                     />
                                 </div>
                                 <p data-testid="graph-attr-help-model_stylesheet" className="text-[11px] text-muted-foreground">
@@ -468,8 +490,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 </div>
                             </div>
                             <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Retry Target</label>
+                                <label htmlFor="graph-attr-retry-target" className="text-xs font-medium text-foreground">
+                                    Retry Target
+                                </label>
                                 <input
+                                    id="graph-attr-retry-target"
                                     value={graphAttrs.retry_target || ''}
                                     onChange={(event) => updateGraphAttr('retry_target', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -480,8 +505,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 {renderFieldDiagnostics('retry_target', 'graph-field-diagnostics-retry_target')}
                             </div>
                             <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Fallback Retry Target</label>
+                                <label htmlFor="graph-attr-fallback-retry-target" className="text-xs font-medium text-foreground">
+                                    Fallback Retry Target
+                                </label>
                                 <input
+                                    id="graph-attr-fallback-retry-target"
                                     value={graphAttrs.fallback_retry_target || ''}
                                     onChange={(event) => updateGraphAttr('fallback_retry_target', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -492,8 +520,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 {renderFieldDiagnostics('fallback_retry_target', 'graph-field-diagnostics-fallback_retry_target')}
                             </div>
                             <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Stack Child Dotfile</label>
+                                <label htmlFor="graph-attr-stack-child-dotfile" className="text-xs font-medium text-foreground">
+                                    Stack Child Dotfile
+                                </label>
                                 <input
+                                    id="graph-attr-stack-child-dotfile"
                                     value={graphAttrs['stack.child_dotfile'] || ''}
                                     onChange={(event) => updateGraphAttr('stack.child_dotfile', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -504,8 +535,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 </p>
                             </div>
                             <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Stack Child Workdir</label>
+                                <label htmlFor="graph-attr-stack-child-workdir" className="text-xs font-medium text-foreground">
+                                    Stack Child Workdir
+                                </label>
                                 <input
+                                    id="graph-attr-stack-child-workdir"
                                     value={graphAttrs['stack.child_workdir'] || ''}
                                     onChange={(event) => updateGraphAttr('stack.child_workdir', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -516,8 +550,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 </p>
                             </div>
                             <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Tool Hooks Pre</label>
+                                <label htmlFor="graph-attr-tool-hooks-pre" className="text-xs font-medium text-foreground">
+                                    Tool Hooks Pre
+                                </label>
                                 <input
+                                    id="graph-attr-tool-hooks-pre"
                                     data-testid="graph-attr-input-tool_hooks.pre"
                                     value={graphAttrs['tool_hooks.pre'] || ''}
                                     onChange={(event) => updateGraphAttr('tool_hooks.pre', event.target.value)}
@@ -533,8 +570,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 )}
                             </div>
                             <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Tool Hooks Post</label>
+                                <label htmlFor="graph-attr-tool-hooks-post" className="text-xs font-medium text-foreground">
+                                    Tool Hooks Post
+                                </label>
                                 <input
+                                    id="graph-attr-tool-hooks-post"
                                     data-testid="graph-attr-input-tool_hooks.post"
                                     value={graphAttrs['tool_hooks.post'] || ''}
                                     onChange={(event) => updateGraphAttr('tool_hooks.post', event.target.value)}
@@ -567,8 +607,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
             </div>
             <div className="mt-3 space-y-3">
                 <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground">Default LLM Provider</label>
+                    <label htmlFor="graph-default-llm-provider" className="text-xs font-medium text-foreground">
+                        Default LLM Provider
+                    </label>
                     <input
+                        id="graph-default-llm-provider"
                         value={graphAttrs.ui_default_llm_provider || ''}
                         onChange={(event) => updateGraphAttr('ui_default_llm_provider', event.target.value)}
                         list="flow-llm-provider-options"
@@ -582,8 +625,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     </datalist>
                 </div>
                 <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground">Default LLM Model</label>
+                    <label htmlFor="graph-default-llm-model" className="text-xs font-medium text-foreground">
+                        Default LLM Model
+                    </label>
                     <input
+                        id="graph-default-llm-model"
                         value={graphAttrs.ui_default_llm_model || ''}
                         onChange={(event) => updateGraphAttr('ui_default_llm_model', event.target.value)}
                         list="flow-llm-model-options"
@@ -597,8 +643,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     </datalist>
                 </div>
                 <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground">Default Reasoning Effort</label>
+                    <label htmlFor="graph-default-reasoning-effort" className="text-xs font-medium text-foreground">
+                        Default Reasoning Effort
+                    </label>
                     <select
+                        id="graph-default-reasoning-effort"
                         value={graphAttrs.ui_default_reasoning_effort || ''}
                         onChange={(event) => updateGraphAttr('ui_default_reasoning_effort', event.target.value)}
                         className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -614,7 +663,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                         type="button"
                         onClick={applyDefaultsToNodes}
                         disabled={!canApplyDefaults}
-                        className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                        className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
                         title={canApplyDefaults ? 'Apply current flow defaults to every node.' : 'Switch to the editor to apply defaults.'}
                     >
                         Apply To Nodes
@@ -626,7 +675,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                             updateGraphAttr('ui_default_llm_model', uiDefaults.llm_model);
                             updateGraphAttr('ui_default_reasoning_effort', uiDefaults.reasoning_effort);
                         }}
-                        className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                        className="h-8 rounded-md border border-border px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                         Reset From Global
                     </button>
@@ -643,7 +692,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         <div className="absolute right-4 top-4 z-20 flex flex-col items-end">
             <button
                 onClick={() => setIsOpen((open) => !open)}
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background/90 px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground shadow-sm hover:text-foreground"
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background/90 px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground shadow-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
                 Graph Settings
             </button>

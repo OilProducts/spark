@@ -5,6 +5,7 @@ import { Navbar } from '@/components/Navbar'
 import { ProjectsPanel } from '@/components/ProjectsPanel'
 import { RunStream } from '@/components/RunStream'
 import { RunsPanel } from '@/components/RunsPanel'
+import { SettingsPanel } from '@/components/SettingsPanel'
 import { Sidebar } from '@/components/Sidebar'
 import { TaskNode } from '@/components/TaskNode'
 import {
@@ -1152,6 +1153,57 @@ describe('Frontend contract behavior', () => {
     await user.keyboard('{ArrowLeft}')
     expect(editorTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('editor')
+  })
+
+  it('[CID:13.1.02] provides semantic labels and focus-visible states across core interactive controls', () => {
+    renderGraphSettings([], [])
+
+    expect(screen.getByLabelText('Model')).toBeVisible()
+    expect(screen.getByLabelText('Working Directory')).toBeVisible()
+    expect(screen.getByLabelText('Goal')).toBeVisible()
+    expect(screen.getByLabelText('Label')).toBeVisible()
+    expect(screen.getByLabelText('Default Max Retry')).toBeVisible()
+    expect(screen.getByLabelText('Default Fidelity')).toBeVisible()
+
+    const advancedToggle = screen.getByTestId('graph-advanced-toggle')
+    expect(advancedToggle.className).toContain('focus-visible')
+    fireEvent.click(advancedToggle)
+
+    expect(screen.getByLabelText('Model Stylesheet')).toBeVisible()
+    expect(screen.getByLabelText('Retry Target')).toBeVisible()
+    expect(screen.getByLabelText('Fallback Retry Target')).toBeVisible()
+    expect(screen.getByLabelText('Stack Child Dotfile')).toBeVisible()
+    expect(screen.getByLabelText('Stack Child Workdir')).toBeVisible()
+    expect(screen.getByLabelText('Tool Hooks Pre')).toBeVisible()
+    expect(screen.getByLabelText('Tool Hooks Post')).toBeVisible()
+    expect(screen.getByLabelText('Default LLM Provider')).toBeVisible()
+    expect(screen.getByLabelText('Default LLM Model')).toBeVisible()
+    expect(screen.getByLabelText('Default Reasoning Effort')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Apply To Nodes' }).className).toContain('focus-visible')
+    expect(screen.getByRole('button', { name: 'Reset From Global' }).className).toContain('focus-visible')
+
+    cleanup()
+    render(<SettingsPanel />)
+
+    expect(screen.getByLabelText('Default LLM Provider')).toBeVisible()
+    expect(screen.getByLabelText('Default LLM Model')).toBeVisible()
+    expect(screen.getByLabelText('Default Reasoning Effort')).toBeVisible()
+
+    cleanup()
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        viewMode: 'execution',
+        selectedRunId: 'run-focus-audit',
+        runtimeStatus: 'running',
+      }))
+    })
+
+    render(<ExecutionControls />)
+
+    expect(screen.getByTestId('execution-footer-cancel-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('execution-footer-pause-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('execution-footer-resume-button').className).toContain('focus-visible')
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {

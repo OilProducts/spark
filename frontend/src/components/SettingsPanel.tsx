@@ -21,8 +21,11 @@ export function SettingsPanel() {
                     </div>
                     <div className="mt-4 space-y-3">
                         <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default LLM Provider</label>
+                            <label htmlFor="settings-default-llm-provider" className="text-xs font-medium text-foreground">
+                                Default LLM Provider
+                            </label>
                             <input
+                                id="settings-default-llm-provider"
                                 value={uiDefaults.llm_provider}
                                 onChange={(event) => setUiDefault('llm_provider', event.target.value)}
                                 list="settings-llm-provider-options"
@@ -36,8 +39,11 @@ export function SettingsPanel() {
                             </datalist>
                         </div>
                         <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default LLM Model</label>
+                            <label htmlFor="settings-default-llm-model" className="text-xs font-medium text-foreground">
+                                Default LLM Model
+                            </label>
                             <input
+                                id="settings-default-llm-model"
                                 value={uiDefaults.llm_model}
                                 onChange={(event) => setUiDefault('llm_model', event.target.value)}
                                 list="settings-llm-model-options"
@@ -51,8 +57,11 @@ export function SettingsPanel() {
                             </datalist>
                         </div>
                         <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Default Reasoning Effort</label>
+                            <label htmlFor="settings-default-reasoning-effort" className="text-xs font-medium text-foreground">
+                                Default Reasoning Effort
+                            </label>
                             <select
+                                id="settings-default-reasoning-effort"
                                 value={uiDefaults.reasoning_effort}
                                 onChange={(event) => setUiDefault('reasoning_effort', event.target.value)}
                                 className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

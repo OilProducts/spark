@@ -10,6 +10,8 @@ interface TokenSegment {
 interface StylesheetEditorProps {
     value: string
     onChange: (value: string) => void
+    ariaLabel?: string
+    id?: string
 }
 
 const TOKEN_STYLES: Record<TokenType, string> = {
@@ -86,7 +88,7 @@ function highlightLine(line: string): TokenSegment[] {
     return highlightSelectors(line)
 }
 
-export function StylesheetEditor({ value, onChange }: StylesheetEditorProps) {
+export function StylesheetEditor({ value, onChange, ariaLabel, id }: StylesheetEditorProps) {
     const highlightRef = useRef<HTMLPreElement | null>(null)
     const highlightedLines = useMemo(() => value.split('\n').map(highlightLine), [value])
 
@@ -123,10 +125,12 @@ export function StylesheetEditor({ value, onChange }: StylesheetEditorProps) {
                 ))}
             </pre>
             <textarea
+                id={id}
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
                 onScroll={handleScroll}
                 spellCheck={false}
+                aria-label={ariaLabel}
                 className="absolute inset-0 h-full w-full resize-none rounded-md border border-input bg-transparent px-2 py-1 text-xs leading-5 font-mono text-transparent caret-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 style={{ WebkitTextFillColor: 'transparent' }}
             />

@@ -288,7 +288,7 @@ export function Navbar() {
                                 void runPipeline()
                             }}
                             disabled={!canRerunBuildWorkflow}
-                            className="mt-1 rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="mt-1 rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                         >
                             Rerun build workflow
                         </button>
