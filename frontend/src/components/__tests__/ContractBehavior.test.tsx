@@ -1190,7 +1190,7 @@ describe('Frontend contract behavior', () => {
     act(() => {
       useStore.setState((state) => ({
         ...state,
-        viewMode: 'editor',
+        viewMode: 'execution',
         activeProjectPath: '/tmp/project-contract-behavior',
         activeFlow: 'contract-behavior.dot',
         projectScopedWorkspaces: {
@@ -1205,7 +1205,7 @@ describe('Frontend contract behavior', () => {
     })
 
     const user = userEvent.setup()
-    render(<Navbar />)
+    render(<ExecutionControls />)
 
     await user.click(screen.getByTestId('execute-button'))
 
@@ -1339,7 +1339,7 @@ describe('Frontend contract behavior', () => {
 
     expect(screen.getByTestId('quick-switch-new-button').className).toContain('focus-visible')
     expect(screen.getByTestId('quick-switch-new-button')).toHaveTextContent('New')
-    const recentActiveProjectButton = within(screen.getByTestId('recent-projects-list')).getByRole('button', {
+    const recentActiveProjectButton = within(screen.getByTestId('projects-list')).getByRole('button', {
       name: /project-contract-behavior/i,
     })
     expect(recentActiveProjectButton.className).toContain('focus-visible')
@@ -1544,6 +1544,7 @@ describe('Frontend contract behavior', () => {
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
       expect(screen.getByTestId('quick-switch-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
       expect(screen.getByTestId('quick-switch-new-button')).toBeVisible()
+      expect(screen.queryByTestId('home-sidebar-resize-handle')).not.toBeInTheDocument()
 
       cleanup()
       act(() => {
@@ -1573,7 +1574,9 @@ describe('Frontend contract behavior', () => {
 
       expect(screen.getByTestId('top-nav')).toHaveAttribute('data-responsive-layout', 'stacked')
       expect(screen.getByTestId('view-mode-tabs')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('execute-button')).toBeVisible()
+      expect(screen.getByTestId('top-nav-active-project')).toBeVisible()
+      expect(screen.queryByTestId('top-nav-active-flow')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('top-nav-run-context')).not.toBeInTheDocument()
     } finally {
       setViewportWidth(originalViewportWidth)
     }
@@ -1605,6 +1608,7 @@ describe('Frontend contract behavior', () => {
       render(<ProjectsPanel />)
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')
       expect(screen.getByTestId('quick-switch-controls')).toHaveAttribute('data-responsive-layout', 'inline')
+      expect(screen.getByTestId('home-sidebar-resize-handle')).toBeVisible()
 
       cleanup()
       setViewportWidth(760)
@@ -1630,6 +1634,7 @@ describe('Frontend contract behavior', () => {
       render(<ProjectsPanel />)
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
       expect(screen.getByTestId('quick-switch-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.queryByTestId('home-sidebar-resize-handle')).not.toBeInTheDocument()
 
       cleanup()
       setViewportWidth(1280)
@@ -1982,7 +1987,7 @@ describe('Frontend contract behavior', () => {
     expect(throughputNotice).toHaveTextContent(`Showing latest ${maxItems} events`)
   })
 
-  it('[CID:14.0.01] marks the active project in Projects quick-switch lists', () => {
+  it('[CID:14.0.01] marks the active project in the Projects list', () => {
     act(() => {
       resetContractState()
       useStore.setState((state) => ({
@@ -2007,18 +2012,14 @@ describe('Frontend contract behavior', () => {
 
     render(<ProjectsPanel />)
 
-    const favoritesList = screen.getByTestId('favorite-projects-list')
-    const recentsList = screen.getByTestId('recent-projects-list')
-    const favoriteActiveButton = within(favoritesList).getByRole('button', { name: /project-alpha/i })
-    const recentActiveButton = within(recentsList).getByRole('button', { name: /project-alpha/i })
-    const recentInactiveButton = within(recentsList).getByRole('button', { name: /project-beta/i })
+    const projectsList = screen.getByTestId('projects-list')
+    const activeProjectButton = within(projectsList).getByRole('button', { name: /project-alpha/i })
+    const inactiveProjectButton = within(projectsList).getByRole('button', { name: /project-beta/i })
 
-    expect(favoriteActiveButton).toHaveAttribute('aria-current', 'true')
-    expect(recentActiveButton).toHaveAttribute('aria-current', 'true')
-    expect(recentInactiveButton).not.toHaveAttribute('aria-current')
+    expect(activeProjectButton).toHaveAttribute('aria-current', 'true')
+    expect(inactiveProjectButton).not.toHaveAttribute('aria-current')
 
-    expect(within(favoriteActiveButton).getByText('Active')).toBeVisible()
-    expect(within(recentActiveButton).getByText('Active')).toBeVisible()
+    expect(within(activeProjectButton).getByText('Active')).toBeVisible()
   })
 
   it('[CID:14.0.02] enforces unique project directories and Git-repo registration invariants', async () => {
@@ -2129,7 +2130,7 @@ describe('Frontend contract behavior', () => {
     })
 
     await user.click(
-      within(screen.getByTestId('recent-projects-list')).getByRole('button', { name: /non-git-existing/i }),
+      within(screen.getByTestId('projects-list')).getByRole('button', { name: /non-git-existing/i }),
     )
 
     await waitFor(() => {

@@ -1,8 +1,20 @@
-import { useMemo } from 'react'
-import { OctagonX } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { OctagonX, Play } from 'lucide-react'
 import { useStore, type RuntimeStatus } from '@/store'
-import { fetchPipelineCancelValidated } from '@/lib/apiClient'
+import { buildPipelineStartPayload } from '@/lib/pipelineStartPayload'
+import {
+    ApiHttpError,
+    fetchFlowPayloadValidated,
+    fetchPipelineCancelValidated,
+    fetchPipelineStartValidated,
+} from '@/lib/apiClient'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
+
+type WorkflowFailureDiagnostics = {
+    message: string
+    failedAt: string
+    flowSource: string | null
+}
 
 const STATUS_LABELS: Record<string, string> = {
     running: 'Running',
@@ -60,14 +72,41 @@ const TERMINAL_RUNTIME_STATUSES = new Set<RuntimeStatus>([
 
 export function ExecutionControls() {
     const viewMode = useStore((state) => state.viewMode)
+    const activeProjectPath = useStore((state) => state.activeProjectPath)
+    const activeProjectScope = useStore((state) =>
+        state.activeProjectPath ? state.projectScopedWorkspaces[state.activeProjectPath] : null
+    )
+    const activeFlow = useStore((state) => state.activeFlow)
+    const workingDir = useStore((state) => state.workingDir)
+    const model = useStore((state) => state.model)
+    const diagnostics = useStore((state) => state.diagnostics)
+    const hasValidationErrors = useStore((state) => state.hasValidationErrors)
     const runtimeStatus = useStore((state) => state.runtimeStatus)
     const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
     const selectedRunId = useStore((state) => state.selectedRunId)
+    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const humanGate = useStore((state) => state.humanGate)
     const isNarrowViewport = useNarrowViewport()
+    const hasValidationWarnings = diagnostics.some((diag) => diag.severity === 'warning')
+    const showValidationWarningBanner = hasValidationWarnings && !hasValidationErrors
+    const [runStartError, setRunStartError] = useState<string | null>(null)
+    const [lastBuildWorkflowFailure, setLastBuildWorkflowFailure] = useState<WorkflowFailureDiagnostics | null>(null)
+    const [runStartGitPolicyWarning, setRunStartGitPolicyWarning] = useState<string | null>(null)
+    const runInitiationForm = {
+        projectPath: activeProjectPath || '',
+        flowSource: activeFlow || '',
+        workingDirectory: workingDir,
+        backend: 'codex',
+        model: model.trim() || null,
+        specArtifactId: activeProjectScope?.specId || null,
+        planArtifactId: activeProjectScope?.planId || null,
+    }
+    const buildWorkflowLaunchReady = Boolean(activeProjectScope?.planId) && activeProjectScope?.planStatus === 'approved'
+    const canRerunBuildWorkflow =
+        Boolean(activeProjectPath) && Boolean(activeFlow) && !hasValidationErrors && buildWorkflowLaunchReady
 
     const runIsActive = ACTIVE_RUNTIME_STATUSES.has(runtimeStatus)
-    const shouldShowFooter = viewMode === 'execution' && (runIsActive || Boolean(selectedRunId))
+    const shouldShowFooter = viewMode === 'execution'
     const canCancel = runtimeStatus === 'running' && Boolean(selectedRunId)
     const statusLabel = useMemo(
         () => STATUS_LABELS[runtimeStatus] || runtimeStatus,
@@ -81,8 +120,103 @@ export function ExecutionControls() {
     const cancelDisabledReason = !selectedRunId
         ? 'Run id is still loading.'
         : CANCEL_DISABLED_REASONS[runtimeStatus] || transitionHint || DEFAULT_CANCEL_DISABLED_REASON
+    const showRunStatusRow = runIsActive || Boolean(selectedRunId) || Boolean(humanGate)
+    const executeDisabledReason = !activeProjectPath
+        ? 'Select an active project before running.'
+        : !activeFlow
+            ? 'Select an active flow before running.'
+            : hasValidationErrors
+                ? 'Fix validation errors before running.'
+                : showValidationWarningBanner
+                    ? 'Warnings are present. Review diagnostics before running.'
+                    : undefined
 
     if (!shouldShowFooter) return null
+
+    const confirmGitPolicyGate = async () => {
+        try {
+            const metadataRes = await fetch(`/api/projects/metadata?directory=${encodeURIComponent(runInitiationForm.projectPath)}`)
+            if (!metadataRes.ok) {
+                const warning = 'Unable to verify project Git state before run start.'
+                setRunStartGitPolicyWarning(warning)
+                return window.confirm(`${warning} Continue with run start anyway?`)
+            }
+
+            const metadata = (await metadataRes.json()) as { branch?: string | null }
+            const branch = typeof metadata?.branch === 'string' ? metadata.branch.trim() : ''
+            if (branch) {
+                setRunStartGitPolicyWarning(null)
+                return true
+            }
+
+            const warning = 'Project Git policy check failed: active project is not a Git repository.'
+            setRunStartGitPolicyWarning(warning)
+            const allowNonGitRun = window.confirm(`${warning} Continue with run start anyway?`)
+            if (!allowNonGitRun) {
+                return false
+            }
+            return true
+        } catch {
+            const warning = 'Unable to verify project Git state before run start.'
+            setRunStartGitPolicyWarning(warning)
+            return window.confirm(`${warning} Continue with run start anyway?`)
+        }
+    }
+
+    const requestStart = async () => {
+        if (!activeProjectPath || !activeFlow || hasValidationErrors) return
+
+        setRunStartError(null)
+        if (!buildWorkflowLaunchReady) {
+            const launchGateMessage = 'Build workflow launch requires an approved plan state.'
+            setRunStartError(launchGateMessage)
+            setLastBuildWorkflowFailure({
+                message: launchGateMessage,
+                failedAt: new Date().toISOString(),
+                flowSource: runInitiationForm.flowSource || null,
+            })
+            return
+        }
+        try {
+            const gitPolicyGateAllowed = await confirmGitPolicyGate()
+            if (!gitPolicyGateAllowed) {
+                return
+            }
+
+            const flow = await fetchFlowPayloadValidated(runInitiationForm.flowSource)
+            const resolvedWorkingDirectory = runInitiationForm.workingDirectory.trim() || runInitiationForm.projectPath
+            const startPayload = buildPipelineStartPayload(
+                {
+                    ...runInitiationForm,
+                    workingDirectory: resolvedWorkingDirectory,
+                },
+                flow.content
+            )
+            const runData = await fetchPipelineStartValidated(startPayload as Record<string, unknown>)
+            if (runData?.status !== 'started') {
+                const reason = runData?.error || runData?.status || 'Unknown run error'
+                throw new Error(`Run not started: ${reason}`)
+            }
+            if (typeof runData?.pipeline_id === 'string') {
+                setSelectedRunId(runData.pipeline_id)
+            }
+
+            setLastBuildWorkflowFailure(null)
+        } catch (error) {
+            console.error(error)
+            const errorMessage = error instanceof ApiHttpError && error.detail
+                ? error.detail
+                : error instanceof Error
+                    ? error.message
+                    : 'Failed to start pipeline run.'
+            setRunStartError(errorMessage)
+            setLastBuildWorkflowFailure({
+                message: errorMessage,
+                failedAt: new Date().toISOString(),
+                flowSource: runInitiationForm.flowSource || null,
+            })
+        }
+    }
 
     const requestCancel = async () => {
         if (!selectedRunId) {
@@ -106,66 +240,140 @@ export function ExecutionControls() {
         <div
             data-testid="execution-footer-controls"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
-            className={`absolute bottom-4 z-20 flex rounded-md border border-border bg-background/90 shadow-lg ${isNarrowViewport
-                ? 'left-2 right-2 flex-col items-stretch gap-2 px-3 py-3'
-                : 'left-1/2 -translate-x-1/2 items-center gap-3 px-3 py-2'
+            className={`absolute bottom-4 z-20 rounded-md border border-border bg-background/95 shadow-lg backdrop-blur ${isNarrowViewport
+                ? 'left-2 right-2 px-3 py-3'
+                : 'left-1/2 w-[min(92vw,1040px)] -translate-x-1/2 px-4 py-3'
                 }`}
         >
-            {humanGate && (
-                <div
-                    data-testid="execution-pending-human-gate-banner"
-                    className="inline-flex items-center rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-800"
+            <div className={`flex ${isNarrowViewport ? 'flex-col items-stretch gap-2' : 'flex-wrap items-center gap-2'}`}>
+                {showValidationWarningBanner ? (
+                    <p
+                        data-testid="execute-warning-banner"
+                        className="rounded border border-amber-400 bg-amber-50 px-2 py-1 text-[11px] font-medium leading-none text-amber-900"
+                    >
+                        Warnings present; run allowed.
+                    </p>
+                ) : null}
+                {runStartGitPolicyWarning ? (
+                    <p
+                        data-testid="run-start-git-policy-warning-banner"
+                        className="max-w-sm truncate rounded border border-amber-400 bg-amber-50 px-2 py-1 text-[11px] font-medium leading-none text-amber-900"
+                    >
+                        {runStartGitPolicyWarning}
+                    </p>
+                ) : null}
+                {runStartError ? (
+                    <p
+                        data-testid="run-start-error-banner"
+                        className="max-w-sm truncate rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] font-medium leading-none text-destructive"
+                    >
+                        Failed to start run: {runStartError}
+                    </p>
+                ) : null}
+                {lastBuildWorkflowFailure ? (
+                    <div
+                        data-testid="build-workflow-failure-diagnostics"
+                        className="max-w-sm rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+                    >
+                        <p className="font-medium">Last build launch failure</p>
+                        <p data-testid="build-workflow-failure-message" className="truncate">
+                            {lastBuildWorkflowFailure.message}
+                        </p>
+                        <p className="truncate">
+                            Flow source: <span className="font-mono">{lastBuildWorkflowFailure.flowSource || 'none'}</span>
+                        </p>
+                        <p>Failed at: {new Date(lastBuildWorkflowFailure.failedAt).toLocaleString()}</p>
+                        <button
+                            data-testid="build-workflow-rerun-button"
+                            onClick={() => {
+                                void requestStart()
+                            }}
+                            disabled={!canRerunBuildWorkflow}
+                            className="mt-1 rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                            Rerun build workflow
+                        </button>
+                        {!canRerunBuildWorkflow ? (
+                            <p data-testid="build-workflow-rerun-disabled-reason" className="mt-1">
+                                Resolve launch blockers to rerun build.
+                            </p>
+                        ) : null}
+                    </div>
+                ) : null}
+                <button
+                    data-testid="execute-button"
+                    onClick={() => {
+                        void requestStart()
+                    }}
+                    disabled={!activeProjectPath || !activeFlow || hasValidationErrors}
+                    title={executeDisabledReason}
+                    className="inline-flex h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
                 >
-                    Pending human gate: {humanGate.prompt || humanGate.nodeId}
-                </div>
-            )}
-            <span data-testid="execution-footer-run-status" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {statusLabel}
-            </span>
-            <span data-testid="execution-footer-run-identity" className="text-xs font-mono text-muted-foreground">
-                {runIdentityLabel}
-            </span>
-            {terminalStateLabel && (
-                <span data-testid="execution-footer-terminal-state" className="text-xs font-medium text-muted-foreground">
-                    {terminalStateLabel}
-                </span>
-            )}
-            <div className={isNarrowViewport ? 'h-px w-full bg-border' : 'h-4 w-px bg-border'} />
-            {transitionHint && (
-                <span className="text-xs text-muted-foreground">{transitionHint}</span>
-            )}
-            <button
-                data-testid="execution-footer-cancel-button"
-                onClick={requestCancel}
-                disabled={!canCancel}
-                title={canCancel ? undefined : cancelDisabledReason}
-                className="inline-flex h-8 items-center gap-2 rounded-md bg-destructive px-2 text-xs font-semibold uppercase tracking-wide text-destructive-foreground transition-colors hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-            >
-                <OctagonX className="h-3.5 w-3.5" />
-                {cancelActionLabel}
-            </button>
-            <button
-                data-testid="execution-footer-pause-button"
-                disabled={true}
-                title={UNSUPPORTED_CONTROL_REASON}
-                className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-            >
-                Pause
-            </button>
-            <button
-                data-testid="execution-footer-resume-button"
-                disabled={true}
-                title={UNSUPPORTED_CONTROL_REASON}
-                className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-            >
-                Resume
-            </button>
-            <span
-                data-testid="execution-footer-unsupported-controls-reason"
-                className={`text-xs text-muted-foreground ${isNarrowViewport ? 'max-w-none' : 'max-w-xs'}`}
-            >
-                {UNSUPPORTED_CONTROL_REASON}
-            </span>
+                    <Play className="h-4 w-4" />
+                    Execute
+                </button>
+            </div>
+            {showRunStatusRow ? (
+                <>
+                    <div className="my-3 h-px bg-border" />
+                    <div className={`flex ${isNarrowViewport ? 'flex-col items-stretch gap-2' : 'flex-wrap items-center gap-3'}`}>
+                        {humanGate && (
+                            <div
+                                data-testid="execution-pending-human-gate-banner"
+                                className="inline-flex items-center rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-800"
+                            >
+                                Pending human gate: {humanGate.prompt || humanGate.nodeId}
+                            </div>
+                        )}
+                        <span data-testid="execution-footer-run-status" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                            {statusLabel}
+                        </span>
+                        <span data-testid="execution-footer-run-identity" className="text-xs font-mono text-muted-foreground">
+                            {runIdentityLabel}
+                        </span>
+                        {terminalStateLabel && (
+                            <span data-testid="execution-footer-terminal-state" className="text-xs font-medium text-muted-foreground">
+                                {terminalStateLabel}
+                            </span>
+                        )}
+                        {transitionHint && (
+                            <span className="text-xs text-muted-foreground">{transitionHint}</span>
+                        )}
+                        <button
+                            data-testid="execution-footer-cancel-button"
+                            onClick={requestCancel}
+                            disabled={!canCancel}
+                            title={canCancel ? undefined : cancelDisabledReason}
+                            className="inline-flex h-8 items-center gap-2 rounded-md bg-destructive px-2 text-xs font-semibold uppercase tracking-wide text-destructive-foreground transition-colors hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                        >
+                            <OctagonX className="h-3.5 w-3.5" />
+                            {cancelActionLabel}
+                        </button>
+                        <button
+                            data-testid="execution-footer-pause-button"
+                            disabled={true}
+                            title={UNSUPPORTED_CONTROL_REASON}
+                            className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                        >
+                            Pause
+                        </button>
+                        <button
+                            data-testid="execution-footer-resume-button"
+                            disabled={true}
+                            title={UNSUPPORTED_CONTROL_REASON}
+                            className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                        >
+                            Resume
+                        </button>
+                        <span
+                            data-testid="execution-footer-unsupported-controls-reason"
+                            className={`text-xs text-muted-foreground ${isNarrowViewport ? 'max-w-none' : 'max-w-xs'}`}
+                        >
+                            {UNSUPPORTED_CONTROL_REASON}
+                        </span>
+                    </div>
+                </>
+            ) : null}
         </div>
     )
 }

@@ -83,8 +83,8 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('top-nav')).toBeVisible()
     expect(screen.getByTestId('projects-panel')).toBeVisible()
     expect(screen.getByTestId('top-nav-active-project')).toHaveTextContent('No active project')
-    expect(screen.getByTestId('top-nav-active-flow')).toHaveTextContent('No active flow')
-    expect(screen.getByTestId('top-nav-run-context')).toHaveTextContent('idle')
+    expect(screen.queryByTestId('top-nav-active-flow')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('top-nav-run-context')).not.toBeInTheDocument()
 
     await user.click(screen.getByTestId('nav-mode-settings'))
     expect(useStore.getState().viewMode).toBe('settings')

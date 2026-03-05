@@ -2,13 +2,14 @@ import type { ReactNode } from "react"
 
 interface HomeProjectSidebarProps {
     children: ReactNode
+    className?: string
 }
 
-export function HomeProjectSidebar({ children }: HomeProjectSidebarProps) {
+export function HomeProjectSidebar({ children, className = "" }: HomeProjectSidebarProps) {
     return (
         <aside
             data-testid="home-project-sidebar"
-            className="flex flex-col gap-4 lg:sticky lg:top-4 lg:max-h-[calc(100vh-7.5rem)] lg:self-start"
+            className={`flex min-h-0 flex-col ${className}`.trim()}
         >
             {children}
         </aside>

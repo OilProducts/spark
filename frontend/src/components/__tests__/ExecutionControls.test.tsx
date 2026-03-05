@@ -79,6 +79,38 @@ describe('Execution controls behavior', () => {
     expect(screen.queryByTestId('execution-footer-controls')).not.toBeInTheDocument()
   })
 
+  it('shows launch controls in execution mode before a run starts', () => {
+    useStore.setState((state) => ({
+      ...state,
+      viewMode: 'execution',
+      activeProjectPath: '/tmp/project',
+      activeFlow: 'implement-spec.dot',
+      projectScopedWorkspaces: {
+        '/tmp/project': {
+          activeFlow: 'implement-spec.dot',
+          selectedRunId: null,
+          workingDir: '/tmp/project',
+          conversationId: null,
+          conversationHistory: [],
+          projectEventLog: [],
+          specId: 'spec-123',
+          specStatus: 'approved',
+          specProvenance: null,
+          planId: 'plan-456',
+          planStatus: 'approved',
+          planProvenance: null,
+          artifactRunId: null,
+        },
+      },
+    }))
+
+    render(<ExecutionControls />)
+
+    expect(screen.getByTestId('execution-footer-controls')).toBeVisible()
+    expect(screen.getByTestId('execute-button')).toBeVisible()
+    expect(screen.queryByTestId('execution-footer-run-status')).not.toBeInTheDocument()
+  })
+
   it('renders runtime state and disables unsupported pause/resume controls', () => {
     useStore.setState((state) => ({
       ...state,
