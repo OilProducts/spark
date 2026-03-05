@@ -467,14 +467,26 @@ export function ProjectsPanel() {
                                 ) : (
                                     favoriteProjects.map((project) => {
                                         const projectPath = project.directoryPath
+                                        const isActive = projectPath === activeProjectPath
                                         return (
                                             <li key={`favorite-${projectPath}`}>
                                                 <button
                                                     type="button"
                                                     onClick={() => setActiveProjectPath(projectPath)}
-                                                    className="w-full rounded border border-border px-3 py-2 text-left text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                    aria-current={isActive ? "true" : undefined}
+                                                    className={`w-full rounded border px-3 py-2 text-left text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${isActive
+                                                        ? "border-primary/60 bg-primary/10 text-foreground"
+                                                        : "border-border hover:bg-muted"
+                                                        }`}
                                                 >
-                                                    {projectPath}
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <span className="truncate">{projectPath}</span>
+                                                        {isActive ? (
+                                                            <span className="rounded bg-primary/20 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                                                                Active
+                                                            </span>
+                                                        ) : null}
+                                                    </div>
                                                 </button>
                                             </li>
                                         )
@@ -492,14 +504,26 @@ export function ProjectsPanel() {
                                 ) : (
                                     recentProjects.map((project) => {
                                         const projectPath = project.directoryPath
+                                        const isActive = projectPath === activeProjectPath
                                         return (
                                             <li key={`recent-${projectPath}`}>
                                                 <button
                                                     type="button"
                                                     onClick={() => setActiveProjectPath(projectPath)}
-                                                    className="w-full rounded border border-border px-3 py-2 text-left text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                    aria-current={isActive ? "true" : undefined}
+                                                    className={`w-full rounded border px-3 py-2 text-left text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${isActive
+                                                        ? "border-primary/60 bg-primary/10 text-foreground"
+                                                        : "border-border hover:bg-muted"
+                                                        }`}
                                                 >
-                                                    {projectPath}
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <span className="truncate">{projectPath}</span>
+                                                        {isActive ? (
+                                                            <span className="rounded bg-primary/20 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                                                                Active
+                                                            </span>
+                                                        ) : null}
+                                                    </div>
                                                 </button>
                                             </li>
                                         )

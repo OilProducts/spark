@@ -1839,6 +1839,173 @@ describe('Frontend contract behavior', () => {
     expect(profile).toHaveTextContent('debounced-preview')
   })
 
+  it('[CID:13.3.03] caps timeline entries and surfaces trimming under sustained SSE throughput', async () => {
+    const runId = 'run-timeline-throughput-contract'
+    const runApiPath = `/pipelines/${encodeURIComponent(runId)}`
+    const maxItems = 200
+    const totalEvents = maxItems + 35
+    const runRecord = {
+      run_id: runId,
+      flow_name: 'contract-behavior.dot',
+      status: 'running',
+      result: 'running',
+      working_directory: '/tmp/project-contract-behavior/workspace',
+      project_path: '/tmp/project-contract-behavior',
+      git_branch: 'main',
+      git_commit: 'abc1234',
+      model: 'gpt-5',
+      started_at: '2026-03-05T04:00:00Z',
+      ended_at: null,
+      last_error: '',
+      token_usage: 0,
+    }
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = requestUrl(input)
+        if (url.endsWith('/runs')) {
+          return jsonResponse({ runs: [runRecord] })
+        }
+        if (url.endsWith(`${runApiPath}/checkpoint`)) {
+          return jsonResponse({ pipeline_id: runId, checkpoint: { node_statuses: {} } })
+        }
+        if (url.endsWith(`${runApiPath}/context`)) {
+          return jsonResponse({ pipeline_id: runId, context: {} })
+        }
+        if (url.endsWith(`${runApiPath}/artifacts`)) {
+          return jsonResponse({ pipeline_id: runId, artifacts: [] })
+        }
+        if (url.endsWith(`${runApiPath}/graph`)) {
+          return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
+            status: 200,
+            headers: { 'Content-Type': 'image/svg+xml' },
+          })
+        }
+        if (url.endsWith(`${runApiPath}/questions`)) {
+          return jsonResponse({ pipeline_id: runId, questions: [] })
+        }
+        return jsonResponse({}, { status: 404 })
+      }),
+    )
+
+    let eventSource: MockEventSource | null = null
+    class MockEventSource {
+      url: string
+      withCredentials = false
+      readyState = 1
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      constructor(url: string) {
+        this.url = url
+        if (!url.includes(`${runApiPath}/events`)) {
+          return
+        }
+        eventSource = this
+        setTimeout(() => {
+          this.onopen?.(new Event('open'))
+        }, 0)
+      }
+
+      close() {
+        this.readyState = 2
+      }
+
+      addEventListener() {}
+
+      removeEventListener() {}
+
+      dispatchEvent() {
+        return false
+      }
+    }
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+
+    act(() => {
+      resetContractState()
+      useStore.setState((state) => ({
+        ...state,
+        viewMode: 'runs',
+        selectedRunId: runId,
+        runtimeStatus: 'running',
+      }))
+    })
+
+    render(<RunsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+    })
+    await waitFor(() => {
+      expect(eventSource?.onmessage).toBeTruthy()
+    })
+
+    act(() => {
+      for (let index = 0; index < totalEvents; index += 1) {
+        eventSource?.onmessage?.(new MessageEvent('message', {
+          data: JSON.stringify({
+            type: 'StageStarted',
+            node_id: `stage_${index}`,
+            index,
+          }),
+        }))
+      }
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(maxItems)
+    })
+
+    const timelineRows = screen.getAllByTestId('run-event-timeline-row')
+    expect(timelineRows[0]).toHaveTextContent(`stage_${totalEvents - 1}`)
+
+    const throughputNotice = screen.getByTestId('run-event-timeline-throughput')
+    expect(throughputNotice).toHaveAttribute('data-max-items', String(maxItems))
+    expect(throughputNotice).toHaveAttribute('data-dropped-count', String(totalEvents - maxItems))
+    expect(throughputNotice).toHaveTextContent(`Showing latest ${maxItems} events`)
+  })
+
+  it('[CID:14.0.01] marks the active project in Projects quick-switch lists', () => {
+    act(() => {
+      resetContractState()
+      useStore.setState((state) => ({
+        ...state,
+        viewMode: 'projects',
+        activeProjectPath: '/tmp/project-alpha',
+        projectRegistry: {
+          '/tmp/project-alpha': {
+            directoryPath: '/tmp/project-alpha',
+            isFavorite: true,
+            lastAccessedAt: '2026-03-05T00:00:00Z',
+          },
+          '/tmp/project-beta': {
+            directoryPath: '/tmp/project-beta',
+            isFavorite: false,
+            lastAccessedAt: '2026-03-05T00:00:00Z',
+          },
+        },
+        recentProjectPaths: ['/tmp/project-alpha', '/tmp/project-beta'],
+      }))
+    })
+
+    render(<ProjectsPanel />)
+
+    const favoritesList = screen.getByTestId('favorite-projects-list')
+    const recentsList = screen.getByTestId('recent-projects-list')
+    const favoriteActiveButton = within(favoritesList).getByRole('button', { name: /project-alpha/i })
+    const recentActiveButton = within(recentsList).getByRole('button', { name: /project-alpha/i })
+    const recentInactiveButton = within(recentsList).getByRole('button', { name: /project-beta/i })
+
+    expect(favoriteActiveButton).toHaveAttribute('aria-current', 'true')
+    expect(recentActiveButton).toHaveAttribute('aria-current', 'true')
+    expect(recentInactiveButton).not.toHaveAttribute('aria-current')
+
+    expect(within(favoriteActiveButton).getByText('Active')).toBeVisible()
+    expect(within(recentActiveButton).getByText('Active')).toBeVisible()
+  })
+
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
     renderSelectedEdgeSidebar()
     const edgeForm = await screen.findByTestId('edge-structured-form')
