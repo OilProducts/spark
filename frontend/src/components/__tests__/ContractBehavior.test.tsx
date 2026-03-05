@@ -1562,6 +1562,92 @@ describe('Frontend contract behavior', () => {
     }
   })
 
+  it('[CID:13.2.03] preserves expected desktop and narrow breakpoint layouts for core navigation and operations', () => {
+    const originalViewportWidth = window.innerWidth
+    try {
+      setViewportWidth(1280)
+      act(() => {
+        resetContractState()
+        useStore.setState((state) => ({
+          ...state,
+          viewMode: 'projects',
+        }))
+      })
+      render(<Navbar />)
+      expect(screen.getByTestId('top-nav')).toHaveAttribute('data-responsive-layout', 'inline')
+      expect(screen.getByTestId('view-mode-tabs')).toHaveAttribute('data-responsive-layout', 'inline')
+
+      cleanup()
+      act(() => {
+        resetContractState()
+        useStore.setState((state) => ({
+          ...state,
+          viewMode: 'projects',
+        }))
+      })
+      render(<ProjectsPanel />)
+      expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')
+      expect(screen.getByTestId('project-register-controls')).toHaveAttribute('data-responsive-layout', 'inline')
+      expect(screen.getAllByTestId('project-row-actions')[0]).toHaveAttribute('data-responsive-layout', 'inline')
+
+      cleanup()
+      setViewportWidth(760)
+      act(() => {
+        resetContractState()
+        useStore.setState((state) => ({
+          ...state,
+          viewMode: 'projects',
+        }))
+      })
+      render(<Navbar />)
+      expect(screen.getByTestId('top-nav')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('view-mode-tabs')).toHaveAttribute('data-responsive-layout', 'stacked')
+
+      cleanup()
+      act(() => {
+        resetContractState()
+        useStore.setState((state) => ({
+          ...state,
+          viewMode: 'projects',
+        }))
+      })
+      render(<ProjectsPanel />)
+      expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('project-register-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getAllByTestId('project-row-actions')[0]).toHaveAttribute('data-responsive-layout', 'stacked')
+
+      cleanup()
+      setViewportWidth(1280)
+      act(() => {
+        resetContractState()
+        useStore.setState((state) => ({
+          ...state,
+          viewMode: 'execution',
+          selectedRunId: 'run-viewport-regression-desktop',
+          runtimeStatus: 'running',
+        }))
+      })
+      render(<ExecutionControls />)
+      expect(screen.getByTestId('execution-footer-controls')).toHaveAttribute('data-responsive-layout', 'inline')
+
+      cleanup()
+      setViewportWidth(760)
+      act(() => {
+        resetContractState()
+        useStore.setState((state) => ({
+          ...state,
+          viewMode: 'execution',
+          selectedRunId: 'run-viewport-regression-mobile',
+          runtimeStatus: 'running',
+        }))
+      })
+      render(<ExecutionControls />)
+      expect(screen.getByTestId('execution-footer-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
+    } finally {
+      setViewportWidth(originalViewportWidth)
+    }
+  })
+
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
     renderSelectedEdgeSidebar()
     const edgeForm = await screen.findByTestId('edge-structured-form')

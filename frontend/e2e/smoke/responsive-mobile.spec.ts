@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
 
 const MOBILE_PROJECT_PATH = '/tmp/ui-smoke-mobile-project'
@@ -10,11 +10,7 @@ const MOBILE_FLOW_DOT = `digraph G {
   start -> task
 }`
 
-test.beforeAll(() => {
-  ensureScreenshotDir()
-})
-
-test('mobile and narrow viewport usability is preserved for core project and operational tasks', async ({ page }) => {
+const seedRouteState = async (page: Page) => {
   await page.addInitScript(
     ({ projectPath, flowName, runId }) => {
       window.localStorage.setItem(
@@ -43,7 +39,9 @@ test('mobile and narrow viewport usability is preserved for core project and ope
       runId: MOBILE_RUN_ID,
     },
   )
+}
 
+const stubResponsiveSmokeApis = async (page: Page) => {
   await page.route('**/*', async (route) => {
     const requestUrl = route.request().url()
     const requestMethod = route.request().method()
@@ -143,6 +141,15 @@ test('mobile and narrow viewport usability is preserved for core project and ope
 
     await route.continue()
   })
+}
+
+test.beforeAll(() => {
+  ensureScreenshotDir()
+})
+
+test('mobile and narrow viewport usability is preserved for core project and operational tasks', async ({ page }) => {
+  await seedRouteState(page)
+  await stubResponsiveSmokeApis(page)
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
@@ -160,4 +167,26 @@ test('mobile and narrow viewport usability is preserved for core project and ope
   await expect(page.getByTestId('execution-footer-cancel-button')).toBeVisible()
   await expect(page.getByTestId('execution-footer-unsupported-controls-reason')).toBeVisible()
   await page.screenshot({ path: screenshotPath('13b-mobile-execution-controls.png'), fullPage: true })
+})
+
+test('viewport regression baselines capture desktop shell layouts for projects and execution surfaces', async ({ page }) => {
+  await seedRouteState(page)
+  await stubResponsiveSmokeApis(page)
+
+  await page.setViewportSize({ width: 1366, height: 900 })
+  await page.goto('/')
+
+  await expect(page.getByTestId('top-nav')).toHaveAttribute('data-responsive-layout', 'inline')
+  await expect(page.getByTestId('view-mode-tabs')).toHaveAttribute('data-responsive-layout', 'inline')
+  await expect(page.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')
+  await expect(page.getByTestId('project-register-controls')).toHaveAttribute('data-responsive-layout', 'inline')
+  await expect(page.getByTestId('project-register-button')).toBeVisible()
+  await expect(page.getByTestId('favorite-toggle-button')).toBeVisible()
+  await page.screenshot({ path: screenshotPath('13c-desktop-projects-operations.png'), fullPage: true })
+
+  await page.getByTestId('nav-mode-execution').click()
+  await expect(page.getByTestId('execution-footer-controls')).toHaveAttribute('data-responsive-layout', 'inline')
+  await expect(page.getByTestId('execution-footer-cancel-button')).toBeVisible()
+  await expect(page.getByTestId('execution-footer-unsupported-controls-reason')).toBeVisible()
+  await page.screenshot({ path: screenshotPath('13d-desktop-execution-controls.png'), fullPage: true })
 })
