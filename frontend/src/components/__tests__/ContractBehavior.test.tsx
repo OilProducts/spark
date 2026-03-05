@@ -1509,6 +1509,45 @@ describe('Frontend contract behavior', () => {
     }
   })
 
+  it('[CID:13.2.02] keeps core project and operational tasks usable in narrow viewport layouts', () => {
+    const originalViewportWidth = window.innerWidth
+    setViewportWidth(760)
+    try {
+      act(() => {
+        useStore.setState((state) => ({
+          ...state,
+          viewMode: 'projects',
+          activeProjectPath: '/tmp/project-contract-behavior',
+        }))
+      })
+      render(<ProjectsPanel />)
+
+      expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('project-register-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getAllByTestId('project-row-actions')[0]).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('project-register-button')).toBeVisible()
+      expect(screen.getByTestId('favorite-toggle-button')).toBeVisible()
+
+      cleanup()
+      act(() => {
+        resetContractState()
+        useStore.setState((state) => ({
+          ...state,
+          viewMode: 'execution',
+          selectedRunId: 'run-mobile-ops',
+          runtimeStatus: 'running',
+        }))
+      })
+      render(<ExecutionControls />)
+
+      expect(screen.getByTestId('execution-footer-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('execution-footer-cancel-button')).toBeVisible()
+      expect(screen.getByTestId('execution-footer-unsupported-controls-reason')).toBeVisible()
+    } finally {
+      setViewportWidth(originalViewportWidth)
+    }
+  })
+
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
     renderSelectedEdgeSidebar()
     const edgeForm = await screen.findByTestId('edge-structured-form')

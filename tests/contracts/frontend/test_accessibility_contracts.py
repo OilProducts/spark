@@ -15,3 +15,7 @@ def test_diagnostic_status_color_contrast_meets_accessibility_thresholds_item_13
 
 def test_responsive_layout_behavior_for_inspector_timeline_and_diagnostics_item_13_2_01() -> None:
     assert_frontend_behavior_contract_passed("13.2.01")
+
+
+def test_mobile_narrow_viewport_usability_for_project_and_operational_tasks_item_13_2_02() -> None:
+    assert_frontend_behavior_contract_passed("13.2.02")

@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { OctagonX } from 'lucide-react'
 import { useStore, type RuntimeStatus } from '@/store'
 import { fetchPipelineCancelValidated } from '@/lib/apiClient'
+import { useNarrowViewport } from '@/lib/useNarrowViewport'
 
 const STATUS_LABELS: Record<string, string> = {
     running: 'Running',
@@ -63,6 +64,7 @@ export function ExecutionControls() {
     const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
     const selectedRunId = useStore((state) => state.selectedRunId)
     const humanGate = useStore((state) => state.humanGate)
+    const isNarrowViewport = useNarrowViewport()
 
     const runIsActive = ACTIVE_RUNTIME_STATUSES.has(runtimeStatus)
     const shouldShowFooter = viewMode === 'execution' && (runIsActive || Boolean(selectedRunId))
@@ -103,7 +105,11 @@ export function ExecutionControls() {
     return (
         <div
             data-testid="execution-footer-controls"
-            className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-3 rounded-md border border-border bg-background/90 px-3 py-2 shadow-lg"
+            data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
+            className={`absolute bottom-4 z-20 flex rounded-md border border-border bg-background/90 shadow-lg ${isNarrowViewport
+                ? 'left-2 right-2 flex-col items-stretch gap-2 px-3 py-3'
+                : 'left-1/2 -translate-x-1/2 items-center gap-3 px-3 py-2'
+                }`}
         >
             {humanGate && (
                 <div
@@ -124,7 +130,7 @@ export function ExecutionControls() {
                     {terminalStateLabel}
                 </span>
             )}
-            <div className="h-4 w-px bg-border" />
+            <div className={isNarrowViewport ? 'h-px w-full bg-border' : 'h-4 w-px bg-border'} />
             {transitionHint && (
                 <span className="text-xs text-muted-foreground">{transitionHint}</span>
             )}
@@ -156,7 +162,7 @@ export function ExecutionControls() {
             </button>
             <span
                 data-testid="execution-footer-unsupported-controls-reason"
-                className="max-w-xs text-xs text-muted-foreground"
+                className={`text-xs text-muted-foreground ${isNarrowViewport ? 'max-w-none' : 'max-w-xs'}`}
             >
                 {UNSUPPORTED_CONTROL_REASON}
             </span>

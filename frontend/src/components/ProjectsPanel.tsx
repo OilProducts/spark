@@ -2,6 +2,7 @@ import { type ConversationHistoryEntry, type PlanStatus, useStore } from "@/stor
 import { type FormEvent, useEffect, useState } from "react"
 import { buildPipelineStartPayload } from "@/lib/pipelineStartPayload"
 import { ApiHttpError, fetchFlowPayloadValidated, fetchPipelineStartValidated, fetchPipelineStatusValidated } from '@/lib/apiClient'
+import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import {
     clearProjectSpecEditProposal,
     getProjectSpecEditProposal,
@@ -93,6 +94,7 @@ export function ProjectsPanel() {
     const [planGenerationError, setPlanGenerationError] = useState<string | null>(null)
     const [planGenerationStatusDegraded, setPlanGenerationStatusDegraded] = useState<string | null>(null)
     const [lastPlanGenerationFailure, setLastPlanGenerationFailure] = useState<WorkflowFailureDiagnostics | null>(null)
+    const isNarrowViewport = useNarrowViewport()
     const activeProjectScope = activeProjectPath ? projectScopedWorkspaces[activeProjectPath] : null
     const activeProjectGitMetadata = activeProjectPath
         ? projectGitMetadata[activeProjectPath] || EMPTY_PROJECT_GIT_METADATA
@@ -434,7 +436,11 @@ export function ProjectsPanel() {
     }
 
     return (
-        <section data-testid="projects-panel" className="flex-1 overflow-auto p-6">
+        <section
+            data-testid="projects-panel"
+            data-responsive-layout={isNarrowViewport ? "stacked" : "split"}
+            className={`flex-1 overflow-auto ${isNarrowViewport ? "p-3" : "p-6"}`}
+        >
             <div className="mx-auto w-full max-w-3xl space-y-6">
                 <div className="space-y-1">
                     <h2 className="text-lg font-semibold">Projects</h2>
@@ -834,7 +840,11 @@ export function ProjectsPanel() {
                         <label htmlFor="project-path-input" className="mb-2 block text-xs font-medium text-foreground">
                             Project directory path
                         </label>
-                        <div className="mb-3 flex gap-2">
+                        <div
+                            data-testid="project-register-controls"
+                            data-responsive-layout={isNarrowViewport ? "stacked" : "inline"}
+                            className={`mb-3 ${isNarrowViewport ? "flex flex-col gap-2" : "flex gap-2"}`}
+                        >
                             <input
                                 id="project-path-input"
                                 data-testid="project-path-input"
@@ -911,7 +921,13 @@ export function ProjectsPanel() {
                                                 </div>
                                             </div>
                                         ) : (
-                                            <div className="flex items-center justify-between gap-3">
+                                            <div
+                                                className={
+                                                    isNarrowViewport
+                                                        ? "flex flex-col items-start gap-3"
+                                                        : "flex items-center justify-between gap-3"
+                                                }
+                                            >
                                                 <div className="min-w-0 flex-1 space-y-1">
                                                     {(() => {
                                                         const projectName = project.directoryPath.split('/').filter(Boolean).pop() || project.directoryPath
@@ -936,7 +952,15 @@ export function ProjectsPanel() {
                                                         )
                                                     })()}
                                                 </div>
-                                                <div className="flex items-center gap-2">
+                                                <div
+                                                    data-testid="project-row-actions"
+                                                    data-responsive-layout={isNarrowViewport ? "stacked" : "inline"}
+                                                    className={
+                                                        isNarrowViewport
+                                                            ? "flex w-full flex-col items-stretch gap-2"
+                                                            : "flex items-center gap-2"
+                                                    }
+                                                >
                                                     <button
                                                         data-testid="favorite-toggle-button"
                                                         type="button"
