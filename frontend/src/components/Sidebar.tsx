@@ -11,6 +11,7 @@ import { toExtensionAttrEntries } from "@/lib/extensionAttrs"
 import { retryLastSaveContent, saveFlowContent } from "@/lib/flowPersistence"
 import { fetchFlowListValidated } from '@/lib/apiClient'
 import { resolveSaveRemediation } from "@/lib/saveRemediation"
+import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { InspectorScaffold, InspectorEmptyState } from './InspectorScaffold'
 import { GraphSettings } from './GraphSettings'
 import { AdvancedKeyValueEditor } from './AdvancedKeyValueEditor'
@@ -77,6 +78,7 @@ function resolveInspectorScope({
 
 export function Sidebar() {
     const { viewMode, activeFlow, setActiveFlow, selectedNodeId, selectedEdgeId, setSelectedNodeId, setSelectedEdgeId } = useStore()
+    const isNarrowViewport = useNarrowViewport()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const diagnostics = useStore((state) => state.diagnostics)
     const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)
@@ -430,7 +432,10 @@ export function Sidebar() {
         <nav
             data-testid="inspector-panel"
             data-inspector-active-scope={activeInspectorScope}
-            className="w-72 border-r bg-background flex flex-col shrink-0 overflow-hidden z-40"
+            data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
+            className={`bg-background flex flex-col shrink-0 overflow-hidden z-40 ${
+                isNarrowViewport ? 'w-full max-h-[46vh] border-b' : 'w-72 border-r'
+            }`}
         >
             <div className="px-4 pb-2 pt-4">
                 <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-[0.2em] text-foreground">

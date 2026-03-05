@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { useStore } from '@/store';
+import { useNarrowViewport } from '@/lib/useNarrowViewport';
 
 const severityStyles: Record<string, string> = {
     error: 'bg-destructive/15 text-destructive',
@@ -28,6 +29,7 @@ export function ValidationPanel() {
     const diagnostics = useStore((state) => state.diagnostics);
     const viewMode = useStore((state) => state.viewMode);
     const hasValidationErrors = useStore((state) => state.hasValidationErrors);
+    const isNarrowViewport = useNarrowViewport();
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId);
     const setSelectedEdgeId = useStore((state) => state.setSelectedEdgeId);
     const { getNode, getEdges, setCenter, setNodes, setEdges } = useReactFlow();
@@ -140,7 +142,10 @@ export function ValidationPanel() {
     return (
         <div
             data-testid="validation-panel"
-            className="absolute left-4 bottom-4 z-20 w-80 rounded-md border border-border bg-card/95 p-3 shadow-lg"
+            data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
+            className={`absolute z-20 rounded-md border border-border bg-card/95 p-3 shadow-lg ${
+                isNarrowViewport ? 'bottom-2 left-2 right-2 w-auto' : 'bottom-4 left-4 w-80'
+            }`}
         >
             <div className="flex items-center justify-between">
                 <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Validation</div>

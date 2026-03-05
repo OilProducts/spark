@@ -8,6 +8,7 @@ import { RunsPanel } from '@/components/RunsPanel'
 import { SettingsPanel } from '@/components/SettingsPanel'
 import { Sidebar } from '@/components/Sidebar'
 import { TaskNode } from '@/components/TaskNode'
+import { ValidationPanel } from '@/components/ValidationPanel'
 import {
   ApiHttpError,
   ApiSchemaError,
@@ -269,6 +270,28 @@ const TaskNodeHarness = ({ nodes, edges = [] }: { nodes: Node[]; edges?: Edge[] 
 )
 
 const renderTaskNode = (node: Node) => renderWithFlowProvider(<TaskNodeHarness nodes={[node]} />)
+
+const SidebarValidationHarness = ({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => (
+  <>
+    <div style={{ width: 800, height: 600 }}>
+      <ReactFlow nodes={nodes} edges={edges} fitView />
+    </div>
+    <Sidebar />
+    <ValidationPanel />
+  </>
+)
+
+const renderSidebarWithValidation = (nodes: Node[], edges: Edge[]) =>
+  renderWithFlowProvider(<SidebarValidationHarness nodes={nodes} edges={edges} />)
+
+const setViewportWidth = (width: number) => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: width,
+  })
+  window.dispatchEvent(new Event('resize'))
+}
 
 describe('Frontend contract behavior', () => {
   const renderSelectedEdgeSidebar = () => {
@@ -1367,6 +1390,122 @@ describe('Frontend contract behavior', () => {
       if (sample.ratio < 4.5) {
         throw new Error(`${sample.name} contrast ratio ${sample.ratio.toFixed(2)} is below 4.50`)
       }
+    }
+  })
+
+  it('[CID:13.2.01] applies narrow-viewport responsive layouts for inspector, diagnostics, and run timeline surfaces', async () => {
+    const originalViewportWidth = window.innerWidth
+    setViewportWidth(760)
+    try {
+      act(() => {
+        useStore.getState().setViewMode('editor')
+        useStore.getState().setDiagnostics([
+          {
+            rule_id: 'node_prompt_required',
+            severity: 'warning',
+            message: 'Prompt is recommended for codergen nodes.',
+            node_id: 'task',
+          },
+        ])
+      })
+
+      const nodes: Node[] = [
+        {
+          id: 'task',
+          position: { x: 150, y: 0 },
+          data: {
+            label: 'Task',
+            shape: 'box',
+            prompt: '',
+          },
+        },
+      ]
+      renderSidebarWithValidation(nodes, [])
+
+      expect(screen.getByTestId('inspector-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('validation-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+
+      cleanup()
+      const runId = 'run-responsive-contract'
+      const runApiPath = `/pipelines/${encodeURIComponent(runId)}`
+      const runRecord = {
+        run_id: runId,
+        flow_name: 'contract-behavior.dot',
+        status: 'running',
+        result: 'running',
+        working_directory: '/tmp/project-contract-behavior/workspace',
+        project_path: '/tmp/project-contract-behavior',
+        git_branch: 'main',
+        git_commit: 'abc1234',
+        model: 'gpt-5',
+        started_at: '2026-03-04T01:00:00Z',
+        ended_at: null,
+        last_error: '',
+        token_usage: 0,
+      }
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          const url = requestUrl(input)
+          if (url.endsWith('/runs')) {
+            return jsonResponse({ runs: [runRecord] })
+          }
+          if (url.endsWith(`${runApiPath}/checkpoint`)) {
+            return jsonResponse({ pipeline_id: runId, checkpoint: { node_statuses: {} } })
+          }
+          if (url.endsWith(`${runApiPath}/context`)) {
+            return jsonResponse({ pipeline_id: runId, context: {} })
+          }
+          if (url.endsWith(`${runApiPath}/artifacts`)) {
+            return jsonResponse({ pipeline_id: runId, artifacts: [] })
+          }
+          if (url.endsWith(`${runApiPath}/graph`)) {
+            return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
+              status: 200,
+              headers: { 'Content-Type': 'image/svg+xml' },
+            })
+          }
+          if (url.endsWith(`${runApiPath}/questions`)) {
+            return jsonResponse({ pipeline_id: runId, questions: [] })
+          }
+          return jsonResponse({}, { status: 404 })
+        }),
+      )
+
+      class MockEventSource {
+        url: string
+        withCredentials = false
+        readyState = 1
+        onopen: ((event: Event) => void) | null = null
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: ((event: Event) => void) | null = null
+
+        constructor(url: string) {
+          this.url = url
+        }
+
+        close() {}
+        addEventListener() {}
+        removeEventListener() {}
+        dispatchEvent(): boolean {
+          return false
+        }
+      }
+      vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+
+      act(() => {
+        useStore.getState().setViewMode('runs')
+        useStore.getState().setSelectedRunId(runId)
+      })
+      render(<RunsPanel />)
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      })
+      expect(screen.getByTestId('run-event-timeline-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+    } finally {
+      setViewportWidth(originalViewportWidth)
     }
   })
 

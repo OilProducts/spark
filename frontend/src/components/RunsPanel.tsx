@@ -6,6 +6,7 @@ import {
     formatRunMetadataLastUpdated,
     RUN_METADATA_STALE_AFTER_MS,
 } from '@/lib/runMetadataFreshness'
+import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import {
     ApiHttpError,
     fetchPipelineAnswerValidated,
@@ -849,6 +850,7 @@ const asPendingQuestionSnapshot = (value: unknown): PendingQuestionSnapshot | nu
 }
 
 export function RunsPanel() {
+    const isNarrowViewport = useNarrowViewport()
     const viewMode = useStore((state) => state.viewMode)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const selectedRunId = useStore((state) => state.selectedRunId)
@@ -1680,7 +1682,7 @@ export function RunsPanel() {
     }
 
     return (
-        <div data-testid="runs-panel" className="flex-1 overflow-auto p-6">
+        <div data-testid="runs-panel" className={`flex-1 overflow-auto ${isNarrowViewport ? 'p-3' : 'p-6'}`}>
             <div className="mx-auto w-full max-w-6xl space-y-6">
                 <div className="flex items-center justify-between">
                     <div className="space-y-1">
@@ -2071,7 +2073,11 @@ export function RunsPanel() {
                     </div>
                 )}
                 {selectedRunSummary && (
-                    <div data-testid="run-event-timeline-panel" className="rounded-md border border-border bg-card p-4 shadow-sm">
+                    <div
+                        data-testid="run-event-timeline-panel"
+                        data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
+                        className={`rounded-md border border-border bg-card shadow-sm ${isNarrowViewport ? 'p-3' : 'p-4'}`}
+                    >
                         <div className="mb-3 flex items-center justify-between gap-3">
                             <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Event Timeline</h3>
                             <span
@@ -2208,7 +2214,7 @@ export function RunsPanel() {
                             </div>
                         )}
                         {!timelineError && (
-                            <div className="mb-3 grid gap-2 md:grid-cols-2">
+                            <div className={`mb-3 grid gap-2 ${isNarrowViewport ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
                                 <label className="space-y-1 text-xs text-muted-foreground">
                                     <span>Event Type</span>
                                     <select

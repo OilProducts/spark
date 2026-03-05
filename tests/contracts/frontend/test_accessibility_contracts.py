@@ -11,3 +11,7 @@ def test_focus_visible_and_semantic_label_audit_across_interactive_controls_item
 
 def test_diagnostic_status_color_contrast_meets_accessibility_thresholds_item_13_1_03() -> None:
     assert_frontend_behavior_contract_passed("13.1.03")
+
+
+def test_responsive_layout_behavior_for_inspector_timeline_and_diagnostics_item_13_2_01() -> None:
+    assert_frontend_behavior_contract_passed("13.2.01")
