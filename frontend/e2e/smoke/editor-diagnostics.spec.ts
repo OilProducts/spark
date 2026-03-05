@@ -1,82 +1,103 @@
 import { expect, test } from '@playwright/test'
-import { cloneFlowForSmokeTest, deleteFlowAfterSmoke, ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
+import {
+  cleanupSmokeFlowsForPage,
+  cloneFlowForSmokeTest,
+  deleteFlowAfterSmoke,
+  ensureScreenshotDir,
+  screenshotPath,
+  stubProjectMetadata,
+} from '../fixtures/smoke-helpers'
 
 test.beforeAll(() => {
   ensureScreenshotDir()
 })
 
+test.beforeEach(async ({ page }) => {
+  await stubProjectMetadata(page)
+})
+
+test.afterEach(async ({ page }) => {
+  await cleanupSmokeFlowsForPage(page)
+})
+
 test("primary UI shells render and can be navigated", async ({ page }) => {
-  await page.goto("/")
+  const flowName = await cloneFlowForSmokeTest(page, "ui-smoke-shell")
 
-  await expect(page.getByTestId("top-nav")).toBeVisible()
-  await expect(page.getByTestId("nav-mode-projects")).toBeVisible()
-  await expect(page.getByTestId("nav-mode-editor")).toBeVisible()
-  await expect(page.getByTestId("nav-mode-settings")).toBeVisible()
-  await expect(page.getByTestId("nav-mode-runs")).toBeVisible()
-  await expect(page.getByTestId("projects-panel")).toBeVisible()
-  await expect(page.getByTestId("canvas-workspace-primary")).toHaveCount(0)
-  await page.screenshot({ path: screenshotPath("01-projects-shell.png"), fullPage: true })
+  try {
+    await page.goto("/")
 
-  await page.getByTestId("project-path-input").fill("/tmp/ui-smoke-project")
-  await page.getByTestId("project-register-button").click()
-  await expect(page.getByTestId("project-registry-list").getByText("/tmp/ui-smoke-project")).toBeVisible()
-  await expect(page.getByTestId("project-metadata-name")).toBeVisible()
-  await expect(page.getByTestId("project-metadata-directory")).toBeVisible()
-  await expect(page.getByTestId("project-metadata-branch")).toBeVisible()
-  await expect(page.getByTestId("project-metadata-last-activity")).toBeVisible()
-  await expect(page.getByTestId("project-metadata-branch")).toContainText("Branch:")
-  await expect(page.getByTestId("project-metadata-last-activity")).toContainText("Last activity:")
-  await expect(page.getByTestId("project-metadata-last-activity")).not.toContainText("No activity yet")
-  await page.getByTestId("project-metadata-last-activity").scrollIntoViewIfNeeded()
-  await expect(page.getByTestId("top-nav-active-project")).toContainText("/tmp/ui-smoke-project")
-  await page.screenshot({ path: screenshotPath("02-projects-panel.png"), fullPage: true })
+    await expect(page.getByTestId("top-nav")).toBeVisible()
+    await expect(page.getByTestId("nav-mode-projects")).toBeVisible()
+    await expect(page.getByTestId("nav-mode-editor")).toBeVisible()
+    await expect(page.getByTestId("nav-mode-settings")).toBeVisible()
+    await expect(page.getByTestId("nav-mode-runs")).toBeVisible()
+    await expect(page.getByTestId("projects-panel")).toBeVisible()
+    await expect(page.getByTestId("canvas-workspace-primary")).toHaveCount(0)
+    await page.screenshot({ path: screenshotPath("01-projects-shell.png"), fullPage: true })
 
-  const proposalPreviewButton = page.getByTestId("project-spec-edit-proposal-preview-button")
-  await expect(proposalPreviewButton).toBeVisible()
-  await proposalPreviewButton.click()
-  const proposalPreview = page.getByTestId("project-spec-edit-proposal-preview")
-  await expect(proposalPreview).toBeVisible()
-  await expect(proposalPreview).toContainText("Proposal preview")
-  await expect(proposalPreview).toContainText("Before:")
-  await expect(proposalPreview).toContainText("After:")
-  await page.screenshot({ path: screenshotPath("02b-spec-edit-proposal-preview.png"), fullPage: true })
+    await page.getByTestId("project-path-input").fill("/tmp/ui-smoke-project")
+    await page.getByTestId("project-register-button").click()
+    await expect(page.getByTestId("project-registry-list").getByText("/tmp/ui-smoke-project")).toBeVisible()
+    await expect(page.getByTestId("project-metadata-name")).toBeVisible()
+    await expect(page.getByTestId("project-metadata-directory")).toBeVisible()
+    await expect(page.getByTestId("project-metadata-branch")).toBeVisible()
+    await expect(page.getByTestId("project-metadata-last-activity")).toBeVisible()
+    await expect(page.getByTestId("project-metadata-branch")).toContainText("Branch:")
+    await expect(page.getByTestId("project-metadata-last-activity")).toContainText("Last activity:")
+    await expect(page.getByTestId("project-metadata-last-activity")).not.toContainText("No activity yet")
+    await page.getByTestId("project-metadata-last-activity").scrollIntoViewIfNeeded()
+    await expect(page.getByTestId("top-nav-active-project")).toContainText("/tmp/ui-smoke-project")
+    await page.screenshot({ path: screenshotPath("02-projects-panel.png"), fullPage: true })
 
-  await page.getByTestId("nav-mode-editor").click()
-  const firstFlowButton = page.locator("button").filter({ hasText: ".dot" }).first()
-  await expect(firstFlowButton).toBeVisible()
-  await firstFlowButton.click()
+    const proposalPreviewButton = page.getByTestId("project-spec-edit-proposal-preview-button")
+    await expect(proposalPreviewButton).toBeVisible()
+    await proposalPreviewButton.click()
+    const proposalPreview = page.getByTestId("project-spec-edit-proposal-preview")
+    await expect(proposalPreview).toBeVisible()
+    await expect(proposalPreview).toContainText("Proposal preview")
+    await expect(proposalPreview).toContainText("Before:")
+    await expect(proposalPreview).toContainText("After:")
+    await page.screenshot({ path: screenshotPath("02b-spec-edit-proposal-preview.png"), fullPage: true })
 
-  await expect(page.getByTestId("canvas-workspace-primary")).toBeVisible()
-  await expect(page.locator('[data-inspector-scope="graph"]')).toBeVisible()
-  await page.screenshot({ path: screenshotPath("03-graph-inspector.png"), fullPage: true })
+    await page.getByTestId("nav-mode-editor").click()
+    const flowButton = page.getByRole("button", { name: flowName })
+    await expect(flowButton).toBeVisible()
+    await flowButton.click()
 
-  const firstNode = page.locator(".react-flow__node").first()
-  await expect(firstNode).toBeVisible()
-  await firstNode.click()
+    await expect(page.getByTestId("canvas-workspace-primary")).toBeVisible()
+    await expect(page.locator('[data-inspector-scope="graph"]')).toBeVisible()
+    await page.screenshot({ path: screenshotPath("03-graph-inspector.png"), fullPage: true })
 
-  await expect(page.locator('[data-inspector-scope="node"]')).toBeVisible()
-  await page.screenshot({ path: screenshotPath("04-node-inspector.png"), fullPage: true })
+    const firstNode = page.locator(".react-flow__node").first()
+    await expect(firstNode).toBeVisible()
+    await firstNode.click()
 
-  const firstEdge = page.locator(".react-flow__edge-interaction").first()
-  await firstEdge.click({ force: true })
+    await expect(page.locator('[data-inspector-scope="node"]')).toBeVisible()
+    await page.screenshot({ path: screenshotPath("04-node-inspector.png"), fullPage: true })
 
-  await expect(page.locator('[data-inspector-scope="edge"]')).toBeVisible()
-  await page.screenshot({ path: screenshotPath("05-edge-inspector.png"), fullPage: true })
+    const firstEdge = page.locator(".react-flow__edge-interaction").first()
+    await firstEdge.click({ force: true })
 
-  await page.getByTestId("nav-mode-execution").click()
-  await expect(page.getByTestId("canvas-workspace-primary")).toBeVisible()
-  await expect(page.getByText("Terminal Output")).toBeVisible()
-  await page.screenshot({ path: screenshotPath("06-execution-panel.png"), fullPage: true })
+    await expect(page.locator('[data-inspector-scope="edge"]')).toBeVisible()
+    await page.screenshot({ path: screenshotPath("05-edge-inspector.png"), fullPage: true })
 
-  await page.getByTestId("nav-mode-settings").click()
-  await expect(page.getByTestId("settings-panel")).toBeVisible()
-  await expect(page.getByTestId("canvas-workspace-primary")).toHaveCount(0)
-  await page.screenshot({ path: screenshotPath("07-settings-panel.png"), fullPage: true })
+    await page.getByTestId("nav-mode-execution").click()
+    await expect(page.getByTestId("canvas-workspace-primary")).toBeVisible()
+    await expect(page.getByText("Terminal Output")).toBeVisible()
+    await page.screenshot({ path: screenshotPath("06-execution-panel.png"), fullPage: true })
 
-  await page.getByTestId("nav-mode-runs").click()
-  await expect(page.getByTestId("runs-panel")).toBeVisible()
-  await expect(page.getByTestId("canvas-workspace-primary")).toHaveCount(0)
-  await page.screenshot({ path: screenshotPath("08-runs-panel.png"), fullPage: true })
+    await page.getByTestId("nav-mode-settings").click()
+    await expect(page.getByTestId("settings-panel")).toBeVisible()
+    await expect(page.getByTestId("canvas-workspace-primary")).toHaveCount(0)
+    await page.screenshot({ path: screenshotPath("07-settings-panel.png"), fullPage: true })
+
+    await page.getByTestId("nav-mode-runs").click()
+    await expect(page.getByTestId("runs-panel")).toBeVisible()
+    await expect(page.getByTestId("canvas-workspace-primary")).toHaveCount(0)
+    await page.screenshot({ path: screenshotPath("08-runs-panel.png"), fullPage: true })
+  } finally {
+    await deleteFlowAfterSmoke(page, flowName)
+  }
 })
 
 test("prompt edits trigger live preview diagnostics before blur for item 5.1-03", async ({ page }) => {
