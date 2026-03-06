@@ -130,7 +130,7 @@ describe('Project-scoped workflow behavior', () => {
     confirmSpy.mockReturnValueOnce(true)
     await user.click(screen.getByTestId('project-spec-edit-proposal-apply-button'))
     await waitFor(() => {
-      expect(screen.queryByTestId('project-spec-edit-proposal-preview')).not.toBeInTheDocument()
+      expect(screen.getByTestId('project-spec-edit-proposal-preview')).toHaveTextContent('Applied')
     })
 
     const projectScope = useStore.getState().projectScopedWorkspaces['/tmp/workflow-project']
@@ -154,6 +154,89 @@ describe('Project-scoped workflow behavior', () => {
     )
     expect(projectScope.specProvenance?.capturedAt).toEqual(expect.any(String))
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Applied spec edit proposal')
+    expect(screen.queryByTestId('project-spec-edit-proposal-apply-button')).not.toBeInTheDocument()
+    expect(screen.getByTestId('project-spec-edit-proposal-preview')).toHaveTextContent(
+      'This approved spec card now acts as the upstream artifact for the execution card below.',
+    )
+  })
+
+  it('reconstructs an applied spec card from approved provenance when no pending proposal state remains', () => {
+    act(() => {
+      useStore.getState().registerProject('/tmp/persisted-spec-project')
+      useStore.getState().setActiveProjectPath('/tmp/persisted-spec-project')
+      useStore.setState((state) => ({
+        ...state,
+        projectScopedWorkspaces: {
+          ...state.projectScopedWorkspaces,
+          '/tmp/persisted-spec-project': {
+            ...state.projectScopedWorkspaces['/tmp/persisted-spec-project'],
+            conversationId: 'conversation-persisted-spec-project',
+            conversationHistory: [
+              {
+                role: 'user',
+                content: 'Refine the home chat and execution cards so tracker-ready work is clearer.',
+                timestamp: '2026-03-05T14:00:00Z',
+              },
+              {
+                role: 'assistant',
+                content: 'I prepared a specification proposal for that refinement.',
+                timestamp: '2026-03-05T14:01:00Z',
+              },
+            ],
+            specId: 'spec-persisted-spec-project',
+            specStatus: 'approved',
+            specProvenance: {
+              source: 'spec-edit-proposal',
+              referenceId: 'proposal-persisted-spec-project',
+              capturedAt: '2026-03-05T14:02:00Z',
+              runId: null,
+              gitBranch: 'main',
+              gitCommit: 'abc123def456',
+            },
+          },
+        },
+      }))
+    })
+
+    render(<ProjectsPanel />)
+
+    const specCard = screen.getByTestId('project-spec-edit-proposal-preview')
+    expect(specCard).toBeVisible()
+    expect(specCard).toHaveTextContent('Applied')
+    expect(specCard).toHaveTextContent('proposal-persisted-spec-project')
+    expect(specCard).toHaveTextContent('Refine the home chat and execution cards so tracker-ready work is clear')
+    expect(screen.queryByTestId('project-spec-edit-proposal-apply-button')).not.toBeInTheDocument()
+  })
+
+  it('seeds a visible example spec card for sparkspawn when execution context exists without proposal provenance', () => {
+    act(() => {
+      useStore.getState().registerProject('/tmp/sparkspawn')
+      useStore.getState().setActiveProjectPath('/tmp/sparkspawn')
+      useStore.setState((state) => ({
+        ...state,
+        projectScopedWorkspaces: {
+          ...state.projectScopedWorkspaces,
+          '/tmp/sparkspawn': {
+            ...state.projectScopedWorkspaces['/tmp/sparkspawn'],
+            planId: 'plan-sparkspawn-demo',
+            planStatus: 'draft',
+            conversationHistory: [],
+            specId: null,
+            specStatus: 'draft',
+            specProvenance: null,
+          },
+        },
+      }))
+    })
+
+    render(<ProjectsPanel />)
+
+    const specCard = screen.getByTestId('project-spec-edit-proposal-preview')
+    expect(specCard).toBeVisible()
+    expect(specCard).toHaveTextContent('Example')
+    expect(specCard).toHaveTextContent('proposal-example-sparkspawn-home-chat')
+    expect(specCard).toHaveTextContent('Seeded example for local UI evaluation in the sparkspawn project.')
+    expect(screen.queryByTestId('project-spec-edit-proposal-apply-button')).not.toBeInTheDocument()
   })
 
   it('auto-launches plan workflow after spec proposal approval and records run context', async () => {

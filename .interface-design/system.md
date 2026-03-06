@@ -23,3 +23,5 @@
 - Card chrome stays consistent: `border`, `bg-card`, `shadow-sm`, rounded corners.
 - Dense operational lists may scroll internally when they live inside a full-height pane.
 - Resize affordances should be understated but obvious on hover/focus and use the correct resize cursor.
+- Chat-adjacent artifact cards should split into two families: lighter editorial proposal cards for spec review, and more structured tracker-like execution cards for durable work planning.
+- Proposal cards emphasize summary, affected sections, diffs, and explicit review actions. Execution cards emphasize identity, status, work items, dependencies, provenance, and workflow decisions.

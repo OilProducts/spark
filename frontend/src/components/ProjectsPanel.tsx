@@ -12,6 +12,7 @@ import {
     getProjectSpecEditProposal,
     type ProjectSpecEditProposalMap,
     type SpecEditProposalPreview,
+    updateProjectSpecEditProposal,
     upsertProjectSpecEditProposal,
 } from "@/lib/projectSpecProposals"
 
@@ -150,6 +151,220 @@ const formatProjectListLabel = (projectPath: string) => {
     return segments[segments.length - 1]
 }
 
+type SurfaceTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
+type ExecutionCardItemStatus = 'pending' | 'ready' | 'in-progress' | 'blocked' | 'done'
+type ExecutionCardItem = {
+    id: string
+    title: string
+    status: ExecutionCardItemStatus
+    detail: string
+}
+
+const SURFACE_TONE_CLASS_MAP: Record<SurfaceTone, string> = {
+    neutral: 'bg-muted/50 text-muted-foreground',
+    info: 'bg-sky-500/15 text-sky-700',
+    success: 'bg-emerald-500/15 text-emerald-800',
+    warning: 'bg-amber-500/15 text-amber-800',
+    danger: 'bg-destructive/10 text-destructive',
+}
+
+const EXECUTION_ITEM_LABELS: Record<ExecutionCardItemStatus, string> = {
+    pending: 'Pending',
+    ready: 'Ready',
+    'in-progress': 'In progress',
+    blocked: 'Blocked',
+    done: 'Done',
+}
+
+const EXECUTION_ITEM_TONES: Record<ExecutionCardItemStatus, SurfaceTone> = {
+    pending: 'neutral',
+    ready: 'info',
+    'in-progress': 'warning',
+    blocked: 'danger',
+    done: 'success',
+}
+
+const getSurfaceToneClassName = (tone: SurfaceTone) => (
+    `rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${SURFACE_TONE_CLASS_MAP[tone]}`
+)
+
+const getExecutionCardStatusPresentation = (options: {
+    hasPlanId: boolean
+    planStatus: PlanStatus
+    isLaunching: boolean
+    hasLaunchError: boolean
+    hasLaunchFailure: boolean
+}) => {
+    if (options.hasLaunchError || options.hasLaunchFailure) {
+        return { label: 'Blocked', tone: 'danger' as const }
+    }
+    if (options.isLaunching) {
+        return { label: 'Generating', tone: 'warning' as const }
+    }
+    if (options.planStatus === 'approved') {
+        return { label: 'Ready for dispatch', tone: 'success' as const }
+    }
+    if (options.planStatus === 'rejected') {
+        return { label: 'Rejected', tone: 'danger' as const }
+    }
+    if (options.planStatus === 'revision-requested') {
+        return { label: 'Revision requested', tone: 'warning' as const }
+    }
+    if (options.hasPlanId) {
+        return { label: 'Draft plan', tone: 'info' as const }
+    }
+    return { label: 'Awaiting approved spec', tone: 'neutral' as const }
+}
+
+const buildExecutionObjective = (conversationHistory: ConversationHistoryEntry[]) => {
+    const latestUserEntry = [...conversationHistory].reverse().find((entry) => entry.role === 'user')
+    if (!latestUserEntry) {
+        return 'Carry approved project changes into an execution-ready work package.'
+    }
+    const trimmed = latestUserEntry.content.trim()
+    if (trimmed.length <= 140) {
+        return trimmed
+    }
+    return `${trimmed.slice(0, 137)}...`
+}
+
+const buildExecutionWorkItems = (options: {
+    projectName: string
+    hasSpecId: boolean
+    specStatus: 'draft' | 'approved'
+    hasPlanId: boolean
+    planStatus: PlanStatus
+    isLaunching: boolean
+    hasLaunchError: boolean
+    hasLaunchFailure: boolean
+}) => {
+    const items: ExecutionCardItem[] = [
+        {
+            id: `${options.projectName.toUpperCase()}-SPEC`,
+            title: 'Finalize specification',
+            status: options.specStatus === 'approved' && options.hasSpecId ? 'done' : 'pending',
+            detail: options.specStatus === 'approved' && options.hasSpecId
+                ? 'Approved specification is linked and ready for planning.'
+                : 'Specification changes still need approval before execution planning can proceed.',
+        },
+        {
+            id: `${options.projectName.toUpperCase()}-PLAN`,
+            title: 'Generate implementation plan',
+            status: options.hasLaunchError || options.hasLaunchFailure
+                ? 'blocked'
+                : options.isLaunching
+                    ? 'in-progress'
+                    : options.hasPlanId
+                        ? 'done'
+                        : options.specStatus === 'approved'
+                            ? 'ready'
+                            : 'pending',
+            detail: options.hasLaunchError || options.hasLaunchFailure
+                ? 'Planning launch needs attention before the execution artifact can be regenerated.'
+                : options.isLaunching
+                    ? 'Creating the implementation plan from the approved specification.'
+                    : options.hasPlanId
+                        ? 'Execution artifact is generated and linked to this project.'
+                        : options.specStatus === 'approved'
+                            ? 'The approved specification is ready to generate a plan.'
+                            : 'Plan generation will unlock once the specification is approved.',
+        },
+        {
+            id: `${options.projectName.toUpperCase()}-REVIEW`,
+            title: 'Review execution plan',
+            status: !options.hasPlanId
+                ? 'pending'
+                : options.planStatus === 'approved'
+                    ? 'done'
+                    : options.planStatus === 'draft'
+                        ? 'ready'
+                        : 'blocked',
+            detail: !options.hasPlanId
+                ? 'Review begins after a plan artifact is available.'
+                : options.planStatus === 'approved'
+                    ? 'The plan is approved and ready to produce assignable work items.'
+                    : options.planStatus === 'draft'
+                        ? 'Review the proposed implementation and decide whether to approve, reject, or revise it.'
+                        : options.planStatus === 'rejected'
+                            ? 'The plan was rejected and must be reshaped before execution.'
+                            : 'Revision was requested before execution can move forward.',
+        },
+        {
+            id: `${options.projectName.toUpperCase()}-DISPATCH`,
+            title: 'Publish work items',
+            status: options.planStatus === 'approved' ? 'ready' : 'pending',
+            detail: options.planStatus === 'approved'
+                ? 'The execution card is ready to dispatch tracker items to agents.'
+                : 'Work item dispatch stays locked until the plan is approved.',
+        },
+    ]
+    return items
+}
+
+const deriveAppliedSpecCardFromScope = (options: {
+    proposal: SpecEditProposalPreview | null
+    projectLabel: string | null
+    hasExecutionContext: boolean
+    projectScope: {
+        specId: string | null
+        specStatus: 'draft' | 'approved'
+        specProvenance?: {
+            source: string
+            referenceId: string
+            capturedAt: string
+        } | null
+    } | null
+    activeChatHistory: ConversationHistoryEntry[]
+    buildProposal: (sourceText: string) => SpecEditProposalPreview
+}): SpecEditProposalPreview | null => {
+    if (options.proposal) {
+        return options.proposal
+    }
+    if (
+        !options.projectScope?.specId
+        || options.projectScope.specStatus !== 'approved'
+        || options.projectScope.specProvenance?.source !== 'spec-edit-proposal'
+    ) {
+        return null
+    }
+    const latestUserEntry = [...options.activeChatHistory].reverse().find((entry) => entry.role === 'user')
+    if (!latestUserEntry) {
+        return null
+    }
+    const derivedProposal = options.buildProposal(latestUserEntry.content)
+    return {
+        ...derivedProposal,
+        id: options.projectScope.specProvenance.referenceId,
+        createdAt: options.projectScope.specProvenance.capturedAt,
+        status: 'applied',
+    }
+}
+
+const buildSeededSpecCardExample = (projectLabel: string | null, hasExecutionContext: boolean): SpecEditProposalPreview | null => {
+    if (!projectLabel || projectLabel.toLowerCase() !== 'sparkspawn' || !hasExecutionContext) {
+        return null
+    }
+    return {
+        id: 'proposal-example-sparkspawn-home-chat',
+        createdAt: '2026-03-05T15:00:00Z',
+        summary: 'Example spec card showing how approved specification changes can feed the execution card.',
+        status: 'applied',
+        isDemo: true,
+        changes: [
+            {
+                path: 'spec/home-chat.md#artifacts',
+                before: 'Document home chat responses and operational workflow state together.',
+                after: 'Document home chat as a conversation surface that can retain a reviewed spec card alongside a downstream execution card.',
+            },
+            {
+                path: 'spec/work-tracker.md#execution-cards',
+                before: 'Describe implementation plans as launch-oriented workflow output.',
+                after: 'Describe execution cards as durable tracker-ready work packages with status, work items, dependencies, and provenance for agent assignment.',
+            },
+        ],
+    }
+}
+
 const deriveProjectPathFromDirectorySelection = (files: FileList | null): string | null => {
     if (!files || files.length === 0) {
         return null
@@ -246,6 +461,7 @@ export function HomePanel() {
         : EMPTY_PROJECT_GIT_METADATA
     const activeProjectProposalPreview = getProjectSpecEditProposal(projectSpecEditProposals, activeProjectPath)
     const specIsApprovedForPlanning = activeProjectScope?.specStatus === 'approved'
+    const activeProjectLabel = activeProjectPath ? formatProjectListLabel(activeProjectPath) : null
     const orderedProjects = (() => {
         const seenProjectPaths = new Set<string>()
         const items: typeof projects = []
@@ -276,6 +492,24 @@ export function HomePanel() {
     const activeProjectEventLog = activeProjectScope?.projectEventLog || []
     const activePlanStatus: PlanStatus = activeProjectScope?.planStatus || 'draft'
     const canRerunPlanGeneration = Boolean(activeProjectScope?.specId) && specIsApprovedForPlanning && Boolean(activeFlow)
+    const executionCardStatus = getExecutionCardStatusPresentation({
+        hasPlanId: Boolean(activeProjectScope?.planId),
+        planStatus: activePlanStatus,
+        isLaunching: isPlanGenerationLaunching,
+        hasLaunchError: Boolean(planGenerationError),
+        hasLaunchFailure: Boolean(lastPlanGenerationFailure),
+    })
+    const executionObjective = buildExecutionObjective(activeChatHistory)
+    const executionWorkItems = buildExecutionWorkItems({
+        projectName: activeProjectLabel || 'project',
+        hasSpecId: Boolean(activeProjectScope?.specId),
+        specStatus: activeProjectScope?.specStatus || 'draft',
+        hasPlanId: Boolean(activeProjectScope?.planId),
+        planStatus: activePlanStatus,
+        isLaunching: isPlanGenerationLaunching,
+        hasLaunchError: Boolean(planGenerationError),
+        hasLaunchFailure: Boolean(lastPlanGenerationFailure),
+    })
 
     useEffect(() => {
         const projectPathsToFetch = projects
@@ -673,6 +907,7 @@ export function HomePanel() {
             id: `proposal-${Date.now()}`,
             createdAt: new Date().toISOString(),
             summary: "Agent-proposed spec refinements generated from the latest project-scoped conversation turn.",
+            status: 'pending',
             changes: [
                 {
                     path: "spec/goals.md#scope",
@@ -689,6 +924,18 @@ export function HomePanel() {
         return proposal
     }
 
+    const activeProjectSpecCard = deriveAppliedSpecCardFromScope({
+        proposal: activeProjectProposalPreview,
+        projectLabel: activeProjectLabel,
+        hasExecutionContext: Boolean(activeProjectScope?.planId || activeProjectScope?.planProvenance || activeProjectScope?.selectedRunId),
+        projectScope: activeProjectScope,
+        activeChatHistory,
+        buildProposal: buildAgentSpecEditProposal,
+    }) || buildSeededSpecCardExample(
+        activeProjectLabel,
+        Boolean(activeProjectScope?.planId || activeProjectScope?.planProvenance || activeProjectScope?.selectedRunId),
+    )
+
     const upsertAgentSpecEditProposal = (sourceText: string) => {
         if (!activeProjectPath) {
             return
@@ -699,7 +946,7 @@ export function HomePanel() {
     }
 
     const onApplySpecEditProposal = () => {
-        if (!activeProjectPath || !activeProjectProposalPreview) {
+        if (!activeProjectPath || !activeProjectSpecCard) {
             return
         }
         if (!window.confirm('Apply these proposed spec edits to the active project spec?')) {
@@ -711,14 +958,21 @@ export function HomePanel() {
         setSpecStatus('approved')
         setSpecProvenance({
             source: "spec-edit-proposal",
-            referenceId: activeProjectProposalPreview.id,
+            referenceId: activeProjectSpecCard.id,
             capturedAt: new Date().toISOString(),
             runId: activeProjectScope?.artifactRunId || null,
             gitBranch: activeProjectGitMetadata.branch,
             gitCommit: activeProjectGitMetadata.commit,
         })
-        appendProjectEvent(`Applied spec edit proposal ${activeProjectProposalPreview.id} to ${specId}.`)
-        setProjectSpecEditProposals((current) => clearProjectSpecEditProposal(current, activeProjectPath))
+        appendProjectEvent(`Applied spec edit proposal ${activeProjectSpecCard.id} to ${specId}.`)
+        setProjectSpecEditProposals((current) => updateProjectSpecEditProposal(
+            current,
+            activeProjectPath,
+            (proposal) => ({
+                ...proposal,
+                status: 'applied',
+            }),
+        ))
         void onLaunchPlanGenerationWorkflow({
             specIdOverride: specId,
             trigger: "spec-proposal-apply",
@@ -825,11 +1079,11 @@ export function HomePanel() {
     }
 
     const onRejectSpecEditProposal = () => {
-        if (!activeProjectPath || !activeProjectProposalPreview) {
+        if (!activeProjectPath || !activeProjectSpecCard) {
             return
         }
 
-        appendProjectEvent(`Rejected spec edit proposal ${activeProjectProposalPreview.id}.`)
+        appendProjectEvent(`Rejected spec edit proposal ${activeProjectSpecCard.id}.`)
         setProjectSpecEditProposals((current) => clearProjectSpecEditProposal(current, activeProjectPath))
     }
 
@@ -998,12 +1252,9 @@ export function HomePanel() {
                             data-testid="project-ai-conversation-surface"
                             className={`rounded-md border border-border bg-card p-4 shadow-sm ${isNarrowViewport ? "" : "flex h-full min-h-0 flex-col"}`}
                         >
-                            <div className="mb-3 space-y-1">
-                                <h3 className="text-sm font-semibold text-foreground">Project-Scoped AI Conversation</h3>
-                                <p className="text-xs text-muted-foreground">
-                                    Chat with the project AI directly in this thread. Messages stay scoped to the active project.
-                                </p>
-                            </div>
+                            <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}
+                            </p>
                             {!activeProjectPath ? (
                                 <p className={`rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground ${isNarrowViewport ? "" : "flex flex-1 items-center"}`}>
                                     Select an active project to begin chatting.
@@ -1014,32 +1265,13 @@ export function HomePanel() {
                                         data-testid="project-ai-conversation-body"
                                         className={`flex min-h-0 flex-1 flex-col gap-3 ${isNarrowViewport ? "" : "overflow-y-auto pr-1"}`}
                                     >
-                                        <p className="truncate rounded-md border border-border px-3 py-2 text-xs text-muted-foreground">
-                                            Active conversation artifact: {activeProjectScope?.conversationId || "Not created yet. Sending your first message creates one."}
-                                        </p>
-                                        <p className="text-[11px] text-muted-foreground">
-                                            Conversation turns: <span className="font-medium text-foreground">{activeChatHistory.length}</span>
-                                        </p>
-                                        <div className="flex flex-wrap items-center gap-3">
-                                            <p className="truncate text-xs text-muted-foreground">
-                                                Spec artifact: <span className="font-mono text-foreground">{activeProjectScope?.specId || "Not created yet"}</span>
-                                            </p>
-                                            <p className="text-xs text-muted-foreground">
-                                                Spec status: <span className="font-medium text-foreground">{activeProjectScope?.specStatus || "draft"}</span>
-                                            </p>
-                                        </div>
-                                        <p className="text-[11px] text-muted-foreground">
-                                            Spec edit proposals are emitted by the assistant and appear inline below the chat thread.
-                                        </p>
-                                        <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col rounded-md border border-border px-3 py-2">
-                                            <p className="text-xs font-medium text-foreground">Conversation history</p>
-                                            <p className="mb-2 text-xs text-muted-foreground">
-                                                Conversation history is scoped to the active project and remains discoverable when you return.
-                                            </p>
+                                        <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col">
                                             {activeChatHistory.length === 0 ? (
-                                                <p className="text-xs text-muted-foreground">No conversation history for this project yet.</p>
+                                                <p className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                                                    No conversation history for this project yet.
+                                                </p>
                                             ) : (
-                                                <ol data-testid="project-ai-conversation-history-list" className="space-y-2">
+                                                <ol data-testid="project-ai-conversation-history-list" className="space-y-3">
                                                     {activeChatHistory.map((entry, index) => (
                                                         <li
                                                             key={`${entry.timestamp}-${index}`}
@@ -1054,7 +1286,7 @@ export function HomePanel() {
                                                                     }`}
                                                             >
                                                                 <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
-                                                                    {entry.role === "assistant" ? "AI" : entry.role}
+                                                                    {entry.role === "assistant" ? "Attractor" : entry.role}
                                                                 </p>
                                                                 <p className="whitespace-pre-wrap text-xs leading-5">{entry.content}</p>
                                                                 <p className="mt-1 text-[10px] opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
@@ -1064,30 +1296,56 @@ export function HomePanel() {
                                                 </ol>
                                             )}
                                         </div>
-                                        {activeProjectProposalPreview ? (
-                                            <div data-testid="project-spec-edit-proposal-preview" className="rounded-md border border-border px-3 py-2">
-                                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                                    <p className="text-xs font-medium text-foreground">Spec edit proposal</p>
-                                                    <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-                                                        Pending review
-                                                    </span>
+                                        {activeProjectSpecCard ? (
+                                            <div
+                                                data-testid="project-spec-edit-proposal-preview"
+                                                className="rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-4 py-3"
+                                            >
+                                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                                    <div className="space-y-1">
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                                                                Specification proposal
+                                                            </p>
+                                                            {activeProjectSpecCard.isDemo ? (
+                                                                <span className={getSurfaceToneClassName('info')}>
+                                                                    Example
+                                                                </span>
+                                                            ) : null}
+                                                            <span className={getSurfaceToneClassName(
+                                                                activeProjectSpecCard.status === 'applied' ? 'success' : 'warning',
+                                                            )}>
+                                                                {activeProjectSpecCard.status === 'applied' ? 'Applied' : 'Pending review'}
+                                                            </span>
+                                                        </div>
+                                                        <p className="text-sm font-medium text-foreground">{activeProjectSpecCard.summary}</p>
+                                                    </div>
+                                                    <p className="text-[11px] text-muted-foreground">
+                                                        {activeProjectSpecCard.changes.length} proposed section
+                                                        {activeProjectSpecCard.changes.length === 1 ? '' : 's'}
+                                                    </p>
                                                 </div>
-                                                <p className="text-[11px] text-muted-foreground">
-                                                    Generated {formatConversationTimestamp(activeProjectProposalPreview.createdAt)} ({activeProjectProposalPreview.id})
-                                                </p>
-                                                <p className="mt-1 text-xs text-foreground">{activeProjectProposalPreview.summary}</p>
-                                                <ul className="mt-2 space-y-2">
-                                                    {activeProjectProposalPreview.changes.map((change, index) => {
+                                                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                                                    <span>
+                                                        {activeProjectSpecCard.status === 'applied' ? 'Applied' : 'Generated'} {formatConversationTimestamp(activeProjectSpecCard.createdAt)}
+                                                    </span>
+                                                    <span className="font-mono">{activeProjectSpecCard.id}</span>
+                                                </div>
+                                                <ul className="mt-3 space-y-2">
+                                                    {activeProjectSpecCard.changes.map((change, index) => {
                                                         const diffLines = buildProposalDiffLines(change)
                                                         const shouldCollapse = diffLines.length > PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT
-                                                        const changeKey = buildProposalChangeKey(activeProjectProposalPreview.id, change.path, index)
+                                                        const changeKey = buildProposalChangeKey(activeProjectSpecCard.id, change.path, index)
                                                         const isExpanded = expandedProposalChanges[changeKey] === true
                                                         const visibleLines = shouldCollapse && !isExpanded
                                                             ? diffLines.slice(0, PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT)
                                                             : diffLines
                                                         return (
-                                                            <li key={`${activeProjectProposalPreview.id}-${change.path}-${index}`} className="rounded border border-border">
-                                                                <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1">
+                                                            <li
+                                                                key={`${activeProjectSpecCard.id}-${change.path}-${index}`}
+                                                                className="rounded border border-amber-500/20 bg-background/80"
+                                                            >
+                                                                <div className="flex items-center justify-between gap-2 border-b border-amber-500/20 px-3 py-2">
                                                                     <p className="truncate text-[11px] font-medium text-foreground">{change.path}</p>
                                                                     {shouldCollapse ? (
                                                                         <button
@@ -1100,7 +1358,7 @@ export function HomePanel() {
                                                                         </button>
                                                                     ) : null}
                                                                 </div>
-                                                                <div className="space-y-1 px-2 py-2">
+                                                                <div className="space-y-1 px-3 py-3">
                                                                     {visibleLines.map((line, lineIndex) => (
                                                                         <p
                                                                             key={`${change.path}-${lineIndex}`}
@@ -1123,27 +1381,40 @@ export function HomePanel() {
                                                         )
                                                     })}
                                                 </ul>
-                                                <div className="mt-3 flex flex-wrap items-center gap-2">
-                                                    <button
-                                                        data-testid="project-spec-edit-proposal-apply-button"
-                                                        type="button"
-                                                        onClick={onApplySpecEditProposal}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                    >
-                                                        Apply proposal
-                                                    </button>
-                                                    <button
-                                                        data-testid="project-spec-edit-proposal-reject-button"
-                                                        type="button"
-                                                        onClick={onRejectSpecEditProposal}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                    >
-                                                        Reject proposal
-                                                    </button>
-                                                    <p className="text-[11px] text-muted-foreground">
-                                                        Applying requires explicit confirmation.
-                                                    </p>
-                                                </div>
+                                                {activeProjectSpecCard.status === 'applied' ? (
+                                                    <div className="mt-3 space-y-1 text-[11px] text-muted-foreground">
+                                                        {activeProjectSpecCard.isDemo ? (
+                                                            <p>
+                                                                Seeded example for local UI evaluation in the <span className="font-medium text-foreground">sparkspawn</span> project.
+                                                            </p>
+                                                        ) : null}
+                                                        <p>
+                                                            This approved spec card now acts as the upstream artifact for the execution card below.
+                                                        </p>
+                                                    </div>
+                                                ) : (
+                                                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                                                        <button
+                                                            data-testid="project-spec-edit-proposal-apply-button"
+                                                            type="button"
+                                                            onClick={onApplySpecEditProposal}
+                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        >
+                                                            Apply proposal
+                                                        </button>
+                                                        <button
+                                                            data-testid="project-spec-edit-proposal-reject-button"
+                                                            type="button"
+                                                            onClick={onRejectSpecEditProposal}
+                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        >
+                                                            Reject proposal
+                                                        </button>
+                                                        <p className="text-[11px] text-muted-foreground">
+                                                            Review the spec edits before carrying them into execution planning.
+                                                        </p>
+                                                    </div>
+                                                )}
                                             </div>
                                         ) : null}
                                         {(activeProjectScope?.specId
@@ -1152,132 +1423,189 @@ export function HomePanel() {
                                             || planGenerationStatusDegraded
                                             || lastPlanGenerationFailure
                                             || isPlanGenerationLaunching) ? (
-                                            <div data-testid="project-plan-generation-surface" className="rounded-md border border-border px-3 py-2">
-                                                <div className="mb-2 space-y-1">
-                                                    <p className="text-xs font-medium text-foreground">Spec to Plan Workflow</p>
-                                                    <p className="text-[11px] text-muted-foreground">
-                                                        Launch is triggered automatically when a spec edit proposal is applied.
-                                                    </p>
-                                                </div>
-                                                <p className="truncate text-xs text-muted-foreground">
-                                                    Plan artifact: <span className="font-mono text-foreground">{activeProjectScope?.planId || "Not created yet"}</span>
-                                                </p>
-                                                <p className="text-xs text-muted-foreground">
-                                                    Spec status: <span className="font-medium text-foreground">{specIsApprovedForPlanning ? "approved" : "draft"}</span>
-                                                </p>
-                                                <p className="text-xs text-muted-foreground">
-                                                    Active flow source: <span className="font-mono text-foreground">{activeFlow || "none selected"}</span>
-                                                </p>
-                                                {isPlanGenerationLaunching ? (
-                                                    <p data-testid="project-plan-generation-launching" className="text-[11px] text-muted-foreground">
-                                                        Launching plan-generation workflow...
-                                                    </p>
-                                                ) : null}
-                                                {!activeProjectScope?.planId && !isPlanGenerationLaunching ? (
-                                                    <p className="text-[11px] text-muted-foreground">
-                                                        Plan artifact will appear here once auto-launch finishes.
-                                                    </p>
-                                                ) : null}
-                                                <div data-testid="project-plan-gate-surface" className="mt-2 rounded-md border border-border px-3 py-2">
-                                                    <p className="text-xs font-medium text-foreground">Plan gate controls</p>
-                                                    <p className="text-[11px] text-muted-foreground">
-                                                        Plan status: <span className="font-medium text-foreground">{activePlanStatus}</span>
-                                                    </p>
-                                                    {!activeProjectScope?.planId ? (
-                                                        <p className="text-[11px] text-muted-foreground">
-                                                            Waiting for plan-generation output before gate actions are available.
+                                            <div
+                                                data-testid="project-plan-generation-surface"
+                                                className="rounded-md border border-sky-500/20 bg-sky-500/[0.05] px-4 py-3"
+                                            >
+                                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                                    <div className="space-y-1">
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+                                                                Execution card
+                                                            </p>
+                                                            <span className={getSurfaceToneClassName(executionCardStatus.tone)}>
+                                                                {executionCardStatus.label}
+                                                            </span>
+                                                        </div>
+                                                        <p className="text-sm font-semibold text-foreground">
+                                                            {activeProjectLabel ? `${activeProjectLabel} implementation plan` : 'Implementation plan'}
                                                         </p>
-                                                    ) : null}
-                                                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                                                        <button
-                                                            data-testid="project-plan-approve-button"
-                                                            type="button"
-                                                            onClick={() => onPlanGateTransition('approved')}
-                                                            disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'approved')}
-                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                                                        >
-                                                            Approve plan
-                                                        </button>
-                                                        <button
-                                                            data-testid="project-plan-reject-button"
-                                                            type="button"
-                                                            onClick={() => onPlanGateTransition('rejected')}
-                                                            disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'rejected')}
-                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                                                        >
-                                                            Reject plan
-                                                        </button>
-                                                        <button
-                                                            data-testid="project-plan-request-revision-button"
-                                                            type="button"
-                                                            onClick={() => onPlanGateTransition('revision-requested')}
-                                                            disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'revision-requested')}
-                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                                                        >
-                                                            Request revision
-                                                        </button>
+                                                    </div>
+                                                    <div className="space-y-1 text-right text-[11px] text-muted-foreground">
+                                                        <p className="font-mono text-foreground">{activeProjectScope?.planId || 'Draft execution card'}</p>
+                                                        <p>{activeProjectScope?.planProvenance?.capturedAt
+                                                            ? `Updated ${formatConversationTimestamp(activeProjectScope.planProvenance.capturedAt)}`
+                                                            : 'Awaiting generated plan metadata'}</p>
                                                     </div>
                                                 </div>
-                                                {planGenerationError ? (
-                                                    <p data-testid="project-plan-generation-error" className="mt-2 text-[11px] text-destructive">
-                                                        {planGenerationError}
-                                                    </p>
-                                                ) : null}
-                                                {planGenerationStatusDegraded ? (
-                                                    <p data-testid="project-plan-generation-status-degraded" className="mt-2 text-[11px] text-amber-800">
-                                                        {planGenerationStatusDegraded}
-                                                    </p>
-                                                ) : null}
-                                                {lastPlanGenerationFailure ? (
-                                                    <div data-testid="project-plan-failure-diagnostics" className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
-                                                        <p className="font-medium">Last planning launch failure</p>
-                                                        <p data-testid="project-plan-failure-message">{lastPlanGenerationFailure.message}</p>
-                                                        <p>
-                                                            Flow source: <span className="font-mono">{lastPlanGenerationFailure.flowSource || "none selected"}</span>
-                                                        </p>
-                                                        <p>
-                                                            Failed at: {formatConversationTimestamp(lastPlanGenerationFailure.failedAt)}
-                                                        </p>
-                                                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                                                            <button
-                                                                data-testid="project-plan-generation-rerun-button"
-                                                                type="button"
-                                                                onClick={() => {
-                                                                    void onLaunchPlanGenerationWorkflow({ trigger: "retry" })
-                                                                }}
-                                                                disabled={!canRerunPlanGeneration}
-                                                                className="rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                                                            >
-                                                                Retry plan-generation workflow
-                                                            </button>
-                                                            {!canRerunPlanGeneration ? (
-                                                                <p data-testid="project-plan-generation-rerun-disabled-reason" className="text-[11px] text-destructive/90">
-                                                                    Fix launch prerequisites to enable rerun.
+                                                <div className="mt-4 space-y-4">
+                                                    <p className="text-sm leading-6 text-foreground">{executionObjective}</p>
+                                                    <section className="space-y-2">
+                                                        <div className="flex items-center justify-between gap-2">
+                                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                                                Derived work items
+                                                            </p>
+                                                            <p className="text-[11px] text-muted-foreground">
+                                                                Review this package as a group before dispatch.
+                                                            </p>
+                                                        </div>
+                                                        <ol className="space-y-2">
+                                                            {executionWorkItems.map((item) => (
+                                                                <li key={item.id} className="rounded-md border border-border bg-background/80 px-3 py-2">
+                                                                    <div className="flex flex-wrap items-start justify-between gap-2">
+                                                                        <div className="min-w-0 space-y-1">
+                                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                                <span className="font-mono text-[10px] text-muted-foreground">{item.id}</span>
+                                                                                <p className="text-xs font-medium text-foreground">{item.title}</p>
+                                                                            </div>
+                                                                            <p className="text-[11px] leading-5 text-muted-foreground">{item.detail}</p>
+                                                                        </div>
+                                                                        <span className={getSurfaceToneClassName(EXECUTION_ITEM_TONES[item.status])}>
+                                                                            {EXECUTION_ITEM_LABELS[item.status]}
+                                                                        </span>
+                                                                    </div>
+                                                                </li>
+                                                            ))}
+                                                        </ol>
+                                                    </section>
+                                                    <section data-testid="project-plan-gate-surface" className="space-y-2 rounded-md border border-border bg-background/80 px-3 py-3">
+                                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                                            <div>
+                                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                                                    Review decision
                                                                 </p>
+                                                                <p className="text-xs text-foreground">
+                                                                    Plan status: <span className="font-medium">{activePlanStatus}</span>
+                                                                </p>
+                                                            </div>
+                                                            {!activeProjectScope?.planId ? (
+                                                                <span className={getSurfaceToneClassName('neutral')}>
+                                                                    Awaiting plan artifact
+                                                                </span>
                                                             ) : null}
                                                         </div>
+                                                        {!activeProjectScope?.planId ? (
+                                                            <p className="text-[11px] text-muted-foreground">
+                                                                Review controls unlock once the execution card has a generated plan artifact.
+                                                            </p>
+                                                        ) : null}
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <button
+                                                                data-testid="project-plan-approve-button"
+                                                                type="button"
+                                                                onClick={() => onPlanGateTransition('approved')}
+                                                                disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'approved')}
+                                                                className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                                            >
+                                                                Approve plan
+                                                            </button>
+                                                            <button
+                                                                data-testid="project-plan-reject-button"
+                                                                type="button"
+                                                                onClick={() => onPlanGateTransition('rejected')}
+                                                                disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'rejected')}
+                                                                className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                                            >
+                                                                Reject plan
+                                                            </button>
+                                                            <button
+                                                                data-testid="project-plan-request-revision-button"
+                                                                type="button"
+                                                                onClick={() => onPlanGateTransition('revision-requested')}
+                                                                disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'revision-requested')}
+                                                                className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                                            >
+                                                                Request revision
+                                                            </button>
+                                                        </div>
+                                                    </section>
+                                                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                                                        <span className="font-mono text-foreground">{activeProjectScope?.specId || 'No spec id'}</span>
+                                                        <span>/</span>
+                                                        <span className="font-mono text-foreground">{activeProjectScope?.planId || 'No execution card id yet'}</span>
+                                                        {activeFlow ? (
+                                                            <>
+                                                                <span>/</span>
+                                                                <span className="font-mono text-foreground">{activeFlow}</span>
+                                                            </>
+                                                        ) : null}
                                                     </div>
-                                                ) : null}
+                                                    {isPlanGenerationLaunching ? (
+                                                        <p data-testid="project-plan-generation-launching" className="text-[11px] text-muted-foreground">
+                                                            Launching plan-generation workflow...
+                                                        </p>
+                                                    ) : null}
+                                                    {!activeProjectScope?.planId && !isPlanGenerationLaunching ? (
+                                                        <p className="text-[11px] text-muted-foreground">
+                                                            The execution card will gain its durable identifier once generation completes.
+                                                        </p>
+                                                    ) : null}
+                                                    {planGenerationError ? (
+                                                        <p data-testid="project-plan-generation-error" className="text-[11px] text-destructive">
+                                                            {planGenerationError}
+                                                        </p>
+                                                    ) : null}
+                                                    {planGenerationStatusDegraded ? (
+                                                        <p data-testid="project-plan-generation-status-degraded" className="text-[11px] text-amber-800">
+                                                            {planGenerationStatusDegraded}
+                                                        </p>
+                                                    ) : null}
+                                                    {lastPlanGenerationFailure ? (
+                                                        <div data-testid="project-plan-failure-diagnostics" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+                                                            <p className="font-medium">Last planning launch failure</p>
+                                                            <p data-testid="project-plan-failure-message">{lastPlanGenerationFailure.message}</p>
+                                                            <p>
+                                                                Flow source: <span className="font-mono">{lastPlanGenerationFailure.flowSource || "none selected"}</span>
+                                                            </p>
+                                                            <p>
+                                                                Failed at: {formatConversationTimestamp(lastPlanGenerationFailure.failedAt)}
+                                                            </p>
+                                                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                                                                <button
+                                                                    data-testid="project-plan-generation-rerun-button"
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        void onLaunchPlanGenerationWorkflow({ trigger: "retry" })
+                                                                    }}
+                                                                    disabled={!canRerunPlanGeneration}
+                                                                    className="rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                                                >
+                                                                    Retry plan-generation workflow
+                                                                </button>
+                                                                {!canRerunPlanGeneration ? (
+                                                                    <p data-testid="project-plan-generation-rerun-disabled-reason" className="text-[11px] text-destructive/90">
+                                                                        Fix launch prerequisites to enable rerun.
+                                                                    </p>
+                                                                ) : null}
+                                                            </div>
+                                                        </div>
+                                                    ) : null}
+                                                </div>
                                             </div>
                                         ) : null}
-                                        <p className="text-[11px] text-muted-foreground">
-                                            Assistant messages and proposal cards are currently local UI placeholders until backend agent/tool APIs are connected.
-                                        </p>
                                     </div>
                                     <form
                                         data-testid="project-ai-conversation-composer"
                                         onSubmit={onChatComposerSubmit}
-                                        className="shrink-0 space-y-2 rounded-md border border-border px-3 py-3"
+                                        className="shrink-0 space-y-2 pt-1"
                                     >
-                                        <label htmlFor="project-ai-conversation-input" className="text-xs font-medium text-foreground">
-                                            Message
-                                        </label>
                                         <textarea
                                             id="project-ai-conversation-input"
                                             data-testid="project-ai-conversation-input"
                                             value={chatDraft}
                                             onChange={(event) => setChatDraft(event.target.value)}
                                             onKeyDown={onChatComposerKeyDown}
+                                            aria-label="Message"
                                             placeholder="Describe the spec change or requirement you want to work on..."
                                             rows={4}
                                             className="w-full rounded border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

@@ -9,6 +9,8 @@ export interface SpecEditProposalPreview {
     createdAt: string
     summary: string
     changes: SpecEditProposalChange[]
+    status?: 'pending' | 'applied'
+    isDemo?: boolean
 }
 
 export type ProjectSpecEditProposalMap = Record<string, SpecEditProposalPreview>
@@ -31,6 +33,21 @@ export const upsertProjectSpecEditProposal = (
     ...proposals,
     [projectPath]: proposal,
 })
+
+export const updateProjectSpecEditProposal = (
+    proposals: ProjectSpecEditProposalMap,
+    projectPath: string,
+    updater: (proposal: SpecEditProposalPreview) => SpecEditProposalPreview
+): ProjectSpecEditProposalMap => {
+    const current = proposals[projectPath]
+    if (!current) {
+        return proposals
+    }
+    return {
+        ...proposals,
+        [projectPath]: updater(current),
+    }
+}
 
 export const clearProjectSpecEditProposal = (
     proposals: ProjectSpecEditProposalMap,
