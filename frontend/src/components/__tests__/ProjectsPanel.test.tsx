@@ -16,6 +16,12 @@ const setViewportWidth = (width: number) => {
   window.dispatchEvent(new Event('resize'))
 }
 
+const resolveRequestUrl = (input: RequestInfo | URL): string => {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.toString()
+  return input.url
+}
+
 const resetProjectScopeState = () => {
   useStore.setState((state) => ({
     ...state,
@@ -138,5 +144,91 @@ describe('ProjectsPanel', () => {
     })
     expect(screen.getByTestId('projects-list')).toHaveTextContent('/tmp/quick-switch-project')
     expect(useStore.getState().activeProjectPath).toBe('/tmp/quick-switch-project')
+  })
+
+  it('renders the user turn before the assistant response completes', async () => {
+    const user = userEvent.setup()
+    let resolveTurnResponse: ((response: Response) => void) | null = null
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/') && !init?.method) {
+          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/') && init?.method === 'POST') {
+          return await new Promise<Response>((resolve) => {
+            resolveTurnResponse = resolve
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    useStore.getState().registerProject('/tmp/chat-project')
+    useStore.getState().setActiveProjectPath('/tmp/chat-project')
+
+    render(<ProjectsPanel />)
+
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Show this message immediately.')
+    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+
+    expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Show this message immediately.')
+
+    resolveTurnResponse?.(
+      new Response(
+        JSON.stringify({
+          conversation_id: 'conversation-chat-project-1',
+          project_path: '/tmp/chat-project',
+          turns: [
+            {
+              id: 'turn-user-1',
+              role: 'user',
+              content: 'Show this message immediately.',
+              timestamp: '2026-03-06T21:45:00Z',
+              kind: 'message',
+              artifact_id: null,
+            },
+            {
+              id: 'turn-assistant-1',
+              role: 'assistant',
+              content: 'Visible.',
+              timestamp: '2026-03-06T21:45:02Z',
+              kind: 'message',
+              artifact_id: null,
+            },
+          ],
+          event_log: [],
+          spec_edit_proposals: [],
+          execution_cards: [],
+          execution_workflow: {
+            run_id: null,
+            status: 'idle',
+            error: null,
+            flow_source: null,
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Visible.')
+    })
   })
 })

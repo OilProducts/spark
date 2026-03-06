@@ -1,28 +1,30 @@
 import { type ConversationHistoryEntry, type PlanStatus, type ProjectRegistrationResult, useStore } from "@/store"
 import { type ChangeEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react"
 import { ChevronDown, ChevronUp } from "lucide-react"
-import { buildPipelineStartPayload } from "@/lib/pipelineStartPayload"
-import { ApiHttpError, fetchFlowPayloadValidated, fetchPipelineStartValidated, fetchPipelineStatusValidated } from '@/lib/apiClient'
+import {
+    ApiHttpError,
+    type ConversationSnapshotResponse,
+    type ExecutionCardResponse,
+    type SpecEditProposalResponse,
+    approveSpecEditProposalValidated,
+    fetchConversationSnapshotValidated,
+    parseConversationSnapshotResponse,
+    rejectSpecEditProposalValidated,
+    reviewExecutionCardValidated,
+    sendConversationTurnValidated,
+} from "@/lib/apiClient"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { isAbsoluteProjectPath, normalizeProjectPath } from "@/lib/projectPaths"
 import { HomeProjectSidebar } from "@/components/HomeProjectSidebar"
 import { HomeWorkspace } from "@/components/HomeWorkspace"
-import {
-    clearProjectSpecEditProposal,
-    getProjectSpecEditProposal,
-    type ProjectSpecEditProposalMap,
-    type SpecEditProposalPreview,
-    updateProjectSpecEditProposal,
-    upsertProjectSpecEditProposal,
-} from "@/lib/projectSpecProposals"
 
-const buildProjectScopedArtifactId = (artifactType: "conversation" | "spec" | "plan", projectPath: string) => {
+const buildProjectScopedConversationId = (projectPath: string) => {
     const normalizedProjectKey = projectPath
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/(^-|-$)/g, "")
     const suffix = normalizedProjectKey || "project"
-    return `${artifactType}-${suffix}-${Date.now()}`
+    return `conversation-${suffix}-${Date.now()}`
 }
 
 const PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT = 12
@@ -31,48 +33,63 @@ const HOME_SIDEBAR_MIN_PRIMARY_HEIGHT = 208
 const HOME_SIDEBAR_MIN_SECONDARY_HEIGHT = 208
 const HOME_SIDEBAR_RESIZE_HANDLE_HEIGHT = 12
 
-const PLAN_STATUS_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {
-    draft: ['approved', 'rejected', 'revision-requested'],
-    approved: ['rejected', 'revision-requested'],
-    rejected: ['revision-requested', 'approved'],
-    'revision-requested': ['approved', 'rejected'],
-}
-
-const PLAN_TRANSITION_ACTION_LABELS: Record<PlanStatus, string> = {
-    draft: 'Reset',
-    approved: 'Approved',
-    rejected: 'Rejected',
-    'revision-requested': 'Requested revision for',
-}
-
-const canTransitionPlanStatus = (from: PlanStatus, to: PlanStatus) =>
-    from !== to && PLAN_STATUS_TRANSITIONS[from].includes(to)
-
-const clampHomeSidebarPrimaryHeight = (height: number, containerHeight: number) => {
-    if (containerHeight <= 0) {
-        return Math.max(height, HOME_SIDEBAR_MIN_PRIMARY_HEIGHT)
-    }
-    const maxPrimaryHeight = Math.max(
-        HOME_SIDEBAR_MIN_PRIMARY_HEIGHT,
-        containerHeight - HOME_SIDEBAR_MIN_SECONDARY_HEIGHT - HOME_SIDEBAR_RESIZE_HANDLE_HEIGHT,
-    )
-    return Math.min(Math.max(height, HOME_SIDEBAR_MIN_PRIMARY_HEIGHT), maxPrimaryHeight)
-}
-
-type WorkflowFailureDiagnostics = {
-    message: string
-    failedAt: string
-    flowSource: string | null
-}
-
 type ProjectGitMetadata = {
     branch: string | null
     commit: string | null
 }
 
+type PickerFileWithPath = File & {
+    path?: string
+    webkitRelativePath?: string
+}
+
+type SurfaceTone = "neutral" | "info" | "success" | "warning" | "danger"
+
 const EMPTY_PROJECT_GIT_METADATA: ProjectGitMetadata = {
     branch: null,
     commit: null,
+}
+
+const SURFACE_TONE_CLASS_MAP: Record<SurfaceTone, string> = {
+    neutral: "bg-muted/50 text-muted-foreground",
+    info: "bg-sky-500/15 text-sky-700",
+    success: "bg-emerald-500/15 text-emerald-800",
+    warning: "bg-amber-500/15 text-amber-800",
+    danger: "bg-destructive/10 text-destructive",
+}
+
+const getSurfaceToneClassName = (tone: SurfaceTone) => (
+    `rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${SURFACE_TONE_CLASS_MAP[tone]}`
+)
+
+const getSpecEditStatusPresentation = (status: SpecEditProposalResponse["status"]) => {
+    if (status === "applied") {
+        return { label: "Applied", tone: "success" as const }
+    }
+    if (status === "rejected") {
+        return { label: "Rejected", tone: "danger" as const }
+    }
+    return { label: "Pending review", tone: "warning" as const }
+}
+
+const getExecutionCardStatusPresentation = (status: ExecutionCardResponse["status"]) => {
+    if (status === "approved") {
+        return { label: "Approved", tone: "success" as const }
+    }
+    if (status === "rejected") {
+        return { label: "Rejected", tone: "danger" as const }
+    }
+    if (status === "revision-requested") {
+        return { label: "Revision requested", tone: "warning" as const }
+    }
+    return { label: "Draft", tone: "info" as const }
+}
+
+const derivePlanStatusFromExecutionCard = (executionCard: ExecutionCardResponse | null): PlanStatus => {
+    if (!executionCard) {
+        return "draft"
+    }
+    return executionCard.status
 }
 
 const asProjectGitMetadataField = (value: unknown): string | null => {
@@ -81,11 +98,6 @@ const asProjectGitMetadataField = (value: unknown): string | null => {
     }
     const trimmed = value.trim()
     return trimmed.length > 0 ? trimmed : null
-}
-
-type PickerFileWithPath = File & {
-    path?: string
-    webkitRelativePath?: string
 }
 
 const parseAbsoluteProjectPath = (value: string): { prefix: string; segments: string[] } | null => {
@@ -142,229 +154,6 @@ const deriveCommonAbsoluteDirectory = (directoryPaths: string[]): string | null 
     return buildAbsoluteProjectPath(firstPrefix, commonSegments)
 }
 
-const formatProjectListLabel = (projectPath: string) => {
-    const normalizedPath = normalizeProjectPath(projectPath)
-    const segments = normalizedPath.split('/').filter(Boolean)
-    if (segments.length === 0) {
-        return normalizedPath
-    }
-    return segments[segments.length - 1]
-}
-
-type SurfaceTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
-type ExecutionCardItemStatus = 'pending' | 'ready' | 'in-progress' | 'blocked' | 'done'
-type ExecutionCardItem = {
-    id: string
-    title: string
-    status: ExecutionCardItemStatus
-    detail: string
-}
-
-const SURFACE_TONE_CLASS_MAP: Record<SurfaceTone, string> = {
-    neutral: 'bg-muted/50 text-muted-foreground',
-    info: 'bg-sky-500/15 text-sky-700',
-    success: 'bg-emerald-500/15 text-emerald-800',
-    warning: 'bg-amber-500/15 text-amber-800',
-    danger: 'bg-destructive/10 text-destructive',
-}
-
-const EXECUTION_ITEM_LABELS: Record<ExecutionCardItemStatus, string> = {
-    pending: 'Pending',
-    ready: 'Ready',
-    'in-progress': 'In progress',
-    blocked: 'Blocked',
-    done: 'Done',
-}
-
-const EXECUTION_ITEM_TONES: Record<ExecutionCardItemStatus, SurfaceTone> = {
-    pending: 'neutral',
-    ready: 'info',
-    'in-progress': 'warning',
-    blocked: 'danger',
-    done: 'success',
-}
-
-const getSurfaceToneClassName = (tone: SurfaceTone) => (
-    `rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${SURFACE_TONE_CLASS_MAP[tone]}`
-)
-
-const getExecutionCardStatusPresentation = (options: {
-    hasPlanId: boolean
-    planStatus: PlanStatus
-    isLaunching: boolean
-    hasLaunchError: boolean
-    hasLaunchFailure: boolean
-}) => {
-    if (options.hasLaunchError || options.hasLaunchFailure) {
-        return { label: 'Blocked', tone: 'danger' as const }
-    }
-    if (options.isLaunching) {
-        return { label: 'Generating', tone: 'warning' as const }
-    }
-    if (options.planStatus === 'approved') {
-        return { label: 'Ready for dispatch', tone: 'success' as const }
-    }
-    if (options.planStatus === 'rejected') {
-        return { label: 'Rejected', tone: 'danger' as const }
-    }
-    if (options.planStatus === 'revision-requested') {
-        return { label: 'Revision requested', tone: 'warning' as const }
-    }
-    if (options.hasPlanId) {
-        return { label: 'Draft plan', tone: 'info' as const }
-    }
-    return { label: 'Awaiting approved spec', tone: 'neutral' as const }
-}
-
-const buildExecutionObjective = (conversationHistory: ConversationHistoryEntry[]) => {
-    const latestUserEntry = [...conversationHistory].reverse().find((entry) => entry.role === 'user')
-    if (!latestUserEntry) {
-        return 'Carry approved project changes into an execution-ready work package.'
-    }
-    const trimmed = latestUserEntry.content.trim()
-    if (trimmed.length <= 140) {
-        return trimmed
-    }
-    return `${trimmed.slice(0, 137)}...`
-}
-
-const buildExecutionWorkItems = (options: {
-    projectName: string
-    hasSpecId: boolean
-    specStatus: 'draft' | 'approved'
-    hasPlanId: boolean
-    planStatus: PlanStatus
-    isLaunching: boolean
-    hasLaunchError: boolean
-    hasLaunchFailure: boolean
-}) => {
-    const items: ExecutionCardItem[] = [
-        {
-            id: `${options.projectName.toUpperCase()}-SPEC`,
-            title: 'Finalize specification',
-            status: options.specStatus === 'approved' && options.hasSpecId ? 'done' : 'pending',
-            detail: options.specStatus === 'approved' && options.hasSpecId
-                ? 'Approved specification is linked and ready for planning.'
-                : 'Specification changes still need approval before execution planning can proceed.',
-        },
-        {
-            id: `${options.projectName.toUpperCase()}-PLAN`,
-            title: 'Generate implementation plan',
-            status: options.hasLaunchError || options.hasLaunchFailure
-                ? 'blocked'
-                : options.isLaunching
-                    ? 'in-progress'
-                    : options.hasPlanId
-                        ? 'done'
-                        : options.specStatus === 'approved'
-                            ? 'ready'
-                            : 'pending',
-            detail: options.hasLaunchError || options.hasLaunchFailure
-                ? 'Planning launch needs attention before the execution artifact can be regenerated.'
-                : options.isLaunching
-                    ? 'Creating the implementation plan from the approved specification.'
-                    : options.hasPlanId
-                        ? 'Execution artifact is generated and linked to this project.'
-                        : options.specStatus === 'approved'
-                            ? 'The approved specification is ready to generate a plan.'
-                            : 'Plan generation will unlock once the specification is approved.',
-        },
-        {
-            id: `${options.projectName.toUpperCase()}-REVIEW`,
-            title: 'Review execution plan',
-            status: !options.hasPlanId
-                ? 'pending'
-                : options.planStatus === 'approved'
-                    ? 'done'
-                    : options.planStatus === 'draft'
-                        ? 'ready'
-                        : 'blocked',
-            detail: !options.hasPlanId
-                ? 'Review begins after a plan artifact is available.'
-                : options.planStatus === 'approved'
-                    ? 'The plan is approved and ready to produce assignable work items.'
-                    : options.planStatus === 'draft'
-                        ? 'Review the proposed implementation and decide whether to approve, reject, or revise it.'
-                        : options.planStatus === 'rejected'
-                            ? 'The plan was rejected and must be reshaped before execution.'
-                            : 'Revision was requested before execution can move forward.',
-        },
-        {
-            id: `${options.projectName.toUpperCase()}-DISPATCH`,
-            title: 'Publish work items',
-            status: options.planStatus === 'approved' ? 'ready' : 'pending',
-            detail: options.planStatus === 'approved'
-                ? 'The execution card is ready to dispatch tracker items to agents.'
-                : 'Work item dispatch stays locked until the plan is approved.',
-        },
-    ]
-    return items
-}
-
-const deriveAppliedSpecCardFromScope = (options: {
-    proposal: SpecEditProposalPreview | null
-    projectLabel: string | null
-    hasExecutionContext: boolean
-    projectScope: {
-        specId: string | null
-        specStatus: 'draft' | 'approved'
-        specProvenance?: {
-            source: string
-            referenceId: string
-            capturedAt: string
-        } | null
-    } | null
-    activeChatHistory: ConversationHistoryEntry[]
-    buildProposal: (sourceText: string) => SpecEditProposalPreview
-}): SpecEditProposalPreview | null => {
-    if (options.proposal) {
-        return options.proposal
-    }
-    if (
-        !options.projectScope?.specId
-        || options.projectScope.specStatus !== 'approved'
-        || options.projectScope.specProvenance?.source !== 'spec-edit-proposal'
-    ) {
-        return null
-    }
-    const latestUserEntry = [...options.activeChatHistory].reverse().find((entry) => entry.role === 'user')
-    if (!latestUserEntry) {
-        return null
-    }
-    const derivedProposal = options.buildProposal(latestUserEntry.content)
-    return {
-        ...derivedProposal,
-        id: options.projectScope.specProvenance.referenceId,
-        createdAt: options.projectScope.specProvenance.capturedAt,
-        status: 'applied',
-    }
-}
-
-const buildSeededSpecCardExample = (projectLabel: string | null, hasExecutionContext: boolean): SpecEditProposalPreview | null => {
-    if (!projectLabel || projectLabel.toLowerCase() !== 'sparkspawn' || !hasExecutionContext) {
-        return null
-    }
-    return {
-        id: 'proposal-example-sparkspawn-home-chat',
-        createdAt: '2026-03-05T15:00:00Z',
-        summary: 'Example spec card showing how approved specification changes can feed the execution card.',
-        status: 'applied',
-        isDemo: true,
-        changes: [
-            {
-                path: 'spec/home-chat.md#artifacts',
-                before: 'Document home chat responses and operational workflow state together.',
-                after: 'Document home chat as a conversation surface that can retain a reviewed spec card alongside a downstream execution card.',
-            },
-            {
-                path: 'spec/work-tracker.md#execution-cards',
-                before: 'Describe implementation plans as launch-oriented workflow output.',
-                after: 'Describe execution cards as durable tracker-ready work packages with status, work items, dependencies, and provenance for agent assignment.',
-            },
-        ],
-    }
-}
-
 const deriveProjectPathFromDirectorySelection = (files: FileList | null): string | null => {
     if (!files || files.length === 0) {
         return null
@@ -417,6 +206,66 @@ const deriveProjectPathFromDirectorySelection = (files: FileList | null): string
     return deriveCommonAbsoluteDirectory(fallbackDirectories)
 }
 
+const formatProjectListLabel = (projectPath: string) => {
+    const normalizedPath = normalizeProjectPath(projectPath)
+    const segments = normalizedPath.split("/").filter(Boolean)
+    if (segments.length === 0) {
+        return normalizedPath
+    }
+    return segments[segments.length - 1]
+}
+
+const clampHomeSidebarPrimaryHeight = (height: number, containerHeight: number) => {
+    if (containerHeight <= 0) {
+        return Math.max(height, HOME_SIDEBAR_MIN_PRIMARY_HEIGHT)
+    }
+    const maxPrimaryHeight = Math.max(
+        HOME_SIDEBAR_MIN_PRIMARY_HEIGHT,
+        containerHeight - HOME_SIDEBAR_MIN_SECONDARY_HEIGHT - HOME_SIDEBAR_RESIZE_HANDLE_HEIGHT,
+    )
+    return Math.min(Math.max(height, HOME_SIDEBAR_MIN_PRIMARY_HEIGHT), maxPrimaryHeight)
+}
+
+const extractApiErrorMessage = (error: unknown, fallback: string) => {
+    if (error instanceof ApiHttpError && error.detail) {
+        return error.detail
+    }
+    if (error instanceof Error && error.message) {
+        return error.message
+    }
+    return fallback
+}
+
+const getLatestApprovedSpecEditProposal = (snapshot: ConversationSnapshotResponse | null) => {
+    if (!snapshot) {
+        return null
+    }
+    for (let index = snapshot.spec_edit_proposals.length - 1; index >= 0; index -= 1) {
+        const proposal = snapshot.spec_edit_proposals[index]
+        if (proposal?.status === "applied") {
+            return proposal
+        }
+    }
+    return null
+}
+
+const getLatestExecutionCard = (snapshot: ConversationSnapshotResponse | null) => {
+    if (!snapshot || snapshot.execution_cards.length === 0) {
+        return null
+    }
+    return snapshot.execution_cards[snapshot.execution_cards.length - 1] || null
+}
+
+const buildConversationHistoryEntries = (snapshot: ConversationSnapshotResponse): ConversationHistoryEntry[] => (
+    snapshot.turns.map((turn) => ({
+        role: turn.role,
+        content: turn.content,
+        timestamp: turn.timestamp,
+        kind: turn.kind,
+        artifactId: turn.artifact_id ?? null,
+    }))
+)
+
 export function HomePanel() {
     const projectRegistry = useStore((state) => state.projectRegistry)
     const projects = Object.values(projectRegistry)
@@ -431,37 +280,54 @@ export function HomePanel() {
     const setConversationId = useStore((state) => state.setConversationId)
     const appendConversationHistoryEntry = useStore((state) => state.appendConversationHistoryEntry)
     const appendProjectEventEntry = useStore((state) => state.appendProjectEventEntry)
-    const setSpecId = useStore((state) => state.setSpecId)
-    const setSpecStatus = useStore((state) => state.setSpecStatus)
-    const setSpecProvenance = useStore((state) => state.setSpecProvenance)
-    const setPlanId = useStore((state) => state.setPlanId)
-    const setPlanStatus = useStore((state) => state.setPlanStatus)
-    const setPlanProvenance = useStore((state) => state.setPlanProvenance)
+    const updateProjectScopedWorkspace = useStore((state) => state.updateProjectScopedWorkspace)
     const activeFlow = useStore((state) => state.activeFlow)
-    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
-    const workingDir = useStore((state) => state.workingDir)
     const model = useStore((state) => state.model)
+
     const [projectGitMetadata, setProjectGitMetadata] = useState<Record<string, ProjectGitMetadata>>({})
-    const [projectSpecEditProposals, setProjectSpecEditProposals] = useState<ProjectSpecEditProposalMap>({})
-    const [planGenerationError, setPlanGenerationError] = useState<string | null>(null)
-    const [planGenerationStatusDegraded, setPlanGenerationStatusDegraded] = useState<string | null>(null)
-    const [lastPlanGenerationFailure, setLastPlanGenerationFailure] = useState<WorkflowFailureDiagnostics | null>(null)
-    const [isPlanGenerationLaunching, setIsPlanGenerationLaunching] = useState(false)
-    const projectDirectoryPickerInputRef = useRef<HTMLInputElement | null>(null)
-    const homeSidebarRef = useRef<HTMLDivElement | null>(null)
-    const homeSidebarResizeRef = useRef<{ startY: number; startHeight: number } | null>(null)
+    const [projectConversationSnapshots, setProjectConversationSnapshots] = useState<Record<string, ConversationSnapshotResponse>>({})
     const [chatDraft, setChatDraft] = useState("")
+    const [panelError, setPanelError] = useState<string | null>(null)
+    const [isSendingChat, setIsSendingChat] = useState(false)
+    const [pendingSpecProposalId, setPendingSpecProposalId] = useState<string | null>(null)
+    const [pendingExecutionCardId, setPendingExecutionCardId] = useState<string | null>(null)
     const [expandedProposalChanges, setExpandedProposalChanges] = useState<Record<string, boolean>>({})
     const [homeSidebarPrimaryHeight, setHomeSidebarPrimaryHeight] = useState(DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT)
     const [isHomeSidebarResizing, setIsHomeSidebarResizing] = useState(false)
+
+    const projectDirectoryPickerInputRef = useRef<HTMLInputElement | null>(null)
+    const homeSidebarRef = useRef<HTMLDivElement | null>(null)
+    const homeSidebarResizeRef = useRef<{ startY: number; startHeight: number } | null>(null)
+    const applyConversationSnapshotRef = useRef<((projectPath: string, snapshot: ConversationSnapshotResponse) => void) | null>(null)
+
     const isNarrowViewport = useNarrowViewport()
     const activeProjectScope = activeProjectPath ? projectScopedWorkspaces[activeProjectPath] : null
+    const activeProjectLabel = activeProjectPath ? formatProjectListLabel(activeProjectPath) : null
     const activeProjectGitMetadata = activeProjectPath
         ? projectGitMetadata[activeProjectPath] || EMPTY_PROJECT_GIT_METADATA
         : EMPTY_PROJECT_GIT_METADATA
-    const activeProjectProposalPreview = getProjectSpecEditProposal(projectSpecEditProposals, activeProjectPath)
-    const specIsApprovedForPlanning = activeProjectScope?.specStatus === 'approved'
-    const activeProjectLabel = activeProjectPath ? formatProjectListLabel(activeProjectPath) : null
+    const activeConversationId = activeProjectScope?.conversationId ?? null
+    const activeConversationSnapshot = activeProjectPath ? projectConversationSnapshots[activeProjectPath] || null : null
+    const hasLoadedActiveConversationSnapshot = Boolean(activeProjectPath && projectConversationSnapshots[activeProjectPath])
+    const activeConversationHistory = activeProjectScope?.conversationHistory || []
+    const activeProjectEventLog = activeProjectScope?.projectEventLog || []
+    const activeSpecEditProposals = activeConversationSnapshot?.spec_edit_proposals || []
+    const activeExecutionCards = activeConversationSnapshot?.execution_cards || []
+    const latestSpecEditProposalId = activeSpecEditProposals.length > 0
+        ? activeSpecEditProposals[activeSpecEditProposals.length - 1]?.id || null
+        : null
+    const latestExecutionCardId = activeExecutionCards.length > 0
+        ? activeExecutionCards[activeExecutionCards.length - 1]?.id || null
+        : null
+    const activeSpecEditProposalsById = new Map(activeSpecEditProposals.map((proposal) => [proposal.id, proposal]))
+    const activeExecutionCardsById = new Map(activeExecutionCards.map((executionCard) => [executionCard.id, executionCard]))
+    const hasRenderableConversationHistory = activeConversationHistory.some((entry) => (
+        entry.kind === "spec_edit_proposal"
+        || entry.kind === "execution_card"
+        || entry.role === "user"
+        || entry.role === "assistant"
+    ))
+
     const orderedProjects = (() => {
         const seenProjectPaths = new Set<string>()
         const items: typeof projects = []
@@ -485,31 +351,80 @@ export function HomePanel() {
 
         return items
     })()
-    const activeConversationHistory = activeProjectScope?.conversationHistory || []
-    const activeChatHistory = activeConversationHistory.filter(
-        (entry) => entry.role === "user" || entry.role === "assistant"
-    )
-    const activeProjectEventLog = activeProjectScope?.projectEventLog || []
-    const activePlanStatus: PlanStatus = activeProjectScope?.planStatus || 'draft'
-    const canRerunPlanGeneration = Boolean(activeProjectScope?.specId) && specIsApprovedForPlanning && Boolean(activeFlow)
-    const executionCardStatus = getExecutionCardStatusPresentation({
-        hasPlanId: Boolean(activeProjectScope?.planId),
-        planStatus: activePlanStatus,
-        isLaunching: isPlanGenerationLaunching,
-        hasLaunchError: Boolean(planGenerationError),
-        hasLaunchFailure: Boolean(lastPlanGenerationFailure),
-    })
-    const executionObjective = buildExecutionObjective(activeChatHistory)
-    const executionWorkItems = buildExecutionWorkItems({
-        projectName: activeProjectLabel || 'project',
-        hasSpecId: Boolean(activeProjectScope?.specId),
-        specStatus: activeProjectScope?.specStatus || 'draft',
-        hasPlanId: Boolean(activeProjectScope?.planId),
-        planStatus: activePlanStatus,
-        isLaunching: isPlanGenerationLaunching,
-        hasLaunchError: Boolean(planGenerationError),
-        hasLaunchFailure: Boolean(lastPlanGenerationFailure),
-    })
+
+    const appendLocalProjectEvent = (message: string) => {
+        appendProjectEventEntry({
+            message,
+            timestamp: new Date().toISOString(),
+        })
+    }
+
+    const applyConversationSnapshot = (projectPath: string, snapshot: ConversationSnapshotResponse) => {
+        const currentScope = projectScopedWorkspaces[projectPath]
+        const latestApprovedProposal = getLatestApprovedSpecEditProposal(snapshot)
+        const latestExecutionCard = getLatestExecutionCard(snapshot)
+        const selectedRunId = snapshot.execution_workflow.run_id
+            || latestExecutionCard?.source_workflow_run_id
+            || currentScope?.selectedRunId
+            || null
+        const flowSource = snapshot.execution_workflow.flow_source
+            || latestExecutionCard?.flow_source
+            || currentScope?.activeFlow
+            || null
+
+        setProjectConversationSnapshots((current) => ({
+            ...current,
+            [projectPath]: snapshot,
+        }))
+
+        updateProjectScopedWorkspace(projectPath, {
+            conversationId: snapshot.conversation_id,
+            conversationHistory: buildConversationHistoryEntries(snapshot),
+            projectEventLog: snapshot.event_log.map((entry) => ({
+                message: entry.message,
+                timestamp: entry.timestamp,
+            })),
+            specId: latestApprovedProposal?.canonical_spec_edit_id ?? null,
+            specStatus: latestApprovedProposal ? "approved" : "draft",
+            specProvenance: latestApprovedProposal
+                ? {
+                    source: "spec-edit-proposal",
+                    referenceId: latestApprovedProposal.id,
+                    capturedAt: latestApprovedProposal.approved_at || latestApprovedProposal.created_at,
+                    runId: null,
+                    gitBranch: latestApprovedProposal.git_branch ?? null,
+                    gitCommit: latestApprovedProposal.git_commit ?? null,
+                }
+                : null,
+            planId: latestExecutionCard?.id ?? null,
+            planStatus: derivePlanStatusFromExecutionCard(latestExecutionCard),
+            planProvenance: latestExecutionCard
+                ? {
+                    source: "execution-card",
+                    referenceId: latestExecutionCard.id,
+                    capturedAt: latestExecutionCard.updated_at,
+                    runId: latestExecutionCard.source_workflow_run_id,
+                    gitBranch: latestApprovedProposal?.git_branch ?? null,
+                    gitCommit: latestApprovedProposal?.git_commit ?? null,
+                }
+                : null,
+            artifactRunId: snapshot.execution_workflow.run_id ?? latestExecutionCard?.source_workflow_run_id ?? null,
+            selectedRunId,
+            activeFlow: flowSource,
+        })
+
+        if (latestApprovedProposal?.git_branch || latestApprovedProposal?.git_commit) {
+            setProjectGitMetadata((current) => ({
+                ...current,
+                [projectPath]: {
+                    branch: latestApprovedProposal.git_branch ?? current[projectPath]?.branch ?? null,
+                    commit: latestApprovedProposal.git_commit ?? current[projectPath]?.commit ?? null,
+                },
+            }))
+        }
+    }
+
+    applyConversationSnapshotRef.current = applyConversationSnapshot
 
     useEffect(() => {
         const projectPathsToFetch = projects
@@ -539,7 +454,7 @@ export function HomePanel() {
                     } catch {
                         return [projectPath, { ...EMPTY_PROJECT_GIT_METADATA }] as const
                     }
-                })
+                }),
             )
 
             if (isCancelled) {
@@ -559,15 +474,16 @@ export function HomePanel() {
         return () => {
             isCancelled = true
         }
-    }, [projects, projectGitMetadata])
+    }, [projectGitMetadata, projects])
 
     useEffect(() => {
         setChatDraft("")
+        setPanelError(null)
     }, [activeProjectPath])
 
     useEffect(() => {
         setExpandedProposalChanges({})
-    }, [activeProjectPath, activeProjectProposalPreview?.id])
+    }, [activeProjectPath, latestSpecEditProposalId])
 
     useEffect(() => {
         if (!projectDirectoryPickerInputRef.current) {
@@ -593,9 +509,9 @@ export function HomePanel() {
         }
 
         syncSidebarHeight()
-        window.addEventListener('resize', syncSidebarHeight)
+        window.addEventListener("resize", syncSidebarHeight)
         return () => {
-            window.removeEventListener('resize', syncSidebarHeight)
+            window.removeEventListener("resize", syncSidebarHeight)
         }
     }, [isNarrowViewport])
 
@@ -607,8 +523,8 @@ export function HomePanel() {
         const stopHomeSidebarResize = () => {
             setIsHomeSidebarResizing(false)
             homeSidebarResizeRef.current = null
-            document.body.style.cursor = ''
-            document.body.style.userSelect = ''
+            document.body.style.cursor = ""
+            document.body.style.userSelect = ""
         }
 
         const handleHomeSidebarPointerMove = (event: PointerEvent) => {
@@ -621,28 +537,84 @@ export function HomePanel() {
             setHomeSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(nextHeight, containerHeight))
         }
 
-        window.addEventListener('pointermove', handleHomeSidebarPointerMove)
-        window.addEventListener('pointerup', stopHomeSidebarResize)
-        window.addEventListener('pointercancel', stopHomeSidebarResize)
+        window.addEventListener("pointermove", handleHomeSidebarPointerMove)
+        window.addEventListener("pointerup", stopHomeSidebarResize)
+        window.addEventListener("pointercancel", stopHomeSidebarResize)
         return () => {
-            window.removeEventListener('pointermove', handleHomeSidebarPointerMove)
-            window.removeEventListener('pointerup', stopHomeSidebarResize)
-            window.removeEventListener('pointercancel', stopHomeSidebarResize)
-            document.body.style.cursor = ''
-            document.body.style.userSelect = ''
+            window.removeEventListener("pointermove", handleHomeSidebarPointerMove)
+            window.removeEventListener("pointerup", stopHomeSidebarResize)
+            window.removeEventListener("pointercancel", stopHomeSidebarResize)
+            document.body.style.cursor = ""
+            document.body.style.userSelect = ""
         }
     }, [isHomeSidebarResizing])
+
+    useEffect(() => {
+        if (!activeProjectPath || !activeConversationId) {
+            return
+        }
+
+        let isCancelled = false
+        let eventSource: EventSource | null = null
+
+        const loadSnapshot = async () => {
+            try {
+                const snapshot = await fetchConversationSnapshotValidated(activeConversationId, activeProjectPath)
+                if (isCancelled) {
+                    return
+                }
+                applyConversationSnapshotRef.current?.(activeProjectPath, snapshot)
+            } catch (error) {
+                if (isCancelled) {
+                    return
+                }
+                if (error instanceof ApiHttpError && error.status === 404 && !hasLoadedActiveConversationSnapshot) {
+                    return
+                }
+                const message = extractApiErrorMessage(error, "Unable to load project conversation.")
+                setPanelError(message)
+                appendLocalProjectEvent(`Project chat sync failed: ${message}`)
+            }
+        }
+
+        void loadSnapshot()
+
+        if (typeof EventSource !== "undefined") {
+            const eventStreamUrl = `/api/conversations/${encodeURIComponent(activeConversationId)}/events?project_path=${encodeURIComponent(activeProjectPath)}`
+            eventSource = new EventSource(eventStreamUrl)
+            eventSource.onmessage = (event) => {
+                if (isCancelled) {
+                    return
+                }
+                try {
+                    const payload = JSON.parse(event.data) as { type?: string; state?: unknown }
+                    if (payload.type !== "conversation_snapshot") {
+                        return
+                    }
+                    const snapshot = parseConversationSnapshotResponse(payload.state, "/api/conversations/{id}/events")
+                    applyConversationSnapshotRef.current?.(activeProjectPath, snapshot)
+                } catch {
+                    // Ignore malformed stream events.
+                }
+            }
+        }
+
+        return () => {
+            isCancelled = true
+            eventSource?.close()
+        }
+    }, [activeConversationId, activeProjectPath, hasLoadedActiveConversationSnapshot])
 
     const resolveProjectPathValidation = (rawPath: string): ProjectRegistrationResult => {
         const normalizedPath = normalizeProjectPath(rawPath)
         if (!normalizedPath) {
-            return { ok: false, error: 'Project directory path is required.' }
+            return { ok: false, error: "Project directory path is required." }
         }
         if (!isAbsoluteProjectPath(normalizedPath)) {
             return {
                 ok: false,
                 normalizedPath,
-                error: 'Project directory path must be absolute.',
+                error: "Project directory path must be absolute.",
             }
         }
         const duplicate = Boolean(projectRegistry[normalizedPath])
@@ -665,14 +637,14 @@ export function HomePanel() {
         try {
             const response = await fetch(`/api/projects/metadata?directory=${encodeURIComponent(projectPath)}`)
             if (!response.ok) {
-                let message = 'Unable to verify project Git state.'
+                let message = "Unable to verify project Git state."
                 try {
                     const payload = (await response.json()) as { detail?: string }
-                    if (payload?.detail) {
+                    if (payload.detail) {
                         message = payload.detail
                     }
                 } catch {
-                    // ignore
+                    // Ignore malformed error payloads.
                 }
                 return { metadata: { ...EMPTY_PROJECT_GIT_METADATA }, error: message }
             }
@@ -684,7 +656,7 @@ export function HomePanel() {
                 },
             }
         } catch {
-            return { metadata: { ...EMPTY_PROJECT_GIT_METADATA }, error: 'Unable to verify project Git state.' }
+            return { metadata: { ...EMPTY_PROJECT_GIT_METADATA }, error: "Unable to verify project Git state." }
         }
     }
 
@@ -696,7 +668,7 @@ export function HomePanel() {
             return null
         }
         if (!metadata.branch && !metadata.commit) {
-            setProjectRegistrationError('Project directory must be a Git repository.')
+            setProjectRegistrationError("Project directory must be a Git repository.")
             return null
         }
         return metadata
@@ -705,7 +677,7 @@ export function HomePanel() {
     const registerProjectFromPath = async (rawProjectPath: string) => {
         const validation = resolveProjectPathValidation(rawProjectPath)
         if (!validation.ok || !validation.normalizedPath) {
-            setProjectRegistrationError(validation.error ?? 'Project directory path is required.')
+            setProjectRegistrationError(validation.error ?? "Project directory path is required.")
             return
         }
         const gitMetadata = await ensureProjectGitRepository(validation.normalizedPath)
@@ -721,7 +693,7 @@ export function HomePanel() {
     const onOpenProjectDirectoryChooser = () => {
         clearProjectRegistrationError()
         if (!projectDirectoryPickerInputRef.current) {
-            setProjectRegistrationError('Directory picker is unavailable. Enter an absolute path manually.')
+            setProjectRegistrationError("Directory picker is unavailable. Enter an absolute path manually.")
             return
         }
         projectDirectoryPickerInputRef.current.value = ""
@@ -745,23 +717,23 @@ export function HomePanel() {
             startHeight: homeSidebarPrimaryHeight,
         }
         setIsHomeSidebarResizing(true)
-        document.body.style.cursor = 'row-resize'
-        document.body.style.userSelect = 'none'
+        document.body.style.cursor = "row-resize"
+        document.body.style.userSelect = "none"
         event.preventDefault()
     }
 
     const onHomeSidebarResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-        if (event.key === 'ArrowUp') {
+        if (event.key === "ArrowUp") {
             event.preventDefault()
             adjustHomeSidebarPrimaryHeight(-24)
             return
         }
-        if (event.key === 'ArrowDown') {
+        if (event.key === "ArrowDown") {
             event.preventDefault()
             adjustHomeSidebarPrimaryHeight(24)
             return
         }
-        if (event.key === 'Home') {
+        if (event.key === "Home") {
             event.preventDefault()
             const containerHeight = homeSidebarRef.current?.getBoundingClientRect().height || 0
             if (containerHeight <= 0) {
@@ -770,7 +742,7 @@ export function HomePanel() {
             setHomeSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(HOME_SIDEBAR_MIN_PRIMARY_HEIGHT, containerHeight))
             return
         }
-        if (event.key === 'End') {
+        if (event.key === "End") {
             event.preventDefault()
             const containerHeight = homeSidebarRef.current?.getBoundingClientRect().height || 0
             if (containerHeight <= 0) {
@@ -785,7 +757,7 @@ export function HomePanel() {
         event.target.value = ""
         if (!selectedProjectPath) {
             setProjectRegistrationError(
-                'Unable to resolve an absolute project path from the selected directory. Enter an absolute path manually.',
+                "Unable to resolve an absolute project path from the selected directory. Enter an absolute path manually.",
             )
             return
         }
@@ -812,15 +784,15 @@ export function HomePanel() {
         if (!activeProjectPath) {
             return null
         }
-        if (activeProjectScope?.conversationId) {
-            return activeProjectScope.conversationId
+        if (activeConversationId) {
+            return activeConversationId
         }
-        const conversationId = buildProjectScopedArtifactId("conversation", activeProjectPath)
+        const conversationId = buildProjectScopedConversationId(activeProjectPath)
         setConversationId(conversationId)
         return conversationId
     }
 
-    const onSendChatMessage = () => {
+    const onSendChatMessage = async () => {
         if (!activeProjectPath) {
             return
         }
@@ -832,34 +804,138 @@ export function HomePanel() {
         if (!conversationId) {
             return
         }
-
-        const userEntry: ConversationHistoryEntry = {
+        const priorConversationId = activeConversationId
+        const priorConversationHistory = activeConversationHistory
+        const optimisticUserTurn: ConversationHistoryEntry = {
             role: "user",
             content: trimmed,
             timestamp: new Date().toISOString(),
+            kind: "message",
+            artifactId: null,
         }
-        appendConversationHistoryEntry(userEntry)
 
-        const summarizedIntent = trimmed.length > 120 ? `${trimmed.slice(0, 117)}...` : trimmed
-        const assistantEntry: ConversationHistoryEntry = {
-            role: "assistant",
-            content: `Acknowledged: "${summarizedIntent}". I drafted a spec edit proposal below for your review.`,
-            timestamp: new Date().toISOString(),
-        }
-        appendConversationHistoryEntry(assistantEntry)
-        upsertAgentSpecEditProposal(trimmed)
+        setIsSendingChat(true)
+        setPanelError(null)
         setChatDraft("")
+        appendConversationHistoryEntry(optimisticUserTurn)
+        try {
+            const snapshot = await sendConversationTurnValidated(conversationId, {
+                project_path: activeProjectPath,
+                message: trimmed,
+                model: model.trim() || null,
+            })
+            applyConversationSnapshot(snapshot.project_path, snapshot)
+        } catch (error) {
+            updateProjectScopedWorkspace(activeProjectPath, {
+                conversationId: priorConversationId,
+                conversationHistory: priorConversationHistory,
+            })
+            setChatDraft(trimmed)
+            const message = extractApiErrorMessage(error, "Unable to send the project chat turn.")
+            setPanelError(message)
+            appendLocalProjectEvent(`Project chat turn failed: ${message}`)
+        } finally {
+            setIsSendingChat(false)
+        }
     }
 
     const onChatComposerSubmit = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault()
-        onSendChatMessage()
+        void onSendChatMessage()
     }
 
     const onChatComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
         if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault()
-            onSendChatMessage()
+            void onSendChatMessage()
+        }
+    }
+
+    const onApproveSpecEditProposal = async (proposal: SpecEditProposalResponse) => {
+        if (!activeProjectPath || !activeConversationId) {
+            return
+        }
+        if (!window.confirm("Approve these spec edits, commit them to git, and start execution planning?")) {
+            return
+        }
+
+        setPendingSpecProposalId(proposal.id)
+        setPanelError(null)
+        try {
+            const snapshot = await approveSpecEditProposalValidated(activeConversationId, proposal.id, {
+                project_path: activeProjectPath,
+                model: model.trim() || null,
+                flow_source: activeFlow || null,
+            })
+            applyConversationSnapshot(snapshot.project_path, snapshot)
+        } catch (error) {
+            const message = extractApiErrorMessage(error, "Unable to approve the spec edit proposal.")
+            setPanelError(message)
+            appendLocalProjectEvent(`Spec edit approval failed: ${message}`)
+        } finally {
+            setPendingSpecProposalId(null)
+        }
+    }
+
+    const onRejectSpecEditProposal = async (proposal: SpecEditProposalResponse) => {
+        if (!activeProjectPath || !activeConversationId) {
+            return
+        }
+
+        setPendingSpecProposalId(proposal.id)
+        setPanelError(null)
+        try {
+            const snapshot = await rejectSpecEditProposalValidated(activeConversationId, proposal.id, {
+                project_path: activeProjectPath,
+            })
+            applyConversationSnapshot(snapshot.project_path, snapshot)
+        } catch (error) {
+            const message = extractApiErrorMessage(error, "Unable to reject the spec edit proposal.")
+            setPanelError(message)
+            appendLocalProjectEvent(`Spec edit rejection failed: ${message}`)
+        } finally {
+            setPendingSpecProposalId(null)
+        }
+    }
+
+    const onReviewExecutionCard = async (
+        executionCard: ExecutionCardResponse,
+        disposition: "approved" | "rejected" | "revision_requested",
+    ) => {
+        if (!activeProjectPath || !activeConversationId) {
+            return
+        }
+
+        const reviewMessage = disposition === "approved"
+            ? "Approved for dispatch."
+            : window.prompt(
+                disposition === "revision_requested"
+                    ? "Describe what should change before execution planning is regenerated."
+                    : "Describe why this execution card should be rejected.",
+                "",
+            )?.trim() || ""
+
+        if (!reviewMessage) {
+            return
+        }
+
+        setPendingExecutionCardId(executionCard.id)
+        setPanelError(null)
+        try {
+            const snapshot = await reviewExecutionCardValidated(activeConversationId, executionCard.id, {
+                project_path: activeProjectPath,
+                disposition,
+                message: reviewMessage,
+                model: model.trim() || null,
+                flow_source: activeFlow || executionCard.flow_source || null,
+            })
+            applyConversationSnapshot(snapshot.project_path, snapshot)
+        } catch (error) {
+            const message = extractApiErrorMessage(error, "Unable to review the execution card.")
+            setPanelError(message)
+            appendLocalProjectEvent(`Execution card review failed: ${message}`)
+        } finally {
+            setPendingExecutionCardId(null)
         }
     }
 
@@ -871,16 +947,9 @@ export function HomePanel() {
         return parsed.toLocaleString()
     }
 
-    const appendProjectEvent = (message: string) => {
-        appendProjectEventEntry({
-            message,
-            timestamp: new Date().toISOString(),
-        })
-    }
-
-    const buildProposalDiffLines = (change: SpecEditProposalPreview["changes"][number]) => {
-        const beforeLines = change.before.split('\n').map((line) => ({ type: "removed" as const, text: line }))
-        const afterLines = change.after.split('\n').map((line) => ({ type: "added" as const, text: line }))
+    const buildProposalDiffLines = (change: SpecEditProposalResponse["changes"][number]) => {
+        const beforeLines = change.before.split("\n").map((line) => ({ type: "removed" as const, text: line }))
+        const afterLines = change.after.split("\n").map((line) => ({ type: "added" as const, text: line }))
         return [...beforeLines, ...afterLines]
     }
 
@@ -893,198 +962,6 @@ export function HomePanel() {
             ...current,
             [changeKey]: !current[changeKey],
         }))
-    }
-
-    const truncateProposalSource = (value: string, maxLength = 72) => {
-        if (value.length <= maxLength) {
-            return value
-        }
-        return `${value.slice(0, maxLength - 1)}...`
-    }
-
-    const buildAgentSpecEditProposal = (sourceText: string): SpecEditProposalPreview => {
-        const proposal: SpecEditProposalPreview = {
-            id: `proposal-${Date.now()}`,
-            createdAt: new Date().toISOString(),
-            summary: "Agent-proposed spec refinements generated from the latest project-scoped conversation turn.",
-            status: 'pending',
-            changes: [
-                {
-                    path: "spec/goals.md#scope",
-                    before: "Document high-level feature scope.",
-                    after: `Document scope anchored to: ${truncateProposalSource(sourceText)}`
-                },
-                {
-                    path: "spec/acceptance.md#checks",
-                    before: "List acceptance checks for UI behavior.",
-                    after: "List acceptance checks for project-scoped proposal preview and explicit apply gating."
-                },
-            ],
-        }
-        return proposal
-    }
-
-    const activeProjectSpecCard = deriveAppliedSpecCardFromScope({
-        proposal: activeProjectProposalPreview,
-        projectLabel: activeProjectLabel,
-        hasExecutionContext: Boolean(activeProjectScope?.planId || activeProjectScope?.planProvenance || activeProjectScope?.selectedRunId),
-        projectScope: activeProjectScope,
-        activeChatHistory,
-        buildProposal: buildAgentSpecEditProposal,
-    }) || buildSeededSpecCardExample(
-        activeProjectLabel,
-        Boolean(activeProjectScope?.planId || activeProjectScope?.planProvenance || activeProjectScope?.selectedRunId),
-    )
-
-    const upsertAgentSpecEditProposal = (sourceText: string) => {
-        if (!activeProjectPath) {
-            return
-        }
-        const proposal = buildAgentSpecEditProposal(sourceText)
-        setProjectSpecEditProposals((current) => upsertProjectSpecEditProposal(current, activeProjectPath, proposal))
-        appendProjectEvent(`Agent proposed spec edits ${proposal.id}.`)
-    }
-
-    const onApplySpecEditProposal = () => {
-        if (!activeProjectPath || !activeProjectSpecCard) {
-            return
-        }
-        if (!window.confirm('Apply these proposed spec edits to the active project spec?')) {
-            return
-        }
-
-        const specId = activeProjectScope?.specId || buildProjectScopedArtifactId("spec", activeProjectPath)
-        setSpecId(specId)
-        setSpecStatus('approved')
-        setSpecProvenance({
-            source: "spec-edit-proposal",
-            referenceId: activeProjectSpecCard.id,
-            capturedAt: new Date().toISOString(),
-            runId: activeProjectScope?.artifactRunId || null,
-            gitBranch: activeProjectGitMetadata.branch,
-            gitCommit: activeProjectGitMetadata.commit,
-        })
-        appendProjectEvent(`Applied spec edit proposal ${activeProjectSpecCard.id} to ${specId}.`)
-        setProjectSpecEditProposals((current) => updateProjectSpecEditProposal(
-            current,
-            activeProjectPath,
-            (proposal) => ({
-                ...proposal,
-                status: 'applied',
-            }),
-        ))
-        void onLaunchPlanGenerationWorkflow({
-            specIdOverride: specId,
-            trigger: "spec-proposal-apply",
-        })
-    }
-
-    const onLaunchPlanGenerationWorkflow = async (options?: {
-        specIdOverride?: string | null
-        trigger?: "spec-proposal-apply" | "retry"
-    }) => {
-        const effectiveSpecId = options?.specIdOverride || activeProjectScope?.specId
-        if (!activeProjectPath || !effectiveSpecId) {
-            return
-        }
-        if (!activeFlow) {
-            setPlanGenerationError('Select a plan-generation flow before launching.')
-            appendProjectEvent('Plan-generation launch blocked: no active flow selected.')
-            return
-        }
-
-        setPlanGenerationError(null)
-        setPlanGenerationStatusDegraded(null)
-        setIsPlanGenerationLaunching(true)
-        try {
-            const flow = await fetchFlowPayloadValidated(activeFlow)
-
-            const runInitiationForm = {
-                projectPath: activeProjectPath,
-                flowSource: activeFlow,
-                workingDirectory: workingDir.trim() || activeProjectPath,
-                backend: 'codex',
-                model: model.trim() || null,
-                specArtifactId: effectiveSpecId,
-                planArtifactId: activeProjectScope?.planId || null,
-            }
-            const startPayload = buildPipelineStartPayload(runInitiationForm, flow.content)
-            const runData = await fetchPipelineStartValidated(startPayload as Record<string, unknown>)
-            if (typeof runData?.pipeline_id !== 'string') {
-                throw new Error('Plan-generation launch did not return a pipeline id.')
-            }
-
-            try {
-                await fetchPipelineStatusValidated(runData.pipeline_id)
-            } catch (statusError) {
-                const detail = statusError instanceof ApiHttpError && statusError.detail
-                    ? statusError.detail
-                    : statusError instanceof Error
-                        ? statusError.message
-                        : 'Plan status retrieval unavailable.'
-                setPlanGenerationStatusDegraded(`Plan generation launched, but status retrieval is degraded: ${detail}`)
-                appendProjectEvent(`Plan generation launched with degraded status retrieval: ${detail}`)
-            }
-
-            setSelectedRunId(runData.pipeline_id)
-            setPlanId(activeProjectScope.planId || buildProjectScopedArtifactId("plan", activeProjectPath))
-            setPlanStatus('draft')
-            setPlanProvenance({
-                source: "plan-generation-workflow",
-                referenceId: runData.pipeline_id,
-                capturedAt: new Date().toISOString(),
-                runId: runData.pipeline_id,
-                gitBranch: activeProjectGitMetadata.branch,
-                gitCommit: activeProjectGitMetadata.commit,
-            })
-            const triggerSource = options?.trigger === "retry" ? "retry" : "approved spec edit"
-            appendProjectEvent(`Launched plan-generation workflow from ${triggerSource} ${effectiveSpecId}.`)
-            setLastPlanGenerationFailure(null)
-        } catch (error) {
-            const message = error instanceof ApiHttpError && error.detail
-                ? error.detail
-                : error instanceof Error
-                    ? error.message
-                    : 'Failed to launch plan-generation workflow.'
-            setPlanGenerationError(message)
-            setPlanGenerationStatusDegraded(null)
-            setLastPlanGenerationFailure({
-                message,
-                failedAt: new Date().toISOString(),
-                flowSource: activeFlow || null,
-            })
-            appendProjectEvent(`Plan-generation workflow launch failed: ${message}`)
-        } finally {
-            setIsPlanGenerationLaunching(false)
-        }
-    }
-
-    const onPlanGateTransition = (nextStatus: PlanStatus) => {
-        if (!activeProjectPath || !activeProjectScope?.planId) {
-            setPlanGenerationError('Create or open a plan before using plan gate controls.')
-            return
-        }
-        if (!canTransitionPlanStatus(activeProjectScope.planStatus, nextStatus)) {
-            setPlanGenerationError(
-                `Cannot transition plan status from ${activeProjectScope.planStatus} to ${nextStatus}.`
-            )
-            return
-        }
-        setPlanGenerationError(null)
-        setPlanGenerationStatusDegraded(null)
-        const previousStatus = activeProjectScope.planStatus
-        const transitionAction = PLAN_TRANSITION_ACTION_LABELS[nextStatus]
-        setPlanStatus(nextStatus)
-        appendProjectEvent(`${transitionAction} plan ${activeProjectScope.planId} (${previousStatus} -> ${nextStatus}).`)
-    }
-
-    const onRejectSpecEditProposal = () => {
-        if (!activeProjectPath || !activeProjectSpecCard) {
-            return
-        }
-
-        appendProjectEvent(`Rejected spec edit proposal ${activeProjectSpecCard.id}.`)
-        setProjectSpecEditProposals((current) => clearProjectSpecEditProposal(current, activeProjectPath))
     }
 
     return (
@@ -1102,7 +979,7 @@ export function HomePanel() {
                     </p>
                 </div>
                 <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground shadow-sm">
-                    Home is now the first-class workspace for project-scoped conversation, spec proposals, and orchestration launch.
+                    Home is now the first-class workspace for project-scoped conversation, spec edit review, and workflow planning.
                 </div>
                 <div
                     data-testid="home-main-layout"
@@ -1253,7 +1130,7 @@ export function HomePanel() {
                             className={`rounded-md border border-border bg-card p-4 shadow-sm ${isNarrowViewport ? "" : "flex h-full min-h-0 flex-col"}`}
                         >
                             <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}
+                                {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : "Project Chat"}
                             </p>
                             {!activeProjectPath ? (
                                 <p className={`rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground ${isNarrowViewport ? "" : "flex flex-1 items-center"}`}>
@@ -1266,333 +1143,335 @@ export function HomePanel() {
                                         className={`flex min-h-0 flex-1 flex-col gap-3 ${isNarrowViewport ? "" : "overflow-y-auto pr-1"}`}
                                     >
                                         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col">
-                                            {activeChatHistory.length === 0 ? (
+                                            {!hasRenderableConversationHistory ? (
                                                 <p className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
                                                     No conversation history for this project yet.
                                                 </p>
                                             ) : (
                                                 <ol data-testid="project-ai-conversation-history-list" className="space-y-3">
-                                                    {activeChatHistory.map((entry, index) => (
-                                                        <li
-                                                            key={`${entry.timestamp}-${index}`}
-                                                            className={`flex ${entry.role === "user" ? "justify-end" : "justify-start"}`}
-                                                        >
-                                                            <div
-                                                                className={`max-w-[85%] rounded border px-3 py-2 ${entry.role === "user"
-                                                                    ? "border-primary/40 bg-primary/10 text-foreground"
-                                                                    : entry.role === "assistant"
-                                                                        ? "border-border bg-muted/40 text-foreground"
-                                                                        : "border-border bg-background text-muted-foreground"
-                                                                    }`}
-                                                            >
-                                                                <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
-                                                                    {entry.role === "assistant" ? "Attractor" : entry.role}
-                                                                </p>
-                                                                <p className="whitespace-pre-wrap text-xs leading-5">{entry.content}</p>
-                                                                <p className="mt-1 text-[10px] opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
-                                                            </div>
-                                                        </li>
-                                                    ))}
-                                                </ol>
-                                            )}
-                                        </div>
-                                        {activeProjectSpecCard ? (
-                                            <div
-                                                data-testid="project-spec-edit-proposal-preview"
-                                                className="rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-4 py-3"
-                                            >
-                                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                                    <div className="space-y-1">
-                                                        <div className="flex flex-wrap items-center gap-2">
-                                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-                                                                Specification proposal
-                                                            </p>
-                                                            {activeProjectSpecCard.isDemo ? (
-                                                                <span className={getSurfaceToneClassName('info')}>
-                                                                    Example
-                                                                </span>
-                                                            ) : null}
-                                                            <span className={getSurfaceToneClassName(
-                                                                activeProjectSpecCard.status === 'applied' ? 'success' : 'warning',
-                                                            )}>
-                                                                {activeProjectSpecCard.status === 'applied' ? 'Applied' : 'Pending review'}
-                                                            </span>
-                                                        </div>
-                                                        <p className="text-sm font-medium text-foreground">{activeProjectSpecCard.summary}</p>
-                                                    </div>
-                                                    <p className="text-[11px] text-muted-foreground">
-                                                        {activeProjectSpecCard.changes.length} proposed section
-                                                        {activeProjectSpecCard.changes.length === 1 ? '' : 's'}
-                                                    </p>
-                                                </div>
-                                                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                                                    <span>
-                                                        {activeProjectSpecCard.status === 'applied' ? 'Applied' : 'Generated'} {formatConversationTimestamp(activeProjectSpecCard.createdAt)}
-                                                    </span>
-                                                    <span className="font-mono">{activeProjectSpecCard.id}</span>
-                                                </div>
-                                                <ul className="mt-3 space-y-2">
-                                                    {activeProjectSpecCard.changes.map((change, index) => {
-                                                        const diffLines = buildProposalDiffLines(change)
-                                                        const shouldCollapse = diffLines.length > PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT
-                                                        const changeKey = buildProposalChangeKey(activeProjectSpecCard.id, change.path, index)
-                                                        const isExpanded = expandedProposalChanges[changeKey] === true
-                                                        const visibleLines = shouldCollapse && !isExpanded
-                                                            ? diffLines.slice(0, PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT)
-                                                            : diffLines
+                                                    {activeConversationHistory.map((entry, index) => {
+                                                        const key = `${entry.timestamp}-${entry.artifactId || index}`
+                                                        if (entry.kind === "spec_edit_proposal" && entry.artifactId) {
+                                                            const proposal = activeSpecEditProposalsById.get(entry.artifactId) || null
+                                                            if (!proposal) {
+                                                                return (
+                                                                    <li key={key} className="flex justify-start">
+                                                                        <div className="w-full rounded-md border border-border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+                                                                            Spec edit artifact unavailable. Refresh the project chat to reload it.
+                                                                        </div>
+                                                                    </li>
+                                                                )
+                                                            }
+                                                            const statusPresentation = getSpecEditStatusPresentation(proposal.status)
+                                                            const isLatestProposal = proposal.id === latestSpecEditProposalId
+                                                            const proposalBranch = proposal.git_branch ?? activeProjectGitMetadata.branch
+                                                            const proposalCommit = proposal.git_commit ?? activeProjectGitMetadata.commit
+                                                            return (
+                                                                <li
+                                                                    key={key}
+                                                                    data-testid={isLatestProposal ? "project-spec-edit-proposal-history-row" : undefined}
+                                                                    className="flex justify-start"
+                                                                >
+                                                                    <div
+                                                                        data-testid={isLatestProposal ? "project-spec-edit-proposal-preview" : undefined}
+                                                                        className="w-full rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-4 py-3"
+                                                                    >
+                                                                        <div className="flex flex-wrap items-start justify-between gap-3">
+                                                                            <div className="space-y-1">
+                                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                                                                                        Spec edit card
+                                                                                    </p>
+                                                                                    <span className={getSurfaceToneClassName(statusPresentation.tone)}>
+                                                                                        {statusPresentation.label}
+                                                                                    </span>
+                                                                                </div>
+                                                                                <p className="text-sm font-medium text-foreground">{proposal.summary}</p>
+                                                                            </div>
+                                                                            <p className="text-[11px] text-muted-foreground">
+                                                                                {proposal.changes.length} changed section{proposal.changes.length === 1 ? "" : "s"}
+                                                                            </p>
+                                                                        </div>
+                                                                        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                                                                            <span>{formatConversationTimestamp(proposal.created_at)}</span>
+                                                                            <span className="font-mono">{proposal.id}</span>
+                                                                        </div>
+                                                                        <ul className="mt-3 space-y-2">
+                                                                            {proposal.changes.map((change, changeIndex) => {
+                                                                                const diffLines = buildProposalDiffLines(change)
+                                                                                const shouldCollapse = diffLines.length > PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT
+                                                                                const changeKey = buildProposalChangeKey(proposal.id, change.path, changeIndex)
+                                                                                const isExpanded = expandedProposalChanges[changeKey] === true
+                                                                                const visibleLines = shouldCollapse && !isExpanded
+                                                                                    ? diffLines.slice(0, PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT)
+                                                                                    : diffLines
+                                                                                return (
+                                                                                    <li
+                                                                                        key={`${proposal.id}-${change.path}-${changeIndex}`}
+                                                                                        className="rounded border border-amber-500/20 bg-background/80"
+                                                                                    >
+                                                                                        <div className="flex items-center justify-between gap-2 border-b border-amber-500/20 px-3 py-2">
+                                                                                            <p className="truncate text-[11px] font-medium text-foreground">{change.path}</p>
+                                                                                            {shouldCollapse ? (
+                                                                                                <button
+                                                                                                    type="button"
+                                                                                                    onClick={() => toggleProposalChangeExpanded(changeKey)}
+                                                                                                    className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                                                                >
+                                                                                                    {isExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                                                                                                    {isExpanded ? "Collapse" : `Show all (${diffLines.length})`}
+                                                                                                </button>
+                                                                                            ) : null}
+                                                                                        </div>
+                                                                                        <div className="space-y-1 px-3 py-3">
+                                                                                            {visibleLines.map((line, lineIndex) => (
+                                                                                                <p
+                                                                                                    key={`${change.path}-${lineIndex}`}
+                                                                                                    className={`whitespace-pre-wrap rounded px-1.5 py-0.5 font-mono text-[11px] ${line.type === "removed"
+                                                                                                        ? "bg-red-500/10 text-red-800"
+                                                                                                        : "bg-emerald-500/10 text-emerald-800"
+                                                                                                        }`}
+                                                                                                >
+                                                                                                    {line.type === "removed" ? "- " : "+ "}
+                                                                                                    {line.text}
+                                                                                                </p>
+                                                                                            ))}
+                                                                                            {shouldCollapse && !isExpanded ? (
+                                                                                                <p className="text-[10px] text-muted-foreground">
+                                                                                                    Showing first {PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT} of {diffLines.length} lines.
+                                                                                                </p>
+                                                                                            ) : null}
+                                                                                        </div>
+                                                                                    </li>
+                                                                                )
+                                                                            })}
+                                                                        </ul>
+                                                                        {proposal.status === "pending" ? (
+                                                                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                                                                                <button
+                                                                                    data-testid={isLatestProposal ? "project-spec-edit-proposal-apply-button" : undefined}
+                                                                                    type="button"
+                                                                                    onClick={() => {
+                                                                                        void onApproveSpecEditProposal(proposal)
+                                                                                    }}
+                                                                                    disabled={pendingSpecProposalId === proposal.id}
+                                                                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                                                                >
+                                                                                    Apply proposal
+                                                                                </button>
+                                                                                <button
+                                                                                    data-testid={isLatestProposal ? "project-spec-edit-proposal-reject-button" : undefined}
+                                                                                    type="button"
+                                                                                    onClick={() => {
+                                                                                        void onRejectSpecEditProposal(proposal)
+                                                                                    }}
+                                                                                    disabled={pendingSpecProposalId === proposal.id}
+                                                                                    className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                                                                >
+                                                                                    Reject proposal
+                                                                                </button>
+                                                                            </div>
+                                                                        ) : proposal.status === "applied" ? (
+                                                                            <div className="mt-3 space-y-1 text-[11px] text-muted-foreground">
+                                                                                <p>
+                                                                                    Canonical spec edit:{" "}
+                                                                                    <span className="font-mono text-foreground">
+                                                                                        {proposal.canonical_spec_edit_id || "Pending canonical ID"}
+                                                                                    </span>
+                                                                                </p>
+                                                                                {(proposalBranch || proposalCommit) ? (
+                                                                                    <p>
+                                                                                        Git anchor:{" "}
+                                                                                        <span className="font-mono text-foreground">
+                                                                                            {proposalBranch || "detached"}@{proposalCommit || "unknown"}
+                                                                                        </span>
+                                                                                    </p>
+                                                                                ) : null}
+                                                                            </div>
+                                                                        ) : (
+                                                                            <p className="mt-3 text-[11px] text-muted-foreground">
+                                                                                This spec edit was rejected. Draft a follow-up change in chat if you want to replace it.
+                                                                            </p>
+                                                                        )}
+                                                                    </div>
+                                                                </li>
+                                                            )
+                                                        }
+
+                                                        if (entry.kind === "execution_card" && entry.artifactId) {
+                                                            const executionCard = activeExecutionCardsById.get(entry.artifactId) || null
+                                                            if (!executionCard) {
+                                                                return (
+                                                                    <li key={key} className="flex justify-start">
+                                                                        <div className="w-full rounded-md border border-border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+                                                                            Execution card artifact unavailable. Refresh the project chat to reload it.
+                                                                        </div>
+                                                                    </li>
+                                                                )
+                                                            }
+                                                            const statusPresentation = getExecutionCardStatusPresentation(executionCard.status)
+                                                            const isLatestExecutionCard = executionCard.id === latestExecutionCardId
+                                                            const canReview = executionCard.status === "draft"
+                                                            return (
+                                                                <li
+                                                                    key={key}
+                                                                    data-testid={isLatestExecutionCard ? "project-plan-generation-history-row" : undefined}
+                                                                    className="flex justify-start"
+                                                                >
+                                                                    <div
+                                                                        data-testid={isLatestExecutionCard ? "project-plan-generation-surface" : undefined}
+                                                                        className="w-full rounded-md border border-sky-500/20 bg-sky-500/[0.05] px-4 py-3"
+                                                                    >
+                                                                        <div className="flex flex-wrap items-start justify-between gap-3">
+                                                                            <div className="space-y-1">
+                                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+                                                                                        Execution card
+                                                                                    </p>
+                                                                                    <span className={getSurfaceToneClassName(statusPresentation.tone)}>
+                                                                                        {statusPresentation.label}
+                                                                                    </span>
+                                                                                </div>
+                                                                                <p className="text-sm font-semibold text-foreground">{executionCard.title}</p>
+                                                                            </div>
+                                                                            <div className="space-y-1 text-right text-[11px] text-muted-foreground">
+                                                                                <p className="font-mono text-foreground">{executionCard.id}</p>
+                                                                                <p>Updated {formatConversationTimestamp(executionCard.updated_at)}</p>
+                                                                            </div>
+                                                                        </div>
+                                                                        <div className="mt-4 space-y-4">
+                                                                            <div className="space-y-2">
+                                                                                <p className="text-sm text-foreground">{executionCard.summary}</p>
+                                                                                <p className="text-xs leading-5 text-muted-foreground">{executionCard.objective}</p>
+                                                                            </div>
+                                                                            <section className="space-y-2">
+                                                                                <div className="flex items-center justify-between gap-2">
+                                                                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                                                                        Derived work items
+                                                                                    </p>
+                                                                                    <p className="text-[11px] text-muted-foreground">
+                                                                                        Review this package as a group before dispatch.
+                                                                                    </p>
+                                                                                </div>
+                                                                                <ol className="space-y-2">
+                                                                                    {executionCard.work_items.map((item) => (
+                                                                                        <li key={item.id} className="rounded-md border border-border bg-background/80 px-3 py-2">
+                                                                                            <div className="space-y-1">
+                                                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                                                    <span className="font-mono text-[10px] text-muted-foreground">{item.id}</span>
+                                                                                                    <p className="text-xs font-medium text-foreground">{item.title}</p>
+                                                                                                </div>
+                                                                                                <p className="text-[11px] leading-5 text-muted-foreground">{item.description}</p>
+                                                                                                {item.acceptance_criteria.length > 0 ? (
+                                                                                                    <ul className="space-y-1 pt-1">
+                                                                                                        {item.acceptance_criteria.map((criterion, criterionIndex) => (
+                                                                                                            <li key={`${item.id}-criterion-${criterionIndex}`} className="text-[11px] text-muted-foreground">
+                                                                                                                - {criterion}
+                                                                                                            </li>
+                                                                                                        ))}
+                                                                                                    </ul>
+                                                                                                ) : null}
+                                                                                            </div>
+                                                                                        </li>
+                                                                                    ))}
+                                                                                </ol>
+                                                                            </section>
+                                                                            <section
+                                                                                data-testid={isLatestExecutionCard ? "project-plan-gate-surface" : undefined}
+                                                                                className="space-y-2 rounded-md border border-border bg-background/80 px-3 py-3"
+                                                                            >
+                                                                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                                                                    <div>
+                                                                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                                                                            Review decision
+                                                                                        </p>
+                                                                                        <p className="text-xs text-foreground">
+                                                                                            Execution card status: <span className="font-medium">{executionCard.status}</span>
+                                                                                        </p>
+                                                                                    </div>
+                                                                                </div>
+                                                                                {canReview ? (
+                                                                                    <div className="flex flex-wrap items-center gap-2">
+                                                                                        <button
+                                                                                            data-testid={isLatestExecutionCard ? "project-plan-approve-button" : undefined}
+                                                                                            type="button"
+                                                                                            onClick={() => {
+                                                                                                void onReviewExecutionCard(executionCard, "approved")
+                                                                                            }}
+                                                                                            disabled={pendingExecutionCardId === executionCard.id}
+                                                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                                                                        >
+                                                                                            Approve plan
+                                                                                        </button>
+                                                                                        <button
+                                                                                            data-testid={isLatestExecutionCard ? "project-plan-reject-button" : undefined}
+                                                                                            type="button"
+                                                                                            onClick={() => {
+                                                                                                void onReviewExecutionCard(executionCard, "rejected")
+                                                                                            }}
+                                                                                            disabled={pendingExecutionCardId === executionCard.id}
+                                                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                                                                        >
+                                                                                            Reject plan
+                                                                                        </button>
+                                                                                        <button
+                                                                                            data-testid={isLatestExecutionCard ? "project-plan-request-revision-button" : undefined}
+                                                                                            type="button"
+                                                                                            onClick={() => {
+                                                                                                void onReviewExecutionCard(executionCard, "revision_requested")
+                                                                                            }}
+                                                                                            disabled={pendingExecutionCardId === executionCard.id}
+                                                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                                                                        >
+                                                                                            Request revision
+                                                                                        </button>
+                                                                                    </div>
+                                                                                ) : null}
+                                                                            </section>
+                                                                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                                                                                <span className="font-mono text-foreground">{executionCard.source_spec_edit_id}</span>
+                                                                                <span>/</span>
+                                                                                <span className="font-mono text-foreground">{executionCard.source_workflow_run_id}</span>
+                                                                                {executionCard.flow_source ? (
+                                                                                    <>
+                                                                                        <span>/</span>
+                                                                                        <span className="font-mono text-foreground">{executionCard.flow_source}</span>
+                                                                                    </>
+                                                                                ) : null}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                </li>
+                                                            )
+                                                        }
+
+                                                        if (entry.role !== "user" && entry.role !== "assistant") {
+                                                            return null
+                                                        }
+
                                                         return (
                                                             <li
-                                                                key={`${activeProjectSpecCard.id}-${change.path}-${index}`}
-                                                                className="rounded border border-amber-500/20 bg-background/80"
+                                                                key={key}
+                                                                className={`flex ${entry.role === "user" ? "justify-end" : "justify-start"}`}
                                                             >
-                                                                <div className="flex items-center justify-between gap-2 border-b border-amber-500/20 px-3 py-2">
-                                                                    <p className="truncate text-[11px] font-medium text-foreground">{change.path}</p>
-                                                                    {shouldCollapse ? (
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => toggleProposalChangeExpanded(changeKey)}
-                                                                            className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                                        >
-                                                                            {isExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                                                                            {isExpanded ? "Collapse" : `Show all (${diffLines.length})`}
-                                                                        </button>
-                                                                    ) : null}
-                                                                </div>
-                                                                <div className="space-y-1 px-3 py-3">
-                                                                    {visibleLines.map((line, lineIndex) => (
-                                                                        <p
-                                                                            key={`${change.path}-${lineIndex}`}
-                                                                            className={`whitespace-pre-wrap rounded px-1.5 py-0.5 font-mono text-[11px] ${line.type === "removed"
-                                                                                ? "bg-red-500/10 text-red-800"
-                                                                                : "bg-emerald-500/10 text-emerald-800"
-                                                                                }`}
-                                                                        >
-                                                                            {line.type === "removed" ? "- " : "+ "}
-                                                                            {line.text}
-                                                                        </p>
-                                                                    ))}
-                                                                    {shouldCollapse && !isExpanded ? (
-                                                                        <p className="text-[10px] text-muted-foreground">
-                                                                            Showing first {PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT} of {diffLines.length} lines.
-                                                                        </p>
-                                                                    ) : null}
+                                                                <div
+                                                                    className={`max-w-[85%] rounded border px-3 py-2 ${entry.role === "user"
+                                                                        ? "border-primary/40 bg-primary/10 text-foreground"
+                                                                        : "border-border bg-muted/40 text-foreground"
+                                                                        }`}
+                                                                >
+                                                                    <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+                                                                        {entry.role === "assistant" ? "Attractor" : entry.role}
+                                                                    </p>
+                                                                    <p className="whitespace-pre-wrap text-xs leading-5">{entry.content}</p>
+                                                                    <p className="mt-1 text-[10px] opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
                                                                 </div>
                                                             </li>
                                                         )
                                                     })}
-                                                </ul>
-                                                {activeProjectSpecCard.status === 'applied' ? (
-                                                    <div className="mt-3 space-y-1 text-[11px] text-muted-foreground">
-                                                        {activeProjectSpecCard.isDemo ? (
-                                                            <p>
-                                                                Seeded example for local UI evaluation in the <span className="font-medium text-foreground">sparkspawn</span> project.
-                                                            </p>
-                                                        ) : null}
-                                                        <p>
-                                                            This approved spec card now acts as the upstream artifact for the execution card below.
-                                                        </p>
-                                                    </div>
-                                                ) : (
-                                                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                                                        <button
-                                                            data-testid="project-spec-edit-proposal-apply-button"
-                                                            type="button"
-                                                            onClick={onApplySpecEditProposal}
-                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                        >
-                                                            Apply proposal
-                                                        </button>
-                                                        <button
-                                                            data-testid="project-spec-edit-proposal-reject-button"
-                                                            type="button"
-                                                            onClick={onRejectSpecEditProposal}
-                                                            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                        >
-                                                            Reject proposal
-                                                        </button>
-                                                        <p className="text-[11px] text-muted-foreground">
-                                                            Review the spec edits before carrying them into execution planning.
-                                                        </p>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        ) : null}
-                                        {(activeProjectScope?.specId
-                                            || activeProjectScope?.planId
-                                            || planGenerationError
-                                            || planGenerationStatusDegraded
-                                            || lastPlanGenerationFailure
-                                            || isPlanGenerationLaunching) ? (
-                                            <div
-                                                data-testid="project-plan-generation-surface"
-                                                className="rounded-md border border-sky-500/20 bg-sky-500/[0.05] px-4 py-3"
-                                            >
-                                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                                    <div className="space-y-1">
-                                                        <div className="flex flex-wrap items-center gap-2">
-                                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-700">
-                                                                Execution card
-                                                            </p>
-                                                            <span className={getSurfaceToneClassName(executionCardStatus.tone)}>
-                                                                {executionCardStatus.label}
-                                                            </span>
-                                                        </div>
-                                                        <p className="text-sm font-semibold text-foreground">
-                                                            {activeProjectLabel ? `${activeProjectLabel} implementation plan` : 'Implementation plan'}
-                                                        </p>
-                                                    </div>
-                                                    <div className="space-y-1 text-right text-[11px] text-muted-foreground">
-                                                        <p className="font-mono text-foreground">{activeProjectScope?.planId || 'Draft execution card'}</p>
-                                                        <p>{activeProjectScope?.planProvenance?.capturedAt
-                                                            ? `Updated ${formatConversationTimestamp(activeProjectScope.planProvenance.capturedAt)}`
-                                                            : 'Awaiting generated plan metadata'}</p>
-                                                    </div>
-                                                </div>
-                                                <div className="mt-4 space-y-4">
-                                                    <p className="text-sm leading-6 text-foreground">{executionObjective}</p>
-                                                    <section className="space-y-2">
-                                                        <div className="flex items-center justify-between gap-2">
-                                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                                                Derived work items
-                                                            </p>
-                                                            <p className="text-[11px] text-muted-foreground">
-                                                                Review this package as a group before dispatch.
-                                                            </p>
-                                                        </div>
-                                                        <ol className="space-y-2">
-                                                            {executionWorkItems.map((item) => (
-                                                                <li key={item.id} className="rounded-md border border-border bg-background/80 px-3 py-2">
-                                                                    <div className="flex flex-wrap items-start justify-between gap-2">
-                                                                        <div className="min-w-0 space-y-1">
-                                                                            <div className="flex flex-wrap items-center gap-2">
-                                                                                <span className="font-mono text-[10px] text-muted-foreground">{item.id}</span>
-                                                                                <p className="text-xs font-medium text-foreground">{item.title}</p>
-                                                                            </div>
-                                                                            <p className="text-[11px] leading-5 text-muted-foreground">{item.detail}</p>
-                                                                        </div>
-                                                                        <span className={getSurfaceToneClassName(EXECUTION_ITEM_TONES[item.status])}>
-                                                                            {EXECUTION_ITEM_LABELS[item.status]}
-                                                                        </span>
-                                                                    </div>
-                                                                </li>
-                                                            ))}
-                                                        </ol>
-                                                    </section>
-                                                    <section data-testid="project-plan-gate-surface" className="space-y-2 rounded-md border border-border bg-background/80 px-3 py-3">
-                                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                                            <div>
-                                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                                                    Review decision
-                                                                </p>
-                                                                <p className="text-xs text-foreground">
-                                                                    Plan status: <span className="font-medium">{activePlanStatus}</span>
-                                                                </p>
-                                                            </div>
-                                                            {!activeProjectScope?.planId ? (
-                                                                <span className={getSurfaceToneClassName('neutral')}>
-                                                                    Awaiting plan artifact
-                                                                </span>
-                                                            ) : null}
-                                                        </div>
-                                                        {!activeProjectScope?.planId ? (
-                                                            <p className="text-[11px] text-muted-foreground">
-                                                                Review controls unlock once the execution card has a generated plan artifact.
-                                                            </p>
-                                                        ) : null}
-                                                        <div className="flex flex-wrap items-center gap-2">
-                                                            <button
-                                                                data-testid="project-plan-approve-button"
-                                                                type="button"
-                                                                onClick={() => onPlanGateTransition('approved')}
-                                                                disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'approved')}
-                                                                className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                                                            >
-                                                                Approve plan
-                                                            </button>
-                                                            <button
-                                                                data-testid="project-plan-reject-button"
-                                                                type="button"
-                                                                onClick={() => onPlanGateTransition('rejected')}
-                                                                disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'rejected')}
-                                                                className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                                                            >
-                                                                Reject plan
-                                                            </button>
-                                                            <button
-                                                                data-testid="project-plan-request-revision-button"
-                                                                type="button"
-                                                                onClick={() => onPlanGateTransition('revision-requested')}
-                                                                disabled={!activeProjectScope?.planId || !canTransitionPlanStatus(activePlanStatus, 'revision-requested')}
-                                                                className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                                                            >
-                                                                Request revision
-                                                            </button>
-                                                        </div>
-                                                    </section>
-                                                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                                                        <span className="font-mono text-foreground">{activeProjectScope?.specId || 'No spec id'}</span>
-                                                        <span>/</span>
-                                                        <span className="font-mono text-foreground">{activeProjectScope?.planId || 'No execution card id yet'}</span>
-                                                        {activeFlow ? (
-                                                            <>
-                                                                <span>/</span>
-                                                                <span className="font-mono text-foreground">{activeFlow}</span>
-                                                            </>
-                                                        ) : null}
-                                                    </div>
-                                                    {isPlanGenerationLaunching ? (
-                                                        <p data-testid="project-plan-generation-launching" className="text-[11px] text-muted-foreground">
-                                                            Launching plan-generation workflow...
-                                                        </p>
-                                                    ) : null}
-                                                    {!activeProjectScope?.planId && !isPlanGenerationLaunching ? (
-                                                        <p className="text-[11px] text-muted-foreground">
-                                                            The execution card will gain its durable identifier once generation completes.
-                                                        </p>
-                                                    ) : null}
-                                                    {planGenerationError ? (
-                                                        <p data-testid="project-plan-generation-error" className="text-[11px] text-destructive">
-                                                            {planGenerationError}
-                                                        </p>
-                                                    ) : null}
-                                                    {planGenerationStatusDegraded ? (
-                                                        <p data-testid="project-plan-generation-status-degraded" className="text-[11px] text-amber-800">
-                                                            {planGenerationStatusDegraded}
-                                                        </p>
-                                                    ) : null}
-                                                    {lastPlanGenerationFailure ? (
-                                                        <div data-testid="project-plan-failure-diagnostics" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
-                                                            <p className="font-medium">Last planning launch failure</p>
-                                                            <p data-testid="project-plan-failure-message">{lastPlanGenerationFailure.message}</p>
-                                                            <p>
-                                                                Flow source: <span className="font-mono">{lastPlanGenerationFailure.flowSource || "none selected"}</span>
-                                                            </p>
-                                                            <p>
-                                                                Failed at: {formatConversationTimestamp(lastPlanGenerationFailure.failedAt)}
-                                                            </p>
-                                                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                                                                <button
-                                                                    data-testid="project-plan-generation-rerun-button"
-                                                                    type="button"
-                                                                    onClick={() => {
-                                                                        void onLaunchPlanGenerationWorkflow({ trigger: "retry" })
-                                                                    }}
-                                                                    disabled={!canRerunPlanGeneration}
-                                                                    className="rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                                                                >
-                                                                    Retry plan-generation workflow
-                                                                </button>
-                                                                {!canRerunPlanGeneration ? (
-                                                                    <p data-testid="project-plan-generation-rerun-disabled-reason" className="text-[11px] text-destructive/90">
-                                                                        Fix launch prerequisites to enable rerun.
-                                                                    </p>
-                                                                ) : null}
-                                                            </div>
-                                                        </div>
-                                                    ) : null}
-                                                </div>
-                                            </div>
-                                        ) : null}
+                                                </ol>
+                                            )}
+                                        </div>
                                     </div>
                                     <form
                                         data-testid="project-ai-conversation-composer"
@@ -1617,12 +1496,15 @@ export function HomePanel() {
                                             <button
                                                 data-testid="project-ai-conversation-send-button"
                                                 type="submit"
-                                                disabled={chatDraft.trim().length === 0}
+                                                disabled={chatDraft.trim().length === 0 || isSendingChat}
                                                 className="rounded border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                             >
                                                 Send
                                             </button>
                                         </div>
+                                        {panelError ? (
+                                            <p className="text-[11px] text-destructive">{panelError}</p>
+                                        ) : null}
                                     </form>
                                 </div>
                             )}

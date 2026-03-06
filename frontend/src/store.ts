@@ -73,6 +73,8 @@ export interface ConversationHistoryEntry {
     role: 'user' | 'assistant' | 'system'
     content: string
     timestamp: string
+    kind?: 'message' | 'spec_edit_proposal' | 'execution_card'
+    artifactId?: string | null
 }
 
 export interface ProjectEventLogEntry {
@@ -281,6 +283,8 @@ interface ProjectScopedWorkspace {
     artifactRunId: string | null
 }
 
+type ProjectScopedWorkspacePatch = Partial<ProjectScopedWorkspace>
+
 interface ProjectScopedArtifactState {
     conversationId: string | null
     specId: string | null
@@ -343,6 +347,12 @@ const coerceConversationHistoryEntry = (value: unknown): ConversationHistoryEntr
             role: candidate.role,
             content: candidate.content,
             timestamp: candidate.timestamp,
+            kind: candidate.kind === "spec_edit_proposal"
+                || candidate.kind === "execution_card"
+                || candidate.kind === "message"
+                ? candidate.kind
+                : undefined,
+            artifactId: typeof candidate.artifactId === "string" ? candidate.artifactId : null,
         }
     }
     return null
@@ -431,11 +441,14 @@ const loadProjectConversationState = (): PersistedProjectWorkspaceState => {
                     .map(coerceConversationHistoryEntry)
                     .filter((entry): entry is ConversationHistoryEntry => entry !== null)
                 : []
-            const conversationHistory = historyEntries.filter(
-                (entry): entry is ConversationHistoryEntry => entry.role === "user" || entry.role === "assistant"
-            )
+            const conversationHistory = historyEntries.filter((entry): entry is ConversationHistoryEntry => {
+                if (entry.kind === "spec_edit_proposal" || entry.kind === "execution_card") {
+                    return true
+                }
+                return entry.role === "user" || entry.role === "assistant"
+            })
             const legacySystemEventEntries = historyEntries
-                .filter((entry) => entry.role === "system")
+                .filter((entry) => entry.role === "system" && entry.kind !== "spec_edit_proposal" && entry.kind !== "execution_card")
                 .map((entry) => ({
                     message: entry.content,
                     timestamp: entry.timestamp,
@@ -695,6 +708,7 @@ interface AppState {
     setConversationId: (id: string | null) => void
     appendConversationHistoryEntry: (entry: ConversationHistoryEntry) => void
     appendProjectEventEntry: (entry: ProjectEventLogEntry) => void
+    updateProjectScopedWorkspace: (projectPath: string, patch: ProjectScopedWorkspacePatch) => void
     setSpecId: (id: string | null) => void
     setSpecStatus: (status: 'draft' | 'approved') => void
     setSpecProvenance: (provenance: ArtifactProvenanceReference | null) => void
@@ -1164,6 +1178,39 @@ export const useStore = create<AppState>((set, get) => ({
             saveProjectConversationState(nextProjectScopedWorkspaces)
             return {
                 projectScopedWorkspaces: nextProjectScopedWorkspaces,
+            }
+        }),
+    updateProjectScopedWorkspace: (projectPath, patch) =>
+        set((state) => {
+            const normalizedProjectPath = normalizeProjectPath(projectPath)
+            if (!normalizedProjectPath || !isAbsoluteProjectPath(normalizedProjectPath)) {
+                return {}
+            }
+            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[normalizedProjectPath], normalizedProjectPath)
+            const nextScopedWorkspace = {
+                ...scoped,
+                ...patch,
+            }
+            nextProjectScopedWorkspaces[normalizedProjectPath] = nextScopedWorkspace
+            saveProjectConversationState(nextProjectScopedWorkspaces)
+            const isActiveScope = state.activeProjectPath === normalizedProjectPath
+            if (!isActiveScope) {
+                return {
+                    projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                }
+            }
+            saveRouteState({
+                viewMode: state.viewMode,
+                activeProjectPath: state.activeProjectPath,
+                activeFlow: nextScopedWorkspace.activeFlow,
+                selectedRunId: nextScopedWorkspace.selectedRunId,
+            })
+            return {
+                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                activeFlow: nextScopedWorkspace.activeFlow,
+                selectedRunId: nextScopedWorkspace.selectedRunId,
+                workingDir: nextScopedWorkspace.workingDir,
             }
         }),
     setSpecId: (id) =>

@@ -8,18 +8,24 @@ services:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
-      - HOME=/codex-home
-      - XDG_CONFIG_HOME=/codex-home/.config
-      - XDG_DATA_HOME=/codex-home/.local/share
+      - HOME=/codex-runtime
+      - CODEX_HOME=/codex-runtime/.codex
+      - XDG_CONFIG_HOME=/codex-runtime/.config
+      - XDG_DATA_HOME=/codex-runtime/.local/share
+      - ATTRACTOR_RUNTIME_REPO_ROOT=/app
+      - ATTRACTOR_HOST_REPO_ROOT=${PWD}
+      - ATTRACTOR_CODEX_RUNTIME_ROOT=/codex-runtime
+      - ATTRACTOR_CODEX_SEED_DIR=/codex-seed
       - OPENAI_API_KEY
       - OPENAI_ORG
       - OPENAI_PROJECT
     command: uvicorn attractor.api.server:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
-      - codex_home:/codex-home
-      - ${HOME}/.codex:/codex-home/.codex
-      - ${HOME}/.codex/skills:/codex-home/.codex/skills
+      - codex_runtime:/codex-runtime
+      - ${HOME}/.codex/auth.json:/codex-seed/auth.json:ro
+      - ${HOME}/.codex/config.toml:/codex-seed/config.toml:ro
+      - ${HOME}/.codex/skills:/codex-runtime/.codex/skills:ro
       - ${HOME}/projects/agent-skills:/Users/chris/projects/agent-skills:ro
 
   frontend:
@@ -41,4 +47,4 @@ services:
 
 volumes:
   frontend_node_modules:
-  codex_home:
+  codex_runtime:

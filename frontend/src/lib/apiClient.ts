@@ -99,6 +99,78 @@ export interface RuntimeStatusResponse {
     last_run_id?: string | null
 }
 
+export interface ConversationTurnResponse {
+    id: string
+    role: 'user' | 'assistant' | 'system'
+    content: string
+    timestamp: string
+    kind: 'message' | 'spec_edit_proposal' | 'execution_card'
+    artifact_id?: string | null
+}
+
+export interface WorkflowEventResponse {
+    message: string
+    timestamp: string
+}
+
+export interface SpecEditProposalResponse {
+    id: string
+    created_at: string
+    summary: string
+    status: 'pending' | 'applied' | 'rejected'
+    changes: Array<{
+        path: string
+        before: string
+        after: string
+    }>
+    canonical_spec_edit_id?: string | null
+    approved_at?: string | null
+    git_branch?: string | null
+    git_commit?: string | null
+}
+
+export interface ExecutionCardResponse {
+    id: string
+    title: string
+    summary: string
+    objective: string
+    status: 'draft' | 'approved' | 'rejected' | 'revision-requested'
+    source_spec_edit_id: string
+    source_workflow_run_id: string
+    created_at: string
+    updated_at: string
+    flow_source?: string | null
+    work_items: Array<{
+        id: string
+        title: string
+        description: string
+        acceptance_criteria: string[]
+        depends_on: string[]
+    }>
+    review_feedback: Array<{
+        id: string
+        disposition: 'approved' | 'rejected' | 'revision_requested'
+        message: string
+        created_at: string
+        author: string
+    }>
+}
+
+export interface ConversationSnapshotResponse {
+    conversation_id: string
+    project_path: string
+    turns: ConversationTurnResponse[]
+    event_log: WorkflowEventResponse[]
+    spec_edit_proposals: SpecEditProposalResponse[]
+    execution_cards: ExecutionCardResponse[]
+    execution_workflow: {
+        run_id?: string | null
+        status: 'idle' | 'running' | 'failed'
+        error?: string | null
+        flow_source?: string | null
+    }
+}
+
 export class ApiSchemaError extends Error {
     endpoint: string
 
@@ -496,6 +568,181 @@ export function parseRuntimeStatusResponse(payload: unknown, endpoint = '/status
     }
 }
 
+function parseConversationTurnResponse(value: unknown, endpoint: string): ConversationTurnResponse | null {
+    const record = asUnknownRecord(value)
+    if (!record) {
+        return null
+    }
+    const role = typeof record.role === 'string' ? record.role : ''
+    if (role !== 'user' && role !== 'assistant' && role !== 'system') {
+        return null
+    }
+    const kind = record.kind === 'spec_edit_proposal' || record.kind === 'execution_card' || record.kind === 'message'
+        ? record.kind
+        : 'message'
+    if (typeof record.id !== 'string' || typeof record.content !== 'string' || typeof record.timestamp !== 'string') {
+        return null
+    }
+    return {
+        id: record.id,
+        role,
+        content: record.content,
+        timestamp: record.timestamp,
+        kind,
+        artifact_id: asOptionalNullableString(record.artifact_id),
+    }
+}
+
+function parseWorkflowEventResponse(value: unknown): WorkflowEventResponse | null {
+    const record = asUnknownRecord(value)
+    if (!record || typeof record.message !== 'string' || typeof record.timestamp !== 'string') {
+        return null
+    }
+    return {
+        message: record.message,
+        timestamp: record.timestamp,
+    }
+}
+
+function parseSpecEditProposalResponse(value: unknown): SpecEditProposalResponse | null {
+    const record = asUnknownRecord(value)
+    if (!record || typeof record.id !== 'string' || typeof record.created_at !== 'string' || typeof record.summary !== 'string') {
+        return null
+    }
+    const rawChanges = record.changes
+    const changes = Array.isArray(rawChanges)
+        ? rawChanges
+            .map((change) => asUnknownRecord(change))
+            .filter((change): change is Record<string, unknown> => change !== null)
+            .filter((change) => typeof change.path === 'string' && typeof change.before === 'string' && typeof change.after === 'string')
+            .map((change) => ({
+                path: String(change.path),
+                before: String(change.before),
+                after: String(change.after),
+            }))
+        : []
+    const status = record.status === 'applied' || record.status === 'rejected' ? record.status : 'pending'
+    return {
+        id: record.id,
+        created_at: record.created_at,
+        summary: record.summary,
+        status,
+        changes,
+        canonical_spec_edit_id: asOptionalNullableString(record.canonical_spec_edit_id),
+        approved_at: asOptionalNullableString(record.approved_at),
+        git_branch: asOptionalNullableString(record.git_branch),
+        git_commit: asOptionalNullableString(record.git_commit),
+    }
+}
+
+function parseExecutionCardResponse(value: unknown): ExecutionCardResponse | null {
+    const record = asUnknownRecord(value)
+    if (
+        !record
+        || typeof record.id !== 'string'
+        || typeof record.title !== 'string'
+        || typeof record.summary !== 'string'
+        || typeof record.objective !== 'string'
+        || typeof record.source_spec_edit_id !== 'string'
+        || typeof record.source_workflow_run_id !== 'string'
+        || typeof record.created_at !== 'string'
+        || typeof record.updated_at !== 'string'
+    ) {
+        return null
+    }
+    const status = record.status === 'approved'
+        || record.status === 'rejected'
+        || record.status === 'revision-requested'
+        ? record.status
+        : 'draft'
+    const work_items = Array.isArray(record.work_items)
+        ? record.work_items
+            .map((item) => asUnknownRecord(item))
+            .filter((item): item is Record<string, unknown> => item !== null)
+            .filter((item) => typeof item.id === 'string' && typeof item.title === 'string' && typeof item.description === 'string')
+            .map((item) => ({
+                id: String(item.id),
+                title: String(item.title),
+                description: String(item.description),
+                acceptance_criteria: Array.isArray(item.acceptance_criteria) ? item.acceptance_criteria.map((entry) => String(entry)) : [],
+                depends_on: Array.isArray(item.depends_on) ? item.depends_on.map((entry) => String(entry)) : [],
+            }))
+        : []
+    const review_feedback = Array.isArray(record.review_feedback)
+        ? record.review_feedback
+            .map((entry) => asUnknownRecord(entry))
+            .filter((entry): entry is Record<string, unknown> => entry !== null)
+            .filter((entry) => typeof entry.id === 'string' && typeof entry.disposition === 'string' && typeof entry.message === 'string' && typeof entry.created_at === 'string')
+            .map((entry) => ({
+                id: String(entry.id),
+                disposition: entry.disposition === 'approved' || entry.disposition === 'rejected' || entry.disposition === 'revision_requested'
+                    ? entry.disposition
+                    : 'revision_requested',
+                message: String(entry.message),
+                created_at: String(entry.created_at),
+                author: typeof entry.author === 'string' ? entry.author : 'user',
+            }))
+        : []
+    return {
+        id: record.id,
+        title: record.title,
+        summary: record.summary,
+        objective: record.objective,
+        status,
+        source_spec_edit_id: record.source_spec_edit_id,
+        source_workflow_run_id: record.source_workflow_run_id,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        flow_source: asOptionalNullableString(record.flow_source),
+        work_items,
+        review_feedback,
+    }
+}
+
+export function parseConversationSnapshotResponse(
+    payload: unknown,
+    endpoint = '/api/conversations/{id}',
+): ConversationSnapshotResponse {
+    const record = expectObjectRecord(payload, endpoint)
+    const turns = Array.isArray(record.turns)
+        ? record.turns
+            .map((entry) => parseConversationTurnResponse(entry, endpoint))
+            .filter((entry): entry is ConversationTurnResponse => entry !== null)
+        : []
+    const event_log = Array.isArray(record.event_log)
+        ? record.event_log
+            .map((entry) => parseWorkflowEventResponse(entry))
+            .filter((entry): entry is WorkflowEventResponse => entry !== null)
+        : []
+    const spec_edit_proposals = Array.isArray(record.spec_edit_proposals)
+        ? record.spec_edit_proposals
+            .map((entry) => parseSpecEditProposalResponse(entry))
+            .filter((entry): entry is SpecEditProposalResponse => entry !== null)
+        : []
+    const execution_cards = Array.isArray(record.execution_cards)
+        ? record.execution_cards
+            .map((entry) => parseExecutionCardResponse(entry))
+            .filter((entry): entry is ExecutionCardResponse => entry !== null)
+        : []
+    const executionWorkflowRecord = asUnknownRecord(record.execution_workflow) || {}
+    return {
+        conversation_id: expectString(record.conversation_id, endpoint, 'conversation_id'),
+        project_path: expectString(record.project_path, endpoint, 'project_path'),
+        turns,
+        event_log,
+        spec_edit_proposals,
+        execution_cards,
+        execution_workflow: {
+            run_id: asOptionalNullableString(executionWorkflowRecord.run_id),
+            status: executionWorkflowRecord.status === 'running' || executionWorkflowRecord.status === 'failed'
+                ? executionWorkflowRecord.status
+                : 'idle',
+            error: asOptionalNullableString(executionWorkflowRecord.error),
+            flow_source: asOptionalNullableString(executionWorkflowRecord.flow_source),
+        },
+    }
+}
+
 export async function fetchFlowListValidated(): Promise<string[]> {
     return fetchJsonWithValidation('/api/flows', undefined, '/api/flows', parseFlowListResponse)
 }
@@ -593,4 +840,89 @@ export async function fetchRunsListValidated(): Promise<RunsListResponse> {
 
 export async function fetchRuntimeStatusValidated(): Promise<RuntimeStatusResponse> {
     return fetchJsonWithValidation('/status', undefined, '/status', parseRuntimeStatusResponse)
+}
+
+export async function fetchConversationSnapshotValidated(
+    conversationId: string,
+    projectPath: string,
+): Promise<ConversationSnapshotResponse> {
+    const url = `/api/conversations/${encodeURIComponent(conversationId)}?project_path=${encodeURIComponent(projectPath)}`
+    return fetchJsonWithValidation(url, undefined, '/api/conversations/{id}', parseConversationSnapshotResponse)
+}
+
+export async function sendConversationTurnValidated(
+    conversationId: string,
+    payload: { project_path: string; message: string; model?: string | null },
+): Promise<ConversationSnapshotResponse> {
+    const url = `/api/conversations/${encodeURIComponent(conversationId)}/turns`
+    return fetchJsonWithValidation(
+        url,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        },
+        '/api/conversations/{id}/turns',
+        parseConversationSnapshotResponse,
+    )
+}
+
+export async function approveSpecEditProposalValidated(
+    conversationId: string,
+    proposalId: string,
+    payload: { project_path: string; model?: string | null; flow_source?: string | null },
+): Promise<ConversationSnapshotResponse> {
+    const url = `/api/conversations/${encodeURIComponent(conversationId)}/spec-edit-proposals/${encodeURIComponent(proposalId)}/approve`
+    return fetchJsonWithValidation(
+        url,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        },
+        '/api/conversations/{id}/spec-edit-proposals/{proposalId}/approve',
+        parseConversationSnapshotResponse,
+    )
+}
+
+export async function rejectSpecEditProposalValidated(
+    conversationId: string,
+    proposalId: string,
+    payload: { project_path: string },
+): Promise<ConversationSnapshotResponse> {
+    const url = `/api/conversations/${encodeURIComponent(conversationId)}/spec-edit-proposals/${encodeURIComponent(proposalId)}/reject`
+    return fetchJsonWithValidation(
+        url,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        },
+        '/api/conversations/{id}/spec-edit-proposals/{proposalId}/reject',
+        parseConversationSnapshotResponse,
+    )
+}
+
+export async function reviewExecutionCardValidated(
+    conversationId: string,
+    executionCardId: string,
+    payload: {
+        project_path: string
+        disposition: 'approved' | 'rejected' | 'revision_requested'
+        message: string
+        model?: string | null
+        flow_source?: string | null
+    },
+): Promise<ConversationSnapshotResponse> {
+    const url = `/api/conversations/${encodeURIComponent(conversationId)}/execution-cards/${encodeURIComponent(executionCardId)}/review`
+    return fetchJsonWithValidation(
+        url,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        },
+        '/api/conversations/{id}/execution-cards/{executionCardId}/review',
+        parseConversationSnapshotResponse,
+    )
 }

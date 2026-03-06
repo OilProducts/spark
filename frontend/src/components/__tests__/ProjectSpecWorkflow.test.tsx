@@ -1,4 +1,5 @@
 import { ProjectsPanel } from '@/components/ProjectsPanel'
+import { type ConversationSnapshotResponse } from '@/lib/apiClient'
 import { useStore } from '@/store'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -33,56 +34,244 @@ const resolveRequestUrl = (input: RequestInfo | URL): string => {
   return input.url
 }
 
+const cloneSnapshot = (snapshot: ConversationSnapshotResponse): ConversationSnapshotResponse => (
+  JSON.parse(JSON.stringify(snapshot)) as ConversationSnapshotResponse
+)
+
+const createConversationSnapshot = (
+  conversationId: string,
+  projectPath: string,
+  overrides?: Partial<ConversationSnapshotResponse>,
+): ConversationSnapshotResponse => ({
+  conversation_id: conversationId,
+  project_path: projectPath,
+  turns: overrides?.turns ?? [],
+  event_log: overrides?.event_log ?? [],
+  spec_edit_proposals: overrides?.spec_edit_proposals ?? [],
+  execution_cards: overrides?.execution_cards ?? [],
+  execution_workflow: overrides?.execution_workflow ?? {
+    run_id: null,
+    status: 'idle',
+    error: null,
+    flow_source: null,
+  },
+})
+
+const getConversationIdFromUrl = (url: string): string | null => {
+  const match = url.match(/\/api\/conversations\/([^/?]+)/)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+class MockEventSource {
+  static instances: MockEventSource[] = []
+
+  url: string
+  onmessage: ((event: MessageEvent<string>) => void) | null = null
+  onerror: ((event: Event) => void) | null = null
+  readyState = 1
+  closed = false
+
+  constructor(url: string) {
+    this.url = url
+    MockEventSource.instances.push(this)
+  }
+
+  close() {
+    this.closed = true
+    this.readyState = 2
+  }
+
+  emit(payload: unknown) {
+    this.onmessage?.({ data: JSON.stringify(payload) } as MessageEvent<string>)
+  }
+}
+
 describe('Project-scoped workflow behavior', () => {
-  let planStatusContractUnavailable = false
+  let conversationSnapshots: Record<string, ConversationSnapshotResponse>
 
   beforeEach(() => {
-    planStatusContractUnavailable = false
+    conversationSnapshots = {}
+    MockEventSource.instances = []
     resetProjectWorkflowState()
     vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
-        if (url.includes('/api/projects/metadata')) {
+        const endpoint = new URL(url, 'http://localhost')
+        const conversationId = getConversationIdFromUrl(url)
+        const requestBody = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
+
+        if (endpoint.pathname === '/api/projects/metadata') {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (url.includes('/api/flows/')) {
-          return new Response(JSON.stringify({ content: 'digraph Plan { start -> end }' }), {
+
+        if (conversationId && endpoint.pathname.endsWith(`/api/conversations/${conversationId}`) && !init?.method) {
+          const projectPath = endpoint.searchParams.get('project_path') || conversationSnapshots[conversationId]?.project_path || '/tmp/unknown-project'
+          const snapshot = conversationSnapshots[conversationId]
+            ? cloneSnapshot(conversationSnapshots[conversationId]!)
+            : createConversationSnapshot(conversationId, projectPath)
+          conversationSnapshots[conversationId] = cloneSnapshot(snapshot)
+          return new Response(JSON.stringify(snapshot), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (url.endsWith('/pipelines') && init?.method === 'POST') {
-          return new Response(JSON.stringify({ status: 'started', pipeline_id: 'run-plan-101' }), {
+
+        if (conversationId && endpoint.pathname.endsWith(`/api/conversations/${conversationId}/turns`) && init?.method === 'POST') {
+          const projectPath = String(requestBody.project_path || '/tmp/unknown-project')
+          const message = String(requestBody.message || '')
+          const proposalId = `proposal-${conversationId}`
+          const snapshot = createConversationSnapshot(conversationId, projectPath, {
+            turns: [
+              {
+                id: `turn-user-${conversationId}`,
+                role: 'user',
+                content: message,
+                timestamp: '2026-03-06T15:00:00Z',
+                kind: 'message',
+                artifact_id: null,
+              },
+              {
+                id: `turn-assistant-${conversationId}`,
+                role: 'assistant',
+                content: 'I drafted a spec edit proposal for review.',
+                timestamp: '2026-03-06T15:00:10Z',
+                kind: 'message',
+                artifact_id: null,
+              },
+              {
+                id: `turn-proposal-${conversationId}`,
+                role: 'system',
+                content: '',
+                timestamp: '2026-03-06T15:00:11Z',
+                kind: 'spec_edit_proposal',
+                artifact_id: proposalId,
+              },
+            ],
+            event_log: [
+              {
+                message: `Drafted spec edit proposal ${proposalId}.`,
+                timestamp: '2026-03-06T15:00:11Z',
+              },
+            ],
+            spec_edit_proposals: [
+              {
+                id: proposalId,
+                created_at: '2026-03-06T15:00:11Z',
+                summary: 'Project-first home chat flow should require explicit spec review before planning.',
+                status: 'pending',
+                changes: [
+                  {
+                    path: 'spec/home-chat.md#review-flow',
+                    before: 'Plan generation may begin immediately after the chat turn.',
+                    after: 'Plan generation begins only after the user approves a reviewed spec edit card.',
+                  },
+                ],
+                canonical_spec_edit_id: null,
+                approved_at: null,
+                git_branch: null,
+                git_commit: null,
+              },
+            ],
+          })
+          conversationSnapshots[conversationId] = cloneSnapshot(snapshot)
+          return new Response(JSON.stringify(snapshot), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (url.endsWith('/pipelines/run-plan-101')) {
-          if (planStatusContractUnavailable) {
-            return new Response(JSON.stringify({ detail: 'plan status endpoint unavailable' }), {
-              status: 503,
-              headers: { 'Content-Type': 'application/json' },
-            })
-          }
-          return new Response(
-            JSON.stringify({
-              pipeline_id: 'run-plan-101',
-              status: 'running',
-              flow_name: 'plan-generation.dot',
-              working_directory: '/tmp/plan-project',
-              model: 'gpt-5.3',
-            }),
+
+        if (conversationId && endpoint.pathname.includes('/spec-edit-proposals/') && endpoint.pathname.endsWith('/approve') && init?.method === 'POST') {
+          const currentSnapshot = cloneSnapshot(conversationSnapshots[conversationId]!)
+          const proposal = currentSnapshot.spec_edit_proposals[0]!
+          proposal.status = 'applied'
+          proposal.canonical_spec_edit_id = `spec-edit-${formatProjectKey(currentSnapshot.project_path)}-001`
+          proposal.approved_at = '2026-03-06T15:01:00Z'
+          proposal.git_branch = 'main'
+          proposal.git_commit = 'abc123def456'
+          currentSnapshot.event_log = [
+            ...currentSnapshot.event_log,
             {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
+              message: `Approved spec edit proposal ${proposal.id} as canonical spec edit ${proposal.canonical_spec_edit_id} and committed it to git.`,
+              timestamp: '2026-03-06T15:01:00Z',
             },
-          )
+            {
+              message: `Execution planning started (workflow-plan-101)${requestBody.flow_source ? ` using ${String(requestBody.flow_source)}.` : '.'}`,
+              timestamp: '2026-03-06T15:01:01Z',
+            },
+          ]
+          currentSnapshot.execution_workflow = {
+            run_id: 'workflow-plan-101',
+            status: 'running',
+            error: null,
+            flow_source: typeof requestBody.flow_source === 'string' ? requestBody.flow_source : null,
+          }
+          conversationSnapshots[conversationId] = cloneSnapshot(currentSnapshot)
+          return new Response(JSON.stringify(currentSnapshot), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
         }
+
+        if (conversationId && endpoint.pathname.includes('/spec-edit-proposals/') && endpoint.pathname.endsWith('/reject') && init?.method === 'POST') {
+          const currentSnapshot = cloneSnapshot(conversationSnapshots[conversationId]!)
+          const proposal = currentSnapshot.spec_edit_proposals[0]!
+          proposal.status = 'rejected'
+          currentSnapshot.event_log = [
+            ...currentSnapshot.event_log,
+            {
+              message: `Rejected spec edit proposal ${proposal.id}.`,
+              timestamp: '2026-03-06T15:01:00Z',
+            },
+          ]
+          conversationSnapshots[conversationId] = cloneSnapshot(currentSnapshot)
+          return new Response(JSON.stringify(currentSnapshot), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+
+        if (conversationId && endpoint.pathname.includes('/execution-cards/') && endpoint.pathname.endsWith('/review') && init?.method === 'POST') {
+          const currentSnapshot = cloneSnapshot(conversationSnapshots[conversationId]!)
+          const executionCard = currentSnapshot.execution_cards[currentSnapshot.execution_cards.length - 1]!
+          executionCard.status = requestBody.disposition === 'approved'
+            ? 'approved'
+            : requestBody.disposition === 'rejected'
+              ? 'rejected'
+              : 'revision-requested'
+          executionCard.review_feedback = [
+            ...(executionCard.review_feedback || []),
+            {
+              id: `review-${conversationId}`,
+              disposition: String(requestBody.disposition),
+              message: String(requestBody.message || ''),
+              created_at: '2026-03-06T15:03:00Z',
+              author: 'user',
+            },
+          ]
+          currentSnapshot.turns = [
+            ...currentSnapshot.turns,
+            {
+              id: `turn-review-${conversationId}`,
+              role: 'user',
+              content: String(requestBody.message || ''),
+              timestamp: '2026-03-06T15:03:00Z',
+              kind: 'message',
+              artifact_id: null,
+            },
+          ]
+          conversationSnapshots[conversationId] = cloneSnapshot(currentSnapshot)
+          return new Response(JSON.stringify(currentSnapshot), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+
         return new Response(JSON.stringify({}), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -95,6 +284,18 @@ describe('Project-scoped workflow behavior', () => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
+
+  const emitConversationSnapshot = (conversationId: string, snapshot: ConversationSnapshotResponse) => {
+    conversationSnapshots[conversationId] = cloneSnapshot(snapshot)
+    MockEventSource.instances
+      .filter((instance) => !instance.closed && getConversationIdFromUrl(instance.url) === conversationId)
+      .forEach((instance) => {
+        instance.emit({
+          type: 'conversation_snapshot',
+          state: snapshot,
+        })
+      })
+  }
 
   it('creates project-scoped conversation history and requires explicit confirmation before applying proposal edits', async () => {
     const user = userEvent.setup()
@@ -111,135 +312,134 @@ describe('Project-scoped workflow behavior', () => {
       'Please add a project-first home chat flow with approval before planning.',
     )
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
-    expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent(
-      'Please add a project-first home chat flow with approval before planning.',
-    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent(
+        'Please add a project-first home chat flow with approval before planning.',
+      )
+    })
     await waitFor(() => {
       expect(screen.getByTestId('project-spec-edit-proposal-preview')).toBeVisible()
     })
-    expect(useStore.getState().projectScopedWorkspaces['/tmp/workflow-project']?.conversationId).toMatch(
-      /^conversation-/,
-    )
+
+    const conversationId = useStore.getState().projectScopedWorkspaces['/tmp/workflow-project']?.conversationId
+    expect(conversationId).toMatch(/^conversation-/)
 
     const confirmSpy = vi.spyOn(window, 'confirm')
     confirmSpy.mockReturnValueOnce(false)
     await user.click(screen.getByTestId('project-spec-edit-proposal-apply-button'))
-    expect(screen.getByTestId('project-spec-edit-proposal-preview')).toBeVisible()
     expect(useStore.getState().projectScopedWorkspaces['/tmp/workflow-project']?.specId).toBeNull()
 
     confirmSpy.mockReturnValueOnce(true)
     await user.click(screen.getByTestId('project-spec-edit-proposal-apply-button'))
+
     await waitFor(() => {
       expect(screen.getByTestId('project-spec-edit-proposal-preview')).toHaveTextContent('Applied')
     })
 
     const projectScope = useStore.getState().projectScopedWorkspaces['/tmp/workflow-project']
-    expect(projectScope.specId).toMatch(/^spec-/)
+    expect(projectScope.specId).toBe('spec-edit-workflow-project-001')
     expect(projectScope.specStatus).toBe('approved')
     expect(projectScope.projectEventLog).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          message: expect.stringContaining('Applied spec edit proposal'),
+          message: expect.stringContaining('Approved spec edit proposal'),
+        }),
+        expect.objectContaining({
+          message: expect.stringContaining('Execution planning started'),
         }),
       ]),
     )
     expect(projectScope.specProvenance).toEqual(
       expect.objectContaining({
         source: 'spec-edit-proposal',
-        referenceId: expect.stringMatching(/^proposal-/),
+        referenceId: `proposal-${conversationId}`,
         runId: null,
         gitBranch: 'main',
         gitCommit: 'abc123def456',
       }),
     )
-    expect(projectScope.specProvenance?.capturedAt).toEqual(expect.any(String))
-    expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Applied spec edit proposal')
     expect(screen.queryByTestId('project-spec-edit-proposal-apply-button')).not.toBeInTheDocument()
-    expect(screen.getByTestId('project-spec-edit-proposal-preview')).toHaveTextContent(
-      'This approved spec card now acts as the upstream artifact for the execution card below.',
-    )
+    expect(screen.getByTestId('project-spec-edit-proposal-preview')).toHaveTextContent('Canonical spec edit')
+    expect(screen.getByTestId('project-event-log-list')).toHaveTextContent('Execution planning started')
+    expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Execution planning started')
   })
 
-  it('reconstructs an applied spec card from approved provenance when no pending proposal state remains', () => {
+  it('loads an applied spec edit card from the backend conversation snapshot', async () => {
+    const conversationId = 'conversation-persisted-spec-project'
+    conversationSnapshots[conversationId] = createConversationSnapshot(conversationId, '/tmp/persisted-spec-project', {
+      turns: [
+        {
+          id: 'turn-user-persisted',
+          role: 'user',
+          content: 'Refine the home chat and execution cards so tracker-ready work is clearer.',
+          timestamp: '2026-03-05T14:00:00Z',
+          kind: 'message',
+          artifact_id: null,
+        },
+        {
+          id: 'turn-spec-persisted',
+          role: 'system',
+          content: '',
+          timestamp: '2026-03-05T14:02:00Z',
+          kind: 'spec_edit_proposal',
+          artifact_id: 'proposal-persisted-spec-project',
+        },
+      ],
+      spec_edit_proposals: [
+        {
+          id: 'proposal-persisted-spec-project',
+          created_at: '2026-03-05T14:02:00Z',
+          summary: 'Refine the home chat and execution cards so tracker-ready work is clearer.',
+          status: 'applied',
+          changes: [
+            {
+              path: 'spec/home-chat.md#layout',
+              before: 'Home chat mixes workflow state and conversation content.',
+              after: 'Home chat shows reviewed artifacts inline while workflow events remain in the event log.',
+            },
+          ],
+          canonical_spec_edit_id: 'spec-edit-persisted-spec-project-001',
+          approved_at: '2026-03-05T14:03:00Z',
+          git_branch: 'main',
+          git_commit: 'abc123def456',
+        },
+      ],
+    })
+
     act(() => {
       useStore.getState().registerProject('/tmp/persisted-spec-project')
       useStore.getState().setActiveProjectPath('/tmp/persisted-spec-project')
-      useStore.setState((state) => ({
-        ...state,
-        projectScopedWorkspaces: {
-          ...state.projectScopedWorkspaces,
-          '/tmp/persisted-spec-project': {
-            ...state.projectScopedWorkspaces['/tmp/persisted-spec-project'],
-            conversationId: 'conversation-persisted-spec-project',
-            conversationHistory: [
-              {
-                role: 'user',
-                content: 'Refine the home chat and execution cards so tracker-ready work is clearer.',
-                timestamp: '2026-03-05T14:00:00Z',
-              },
-              {
-                role: 'assistant',
-                content: 'I prepared a specification proposal for that refinement.',
-                timestamp: '2026-03-05T14:01:00Z',
-              },
-            ],
-            specId: 'spec-persisted-spec-project',
-            specStatus: 'approved',
-            specProvenance: {
-              source: 'spec-edit-proposal',
-              referenceId: 'proposal-persisted-spec-project',
-              capturedAt: '2026-03-05T14:02:00Z',
-              runId: null,
-              gitBranch: 'main',
-              gitCommit: 'abc123def456',
-            },
-          },
-        },
-      }))
+      useStore.getState().setConversationId(conversationId)
     })
 
     render(<ProjectsPanel />)
 
-    const specCard = screen.getByTestId('project-spec-edit-proposal-preview')
-    expect(specCard).toBeVisible()
-    expect(specCard).toHaveTextContent('Applied')
-    expect(specCard).toHaveTextContent('proposal-persisted-spec-project')
-    expect(specCard).toHaveTextContent('Refine the home chat and execution cards so tracker-ready work is clear')
+    await waitFor(() => {
+      expect(screen.getByTestId('project-spec-edit-proposal-preview')).toBeVisible()
+    })
+    expect(screen.getByTestId('project-spec-edit-proposal-preview')).toHaveTextContent('Applied')
+    expect(screen.getByTestId('project-spec-edit-proposal-preview')).toHaveTextContent('proposal-persisted-spec-project')
+    expect(screen.getByTestId('project-spec-edit-proposal-preview')).toHaveTextContent('spec-edit-persisted-spec-project-001')
     expect(screen.queryByTestId('project-spec-edit-proposal-apply-button')).not.toBeInTheDocument()
   })
 
-  it('seeds a visible example spec card for sparkspawn when execution context exists without proposal provenance', () => {
+  it('does not render a synthetic spec card for sparkspawn without backend artifact state', async () => {
     act(() => {
       useStore.getState().registerProject('/tmp/sparkspawn')
       useStore.getState().setActiveProjectPath('/tmp/sparkspawn')
-      useStore.setState((state) => ({
-        ...state,
-        projectScopedWorkspaces: {
-          ...state.projectScopedWorkspaces,
-          '/tmp/sparkspawn': {
-            ...state.projectScopedWorkspaces['/tmp/sparkspawn'],
-            planId: 'plan-sparkspawn-demo',
-            planStatus: 'draft',
-            conversationHistory: [],
-            specId: null,
-            specStatus: 'draft',
-            specProvenance: null,
-          },
-        },
-      }))
     })
 
     render(<ProjectsPanel />)
 
-    const specCard = screen.getByTestId('project-spec-edit-proposal-preview')
-    expect(specCard).toBeVisible()
-    expect(specCard).toHaveTextContent('Example')
-    expect(specCard).toHaveTextContent('proposal-example-sparkspawn-home-chat')
-    expect(specCard).toHaveTextContent('Seeded example for local UI evaluation in the sparkspawn project.')
-    expect(screen.queryByTestId('project-spec-edit-proposal-apply-button')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-surface')).toBeVisible()
+    })
+    expect(screen.queryByTestId('project-spec-edit-proposal-preview')).not.toBeInTheDocument()
+    expect(screen.getByTestId('project-ai-conversation-surface')).toHaveTextContent('No conversation history for this project yet.')
   })
 
-  it('auto-launches plan workflow after spec proposal approval and records run context', async () => {
+  it('adds the execution card from streamed workflow completion and records run context', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/plan-project')
@@ -248,45 +448,106 @@ describe('Project-scoped workflow behavior', () => {
     })
 
     render(<ProjectsPanel />)
-    expect(screen.queryByTestId('project-plan-generation-surface')).not.toBeInTheDocument()
     await user.type(
       screen.getByTestId('project-ai-conversation-input'),
       'Generate a plan for implementing project-home chat proposal approvals.',
     )
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+
     await waitFor(() => {
       expect(screen.getByTestId('project-spec-edit-proposal-preview')).toBeVisible()
     })
     await user.click(screen.getByTestId('project-spec-edit-proposal-apply-button'))
+
+    const conversationId = useStore.getState().projectScopedWorkspaces['/tmp/plan-project']?.conversationId
+    expect(conversationId).toBeTruthy()
+
     await waitFor(() => {
-      expect(useStore.getState().selectedRunId).toBe('run-plan-101')
+      expect(MockEventSource.instances.some((instance) => getConversationIdFromUrl(instance.url) === conversationId)).toBe(true)
+    })
+
+    const currentSnapshot = cloneSnapshot(conversationSnapshots[conversationId!])
+    const executionSnapshot = createConversationSnapshot(conversationId!, '/tmp/plan-project', {
+      turns: [
+        ...currentSnapshot.turns,
+        {
+          id: 'turn-execution-plan-project',
+          role: 'system',
+          content: '',
+          timestamp: '2026-03-06T15:02:00Z',
+          kind: 'execution_card',
+          artifact_id: 'execution-card-plan-project-001',
+        },
+      ],
+      event_log: [
+        ...currentSnapshot.event_log,
+        {
+          message: 'Execution planning completed and produced execution-card-plan-project-001.',
+          timestamp: '2026-03-06T15:02:00Z',
+        },
+      ],
+      spec_edit_proposals: currentSnapshot.spec_edit_proposals,
+      execution_cards: [
+        {
+          id: 'execution-card-plan-project-001',
+          title: 'Implement project-home chat approval workflow',
+          summary: 'Turn the approved spec edit into tracker-ready work.',
+          objective: 'Ship reviewed project chat, spec edit approval, and execution-card workflows.',
+          status: 'draft',
+          source_spec_edit_id: 'spec-edit-plan-project-001',
+          source_workflow_run_id: 'workflow-plan-101',
+          created_at: '2026-03-06T15:02:00Z',
+          updated_at: '2026-03-06T15:02:00Z',
+          flow_source: 'plan-generation.dot',
+          work_items: [
+            {
+              id: 'WORK-1',
+              title: 'Wire project chat to backend conversation snapshots',
+              description: 'Replace local stubbed chat state with backend conversation transport and persistence.',
+              acceptance_criteria: ['Chat turns render from backend snapshots.'],
+              depends_on: [],
+            },
+          ],
+          review_feedback: [],
+        },
+      ],
+      execution_workflow: {
+        run_id: 'workflow-plan-101',
+        status: 'idle',
+        error: null,
+        flow_source: 'plan-generation.dot',
+      },
+    })
+
+    act(() => {
+      emitConversationSnapshot(conversationId!, executionSnapshot)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-plan-generation-surface')).toBeVisible()
     })
 
     const state = useStore.getState()
     const scope = state.projectScopedWorkspaces['/tmp/plan-project']
-    expect(screen.getByTestId('project-plan-generation-surface')).toBeVisible()
-    expect(scope.planId).toMatch(/^plan-/)
+    expect(scope.planId).toBe('execution-card-plan-project-001')
     expect(scope.planStatus).toBe('draft')
     expect(scope.planProvenance).toEqual(
       expect.objectContaining({
-        source: 'plan-generation-workflow',
-        referenceId: 'run-plan-101',
-        capturedAt: expect.any(String),
-        runId: 'run-plan-101',
-        gitBranch: 'main',
-        gitCommit: 'abc123def456',
+        source: 'execution-card',
+        referenceId: 'execution-card-plan-project-001',
+        runId: 'workflow-plan-101',
       }),
     )
-    expect(state.viewMode).toBe('home')
+    expect(state.selectedRunId).toBe('workflow-plan-101')
     expect(screen.getByTestId('project-plan-gate-surface')).toBeVisible()
+    expect(screen.getByTestId('project-plan-generation-surface')).toHaveTextContent('WORK-1')
   })
 
-  it('[CID:12.4.03] keeps plan-generation launch active when status retrieval is degraded', async () => {
-    planStatusContractUnavailable = true
+  it('[CID:12.4.03] routes execution-planning status updates to the workflow event log instead of chat history', async () => {
     const user = userEvent.setup()
     act(() => {
-      useStore.getState().registerProject('/tmp/plan-status-degraded-project')
-      useStore.getState().setActiveProjectPath('/tmp/plan-status-degraded-project')
+      useStore.getState().registerProject('/tmp/event-log-project')
+      useStore.getState().setActiveProjectPath('/tmp/event-log-project')
       useStore.getState().setActiveFlow('plan-generation.dot')
     })
 
@@ -301,14 +562,42 @@ describe('Project-scoped workflow behavior', () => {
     })
     await user.click(screen.getByTestId('project-spec-edit-proposal-apply-button'))
 
-    await waitFor(() => {
-      expect(useStore.getState().selectedRunId).toBe('run-plan-101')
+    const conversationId = useStore.getState().projectScopedWorkspaces['/tmp/event-log-project']?.conversationId
+    expect(conversationId).toBeTruthy()
+
+    const currentSnapshot = cloneSnapshot(conversationSnapshots[conversationId!])
+    const failureSnapshot = createConversationSnapshot(conversationId!, '/tmp/event-log-project', {
+      turns: currentSnapshot.turns,
+      event_log: [
+        ...currentSnapshot.event_log,
+        {
+          message: 'Execution planning failed: app-server session dropped before completion.',
+          timestamp: '2026-03-06T15:02:30Z',
+        },
+      ],
+      spec_edit_proposals: currentSnapshot.spec_edit_proposals,
+      execution_cards: [],
+      execution_workflow: {
+        run_id: 'workflow-plan-101',
+        status: 'failed',
+        error: 'app-server session dropped before completion.',
+        flow_source: 'plan-generation.dot',
+      },
     })
 
-    expect(screen.getByTestId('project-plan-generation-status-degraded')).toHaveTextContent(
-      'plan status endpoint unavailable',
-    )
-    expect(useStore.getState().projectScopedWorkspaces['/tmp/plan-status-degraded-project']?.planStatus).toBe('draft')
-    expect(useStore.getState().viewMode).toBe('home')
+    act(() => {
+      emitConversationSnapshot(conversationId!, failureSnapshot)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-event-log-list')).toHaveTextContent('Execution planning failed')
+    })
+    expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Execution planning failed')
+    expect(screen.queryByTestId('project-plan-generation-surface')).not.toBeInTheDocument()
   })
 })
+
+const formatProjectKey = (projectPath: string) => {
+  const segments = projectPath.split('/').filter(Boolean)
+  return segments[segments.length - 1] || 'project'
+}

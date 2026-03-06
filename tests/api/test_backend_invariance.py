@@ -233,6 +233,63 @@ def test_local_codex_app_server_backend_missing_binary_returns_fail_outcome_and_
     assert events[-1] == {"type": "log", "msg": "[plan] codex app-server not found on PATH"}
 
 
+def test_resolve_runtime_workspace_path_maps_host_repo_root_override_to_runtime_repo_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_repo_root = Path(server.__file__).resolve().parents[2]
+    monkeypatch.setenv("ATTRACTOR_HOST_REPO_ROOT", "/Users/chris/tinker/sparkspawn")
+    monkeypatch.setenv("ATTRACTOR_RUNTIME_REPO_ROOT", str(runtime_repo_root))
+    translated = server.resolve_runtime_workspace_path("/home/chris/tinker/sparkspawn/frontend")
+
+    assert translated == str((runtime_repo_root / "frontend").resolve(strict=False))
+
+
+def test_build_codex_runtime_environment_isolates_home_and_seeds_runtime_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "codex-runtime"
+    seed_dir = tmp_path / "codex-seed"
+    seed_dir.mkdir()
+    (seed_dir / "auth.json").write_text('{"token":"seed"}', encoding="utf-8")
+    (seed_dir / "config.toml").write_text("model = 'gpt-test'\n", encoding="utf-8")
+    monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("ATTRACTOR_CODEX_SEED_DIR", str(seed_dir))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+    env = server.build_codex_runtime_environment()
+
+    assert env["HOME"] == str(runtime_root)
+    assert env["CODEX_HOME"] == str(runtime_root / ".codex")
+    assert env["XDG_CONFIG_HOME"] == str(runtime_root / ".config")
+    assert env["XDG_DATA_HOME"] == str(runtime_root / ".local/share")
+    assert (runtime_root / ".codex" / "auth.json").read_text(encoding="utf-8") == '{"token":"seed"}'
+    assert (runtime_root / ".codex" / "config.toml").read_text(encoding="utf-8") == "model = 'gpt-test'\n"
+
+
+def test_local_codex_app_server_backend_missing_runtime_working_directory_returns_specific_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    missing_dir = tmp_path / "missing-workdir"
+    events: List[dict] = []
+    backend = server.LocalCodexAppServerBackend(str(missing_dir), events.append, model=None)
+
+    def _raise_missing(*args, **kwargs):
+        raise FileNotFoundError(str(missing_dir))
+
+    monkeypatch.setattr(server.subprocess, "Popen", _raise_missing)
+
+    result = backend.run("plan", "hello", Context())
+
+    assert isinstance(result, Outcome)
+    assert result.status == OutcomeStatus.FAIL
+    assert "working directory is unavailable in the runtime" in str(result.failure_reason)
+    assert str(missing_dir.resolve(strict=False)) in str(result.failure_reason)
+    assert "working directory is unavailable in the runtime" in events[-1]["msg"]
+
+
 def test_local_codex_app_server_backend_reuses_session_for_same_thread_key(tmp_path: Path) -> None:
     backend = server.LocalCodexAppServerBackend(str(tmp_path), lambda event: None, model=None)
     created: list[str] = []

@@ -9,8 +9,12 @@ export interface SpecEditProposalPreview {
     createdAt: string
     summary: string
     changes: SpecEditProposalChange[]
-    status?: 'pending' | 'applied'
+    status?: 'pending' | 'applied' | 'rejected'
     isDemo?: boolean
+    canonicalSpecEditId?: string | null
+    approvedAt?: string | null
+    gitBranch?: string | null
+    gitCommit?: string | null
 }
 
 export type ProjectSpecEditProposalMap = Record<string, SpecEditProposalPreview>

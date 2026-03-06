@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 import subprocess
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
@@ -41,6 +41,11 @@ from attractor.engine import (
 )
 from attractor.graphviz_export import export_graphviz_artifact
 from attractor.config import Settings, resolve_settings, validate_settings
+from attractor.api.project_chat import (
+    ProjectChatService,
+    build_codex_runtime_environment,
+    resolve_runtime_workspace_path,
+)
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.handlers.base import CodergenBackend
 from attractor.interviewer.base import Interviewer
@@ -55,6 +60,7 @@ from attractor.transforms import (
 app = FastAPI()
 SETTINGS_LOCK = threading.Lock()
 SETTINGS = resolve_settings()
+PROJECT_CHAT = ProjectChatService(SETTINGS.data_dir)
 REGISTERED_TRANSFORMS: List[object] = []
 _REGISTERED_TRANSFORMS_LOCK = threading.Lock()
 
@@ -71,7 +77,7 @@ def configure_runtime_paths(
     flows_dir: Path | str | None = None,
     ui_dir: Path | str | None = None,
 ) -> Settings:
-    global SETTINGS
+    global SETTINGS, PROJECT_CHAT
     current = get_settings()
     updated = resolve_settings(
         data_dir=data_dir if data_dir is not None else current.data_dir,
@@ -82,6 +88,7 @@ def configure_runtime_paths(
     validate_settings(updated)
     with SETTINGS_LOCK:
         SETTINGS = updated
+    PROJECT_CHAT = ProjectChatService(updated.data_dir)
     return updated
 
 
@@ -853,6 +860,30 @@ class LegacyHumanAnswerRequest(BaseModel):
     selected_value: str
 
 
+class ConversationTurnRequest(BaseModel):
+    project_path: str
+    message: str
+    model: Optional[str] = None
+
+
+class SpecEditApprovalRequest(BaseModel):
+    project_path: str
+    model: Optional[str] = None
+    flow_source: Optional[str] = None
+
+
+class SpecEditRejectionRequest(BaseModel):
+    project_path: str
+
+
+class ExecutionCardReviewRequest(BaseModel):
+    project_path: str
+    disposition: str
+    message: str
+    model: Optional[str] = None
+    flow_source: Optional[str] = None
+
+
 DEFAULT_FLOW = """digraph SoftwareFactory {
     start [shape=Mdiamond, label="Start"];
     setup [shape=box, prompt="Initialize project"];
@@ -865,7 +896,8 @@ DEFAULT_FLOW = """digraph SoftwareFactory {
 
 class LocalCodexCliBackend(CodergenBackend):
     def __init__(self, working_dir: str, emit, model: Optional[str] = None):
-        self.working_dir = working_dir
+        self.requested_working_dir = str(Path(working_dir).expanduser().resolve(strict=False))
+        self.working_dir = resolve_runtime_workspace_path(working_dir)
         self.emit = emit
         self.model = model
 
@@ -892,12 +924,20 @@ class LocalCodexCliBackend(CodergenBackend):
             proc = subprocess.run(
                 cmd,
                 cwd=self.working_dir,
+                env=build_codex_runtime_environment(),
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                start_new_session=True,
             )
         except FileNotFoundError:
-            failure_reason = "codex executable not found on PATH"
+            if not Path(self.working_dir).exists():
+                failure_reason = (
+                    "codex working directory is unavailable in the runtime: "
+                    f"requested {self.requested_working_dir}, resolved {self.working_dir}"
+                )
+            else:
+                failure_reason = "codex executable not found on PATH"
             self.emit({"type": "log", "msg": f"[{node_id}] {failure_reason}"})
             return Outcome(status=OutcomeStatus.FAIL, failure_reason=failure_reason)
         except subprocess.TimeoutExpired:
@@ -919,7 +959,8 @@ class LocalCodexAppServerBackend(CodergenBackend):
     RUNTIME_THREAD_ID_KEY = "_attractor.runtime.thread_id"
 
     def __init__(self, working_dir: str, emit, model: Optional[str] = None):
-        self.working_dir = working_dir
+        self.requested_working_dir = str(Path(working_dir).expanduser().resolve(strict=False))
+        self.working_dir = resolve_runtime_workspace_path(working_dir)
         self.emit = emit
         self.model = model
         self._session_threads_by_key: dict[str, str] = {}
@@ -978,13 +1019,20 @@ class LocalCodexAppServerBackend(CodergenBackend):
             proc = subprocess.Popen(
                 cmd,
                 cwd=self.working_dir,
+                env=build_codex_runtime_environment(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                start_new_session=True,
             )
         except FileNotFoundError:
+            if not Path(self.working_dir).exists():
+                return fail(
+                    "codex app-server working directory is unavailable in the runtime: "
+                    f"requested {self.requested_working_dir}, resolved {self.working_dir}"
+                )
             return fail("codex app-server not found on PATH")
 
         selector = selectors.DefaultSelector()
@@ -1954,7 +2002,7 @@ def _resolve_project_git_commit(directory_path: Path) -> Optional[str]:
 
 
 def _resolve_run_project_git_metadata(working_directory: str) -> tuple[str, Optional[str], Optional[str]]:
-    normalized_working_dir = str(Path(working_directory).resolve())
+    normalized_working_dir = resolve_runtime_workspace_path(working_directory)
     try:
         completed = subprocess.run(
             ["git", "-C", normalized_working_dir, "rev-parse", "--show-toplevel"],
@@ -1974,6 +2022,182 @@ def _resolve_run_project_git_metadata(working_directory: str) -> tuple[str, Opti
     )
 
 
+def _run_project_chat_codex_prompt(project_path: str, prompt: str, model: Optional[str]) -> str:
+    backend = LocalCodexAppServerBackend(
+        project_path,
+        lambda _message: None,
+        model=(model or "").strip() or None,
+    )
+    result = backend.run(
+        "project_chat",
+        prompt,
+        Context(values={}),
+        timeout=300,
+    )
+    if isinstance(result, Outcome):
+        raise RuntimeError(result.failure_reason or "Codex app-server chat run failed")
+    return str(result)
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def get_project_conversation(conversation_id: str, project_path: Optional[str] = None):
+    try:
+        return await asyncio.to_thread(PROJECT_CHAT.get_snapshot, conversation_id, project_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown conversation: {conversation_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/conversations/{conversation_id}/events")
+async def project_conversation_events(conversation_id: str, request: Request, project_path: Optional[str] = None):
+    try:
+        snapshot = await asyncio.to_thread(PROJECT_CHAT.get_snapshot, conversation_id, project_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown conversation: {conversation_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    queue = PROJECT_CHAT.events().subscribe(conversation_id)
+
+    async def stream():
+        try:
+            yield f"data: {json.dumps({'type': 'conversation_snapshot', 'state': snapshot})}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            PROJECT_CHAT.events().unsubscribe(conversation_id, queue)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.post("/api/conversations/{conversation_id}/turns")
+async def send_project_conversation_turn(conversation_id: str, req: ConversationTurnRequest):
+    try:
+        snapshot = await asyncio.to_thread(
+            PROJECT_CHAT.send_turn,
+            conversation_id,
+            req.project_path,
+            req.message,
+            req.model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    await PROJECT_CHAT.publish_snapshot(conversation_id)
+    return snapshot
+
+
+@app.post("/api/conversations/{conversation_id}/spec-edit-proposals/{proposal_id}/approve")
+async def approve_project_spec_edit_proposal(
+    conversation_id: str,
+    proposal_id: str,
+    req: SpecEditApprovalRequest,
+):
+    try:
+        snapshot, proposal = await asyncio.to_thread(
+            PROJECT_CHAT.approve_spec_edit,
+            conversation_id,
+            req.project_path,
+            proposal_id,
+        )
+        workflow_run_id = f"workflow-{uuid.uuid4().hex[:12]}"
+        snapshot = await asyncio.to_thread(
+            PROJECT_CHAT.mark_execution_workflow_started,
+            conversation_id,
+            workflow_run_id,
+            req.flow_source,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() if exc.stderr else str(exc)
+        raise HTTPException(status_code=500, detail=f"Failed to commit approved spec edit: {detail}") from exc
+
+    await PROJECT_CHAT.publish_snapshot(conversation_id)
+    asyncio.create_task(
+        PROJECT_CHAT.run_execution_workflow(
+            conversation_id,
+            proposal.id,
+            req.model,
+            req.flow_source,
+            None,
+            workflow_run_id,
+            lambda prompt, model: _run_project_chat_codex_prompt(req.project_path, prompt, model),
+        )
+    )
+    return snapshot
+
+
+@app.post("/api/conversations/{conversation_id}/spec-edit-proposals/{proposal_id}/reject")
+async def reject_project_spec_edit_proposal(
+    conversation_id: str,
+    proposal_id: str,
+    req: SpecEditRejectionRequest,
+):
+    try:
+        snapshot = await asyncio.to_thread(
+            PROJECT_CHAT.reject_spec_edit,
+            conversation_id,
+            req.project_path,
+            proposal_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await PROJECT_CHAT.publish_snapshot(conversation_id)
+    return snapshot
+
+
+@app.post("/api/conversations/{conversation_id}/execution-cards/{execution_card_id}/review")
+async def review_project_execution_card(
+    conversation_id: str,
+    execution_card_id: str,
+    req: ExecutionCardReviewRequest,
+):
+    if req.disposition not in {"approved", "rejected", "revision_requested"}:
+        raise HTTPException(status_code=400, detail="Execution card disposition must be approved, rejected, or revision_requested.")
+    try:
+        snapshot, execution_card, proposal_id, workflow_run_id = await asyncio.to_thread(
+            PROJECT_CHAT.review_execution_card,
+            conversation_id,
+            req.project_path,
+            execution_card_id,
+            req.disposition,
+            req.message,
+            req.flow_source,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await PROJECT_CHAT.publish_snapshot(conversation_id)
+    if req.disposition != "approved" and proposal_id and workflow_run_id:
+        asyncio.create_task(
+            PROJECT_CHAT.run_execution_workflow(
+                conversation_id,
+                proposal_id,
+                req.model,
+                req.flow_source or execution_card.flow_source,
+                req.message,
+                workflow_run_id,
+                lambda prompt, model: _run_project_chat_codex_prompt(req.project_path, prompt, model),
+            )
+        )
+    return snapshot
+
+
 @app.get("/api/projects/metadata")
 async def get_project_metadata(directory: str):
     requested_path = directory.strip()
@@ -1985,11 +2209,12 @@ async def get_project_metadata(directory: str):
         raise HTTPException(status_code=400, detail="Project directory path must be absolute.")
 
     normalized_path = project_path.resolve(strict=False)
+    runtime_path = Path(resolve_runtime_workspace_path(str(normalized_path)))
     return {
         "name": normalized_path.name or str(normalized_path),
         "directory": str(normalized_path),
-        "branch": _resolve_project_git_branch(normalized_path),
-        "commit": _resolve_project_git_commit(normalized_path),
+        "branch": _resolve_project_git_branch(runtime_path),
+        "commit": _resolve_project_git_commit(runtime_path),
     }
 
 
