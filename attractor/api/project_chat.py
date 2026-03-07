@@ -845,6 +845,13 @@ class ConversationState:
     execution_cards: list[ExecutionCard] = field(default_factory=list)
     execution_workflow: ExecutionWorkflowState = field(default_factory=ExecutionWorkflowState)
 
+    def persisted_turn_events(self) -> list[ConversationTurnEvent]:
+        return [
+            event
+            for event in self.turn_events
+            if event.kind != "assistant_delta"
+        ]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "conversation_id": self.conversation_id,
@@ -853,7 +860,7 @@ class ConversationState:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "turns": [turn.to_dict() for turn in self.turns],
-            "turn_events": [event.to_dict() for event in self.turn_events],
+            "turn_events": [event.to_dict() for event in self.persisted_turn_events()],
             "event_log": [entry.to_dict() for entry in self.event_log],
             "spec_edit_proposals": [proposal.to_dict() for proposal in self.spec_edit_proposals],
             "execution_cards": [card.to_dict() for card in self.execution_cards],
@@ -1589,6 +1596,8 @@ class ProjectChatService:
                     state.updated_at = state.created_at
                 if not _as_non_empty_string(state.title):
                     state.title = _derive_conversation_title(state.turns)
+                should_write_state = True
+            if len(state.persisted_turn_events()) != len(state.turn_events):
                 should_write_state = True
             if should_write_state:
                 self._write_state(state)

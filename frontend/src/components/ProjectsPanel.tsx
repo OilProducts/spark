@@ -408,6 +408,75 @@ const appendConversationTurnEvent = (
     }
 }
 
+const buildAssistantTimelineEntries = (
+    turn: ConversationTurnResponse,
+    turnEvents: ConversationTurnEventResponse[],
+): ConversationTimelineEntry[] => {
+    const entries: ConversationTimelineEntry[] = []
+    let assistantEntryIndex = -1
+
+    const upsertAssistantEntry = (timestamp: string) => {
+        const nextEntry: ConversationTimelineEntry = {
+            id: turn.id,
+            kind: "message",
+            role: "assistant",
+            content: turn.content,
+            timestamp,
+            status: turn.status,
+            error: turn.error ?? null,
+        }
+        if (assistantEntryIndex >= 0) {
+            entries[assistantEntryIndex] = nextEntry
+            return
+        }
+        assistantEntryIndex = entries.length
+        entries.push(nextEntry)
+    }
+
+    turnEvents.forEach((event) => {
+        if (event.kind === "assistant_delta") {
+            upsertAssistantEntry(event.timestamp || turn.timestamp)
+            return
+        }
+        if (event.tool_call && event.tool_call_id) {
+            const nextEntry: ConversationTimelineEntry = {
+                id: event.tool_call_id,
+                kind: "tool_call",
+                role: "system",
+                timestamp: event.timestamp,
+                toolCall: {
+                    id: event.tool_call.id,
+                    kind: event.tool_call.kind,
+                    status: event.tool_call.status,
+                    title: event.tool_call.title,
+                    command: event.tool_call.command ?? null,
+                    output: event.tool_call.output ?? null,
+                    filePaths: event.tool_call.file_paths,
+                },
+            }
+            const existingIndex = entries.findIndex((entry) => entry.kind === "tool_call" && entry.id === event.tool_call_id)
+            if (existingIndex >= 0) {
+                entries[existingIndex] = nextEntry
+            } else {
+                entries.push(nextEntry)
+            }
+            return
+        }
+        if (event.kind === "assistant_completed" || event.kind === "assistant_failed") {
+            upsertAssistantEntry(event.timestamp || turn.timestamp)
+        }
+    })
+
+    if (
+        assistantEntryIndex < 0
+        && (turn.content || turn.status === "pending" || turn.status === "streaming" || turn.status === "failed")
+    ) {
+        upsertAssistantEntry(turn.timestamp)
+    }
+
+    return entries
+}
+
 const buildConversationTimelineEntries = (
     snapshot: ConversationSnapshotResponse | null,
     optimisticSend: OptimisticSendState | null,
@@ -436,7 +505,7 @@ const buildConversationTimelineEntries = (
         ]
     }
 
-    const toolCallsByTurn = new Map<string, ConversationTimelineEntry[]>()
+    const eventsByTurn = new Map<string, ConversationTurnEventResponse[]>()
     const sortedEvents = [...snapshot.turn_events].sort((left, right) => {
         if (left.turn_id === right.turn_id) {
             return left.sequence - right.sequence
@@ -444,32 +513,9 @@ const buildConversationTimelineEntries = (
         return left.timestamp.localeCompare(right.timestamp)
     })
     sortedEvents.forEach((event) => {
-        if (!event.tool_call || !event.tool_call_id) {
-            return
-        }
-        const entries = toolCallsByTurn.get(event.turn_id) || []
-        const nextEntry: ConversationTimelineEntry = {
-            id: event.tool_call_id,
-            kind: "tool_call",
-            role: "system",
-            timestamp: event.timestamp,
-            toolCall: {
-                id: event.tool_call.id,
-                kind: event.tool_call.kind,
-                status: event.tool_call.status,
-                title: event.tool_call.title,
-                command: event.tool_call.command ?? null,
-                output: event.tool_call.output ?? null,
-                filePaths: event.tool_call.file_paths,
-            },
-        }
-        const existingIndex = entries.findIndex((entry) => entry.kind === "tool_call" && entry.id === event.tool_call_id)
-        if (existingIndex >= 0) {
-            entries[existingIndex] = nextEntry
-        } else {
-            entries.push(nextEntry)
-        }
-        toolCallsByTurn.set(event.turn_id, entries)
+        const entries = eventsByTurn.get(event.turn_id) || []
+        entries.push(event)
+        eventsByTurn.set(event.turn_id, entries)
     })
 
     const timeline: ConversationTimelineEntry[] = []
@@ -495,6 +541,10 @@ const buildConversationTimelineEntries = (
             return
         }
         if (turn.role === "user" || turn.role === "assistant") {
+            if (turn.role === "assistant") {
+                timeline.push(...buildAssistantTimelineEntries(turn, eventsByTurn.get(turn.id) || []))
+                return
+            }
             timeline.push({
                 id: turn.id,
                 kind: "message",
@@ -504,9 +554,6 @@ const buildConversationTimelineEntries = (
                 status: turn.status,
                 error: turn.error ?? null,
             })
-        }
-        if (turn.role === "assistant") {
-            timeline.push(...(toolCallsByTurn.get(turn.id) || []))
         }
     })
 

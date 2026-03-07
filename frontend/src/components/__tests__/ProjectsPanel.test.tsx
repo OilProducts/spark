@@ -360,6 +360,169 @@ describe('ProjectsPanel', () => {
     })
   })
 
+  it('renders assistant tool calls before the completed assistant summary for the same turn', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/') && !init?.method) {
+          return new Response(
+            JSON.stringify({
+              conversation_id: 'conversation-ordering-1',
+              project_path: '/tmp/chat-project',
+              title: 'Ordering thread',
+              created_at: '2026-03-07T19:45:43Z',
+              updated_at: '2026-03-07T19:46:30Z',
+              turns: [
+                {
+                  id: 'turn-user-1',
+                  role: 'user',
+                  content: 'Run ls then ps and summarize them.',
+                  timestamp: '2026-03-07T19:46:00Z',
+                  status: 'complete',
+                  kind: 'message',
+                  artifact_id: null,
+                },
+                {
+                  id: 'turn-assistant-1',
+                  role: 'assistant',
+                  content: 'Summary after tools.',
+                  timestamp: '2026-03-07T19:46:30Z',
+                  status: 'complete',
+                  kind: 'message',
+                  artifact_id: null,
+                  parent_turn_id: 'turn-user-1',
+                },
+              ],
+              turn_events: [
+                {
+                  id: 'event-tool-started-1',
+                  turn_id: 'turn-assistant-1',
+                  sequence: 1,
+                  timestamp: '2026-03-07T19:46:10Z',
+                  kind: 'tool_call_started',
+                  tool_call_id: 'tool-ls',
+                  tool_call: {
+                    id: 'tool-ls',
+                    kind: 'command_execution',
+                    status: 'running',
+                    title: 'Run command',
+                    command: '/bin/zsh -lc ls',
+                    output: null,
+                    file_paths: [],
+                  },
+                },
+                {
+                  id: 'event-tool-completed-1',
+                  turn_id: 'turn-assistant-1',
+                  sequence: 2,
+                  timestamp: '2026-03-07T19:46:12Z',
+                  kind: 'tool_call_completed',
+                  tool_call_id: 'tool-ls',
+                  tool_call: {
+                    id: 'tool-ls',
+                    kind: 'command_execution',
+                    status: 'completed',
+                    title: 'Run command',
+                    command: '/bin/zsh -lc ls',
+                    output: 'AGENTS.md',
+                    file_paths: [],
+                  },
+                },
+                {
+                  id: 'event-tool-started-2',
+                  turn_id: 'turn-assistant-1',
+                  sequence: 3,
+                  timestamp: '2026-03-07T19:46:20Z',
+                  kind: 'tool_call_started',
+                  tool_call_id: 'tool-ps',
+                  tool_call: {
+                    id: 'tool-ps',
+                    kind: 'command_execution',
+                    status: 'running',
+                    title: 'Run command',
+                    command: '/bin/zsh -lc ps',
+                    output: null,
+                    file_paths: [],
+                  },
+                },
+                {
+                  id: 'event-tool-completed-2',
+                  turn_id: 'turn-assistant-1',
+                  sequence: 4,
+                  timestamp: '2026-03-07T19:46:22Z',
+                  kind: 'tool_call_completed',
+                  tool_call_id: 'tool-ps',
+                  tool_call: {
+                    id: 'tool-ps',
+                    kind: 'command_execution',
+                    status: 'completed',
+                    title: 'Run command',
+                    command: '/bin/zsh -lc ps',
+                    output: 'PID TTY TIME CMD',
+                    file_paths: [],
+                  },
+                },
+                {
+                  id: 'event-assistant-completed-1',
+                  turn_id: 'turn-assistant-1',
+                  sequence: 5,
+                  timestamp: '2026-03-07T19:46:30Z',
+                  kind: 'assistant_completed',
+                  message: 'Assistant turn completed.',
+                },
+              ],
+              event_log: [],
+              spec_edit_proposals: [],
+              execution_cards: [],
+              execution_workflow: {
+                run_id: null,
+                status: 'idle',
+                error: null,
+                flow_source: null,
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          )
+        }
+        return new Response(JSON.stringify({ detail: 'not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    useStore.getState().registerProject('/tmp/chat-project')
+    useStore.getState().setActiveProjectPath('/tmp/chat-project')
+    useStore.getState().setConversationId('/tmp/chat-project', 'conversation-ordering-1')
+
+    render(<ProjectsPanel />)
+
+    const history = await screen.findByTestId('project-ai-conversation-history-list')
+    const text = history.textContent ?? ''
+
+    expect(text.indexOf('/bin/zsh -lc ls')).toBeGreaterThan(-1)
+    expect(text.indexOf('/bin/zsh -lc ps')).toBeGreaterThan(-1)
+    expect(text.indexOf('Summary after tools.')).toBeGreaterThan(-1)
+    expect(text.indexOf('/bin/zsh -lc ls')).toBeLessThan(text.indexOf('Summary after tools.'))
+    expect(text.indexOf('/bin/zsh -lc ps')).toBeLessThan(text.indexOf('Summary after tools.'))
+  })
+
   it('streams assistant text into the history before the turn response completes', async () => {
     class MockEventSource {
       static instances: MockEventSource[] = []

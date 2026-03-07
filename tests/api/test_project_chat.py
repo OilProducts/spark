@@ -620,9 +620,7 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
     assert payload["turns"][1]["content"] == "ACK"
     assert payload["turns"][1]["status"] == "complete"
     assert [event["kind"] for event in payload["turn_events"]] == [
-        "assistant_delta",
         "tool_call_started",
-        "assistant_delta",
         "assistant_completed",
     ]
     assert partial_snapshots
@@ -630,9 +628,69 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
     assert partial_snapshots[-1]["turns"][1]["content"] == "Working on it"
     assert partial_snapshots[-1]["turns"][1]["status"] == "streaming"
     assert [event["kind"] for event in partial_snapshots[-1]["turn_events"]] == [
-        "assistant_delta",
         "tool_call_started",
     ]
+
+
+def test_snapshot_compacts_streamed_assistant_deltas(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    state = project_chat.ConversationState(
+        conversation_id="conversation-compact",
+        project_path=str(tmp_path),
+        title="Compact thread",
+        created_at="2026-03-07T18:00:00Z",
+        updated_at="2026-03-07T18:00:03Z",
+        turns=[
+            project_chat.ConversationTurn(
+                id="turn-user-1",
+                role="user",
+                content="hi",
+                timestamp="2026-03-07T18:00:00Z",
+                status="complete",
+            ),
+            project_chat.ConversationTurn(
+                id="turn-assistant-1",
+                role="assistant",
+                content="hello",
+                timestamp="2026-03-07T18:00:03Z",
+                status="complete",
+                parent_turn_id="turn-user-1",
+            ),
+        ],
+        turn_events=[
+            project_chat.ConversationTurnEvent(
+                id="event-assistant-delta-1",
+                turn_id="turn-assistant-1",
+                sequence=1,
+                timestamp="2026-03-07T18:00:01Z",
+                kind="assistant_delta",
+                content_delta="hel",
+            ),
+            project_chat.ConversationTurnEvent(
+                id="event-assistant-delta-2",
+                turn_id="turn-assistant-1",
+                sequence=2,
+                timestamp="2026-03-07T18:00:02Z",
+                kind="assistant_delta",
+                content_delta="lo",
+            ),
+            project_chat.ConversationTurnEvent(
+                id="event-assistant-completed-1",
+                turn_id="turn-assistant-1",
+                sequence=3,
+                timestamp="2026-03-07T18:00:03Z",
+                kind="assistant_completed",
+                message="Assistant turn completed.",
+            ),
+        ],
+    )
+    service._write_state(state)
+
+    snapshot = service.get_snapshot("conversation-compact", str(tmp_path))
+
+    assert [event["kind"] for event in snapshot["turn_events"]] == ["assistant_completed"]
+    persisted = json.loads((tmp_path / "conversations" / "conversation-compact" / "state.json").read_text(encoding="utf-8"))
+    assert [event["kind"] for event in persisted["turn_events"]] == ["assistant_completed"]
 
 
 def test_list_project_conversations_endpoint_returns_project_threads(api_client, tmp_path: Path) -> None:
