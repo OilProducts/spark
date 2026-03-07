@@ -257,6 +257,92 @@ describe('ProjectsPanel', () => {
     expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Send')
   })
 
+  it('renders the assistant reply even when the backend canonicalizes project_path', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/') && !init?.method) {
+          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/') && init?.method === 'POST') {
+          return new Response(
+            JSON.stringify({
+              conversation_id: 'conversation-home-project-1',
+              project_path: '/System/Volumes/Data/home/chris/tinker/sparkspawn',
+              title: 'Reply with a one-line acknowledgement only.',
+              created_at: '2026-03-07T15:55:00Z',
+              updated_at: '2026-03-07T15:55:04Z',
+              turns: [
+                {
+                  id: 'turn-user-1',
+                  role: 'user',
+                  content: 'Reply with a one-line acknowledgement only.',
+                  timestamp: '2026-03-07T15:55:00Z',
+                  kind: 'message',
+                  artifact_id: null,
+                },
+                {
+                  id: 'turn-assistant-1',
+                  role: 'assistant',
+                  content: 'Acknowledged.',
+                  timestamp: '2026-03-07T15:55:04Z',
+                  kind: 'message',
+                  artifact_id: null,
+                },
+              ],
+              event_log: [],
+              spec_edit_proposals: [],
+              execution_cards: [],
+              execution_workflow: {
+                run_id: null,
+                status: 'idle',
+                error: null,
+                flow_source: null,
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          )
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    useStore.getState().registerProject('/home/chris/tinker/sparkspawn')
+    useStore.getState().setActiveProjectPath('/home/chris/tinker/sparkspawn')
+
+    render(<ProjectsPanel />)
+
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Reply with a one-line acknowledgement only.')
+    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Acknowledged.')
+    })
+  })
+
   it('keeps the composer cleared when sending a turn fails', async () => {
     const user = userEvent.setup()
     vi.stubGlobal(

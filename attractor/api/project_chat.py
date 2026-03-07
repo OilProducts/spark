@@ -18,6 +18,8 @@ from typing import Any, Callable, Optional
 
 CHAT_RUNTIME_THREAD_KEY = "_attractor.runtime.thread_id"
 RUNTIME_REPO_ROOT = Path(__file__).resolve().parents[2]
+FINAL_ANSWER_IDLE_GRACE_SECONDS = 1.0
+CHAT_TURN_IDLE_TIMEOUT_SECONDS = 15.0
 
 
 def _iso_now() -> str:
@@ -1058,6 +1060,8 @@ class CodexAppServerChatSession:
             self._ensure_thread(model)
             agent_chunks: list[str] = []
             last_error: Optional[str] = None
+            saw_final_agent_message = False
+            last_activity_at = time.monotonic()
             tool_calls: list[ToolCallRecord] = []
             tool_call_index_by_item_id: dict[str, int] = {}
             params: dict[str, Any] = {
@@ -1075,10 +1079,18 @@ class CodexAppServerChatSession:
             while True:
                 line = self._read_line(0.1)
                 if line is None:
+                    idle_for = time.monotonic() - last_activity_at
+                    if idle_for >= CHAT_TURN_IDLE_TIMEOUT_SECONDS:
+                        self._close()
+                        raise RuntimeError("codex app-server turn timed out waiting for activity")
+                    if saw_final_agent_message and "".join(agent_chunks).strip():
+                        if idle_for >= FINAL_ANSWER_IDLE_GRACE_SECONDS:
+                            break
                     if self._proc is not None and self._proc.poll() is not None:
                         self._close()
                         raise RuntimeError("codex app-server exited before turn completion")
                     continue
+                last_activity_at = time.monotonic()
                 try:
                     message = json.loads(line)
                 except json.JSONDecodeError:
@@ -1137,6 +1149,10 @@ class CodexAppServerChatSession:
                     if isinstance(item, dict):
                         item_id = _as_non_empty_string(item.get("id"))
                         tool_call = _tool_call_from_item(item)
+                        item_type = str(item.get("type") or "").strip().lower()
+                        item_phase = str(item.get("phase") or "").strip().lower()
+                        if item_type == "agentmessage" and item_phase == "final_answer":
+                            saw_final_agent_message = True
                         if tool_call is not None:
                             if item_id and item_id in tool_call_index_by_item_id:
                                 tool_calls[tool_call_index_by_item_id[item_id]] = tool_call
@@ -1160,9 +1176,12 @@ class CodexAppServerChatSession:
                     continue
                 if method == "codex/event/agent_message":
                     msg = (params.get("msg") or {}).get("message")
+                    phase = str((params.get("msg") or {}).get("phase") or "").strip().lower()
                     if msg:
                         agent_chunks = [str(msg)]
                         self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                    if phase == "final_answer":
+                        saw_final_agent_message = True
                     continue
                 if method == "item/commandExecution/outputDelta":
                     delta = _as_non_empty_string(params.get("delta"))
@@ -1184,6 +1203,12 @@ class CodexAppServerChatSession:
                     if status and status != "completed":
                         error = turn.get("error") or {}
                         last_error = str(error.get("message") or last_error or f"turn ended with status '{status}'")
+                    break
+                if method == "codex/event/task_complete":
+                    msg = params.get("msg") or {}
+                    last_agent_message = _as_non_empty_string(msg.get("last_agent_message"))
+                    if last_agent_message and not "".join(agent_chunks).strip():
+                        agent_chunks = [last_agent_message]
                     break
             for tool_call in tool_calls:
                 if tool_call.status == "running":
@@ -1524,6 +1549,29 @@ class ProjectChatService:
             self._sessions[conversation_id] = session
             return session
 
+    def _replace_session(
+        self,
+        conversation_id: str,
+        project_path: str,
+        *,
+        persisted_thread_id: Optional[str] = None,
+    ) -> CodexAppServerChatSession:
+        with self._sessions_lock:
+            existing = self._sessions.pop(conversation_id, None)
+            if existing is not None:
+                existing._close()
+            session = CodexAppServerChatSession(
+                project_path,
+                persisted_thread_id=persisted_thread_id,
+                on_thread_id_updated=lambda thread_id: self._persist_session_thread(
+                    conversation_id,
+                    project_path,
+                    thread_id,
+                ),
+            )
+            self._sessions[conversation_id] = session
+            return session
+
     def send_turn(
         self,
         conversation_id: str,
@@ -1566,11 +1614,29 @@ class ProjectChatService:
             if progress_callback is not None:
                 progress_callback(current_snapshot)
 
-        turn_result = session.turn(
-            self._build_chat_prompt(state, trimmed_message),
-            model.strip() if model else None,
-            on_progress=persist_progress,
-        )
+        prompt = self._build_chat_prompt(state, trimmed_message)
+        normalized_model = model.strip() if model else None
+        try:
+            turn_result = session.turn(
+                prompt,
+                normalized_model,
+                on_progress=persist_progress,
+            )
+        except RuntimeError as exc:
+            if "timed out" not in str(exc).lower():
+                raise
+            with self._lock:
+                current_state = self._read_state(conversation_id) or state
+                self._sync_live_tool_call_turns(current_state, user_turn.id, [])
+                self._sync_live_assistant_turn(current_state, user_turn.id, "")
+                self._touch_conversation_state(current_state)
+                self._write_state(current_state)
+            session = self._replace_session(conversation_id, normalized_project_path, persisted_thread_id=None)
+            turn_result = session.turn(
+                prompt,
+                normalized_model,
+                on_progress=persist_progress,
+            )
         parsed = _extract_json_object(turn_result.assistant_message)
         assistant_message = str(parsed.get("assistant_message", "")).strip()
         if not assistant_message:

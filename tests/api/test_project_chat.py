@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import attractor.api.server as server
@@ -229,6 +230,132 @@ def test_chat_session_starts_new_durable_thread_when_resume_fails(monkeypatch) -
     assert calls[1][1]["ephemeral"] is False
     assert session._thread_id == "thread-fresh"
     assert updated_thread_ids == ["thread-fresh"]
+
+
+def test_chat_session_turn_completes_on_task_complete_event(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    lines = iter(
+        [
+            json.dumps(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {"delta": '{"assistant_message":"Ack"}'},
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "codex/event/task_complete",
+                    "params": {
+                        "msg": {
+                            "type": "task_complete",
+                            "last_agent_message": '{"assistant_message":"Ack"}',
+                        }
+                    },
+                }
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+
+    def fake_ensure_thread(model: str | None) -> None:
+        session._thread_id = "thread-123"
+        session._thread_initialized = True
+
+    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
+    monkeypatch.setattr(
+        session,
+        "_send_request",
+        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
+    )
+    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+
+    result = session.turn("hello", None)
+
+    assert result.assistant_message == '{"assistant_message":"Ack"}'
+
+
+def test_chat_session_turn_completes_after_final_answer_quiet_period(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    lines = iter(
+        [
+            json.dumps(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {"delta": '{"assistant_message":"Ack"}'},
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "id": "msg-123",
+                            "phase": "final_answer",
+                            "text": '{"assistant_message":"Ack"}',
+                        }
+                    },
+                }
+            ),
+            None,
+            None,
+        ]
+    )
+    monotonic_values = iter([0.0, 0.0, 0.0, 1.5])
+
+    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+
+    def fake_ensure_thread(model: str | None) -> None:
+        session._thread_id = "thread-123"
+        session._thread_initialized = True
+
+    monkeypatch.setattr(project_chat.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
+    monkeypatch.setattr(
+        session,
+        "_send_request",
+        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
+    )
+    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+
+    result = session.turn("hello", None)
+
+    assert result.assistant_message == '{"assistant_message":"Ack"}'
+
+
+def test_send_turn_retries_with_fresh_session_after_timeout(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+
+    class TimedOutSession:
+        def turn(self, prompt: str, model: str | None, *, on_progress=None) -> project_chat.ChatTurnResult:
+            raise RuntimeError("codex app-server turn timed out waiting for activity")
+
+        def _close(self) -> None:
+            return None
+
+    class FreshSession:
+        def turn(self, prompt: str, model: str | None, *, on_progress=None) -> project_chat.ChatTurnResult:
+            return project_chat.ChatTurnResult(
+                assistant_message='{"assistant_message":"Recovered."}',
+                tool_calls=[],
+            )
+
+        def _close(self) -> None:
+            return None
+
+    sessions = [TimedOutSession(), FreshSession()]
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: sessions.pop(0))
+    monkeypatch.setattr(
+        service,
+        "_replace_session",
+        lambda conversation_id, project_path, persisted_thread_id=None: sessions.pop(0),
+    )
+
+    snapshot = service.send_turn("conversation-test", str(tmp_path), "hello", None)
+
+    assert snapshot["turns"][-1]["role"] == "assistant"
+    assert snapshot["turns"][-1]["content"] == "Recovered."
 
 
 def test_list_conversations_filters_by_project_and_sorts_latest_first(tmp_path: Path) -> None:

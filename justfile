@@ -4,7 +4,15 @@ dev:
   docker compose up --build
 
 run:
-  bash -lc 'set -euo pipefail; trap "kill 0" EXIT INT TERM; uv run sparkspawn serve --host 127.0.0.1 --port 8000 & npm --prefix frontend run dev -- --host 127.0.0.1; wait'
+  #!/usr/bin/env bash
+  set -euo pipefail
+  trap 'kill "${backend_pid:-}" "${frontend_pid:-}" 2>/dev/null || true; wait || true' EXIT INT TERM
+  uv run sparkspawn serve --host 127.0.0.1 --port 8000 --reload &
+  backend_pid=$!
+  npm --prefix frontend run dev -- --host 127.0.0.1 &
+  frontend_pid=$!
+  while kill -0 "${backend_pid}" 2>/dev/null && kill -0 "${frontend_pid}" 2>/dev/null; do sleep 1; done
+  if ! kill -0 "${backend_pid}" 2>/dev/null; then wait "${backend_pid}"; else wait "${frontend_pid}"; fi
 
 stop:
   docker compose down

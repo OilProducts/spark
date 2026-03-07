@@ -1037,7 +1037,7 @@ export function HomePanel() {
                 message: trimmed,
                 model: model.trim() || null,
             })
-            applyConversationSnapshot(snapshot.project_path, snapshot)
+            applyConversationSnapshot(activeProjectPath, snapshot)
         } catch (error) {
             updateProjectScopedWorkspace(activeProjectPath, {
                 conversationId: priorConversationId,
@@ -1079,7 +1079,7 @@ export function HomePanel() {
                 model: model.trim() || null,
                 flow_source: activeFlow || null,
             })
-            applyConversationSnapshot(snapshot.project_path, snapshot)
+            applyConversationSnapshot(activeProjectPath, snapshot)
         } catch (error) {
             const message = extractApiErrorMessage(error, "Unable to approve the spec edit proposal.")
             setPanelError(message)
@@ -1100,7 +1100,7 @@ export function HomePanel() {
             const snapshot = await rejectSpecEditProposalValidated(activeConversationId, proposal.id, {
                 project_path: activeProjectPath,
             })
-            applyConversationSnapshot(snapshot.project_path, snapshot)
+            applyConversationSnapshot(activeProjectPath, snapshot)
         } catch (error) {
             const message = extractApiErrorMessage(error, "Unable to reject the spec edit proposal.")
             setPanelError(message)
@@ -1141,7 +1141,7 @@ export function HomePanel() {
                 model: model.trim() || null,
                 flow_source: activeFlow || executionCard.flow_source || null,
             })
-            applyConversationSnapshot(snapshot.project_path, snapshot)
+            applyConversationSnapshot(activeProjectPath, snapshot)
         } catch (error) {
             const message = extractApiErrorMessage(error, "Unable to review the execution card.")
             setPanelError(message)

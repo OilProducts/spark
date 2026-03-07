@@ -45,6 +45,8 @@ just run
 ```
 
 This starts the backend on `127.0.0.1:8000` and the Vite frontend dev server with API proxying enabled.
+The backend runs with auto-reload enabled in this mode, so Python/API changes are picked up without restarting `just run`.
+If the backend cannot bind to `127.0.0.1:8000`, `sparkspawn serve` reports that failure directly and `just run` tears down the frontend process.
 
 Optional runtime path overrides (CLI args or env vars):
 

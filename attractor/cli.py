@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -42,6 +43,12 @@ def _run_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     import attractor.api.server as server
+    from attractor.config import ENV_DATA_DIR, ENV_FLOWS_DIR, ENV_RUNS_DIR, ENV_UI_DIR
+
+    def _set_path_env(name: str, value: Path | None) -> None:
+        if value is None:
+            return
+        os.environ[name] = str(value.expanduser().resolve(strict=False))
 
     server.configure_runtime_paths(
         data_dir=args.data_dir,
@@ -50,9 +57,13 @@ def _run_serve(args: argparse.Namespace) -> int:
         ui_dir=args.ui_dir,
     )
     server.validate_runtime_paths()
+    _set_path_env(ENV_DATA_DIR, args.data_dir)
+    _set_path_env(ENV_RUNS_DIR, args.runs_dir)
+    _set_path_env(ENV_FLOWS_DIR, args.flows_dir)
+    _set_path_env(ENV_UI_DIR, args.ui_dir)
 
     uvicorn.run(
-        server.app,
+        "attractor.api.server:app" if args.reload else server.app,
         host=args.host,
         port=args.port,
         reload=args.reload,
