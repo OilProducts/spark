@@ -863,7 +863,7 @@ class ConversationState:
         return [
             event
             for event in self.turn_events
-            if event.kind not in {"assistant_delta", "reasoning_summary"}
+            if event.kind != "assistant_delta"
         ]
 
     def to_dict(self) -> dict[str, Any]:
@@ -2243,7 +2243,7 @@ class ProjectChatService:
                     self._upsert_turn(current_state, current_assistant_turn)
                     emitted_payloads.append(self._build_turn_upsert_payload(current_state, current_assistant_turn))
 
-                if event.kind in {"assistant_delta", "reasoning_summary"}:
+                if event.kind == "assistant_delta":
                     if event.content_delta:
                         live_event = ConversationTurnEvent(
                             id=f"event-{uuid.uuid4().hex}",
@@ -2254,6 +2254,16 @@ class ProjectChatService:
                             content_delta=event.content_delta,
                         )
                         emitted_payloads.append(self._build_turn_event_payload(current_state, live_event))
+                elif event.kind == "reasoning_summary":
+                    if event.content_delta:
+                        reasoning_event = self._append_turn_event(
+                            current_state,
+                            current_assistant_turn.id,
+                            "reasoning_summary",
+                            sequence=allocate_event_sequence(),
+                            content_delta=event.content_delta,
+                        )
+                        emitted_payloads.append(self._build_turn_event_payload(current_state, reasoning_event))
                 elif event.kind in {"tool_call_started", "tool_call_updated", "tool_call_completed", "tool_call_failed"} and event.tool_call is not None:
                     tool_event = self._append_turn_event(
                         current_state,

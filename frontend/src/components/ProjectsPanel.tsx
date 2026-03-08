@@ -452,7 +452,7 @@ const appendConversationTurnEvent = (
 }
 
 const isTransientConversationTurnEvent = (event: ConversationTurnEventResponse) => (
-    event.kind === 'assistant_delta' || event.kind === 'reasoning_summary'
+    event.kind === 'assistant_delta'
 )
 
 const sortConversationTurnEvents = (events: ConversationTurnEventResponse[]) => (

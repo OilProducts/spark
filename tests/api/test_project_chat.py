@@ -1054,6 +1054,12 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
             on_dynamic_tool_call=None,
         ) -> project_chat.ChatTurnResult:
             if on_event is not None:
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="reasoning_summary",
+                        content_delta="Checking whether a spec proposal makes sense.",
+                    )
+                )
                 on_event(project_chat.ChatTurnLiveEvent(kind="assistant_delta", content_delta="Working on it"))
                 on_event(
                     project_chat.ChatTurnLiveEvent(
@@ -1091,6 +1097,7 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
     assert payload["turns"][1]["content"] == "ACK"
     assert payload["turns"][1]["status"] == "complete"
     assert [event["kind"] for event in payload["turn_events"]] == [
+        "reasoning_summary",
         "tool_call_started",
         "assistant_completed",
     ]
@@ -1099,6 +1106,7 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
     assert partial_snapshots[-1]["turns"][1]["content"] == ""
     assert partial_snapshots[-1]["turns"][1]["status"] == "streaming"
     assert [event["kind"] for event in partial_snapshots[-1]["turn_events"]] == [
+        "reasoning_summary",
         "tool_call_started",
     ]
 
@@ -1168,11 +1176,11 @@ def test_snapshot_compacts_streamed_assistant_deltas(tmp_path: Path) -> None:
 
     snapshot = service.get_snapshot("conversation-compact", str(tmp_path))
 
-    assert [event["kind"] for event in snapshot["turn_events"]] == ["assistant_completed"]
+    assert [event["kind"] for event in snapshot["turn_events"]] == ["reasoning_summary", "assistant_completed"]
     persisted = json.loads(
         (project_paths.conversations_dir / "conversation-compact" / "state.json").read_text(encoding="utf-8")
     )
-    assert [event["kind"] for event in persisted["turn_events"]] == ["assistant_completed"]
+    assert [event["kind"] for event in persisted["turn_events"]] == ["reasoning_summary", "assistant_completed"]
 
 
 def test_list_project_conversations_endpoint_returns_project_threads(api_client, tmp_path: Path) -> None:
