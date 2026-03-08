@@ -343,8 +343,8 @@ describe('ProjectsPanel', () => {
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
     expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Show this message immediately.')
-    expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Thinking...')
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Thinking...')
+    expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Thinking...')
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Sending...')
 
     resolveTurnResponse?.(
       new Response(
@@ -829,7 +829,7 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it('preserves streamed assistant ordering when the final snapshot compacts assistant deltas', async () => {
+  it('preserves reasoning, tool calls, and post-tool assistant text ordering when the final snapshot compacts transient events', async () => {
     class MockEventSource {
       static instances: MockEventSource[] = []
 
@@ -922,6 +922,23 @@ describe('ProjectsPanel', () => {
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
+          updated_at: '2026-03-08T19:10:00Z',
+          event: {
+            id: 'event-reasoning-1',
+            turn_id: 'turn-assistant-1',
+            sequence: 0,
+            timestamp: '2026-03-08T19:10:00Z',
+            kind: 'reasoning_summary',
+            content_delta: 'Scanning the repository structure first.',
+          },
+        }),
+      } as MessageEvent)
+      MockEventSource.instances[0]?.onmessage?.({
+        data: JSON.stringify({
+          type: 'turn_event',
+          conversation_id: conversationId,
+          project_path: '/tmp/chat-project',
+          title: 'Draft a spec.',
           updated_at: '2026-03-08T19:10:01Z',
           event: {
             id: 'event-assistant-delta-1',
@@ -959,10 +976,28 @@ describe('ProjectsPanel', () => {
           },
         }),
       } as MessageEvent)
+      MockEventSource.instances[0]?.onmessage?.({
+        data: JSON.stringify({
+          type: 'turn_event',
+          conversation_id: conversationId,
+          project_path: '/tmp/chat-project',
+          title: 'Draft a spec.',
+          updated_at: '2026-03-08T19:10:03Z',
+          event: {
+            id: 'event-assistant-delta-2',
+            turn_id: 'turn-assistant-1',
+            sequence: 3,
+            timestamp: '2026-03-08T19:10:03Z',
+            kind: 'assistant_delta',
+            content_delta: 'I found the main entry points and can summarize them.',
+          },
+        }),
+      } as MessageEvent)
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('I’m going to scan the repository structure first.')
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Scanning the repository structure first.')
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('I found the main entry points and can summarize them.')
     })
 
     resolveTurnResponse?.(
@@ -986,7 +1021,7 @@ describe('ProjectsPanel', () => {
             {
               id: 'turn-assistant-1',
               role: 'assistant',
-              content: 'I’m going to scan the repository structure first.',
+              content: 'I’m going to scan the repository structure first. I found the main entry points and can summarize them.',
               timestamp: '2026-03-08T19:10:01Z',
               status: 'complete',
               kind: 'message',
@@ -1000,7 +1035,7 @@ describe('ProjectsPanel', () => {
               turn_id: 'turn-assistant-1',
               sequence: 2,
               timestamp: '2026-03-08T19:10:02Z',
-              kind: 'tool_call_started',
+              kind: 'tool_call_completed',
               tool_call_id: 'tool-ls',
               tool_call: {
                 id: 'tool-ls',
@@ -1040,10 +1075,12 @@ describe('ProjectsPanel', () => {
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
-      const text = history.textContent ?? ''
-      expect(text.indexOf('I’m going to scan the repository structure first.')).toBeGreaterThan(-1)
+          const text = history.textContent ?? ''
+      expect(text.indexOf('Scanning the repository structure first.')).toBeGreaterThan(-1)
       expect(text.indexOf('/bin/zsh -lc ls')).toBeGreaterThan(-1)
-      expect(text.indexOf('I’m going to scan the repository structure first.')).toBeLessThan(text.indexOf('/bin/zsh -lc ls'))
+      expect(text.indexOf('I found the main entry points and can summarize them.')).toBeGreaterThan(-1)
+      expect(text.indexOf('Scanning the repository structure first.')).toBeLessThan(text.indexOf('/bin/zsh -lc ls'))
+      expect(text.indexOf('/bin/zsh -lc ls')).toBeLessThan(text.indexOf('I found the main entry points and can summarize them.'))
     })
   })
 

@@ -366,6 +366,7 @@ type ConversationTimelineEntry =
         timestamp: string
         status: ConversationTurnResponse["status"]
         error?: string | null
+        presentation?: "default" | "thinking"
     }
     | {
         id: string
@@ -460,7 +461,7 @@ const mergeConversationSnapshotPreservingTransientEvents = (
     const incomingTurnIds = new Set(incoming.turns.map((turn) => turn.id))
     const incomingEventIds = new Set(incoming.turn_events.map((event) => event.id))
     const preservedEvents = current.turn_events.filter((event) => (
-        event.kind === "assistant_delta"
+        (event.kind === "assistant_delta" || event.kind === "reasoning_summary")
         && incomingTurnIds.has(event.turn_id)
         && !incomingEventIds.has(event.id)
     ))
@@ -483,29 +484,74 @@ const buildAssistantTimelineEntries = (
     turnEvents: ConversationTurnEventResponse[],
 ): ConversationTimelineEntry[] => {
     const entries: ConversationTimelineEntry[] = []
-    let assistantEntryIndex = -1
+    let currentAssistantMessageIndex = -1
+    let currentThinkingIndex = -1
+    let accumulatedAssistantContent = ""
 
-    const upsertAssistantEntry = (timestamp: string) => {
-        const nextEntry: ConversationTimelineEntry = {
-            id: turn.id,
+    const startAssistantEntry = (
+        timestamp: string,
+        content: string,
+        presentation: "default" | "thinking",
+        status: ConversationTurnResponse["status"],
+    ) => {
+        const entry: ConversationTimelineEntry = {
+            id: `${turn.id}:${presentation}:${entries.length}`,
             kind: "message",
             role: "assistant",
-            content: turn.content,
+            content,
             timestamp,
-            status: turn.status,
+            status,
             error: turn.error ?? null,
+            presentation,
         }
-        if (assistantEntryIndex >= 0) {
-            entries[assistantEntryIndex] = nextEntry
-            return
+        entries.push(entry)
+        if (presentation === "thinking") {
+            currentThinkingIndex = entries.length - 1
+            currentAssistantMessageIndex = -1
+        } else {
+            currentAssistantMessageIndex = entries.length - 1
+            currentThinkingIndex = -1
         }
-        assistantEntryIndex = entries.length
-        entries.push(nextEntry)
+    }
+
+    const appendAssistantMessageDelta = (timestamp: string, contentDelta: string) => {
+        if (currentAssistantMessageIndex < 0) {
+            startAssistantEntry(timestamp, contentDelta, "default", turn.status)
+        } else {
+            const entry = entries[currentAssistantMessageIndex]
+            if (entry.kind === "message") {
+                entry.content = `${entry.content}${contentDelta}`
+                entry.status = turn.status
+                entry.error = turn.error ?? null
+            }
+        }
+        accumulatedAssistantContent = `${accumulatedAssistantContent}${contentDelta}`
+    }
+
+    const appendReasoningSummaryDelta = (timestamp: string, contentDelta: string) => {
+        if (currentThinkingIndex < 0) {
+            startAssistantEntry(timestamp, contentDelta, "thinking", "streaming")
+        } else {
+            const entry = entries[currentThinkingIndex]
+            if (entry.kind === "message") {
+                entry.content = `${entry.content}${contentDelta}`
+                entry.status = "streaming"
+            }
+        }
+    }
+
+    const resetAssistantSegmentPointers = () => {
+        currentAssistantMessageIndex = -1
+        currentThinkingIndex = -1
     }
 
     turnEvents.forEach((event) => {
         if (event.kind === "assistant_delta") {
-            upsertAssistantEntry(event.timestamp || turn.timestamp)
+            appendAssistantMessageDelta(event.timestamp || turn.timestamp, event.content_delta || "")
+            return
+        }
+        if (event.kind === "reasoning_summary") {
+            appendReasoningSummaryDelta(event.timestamp || turn.timestamp, event.content_delta || "")
             return
         }
         if (event.tool_call && event.tool_call_id) {
@@ -530,18 +576,65 @@ const buildAssistantTimelineEntries = (
             } else {
                 entries.push(nextEntry)
             }
+            resetAssistantSegmentPointers()
             return
         }
-        if (event.kind === "assistant_completed" || event.kind === "assistant_failed") {
-            upsertAssistantEntry(event.timestamp || turn.timestamp)
+        if (event.kind === "assistant_completed") {
+            if (!accumulatedAssistantContent && turn.content.trim()) {
+                startAssistantEntry(event.timestamp || turn.timestamp, turn.content, "default", "complete")
+            } else if (turn.content.startsWith(accumulatedAssistantContent)) {
+                const remainingContent = turn.content.slice(accumulatedAssistantContent.length)
+                if (remainingContent) {
+                    startAssistantEntry(event.timestamp || turn.timestamp, remainingContent, "default", "complete")
+                    accumulatedAssistantContent = turn.content
+                } else if (currentAssistantMessageIndex >= 0) {
+                    const entry = entries[currentAssistantMessageIndex]
+                    if (entry.kind === "message") {
+                        entry.status = "complete"
+                    }
+                }
+            } else if (currentAssistantMessageIndex >= 0) {
+                const entry = entries[currentAssistantMessageIndex]
+                if (entry.kind === "message") {
+                    entry.content = turn.content
+                    entry.status = "complete"
+                }
+            } else if (turn.content.trim()) {
+                startAssistantEntry(event.timestamp || turn.timestamp, turn.content, "default", "complete")
+            }
+            currentThinkingIndex = -1
+            return
+        }
+        if (event.kind === "assistant_failed") {
+            if (currentAssistantMessageIndex >= 0) {
+                const entry = entries[currentAssistantMessageIndex]
+                if (entry.kind === "message") {
+                    entry.status = "failed"
+                    entry.error = turn.error ?? event.message ?? null
+                }
+            } else {
+                startAssistantEntry(
+                    event.timestamp || turn.timestamp,
+                    turn.content || event.message || "",
+                    "default",
+                    "failed",
+                )
+            }
+            currentThinkingIndex = -1
         }
     })
 
-    if (
-        assistantEntryIndex < 0
-        && (turn.content || turn.status === "pending" || turn.status === "streaming" || turn.status === "failed")
-    ) {
-        upsertAssistantEntry(turn.timestamp)
+    if (entries.length === 0 && turn.content.trim()) {
+        startAssistantEntry(turn.timestamp, turn.content, "default", turn.status)
+    }
+
+    const needsTrailingThinkingEntry = (
+        (turn.status === "pending" || turn.status === "streaming")
+        && currentAssistantMessageIndex < 0
+        && currentThinkingIndex < 0
+    )
+    if (needsTrailingThinkingEntry) {
+        startAssistantEntry(turn.timestamp, "", "thinking", turn.status)
     }
 
     return entries
@@ -563,14 +656,6 @@ const buildConversationTimelineEntries = (
                 content: optimisticSend.message,
                 timestamp: optimisticSend.createdAt,
                 status: "complete",
-            },
-            {
-                id: `${optimisticSend.conversationId}:optimistic:assistant`,
-                kind: "message",
-                role: "assistant",
-                content: "",
-                timestamp: optimisticSend.createdAt,
-                status: "streaming",
             },
         ]
     }
@@ -637,12 +722,6 @@ const buildConversationTimelineEntries = (
         && entry.content === optimisticSend.message
         && entry.timestamp >= optimisticSend.createdAt
     ))
-    const hasMatchingAssistantTurn = timeline.some((entry) => (
-        entry.kind === "message"
-        && entry.role === "assistant"
-        && entry.timestamp >= optimisticSend.createdAt
-    ))
-
     const optimisticEntries: ConversationTimelineEntry[] = []
     if (!hasMatchingUserTurn) {
         optimisticEntries.push({
@@ -652,16 +731,6 @@ const buildConversationTimelineEntries = (
             content: optimisticSend.message,
             timestamp: optimisticSend.createdAt,
             status: "complete",
-        })
-    }
-    if (!hasMatchingAssistantTurn) {
-        optimisticEntries.push({
-            id: `${optimisticSend.conversationId}:optimistic:assistant`,
-            kind: "message",
-            role: "assistant",
-            content: "",
-            timestamp: optimisticSend.createdAt,
-            status: "streaming",
         })
     }
     return [...timeline, ...optimisticEntries]
@@ -754,6 +823,15 @@ export function HomePanel() {
         || entry.role === "user"
         || entry.role === "assistant"
     ))
+    const hasAssistantConversationActivity = activeConversationHistory.some((entry) => (
+        entry.kind === "message"
+        && entry.role === "assistant"
+    ))
+    const chatSendButtonLabel = !isSendingChat
+        ? "Send"
+        : hasAssistantConversationActivity
+            ? "Thinking..."
+            : "Sending..."
 
     const orderedProjects = (() => {
         const seenProjectPaths = new Set<string>()
@@ -2356,13 +2434,17 @@ export function HomePanel() {
                                                                 <div
                                                                     className={`max-w-[85%] rounded border px-3 py-2 ${entry.role === "user"
                                                                         ? "border-primary/40 bg-primary/10 text-foreground"
-                                                                        : "border-border bg-muted/40 text-foreground"
+                                                                        : entry.presentation === "thinking"
+                                                                            ? "border-border/80 bg-background text-muted-foreground"
+                                                                            : "border-border bg-muted/40 text-foreground"
                                                                         }`}
                                                                 >
                                                                     <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
-                                                                        {entry.role === "assistant" ? "Spark Spawn" : entry.role}
+                                                                        {entry.role === "assistant"
+                                                                            ? (entry.presentation === "thinking" ? "Thinking" : "Spark Spawn")
+                                                                            : entry.role}
                                                                     </p>
-                                                                    <p className="whitespace-pre-wrap text-xs leading-5">
+                                                                    <p className={`whitespace-pre-wrap text-xs leading-5 ${entry.presentation === "thinking" ? "italic" : ""}`}>
                                                                         {entry.role === "assistant" && entry.status !== "complete" && !entry.content.trim()
                                                                             ? entry.status === "failed"
                                                                                 ? (entry.error || "Response failed.")
@@ -2416,7 +2498,7 @@ export function HomePanel() {
                                                 disabled={chatDraft.trim().length === 0 || isSendingChat}
                                                 className="rounded border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                             >
-                                                {isSendingChat ? "Thinking..." : "Send"}
+                                                {chatSendButtonLabel}
                                             </button>
                                         </div>
                                         {panelError ? (

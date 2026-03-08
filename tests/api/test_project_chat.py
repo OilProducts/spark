@@ -469,6 +469,62 @@ def test_chat_session_handles_dynamic_tool_call(monkeypatch) -> None:
     }
 
 
+def test_chat_session_surfaces_reasoning_summary_progress(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    lines = iter(
+        [
+            json.dumps(
+                {
+                    "method": "item/reasoning/summaryTextDelta",
+                    "params": {
+                        "delta": "Scanning the repository structure.",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "delta": "I found the main entry points.",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "codex/event/task_complete",
+                    "params": {
+                        "msg": {
+                            "last_agent_message": "I found the main entry points.",
+                        }
+                    },
+                }
+            ),
+            None,
+        ]
+    )
+    progress_updates: list[project_chat.ChatTurnResult] = []
+
+    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+
+    def fake_ensure_thread(model: str | None) -> None:
+        session._thread_id = "thread-123"
+        session._thread_initialized = True
+
+    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
+    monkeypatch.setattr(
+        session,
+        "_send_request",
+        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
+    )
+    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+
+    result = session.turn("hello", None, on_progress=progress_updates.append)
+
+    assert result.reasoning_summary == "Scanning the repository structure."
+    assert result.assistant_message == "I found the main entry points."
+    assert any(update.reasoning_summary == "Scanning the repository structure." for update in progress_updates)
+
+
 def test_chat_session_initialize_enables_experimental_api(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     requests: list[tuple[str, dict[str, object] | None]] = []
@@ -1042,9 +1098,17 @@ def test_snapshot_compacts_streamed_assistant_deltas(tmp_path: Path) -> None:
                 content_delta="hel",
             ),
             project_chat.ConversationTurnEvent(
-                id="event-assistant-delta-2",
+                id="event-reasoning-1",
                 turn_id="turn-assistant-1",
                 sequence=2,
+                timestamp="2026-03-07T18:00:01Z",
+                kind="reasoning_summary",
+                content_delta="Thinking about the repository structure.",
+            ),
+            project_chat.ConversationTurnEvent(
+                id="event-assistant-delta-2",
+                turn_id="turn-assistant-1",
+                sequence=3,
                 timestamp="2026-03-07T18:00:02Z",
                 kind="assistant_delta",
                 content_delta="lo",
@@ -1052,7 +1116,7 @@ def test_snapshot_compacts_streamed_assistant_deltas(tmp_path: Path) -> None:
             project_chat.ConversationTurnEvent(
                 id="event-assistant-completed-1",
                 turn_id="turn-assistant-1",
-                sequence=3,
+                sequence=4,
                 timestamp="2026-03-07T18:00:03Z",
                 kind="assistant_completed",
                 message="Assistant turn completed.",

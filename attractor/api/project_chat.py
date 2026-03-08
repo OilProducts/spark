@@ -529,6 +529,7 @@ class ToolCallRecord:
 @dataclass
 class ChatTurnResult:
     assistant_message: str
+    reasoning_summary: str = ""
     tool_calls: list[ToolCallRecord] = field(default_factory=list)
     spec_proposal_payloads: list[dict[str, Any]] = field(default_factory=list)
 
@@ -911,7 +912,7 @@ class ConversationState:
         return [
             event
             for event in self.turn_events
-            if event.kind != "assistant_delta"
+            if event.kind not in {"assistant_delta", "reasoning_summary"}
         ]
 
     def to_dict(self) -> dict[str, Any]:
@@ -1324,12 +1325,14 @@ class CodexAppServerChatSession:
         callback: Optional[Callable[[ChatTurnResult], None]],
         tool_calls: list[ToolCallRecord],
         assistant_message: str,
+        reasoning_summary: str,
     ) -> None:
         if callback is None:
             return
         callback(
             ChatTurnResult(
                 assistant_message=assistant_message,
+                reasoning_summary=reasoning_summary,
                 tool_calls=[
                     ToolCallRecord.from_dict(tool_call.to_dict())
                     for tool_call in tool_calls
@@ -1349,6 +1352,7 @@ class CodexAppServerChatSession:
             self._ensure_process()
             self._ensure_thread(model)
             agent_chunks: list[str] = []
+            reasoning_chunks: list[str] = []
             last_error: Optional[str] = None
             saw_final_agent_message = False
             saw_item_agent_message_delta = False
@@ -1427,7 +1431,7 @@ class CodexAppServerChatSession:
                         )
                         if item_id:
                             tool_call_index_by_item_id[item_id] = len(tool_calls) - 1
-                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                     elif request_method == "item/fileChange/requestApproval":
                         file_paths = _extract_file_paths(request_params)
                         item_id = _as_non_empty_string(request_params.get("itemId")) or f"tool-{uuid.uuid4().hex}"
@@ -1442,7 +1446,7 @@ class CodexAppServerChatSession:
                         )
                         if item_id:
                             tool_call_index_by_item_id[item_id] = len(tool_calls) - 1
-                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                     elif request_method == "item/tool/call":
                         tool_name = _as_non_empty_string(request_params.get("tool")) or "unknown_tool"
                         call_id = _as_non_empty_string(request_params.get("callId")) or f"tool-{uuid.uuid4().hex}"
@@ -1454,7 +1458,7 @@ class CodexAppServerChatSession:
                         )
                         tool_calls.append(initial_tool_call)
                         tool_call_index_by_item_id[call_id] = len(tool_calls) - 1
-                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                         if on_dynamic_tool_call is None:
                             tool_calls[tool_call_index_by_item_id[call_id]] = ToolCallRecord(
                                 id=call_id,
@@ -1463,7 +1467,7 @@ class CodexAppServerChatSession:
                                 title=tool_name,
                                 output="Dynamic tools are not available in this session.",
                             )
-                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                             self._send_response(
                                 message.get("id"),
                                 {
@@ -1480,7 +1484,7 @@ class CodexAppServerChatSession:
                             tool_calls[tool_call_index_by_item_id[call_id]] = tool_result.tool_call
                             if tool_result.spec_proposal_payload is not None:
                                 spec_proposal_payloads.append(tool_result.spec_proposal_payload)
-                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                             self._send_response(message.get("id"), tool_result.response)
                         except Exception as exc:
                             tool_calls[tool_call_index_by_item_id[call_id]] = ToolCallRecord(
@@ -1490,7 +1494,7 @@ class CodexAppServerChatSession:
                                 title=tool_name,
                                 output=str(exc),
                             )
-                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                             self._send_response(
                                 message.get("id"),
                                 {
@@ -1515,7 +1519,7 @@ class CodexAppServerChatSession:
                                 tool_calls.append(tool_call)
                                 if item_id:
                                     tool_call_index_by_item_id[item_id] = len(tool_calls) - 1
-                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                     continue
                 if method == "item/completed":
                     item = params.get("item")
@@ -1534,7 +1538,7 @@ class CodexAppServerChatSession:
                                 tool_calls.append(tool_call)
                                 if item_id:
                                     tool_call_index_by_item_id[item_id] = len(tool_calls) - 1
-                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                     continue
                 if method == "item/agentMessage/delta":
                     delta = params.get("delta") or ""
@@ -1542,7 +1546,28 @@ class CodexAppServerChatSession:
                         saw_item_agent_message_delta = True
                         agent_chunks.append(str(delta))
                         last_agent_activity_at = time.monotonic()
-                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
+                    continue
+                if method == "item/reasoning/summaryTextDelta":
+                    delta = _as_non_empty_string(params.get("delta") or params.get("textDelta") or params.get("text"))
+                    if delta:
+                        reasoning_chunks.append(delta)
+                        last_agent_activity_at = time.monotonic()
+                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
+                    continue
+                if method == "item/reasoning/summaryPartAdded":
+                    part = params.get("part")
+                    summary_text: Optional[str] = None
+                    if isinstance(part, dict):
+                        summary_text = _as_non_empty_string(
+                            part.get("text")
+                            or part.get("summaryText")
+                            or part.get("summary_text")
+                        )
+                    if summary_text:
+                        reasoning_chunks.append(summary_text)
+                        last_agent_activity_at = time.monotonic()
+                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                     continue
                 if method == "codex/event/agent_message_delta":
                     if saw_item_agent_message_delta:
@@ -1551,7 +1576,7 @@ class CodexAppServerChatSession:
                     if delta:
                         agent_chunks.append(str(delta))
                         last_agent_activity_at = time.monotonic()
-                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                     continue
                 if method == "codex/event/agent_message":
                     msg = (params.get("msg") or {}).get("message")
@@ -1559,7 +1584,7 @@ class CodexAppServerChatSession:
                     if msg:
                         agent_chunks = [str(msg)]
                         last_agent_activity_at = time.monotonic()
-                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                     if phase == "final_answer":
                         saw_final_agent_message = True
                     continue
@@ -1572,7 +1597,7 @@ class CodexAppServerChatSession:
                             tool_calls[tool_call_index].output,
                             delta,
                         )
-                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+                        self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
                     continue
                 if method == "error":
                     last_error = str(params.get("message") or "codex app-server error")
@@ -1593,7 +1618,7 @@ class CodexAppServerChatSession:
             for tool_call in tool_calls:
                 if tool_call.status == "running":
                     tool_call.status = "failed" if last_error else "completed"
-            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip())
+            self._emit_progress(on_progress, tool_calls, "".join(agent_chunks).strip(), "".join(reasoning_chunks).strip())
             if last_error:
                 raise RuntimeError(last_error)
             response_text = "".join(agent_chunks).strip()
@@ -1601,6 +1626,7 @@ class CodexAppServerChatSession:
                 raise RuntimeError("codex app-server returned an empty chat response")
             return ChatTurnResult(
                 assistant_message=response_text,
+                reasoning_summary="".join(reasoning_chunks).strip(),
                 tool_calls=tool_calls,
                 spec_proposal_payloads=spec_proposal_payloads,
             )
@@ -2164,11 +2190,13 @@ class ProjectChatService:
             self._publish_progress_payload(progress_callback, self._build_turn_upsert_payload(state, assistant_turn))
 
         previous_live_assistant_message = ""
+        previous_reasoning_summary = ""
         known_tool_calls: dict[str, ToolCallRecord] = {}
 
         def persist_progress(progress: ChatTurnResult) -> None:
-            nonlocal previous_live_assistant_message, known_tool_calls
+            nonlocal previous_live_assistant_message, previous_reasoning_summary, known_tool_calls
             live_assistant_message = _extract_live_assistant_message(progress.assistant_message)
+            reasoning_summary = progress.reasoning_summary.strip()
             with self._lock:
                 current_state = self._read_state(conversation_id, normalized_project_path) or state
                 current_assistant_turn = self._get_turn(current_state, assistant_turn.id)
@@ -2184,6 +2212,24 @@ class ProjectChatService:
                     self._upsert_turn(current_state, current_assistant_turn)
 
                 emitted_payloads: list[dict[str, Any]] = []
+                if reasoning_summary != previous_reasoning_summary:
+                    summary_delta = reasoning_summary
+                    if reasoning_summary.startswith(previous_reasoning_summary):
+                        summary_delta = reasoning_summary[len(previous_reasoning_summary):]
+                    previous_reasoning_summary = reasoning_summary
+                    if current_assistant_turn.status == "pending":
+                        current_assistant_turn.status = "streaming"
+                        self._upsert_turn(current_state, current_assistant_turn)
+                        emitted_payloads.append(self._build_turn_upsert_payload(current_state, current_assistant_turn))
+                    if summary_delta:
+                        reasoning_event = self._append_turn_event(
+                            current_state,
+                            current_assistant_turn.id,
+                            "reasoning_summary",
+                            content_delta=summary_delta,
+                        )
+                        emitted_payloads.append(self._build_turn_event_payload(current_state, reasoning_event))
+
                 if live_assistant_message != previous_live_assistant_message:
                     content_delta = live_assistant_message
                     if live_assistant_message.startswith(previous_live_assistant_message):
@@ -2235,6 +2281,7 @@ class ProjectChatService:
                     "persisted progress events",
                     conversation_id=conversation_id,
                     live_assistant_message=live_assistant_message,
+                    reasoning_summary=reasoning_summary,
                     tool_call_count=len(progress.tool_calls),
                     turns=_summarize_turns_for_debug(current_state.turns),
                 )

@@ -118,6 +118,7 @@ export interface ConversationTurnEventResponse {
     timestamp: string
     kind:
         | 'assistant_delta'
+        | 'reasoning_summary'
         | 'assistant_completed'
         | 'assistant_failed'
         | 'tool_call_started'
@@ -702,6 +703,7 @@ function parseConversationTurnEventResponse(value: unknown, endpoint: string): C
         return null
     }
     const kind = record.kind === 'assistant_delta'
+        || record.kind === 'reasoning_summary'
         || record.kind === 'assistant_completed'
         || record.kind === 'assistant_failed'
         || record.kind === 'tool_call_started'
