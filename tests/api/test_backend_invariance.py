@@ -147,7 +147,7 @@ def test_initialize_creates_run_dir_and_seed_checkpoint_with_transformed_graph(
     )
     assert payload["status"] == "started"
     run_id = payload["run_id"]
-    run_root = tmp_path / "runs" / run_id
+    run_root = server._run_root(run_id)
     assert run_root.exists()
 
     checkpoint = load_checkpoint(run_root / "state.json")

@@ -36,7 +36,7 @@ def test_get_pipeline_returns_progress_for_active_run(
 
     start_payload = _start_pipeline(api_client, tmp_path / "work")
     run_id = str(start_payload["pipeline_id"])
-    run_root = runs_root / run_id
+    run_root = server._run_root(run_id)
     _write_checkpoint(run_root, current_node="plan", completed_nodes=["start"])
 
     response = api_client.get(f"/pipelines/{run_id}")
@@ -65,7 +65,7 @@ def test_get_pipeline_uses_checkpoint_progress_for_persisted_run(
     final_status = _wait_for_pipeline_terminal_status(api_client, run_id)
     assert final_status == "success"
 
-    run_root = runs_root / run_id
+    run_root = server._run_root(run_id)
     _write_checkpoint(run_root, current_node="done", completed_nodes=["start", "plan"])
 
     response = api_client.get(f"/pipelines/{run_id}")

@@ -21,7 +21,7 @@ def _seed_run(
     server.configure_runtime_paths(runs_dir=runs_root)
     monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
     run_id = str(_start_pipeline(api_client, tmp_path / "work")["pipeline_id"])
-    return run_id, runs_root / run_id
+    return run_id, server._run_root(run_id)
 
 
 def test_list_pipeline_artifacts_returns_run_outputs_for_known_pipeline(

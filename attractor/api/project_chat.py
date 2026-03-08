@@ -16,6 +16,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from attractor.storage import (
+    ProjectPaths,
+    ensure_project_paths,
+    normalize_project_path,
+    read_project_paths_by_id,
+)
+
 
 CHAT_RUNTIME_THREAD_KEY = "_attractor.runtime.thread_id"
 RUNTIME_REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,10 +50,7 @@ def _truncate_text(value: str, limit: int) -> str:
 
 
 def _normalize_project_path(value: str) -> str:
-    trimmed = value.strip()
-    if not trimmed:
-        return ""
-    return str(Path(trimmed).expanduser().resolve(strict=False))
+    return normalize_project_path(value)
 
 
 def _extract_json_object(raw: str) -> dict[str, Any]:
@@ -1514,21 +1518,59 @@ class ProjectChatService:
     def events(self) -> ConversationEventHub:
         return self._event_hub
 
-    def _conversations_root(self) -> Path:
-        root = self._data_dir / "conversations"
+    def _projects_root(self) -> Path:
+        root = self._data_dir / "projects"
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    def _conversation_root(self, conversation_id: str) -> Path:
-        root = self._conversations_root() / conversation_id
+    def _project_paths(self, project_path: str) -> ProjectPaths:
+        return ensure_project_paths(self._data_dir, project_path)
+
+    def _project_paths_for_conversation(
+        self,
+        conversation_id: str,
+        project_path: Optional[str] = None,
+    ) -> ProjectPaths:
+        if project_path:
+            return self._project_paths(project_path)
+        candidates: list[ProjectPaths] = []
+        for project_root in self._projects_root().iterdir():
+            if not project_root.is_dir():
+                continue
+            project_record = read_project_paths_by_id(self._data_dir, project_root.name)
+            if project_record is None:
+                continue
+            if (project_record.conversations_dir / conversation_id).exists():
+                candidates.append(project_record)
+        if len(candidates) == 1:
+            return candidates[0]
+        if not candidates:
+            raise FileNotFoundError(conversation_id)
+        raise RuntimeError(f"Conversation id is ambiguous across projects: {conversation_id}")
+
+    def _conversation_root(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
+        project_paths = self._project_paths_for_conversation(conversation_id, project_path)
+        root = project_paths.conversations_dir / conversation_id
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    def _conversation_state_path(self, conversation_id: str) -> Path:
-        return self._conversation_root(conversation_id) / "state.json"
+    def _conversation_state_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
+        return self._conversation_root(conversation_id, project_path) / "state.json"
 
-    def _conversation_session_path(self, conversation_id: str) -> Path:
-        return self._conversation_root(conversation_id) / "session.json"
+    def _conversation_session_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
+        return self._conversation_root(conversation_id, project_path) / "session.json"
+
+    def _workflow_state_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
+        project_paths = self._project_paths_for_conversation(conversation_id, project_path)
+        return project_paths.workflow_dir / f"{conversation_id}.json"
+
+    def _proposals_state_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
+        project_paths = self._project_paths_for_conversation(conversation_id, project_path)
+        return project_paths.proposals_dir / f"{conversation_id}.json"
+
+    def _execution_cards_state_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
+        project_paths = self._project_paths_for_conversation(conversation_id, project_path)
+        return project_paths.execution_cards_dir / f"{conversation_id}.json"
 
     def _touch_conversation_state(self, state: ConversationState, *, title_hint: Optional[str] = None) -> None:
         if not state.created_at:
@@ -1555,26 +1597,92 @@ class ProjectChatService:
             last_message_preview=_build_conversation_preview(state.turns),
         )
 
-    def _read_state(self, conversation_id: str) -> Optional[ConversationState]:
-        path = self._conversation_state_path(conversation_id)
+    def _read_state(self, conversation_id: str, project_path: Optional[str] = None) -> Optional[ConversationState]:
+        try:
+            path = self._conversation_state_path(conversation_id, project_path)
+        except (FileNotFoundError, RuntimeError):
+            return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return None
         if not isinstance(payload, dict):
             return None
+        project_path = _normalize_project_path(str(payload.get("project_path", "")))
+        workflow_payload = self._read_json_dict(self._workflow_state_path(conversation_id, project_path))
+        proposals_payload = self._read_json_dict(self._proposals_state_path(conversation_id, project_path))
+        execution_cards_payload = self._read_json_dict(self._execution_cards_state_path(conversation_id, project_path))
+        if workflow_payload:
+            payload["event_log"] = workflow_payload.get("event_log", [])
+            payload["execution_workflow"] = workflow_payload.get("execution_workflow", {})
+        if proposals_payload:
+            payload["spec_edit_proposals"] = proposals_payload.get("spec_edit_proposals", [])
+        if execution_cards_payload:
+            payload["execution_cards"] = execution_cards_payload.get("execution_cards", [])
         state = ConversationState.from_dict(payload)
         if not state.conversation_id:
             state.conversation_id = conversation_id
         return state
 
     def _write_state(self, state: ConversationState) -> None:
-        path = self._conversation_state_path(state.conversation_id)
+        project_paths = self._project_paths(state.project_path)
+        path = self._conversation_state_path(state.conversation_id, state.project_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+        conversation_payload = {
+            "conversation_id": state.conversation_id,
+            "project_path": state.project_path,
+            "title": state.title,
+            "created_at": state.created_at,
+            "updated_at": state.updated_at,
+            "turns": [turn.to_dict() for turn in state.turns],
+            "turn_events": [event.to_dict() for event in state.persisted_turn_events()],
+        }
+        path.write_text(json.dumps(conversation_payload, indent=2, sort_keys=True), encoding="utf-8")
+        self._write_json(
+            self._workflow_state_path(state.conversation_id, state.project_path),
+            {
+                "conversation_id": state.conversation_id,
+                "project_id": project_paths.project_id,
+                "project_path": state.project_path,
+                "event_log": [entry.to_dict() for entry in state.event_log],
+                "execution_workflow": state.execution_workflow.to_dict(),
+            },
+        )
+        self._write_json(
+            self._proposals_state_path(state.conversation_id, state.project_path),
+            {
+                "conversation_id": state.conversation_id,
+                "project_id": project_paths.project_id,
+                "project_path": state.project_path,
+                "spec_edit_proposals": [proposal.to_dict() for proposal in state.spec_edit_proposals],
+            },
+        )
+        self._write_json(
+            self._execution_cards_state_path(state.conversation_id, state.project_path),
+            {
+                "conversation_id": state.conversation_id,
+                "project_id": project_paths.project_id,
+                "project_path": state.project_path,
+                "execution_cards": [card.to_dict() for card in state.execution_cards],
+            },
+        )
 
-    def _read_session_state(self, conversation_id: str) -> Optional[ConversationSessionState]:
-        path = self._conversation_session_path(conversation_id)
+    def _read_json_dict(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _read_session_state(self, conversation_id: str, project_path: Optional[str] = None) -> Optional[ConversationSessionState]:
+        try:
+            path = self._conversation_session_path(conversation_id, project_path)
+        except (FileNotFoundError, RuntimeError):
+            return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
@@ -1587,7 +1695,7 @@ class ProjectChatService:
         return state
 
     def _write_session_state(self, state: ConversationSessionState) -> None:
-        path = self._conversation_session_path(state.conversation_id)
+        path = self._conversation_session_path(state.conversation_id, state.project_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
 
@@ -1600,7 +1708,7 @@ class ProjectChatService:
         normalized_project_path = _normalize_project_path(project_path)
         runtime_project_path = resolve_runtime_workspace_path(normalized_project_path)
         with self._lock:
-            session_state = self._read_session_state(conversation_id)
+            session_state = self._read_session_state(conversation_id, normalized_project_path)
             if session_state is None:
                 session_state = ConversationSessionState(
                     conversation_id=conversation_id,
@@ -1622,9 +1730,10 @@ class ProjectChatService:
         normalized_project_path = _normalize_project_path(project_path)
         if not normalized_project_path:
             raise ValueError("Project path is required.")
+        project_paths = self._project_paths(normalized_project_path)
         with self._lock:
             summaries: list[ConversationSummary] = []
-            for state_path in self._conversations_root().glob("*/state.json"):
+            for state_path in project_paths.conversations_dir.glob("*/state.json"):
                 try:
                     payload = json.loads(state_path.read_text(encoding="utf-8"))
                 except Exception:
@@ -1641,7 +1750,7 @@ class ProjectChatService:
     def get_snapshot(self, conversation_id: str, project_path: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
             should_write_state = False
-            state = self._read_state(conversation_id)
+            state = self._read_state(conversation_id, project_path)
             if state is None:
                 normalized_project_path = _normalize_project_path(project_path or "")
                 if not normalized_project_path:
@@ -1675,9 +1784,10 @@ class ProjectChatService:
         if not normalized_project_path:
             raise ValueError("Project path is required.")
 
-        conversation_root = self._conversations_root() / conversation_id
+        project_paths = self._project_paths(normalized_project_path)
+        conversation_root = project_paths.conversations_dir / conversation_id
         with self._lock:
-            state = self._read_state(conversation_id)
+            state = self._read_state(conversation_id, normalized_project_path)
             if state is None or state.project_path != normalized_project_path:
                 raise FileNotFoundError(conversation_id)
 
@@ -1688,6 +1798,12 @@ class ProjectChatService:
 
         if conversation_root.exists():
             shutil.rmtree(conversation_root)
+        for sidecar in (
+            project_paths.workflow_dir / f"{conversation_id}.json",
+            project_paths.proposals_dir / f"{conversation_id}.json",
+            project_paths.execution_cards_dir / f"{conversation_id}.json",
+        ):
+            sidecar.unlink(missing_ok=True)
 
         return {
             "status": "deleted",
@@ -1862,7 +1978,7 @@ class ProjectChatService:
             session = self._sessions.get(conversation_id)
             if session is not None:
                 return session
-            persisted_session = self._read_session_state(conversation_id)
+            persisted_session = self._read_session_state(conversation_id, project_path)
             session = CodexAppServerChatSession(
                 project_path,
                 persisted_thread_id=persisted_session.thread_id if persisted_session is not None else None,
@@ -1915,7 +2031,7 @@ class ProjectChatService:
             raise ValueError("Message is required.")
         session = self._build_session(conversation_id, normalized_project_path)
         with self._lock:
-            state = self._read_state(conversation_id)
+            state = self._read_state(conversation_id, normalized_project_path)
             if state is None:
                 state = ConversationState(conversation_id=conversation_id, project_path=normalized_project_path)
             elif state.project_path != normalized_project_path:
@@ -1955,7 +2071,7 @@ class ProjectChatService:
             nonlocal previous_live_assistant_message, known_tool_calls
             live_assistant_message = _extract_live_assistant_message(progress.assistant_message)
             with self._lock:
-                current_state = self._read_state(conversation_id) or state
+                current_state = self._read_state(conversation_id, normalized_project_path) or state
                 current_assistant_turn = self._get_turn(current_state, assistant_turn.id)
                 if current_assistant_turn is None:
                     current_assistant_turn = ConversationTurn(
@@ -2037,7 +2153,7 @@ class ProjectChatService:
         except RuntimeError as exc:
             if "timed out" not in str(exc).lower():
                 with self._lock:
-                    current_state = self._read_state(conversation_id) or state
+                    current_state = self._read_state(conversation_id, normalized_project_path) or state
                     current_assistant_turn = self._get_turn(current_state, assistant_turn.id)
                     if current_assistant_turn is not None:
                         current_assistant_turn.status = "failed"
@@ -2055,7 +2171,7 @@ class ProjectChatService:
                         self._publish_progress_payload(progress_callback, self._build_turn_upsert_payload(current_state, current_assistant_turn))
                 raise
             with self._lock:
-                current_state = self._read_state(conversation_id) or state
+                current_state = self._read_state(conversation_id, normalized_project_path) or state
                 current_assistant_turn = self._get_turn(current_state, assistant_turn.id)
                 retry_event: Optional[ConversationTurnEvent] = None
                 if current_assistant_turn is not None:
@@ -2098,7 +2214,7 @@ class ProjectChatService:
                     error=str(exc),
                 )
         with self._lock:
-            state = self._read_state(conversation_id) or state
+            state = self._read_state(conversation_id, normalized_project_path) or state
             current_assistant_turn = self._get_turn(state, assistant_turn.id)
             if current_assistant_turn is None:
                 current_assistant_turn = ConversationTurn(
@@ -2178,7 +2294,7 @@ class ProjectChatService:
     def reject_spec_edit(self, conversation_id: str, project_path: str, proposal_id: str) -> dict[str, Any]:
         normalized_project_path = _normalize_project_path(project_path)
         with self._lock:
-            state = self._read_state(conversation_id)
+            state = self._read_state(conversation_id, normalized_project_path)
             if state is None or state.project_path != normalized_project_path:
                 raise ValueError("Conversation not found for project.")
             proposal = next((entry for entry in state.spec_edit_proposals if entry.id == proposal_id), None)
@@ -2190,56 +2306,6 @@ class ProjectChatService:
             self._write_state(state)
         return state.to_dict()
 
-    def _write_spec_edit_artifact(
-        self,
-        runtime_project_path: str,
-        conversation_id: str,
-        proposal: SpecEditProposal,
-        canonical_spec_edit_id: str,
-    ) -> Path:
-        artifact_dir = Path(runtime_project_path) / ".sparkspawn" / "spec-edits"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = artifact_dir / f"{canonical_spec_edit_id}.json"
-        payload = {
-            "canonical_spec_edit_id": canonical_spec_edit_id,
-            "conversation_id": conversation_id,
-            "approved_at": proposal.approved_at,
-            "summary": proposal.summary,
-            "changes": [change.to_dict() for change in proposal.changes],
-            "proposal_id": proposal.id,
-        }
-        artifact_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        return artifact_path
-
-    def _git_commit_spec_edit(self, runtime_project_path: str, artifact_path: Path, canonical_spec_edit_id: str) -> tuple[str | None, str | None]:
-        project_dir = Path(runtime_project_path)
-        relative_artifact_path = artifact_path.relative_to(project_dir)
-        subprocess.run(
-            ["git", "-C", str(project_dir), "add", str(relative_artifact_path)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(project_dir), "commit", "-m", f"Approve spec edit {canonical_spec_edit_id}", "--", str(relative_artifact_path)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        branch = subprocess.run(
-            ["git", "-C", str(project_dir), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        commit = subprocess.run(
-            ["git", "-C", str(project_dir), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        return branch or None, commit or None
-
     def approve_spec_edit(
         self,
         conversation_id: str,
@@ -2247,9 +2313,8 @@ class ProjectChatService:
         proposal_id: str,
     ) -> tuple[dict[str, Any], SpecEditProposal]:
         normalized_project_path = _normalize_project_path(project_path)
-        runtime_project_path = resolve_runtime_workspace_path(normalized_project_path)
         with self._lock:
-            state = self._read_state(conversation_id)
+            state = self._read_state(conversation_id, normalized_project_path)
             if state is None or state.project_path != normalized_project_path:
                 raise ValueError("Conversation not found for project.")
             proposal = next((entry for entry in state.spec_edit_proposals if entry.id == proposal_id), None)
@@ -2259,24 +2324,9 @@ class ProjectChatService:
             proposal.status = "applied"
             proposal.canonical_spec_edit_id = canonical_spec_edit_id
             proposal.approved_at = _iso_now()
-        if not Path(runtime_project_path).exists():
-            raise ValueError(
-                "Project path is not available inside the backend runtime: "
-                f"requested {normalized_project_path}, resolved {runtime_project_path}"
-            )
-        artifact_path = self._write_spec_edit_artifact(runtime_project_path, conversation_id, proposal, canonical_spec_edit_id)
-        branch, commit = self._git_commit_spec_edit(runtime_project_path, artifact_path, canonical_spec_edit_id)
-        with self._lock:
-            state = self._read_state(conversation_id) or state
-            proposal = next((entry for entry in state.spec_edit_proposals if entry.id == proposal_id), proposal)
-            proposal.status = "applied"
-            proposal.canonical_spec_edit_id = canonical_spec_edit_id
-            proposal.approved_at = proposal.approved_at or _iso_now()
-            proposal.git_branch = branch
-            proposal.git_commit = commit
             self._append_event(
                 state,
-                f"Approved spec edit proposal {proposal.id} as canonical spec edit {canonical_spec_edit_id} and committed it to git.",
+                f"Approved spec edit proposal {proposal.id} as canonical spec edit {canonical_spec_edit_id}.",
             )
             self._touch_conversation_state(state)
             self._write_state(state)
@@ -2289,7 +2339,7 @@ class ProjectChatService:
         flow_source: Optional[str],
     ) -> dict[str, Any]:
         with self._lock:
-            state = self._read_state(conversation_id)
+            state = self._read_state(conversation_id, normalized_project_path)
             if state is None:
                 raise ValueError("Unknown conversation.")
             state.execution_workflow = ExecutionWorkflowState(
@@ -2317,7 +2367,7 @@ class ProjectChatService:
         codex_runner: Any,
     ) -> None:
         try:
-            state = self._read_state(conversation_id)
+            state = self._read_state(conversation_id, normalized_project_path)
             if state is None:
                 return
             proposal = next((entry for entry in state.spec_edit_proposals if entry.id == proposal_id), None)
@@ -2403,7 +2453,7 @@ class ProjectChatService:
         if not trimmed_message:
             raise ValueError("Review message is required.")
         with self._lock:
-            state = self._read_state(conversation_id)
+            state = self._read_state(conversation_id, normalized_project_path)
             if state is None or state.project_path != normalized_project_path:
                 raise ValueError("Conversation not found for project.")
             execution_card = next((entry for entry in state.execution_cards if entry.id == execution_card_id), None)

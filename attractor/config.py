@@ -16,6 +16,10 @@ ENV_UI_DIR = "SPARKSPAWN_UI_DIR"
 class Settings:
     project_root: Path
     data_dir: Path
+    config_dir: Path
+    runtime_dir: Path
+    logs_dir: Path
+    projects_dir: Path
     runs_dir: Path
     flows_dir: Path
     ui_dir: Optional[Path]
@@ -33,7 +37,11 @@ def resolve_settings(
     env_map = env if env is not None else os.environ
     project_root = _detect_project_root()
     default_data_dir = Path.home() / ".sparkspawn"
-    default_runs_dir = default_data_dir / "runs"
+    default_config_dir = default_data_dir / "config"
+    default_runtime_dir = default_data_dir / "runtime"
+    default_logs_dir = default_data_dir / "logs"
+    default_projects_dir = default_data_dir / "projects"
+    default_runs_dir = default_runtime_dir / "runs"
     default_flows_dir = (
         (project_root / "flows")
         if (project_root / ".git").exists()
@@ -50,10 +58,14 @@ def resolve_settings(
         env_value=env_map.get(ENV_HOME_DIR),
         default_value=default_data_dir,
     )
+    resolved_config_dir = resolved_data_dir / "config"
+    resolved_runtime_dir = resolved_data_dir / "runtime"
+    resolved_logs_dir = resolved_data_dir / "logs"
+    resolved_projects_dir = resolved_data_dir / "projects"
     resolved_runs_dir = _coalesce_path(
         cli_value=runs_dir,
         env_value=env_map.get(ENV_RUNS_DIR),
-        default_value=default_runs_dir,
+        default_value=resolved_runtime_dir / "runs",
     )
     resolved_flows_dir = _coalesce_path(
         cli_value=flows_dir,
@@ -70,6 +82,10 @@ def resolve_settings(
     return Settings(
         project_root=project_root,
         data_dir=resolved_data_dir,
+        config_dir=resolved_config_dir,
+        runtime_dir=resolved_runtime_dir,
+        logs_dir=resolved_logs_dir,
+        projects_dir=resolved_projects_dir,
         runs_dir=resolved_runs_dir,
         flows_dir=resolved_flows_dir,
         ui_dir=resolved_ui_dir,
@@ -78,6 +94,10 @@ def resolve_settings(
 
 
 def validate_settings(settings: Settings) -> None:
+    ensure_writable_directory(settings.config_dir, "config")
+    ensure_writable_directory(settings.runtime_dir, "runtime")
+    ensure_writable_directory(settings.logs_dir, "logs")
+    ensure_writable_directory(settings.projects_dir, "projects")
     ensure_writable_directory(settings.runs_dir, "runs")
     ensure_writable_directory(settings.flows_dir, "flows")
     if settings.ui_dir:

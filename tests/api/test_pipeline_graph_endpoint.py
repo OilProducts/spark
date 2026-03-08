@@ -23,7 +23,7 @@ def test_get_pipeline_graph_returns_svg_for_known_pipeline(
     start_payload = _start_pipeline(api_client, tmp_path / "work")
     run_id = str(start_payload["pipeline_id"])
 
-    svg_path = runs_root / run_id / "artifacts" / "graphviz" / "pipeline.svg"
+    svg_path = server._run_root(run_id) / "artifacts" / "graphviz" / "pipeline.svg"
     svg_path.parent.mkdir(parents=True, exist_ok=True)
     svg_path.write_text("<svg/>", encoding="utf-8")
 

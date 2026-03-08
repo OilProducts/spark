@@ -5,6 +5,7 @@ from pathlib import Path
 
 import attractor.api.server as server
 import attractor.api.project_chat as project_chat
+from attractor.storage import ensure_project_paths
 
 
 def test_extract_command_text_handles_list_and_string_payloads() -> None:
@@ -176,6 +177,7 @@ def test_append_turn_event_records_tool_call_against_assistant_turn(tmp_path: Pa
 
 def test_conversation_session_state_round_trips(tmp_path: Path) -> None:
     service = project_chat.ProjectChatService(tmp_path)
+    project_paths = ensure_project_paths(tmp_path, "/tmp/project")
     session_state = project_chat.ConversationSessionState(
         conversation_id="conversation-test",
         updated_at="2026-03-06T23:59:00Z",
@@ -192,6 +194,7 @@ def test_conversation_session_state_round_trips(tmp_path: Path) -> None:
     assert loaded.thread_id == "thread-123"
     assert loaded.project_path == project_chat._normalize_project_path("/tmp/project")
     assert loaded.runtime_project_path == project_chat._normalize_project_path("/runtime/project")
+    assert project_paths.project_file.exists()
 
 
 def test_build_session_restores_persisted_thread_id(tmp_path: Path) -> None:
@@ -720,6 +723,7 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
 
 def test_snapshot_compacts_streamed_assistant_deltas(tmp_path: Path) -> None:
     service = project_chat.ProjectChatService(tmp_path)
+    project_paths = ensure_project_paths(tmp_path, str(tmp_path))
     state = project_chat.ConversationState(
         conversation_id="conversation-compact",
         project_path=str(tmp_path),
@@ -775,7 +779,9 @@ def test_snapshot_compacts_streamed_assistant_deltas(tmp_path: Path) -> None:
     snapshot = service.get_snapshot("conversation-compact", str(tmp_path))
 
     assert [event["kind"] for event in snapshot["turn_events"]] == ["assistant_completed"]
-    persisted = json.loads((tmp_path / "conversations" / "conversation-compact" / "state.json").read_text(encoding="utf-8"))
+    persisted = json.loads(
+        (project_paths.conversations_dir / "conversation-compact" / "state.json").read_text(encoding="utf-8")
+    )
     assert [event["kind"] for event in persisted["turn_events"]] == ["assistant_completed"]
 
 
@@ -811,6 +817,7 @@ def test_list_project_conversations_endpoint_returns_project_threads(api_client,
 def test_delete_project_conversation_endpoint_removes_thread_state(api_client, tmp_path: Path) -> None:
     service = server.PROJECT_CHAT
     conversation_id = "conversation-delete-me"
+    project_paths = ensure_project_paths(tmp_path / ".sparkspawn", str(tmp_path))
     service._write_state(
         project_chat.ConversationState(
             conversation_id=conversation_id,
@@ -841,7 +848,7 @@ def test_delete_project_conversation_endpoint_removes_thread_state(api_client, t
         "conversation_id": conversation_id,
         "project_path": str(tmp_path.resolve()),
     }
-    assert not (tmp_path / "conversations" / conversation_id).exists()
+    assert not (project_paths.conversations_dir / conversation_id).exists()
 
     list_response = api_client.get("/api/projects/conversations", params={"project_path": str(tmp_path)})
     assert list_response.status_code == 200

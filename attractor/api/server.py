@@ -47,6 +47,7 @@ from attractor.api.project_chat import (
     build_codex_runtime_environment,
     resolve_runtime_workspace_path,
 )
+from attractor.storage import ensure_project_paths, normalize_project_path
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.handlers.base import CodergenBackend
 from attractor.interviewer.base import Interviewer
@@ -442,10 +443,56 @@ PIPELINE_LIFECYCLE_PHASES = ("PARSE", "VALIDATE", "INITIALIZE", "EXECUTE", "FINA
 
 
 def _runs_root() -> Path:
-    return get_settings().runs_dir
+    root = get_settings().runs_dir
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _run_index_path(run_id: str) -> Path:
+    return _runs_root() / f"{run_id}.json"
+
+
+def _read_run_index(run_id: str) -> Optional[dict[str, object]]:
+    try:
+        payload = json.loads(_run_index_path(run_id).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_run_index(run_id: str, project_path: str) -> Path:
+    normalized_project_path = normalize_project_path(project_path)
+    if not normalized_project_path:
+        raise ValueError("Run storage requires a project path.")
+    project_paths = ensure_project_paths(get_settings().data_dir, normalized_project_path)
+    run_root = project_paths.runs_dir / run_id
+    run_root.mkdir(parents=True, exist_ok=True)
+    _run_index_path(run_id).write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "project_id": project_paths.project_id,
+                "project_path": project_paths.project_path,
+                "run_root": str(run_root),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return run_root
+
+
+def _ensure_run_root_for_project(run_id: str, project_path: str) -> Path:
+    return _write_run_index(run_id, project_path)
 
 
 def _run_root(run_id: str) -> Path:
+    index_record = _read_run_index(run_id)
+    if index_record is not None:
+        raw_run_root = index_record.get("run_root")
+        if isinstance(raw_run_root, str) and raw_run_root.strip():
+            return Path(raw_run_root).expanduser().resolve(strict=False)
     return _runs_root() / run_id
 
 
@@ -479,8 +526,10 @@ def _run_meta_path(run_id: str) -> Path:
 
 
 def _write_run_meta(record: RunRecord) -> None:
-    run_meta_path = _run_meta_path(record.run_id)
     try:
+        if record.project_path or record.working_directory:
+            _write_run_index(record.run_id, record.project_path or record.working_directory)
+        run_meta_path = _run_meta_path(record.run_id)
         run_meta_path.parent.mkdir(parents=True, exist_ok=True)
         with run_meta_path.open("w", encoding="utf-8") as f:
             json.dump(record.to_dict(), f, indent=2, sort_keys=True)
@@ -1362,12 +1411,20 @@ async def get_status():
 
 @app.get("/runs")
 async def list_runs(project_path: Optional[str] = None):
-    runs_root = _runs_root()
-    if not runs_root.exists():
-        return {"runs": []}
-
     records: List[RunRecord] = []
-    for run_dir in runs_root.iterdir():
+    run_dirs: list[Path] = []
+    for index_path in _runs_root().glob("*.json"):
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        raw_run_root = payload.get("run_root")
+        if isinstance(raw_run_root, str) and raw_run_root.strip():
+            run_dirs.append(Path(raw_run_root))
+
+    for run_dir in run_dirs:
         if not run_dir.is_dir():
             continue
         meta_path = run_dir / "run.json"
@@ -1648,7 +1705,7 @@ async def _start_pipeline(req: PipelineStartRequest) -> dict:
     )
     runner = BroadcastingRunner(HandlerRunner(graph, registry), emit)
 
-    run_root = _run_root(run_id)
+    run_root = _ensure_run_root_for_project(run_id, working_dir)
     checkpoint_file = str(run_root / "state.json")
     logs_root = str(run_root / "logs")
     # NOTE: This artifact render intentionally uses the submitted DOT source.
@@ -1979,6 +2036,10 @@ async def reset_checkpoint(req: ResetRequest):
     runs_root = _runs_root()
     if runs_root.exists():
         shutil.rmtree(runs_root, ignore_errors=True)
+    projects_root = get_settings().projects_dir
+    if projects_root.exists():
+        for runs_dir in projects_root.glob("*/runs"):
+            shutil.rmtree(runs_dir, ignore_errors=True)
     return {"status": "reset"}
 
 

@@ -152,23 +152,20 @@ def test_list_runs_backfills_missing_timestamps_from_run_log_item_9_6_04(
     server.configure_runtime_paths(runs_dir=runs_root)
 
     run_id = "run-with-partial-timestamps"
-    run_root = runs_root / run_id
-    run_root.mkdir(parents=True, exist_ok=True)
-    (run_root / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "flow_name": "Flow",
-                "status": "success",
-                "result": "success",
-                "working_directory": str(tmp_path / "project"),
-                "model": "test-model",
-                "started_at": "",
-                "ended_at": None,
-            }
-        ),
-        encoding="utf-8",
+    server._write_run_meta(
+        server.RunRecord(
+            run_id=run_id,
+            flow_name="Flow",
+            status="success",
+            result="success",
+            working_directory=str(tmp_path / "project"),
+            model="test-model",
+            started_at="",
+            ended_at=None,
+            project_path=str(tmp_path / "project"),
+        )
     )
+    run_root = server._run_root(run_id)
     (run_root / "run.log").write_text(
         "\n".join(
             [
@@ -205,23 +202,20 @@ def test_list_runs_reconstructs_timestamp_ordering_from_run_logs_item_9_6_04(
         (older_id, "2026-01-01 00:00:00", "2026-01-01 00:00:30"),
         (newer_id, "2026-01-01 00:01:00", "2026-01-01 00:01:30"),
     ]:
-        run_root = runs_root / run_id
-        run_root.mkdir(parents=True, exist_ok=True)
-        (run_root / "run.json").write_text(
-            json.dumps(
-                {
-                    "run_id": run_id,
-                    "flow_name": "Flow",
-                    "status": "success",
-                    "result": "success",
-                    "working_directory": str(tmp_path / "project"),
-                    "model": "test-model",
-                    "started_at": "",
-                    "ended_at": None,
-                }
-            ),
-            encoding="utf-8",
+        server._write_run_meta(
+            server.RunRecord(
+                run_id=run_id,
+                flow_name="Flow",
+                status="success",
+                result="success",
+                working_directory=str(tmp_path / "project"),
+                model="test-model",
+                started_at="",
+                ended_at=None,
+                project_path=str(tmp_path / "project"),
+            )
         )
+        run_root = server._run_root(run_id)
         (run_root / "run.log").write_text(
             "\n".join(
                 [

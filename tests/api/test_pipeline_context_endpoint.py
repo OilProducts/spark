@@ -36,7 +36,7 @@ def test_get_pipeline_context_returns_context_for_known_pipeline(
 
     start_payload = _start_pipeline(api_client, tmp_path / "work")
     run_id = str(start_payload["pipeline_id"])
-    run_root = runs_root / run_id
+    run_root = server._run_root(run_id)
 
     checkpoint = Checkpoint(
         timestamp="2026-01-01T00:00:00Z",
