@@ -469,6 +469,46 @@ def test_chat_session_handles_dynamic_tool_call(monkeypatch) -> None:
     }
 
 
+def test_chat_session_initialize_enables_experimental_api(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    requests: list[tuple[str, dict[str, object] | None]] = []
+
+    class DummyStdout:
+        pass
+
+    class DummyProc:
+        stdout = DummyStdout()
+
+        def poll(self) -> int | None:
+            return None
+
+    class DummySelector:
+        def register(self, fileobj, events) -> None:
+            return None
+
+    monkeypatch.setattr(project_chat.subprocess, "Popen", lambda *args, **kwargs: DummyProc())
+    monkeypatch.setattr(project_chat.selectors, "DefaultSelector", lambda: DummySelector())
+
+    def fake_send_request(method: str, params: dict[str, object] | None) -> dict[str, object]:
+        requests.append((method, params))
+        if method == "initialize":
+            return {"result": {}}
+        raise AssertionError(f"unexpected request: {method}")
+
+    monkeypatch.setattr(session, "_send_request", fake_send_request)
+    session._ensure_process()
+
+    assert requests == [
+        (
+            "initialize",
+            {
+                "clientInfo": {"name": "sparkspawn", "version": "0.1"},
+                "capabilities": {"experimentalApi": True},
+            },
+        )
+    ]
+
+
 def test_chat_session_turn_completes_after_final_answer_quiet_period(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
@@ -748,6 +788,40 @@ def test_chat_session_ignores_duplicate_codex_agent_delta_channel(monkeypatch) -
     assert result.assistant_message == '{"assistant_message":"Ack"}'
     assert any(message == '{"assistant_message":"Ack' for message in progress_messages)
     assert all("assistantassistant" not in message for message in progress_messages)
+
+
+def test_build_session_ignores_legacy_persisted_thread_without_session_version(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    conversation_id = "conversation-test"
+    project_path = str(tmp_path)
+    conversation_root = ensure_project_paths(tmp_path, project_path).conversations_dir / conversation_id
+    conversation_root.mkdir(parents=True, exist_ok=True)
+    (conversation_root / "session.json").write_text(
+        json.dumps(
+            {
+                "conversation_id": conversation_id,
+                "updated_at": "2026-03-08T19:00:00Z",
+                "project_path": project_path,
+                "runtime_project_path": project_path,
+                "thread_id": "legacy-thread",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_init(self, working_dir: str, *, persisted_thread_id=None, on_thread_id_updated=None):
+        captured["working_dir"] = working_dir
+        captured["persisted_thread_id"] = persisted_thread_id
+        captured["on_thread_id_updated"] = on_thread_id_updated
+
+    monkeypatch.setattr(project_chat.CodexAppServerChatSession, "__init__", fake_init)
+
+    service._build_session(conversation_id, project_path)
+
+    assert captured["working_dir"] == project_path
+    assert captured["persisted_thread_id"] is None
 
 
 def test_send_turn_retries_with_fresh_session_after_timeout(tmp_path: Path, monkeypatch) -> None:

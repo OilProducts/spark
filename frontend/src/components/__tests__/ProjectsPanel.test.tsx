@@ -829,6 +829,224 @@ describe('ProjectsPanel', () => {
     })
   })
 
+  it('preserves streamed assistant ordering when the final snapshot compacts assistant deltas', async () => {
+    class MockEventSource {
+      static instances: MockEventSource[] = []
+
+      url: string
+      onmessage: ((event: MessageEvent) => void) | null = null
+
+      constructor(url: string) {
+        this.url = url
+        MockEventSource.instances.push(this)
+      }
+
+      close() {}
+    }
+
+    const user = userEvent.setup()
+    let resolveTurnResponse: ((response: Response) => void) | null = null
+
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/') && !init?.method) {
+          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/') && init?.method === 'POST') {
+          return await new Promise<Response>((resolve) => {
+            resolveTurnResponse = resolve
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    useStore.getState().registerProject('/tmp/chat-project')
+    useStore.getState().setActiveProjectPath('/tmp/chat-project')
+
+    render(<ProjectsPanel />)
+
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Draft a spec.')
+    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+    const conversationId = useStore.getState().projectScopedWorkspaces['/tmp/chat-project']?.conversationId
+    expect(conversationId).toBeTruthy()
+
+    await waitFor(() => {
+      expect(MockEventSource.instances.length).toBeGreaterThan(0)
+    })
+
+    act(() => {
+      MockEventSource.instances[0]?.onmessage?.({
+        data: JSON.stringify({
+          type: 'turn_upsert',
+          conversation_id: conversationId,
+          project_path: '/tmp/chat-project',
+          title: 'Draft a spec.',
+          updated_at: '2026-03-08T19:10:01Z',
+          turn: {
+            id: 'turn-assistant-1',
+            role: 'assistant',
+            content: 'I’m going to scan the repository structure first.',
+            timestamp: '2026-03-08T19:10:01Z',
+            status: 'streaming',
+            kind: 'message',
+            artifact_id: null,
+            parent_turn_id: 'turn-user-1',
+          },
+        }),
+      } as MessageEvent)
+      MockEventSource.instances[0]?.onmessage?.({
+        data: JSON.stringify({
+          type: 'turn_event',
+          conversation_id: conversationId,
+          project_path: '/tmp/chat-project',
+          title: 'Draft a spec.',
+          updated_at: '2026-03-08T19:10:01Z',
+          event: {
+            id: 'event-assistant-delta-1',
+            turn_id: 'turn-assistant-1',
+            sequence: 1,
+            timestamp: '2026-03-08T19:10:01Z',
+            kind: 'assistant_delta',
+            content_delta: 'I’m going to scan the repository structure first.',
+          },
+        }),
+      } as MessageEvent)
+      MockEventSource.instances[0]?.onmessage?.({
+        data: JSON.stringify({
+          type: 'turn_event',
+          conversation_id: conversationId,
+          project_path: '/tmp/chat-project',
+          title: 'Draft a spec.',
+          updated_at: '2026-03-08T19:10:02Z',
+          event: {
+            id: 'event-tool-started-1',
+            turn_id: 'turn-assistant-1',
+            sequence: 2,
+            timestamp: '2026-03-08T19:10:02Z',
+            kind: 'tool_call_started',
+            tool_call_id: 'tool-ls',
+            tool_call: {
+              id: 'tool-ls',
+              kind: 'command_execution',
+              status: 'running',
+              title: 'Run command',
+              command: '/bin/zsh -lc ls',
+              output: null,
+              file_paths: [],
+            },
+          },
+        }),
+      } as MessageEvent)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('I’m going to scan the repository structure first.')
+    })
+
+    resolveTurnResponse?.(
+      new Response(
+        JSON.stringify({
+          conversation_id: conversationId,
+          project_path: '/tmp/chat-project',
+          title: 'Draft a spec.',
+          created_at: '2026-03-08T19:10:00Z',
+          updated_at: '2026-03-08T19:10:04Z',
+          turns: [
+            {
+              id: 'turn-user-1',
+              role: 'user',
+              content: 'Draft a spec.',
+              timestamp: '2026-03-08T19:10:00Z',
+              status: 'complete',
+              kind: 'message',
+              artifact_id: null,
+            },
+            {
+              id: 'turn-assistant-1',
+              role: 'assistant',
+              content: 'I’m going to scan the repository structure first.',
+              timestamp: '2026-03-08T19:10:01Z',
+              status: 'complete',
+              kind: 'message',
+              artifact_id: null,
+              parent_turn_id: 'turn-user-1',
+            },
+          ],
+          turn_events: [
+            {
+              id: 'event-tool-started-1',
+              turn_id: 'turn-assistant-1',
+              sequence: 2,
+              timestamp: '2026-03-08T19:10:02Z',
+              kind: 'tool_call_started',
+              tool_call_id: 'tool-ls',
+              tool_call: {
+                id: 'tool-ls',
+                kind: 'command_execution',
+                status: 'completed',
+                title: 'Run command',
+                command: '/bin/zsh -lc ls',
+                output: 'README.md',
+                file_paths: [],
+              },
+            },
+            {
+              id: 'event-assistant-completed-1',
+              turn_id: 'turn-assistant-1',
+              sequence: 3,
+              timestamp: '2026-03-08T19:10:04Z',
+              kind: 'assistant_completed',
+              message: 'Assistant turn completed.',
+            },
+          ],
+          event_log: [],
+          spec_edit_proposals: [],
+          execution_cards: [],
+          execution_workflow: {
+            run_id: null,
+            status: 'idle',
+            error: null,
+            flow_source: null,
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+
+    const history = await screen.findByTestId('project-ai-conversation-history-list')
+    await waitFor(() => {
+      const text = history.textContent ?? ''
+      expect(text.indexOf('I’m going to scan the repository structure first.')).toBeGreaterThan(-1)
+      expect(text.indexOf('/bin/zsh -lc ls')).toBeGreaterThan(-1)
+      expect(text.indexOf('I’m going to scan the repository structure first.')).toBeLessThan(text.indexOf('/bin/zsh -lc ls'))
+    })
+  })
+
   it('keeps the composer cleared when sending a turn fails', async () => {
     const user = userEvent.setup()
     vi.stubGlobal(

@@ -26,6 +26,7 @@ from attractor.storage import (
 
 
 CHAT_RUNTIME_THREAD_KEY = "_attractor.runtime.thread_id"
+CHAT_SESSION_VERSION = 2
 RUNTIME_REPO_ROOT = Path(__file__).resolve().parents[2]
 FINAL_ANSWER_IDLE_GRACE_SECONDS = 1.0
 LIVE_ASSISTANT_IDLE_COMPLETION_GRACE_SECONDS = 2.5
@@ -1011,6 +1012,7 @@ class ConversationSessionState:
     updated_at: str
     project_path: str
     runtime_project_path: str
+    session_version: int = CHAT_SESSION_VERSION
     thread_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -1019,6 +1021,7 @@ class ConversationSessionState:
             "updated_at": self.updated_at,
             "project_path": self.project_path,
             "runtime_project_path": self.runtime_project_path,
+            "session_version": self.session_version,
         }
         if self.thread_id:
             payload["thread_id"] = self.thread_id
@@ -1031,6 +1034,7 @@ class ConversationSessionState:
             updated_at=str(payload.get("updated_at", "")),
             project_path=_normalize_project_path(str(payload.get("project_path", ""))),
             runtime_project_path=_normalize_project_path(str(payload.get("runtime_project_path", ""))),
+            session_version=int(payload.get("session_version", 0) or 0),
             thread_id=str(payload.get("thread_id")) if payload.get("thread_id") is not None else None,
         )
 
@@ -1147,7 +1151,13 @@ class CodexAppServerChatSession:
         self._selector = selector
         self._request_id = 0
         self._thread_initialized = False
-        init_response = self._send_request("initialize", {"clientInfo": {"name": "sparkspawn", "version": "0.1"}})
+        init_response = self._send_request(
+            "initialize",
+            {
+                "clientInfo": {"name": "sparkspawn", "version": "0.1"},
+                "capabilities": {"experimentalApi": True},
+            },
+        )
         if init_response.get("error"):
             self._close()
             raise RuntimeError("codex app-server initialize failed")
@@ -1265,7 +1275,6 @@ class CodexAppServerChatSession:
             "cwd": self.working_dir,
             "sandbox": "danger-full-access",
             "approvalPolicy": "never",
-            "tools": self._dynamic_tool_specs(),
         }
         if model:
             params["model"] = model
@@ -1286,7 +1295,7 @@ class CodexAppServerChatSession:
             "sandbox": "danger-full-access",
             "approvalPolicy": "never",
             "ephemeral": False,
-            "tools": self._dynamic_tool_specs(),
+            "dynamicTools": self._dynamic_tool_specs(),
         }
         if model:
             params["model"] = model
@@ -1806,10 +1815,12 @@ class ProjectChatService:
                     updated_at=_iso_now(),
                     project_path=normalized_project_path,
                     runtime_project_path=runtime_project_path,
+                    session_version=CHAT_SESSION_VERSION,
                 )
             session_state.thread_id = thread_id
             session_state.project_path = normalized_project_path
             session_state.runtime_project_path = runtime_project_path
+            session_state.session_version = CHAT_SESSION_VERSION
             session_state.updated_at = _iso_now()
             self._write_session_state(session_state)
 
@@ -2062,9 +2073,15 @@ class ProjectChatService:
             if session is not None:
                 return session
             persisted_session = self._read_session_state(conversation_id, project_path)
+            persisted_thread_id: Optional[str] = None
+            if (
+                persisted_session is not None
+                and persisted_session.session_version >= CHAT_SESSION_VERSION
+            ):
+                persisted_thread_id = persisted_session.thread_id
             session = CodexAppServerChatSession(
                 project_path,
-                persisted_thread_id=persisted_session.thread_id if persisted_session is not None else None,
+                persisted_thread_id=persisted_thread_id,
                 on_thread_id_updated=lambda thread_id: self._persist_session_thread(
                     conversation_id,
                     project_path,

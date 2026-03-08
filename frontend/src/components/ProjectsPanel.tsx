@@ -450,6 +450,34 @@ const appendConversationTurnEvent = (
     }
 }
 
+const mergeConversationSnapshotPreservingTransientEvents = (
+    current: ConversationSnapshotResponse | null,
+    incoming: ConversationSnapshotResponse,
+): ConversationSnapshotResponse => {
+    if (!current) {
+        return incoming
+    }
+    const incomingTurnIds = new Set(incoming.turns.map((turn) => turn.id))
+    const incomingEventIds = new Set(incoming.turn_events.map((event) => event.id))
+    const preservedEvents = current.turn_events.filter((event) => (
+        event.kind === "assistant_delta"
+        && incomingTurnIds.has(event.turn_id)
+        && !incomingEventIds.has(event.id)
+    ))
+    if (preservedEvents.length === 0) {
+        return incoming
+    }
+    return {
+        ...incoming,
+        turn_events: [...incoming.turn_events, ...preservedEvents].sort((left, right) => {
+            if (left.turn_id === right.turn_id) {
+                return left.sequence - right.sequence
+            }
+            return left.timestamp.localeCompare(right.timestamp)
+        }),
+    }
+}
+
 const buildAssistantTimelineEntries = (
     turn: ConversationTurnResponse,
     turnEvents: ConversationTurnEventResponse[],
@@ -876,7 +904,10 @@ export function HomePanel() {
 
         setProjectConversationSnapshots((current) => ({
             ...current,
-            [snapshot.conversation_id]: snapshot,
+            [snapshot.conversation_id]: mergeConversationSnapshotPreservingTransientEvents(
+                current[snapshot.conversation_id] || null,
+                snapshot,
+            ),
         }))
         setProjectConversationSummaries((current) => ({
             ...current,
