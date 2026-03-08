@@ -13,6 +13,7 @@ import {
   ApiHttpError,
   ApiSchemaError,
   approveSpecEditProposalValidated,
+  deleteConversationValidated,
   fetchConversationSnapshotValidated,
   fetchFlowListValidated,
   fetchFlowPayloadValidated,
@@ -25,6 +26,7 @@ import {
   fetchPipelineStartValidated,
   fetchPipelineStatusValidated,
   fetchPreviewValidated,
+  pickProjectDirectoryValidated,
   rejectSpecEditProposalValidated,
   reviewExecutionCardValidated,
   fetchRunsListValidated,
@@ -34,6 +36,7 @@ import {
   parseFlowListResponse,
   parseFlowPayloadResponse,
   parsePipelineGraphResponse,
+  parseProjectDirectoryPickResponse,
   parsePipelineStatusResponse,
   parsePreviewResponse,
   parseRuntimeStatusResponse,
@@ -298,19 +301,6 @@ const setViewportWidth = (width: number) => {
   window.dispatchEvent(new Event('resize'))
 }
 
-const buildDirectoryPickerFile = (absoluteFilePath: string, relativeFilePath: string) => {
-  const selectedFile = new File(['console.log("project")'], 'main.ts', { type: 'text/plain' })
-  Object.defineProperty(selectedFile, 'path', {
-    configurable: true,
-    value: absoluteFilePath,
-  })
-  Object.defineProperty(selectedFile, 'webkitRelativePath', {
-    configurable: true,
-    value: relativeFilePath,
-  })
-  return selectedFile
-}
-
 describe('Frontend contract behavior', () => {
   const renderSelectedEdgeSidebar = () => {
     act(() => {
@@ -394,6 +384,8 @@ describe('Frontend contract behavior', () => {
       { endpoint: '/api/flows', pattern: /fetch\(\s*['"]\/api\/flows['"]|fetchFlowListValidated\(/ },
       { endpoint: '/api/flows/{name}', pattern: /fetch\(\s*`\/api\/flows\/\$\{encodeURIComponent\([^)]+\)\}`|fetchFlowPayloadValidated\(/ },
       { endpoint: '/api/conversations/{id}', pattern: /fetchConversationSnapshotValidated\(/ },
+      { endpoint: '/api/conversations/{id} \(DELETE\)', pattern: /deleteConversationValidated\(/ },
+      { endpoint: '/api/projects/pick-directory', pattern: /pickProjectDirectoryValidated\(/ },
       { endpoint: '/api/conversations/{id}\/events', pattern: /new EventSource\(\s*eventStreamUrl\s*\)|\/api\/conversations\/\$\{encodeURIComponent\([^)]+\)\}\/events\?project_path=/ },
       { endpoint: '/api/conversations/{id}\/turns', pattern: /sendConversationTurnValidated\(/ },
       { endpoint: '/api/conversations/{id}\/spec-edit-proposals\/{proposalId}\/approve', pattern: /approveSpecEditProposalValidated\(/ },
@@ -439,9 +431,13 @@ describe('Frontend contract behavior', () => {
       { requirement: 'runs list response validator', pattern: /function\s+parseRunsListResponse\s*\(/ },
       { requirement: 'runtime status response validator', pattern: /function\s+parseRuntimeStatusResponse\s*\(/ },
       { requirement: 'conversation snapshot response validator', pattern: /function\s+parseConversationSnapshotResponse\s*\(/ },
+      { requirement: 'conversation delete response validator', pattern: /function\s+parseConversationDeleteResponse\s*\(/ },
+      { requirement: 'project directory picker response validator', pattern: /function\s+parseProjectDirectoryPickResponse\s*\(/ },
       { requirement: 'validated flows adapter', pattern: /function\s+fetchFlowListValidated\s*\(/ },
       { requirement: 'validated flow adapter', pattern: /function\s+fetchFlowPayloadValidated\s*\(/ },
       { requirement: 'validated conversation snapshot adapter', pattern: /function\s+fetchConversationSnapshotValidated\s*\(/ },
+      { requirement: 'validated conversation delete adapter', pattern: /function\s+deleteConversationValidated\s*\(/ },
+      { requirement: 'validated project directory picker adapter', pattern: /function\s+pickProjectDirectoryValidated\s*\(/ },
       { requirement: 'validated conversation turn adapter', pattern: /function\s+sendConversationTurnValidated\s*\(/ },
       { requirement: 'validated spec approval adapter', pattern: /function\s+approveSpecEditProposalValidated\s*\(/ },
       { requirement: 'validated spec rejection adapter', pattern: /function\s+rejectSpecEditProposalValidated\s*\(/ },
@@ -500,6 +496,12 @@ describe('Frontend contract behavior', () => {
       },
     }).conversation_id).toBe('conversation-1')
     expect(() => parseConversationSnapshotResponse({ conversation_id: 'conversation-1' })).toThrow(ApiSchemaError)
+    expect(parseProjectDirectoryPickResponse({ status: 'selected', directory_path: '/tmp/project' })).toEqual({
+      status: 'selected',
+      directory_path: '/tmp/project',
+    })
+    expect(parseProjectDirectoryPickResponse({ status: 'canceled' })).toEqual({ status: 'canceled' })
+    expect(() => parseProjectDirectoryPickResponse({ status: 'selected' })).toThrow(ApiSchemaError)
     expect(parsePipelineGraphResponse('<svg></svg>')).toContain('<svg')
     expect(() => parsePipelineGraphResponse('')).toThrow(ApiSchemaError)
   })
@@ -516,6 +518,21 @@ describe('Frontend contract behavior', () => {
     }
 
     const successCases: SuccessCase[] = [
+      {
+        name: 'project directory picker',
+        invoke: () => pickProjectDirectoryValidated(),
+        expectedUrl: '/api/projects/pick-directory',
+        expectedMethod: 'POST',
+        response: jsonResponse({
+          status: 'selected',
+          directory_path: '/tmp/project one',
+        }),
+        assertResult: (result) =>
+          expect(result).toEqual({
+            status: 'selected',
+            directory_path: '/tmp/project one',
+          }),
+      },
       {
         name: 'flow list',
         invoke: () => fetchFlowListValidated(),
@@ -580,6 +597,22 @@ describe('Frontend contract behavior', () => {
             model: 'gpt-5.3',
           })
         },
+      },
+      {
+        name: 'conversation delete',
+        invoke: () => deleteConversationValidated('conversation 1', '/tmp/project one'),
+        expectedUrl: '/api/conversations/conversation%201?project_path=%2Ftmp%2Fproject%20one',
+        expectedMethod: 'DELETE',
+        response: jsonResponse({
+          status: 'deleted',
+          conversation_id: 'conversation 1',
+          project_path: '/tmp/project one',
+        }),
+        assertResult: (result) => expect(result).toMatchObject({
+          status: 'deleted',
+          conversation_id: 'conversation 1',
+          project_path: '/tmp/project one',
+        }),
       },
       {
         name: 'spec approval',
@@ -2452,13 +2485,22 @@ describe('Frontend contract behavior', () => {
 
     expect(activeProjectButton).toHaveAttribute('aria-current', 'true')
     expect(inactiveProjectButton).not.toHaveAttribute('aria-current')
-
-    expect(within(activeProjectButton).getByText('Active')).toBeVisible()
+    expect(screen.getByTestId('project-thread-controls')).toBeVisible()
   })
 
   it('[CID:14.0.02] enforces unique project directories and Git-repo registration invariants', async () => {
+    const pickedDirectories = [
+      '/tmp/project-contract-behavior',
+      '/tmp/non-git-project',
+      '/tmp/detached-git-project',
+      '/tmp/git-project',
+    ]
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = requestUrl(input)
+      if (url.includes('/api/projects/pick-directory')) {
+        const nextDirectory = pickedDirectories.shift()
+        return jsonResponse(nextDirectory ? { status: 'selected', directory_path: nextDirectory } : { status: 'canceled' })
+      }
       if (url.includes('/api/projects/metadata')) {
         const directory = new URL(url, 'http://localhost').searchParams.get('directory') ?? ''
         if (directory.includes('non-git')) {
@@ -2482,33 +2524,14 @@ describe('Frontend contract behavior', () => {
     })
 
     render(<ProjectsPanel />)
-
-    const pickerInput = screen.getByTestId('project-directory-picker-input') as HTMLInputElement
-    fireEvent.change(pickerInput, {
-      target: {
-        files: [
-          buildDirectoryPickerFile(
-            '/tmp/project-contract-behavior/src/main.ts',
-            'project-contract-behavior/src/main.ts',
-          ),
-        ],
-      },
-    })
+    const newButton = screen.getByTestId('quick-switch-new-button')
+    await user.click(newButton)
 
     expect(screen.getByTestId('project-registration-error')).toHaveTextContent(
       'Project already registered: /tmp/project-contract-behavior',
     )
 
-    fireEvent.change(pickerInput, {
-      target: {
-        files: [
-          buildDirectoryPickerFile(
-            '/tmp/non-git-project/src/main.ts',
-            'non-git-project/src/main.ts',
-          ),
-        ],
-      },
-    })
+    await user.click(newButton)
 
     await waitFor(() => {
       expect(screen.getByTestId('project-registration-error')).toHaveTextContent(
@@ -2517,32 +2540,14 @@ describe('Frontend contract behavior', () => {
     })
     expect(useStore.getState().projectRegistry['/tmp/non-git-project']).toBeUndefined()
 
-    fireEvent.change(pickerInput, {
-      target: {
-        files: [
-          buildDirectoryPickerFile(
-            '/tmp/detached-git-project/src/main.ts',
-            'detached-git-project/src/main.ts',
-          ),
-        ],
-      },
-    })
+    await user.click(newButton)
 
     await waitFor(() => {
       expect(useStore.getState().projectRegistry['/tmp/detached-git-project']).toBeDefined()
     })
     expect(screen.queryByTestId('project-registration-error')).not.toBeInTheDocument()
 
-    fireEvent.change(pickerInput, {
-      target: {
-        files: [
-          buildDirectoryPickerFile(
-            '/tmp/git-project/src/main.ts',
-            'git-project/src/main.ts',
-          ),
-        ],
-      },
-    })
+    await user.click(newButton)
 
     await waitFor(() => {
       expect(useStore.getState().projectRegistry['/tmp/git-project']).toBeDefined()

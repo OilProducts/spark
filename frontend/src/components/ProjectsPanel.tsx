@@ -1,6 +1,6 @@
 import { type PlanStatus, type ProjectRegistrationResult, useStore } from "@/store"
 import { type ChangeEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react"
-import { ChevronDown, ChevronUp } from "lucide-react"
+import { ChevronDown, ChevronUp, FileText, Folder, FolderOpen, Plus, Trash2 } from "lucide-react"
 import {
     ApiHttpError,
     type ConversationSummaryResponse,
@@ -9,11 +9,13 @@ import {
     type ConversationTurnUpsertEventResponse,
     type ConversationTurnEventResponse,
     type ConversationTurnResponse,
+    deleteConversationValidated,
     type ExecutionCardResponse,
     type SpecEditProposalResponse,
     approveSpecEditProposalValidated,
     fetchConversationSnapshotValidated,
     fetchProjectConversationListValidated,
+    pickProjectDirectoryValidated,
     parseConversationSnapshotResponse,
     parseConversationStreamEventResponse,
     rejectSpecEditProposalValidated,
@@ -234,6 +236,31 @@ const formatProjectListLabel = (projectPath: string) => {
         return normalizedPath
     }
     return segments[segments.length - 1]
+}
+
+const formatConversationAgeShort = (value: string) => {
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) {
+        return ""
+    }
+    const deltaMs = Date.now() - parsed.getTime()
+    if (deltaMs <= 0) {
+        return "now"
+    }
+    const minuteMs = 60_000
+    const hourMs = 60 * minuteMs
+    const dayMs = 24 * hourMs
+    const weekMs = 7 * dayMs
+    if (deltaMs < hourMs) {
+        return `${Math.max(1, Math.round(deltaMs / minuteMs))}m`
+    }
+    if (deltaMs < dayMs) {
+        return `${Math.max(1, Math.round(deltaMs / hourMs))}h`
+    }
+    if (deltaMs < weekMs) {
+        return `${Math.max(1, Math.round(deltaMs / dayMs))}d`
+    }
+    return `${Math.max(1, Math.round(deltaMs / weekMs))}w`
 }
 
 const clampHomeSidebarPrimaryHeight = (height: number, containerHeight: number) => {
@@ -635,6 +662,7 @@ export function HomePanel() {
     const [optimisticSend, setOptimisticSend] = useState<OptimisticSendState | null>(null)
     const [pendingSpecProposalId, setPendingSpecProposalId] = useState<string | null>(null)
     const [pendingExecutionCardId, setPendingExecutionCardId] = useState<string | null>(null)
+    const [pendingDeleteConversationId, setPendingDeleteConversationId] = useState<string | null>(null)
     const [expandedProposalChanges, setExpandedProposalChanges] = useState<Record<string, boolean>>({})
     const [homeSidebarPrimaryHeight, setHomeSidebarPrimaryHeight] = useState(DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT)
     const [isHomeSidebarResizing, setIsHomeSidebarResizing] = useState(false)
@@ -1243,10 +1271,26 @@ export function HomePanel() {
         }
     }
 
-    const onOpenProjectDirectoryChooser = () => {
+    const onOpenProjectDirectoryChooser = async () => {
         clearProjectRegistrationError()
+        try {
+            const selection = await pickProjectDirectoryValidated()
+            if (selection.status === "canceled") {
+                return
+            }
+            await registerProjectFromPath(selection.directory_path)
+            return
+        } catch (error) {
+            const canUseBrowserFallback = error instanceof ApiHttpError
+                && [404, 405, 501, 503].includes(error.status)
+                && projectDirectoryPickerInputRef.current
+            if (!canUseBrowserFallback) {
+                setProjectRegistrationError(extractApiErrorMessage(error, "Directory picker is unavailable."))
+                return
+            }
+        }
         if (!projectDirectoryPickerInputRef.current) {
-            setProjectRegistrationError("Directory picker is unavailable. Enter an absolute path manually.")
+            setProjectRegistrationError("Directory picker is unavailable.")
             return
         }
         projectDirectoryPickerInputRef.current.value = ""
@@ -1306,11 +1350,12 @@ export function HomePanel() {
     }
 
     const onProjectDirectorySelected = (event: ChangeEvent<HTMLInputElement>) => {
-        const selectedProjectPath = deriveProjectPathFromDirectorySelection(event.target.files)
+        const files = event.target.files
+        const selectedProjectPath = deriveProjectPathFromDirectorySelection(files)
         event.target.value = ""
         if (!selectedProjectPath) {
             setProjectRegistrationError(
-                "Unable to resolve an absolute project path from the selected directory. Enter an absolute path manually.",
+                "Unable to resolve an absolute project path from the selected directory.",
             )
             return
         }
@@ -1363,6 +1408,56 @@ export function HomePanel() {
         const cachedSnapshot = projectConversationSnapshots[conversationId]
         if (cachedSnapshot) {
             applyConversationSnapshot(activeProjectPath, cachedSnapshot, "thread-cache")
+        }
+    }
+
+    const onDeleteConversationThread = async (conversationId: string, title: string) => {
+        if (!activeProjectPath) {
+            return
+        }
+        if (typeof window !== "undefined" && !window.confirm(`Delete thread "${title}"?`)) {
+            return
+        }
+        setPanelError(null)
+        setPendingDeleteConversationId(conversationId)
+        try {
+            await deleteConversationValidated(conversationId, activeProjectPath)
+            setProjectConversationSnapshots((current) => {
+                const next = { ...current }
+                delete next[conversationId]
+                return next
+            })
+            const localRemainingSummaries = sortConversationSummaries(
+                (projectConversationSummaries[activeProjectPath] || []).filter(
+                    (entry) => entry.conversation_id !== conversationId,
+                ),
+            )
+            setProjectConversationSummaryList(activeProjectPath, localRemainingSummaries)
+
+            let remainingSummaries = localRemainingSummaries
+            try {
+                remainingSummaries = await fetchProjectConversationListValidated(activeProjectPath)
+                setProjectConversationSummaryList(activeProjectPath, remainingSummaries)
+            } catch {
+                // Keep the local optimistic removal if the follow-up refresh fails.
+            }
+
+            if (activeConversationId === conversationId) {
+                const fallbackConversationId = remainingSummaries[0]?.conversation_id || null
+                setOptimisticSend(null)
+                setConversationId(fallbackConversationId)
+                if (fallbackConversationId) {
+                    updateProjectScopedWorkspace(activeProjectPath, {
+                        conversationId: fallbackConversationId,
+                    })
+                }
+            }
+        } catch (error) {
+            const message = extractApiErrorMessage(error, "Unable to delete the thread.")
+            setPanelError(message)
+            appendLocalProjectEvent(`Thread deletion failed: ${message}`)
+        } finally {
+            setPendingDeleteConversationId(null)
         }
     }
 
@@ -1587,9 +1682,6 @@ export function HomePanel() {
                                                 New
                                             </button>
                                         </div>
-                                        <p className="text-xs text-muted-foreground">
-                                            Select the active project context for chat and workflow activity.
-                                        </p>
                                         <input
                                             ref={projectDirectoryPickerInputRef}
                                             data-testid="project-directory-picker-input"
@@ -1607,7 +1699,7 @@ export function HomePanel() {
                                         ) : null}
                                     </div>
                                     <div className={isNarrowViewport ? "" : "min-h-0 flex-1 overflow-y-auto pr-1"}>
-                                        <ul data-testid="projects-list" className="space-y-2">
+                                        <ul data-testid="projects-list" className="space-y-1.5">
                                             {orderedProjects.length === 0 ? (
                                                 <li className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
                                                     No projects registered yet.
@@ -1616,103 +1708,104 @@ export function HomePanel() {
                                                 orderedProjects.map((project) => {
                                                     const projectPath = project.directoryPath
                                                     const isActive = projectPath === activeProjectPath
+                                                    const projectConversationSummaries = isActive ? activeProjectConversationSummaries : []
                                                     return (
-                                                        <li key={projectPath}>
+                                                        <li key={projectPath} className="space-y-1">
                                                             <button
                                                                 type="button"
                                                                 onClick={() => {
                                                                     void onActivateProject(projectPath)
                                                                 }}
                                                                 aria-current={isActive ? "true" : undefined}
-                                                                className={`w-full rounded border px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${isActive
-                                                                    ? "border-primary/60 bg-primary/10 text-foreground"
-                                                                    : "border-border hover:bg-muted"
+                                                                title={projectPath}
+                                                                className={`w-full rounded-md px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${isActive
+                                                                    ? "bg-primary/10 text-foreground"
+                                                                    : "text-foreground hover:bg-muted/70"
                                                                     }`}
                                                             >
-                                                                <div className="flex items-start justify-between gap-2">
-                                                                    <div className="min-w-0 space-y-1">
-                                                                        <p className="truncate text-xs font-medium text-foreground">
-                                                                            {formatProjectListLabel(projectPath)}
-                                                                        </p>
-                                                                        <p className="truncate text-[11px] text-muted-foreground">
-                                                                            {projectPath}
-                                                                        </p>
-                                                                    </div>
+                                                                <div className="flex items-center gap-2">
                                                                     {isActive ? (
-                                                                        <span className="rounded bg-primary/20 px-2 py-0.5 text-[10px] font-semibold text-primary">
-                                                                            Active
-                                                                        </span>
-                                                                    ) : null}
+                                                                        <FolderOpen className="h-4 w-4 shrink-0 text-primary" />
+                                                                    ) : (
+                                                                        <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                                                    )}
+                                                                    <span className={`truncate text-sm font-medium ${isActive ? "text-foreground" : "text-foreground/90"}`}>
+                                                                        {formatProjectListLabel(projectPath)}
+                                                                    </span>
                                                                 </div>
                                                             </button>
+                                                            {isActive ? (
+                                                                <div className="ml-5 border-l border-border/70 pl-2">
+                                                                    <div
+                                                                        data-testid="project-thread-controls"
+                                                                        className="mb-1 flex justify-end"
+                                                                    >
+                                                                        <button
+                                                                            data-testid="project-thread-new-button"
+                                                                            type="button"
+                                                                            onClick={onCreateConversationThread}
+                                                                            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                                        >
+                                                                            <Plus className="h-3.5 w-3.5" />
+                                                                            <span>New thread</span>
+                                                                        </button>
+                                                                    </div>
+                                                                    <ul data-testid="project-thread-list" className="space-y-1">
+                                                                        {projectConversationSummaries.length === 0 ? (
+                                                                            <li className="px-2 py-1 text-[11px] text-muted-foreground">
+                                                                                No threads yet.
+                                                                            </li>
+                                                                        ) : (
+                                                                            projectConversationSummaries.map((conversation) => {
+                                                                                const isActiveConversation = conversation.conversation_id === activeConversationId
+                                                                                const ageLabel = formatConversationAgeShort(conversation.updated_at)
+                                                                                const isDeletingConversation = pendingDeleteConversationId === conversation.conversation_id
+                                                                                return (
+                                                                                    <li key={conversation.conversation_id} className="group/thread relative">
+                                                                                        <button
+                                                                                            type="button"
+                                                                                            onClick={() => onSelectConversationThread(conversation.conversation_id)}
+                                                                                            aria-current={isActiveConversation ? "true" : undefined}
+                                                                                            aria-label={`Open thread ${conversation.title}`}
+                                                                                            className={`w-full rounded-xl px-2 py-2 pr-9 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${isActiveConversation
+                                                                                                ? "bg-muted text-foreground shadow-sm"
+                                                                                                : "text-foreground/90 hover:bg-muted/60"
+                                                                                                }`}
+                                                                                        >
+                                                                                            <div className="flex items-center gap-2">
+                                                                                                <FileText className={`h-3.5 w-3.5 shrink-0 ${isActiveConversation ? "text-foreground" : "text-muted-foreground"}`} />
+                                                                                                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+                                                                                                    {conversation.title}
+                                                                                                </span>
+                                                                                                <span className="shrink-0 text-[11px] text-muted-foreground transition-opacity group-hover/thread:opacity-0 group-focus-within/thread:opacity-0">
+                                                                                                    {ageLabel}
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        </button>
+                                                                                        <button
+                                                                                            type="button"
+                                                                                            aria-label={`Delete thread ${conversation.title}`}
+                                                                                            data-testid={`project-thread-delete-${conversation.conversation_id}`}
+                                                                                            onClick={() => {
+                                                                                                void onDeleteConversationThread(conversation.conversation_id, conversation.title)
+                                                                                            }}
+                                                                                            disabled={isDeletingConversation}
+                                                                                            className="absolute right-1 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/thread:opacity-100 group-focus-within/thread:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                                                                        >
+                                                                                            <Trash2 className="h-3.5 w-3.5" />
+                                                                                        </button>
+                                                                                    </li>
+                                                                                )
+                                                                            })
+                                                                        )}
+                                                                    </ul>
+                                                                </div>
+                                                            ) : null}
                                                         </li>
                                                     )
                                                 })
                                             )}
                                         </ul>
-                                        {activeProjectPath ? (
-                                            <div className="mt-4 border-t border-border pt-4">
-                                                <div
-                                                    data-testid="project-thread-controls"
-                                                    className="flex items-start justify-between gap-2"
-                                                >
-                                                    <div className="space-y-1">
-                                                        <h4 className="text-sm font-semibold text-foreground">Threads</h4>
-                                                        <p className="text-[11px] text-muted-foreground">
-                                                            Separate conversation history within this project.
-                                                        </p>
-                                                    </div>
-                                                    <button
-                                                        data-testid="project-thread-new-button"
-                                                        type="button"
-                                                        onClick={onCreateConversationThread}
-                                                        className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                    >
-                                                        New thread
-                                                    </button>
-                                                </div>
-                                                <ul data-testid="project-thread-list" className="mt-3 space-y-2">
-                                                    {activeProjectConversationSummaries.length === 0 ? (
-                                                        <li className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                                                            No threads yet.
-                                                        </li>
-                                                    ) : (
-                                                        activeProjectConversationSummaries.map((conversation) => {
-                                                            const isActiveConversation = conversation.conversation_id === activeConversationId
-                                                            return (
-                                                                <li key={conversation.conversation_id}>
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => onSelectConversationThread(conversation.conversation_id)}
-                                                                        aria-current={isActiveConversation ? "true" : undefined}
-                                                                        className={`w-full rounded border px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${isActiveConversation
-                                                                            ? "border-primary/60 bg-primary/10 text-foreground"
-                                                                            : "border-border hover:bg-muted"
-                                                                            }`}
-                                                                    >
-                                                                        <div className="flex items-start justify-between gap-2">
-                                                                            <div className="min-w-0 space-y-1">
-                                                                                <p className="truncate text-xs font-medium text-foreground">
-                                                                                    {conversation.title}
-                                                                                </p>
-                                                                                <p className="truncate text-[11px] text-muted-foreground">
-                                                                                    {conversation.last_message_preview || formatConversationTimestamp(conversation.updated_at)}
-                                                                                </p>
-                                                                            </div>
-                                                                            {isActiveConversation ? (
-                                                                                <span className="rounded bg-primary/20 px-2 py-0.5 text-[10px] font-semibold text-primary">
-                                                                                    Active
-                                                                                </span>
-                                                                            ) : null}
-                                                                        </div>
-                                                                    </button>
-                                                                </li>
-                                                            )
-                                                        })
-                                                    )}
-                                                </ul>
-                                            </div>
-                                        ) : null}
                                     </div>
                                 </div>
                             </div>
@@ -2136,7 +2229,7 @@ export function HomePanel() {
                                                                         }`}
                                                                 >
                                                                     <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
-                                                                        {entry.role === "assistant" ? "Attractor" : entry.role}
+                                                                        {entry.role === "assistant" ? "Spark Spawn" : entry.role}
                                                                     </p>
                                                                     <p className="whitespace-pre-wrap text-xs leading-5">
                                                                         {entry.role === "assistant" && entry.status !== "complete" && !entry.content.trim()

@@ -1,6 +1,6 @@
-# Attractor UI User Stories: Home-First Project Workflow
+# Spark Spawn UI User Stories: Home-First Project Workflow
 
-This document captures user stories implied by the current Attractor direction and the `project` concept.
+This document captures user stories implied by the current Spark Spawn product direction and the `project` concept.
 
 A **project** is a user-selected work target with these invariants:
 - It is identified by a unique directory path.

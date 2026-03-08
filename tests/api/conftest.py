@@ -11,7 +11,7 @@ import attractor.api.server as server
 @pytest.fixture(autouse=True)
 def _reset_api_server_state(tmp_path: Path) -> None:
     server.configure_runtime_paths(
-        data_dir=tmp_path / ".attractor",
+        data_dir=tmp_path / ".sparkspawn",
         runs_dir=tmp_path / "runs",
         flows_dir=tmp_path / "flows",
     )

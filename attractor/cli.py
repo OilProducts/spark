@@ -43,7 +43,7 @@ def _run_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     import attractor.api.server as server
-    from attractor.config import ENV_DATA_DIR, ENV_FLOWS_DIR, ENV_RUNS_DIR, ENV_UI_DIR
+    from attractor.config import ENV_FLOWS_DIR, ENV_HOME_DIR, ENV_RUNS_DIR, ENV_UI_DIR
 
     def _set_path_env(name: str, value: Path | None) -> None:
         if value is None:
@@ -57,7 +57,7 @@ def _run_serve(args: argparse.Namespace) -> int:
         ui_dir=args.ui_dir,
     )
     server.validate_runtime_paths()
-    _set_path_env(ENV_DATA_DIR, args.data_dir)
+    _set_path_env(ENV_HOME_DIR, args.data_dir)
     _set_path_env(ENV_RUNS_DIR, args.runs_dir)
     _set_path_env(ENV_FLOWS_DIR, args.flows_dir)
     _set_path_env(ENV_UI_DIR, args.ui_dir)

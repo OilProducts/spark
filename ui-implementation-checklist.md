@@ -1,4 +1,4 @@
-# Attractor UI Implementation Checklist
+# Spark Spawn UI Implementation Checklist
 
 Companion to `/Users/chris/tinker/sparkspawn/specs/ui-spec.md`.
 

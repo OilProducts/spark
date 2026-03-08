@@ -1,7 +1,7 @@
 agent-notes.md
 __pycache__/
 *.pyc
-.attractor/
+.sparkspawn/
 codex-app-server.schema/
 .DS_Store
 artifacts/

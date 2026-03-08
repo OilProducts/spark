@@ -236,7 +236,7 @@ report_stop_with_iteration_artifacts() {
 create_iteration_worktree() {
   local base_head="$1"
   local iteration_worktree
-  iteration_worktree="$(mktemp -d "${TMPDIR:-/tmp}/attractor-loop-worktree.XXXXXX")"
+  iteration_worktree="$(mktemp -d "${TMPDIR:-/tmp}/sparkspawn-loop-worktree.XXXXXX")"
   if ! git -C "$ROOT_DIR" worktree add --detach "$iteration_worktree" "$base_head" >/dev/null 2>&1; then
     rm -rf "$iteration_worktree"
     echo "error: failed to create iteration worktree at HEAD $base_head" >&2

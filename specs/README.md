@@ -1,6 +1,6 @@
 # Specs
 
-This directory contains the canonical target-state documents for Sparkspawn and Attractor.
+This directory contains the canonical target-state documents for Spark Spawn, plus the referenced Attractor source specification.
 
 These files define the program we are building:
 - core product and runtime specifications
@@ -19,7 +19,7 @@ Execution artifacts stay outside this folder:
 - `attractor-spec.md`
   Core runtime and DSL specification.
 - `sparkspawn-attractor-extensions.md`
-  Sparkspawn-specific extensions to the core Attractor runtime.
+  Spark Spawn-specific extensions to the core Attractor runtime.
 - `ui-spec.md`
   Canonical web UI specification.
 - `ui-user-stories.md`
@@ -28,6 +28,8 @@ Execution artifacts stay outside this folder:
   Detailed story records with rationale, acceptance criteria, non-goals, and implementation intent.
 - `conversation-paradigm.md`
   Canonical definition of project chat conversations, turns, streaming, and review artifacts.
+- `storage-boundaries.md`
+  Canonical definition of app-owned versus project-owned data and where each must live.
 
 ## Supporting Spec Documents
 

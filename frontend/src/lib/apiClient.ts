@@ -215,6 +215,21 @@ export interface ConversationSummaryResponse {
     last_message_preview?: string | null
 }
 
+export interface ConversationDeleteResponse {
+    status: 'deleted'
+    conversation_id: string
+    project_path: string
+}
+
+export type ProjectDirectoryPickResponse =
+    | {
+        status: 'selected'
+        directory_path: string
+    }
+    | {
+        status: 'canceled'
+    }
+
 export interface ConversationTurnUpsertEventResponse {
     type: 'turn_upsert'
     conversation_id: string
@@ -852,6 +867,36 @@ export function parseConversationSummaryListResponse(
         .filter((entry): entry is ConversationSummaryResponse => entry !== null)
 }
 
+export function parseConversationDeleteResponse(
+    payload: unknown,
+    endpoint = '/api/conversations/{id}',
+): ConversationDeleteResponse {
+    const record = expectObjectRecord(payload, endpoint)
+    return {
+        status: expectString(record.status, endpoint, 'status') === 'deleted' ? 'deleted' : 'deleted',
+        conversation_id: expectString(record.conversation_id, endpoint, 'conversation_id'),
+        project_path: expectString(record.project_path, endpoint, 'project_path'),
+    }
+}
+
+export function parseProjectDirectoryPickResponse(
+    payload: unknown,
+    endpoint = '/api/projects/pick-directory',
+): ProjectDirectoryPickResponse {
+    const record = expectObjectRecord(payload, endpoint)
+    const status = expectString(record.status, endpoint, 'status')
+    if (status === 'canceled') {
+        return { status: 'canceled' }
+    }
+    if (status === 'selected') {
+        return {
+            status: 'selected',
+            directory_path: expectString(record.directory_path, endpoint, 'directory_path'),
+        }
+    }
+    throw new ApiSchemaError(endpoint, `Expected "status" to be "selected" or "canceled"; got "${status}".`)
+}
+
 export function parseConversationSnapshotResponse(
     payload: unknown,
     endpoint = '/api/conversations/{id}',
@@ -1061,11 +1106,37 @@ export async function fetchConversationSnapshotValidated(
     return fetchJsonWithValidation(url, undefined, '/api/conversations/{id}', parseConversationSnapshotResponse)
 }
 
+export async function deleteConversationValidated(
+    conversationId: string,
+    projectPath: string,
+): Promise<ConversationDeleteResponse> {
+    const url = `/api/conversations/${encodeURIComponent(conversationId)}?project_path=${encodeURIComponent(projectPath)}`
+    return fetchJsonWithValidation(
+        url,
+        {
+            method: 'DELETE',
+        },
+        '/api/conversations/{id}',
+        parseConversationDeleteResponse,
+    )
+}
+
 export async function fetchProjectConversationListValidated(
     projectPath: string,
 ): Promise<ConversationSummaryResponse[]> {
     const url = `/api/projects/conversations?project_path=${encodeURIComponent(projectPath)}`
     return fetchJsonWithValidation(url, undefined, '/api/projects/conversations', parseConversationSummaryListResponse)
+}
+
+export async function pickProjectDirectoryValidated(): Promise<ProjectDirectoryPickResponse> {
+    return fetchJsonWithValidation(
+        '/api/projects/pick-directory',
+        {
+            method: 'POST',
+        },
+        '/api/projects/pick-directory',
+        parseProjectDirectoryPickResponse,
+    )
 }
 
 export async function sendConversationTurnValidated(

@@ -63,7 +63,7 @@ def test_run_serve_preserves_runtime_path_env_for_reload(monkeypatch, tmp_path: 
 
     cli._run_serve(args)
 
-    assert cli.os.environ["SPARKSPAWN_DATA_DIR"] == str(data_dir.resolve(strict=False))
+    assert cli.os.environ["SPARKSPAWN_HOME"] == str(data_dir.resolve(strict=False))
     assert cli.os.environ["SPARKSPAWN_RUNS_DIR"] == str(runs_dir.resolve(strict=False))
     assert cli.os.environ["SPARKSPAWN_FLOWS_DIR"] == str(flows_dir.resolve(strict=False))
     assert cli.os.environ["SPARKSPAWN_UI_DIR"] == str(ui_dir.resolve(strict=False))

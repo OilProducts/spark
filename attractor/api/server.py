@@ -10,6 +10,7 @@ import os
 import shutil
 import re
 import selectors
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -2032,6 +2033,71 @@ def _resolve_run_project_git_metadata(working_directory: str) -> tuple[str, Opti
     )
 
 
+def _pick_directory_with_osascript(prompt: str) -> Path | None:
+    escaped_prompt = prompt.replace('"', '\\"')
+    completed = subprocess.run(
+        [
+            "osascript",
+            "-e",
+            "try",
+            "-e",
+            f'POSIX path of (choose folder with prompt "{escaped_prompt}")',
+            "-e",
+            "on error number -128",
+            "-e",
+            'return "__CANCELED__"',
+            "-e",
+            "end try",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "Native macOS directory picker failed.").strip()
+        raise RuntimeError(message)
+    selected_path = completed.stdout.strip()
+    if not selected_path or selected_path == "__CANCELED__":
+        return None
+    return Path(selected_path).expanduser().resolve()
+
+
+def _pick_directory_with_tk(prompt: str) -> Path | None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:  # pragma: no cover - platform-dependent fallback
+        raise RuntimeError("Tk directory picker is unavailable.") from exc
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+    except Exception:
+        pass
+    try:
+        selected_path = filedialog.askdirectory(title=prompt, mustexist=True)
+    finally:
+        root.destroy()
+    if not selected_path:
+        return None
+    return Path(selected_path).expanduser().resolve()
+
+
+def _pick_project_directory(prompt: str = "Select Spark Spawn project directory") -> Path | None:
+    picker_errors: list[str] = []
+    if sys.platform == "darwin" and shutil.which("osascript"):
+        try:
+            return _pick_directory_with_osascript(prompt)
+        except RuntimeError as exc:
+            picker_errors.append(str(exc))
+    try:
+        return _pick_directory_with_tk(prompt)
+    except RuntimeError as exc:
+        picker_errors.append(str(exc))
+    raise RuntimeError(picker_errors[-1] if picker_errors else "No native directory picker is available in this runtime.")
+
+
 def _run_project_chat_codex_prompt(project_path: str, prompt: str, model: Optional[str]) -> str:
     backend = LocalCodexAppServerBackend(
         project_path,
@@ -2053,6 +2119,16 @@ def _run_project_chat_codex_prompt(project_path: str, prompt: str, model: Option
 async def get_project_conversation(conversation_id: str, project_path: Optional[str] = None):
     try:
         return await asyncio.to_thread(PROJECT_CHAT.get_snapshot, conversation_id, project_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown conversation: {conversation_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_project_conversation(conversation_id: str, project_path: str):
+    try:
+        return await asyncio.to_thread(PROJECT_CHAT.delete_conversation, conversation_id, project_path)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Unknown conversation: {conversation_id}") from exc
     except ValueError as exc:
@@ -2123,6 +2199,7 @@ async def send_project_conversation_turn(conversation_id: str, req: Conversation
             req.message,
             req.model,
             publish_progress_event,
+            lambda prompt, model: _run_project_chat_codex_prompt(req.project_path, prompt, model),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2244,6 +2321,22 @@ async def get_project_metadata(directory: str):
         "directory": str(normalized_path),
         "branch": _resolve_project_git_branch(runtime_path),
         "commit": _resolve_project_git_commit(runtime_path),
+    }
+
+
+@app.post("/api/projects/pick-directory")
+async def pick_project_directory():
+    try:
+        selected_directory = await asyncio.to_thread(_pick_project_directory)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if selected_directory is None:
+        return {"status": "canceled"}
+    if not selected_directory.is_absolute():
+        raise HTTPException(status_code=500, detail="Directory picker returned a non-absolute path.")
+    return {
+        "status": "selected",
+        "directory_path": str(selected_directory),
     }
 
 

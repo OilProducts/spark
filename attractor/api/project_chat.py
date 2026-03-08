@@ -77,6 +77,8 @@ def _extract_live_assistant_message(raw: str) -> str:
     if isinstance(parsed, dict):
         assistant_message = _as_non_empty_string(parsed.get("assistant_message"))
         return assistant_message or ""
+    if not text.startswith("{"):
+        return text
 
     key_match = re.search(r'"assistant_message"\s*:\s*"', text)
     if key_match is None:
@@ -118,6 +120,67 @@ def _extract_live_assistant_message(raw: str) -> str:
         chars.append(char)
         index += 1
     return "".join(chars).strip()
+
+
+def _parse_chat_response_payload(raw: str) -> tuple[str, Optional[dict[str, Any]]]:
+    text = raw.strip()
+    if not text:
+        return "", None
+    try:
+        parsed = _extract_json_object(text)
+    except Exception:
+        return text, None
+    assistant_message = _as_non_empty_string(parsed.get("assistant_message"))
+    if assistant_message:
+        return assistant_message, parsed if isinstance(parsed, dict) else None
+    fallback_text = text if not text.startswith("{") else ""
+    return fallback_text, parsed if isinstance(parsed, dict) else None
+
+
+def _should_draft_spec_proposal(message: str) -> bool:
+    normalized = message.strip().lower()
+    if not normalized:
+        return False
+    informational_starts = (
+        "what is",
+        "what's",
+        "whats",
+        "explain",
+        "summarize",
+        "list",
+        "show",
+        "tell me",
+        "why is",
+        "how does",
+        "how do",
+    )
+    if normalized.startswith(informational_starts):
+        return False
+    proposal_signals = (
+        "change",
+        "update",
+        "remove",
+        "replace",
+        "rename",
+        "rework",
+        "refactor",
+        "clean up",
+        "cleanup",
+        "redesign",
+        "adjust",
+        "should",
+        "need to",
+        "let's",
+        "lets",
+        "implement",
+        "add ",
+        "move ",
+        "spec",
+        "workflow",
+        "ux",
+        "ui",
+    )
+    return any(signal in normalized for signal in proposal_signals)
 
 
 def _as_non_empty_string(value: Any) -> Optional[str]:
@@ -1050,6 +1113,10 @@ class CodexAppServerChatSession:
             self._proc = None
         self._thread_initialized = False
 
+    def close(self) -> None:
+        with self._lock:
+            self._close()
+
     def _ensure_process(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
@@ -1603,6 +1670,31 @@ class ProjectChatService:
                 self._write_state(state)
         return state.to_dict()
 
+    def delete_conversation(self, conversation_id: str, project_path: str) -> dict[str, Any]:
+        normalized_project_path = _normalize_project_path(project_path)
+        if not normalized_project_path:
+            raise ValueError("Project path is required.")
+
+        conversation_root = self._conversations_root() / conversation_id
+        with self._lock:
+            state = self._read_state(conversation_id)
+            if state is None or state.project_path != normalized_project_path:
+                raise FileNotFoundError(conversation_id)
+
+        with self._sessions_lock:
+            session = self._sessions.pop(conversation_id, None)
+        if session is not None:
+            session.close()
+
+        if conversation_root.exists():
+            shutil.rmtree(conversation_root)
+
+        return {
+            "status": "deleted",
+            "conversation_id": conversation_id,
+            "project_path": normalized_project_path,
+        }
+
     def _append_event(self, state: ConversationState, message: str) -> None:
         state.event_log.append(WorkflowEvent(message=message, timestamp=_iso_now()))
 
@@ -1700,15 +1792,39 @@ class ProjectChatService:
         history_text = "\n".join(history_lines) if history_lines else "No prior conversation history."
         return (
             "You are the Sparkspawn project chat assistant. "
-            "Respond with JSON only. "
-            "Schema: "
-            "{\"assistant_message\": string, \"spec_proposal\": {\"summary\": string, \"changes\": [{\"path\": string, \"before\": string, \"after\": string}]}} with spec_proposal omitted unless you are actually proposing one. "
-            "Do not create an execution card. "
-            "Create a spec_proposal when the user is asking for product, UX, workflow, or implementation-intent changes that should be reviewed before execution. "
-            "Keep assistant_message concise and practical.\n\n"
+            "Reply in plain text only. "
+            "Do not wrap your answer in JSON. "
+            "Do not create spec proposals or execution cards inline; those are drafted separately by the app when needed. "
+            "Keep the reply concise and practical.\n\n"
             f"Project path: {state.project_path}\n"
             f"Recent conversation:\n{history_text}\n\n"
             f"Latest user message:\n{message}\n"
+        )
+
+    def _build_spec_proposal_prompt(
+        self,
+        state: ConversationState,
+        message: str,
+        assistant_message: str,
+    ) -> str:
+        recent_turns = state.turns[-10:]
+        history_lines = []
+        for turn in recent_turns:
+            if turn.kind != "message":
+                continue
+            history_lines.append(f"{turn.role.upper()}: {turn.content}")
+        history_text = "\n".join(history_lines) if history_lines else "No prior conversation history."
+        return (
+            "You are drafting a reviewable Spark Spawn spec edit proposal. "
+            "Respond with JSON only. "
+            "Schema: "
+            "{\"summary\": string, \"changes\": [{\"path\": string, \"before\": string, \"after\": string}]}. "
+            "Return only valid JSON with at least one concrete change when a proposal is warranted. "
+            "If no proposal is warranted, return {\"summary\":\"\",\"changes\":[]}.\n\n"
+            f"Project path: {state.project_path}\n"
+            f"Recent conversation:\n{history_text}\n\n"
+            f"Latest user message:\n{message}\n\n"
+            f"Assistant reply:\n{assistant_message}\n"
         )
 
     def _build_execution_planning_prompt(
@@ -1789,6 +1905,7 @@ class ProjectChatService:
         message: str,
         model: Optional[str],
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        spec_proposal_drafter: Optional[Callable[[str, Optional[str]], str]] = None,
     ) -> dict[str, Any]:
         normalized_project_path = _normalize_project_path(project_path)
         if not normalized_project_path:
@@ -1963,11 +2080,23 @@ class ProjectChatService:
                 normalized_model,
                 on_progress=persist_progress,
             )
-        parsed = _extract_json_object(turn_result.assistant_message)
-        assistant_message = str(parsed.get("assistant_message", "")).strip()
+        assistant_message, _ = _parse_chat_response_payload(turn_result.assistant_message)
         if not assistant_message:
             assistant_message = "I reviewed that request."
-        spec_proposal_payload = parsed.get("spec_proposal")
+        spec_proposal_payload: Optional[dict[str, Any]] = None
+        if spec_proposal_drafter is not None and _should_draft_spec_proposal(trimmed_message):
+            try:
+                proposal_prompt = self._build_spec_proposal_prompt(state, trimmed_message, assistant_message)
+                proposal_raw = spec_proposal_drafter(proposal_prompt, normalized_model)
+                parsed_proposal = _extract_json_object(proposal_raw)
+                if isinstance(parsed_proposal, dict):
+                    spec_proposal_payload = parsed_proposal
+            except Exception as exc:
+                _log_project_chat_debug(
+                    "spec proposal drafting failed",
+                    conversation_id=conversation_id,
+                    error=str(exc),
+                )
         with self._lock:
             state = self._read_state(conversation_id) or state
             current_assistant_turn = self._get_turn(state, assistant_turn.id)
@@ -2068,7 +2197,7 @@ class ProjectChatService:
         proposal: SpecEditProposal,
         canonical_spec_edit_id: str,
     ) -> Path:
-        artifact_dir = Path(runtime_project_path) / ".attractor" / "spec-edits"
+        artifact_dir = Path(runtime_project_path) / ".sparkspawn" / "spec-edits"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = artifact_dir / f"{canonical_spec_edit_id}.json"
         payload = {

@@ -45,6 +45,12 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/pick-directory')) {
+          return new Response(JSON.stringify({ status: 'canceled' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
         if (url.includes('/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main' }), {
             status: 200,
@@ -109,8 +115,37 @@ describe('ProjectsPanel', () => {
     expect(sidebarPrimarySurface.style.height).toBe('380px')
   })
 
-  it('shows an error when picker selection cannot resolve an absolute project path', async () => {
+  it('shows an error when the browser fallback cannot resolve an absolute project path', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/pick-directory')) {
+          return new Response(JSON.stringify({ detail: 'picker unavailable' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     render(<ProjectsPanel />)
+    await userEvent.setup().click(screen.getByTestId('quick-switch-new-button'))
     const pickerInput = screen.getByTestId('project-directory-picker-input') as HTMLInputElement
     const selectedFile = new File(['console.log("hello")'], 'main.ts', { type: 'text/plain' })
     Object.defineProperty(selectedFile, 'webkitRelativePath', {
@@ -127,8 +162,75 @@ describe('ProjectsPanel', () => {
     )
   })
 
-  it('registers a selected directory from the project new-button picker', async () => {
+  it('registers a project from the native directory picker', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/pick-directory')) {
+          return new Response(JSON.stringify({ status: 'selected', directory_path: '/tmp/quick-switch-project' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     const user = userEvent.setup()
+    render(<ProjectsPanel />)
+    await user.click(screen.getByTestId('quick-switch-new-button'))
+
+    await waitFor(() => {
+      expect(useStore.getState().projectRegistry['/tmp/quick-switch-project']).toBeDefined()
+    })
+    expect(useStore.getState().activeProjectPath).toBe('/tmp/quick-switch-project')
+  })
+
+  it('falls back to the browser directory picker when the native picker is unavailable', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/pick-directory')) {
+          return new Response(JSON.stringify({ detail: 'picker unavailable' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     render(<ProjectsPanel />)
 
     const pickerInput = screen.getByTestId('project-directory-picker-input') as HTMLInputElement
@@ -155,7 +257,7 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(useStore.getState().projectRegistry['/tmp/quick-switch-project']).toBeDefined()
     })
-    expect(screen.getByTestId('projects-list')).toHaveTextContent('/tmp/quick-switch-project')
+    expect(screen.getByTestId('projects-list')).toHaveTextContent('quick-switch-project')
     expect(useStore.getState().activeProjectPath).toBe('/tmp/quick-switch-project')
   })
 
@@ -932,6 +1034,24 @@ describe('ProjectsPanel', () => {
 
   it('switches between project threads without mixing their histories', async () => {
     const user = userEvent.setup()
+    let conversationSummaries = [
+      {
+        conversation_id: 'conversation-thread-b',
+        project_path: '/tmp/thread-project',
+        title: 'Planning thread',
+        created_at: '2026-03-07T15:00:00Z',
+        updated_at: '2026-03-07T15:10:00Z',
+        last_message_preview: 'This is the planning thread history.',
+      },
+      {
+        conversation_id: 'conversation-thread-a',
+        project_path: '/tmp/thread-project',
+        title: 'Design thread',
+        created_at: '2026-03-07T14:00:00Z',
+        updated_at: '2026-03-07T14:05:00Z',
+        last_message_preview: 'Discuss the design changes.',
+      },
+    ]
     const conversationSnapshots = {
       'conversation-thread-a': {
         conversation_id: 'conversation-thread-a',
@@ -999,24 +1119,7 @@ describe('ProjectsPanel', () => {
         }
         if (url.includes('/api/projects/conversations')) {
           return new Response(
-            JSON.stringify([
-              {
-                conversation_id: 'conversation-thread-b',
-                project_path: '/tmp/thread-project',
-                title: 'Planning thread',
-                created_at: '2026-03-07T15:00:00Z',
-                updated_at: '2026-03-07T15:10:00Z',
-                last_message_preview: 'This is the planning thread history.',
-              },
-              {
-                conversation_id: 'conversation-thread-a',
-                project_path: '/tmp/thread-project',
-                title: 'Design thread',
-                created_at: '2026-03-07T14:00:00Z',
-                updated_at: '2026-03-07T14:05:00Z',
-                last_message_preview: 'Discuss the design changes.',
-              },
-            ]),
+            JSON.stringify(conversationSummaries),
             {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -1053,7 +1156,7 @@ describe('ProjectsPanel', () => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Discuss the design changes.')
     })
 
-    await user.click(screen.getByRole('button', { name: /Planning thread/i }))
+    await user.click(screen.getByRole('button', { name: /Open thread Planning thread/i }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
@@ -1064,6 +1167,24 @@ describe('ProjectsPanel', () => {
   it('does not switch back to a thread when an in-flight send resolves after the user selects another thread', async () => {
     const user = userEvent.setup()
     let resolveTurnResponse: ((response: Response) => void) | null = null
+    let conversationSummaries = [
+      {
+        conversation_id: 'conversation-thread-b',
+        project_path: '/tmp/thread-project',
+        title: 'Planning thread',
+        created_at: '2026-03-07T15:00:00Z',
+        updated_at: '2026-03-07T15:10:00Z',
+        last_message_preview: 'This is the planning thread history.',
+      },
+      {
+        conversation_id: 'conversation-thread-a',
+        project_path: '/tmp/thread-project',
+        title: 'Design thread',
+        created_at: '2026-03-07T14:00:00Z',
+        updated_at: '2026-03-07T14:05:00Z',
+        last_message_preview: 'Discuss the design changes.',
+      },
+    ]
 
     const conversationSnapshots = {
       'conversation-thread-a': {
@@ -1132,24 +1253,7 @@ describe('ProjectsPanel', () => {
         }
         if (url.includes('/api/projects/conversations')) {
           return new Response(
-            JSON.stringify([
-              {
-                conversation_id: 'conversation-thread-b',
-                project_path: '/tmp/thread-project',
-                title: 'Planning thread',
-                created_at: '2026-03-07T15:00:00Z',
-                updated_at: '2026-03-07T15:10:00Z',
-                last_message_preview: 'This is the planning thread history.',
-              },
-              {
-                conversation_id: 'conversation-thread-a',
-                project_path: '/tmp/thread-project',
-                title: 'Design thread',
-                created_at: '2026-03-07T14:00:00Z',
-                updated_at: '2026-03-07T14:05:00Z',
-                last_message_preview: 'Discuss the design changes.',
-              },
-            ]),
+            JSON.stringify(conversationSummaries),
             {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -1191,7 +1295,7 @@ describe('ProjectsPanel', () => {
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Follow up on thread A.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
-    await user.click(screen.getByRole('button', { name: /Planning thread/i }))
+    await user.click(screen.getByRole('button', { name: /Open thread Planning thread/i }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
@@ -1262,9 +1366,144 @@ describe('ProjectsPanel', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Planning thread/i })).toHaveAttribute('aria-current', 'true')
+      expect(screen.getByRole('button', { name: /Open thread Planning thread/i })).toHaveAttribute('aria-current', 'true')
     })
     expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Response for thread A.')
+  })
+
+  it('deletes the active thread and falls back to the next remaining thread', async () => {
+    const user = userEvent.setup()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    let conversationSummaries = [
+      {
+        conversation_id: 'conversation-thread-b',
+        project_path: '/tmp/thread-project',
+        title: 'Planning thread',
+        created_at: '2026-03-07T12:10:00Z',
+        updated_at: '2026-03-07T12:40:00Z',
+        last_message_preview: 'This is the planning thread history.',
+      },
+      {
+        conversation_id: 'conversation-thread-a',
+        project_path: '/tmp/thread-project',
+        title: 'Design thread',
+        created_at: '2026-03-07T12:00:00Z',
+        updated_at: '2026-03-07T12:30:00Z',
+        last_message_preview: 'Discuss the design changes.',
+      },
+    ]
+
+    const conversationSnapshots = {
+      'conversation-thread-a': {
+        conversation_id: 'conversation-thread-a',
+        project_path: '/tmp/thread-project',
+        title: 'Design thread',
+        created_at: '2026-03-07T12:00:00Z',
+        updated_at: '2026-03-07T12:30:00Z',
+        turns: [
+          {
+            id: 'turn-a-1',
+            role: 'user',
+            kind: 'message',
+            status: 'complete',
+            content: 'Discuss the design changes.',
+            timestamp: '2026-03-07T12:30:00Z',
+          },
+        ],
+        turn_events: [],
+        event_log: [],
+        spec_edit_proposals: [],
+        execution_cards: [],
+        execution_workflow: { status: 'idle' },
+      },
+      'conversation-thread-b': {
+        conversation_id: 'conversation-thread-b',
+        project_path: '/tmp/thread-project',
+        title: 'Planning thread',
+        created_at: '2026-03-07T12:10:00Z',
+        updated_at: '2026-03-07T12:40:00Z',
+        turns: [
+          {
+            id: 'turn-b-1',
+            role: 'assistant',
+            kind: 'message',
+            status: 'complete',
+            content: 'This is the planning thread history.',
+            timestamp: '2026-03-07T12:40:00Z',
+          },
+        ],
+        turn_events: [],
+        event_log: [],
+        spec_edit_proposals: [],
+        execution_cards: [],
+        execution_workflow: { status: 'idle' },
+      },
+    }
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/conversations')) {
+          return new Response(JSON.stringify(conversationSummaries), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        const conversationIdMatch = url.match(/\/api\/conversations\/([^/?]+)/)
+        const conversationId = conversationIdMatch ? decodeURIComponent(conversationIdMatch[1]!) : null
+        if (conversationId && !url.includes('/turns') && init?.method === 'DELETE') {
+          conversationSummaries = conversationSummaries.filter((entry) => entry.conversation_id !== conversationId)
+          return new Response(JSON.stringify({
+            status: 'deleted',
+            conversation_id: conversationId,
+            project_path: '/tmp/thread-project',
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (conversationId && !url.includes('/turns')) {
+          return new Response(JSON.stringify(conversationSnapshots[conversationId as keyof typeof conversationSnapshots]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/thread-project')
+      useStore.getState().setActiveProjectPath('/tmp/thread-project')
+      useStore.getState().setConversationId('conversation-thread-a')
+    })
+
+    render(<ProjectsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Discuss the design changes.')
+    })
+
+    await user.click(screen.getByTestId('project-thread-delete-conversation-thread-a'))
+
+    expect(confirmSpy).toHaveBeenCalledWith('Delete thread "Design thread"?')
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-thread-list')).not.toHaveTextContent('Design thread')
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
+    })
   })
 })

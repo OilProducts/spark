@@ -1,6 +1,6 @@
-# Attractor UI Specification
+# Spark Spawn UI Specification
 
-Natural-language specification for the Attractor web UI. This document defines the target behavior, information architecture, feature coverage, and delivery slices for full parity with `attractor-spec.md` plus project-scoped workflow requirements defined here.
+Natural-language specification for the Spark Spawn web UI. This document defines the target behavior, information architecture, feature coverage, and delivery slices for full parity with `attractor-spec.md` plus project-scoped workflow requirements defined here.
 
 ---
 
@@ -29,7 +29,7 @@ Natural-language specification for the Attractor web UI. This document defines t
 
 ## 1. Overview and Goals
 
-The Attractor UI is the project-scoped operator and authoring surface for DOT-defined pipelines.
+The Spark Spawn UI is the project-scoped operator and authoring surface for DOT-defined pipelines.
 
 The UI MUST support three top-level use cases:
 
@@ -434,6 +434,9 @@ If backend emits multi-question or inform patterns, UI SHOULD group them by stag
 ---
 
 ## 11. Persistence and DOT Serialization
+
+Source of truth for app-owned versus project-owned storage:
+- `storage-boundaries.md`
 
 ### 11.1 Canonical Model
 

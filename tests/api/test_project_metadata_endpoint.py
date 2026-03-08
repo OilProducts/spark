@@ -80,3 +80,49 @@ def test_project_metadata_rejects_non_absolute_directory(api_client: TestClient)
 
     assert response.status_code == 400
     assert "must be absolute" in response.json()["detail"]
+
+
+def test_project_directory_picker_returns_selected_absolute_directory(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = (tmp_path / "picked-project").resolve()
+    project_dir.mkdir()
+
+    monkeypatch.setattr(server, "_pick_project_directory", lambda prompt="": project_dir)
+
+    response = api_client.post("/api/projects/pick-directory")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "selected",
+        "directory_path": str(project_dir),
+    }
+
+
+def test_project_directory_picker_returns_canceled_when_no_directory_selected(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server, "_pick_project_directory", lambda prompt="": None)
+
+    response = api_client.post("/api/projects/pick-directory")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "canceled"}
+
+
+def test_project_directory_picker_reports_unavailable_runtime(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(prompt: str = "") -> Path | None:
+        raise RuntimeError("Native directory picker is unavailable.")
+
+    monkeypatch.setattr(server, "_pick_project_directory", fail)
+
+    response = api_client.post("/api/projects/pick-directory")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Native directory picker is unavailable."

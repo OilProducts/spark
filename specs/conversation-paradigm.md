@@ -1,8 +1,11 @@
 # Conversation Paradigm
 
-This document defines the canonical conversation model for Sparkspawn project chat.
+This document defines the canonical conversation model for Spark Spawn project chat.
 
 It exists to keep chat behavior coherent as the UI, backend, and workflow artifacts evolve.
+
+Source of truth for where conversation data must live:
+- `storage-boundaries.md`
 
 ## Purpose
 

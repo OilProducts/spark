@@ -5,10 +5,8 @@ import os
 from pathlib import Path
 from typing import Mapping, Optional
 
-from platformdirs import user_data_path
 
-
-ENV_DATA_DIR = "SPARKSPAWN_DATA_DIR"
+ENV_HOME_DIR = "SPARKSPAWN_HOME"
 ENV_RUNS_DIR = "SPARKSPAWN_RUNS_DIR"
 ENV_FLOWS_DIR = "SPARKSPAWN_FLOWS_DIR"
 ENV_UI_DIR = "SPARKSPAWN_UI_DIR"
@@ -34,17 +32,11 @@ def resolve_settings(
 ) -> Settings:
     env_map = env if env is not None else os.environ
     project_root = _detect_project_root()
-    in_source_checkout = (project_root / ".git").exists()
-
-    default_data_dir = (
-        (project_root / ".attractor")
-        if in_source_checkout
-        else user_data_path("sparkspawn")
-    )
+    default_data_dir = Path.home() / ".sparkspawn"
     default_runs_dir = default_data_dir / "runs"
     default_flows_dir = (
         (project_root / "flows")
-        if in_source_checkout
+        if (project_root / ".git").exists()
         else default_data_dir / "flows"
     )
 
@@ -55,7 +47,7 @@ def resolve_settings(
 
     resolved_data_dir = _coalesce_path(
         cli_value=data_dir,
-        env_value=env_map.get(ENV_DATA_DIR),
+        env_value=env_map.get(ENV_HOME_DIR),
         default_value=default_data_dir,
     )
     resolved_runs_dir = _coalesce_path(

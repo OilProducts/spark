@@ -1,10 +1,10 @@
-# Sparkspawn
+# Spark Spawn
 
-Sparkspawn is a DOT-driven workflow runner for multi-stage AI pipelines, with a FastAPI backend and React UI for authoring, execution, and run inspection.
+Spark Spawn is a DOT-driven workflow runner for multi-stage AI pipelines, with a FastAPI backend and React UI for authoring, execution, and run inspection.
 
 ## Description
 
-Sparkspawn lets you define workflows as directed graphs (DOT), run them with built-in handlers (codergen, tool, conditional, fan-in, parallel, human gate), and inspect status, events, checkpoints, context, and artifacts from the web UI.
+Spark Spawn lets you define workflows as directed graphs (DOT), run them with built-in handlers (codergen, tool, conditional, fan-in, parallel, human gate), and inspect status, events, checkpoints, context, and artifacts from the web UI.
 
 ## Features
 
@@ -50,7 +50,7 @@ If the backend cannot bind to `127.0.0.1:8000`, `sparkspawn serve` reports that 
 
 Optional runtime path overrides (CLI args or env vars):
 
-- `SPARKSPAWN_DATA_DIR`
+- `SPARKSPAWN_HOME`
 - `SPARKSPAWN_RUNS_DIR`
 - `SPARKSPAWN_FLOWS_DIR`
 - `SPARKSPAWN_UI_DIR`

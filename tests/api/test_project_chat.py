@@ -19,7 +19,31 @@ def test_extract_live_assistant_message_handles_partial_and_complete_json() -> N
     assert project_chat._extract_live_assistant_message(
         '{"assistant_message":"Hello'
     ) == "Hello"
-    assert project_chat._extract_live_assistant_message("plain text") == ""
+    assert project_chat._extract_live_assistant_message("plain text") == "plain text"
+
+
+def test_parse_chat_response_payload_accepts_plain_text_and_json() -> None:
+    assistant_message, payload = project_chat._parse_chat_response_payload("Plain text reply.")
+
+    assert assistant_message == "Plain text reply."
+    assert payload is None
+
+    assistant_message, payload = project_chat._parse_chat_response_payload(
+        '{"assistant_message":"Hello.","spec_proposal":null}'
+    )
+
+    assert assistant_message == "Hello."
+    assert payload == {
+        "assistant_message": "Hello.",
+        "spec_proposal": None,
+    }
+
+
+def test_should_draft_spec_proposal_uses_change_intent_not_informational_queries() -> None:
+    assert project_chat._should_draft_spec_proposal("Let's clean up the top bar.")
+    assert project_chat._should_draft_spec_proposal("We should rename this panel.")
+    assert not project_chat._should_draft_spec_proposal("What's this project about?")
+    assert not project_chat._should_draft_spec_proposal("Summarize the tools you have available.")
 
 
 def test_extract_file_paths_deduplicates_nested_entries() -> None:
@@ -409,6 +433,68 @@ def test_send_turn_retries_when_app_server_request_times_out_before_progress(tmp
     assert snapshot["turns"][-1]["content"] == "hi"
 
 
+def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+
+    class PlainTextSession:
+        def turn(self, prompt: str, model: str | None, *, on_progress=None) -> project_chat.ChatTurnResult:
+            return project_chat.ChatTurnResult(
+                assistant_message="This looks like a Collatz implementation project.",
+                tool_calls=[],
+            )
+
+        def _close(self) -> None:
+            return None
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: PlainTextSession())
+
+    snapshot = service.send_turn("conversation-test", str(tmp_path), "What's this project about?", None)
+
+    assert snapshot["turns"][-1]["role"] == "assistant"
+    assert snapshot["turns"][-1]["status"] == "complete"
+    assert snapshot["turns"][-1]["content"] == "This looks like a Collatz implementation project."
+
+
+def test_send_turn_drafts_spec_proposal_separately_from_plain_text_reply(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+
+    class PlainTextSession:
+        def turn(self, prompt: str, model: str | None, *, on_progress=None) -> project_chat.ChatTurnResult:
+            return project_chat.ChatTurnResult(
+                assistant_message="I can tighten the top bar and relocate the overflow metadata.",
+                tool_calls=[],
+            )
+
+        def _close(self) -> None:
+            return None
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: PlainTextSession())
+
+    snapshot = service.send_turn(
+        "conversation-test",
+        str(tmp_path),
+        "Let's clean up the top bar.",
+        None,
+        spec_proposal_drafter=lambda prompt, model: json.dumps(
+            {
+                "summary": "Reduce top-bar chrome and keep only project context.",
+                "changes": [
+                    {
+                        "path": "specs/ui-spec.md#home-header",
+                        "before": "The home header surfaces execution controls and runtime metadata.",
+                        "after": "The home header shows only navigation and active project context.",
+                    }
+                ],
+            }
+        ),
+    )
+
+    assert snapshot["turns"][-1]["kind"] == "spec_edit_proposal"
+    assert snapshot["turns"][-2]["role"] == "assistant"
+    assert snapshot["turns"][-2]["content"] == "I can tighten the top bar and relocate the overflow metadata."
+    assert snapshot["spec_edit_proposals"][0]["summary"] == "Reduce top-bar chrome and keep only project context."
+
+
 def test_chat_session_ignores_duplicate_codex_agent_delta_channel(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
@@ -720,3 +806,43 @@ def test_list_project_conversations_endpoint_returns_project_threads(api_client,
     assert [entry["conversation_id"] for entry in payload] == ["conversation-a"]
     assert payload[0]["title"] == "Design thread"
     assert payload[0]["last_message_preview"] == "Design thread preview"
+
+
+def test_delete_project_conversation_endpoint_removes_thread_state(api_client, tmp_path: Path) -> None:
+    service = server.PROJECT_CHAT
+    conversation_id = "conversation-delete-me"
+    service._write_state(
+        project_chat.ConversationState(
+            conversation_id=conversation_id,
+            project_path=str(tmp_path),
+            title="Delete me",
+            created_at="2026-03-07T14:00:00Z",
+            updated_at="2026-03-07T14:02:00Z",
+        )
+    )
+    service._write_session_state(
+        project_chat.ConversationSessionState(
+            conversation_id=conversation_id,
+            updated_at="2026-03-07T14:02:00Z",
+            project_path=str(tmp_path),
+            runtime_project_path=str(tmp_path),
+            thread_id="thread-delete-me",
+        )
+    )
+
+    response = api_client.delete(
+        f"/api/conversations/{conversation_id}",
+        params={"project_path": str(tmp_path)},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "deleted",
+        "conversation_id": conversation_id,
+        "project_path": str(tmp_path.resolve()),
+    }
+    assert not (tmp_path / "conversations" / conversation_id).exists()
+
+    list_response = api_client.get("/api/projects/conversations", params={"project_path": str(tmp_path)})
+    assert list_response.status_code == 200
+    assert list_response.json() == []

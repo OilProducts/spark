@@ -50,7 +50,7 @@ export function Navbar() {
             <div className={isNarrowViewport ? 'flex flex-col gap-2' : 'flex items-center gap-8'}>
                 <div className="flex items-center gap-2">
                     <Settings2 className="w-5 h-5" />
-                    <span className="font-semibold tracking-tight">Attractor React</span>
+                    <span className="font-semibold tracking-tight">Spark Spawn</span>
                 </div>
 
                 <div

@@ -1,6 +1,6 @@
-# Sparkspawn Attractor Extensions
+# Spark Spawn Attractor Extensions
 
-This document defines **Sparkspawn-specific extensions** that are not part of the core `attractor-spec.md`.
+This document defines **Spark Spawn-specific extensions** that are not part of the core `attractor-spec.md`.
 Extensions are intended for UI/UX features and convenience defaults that the engine **must ignore** unless
 explicitly implemented. The goal is to keep UI behavior deterministic while preserving core spec compliance.
 
