@@ -33,7 +33,6 @@ Execution artifacts stay outside this folder:
 
 ## Supporting Spec Documents
 
-- `ui-runtime-parser-boundaries.md`
 
 ## Acceptance Workflow Assets
 

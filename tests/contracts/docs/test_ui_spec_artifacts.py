@@ -82,26 +82,3 @@ def _extract_component_paths(cell_text: str) -> set[str]:
 def _extract_ui_spec_refs(cell_text: str) -> set[str]:
     return set(re.findall(r"\b\d+\.\d+\b", cell_text))
 
-
-def test_runtime_parser_boundaries_doc_contract() -> None:
-    _, doc_text = _load_doc("specs/ui-runtime-parser-boundaries.md")
-    assert _checklist_item_id(doc_text) == "1.3-01"
-
-    headings = set(_h2_headings(doc_text))
-    assert {
-        "Source of Truth",
-        "UI-owned responsibilities",
-        "Runtime/parser-owned responsibilities",
-        "Boundary Rules",
-    }.issubset(headings)
-
-    source_of_truth = _section(doc_text, "Source of Truth")
-    assert "ui-spec.md" in source_of_truth
-    assert "attractor-spec.md" in source_of_truth
-
-    ui_owned = _section(doc_text, "UI-owned responsibilities")
-    runtime_owned = _section(doc_text, "Runtime/parser-owned responsibilities")
-    boundary_rules = _section(doc_text, "Boundary Rules")
-    assert len(_bullet_items(ui_owned)) >= 3
-    assert len(_bullet_items(runtime_owned)) >= 3
-    assert len(_numbered_items(boundary_rules)) >= 4

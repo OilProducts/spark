@@ -54,7 +54,7 @@ For project-first operation, the UI MUST additionally support a complete project
 ### 1.3 Non-Goals
 
 - Replacing the DOT runtime parser or executor.
-- Redefining DOT parsing or runtime execution semantics in the UI layer; when UI interpretation and runtime behavior differ, runtime behavior is authoritative.
+- UI interpretation of DOT parsing and execution behavior MUST not diverge from `attractor-spec.md` or the runtime/parser implementation.
 - Supporting arbitrary invalid DOT inputs.
 - Hiding advanced features in favor of a simplified-only mode.
 
