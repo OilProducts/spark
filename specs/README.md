@@ -5,7 +5,7 @@ This directory contains the canonical target-state documents for Spark Spawn, pl
 These files define the program we are building:
 - core product and runtime specifications
 - user stories and detailed story records
-- selected target-behavior adjuncts such as boundaries, scenarios, and acceptance scripts
+- selected target-behavior adjuncts such as boundaries
 
 Execution artifacts stay outside this folder:
 - checklists
@@ -33,6 +33,9 @@ Execution artifacts stay outside this folder:
 
 ## Supporting Spec Documents
 
-- `ui-role-persona-scenarios.md`
-- `ui-parity-complete-user-journey.md`
 - `ui-runtime-parser-boundaries.md`
+
+## Acceptance Workflow Assets
+
+High-level workflow verification assets live outside `specs/` under:
+- `/Users/chris/tinker/sparkspawn/tests/acceptance/agent-workflows/`

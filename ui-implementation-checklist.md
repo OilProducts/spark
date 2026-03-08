@@ -14,12 +14,12 @@ Status key:
 ## 1. Overview and Goals
 
 ### 1.1 Problem Statement
-- [x] [1.1-01] Document all places where users must leave the UI to raw DOT for required configuration. (See `ui-raw-dot-required-config.md`.)
-- [x] [1.1-02] Add a parity-risk report that identifies current behavior-loss and hidden-config failure modes. (See `ui-parity-risk-report.md`.)
+- [x] [1.1-01] Identify remaining places where users must leave the UI to raw DOT for required configuration and track unresolved gaps in `TODO.md`.
+- [x] [1.1-02] Review parity-risk gaps and retire stale report artifacts once unresolved items are tracked elsewhere.
 - [x] [1.1-03] Add a baseline fixture set of spec-valid flows that currently require raw DOT edits.
 
 ### 1.2 Product Goal
-- [x] [1.2-01] Define the parity-complete user journey (project-select, author, execute, inspect) as an end-to-end acceptance script.
+- [x] [1.2-01] Define the parity-complete user journey (project-select, author, execute, inspect) as a high-level acceptance workflow asset. (See `tests/acceptance/agent-workflows/project-select-author-execute-inspect.md`.)
 - [x] [1.2-03] Add release criteria that fail when any required spec feature is unavailable in UI.
 
 ### 1.3 Non-Goals
@@ -43,7 +43,7 @@ Status key:
 ## 3. Users and Primary Workflows
 
 ### 3.1 User Roles
-- [x] [3.1-01] Capture author/operator/reviewer/project-owner persona scenarios with concrete UI success criteria. (See `specs/ui-role-persona-scenarios.md`.)
+- [x] [3.1-01] Capture author/operator/reviewer/project-owner workflows as high-level acceptance assets. (See `tests/acceptance/agent-workflows/`.)
 
 ### 3.2 Primary Workflows
 - Deferred to `Deferred Tasks` until project-scoped conversation/spec/plan/build surfaces exist.
