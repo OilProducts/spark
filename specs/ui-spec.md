@@ -49,7 +49,7 @@ Without full parity, users are forced to switch between visual editing and raw D
 
 A user MUST be able to author, run, inspect, and troubleshoot any spec-valid pipeline entirely in the UI, without behavior loss and without hidden required configuration.
 
-For project-first operation, the UI MUST additionally support a complete project-scoped loop: select project -> collaborate on spec -> generate/approve implementation plan -> run build workflows -> inspect outcomes.
+For project-first operation, the UI MUST additionally support a complete project-scoped loop: select project -> collaborate on spec -> review execution cards derived from approved spec edits -> run build workflows -> inspect outcomes.
 
 ### 1.3 Non-Goals
 
@@ -77,7 +77,7 @@ For project-first operation, the UI MUST additionally support a complete project
 - **Pipeline Author:** defines workflow structure and stage configuration.
 - **Operator:** executes and monitors runs in real time.
 - **Reviewer/Auditor:** inspects run artifacts, context, and decisions after execution.
-- **Project Owner/Planner:** selects project scope and drives project-scoped spec-to-plan-to-tracker-to-build loops.
+- **Project Owner/Planner:** selects project scope and drives project-scoped spec-to-execution-card-to-build loops.
 
 ### 3.2 Primary Workflows
 
@@ -87,10 +87,10 @@ For project-first operation, the UI MUST additionally support a complete project
 4. Open or continue a project-scoped AI conversation in Home.
 5. Draft/refine project specification via explicit AI edit proposals.
 6. Accept a spec edit proposal to apply the spec change.
-7. Automatically trigger a DOT plan-and-tracker workflow that generates implementation plan artifacts and staged work items.
-8. Complete a human approval gate for staged work items (`approve`, `reject`, `request-revision`).
-9. Publish approved work items to tracker `ready` state for implementation agents.
-10. Create/open flow within active project context.
+7. Automatically trigger an execution-planning workflow from an accepted spec edit.
+8. Review the resulting execution card with `approve`, `reject`, or `request-revision`.
+9. Launch build workflows from approved execution-card state when supported by the active flow.
+10. Create/open global reusable flows for use within project context.
 11. Edit graph, nodes, edges, subgraph/default behavior.
 12. Validate and resolve diagnostics.
 13. Start run with model and project-scoped working directory.
@@ -115,9 +115,9 @@ Each area MUST have deterministic, deep-linkable state (project/flow/run/convers
 ### 4.1 Global Regions
 
 - **Left navigation rail:** top-level area switching.
-- **Top navigation/header:** active project identity, active flow identity, run action.
-- **Home project sidebar:** project list/quick switch at top plus a running workflow event log at bottom.
-- **Home main workspace:** project-scoped AI conversation with inline spec-proposal cards and review/apply controls.
+- **Top navigation/header:** product identity, top-level tabs, and active project identity.
+- **Home project sidebar:** compact project/thread navigator at top plus a running workflow event log at bottom.
+- **Home main workspace:** project-scoped AI conversation with inline spec-edit cards, execution cards, and review controls.
 - **Canvas workspace:** graph and contextual overlays.
 - **Inspector panel:** graph/node/edge properties.
 - **Footer/stream area:** execution controls and runtime output.
@@ -130,24 +130,26 @@ The UI MUST treat project scope as a first-class operational boundary.
 - Duplicate project registrations for the same directory MUST be rejected.
 - Project directory MUST resolve to a Git repository before workflows can run.
 - Exactly one project is active at a time for authoring/execution actions.
-- Conversations, specs, plans, runs, and artifacts MUST be project-scoped.
+- Flow definitions are global reusable workflow assets rather than project-owned documents.
+- User-configured event or trigger bindings for flows are a future orchestration concern and are out of scope for this document.
+- Conversations, project-authored specs, execution-card workflow state, runs, and artifacts MUST be project-scoped.
 - Cross-project context/file leakage MUST be prevented by default.
-- Home workspace SHOULD provide direct access to project-scoped conversation, spec, plan, and tracker artifacts.
+- Home workspace SHOULD provide direct access to project-scoped conversation, spec-edit, and execution-card artifacts.
 
 ### 4.3 Home Workspace Requirements
 
 The Home area MUST provide:
 
 - Create/register from local directory path.
+- Native directory picker support when the runtime can provide it.
 - Duplicate-path prevention at registration/update time.
-- Git repository verification for selected directory with an explicit initialize action.
-- Active project selection in a left sidebar with persistent display in top navigation.
-- Fast switching across recent and favorited projects via sidebar selection.
-- Glanceable project metadata (`name`, `directory`, current branch, last activity timestamp).
-- Active project directory path visible and copyable from Home.
+- Git repository verification for selected directory at registration/activation time.
+- Active project selection in a compact left sidebar tree with persistent display in top navigation.
+- Per-project conversation thread selection, creation, and deletion from the Home sidebar.
 - Project-scoped AI conversation in the main Home pane.
 - Agent-emitted proposal/review/apply controls for spec edits inline within the conversation pane (no user-triggered proposal-generation button).
-- Automatic trigger wiring from accepted spec edit proposals to plan/tracker orchestration.
+- Inline execution-card review controls in the conversation pane after planning completes.
+- Automatic workflow trigger wiring from accepted spec edit proposals to execution-card generation.
 - Deterministic deep-link state including active project identity and active conversation.
 
 ---
@@ -178,6 +180,7 @@ The UI MUST support:
 
 - Actions that mutate flow state or start runs MUST require an active project.
 - AI conversation context MUST include active project directory and repository metadata.
+- Flow definitions remain global reusable assets even when they are authored or executed from within an active project context.
 - Project switching from the Home sidebar MUST reset selection context to the target project (flow/run/conversation) and MUST NOT carry hidden state across projects.
 
 ### 5.5 AI Conversation and Spec Authoring Loop
@@ -192,16 +195,19 @@ Source of truth for conversation lifecycle, streaming, retry semantics, and arti
 - Project-scoped conversations MUST survive app restart and SHOULD resume the same underlying AI thread when the runtime can restore it.
 - The UI MUST support multiple conversation threads per project.
 - Users MUST be able to start a new thread from the Home conversation surface without changing active project.
-- The Home sidebar SHOULD expose the active project's conversation threads as a selectable list adjacent to project navigation.
+- The Home sidebar SHOULD expose the active project's conversation threads as a compact selectable list adjacent to project navigation.
 - Switching threads within a project MUST replace the visible chat history, inline artifacts, and resumed AI session with the selected thread's state.
 - Creating a new thread MUST start with an empty visible conversation history while preserving active project scope, repository metadata, and project event log context.
 - Chat history in the conversation surface MUST represent user/assistant turns; workflow/system events MUST render in the sidebar event log, not as chat cards.
+- Assistant responses SHOULD stream progressively into the conversation surface while a turn is in progress.
+- Tool calls and tool output SHOULD render inline in chronological order within the conversation timeline.
+- The conversation surface SHOULD auto-follow new content only while the user remains at the live edge, and SHOULD expose an explicit jump-to-bottom affordance when the user scrolls away.
 - AI-proposed spec edits MUST be emitted by the assistant/agent turn pipeline and presented as inline conversation cards with explicit, reviewable before/after changes before apply.
 - Proposal cards SHOULD render Git-like diff styling and MUST support collapsed/expanded viewing for long diffs.
 - Applying spec edits MUST require explicit user confirmation.
 - Rejected proposals MUST not mutate spec files.
 - Conversation context and proposal artifacts MUST remain isolated to the originating project.
-- Accepted spec-edit proposals MUST trigger a plan/tracker orchestration run in project scope.
+- Accepted spec-edit proposals MUST trigger an execution-planning workflow in project scope.
 
 ---
 
@@ -331,18 +337,18 @@ The canvas MUST reflect node runtime status transitions in near real time.
 
 Execution controls and status MUST stay visible in canvas footer during active runs.
 
-### 8.5 Spec -> Plan -> Tracker -> Build Workflow Orchestration
+### 8.5 Spec -> Execution Card -> Build Workflow Orchestration
 
-The UI MUST support workflow chaining from project specification to implementation execution with tracker gating.
+The UI MUST support workflow chaining from project specification to implementation execution through reviewable execution cards.
 
-- Accepted spec edit proposals MUST trigger a DOT workflow execution that performs plan generation and tracker staging.
-- Generated implementation plans MUST be written to project files with visible status and provenance metadata.
-- The DOT workflow MUST produce candidate work items and stage them pending human decision.
-- Human gate actions (`approve`, `reject`, `request-revision`) MUST be supported for staged work publication.
-- `approve` MUST publish staged items to tracker `ready` state; `reject`/`request-revision` MUST keep items non-ready.
-- Build/implementation workflows MUST be launchable from approved tracker-ready work.
+- Accepted spec edit proposals MUST trigger a workflow execution that generates an execution card in the originating conversation.
+- Execution-card generation MUST run asynchronously with visible workflow-event-log progress.
+- Execution cards MUST represent grouped work derived from the approved spec edit and MUST support `approve`, `reject`, and `request-revision`.
+- `reject` and `request-revision` actions MUST capture reviewer feedback for the next planning pass.
+- Approved execution cards are intended to feed a future work tracker, but tracker ingestion mechanics are out of scope for this document.
+- Build/implementation workflows MUST be launchable from approved execution-card state when supported by the active flow.
 - Failed planning/build runs MUST expose actionable diagnostics and rerun options.
-- Live status/log/artifact visibility MUST be available for planning, approval, and build workflows.
+- Live status/log/artifact visibility MUST be available for planning, review, and build workflows.
 
 ---
 
@@ -400,7 +406,7 @@ The UI MUST expose run artifact directories/files where available:
 
 - Run history MUST be durable and filterable by project.
 - Each run record MUST link to project identity and available Git metadata (branch/commit).
-- Where available, run records SHOULD link associated spec and plan artifacts.
+- Where available, run records SHOULD link associated spec and execution-card artifacts.
 - Timeline and summary surfaces MUST preserve timestamps sufficient for audit reconstruction.
 
 ---
@@ -463,16 +469,15 @@ Attributes outside core spec SHOULD be preserved and editable through a generic 
 ### 11.5 Project Workspace Persistence
 
 - Project registry data MUST persist across sessions with unique-directory enforcement.
-- Project-scoped conversation history and spec/plan/tracker artifacts MUST remain linked to the originating project.
-- Restore-on-reopen behavior MUST rehydrate the last active project context safely.
-- Home sidebar ordering/preferences (recent/favorite) SHOULD persist across sessions.
+- Project-scoped conversation history and spec-edit/execution-card artifacts MUST remain linked to the originating project.
+- Restore-on-reopen behavior MUST rehydrate the last active project and active thread context safely.
+- Home sidebar project/thread selection state SHOULD persist across sessions where practical.
 
-### 11.6 Spec and Plan Artifact Provenance
+### 11.6 Spec and Execution Artifact Provenance
 
-- Spec/plan/work-item artifacts produced through UI workflows MUST include or reference provenance metadata.
+- Spec-edit and execution-card artifacts produced through UI workflows MUST include or reference provenance metadata.
 - Provenance MUST include run linkage and timestamps, and SHOULD include available branch/commit context.
-- Plan status transitions (draft/approved/rejected/revision-requested) MUST be persisted and recoverable.
-- Work-item publication transitions (staged/approved-ready/rejected/revision-requested) MUST be persisted and recoverable.
+- Execution-card status transitions (draft/approved/rejected/revision-requested/superseded) MUST be persisted and recoverable.
 
 ---
 
@@ -492,6 +497,15 @@ UI integrations MUST cover:
 - `/pipelines/{id}/questions/{qid}/answer`
 - `/pipelines/{id}/checkpoint`
 - `/pipelines/{id}/context`
+- `/api/projects/metadata`
+- `/api/projects/pick-directory`
+- `/api/projects/conversations`
+- `/api/conversations/{id}`
+- `/api/conversations/{id}/events`
+- `/api/conversations/{id}/turns`
+- `/api/conversations/{id}/spec-edit-proposals/{proposalId}/approve`
+- `/api/conversations/{id}/spec-edit-proposals/{proposalId}/reject`
+- `/api/conversations/{id}/execution-cards/{executionCardId}/review`
 - `/runs`, `/status`
 
 ### 12.2 Contract Drift Handling
@@ -506,7 +520,7 @@ If an endpoint is unavailable or shape changes, UI MUST:
 
 - Project selection and active-project identity MUST be persisted by the UI.
 - Project identity passed to execution surfaces MUST resolve to a concrete working directory.
-- Conversation/spec/plan state MUST be retrievable by project identity.
+- Conversation/spec-edit/execution-card state MUST be retrievable by project identity.
 
 ### 12.4 Workflow Orchestration Contract
 
@@ -514,12 +528,10 @@ UI integrations MUST cover backend contracts for:
 
 - Project-scoped conversation turns and history retrieval.
 - Proposal of spec edits and explicit apply/reject actions.
-- Triggering DOT orchestration on accepted spec edits.
-- Plan-generation workflow invocation and status retrieval.
-- Staged work-item creation/update in tracker scope.
-- Human approval/rejection/revision transitions for staged work items.
-- Publication of approved items to tracker `ready` state.
-- Build workflow invocation from approved plan/tracker-ready state.
+- Triggering execution-planning workflows on accepted spec edits.
+- Execution-card generation and status retrieval.
+- Human approval/rejection/revision transitions for execution cards.
+- Build workflow invocation from approved execution-card state.
 
 ---
 
@@ -564,14 +576,13 @@ Scope:
 - Add Home as a first-class top-level area.
 - Move project registration and active-project selection into Home.
 - Enforce unique-directory and Git-repository invariants.
-- Establish Home sidebar quick-switch behavior for active project selection.
+- Establish compact Home project/thread tree navigation.
 - Establish project-scoped conversation/session state and deep-linking.
 - Enforce cross-project context isolation for authoring/execution surfaces.
-- Add recent/favorite switching and glanceable metadata in Home sidebar.
 
 User story:
 
-- As a user, I can choose an active project from Home and safely run the spec-to-plan-to-tracker-to-build loop without context leakage.
+- As a user, I can choose an active project from Home and safely run the spec-to-execution-card-to-build loop without context leakage.
 
 ### 14.1 E1 - Data Model Parity Foundation (P0)
 
@@ -705,31 +716,31 @@ Scope:
 
 - Test suite and checklist proving full UI parity with spec tables.
 
-### 14.15 E15 - Spec-to-Plan Conversation Workflow (P0)
+### 14.15 E15 - Spec Authoring Conversation Workflow (P0)
 
 Scope:
 
 - Home-based project-scoped AI conversation for iterative spec drafting.
 - Explicit proposal/review/apply model for spec edits.
 - Durable conversation history and artifact linkage by project.
-- Trigger DOT plan/tracker orchestration automatically on accepted spec edits.
+- Trigger execution-card planning automatically on accepted spec edits.
+- Stream assistant/tool activity directly in the conversation surface.
 
 User story:
 
-- As a project author, I can collaborate with AI on spec drafting, accept explicit edits, and automatically trigger planning without cross-project leakage.
+- As a project author, I can collaborate with AI on spec drafting, accept explicit edits, and automatically trigger execution planning without cross-project leakage.
 
-### 14.16 E16 - Plan Governance and Build Launch (P0)
+### 14.16 E16 - Execution Card Governance and Build Launch (P0)
 
 Scope:
 
-- Plan-generation + tracker-staging workflow execution from accepted spec edits.
-- Human gate for staged work publication (`approve`, `reject`, `request-revision`).
-- Tracker transition of approved work to `ready`.
-- Build launch from approved ready work and failure-recovery UX.
+- Execution-card workflow execution from accepted spec edits.
+- Human review for execution cards (`approve`, `reject`, `request-revision`).
+- Build launch from approved execution-card state and failure-recovery UX.
 
 User story:
 
-- As an operator/reviewer, I can gate staged work publication and run builds from approved ready work with full traceability.
+- As an operator/reviewer, I can gate execution-card approval and run builds from approved work packages with full traceability.
 
 ---
 
@@ -745,8 +756,8 @@ A parity-complete UI release is done when all conditions hold:
 6. Full frontend build/lint/test passes.
 7. End-to-end parity tests pass against representative fixtures.
 8. Home is first-class in IA with integrated project sidebar, enforces unique-directory + Git invariants, and isolates context across projects.
-9. Project-scoped conversation/spec/plan/tracker/build loop is fully operable with explicit spec-edit and work-publication approval gates.
-10. Per-project run history/provenance supports audit reconstruction of spec/plan/tracker/build outcomes.
+9. Project-scoped conversation/spec-edit/execution-card/build loop is fully operable with explicit spec-edit and execution-card approval gates.
+10. Per-project run history/provenance supports audit reconstruction of spec-edit/execution-card/build outcomes.
 
 ---
 
