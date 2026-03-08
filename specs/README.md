@@ -5,7 +5,7 @@ This directory contains the canonical target-state documents for Spark Spawn, pl
 These files define the program we are building:
 - core product and runtime specifications
 - user stories and detailed story records
-- target-behavior adjuncts such as boundaries, scenarios, and behavior maps
+- selected target-behavior adjuncts such as boundaries, scenarios, and acceptance scripts
 
 Execution artifacts stay outside this folder:
 - checklists
@@ -33,8 +33,6 @@ Execution artifacts stay outside this folder:
 
 ## Supporting Spec Documents
 
-- `ui-spec-first-behavior-map.md`
 - `ui-role-persona-scenarios.md`
 - `ui-parity-complete-user-journey.md`
-- `ui-advanced-feature-access.md`
 - `ui-runtime-parser-boundaries.md`

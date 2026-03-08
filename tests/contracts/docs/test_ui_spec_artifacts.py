@@ -83,24 +83,6 @@ def _extract_ui_spec_refs(cell_text: str) -> set[str]:
     return set(re.findall(r"\b\d+\.\d+\b", cell_text))
 
 
-def test_advanced_feature_access_doc_contract() -> None:
-    _, doc_text = _load_doc("specs/ui-advanced-feature-access.md")
-    assert _checklist_item_id(doc_text) == "1.3-03"
-
-    headings = set(_h2_headings(doc_text))
-    assert {"Spec Anchor", "Guardrail Rules", "Verification approach"}.issubset(headings)
-
-    spec_anchor = _section(doc_text, "Spec Anchor")
-    assert len(_bullet_items(spec_anchor)) >= 2
-    assert spec_anchor.count("ui-spec.md") >= 2
-
-    guardrails = _section(doc_text, "Guardrail Rules")
-    assert len(_numbered_items(guardrails)) >= 3
-
-    verification = _section(doc_text, "Verification approach")
-    assert len(_bullet_items(verification)) >= 2
-
-
 def test_parity_complete_user_journey_doc_contract() -> None:
     _, doc_text = _load_doc("specs/ui-parity-complete-user-journey.md")
     assert _checklist_item_id(doc_text) == "1.2-01"
@@ -247,60 +229,3 @@ def test_runtime_parser_boundaries_doc_contract() -> None:
     assert len(_bullet_items(runtime_owned)) >= 3
     assert len(_numbered_items(boundary_rules)) >= 4
 
-
-def test_spec_first_behavior_mapping_doc_contract() -> None:
-    _, doc_text = _load_doc("specs/ui-spec-first-behavior-map.md")
-    assert _checklist_item_id(doc_text) == "2-01"
-
-    headings = set(_h2_headings(doc_text))
-    assert {
-        "Source of Truth",
-        "Control-to-Spec Behavior Map",
-        "Spec references used during control behavior decisions",
-    }.issubset(headings)
-    assert "ui-spec.md" in _section(doc_text, "Source of Truth")
-    assert "attractor-spec.md" in _section(doc_text, "Source of Truth")
-
-    table_header, rows = _markdown_table(_section(doc_text, "Control-to-Spec Behavior Map"))
-    assert table_header == [
-        "UI control",
-        "Current location",
-        "Expected behavior",
-        "Spec references",
-    ]
-    assert len(rows) >= 25
-
-    component_paths: set[str] = set()
-    ui_spec_refs: set[str] = set()
-    for row in rows:
-        component_paths.update(_extract_component_paths(row[1]))
-        ui_spec_refs.update(_extract_ui_spec_refs(row[3]))
-        assert "ui-spec.md" in row[3], f"Missing ui-spec traceability in row: {row[0]}"
-
-    required_components = {
-        "frontend/src/components/Navbar.tsx",
-        "frontend/src/components/Sidebar.tsx",
-        "frontend/src/components/Editor.tsx",
-        "frontend/src/components/GraphSettings.tsx",
-        "frontend/src/components/TaskNode.tsx",
-        "frontend/src/components/ValidationPanel.tsx",
-        "frontend/src/components/RunsPanel.tsx",
-        "frontend/src/components/ExecutionControls.tsx",
-        "frontend/src/components/Terminal.tsx",
-        "frontend/src/components/SettingsPanel.tsx",
-        "frontend/src/components/ProjectsPanel.tsx",
-        "frontend/src/components/ExplainabilityPanel.tsx",
-        "frontend/src/components/RunStream.tsx",
-        "frontend/src/components/StylesheetEditor.tsx",
-        "frontend/src/components/InspectorScaffold.tsx",
-        "frontend/src/components/ValidationEdge.tsx",
-    }
-    assert required_components.issubset(component_paths)
-
-    for major_area in ("4", "5", "6", "7", "8", "9", "10"):
-        assert any(ref.startswith(f"{major_area}.") for ref in ui_spec_refs), (
-            f"Control map missing ui-spec major area {major_area}.x coverage."
-        )
-
-    for critical_section in ("5.2", "6.2", "7.1", "8.1", "9.1", "10.1"):
-        assert critical_section in ui_spec_refs, f"Control map missing critical ui-spec section {critical_section}."

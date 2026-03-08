@@ -31,7 +31,7 @@ Status key:
 
 ## 2. Design Principles
 
-- [x] [2-01] Implement spec-first behavior mapping for each UI control with direct spec references. (See `specs/ui-spec-first-behavior-map.md`.)
+- [x] [2-01] Implement spec-first behavior mapping for UI controls and tests with direct references back to `specs/ui-spec.md` and `specs/attractor-spec.md`.
 - [x] [2-02] Add no-silent-loss save protections and user-visible failure states.
 - [x] [2-03] Ensure progressive disclosure for advanced fields while preserving full editability.
 - [x] [2-04] Add explainability views for routing, retry, and failure decisions.
