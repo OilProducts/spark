@@ -825,6 +825,168 @@ describe('ProjectsPanel', () => {
     })
   })
 
+  it('ignores a stale send-response snapshot after the stream has already advanced the turn', async () => {
+    class MockEventSource {
+      static instances: MockEventSource[] = []
+
+      url: string
+      onmessage: ((event: MessageEvent) => void) | null = null
+
+      constructor(url: string) {
+        this.url = url
+        MockEventSource.instances.push(this)
+      }
+
+      close() {}
+    }
+
+    const user = userEvent.setup()
+    let resolveTurnResponse: ((response: Response) => void) | null = null
+
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/') && !init?.method) {
+          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/') && init?.method === 'POST') {
+          return await new Promise<Response>((resolve) => {
+            resolveTurnResponse = resolve
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    useStore.getState().registerProject('/tmp/chat-project')
+    useStore.getState().setActiveProjectPath('/tmp/chat-project')
+
+    render(<ProjectsPanel />)
+
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Keep the streamed thinking visible.')
+    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+    const conversationId = useStore.getState().projectScopedWorkspaces['/tmp/chat-project']?.conversationId
+    expect(conversationId).toBeTruthy()
+
+    await waitFor(() => {
+      expect(MockEventSource.instances.length).toBeGreaterThan(0)
+    })
+
+    act(() => {
+      MockEventSource.instances[0]?.onmessage?.({
+        data: JSON.stringify({
+          type: 'turn_upsert',
+          conversation_id: conversationId,
+          project_path: '/tmp/chat-project',
+          title: 'Keep the streamed thinking visible.',
+          updated_at: '2026-03-07T15:31:02Z',
+          turn: {
+            id: 'turn-assistant-live',
+            role: 'assistant',
+            content: '',
+            timestamp: '2026-03-07T15:31:02Z',
+            status: 'streaming',
+            kind: 'message',
+            artifact_id: null,
+            parent_turn_id: 'turn-user-1',
+          },
+        }),
+      } as MessageEvent)
+      MockEventSource.instances[0]?.onmessage?.({
+        data: JSON.stringify({
+          type: 'turn_event',
+          conversation_id: conversationId,
+          project_path: '/tmp/chat-project',
+          title: 'Keep the streamed thinking visible.',
+          updated_at: '2026-03-07T15:31:02Z',
+          event: {
+            id: 'event-reasoning-live',
+            turn_id: 'turn-assistant-live',
+            sequence: 1,
+            timestamp: '2026-03-07T15:31:02Z',
+            kind: 'reasoning_summary',
+            content_delta: 'Scanning the project layout first.',
+          },
+        }),
+      } as MessageEvent)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Scanning the project layout first.')
+    })
+
+    resolveTurnResponse?.(
+      new Response(
+        JSON.stringify({
+          conversation_id: conversationId,
+          project_path: '/tmp/chat-project',
+          title: 'Keep the streamed thinking visible.',
+          created_at: '2026-03-07T15:31:00Z',
+          updated_at: '2026-03-07T15:31:02Z',
+          turns: [
+            {
+              id: 'turn-user-1',
+              role: 'user',
+              content: 'Keep the streamed thinking visible.',
+              timestamp: '2026-03-07T15:31:00Z',
+              status: 'complete',
+              kind: 'message',
+              artifact_id: null,
+            },
+            {
+              id: 'turn-assistant-live',
+              role: 'assistant',
+              content: '',
+              timestamp: '2026-03-07T15:31:01Z',
+              status: 'pending',
+              kind: 'message',
+              artifact_id: null,
+              parent_turn_id: 'turn-user-1',
+            },
+          ],
+          turn_events: [],
+          event_log: [],
+          spec_edit_proposals: [],
+          execution_cards: [],
+          execution_workflow: {
+            run_id: null,
+            status: 'idle',
+            error: null,
+            flow_source: null,
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Scanning the project layout first.')
+    })
+  })
+
   it('preserves reasoning, tool calls, and post-tool assistant text ordering when the final snapshot compacts transient events', async () => {
     class MockEventSource {
       static instances: MockEventSource[] = []

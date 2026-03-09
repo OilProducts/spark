@@ -2313,7 +2313,7 @@ async def send_project_conversation_turn(conversation_id: str, req: Conversation
 
     try:
         snapshot = await asyncio.to_thread(
-            PROJECT_CHAT.send_turn,
+            PROJECT_CHAT.start_turn,
             conversation_id,
             req.project_path,
             req.message,

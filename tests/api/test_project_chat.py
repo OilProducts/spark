@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -385,6 +387,40 @@ def test_chat_session_turn_uses_task_complete_message_but_waits_for_turn_complet
     result = session.turn("hello", None)
 
     assert result.assistant_message == '{"assistant_message":"Ack"}'
+
+
+def test_chat_session_raw_rpc_logger_records_transport_lines(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    outgoing_lines: list[str] = []
+    captured: list[tuple[str, str]] = []
+
+    class DummyStdin:
+        def write(self, text: str) -> None:
+            outgoing_lines.append(text)
+
+        def flush(self) -> None:
+            return None
+
+    class DummyProc:
+        stdin = DummyStdin()
+
+        def poll(self) -> int | None:
+            return None
+
+    session._proc = DummyProc()
+    session.set_raw_rpc_logger(lambda direction, line: captured.append((direction, line)))
+
+    session._send_json({"jsonrpc": "2.0", "id": 7, "method": "ping"})
+    monkeypatch.setattr(session, "_read_line", lambda wait: '{"jsonrpc":"2.0","id":7,"result":{}}')
+
+    response = session._wait_for_response(7)
+
+    assert outgoing_lines == ['{"jsonrpc": "2.0", "id": 7, "method": "ping"}\n']
+    assert response == {"jsonrpc": "2.0", "id": 7, "result": {}}
+    assert captured == [
+        ("outgoing", '{"jsonrpc": "2.0", "id": 7, "method": "ping"}'),
+        ("incoming", '{"jsonrpc":"2.0","id":7,"result":{}}'),
+    ]
 
 
 def test_chat_session_handles_dynamic_tool_call(monkeypatch) -> None:
@@ -958,6 +994,71 @@ def test_chat_session_ignores_duplicate_codex_agent_delta_channel(monkeypatch) -
     assert all("assistantassistant" not in message for message in progress_messages)
 
 
+def test_chat_session_emits_assistant_completed_from_item_completed(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    lines = iter(
+        [
+            json.dumps(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {"delta": "Ack"},
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "codex/event/item_completed",
+                    "params": {
+                        "msg": {
+                            "item": {
+                                "type": "AgentMessage",
+                                "id": "msg-1",
+                                "content": [{"type": "Text", "text": "Ack"}],
+                                "phase": "final_answer",
+                            }
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "completed",
+                        }
+                    },
+                }
+            ),
+        ]
+    )
+    captured_events: list[project_chat.ChatTurnLiveEvent] = []
+
+    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+
+    def fake_ensure_thread(model: str | None) -> None:
+        session._thread_id = "thread-123"
+        session._thread_initialized = True
+
+    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
+    monkeypatch.setattr(
+        session,
+        "_send_request",
+        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
+    )
+    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+
+    result = session.turn(
+        "hello",
+        None,
+        on_event=lambda event: captured_events.append(event),
+    )
+
+    assert result.assistant_message == "Ack"
+    assert [event.kind for event in captured_events] == ["assistant_delta", "assistant_completed"]
+    assert captured_events[-1].content_delta == "Ack"
+
+
 def test_build_session_ignores_legacy_persisted_thread_without_session_version(tmp_path: Path, monkeypatch) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     conversation_id = "conversation-test"
@@ -1039,6 +1140,101 @@ def test_send_turn_retries_with_fresh_session_after_timeout(tmp_path: Path, monk
     assert snapshot["turns"][-1]["content"] == "Recovered."
 
 
+def test_send_turn_writes_raw_jsonrpc_log(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.raw_logger = None
+
+        def set_raw_rpc_logger(self, callback) -> None:
+            self.raw_logger = callback
+
+        def clear_raw_rpc_logger(self) -> None:
+            self.raw_logger = None
+
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            assert self.raw_logger is not None
+            self.raw_logger("outgoing", '{"jsonrpc":"2.0","id":1,"method":"turn/start"}')
+            self.raw_logger("incoming", '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"status":"completed"}}}')
+            return project_chat.ChatTurnResult(
+                assistant_message='{"assistant_message":"Logged."}',
+            )
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: FakeSession())
+
+    snapshot = service.send_turn("conversation-test", str(tmp_path), "hello", None)
+
+    assert snapshot["turns"][-1]["content"] == "Logged."
+    raw_log_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "raw-log.jsonl"
+    raw_entries = [json.loads(line) for line in raw_log_path.read_text(encoding="utf-8").splitlines()]
+    assert [(entry["direction"], entry["line"]) for entry in raw_entries] == [
+        ("outgoing", '{"jsonrpc":"2.0","id":1,"method":"turn/start"}'),
+        ("incoming", '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"status":"completed"}}}'),
+    ]
+
+
+def test_start_turn_returns_initial_snapshot_before_background_completion(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    entered_turn = threading.Event()
+    finish_turn = threading.Event()
+
+    class FakeSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            entered_turn.set()
+            assert finish_turn.wait(timeout=2)
+            if on_event is not None:
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="reasoning_summary",
+                        content_delta="Checking the repository.",
+                    )
+                )
+            return project_chat.ChatTurnResult(
+                assistant_message='{"assistant_message":"ACK"}',
+            )
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: FakeSession())
+
+    snapshot = service.start_turn("conversation-test", str(tmp_path), "hello", None)
+
+    assert [turn["role"] for turn in snapshot["turns"]] == ["user", "assistant"]
+    assert snapshot["turns"][-1]["status"] == "pending"
+    assert snapshot["turns"][-1]["content"] == ""
+    assert entered_turn.wait(timeout=2)
+
+    finish_turn.set()
+    deadline = time.time() + 2.0
+    final_snapshot: dict[str, object] | None = None
+    while time.time() < deadline:
+        candidate = service.get_snapshot("conversation-test", str(tmp_path))
+        if candidate["turns"][-1]["status"] == "complete":
+            final_snapshot = candidate
+            break
+        time.sleep(0.02)
+
+    assert final_snapshot is not None
+    assert final_snapshot["turns"][-1]["content"] == "ACK"
+    assert [event["kind"] for event in final_snapshot["turn_events"]] == [
+        "reasoning_summary",
+        "assistant_completed",
+    ]
+
+
 def test_list_conversations_filters_by_project_and_sorts_latest_first(tmp_path: Path) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     shared_project = str(tmp_path / "project-a")
@@ -1102,7 +1298,8 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
     tmp_path: Path,
 ) -> None:
     service = server.PROJECT_CHAT
-    partial_snapshots: list[dict[str, object]] = []
+    entered_turn = threading.Event()
+    finish_turn = threading.Event()
 
     class FakeSession:
         def turn(
@@ -1113,6 +1310,8 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
             on_event=None,
             on_dynamic_tool_call=None,
         ) -> project_chat.ChatTurnResult:
+            entered_turn.set()
+            assert finish_turn.wait(timeout=2)
             if on_event is not None:
                 on_event(
                     project_chat.ChatTurnLiveEvent(
@@ -1134,7 +1333,6 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
                         ),
                     )
                 )
-                partial_snapshots.append(service.get_snapshot("conversation-test", str(tmp_path)))
             return project_chat.ChatTurnResult(
                 assistant_message='{"assistant_message":"ACK","spec_proposal":null}',
             )
@@ -1154,20 +1352,29 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
     payload = response.json()
     assert payload["conversation_id"] == "conversation-test"
     assert [turn["role"] for turn in payload["turns"]] == ["user", "assistant"]
-    assert payload["turns"][1]["content"] == "ACK"
-    assert payload["turns"][1]["status"] == "complete"
-    assert [event["kind"] for event in payload["turn_events"]] == [
+    assert payload["turns"][1]["content"] == ""
+    assert payload["turns"][1]["status"] == "pending"
+    assert payload["turn_events"] == []
+    assert entered_turn.wait(timeout=2)
+
+    finish_turn.set()
+    deadline = time.time() + 2.0
+    final_snapshot: dict[str, object] | None = None
+    while time.time() < deadline:
+        candidate = service.get_snapshot("conversation-test", str(tmp_path))
+        if candidate["turns"][-1]["status"] == "complete":
+            final_snapshot = candidate
+            break
+        time.sleep(0.02)
+
+    assert final_snapshot is not None
+    assert [turn["role"] for turn in final_snapshot["turns"]] == ["user", "assistant"]
+    assert final_snapshot["turns"][1]["content"] == "ACK"
+    assert final_snapshot["turns"][1]["status"] == "complete"
+    assert [event["kind"] for event in final_snapshot["turn_events"]] == [
         "reasoning_summary",
         "tool_call_started",
         "assistant_completed",
-    ]
-    assert partial_snapshots
-    assert [turn["role"] for turn in partial_snapshots[-1]["turns"]] == ["user", "assistant"]
-    assert partial_snapshots[-1]["turns"][1]["content"] == ""
-    assert partial_snapshots[-1]["turns"][1]["status"] == "streaming"
-    assert [event["kind"] for event in partial_snapshots[-1]["turn_events"]] == [
-        "reasoning_summary",
-        "tool_call_started",
     ]
 
 

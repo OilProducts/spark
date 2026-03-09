@@ -505,10 +505,46 @@ const sanitizeStreamingTurnUpsert = (
     if (incomingTurn.status !== 'pending' && incomingTurn.status !== 'streaming') {
         return incomingTurn
     }
+    if (incomingTurn.content.trim().length > 0) {
+        return incomingTurn
+    }
     return {
         ...incomingTurn,
         content: currentTurn?.content ?? '',
     }
+}
+
+const scoreConversationSnapshotFreshness = (snapshot: ConversationSnapshotResponse): number => {
+    const turnStatusScore = snapshot.turns.reduce((score, turn) => {
+        if (turn.status === 'failed') {
+            return score + 4
+        }
+        if (turn.status === 'complete') {
+            return score + 3
+        }
+        if (turn.status === 'streaming') {
+            return score + 2
+        }
+        return score + 1
+    }, 0)
+    const contentScore = snapshot.turns.reduce((score, turn) => score + turn.content.length, 0)
+    return (
+        snapshot.turns.length * 100000
+        + snapshot.turn_events.length * 1000
+        + turnStatusScore * 100
+        + contentScore
+    )
+}
+
+const compareConversationSnapshotFreshness = (
+    left: ConversationSnapshotResponse,
+    right: ConversationSnapshotResponse,
+): number => {
+    const updatedAtCompare = left.updated_at.localeCompare(right.updated_at)
+    if (updatedAtCompare !== 0) {
+        return updatedAtCompare
+    }
+    return scoreConversationSnapshotFreshness(left) - scoreConversationSnapshotFreshness(right)
 }
 
 const buildAssistantTimelineEntries = (
@@ -986,6 +1022,24 @@ export function HomePanel() {
             forceWorkspaceSync?: boolean
         },
     ) => {
+        let shouldApplySnapshot = true
+        setProjectConversationSnapshots((current) => {
+            const existingSnapshot = current[snapshot.conversation_id]
+            if (existingSnapshot && compareConversationSnapshotFreshness(existingSnapshot, snapshot) >= 0) {
+                shouldApplySnapshot = false
+                return current
+            }
+            return current
+        })
+        if (!shouldApplySnapshot) {
+            debugProjectChat("skip stale conversation snapshot", {
+                source,
+                projectPath,
+                conversationId: snapshot.conversation_id,
+                snapshotUpdatedAt: snapshot.updated_at,
+            })
+            return
+        }
         const latestProjectScope = useStore.getState().projectScopedWorkspaces[projectPath]
         const shouldSyncActiveWorkspace = options?.forceWorkspaceSync === true
             || latestProjectScope?.conversationId === snapshot.conversation_id
