@@ -28,9 +28,7 @@ from attractor.storage import (
 CHAT_RUNTIME_THREAD_KEY = "_attractor.runtime.thread_id"
 CHAT_SESSION_VERSION = 2
 RUNTIME_REPO_ROOT = Path(__file__).resolve().parents[2]
-FINAL_ANSWER_IDLE_GRACE_SECONDS = 1.0
-LIVE_ASSISTANT_IDLE_COMPLETION_GRACE_SECONDS = 2.5
-CHAT_TURN_IDLE_TIMEOUT_SECONDS = 15.0
+CHAT_TURN_IDLE_TIMEOUT_SECONDS = 60.0
 APP_SERVER_REQUEST_TIMEOUT_SECONDS = 15.0
 LOGGER = logging.getLogger(__name__)
 
@@ -1294,11 +1292,9 @@ class CodexAppServerChatSession:
             agent_chunks: list[str] = []
             final_agent_message: Optional[str] = None
             last_error: Optional[str] = None
-            saw_final_agent_message = False
             saw_item_agent_message_delta = False
             reasoning_summary_buffer = ""
             last_activity_at = time.monotonic()
-            last_agent_activity_at: float | None = None
             spec_proposal_payloads: list[dict[str, Any]] = []
             tool_calls_by_id: dict[str, ToolCallRecord] = {}
             params: dict[str, Any] = {
@@ -1320,31 +1316,6 @@ class CodexAppServerChatSession:
                     if idle_for >= CHAT_TURN_IDLE_TIMEOUT_SECONDS:
                         self._close()
                         raise RuntimeError("codex app-server turn timed out waiting for activity")
-                    if saw_final_agent_message and "".join(agent_chunks).strip():
-                        if idle_for >= FINAL_ANSWER_IDLE_GRACE_SECONDS:
-                            _log_project_chat_debug(
-                                "completed turn after final-answer quiet period",
-                                thread_id=self._thread_id,
-                                idle_for=idle_for,
-                                assistant_message="".join(agent_chunks).strip(),
-                            )
-                            break
-                    if (
-                        not saw_final_agent_message
-                        and last_agent_activity_at is not None
-                        and "".join(agent_chunks).strip()
-                        and not any(tool_call.status == "running" for tool_call in tool_calls_by_id.values())
-                    ):
-                        agent_idle_for = time.monotonic() - last_agent_activity_at
-                        if agent_idle_for >= LIVE_ASSISTANT_IDLE_COMPLETION_GRACE_SECONDS:
-                            _log_project_chat_debug(
-                                "completed turn after live-assistant quiet period",
-                                thread_id=self._thread_id,
-                                idle_for=idle_for,
-                                agent_idle_for=agent_idle_for,
-                                assistant_message="".join(agent_chunks).strip(),
-                            )
-                            break
                     if self._proc is not None and self._proc.poll() is not None:
                         self._close()
                         raise RuntimeError("codex app-server exited before turn completion")
@@ -1506,11 +1477,6 @@ class CodexAppServerChatSession:
                     if isinstance(item, dict):
                         item_id = _as_non_empty_string(item.get("id"))
                         tool_call = _tool_call_from_item(item)
-                        item_type = str(item.get("type") or "").strip().lower()
-                        item_phase = str(item.get("phase") or "").strip().lower()
-                        if item_type == "agentmessage" and item_phase == "final_answer":
-                            saw_final_agent_message = True
-                            last_agent_activity_at = time.monotonic()
                         if tool_call is not None:
                             if item_id:
                                 tool_calls_by_id[item_id] = tool_call
@@ -1528,7 +1494,6 @@ class CodexAppServerChatSession:
                     if delta:
                         saw_item_agent_message_delta = True
                         agent_chunks.append(str(delta))
-                        last_agent_activity_at = time.monotonic()
                         self._emit_live_event(
                             on_event,
                             ChatTurnLiveEvent(kind="assistant_delta", content_delta=str(delta)),
@@ -1542,7 +1507,6 @@ class CodexAppServerChatSession:
                             on_event,
                             ChatTurnLiveEvent(kind="reasoning_summary", content_delta=str(delta)),
                         )
-                    last_agent_activity_at = time.monotonic()
                     continue
                 if method == "item/reasoning/summaryPartAdded":
                     part = params.get("part")
@@ -1554,7 +1518,6 @@ class CodexAppServerChatSession:
                                 summary_text = str(value)
                                 break
                     if summary_text:
-                        last_agent_activity_at = time.monotonic()
                         if reasoning_summary_buffer and summary_text.startswith(reasoning_summary_buffer):
                             remaining_summary_text = summary_text[len(reasoning_summary_buffer):]
                             reasoning_summary_buffer = ""
@@ -1576,7 +1539,6 @@ class CodexAppServerChatSession:
                     delta = (params.get("msg") or {}).get("delta") or ""
                     if delta:
                         agent_chunks.append(str(delta))
-                        last_agent_activity_at = time.monotonic()
                         self._emit_live_event(
                             on_event,
                             ChatTurnLiveEvent(kind="assistant_delta", content_delta=str(delta)),
@@ -1584,12 +1546,8 @@ class CodexAppServerChatSession:
                     continue
                 if method == "codex/event/agent_message":
                     msg = (params.get("msg") or {}).get("message")
-                    phase = str((params.get("msg") or {}).get("phase") or "").strip().lower()
                     if msg:
                         final_agent_message = str(msg)
-                        last_agent_activity_at = time.monotonic()
-                    if phase == "final_answer":
-                        saw_final_agent_message = True
                     continue
                 if method == "item/commandExecution/outputDelta":
                     delta = _as_non_empty_string(params.get("delta"))
@@ -1624,7 +1582,7 @@ class CodexAppServerChatSession:
                     last_agent_message = _as_non_empty_string(msg.get("last_agent_message"))
                     if last_agent_message:
                         final_agent_message = last_agent_message
-                    break
+                    continue
             for tool_call in tool_calls_by_id.values():
                 if tool_call.status == "running":
                     tool_call.status = "failed" if last_error else "completed"

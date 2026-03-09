@@ -1216,8 +1216,6 @@ class LocalCodexAppServerBackend(CodergenBackend):
                     turn_error = err.get("message") or turn_error
                 return
             if method == "codex/event/task_complete":
-                if not turn_status:
-                    turn_status = "completed"
                 return
 
         def wait_for_response(target_id: int) -> Optional[dict]:
@@ -1261,7 +1259,7 @@ class LocalCodexAppServerBackend(CodergenBackend):
                     continue
                 if "method" in message:
                     handle_notification(message)
-                    if message.get("method") in {"turn/completed", "codex/event/task_complete"}:
+                    if message.get("method") == "turn/completed":
                         return True
 
         try:

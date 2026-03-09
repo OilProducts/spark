@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import attractor.api.server as server
 import attractor.api.project_chat as project_chat
 from attractor.prompt_templates import PROMPTS_FILE_NAME
@@ -331,7 +333,7 @@ def test_chat_session_starts_new_durable_thread_when_resume_fails(monkeypatch) -
     assert updated_thread_ids == ["thread-fresh"]
 
 
-def test_chat_session_turn_completes_on_task_complete_event(monkeypatch) -> None:
+def test_chat_session_turn_uses_task_complete_message_but_waits_for_turn_completed(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
         [
@@ -348,6 +350,17 @@ def test_chat_session_turn_completes_on_task_complete_event(monkeypatch) -> None
                         "msg": {
                             "type": "task_complete",
                             "last_agent_message": '{"assistant_message":"Ack"}',
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "completed",
                         }
                     },
                 }
@@ -411,7 +424,17 @@ def test_chat_session_handles_dynamic_tool_call(monkeypatch) -> None:
                     },
                 }
             ),
-            None,
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "completed",
+                        }
+                    },
+                }
+            ),
         ]
     )
     responses: list[dict[str, object]] = []
@@ -493,7 +516,17 @@ def test_chat_session_surfaces_reasoning_summary_progress(monkeypatch) -> None:
                     },
                 }
             ),
-            None,
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "completed",
+                        }
+                    },
+                }
+            ),
         ]
     )
     progress_updates: list[project_chat.ChatTurnLiveEvent] = []
@@ -551,7 +584,17 @@ def test_chat_session_surfaces_reasoning_summary_text_deltas(monkeypatch) -> Non
                     },
                 }
             ),
-            None,
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "completed",
+                        }
+                    },
+                }
+            ),
         ]
     )
     progress_updates: list[project_chat.ChatTurnLiveEvent] = []
@@ -620,7 +663,7 @@ def test_chat_session_initialize_enables_experimental_api(monkeypatch) -> None:
     ]
 
 
-def test_chat_session_turn_completes_after_final_answer_quiet_period(monkeypatch) -> None:
+def test_chat_session_turn_completes_on_turn_completed_after_final_answer(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
         [
@@ -643,11 +686,19 @@ def test_chat_session_turn_completes_after_final_answer_quiet_period(monkeypatch
                     },
                 }
             ),
-            None,
-            None,
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "completed",
+                        }
+                    },
+                }
+            ),
         ]
     )
-    monotonic_values = iter([0.0, 0.0, 0.0, 0.0, 0.5, 1.5, 1.5])
 
     monkeypatch.setattr(session, "_ensure_process", lambda: None)
 
@@ -655,7 +706,6 @@ def test_chat_session_turn_completes_after_final_answer_quiet_period(monkeypatch
         session._thread_id = "thread-123"
         session._thread_initialized = True
 
-    monkeypatch.setattr(project_chat.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
     monkeypatch.setattr(
         session,
@@ -669,7 +719,7 @@ def test_chat_session_turn_completes_after_final_answer_quiet_period(monkeypatch
     assert result.assistant_message == '{"assistant_message":"Ack"}'
 
 
-def test_chat_session_turn_completes_after_live_assistant_quiet_period(monkeypatch) -> None:
+def test_chat_session_turn_times_out_after_live_assistant_quiet_period_without_terminal_event(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
         [
@@ -686,10 +736,9 @@ def test_chat_session_turn_completes_after_live_assistant_quiet_period(monkeypat
                 }
             ),
             None,
-            None,
         ]
     )
-    monotonic_values = iter([0.0, 0.0, 0.4, 0.4, 0.8, 3.3, 3.3, 3.3])
+    monotonic_values = iter([0.0, 0.1, 0.2, 1.3])
 
     monkeypatch.setattr(session, "_ensure_process", lambda: None)
 
@@ -697,6 +746,7 @@ def test_chat_session_turn_completes_after_live_assistant_quiet_period(monkeypat
         session._thread_id = "thread-123"
         session._thread_initialized = True
 
+    monkeypatch.setattr(project_chat, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(project_chat.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
     monkeypatch.setattr(
@@ -706,9 +756,8 @@ def test_chat_session_turn_completes_after_live_assistant_quiet_period(monkeypat
     )
     monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
 
-    result = session.turn("hello", None)
-
-    assert result.assistant_message == '{"assistant_message":"Ack"}'
+    with pytest.raises(RuntimeError, match="timed out waiting for activity"):
+        session.turn("hello", None)
 
 
 def test_send_turn_retries_when_app_server_request_times_out_before_progress(tmp_path: Path, monkeypatch) -> None:
@@ -865,6 +914,17 @@ def test_chat_session_ignores_duplicate_codex_agent_delta_channel(monkeypatch) -
                         "msg": {
                             "type": "task_complete",
                             "last_agent_message": '{"assistant_message":"Ack"}',
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "completed",
                         }
                     },
                 }
