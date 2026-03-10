@@ -1984,6 +1984,151 @@ describe('ProjectsPanel', () => {
     expect(within(history).getAllByText('Planning from the project context. and I am checking the repository first.')).toHaveLength(1)
   })
 
+  it('renders persisted spec proposals inline from turn events instead of requiring proposal turns', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/projects/conversations')) {
+          return new Response(JSON.stringify([
+            {
+              conversation_id: 'conversation-inline-proposal',
+              project_path: '/tmp/chat-project',
+              title: 'Inline proposal thread',
+              created_at: '2026-03-09T21:00:00Z',
+              updated_at: '2026-03-09T21:00:03Z',
+              last_message_preview: 'I drafted the proposal for review.',
+            },
+          ]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/conversations/conversation-inline-proposal') && !url.includes('/turns')) {
+          return new Response(JSON.stringify({
+            conversation_id: 'conversation-inline-proposal',
+            project_path: '/tmp/chat-project',
+            title: 'Inline proposal thread',
+            created_at: '2026-03-09T21:00:00Z',
+            updated_at: '2026-03-09T21:00:03Z',
+            turns: [
+              {
+                id: 'turn-user-inline',
+                role: 'user',
+                content: 'Draft the proposal.',
+                timestamp: '2026-03-09T21:00:00Z',
+                status: 'complete',
+                kind: 'message',
+                artifact_id: null,
+              },
+              {
+                id: 'turn-assistant-inline',
+                role: 'assistant',
+                content: 'I drafted the proposal for review.',
+                timestamp: '2026-03-09T21:00:01Z',
+                status: 'complete',
+                kind: 'message',
+                artifact_id: null,
+              },
+            ],
+            turn_events: [
+              {
+                id: 'event-tool-inline',
+                turn_id: 'turn-assistant-inline',
+                sequence: 1,
+                timestamp: '2026-03-09T21:00:01Z',
+                kind: 'tool_call_completed',
+                tool_call_id: 'tool-inline',
+                tool_call: {
+                  id: 'tool-inline',
+                  kind: 'dynamic_tool',
+                  status: 'completed',
+                  title: 'Draft spec proposal',
+                  output: 'Drafted spec proposal: Add proposal smoke test.',
+                  file_paths: [],
+                },
+              },
+              {
+                id: 'event-proposal-inline',
+                turn_id: 'turn-assistant-inline',
+                sequence: 2,
+                timestamp: '2026-03-09T21:00:02Z',
+                kind: 'spec_edit_proposal_created',
+                artifact_id: 'proposal-inline',
+                message: 'Drafted spec edit proposal proposal-inline.',
+              },
+              {
+                id: 'event-assistant-inline',
+                turn_id: 'turn-assistant-inline',
+                sequence: 3,
+                timestamp: '2026-03-09T21:00:03Z',
+                kind: 'assistant_completed',
+                message: 'Assistant turn completed.',
+              },
+            ],
+            event_log: [
+              {
+                message: 'Drafted spec edit proposal proposal-inline.',
+                timestamp: '2026-03-09T21:00:02Z',
+              },
+            ],
+            spec_edit_proposals: [
+              {
+                id: 'proposal-inline',
+                created_at: '2026-03-09T21:00:02Z',
+                summary: 'Add proposal smoke test.',
+                status: 'pending',
+                changes: [
+                  {
+                    path: 'docs/spec-proposals/README.md',
+                    before: 'No proposal smoke test guidance exists.',
+                    after: 'Document the placeholder proposal smoke test flow.',
+                  },
+                ],
+                canonical_spec_edit_id: null,
+                approved_at: null,
+                git_branch: null,
+                git_commit: null,
+              },
+            ],
+            execution_cards: [],
+            execution_workflow: {
+              run_id: null,
+              status: 'idle',
+              error: null,
+              flow_source: null,
+            },
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response('Not found', { status: 404 })
+      }),
+    )
+
+    useStore.getState().registerProject('/tmp/chat-project')
+    useStore.getState().setActiveProjectPath('/tmp/chat-project')
+
+    render(<ProjectsPanel />)
+
+    const history = await screen.findByTestId('project-ai-conversation-history-list')
+    await waitFor(() => {
+      const text = history.textContent ?? ''
+      const proposalIndex = text.indexOf('Add proposal smoke test.')
+      const replyIndex = text.indexOf('I drafted the proposal for review.')
+      expect(proposalIndex).toBeGreaterThan(-1)
+      expect(replyIndex).toBeGreaterThan(-1)
+      expect(proposalIndex).toBeLessThan(replyIndex)
+    })
+  })
+
   it('keeps the composer cleared when sending a turn fails', async () => {
     const user = userEvent.setup()
     vi.stubGlobal(

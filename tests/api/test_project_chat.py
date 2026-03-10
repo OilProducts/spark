@@ -915,10 +915,115 @@ def test_send_turn_persists_spec_proposal_from_dynamic_tool_call(tmp_path: Path,
         None,
     )
 
-    assert snapshot["turns"][-1]["kind"] == "spec_edit_proposal"
-    assert snapshot["turns"][-2]["role"] == "assistant"
-    assert snapshot["turns"][-2]["content"] == "I can tighten the top bar and relocate the overflow metadata."
+    assert snapshot["turns"][-1]["role"] == "assistant"
+    assert snapshot["turns"][-1]["content"] == "I can tighten the top bar and relocate the overflow metadata."
     assert snapshot["spec_edit_proposals"][0]["summary"] == "Reduce top-bar chrome and keep only project context."
+    assert any(event["kind"] == "spec_edit_proposal_created" for event in snapshot["turn_events"])
+
+
+def test_run_prepared_turn_persists_spec_proposal_before_turn_completion(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    prepared, _ = service._prepare_turn("conversation-test", str(tmp_path), "Use the proposal tool.", None)
+
+    def fake_execute_turn_with_retry(
+        prepared_turn: project_chat.PreparedChatTurn,
+        persist_live_event,
+        progress_callback=None,
+    ) -> project_chat.ChatTurnResult:
+        proposal_payload = {
+            "summary": "Document the proposal workflow smoke test.",
+            "changes": [
+                {
+                    "path": "docs/spec-proposals/README.md",
+                    "before": "There is no documented proposal smoke test.",
+                    "after": "Add a note that proposal smoke tests may draft a placeholder spec proposal.",
+                }
+            ],
+        }
+        persist_live_event(
+            project_chat.ChatTurnLiveEvent(
+                kind="tool_call_started",
+                tool_call_id="call-1",
+                tool_call=project_chat.ToolCallRecord(
+                    id="call-1",
+                    kind="dynamic_tool",
+                    status="running",
+                    title="draft_spec_proposal",
+                ),
+            )
+        )
+        persist_live_event(
+            project_chat.ChatTurnLiveEvent(
+                kind="tool_call_completed",
+                tool_call_id="call-1",
+                tool_call=project_chat.ToolCallRecord(
+                    id="call-1",
+                    kind="dynamic_tool",
+                    status="completed",
+                    title="Draft spec proposal",
+                    output="Document the proposal workflow smoke test.",
+                ),
+                spec_proposal_payload=proposal_payload,
+            )
+        )
+        raise RuntimeError("codex app-server turn timed out waiting for activity")
+
+    monkeypatch.setattr(service, "_execute_turn_with_retry", fake_execute_turn_with_retry)
+
+    with pytest.raises(RuntimeError, match="timed out waiting for activity"):
+        service._run_prepared_turn(prepared)
+
+    snapshot = service.get_snapshot("conversation-test", str(tmp_path))
+
+    assert snapshot["spec_edit_proposals"][0]["summary"] == "Document the proposal workflow smoke test."
+    assert any(event["kind"] == "spec_edit_proposal_created" for event in snapshot["turn_events"])
+
+
+def test_run_prepared_turn_does_not_duplicate_live_persisted_spec_proposal(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    prepared, _ = service._prepare_turn("conversation-test", str(tmp_path), "Use the proposal tool.", None)
+
+    proposal_payload = {
+        "summary": "Reduce header chrome.",
+        "changes": [
+            {
+                "path": "specs/ui-spec.md",
+                "before": "Header contains extra metadata.",
+                "after": "Header contains only navigation and active project context.",
+            }
+        ],
+    }
+
+    def fake_execute_turn_with_retry(
+        prepared_turn: project_chat.PreparedChatTurn,
+        persist_live_event,
+        progress_callback=None,
+    ) -> project_chat.ChatTurnResult:
+        persist_live_event(
+            project_chat.ChatTurnLiveEvent(
+                kind="tool_call_completed",
+                tool_call_id="call-1",
+                tool_call=project_chat.ToolCallRecord(
+                    id="call-1",
+                    kind="dynamic_tool",
+                    status="completed",
+                    title="Draft spec proposal",
+                    output="Reduce header chrome.",
+                ),
+                spec_proposal_payload=proposal_payload,
+            )
+        )
+        return project_chat.ChatTurnResult(
+            assistant_message="I drafted the spec proposal for review.",
+            spec_proposal_payloads=[proposal_payload],
+        )
+
+    monkeypatch.setattr(service, "_execute_turn_with_retry", fake_execute_turn_with_retry)
+
+    snapshot = service._run_prepared_turn(prepared)
+
+    assert len(snapshot["spec_edit_proposals"]) == 1
+    assert len([event for event in snapshot["turn_events"] if event["kind"] == "spec_edit_proposal_created"]) == 1
 
 
 def test_chat_session_ignores_duplicate_codex_agent_delta_channel(monkeypatch) -> None:

@@ -125,10 +125,12 @@ export interface ConversationTurnEventResponse {
         | 'tool_call_updated'
         | 'tool_call_completed'
         | 'tool_call_failed'
+        | 'spec_edit_proposal_created'
         | 'retry_started'
     content_delta?: string | null
     message?: string | null
     tool_call_id?: string | null
+    artifact_id?: string | null
     tool_call?: {
         kind: 'command_execution' | 'file_change' | 'dynamic_tool'
         status: 'running' | 'completed' | 'failed'
@@ -710,6 +712,7 @@ function parseConversationTurnEventResponse(value: unknown, endpoint: string): C
         || record.kind === 'tool_call_updated'
         || record.kind === 'tool_call_completed'
         || record.kind === 'tool_call_failed'
+        || record.kind === 'spec_edit_proposal_created'
         || record.kind === 'retry_started'
         ? record.kind
         : null
@@ -726,6 +729,7 @@ function parseConversationTurnEventResponse(value: unknown, endpoint: string): C
         content_delta: asOptionalNullableString(record.content_delta),
         message: asOptionalNullableString(record.message),
         tool_call_id: asOptionalNullableString(record.tool_call_id),
+        artifact_id: asOptionalNullableString(record.artifact_id),
         tool_call: toolCall && typeof toolCall.title === 'string' && typeof toolCall.id === 'string'
             ? {
                 id: toolCall.id,

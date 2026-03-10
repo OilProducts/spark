@@ -740,6 +740,17 @@ const buildAssistantTimelineEntries = (
             resetAssistantSegmentPointers()
             return
         }
+        if (event.kind === "spec_edit_proposal_created" && event.artifact_id) {
+            entries.push({
+                id: event.id,
+                kind: "spec_edit_proposal",
+                role: "system",
+                artifactId: event.artifact_id,
+                timestamp: event.timestamp,
+            })
+            resetAssistantSegmentPointers()
+            return
+        }
         if (event.kind === "assistant_completed") {
             if (!accumulatedAssistantContent && turn.content.trim()) {
                 maybeInsertFinalMessageSeparator(event.timestamp || turn.timestamp)

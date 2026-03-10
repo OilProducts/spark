@@ -1281,13 +1281,16 @@ describe('Frontend contract behavior', () => {
               timestamp: '2026-03-06T15:00:10Z',
               kind: 'message',
             },
+          ],
+          turn_events: [
             {
-              id: 'turn-spec-card',
-              role: 'system',
-              content: '',
+              id: 'event-proposal-contract',
+              turn_id: 'turn-assistant',
+              sequence: 1,
               timestamp: '2026-03-06T15:00:11Z',
-              kind: 'spec_edit_proposal',
+              kind: 'spec_edit_proposal_created',
               artifact_id: 'proposal-contract',
+              message: 'Drafted spec edit proposal proposal-contract.',
             },
           ],
           event_log: [

@@ -500,6 +500,7 @@ class ChatTurnLiveEvent:
     message: Optional[str] = None
     tool_call_id: Optional[str] = None
     tool_call: Optional[ToolCallRecord] = None
+    spec_proposal_payload: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -536,6 +537,7 @@ class ConversationTurnEvent:
     message: Optional[str] = None
     tool_call_id: Optional[str] = None
     tool_call: Optional[ToolCallRecord] = None
+    artifact_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -553,6 +555,8 @@ class ConversationTurnEvent:
             payload["tool_call_id"] = self.tool_call_id
         if self.tool_call is not None:
             payload["tool_call"] = self.tool_call.to_dict()
+        if self.artifact_id is not None:
+            payload["artifact_id"] = self.artifact_id
         return payload
 
     @classmethod
@@ -569,6 +573,7 @@ class ConversationTurnEvent:
             tool_call=ToolCallRecord.from_dict(payload.get("tool_call"))
             if isinstance(payload.get("tool_call"), dict)
             else None,
+            artifact_id=str(payload.get("artifact_id")) if payload.get("artifact_id") is not None else None,
         )
 
 
@@ -1472,6 +1477,7 @@ class CodexAppServerChatSession:
                                     kind="tool_call_completed",
                                     tool_call_id=call_id,
                                     tool_call=ToolCallRecord.from_dict(tool_result.tool_call.to_dict()),
+                                    spec_proposal_payload=tool_result.spec_proposal_payload,
                                 ),
                             )
                             self._send_response(message.get("id"), tool_result.response)
@@ -2015,6 +2021,67 @@ class ProjectChatService:
     def _append_event(self, state: ConversationState, message: str) -> None:
         state.event_log.append(WorkflowEvent(message=message, timestamp=_iso_now()))
 
+    def _persist_spec_edit_proposal(
+        self,
+        state: ConversationState,
+        parent_turn: ConversationTurn,
+        spec_proposal_payload: dict[str, Any],
+        *,
+        sequence: Optional[int] = None,
+        assistant_message_fallback: str = "",
+    ) -> Optional[ConversationTurnEvent]:
+        raw_changes = spec_proposal_payload.get("changes")
+        changes = [
+            SpecEditProposalChange.from_dict(change)
+            for change in raw_changes
+            if isinstance(change, dict)
+        ] if isinstance(raw_changes, list) else []
+        if not changes:
+            return None
+
+        summary = str(spec_proposal_payload.get("summary", "")).strip() or assistant_message_fallback
+        if not summary:
+            summary = "Draft spec proposal"
+
+        proposals_by_id = {proposal.id: proposal for proposal in state.spec_edit_proposals}
+        for event in state.turn_events:
+            if event.turn_id != parent_turn.id or event.kind != "spec_edit_proposal_created" or not event.artifact_id:
+                continue
+            existing_proposal = proposals_by_id.get(event.artifact_id)
+            if existing_proposal is None:
+                continue
+            if existing_proposal.summary != summary:
+                continue
+            if len(existing_proposal.changes) != len(changes):
+                continue
+            if all(
+                existing.path == candidate.path
+                and existing.before == candidate.before
+                and existing.after == candidate.after
+                for existing, candidate in zip(existing_proposal.changes, changes)
+            ):
+                return None
+
+        proposal = SpecEditProposal(
+            id=f"proposal-{uuid.uuid4().hex[:12]}",
+            created_at=_iso_now(),
+            summary=summary,
+            changes=changes,
+            status="pending",
+        )
+        state.spec_edit_proposals.append(proposal)
+        proposal_event = self._append_turn_event(
+            state,
+            parent_turn.id,
+            "spec_edit_proposal_created",
+            sequence=sequence,
+            artifact_id=proposal.id,
+            message=f"Drafted spec edit proposal {proposal.id}.",
+            timestamp=proposal.created_at,
+        )
+        self._append_event(state, f"Drafted spec edit proposal {proposal.id}.")
+        return proposal_event
+
     def _next_turn_event_sequence(self, state: ConversationState, turn_id: str) -> int:
         max_sequence = 0
         for event in state.turn_events:
@@ -2033,6 +2100,7 @@ class ProjectChatService:
         message: Optional[str] = None,
         tool_call_id: Optional[str] = None,
         tool_call: Optional[ToolCallRecord] = None,
+        artifact_id: Optional[str] = None,
         timestamp: Optional[str] = None,
     ) -> ConversationTurnEvent:
         event = ConversationTurnEvent(
@@ -2045,6 +2113,7 @@ class ProjectChatService:
             message=message,
             tool_call_id=tool_call_id,
             tool_call=ToolCallRecord.from_dict(tool_call.to_dict()) if tool_call is not None else None,
+            artifact_id=artifact_id,
         )
         state.turn_events.append(event)
         return event
@@ -2389,6 +2458,7 @@ class ProjectChatService:
                     self._upsert_turn(current_state, current_assistant_turn)
 
                 emitted_payloads: list[dict[str, Any]] = []
+                should_publish_snapshot = False
                 if current_assistant_turn.status == "pending" and event.kind != "assistant_completed":
                     current_assistant_turn.status = "streaming"
                     self._upsert_turn(current_state, current_assistant_turn)
@@ -2442,11 +2512,23 @@ class ProjectChatService:
                         tool_call=event.tool_call,
                     )
                     emitted_payloads.append(self._build_turn_event_payload(current_state, tool_event))
+                    if event.kind == "tool_call_completed" and event.spec_proposal_payload is not None:
+                        proposal_event = self._persist_spec_edit_proposal(
+                            current_state,
+                            current_assistant_turn,
+                            event.spec_proposal_payload,
+                            sequence=allocate_event_sequence(),
+                            assistant_message_fallback=current_assistant_turn.content,
+                        )
+                        if proposal_event is not None:
+                            emitted_payloads.append(self._build_turn_event_payload(current_state, proposal_event))
+                            should_publish_snapshot = True
                 else:
                     return
 
                 self._touch_conversation_state(current_state)
                 self._write_state(current_state)
+                snapshot_payload = current_state.to_dict() if should_publish_snapshot else None
                 _log_project_chat_debug(
                     "persisted progress events",
                     conversation_id=prepared.conversation_id,
@@ -2455,6 +2537,8 @@ class ProjectChatService:
                 )
             for payload in emitted_payloads:
                 self._publish_progress_payload(progress_callback, payload)
+            if should_publish_snapshot and snapshot_payload is not None:
+                self._publish_progress_payload(progress_callback, {"type": "conversation_snapshot", "state": snapshot_payload})
 
         try:
             turn_result = self._execute_turn_with_retry(prepared, persist_live_event, progress_callback)
@@ -2478,6 +2562,7 @@ class ProjectChatService:
                     parent_turn_id=prepared.user_turn.id,
                 )
             emitted_payloads: list[dict[str, Any]] = []
+            should_publish_snapshot = False
             assistant_completion_recorded = self._assistant_turn_has_completed_message(state, current_assistant_turn.id)
             turn_changed = (
                 current_assistant_turn.content != assistant_message
@@ -2500,36 +2585,19 @@ class ProjectChatService:
                 )
                 emitted_payloads.append(self._build_turn_event_payload(state, assistant_completed_event))
             for spec_proposal_payload in turn_result.spec_proposal_payloads:
-                raw_changes = spec_proposal_payload.get("changes")
-                changes = [
-                    SpecEditProposalChange.from_dict(change)
-                    for change in raw_changes
-                    if isinstance(change, dict)
-                ] if isinstance(raw_changes, list) else []
-                if changes:
-                    proposal = SpecEditProposal(
-                        id=f"proposal-{uuid.uuid4().hex[:12]}",
-                        created_at=_iso_now(),
-                        summary=str(spec_proposal_payload.get("summary", "")).strip() or assistant_message,
-                        changes=changes,
-                        status="pending",
-                    )
-                    state.spec_edit_proposals.append(proposal)
-                    proposal_turn = ConversationTurn(
-                        id=f"turn-{uuid.uuid4().hex}",
-                        role="system",
-                        content="",
-                        timestamp=proposal.created_at,
-                        status="complete",
-                        kind="spec_edit_proposal",
-                        artifact_id=proposal.id,
-                        parent_turn_id=current_assistant_turn.id,
-                    )
-                    state.turns.append(proposal_turn)
-                    self._append_event(state, f"Drafted spec edit proposal {proposal.id}.")
-                    emitted_payloads.append(self._build_turn_upsert_payload(state, proposal_turn))
+                proposal_event = self._persist_spec_edit_proposal(
+                    state,
+                    current_assistant_turn,
+                    spec_proposal_payload,
+                    sequence=allocate_event_sequence(),
+                    assistant_message_fallback=assistant_message,
+                )
+                if proposal_event is not None:
+                    emitted_payloads.append(self._build_turn_event_payload(state, proposal_event))
+                    should_publish_snapshot = True
             self._touch_conversation_state(state)
             self._write_state(state)
+            snapshot_payload = state.to_dict() if should_publish_snapshot else None
             _log_project_chat_debug(
                 "persisted final assistant turn",
                 conversation_id=prepared.conversation_id,
@@ -2539,6 +2607,8 @@ class ProjectChatService:
             snapshot = state.to_dict()
         for payload in emitted_payloads:
             self._publish_progress_payload(progress_callback, payload)
+        if should_publish_snapshot and snapshot_payload is not None:
+            self._publish_progress_payload(progress_callback, {"type": "conversation_snapshot", "state": snapshot_payload})
         return snapshot
 
     def _run_prepared_turn_background(

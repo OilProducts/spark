@@ -171,15 +171,6 @@ describe('Project-scoped workflow behavior', () => {
                 kind: 'message',
                 artifact_id: null,
               },
-              {
-                id: `turn-proposal-${conversationId}`,
-                role: 'system',
-                content: '',
-                timestamp: '2026-03-06T15:00:11Z',
-                status: 'complete',
-                kind: 'spec_edit_proposal',
-                artifact_id: proposalId,
-              },
             ],
             turn_events: [
               {
@@ -198,6 +189,15 @@ describe('Project-scoped workflow behavior', () => {
                   output: ' M frontend/src/components/ProjectsPanel.tsx',
                   file_paths: [],
                 },
+              },
+              {
+                id: `event-proposal-${conversationId}`,
+                turn_id: `turn-assistant-${conversationId}`,
+                sequence: 2,
+                timestamp: '2026-03-06T15:00:11Z',
+                kind: 'spec_edit_proposal_created',
+                artifact_id: proposalId,
+                message: `Drafted spec edit proposal ${proposalId}.`,
               },
             ],
             event_log: [
@@ -426,12 +426,23 @@ describe('Project-scoped workflow behavior', () => {
           artifact_id: null,
         },
         {
-          id: 'turn-spec-persisted',
-          role: 'system',
+          id: 'turn-assistant-persisted',
+          role: 'assistant',
           content: '',
           timestamp: '2026-03-05T14:02:00Z',
-          kind: 'spec_edit_proposal',
+          kind: 'message',
+          artifact_id: null,
+        },
+      ],
+      turn_events: [
+        {
+          id: 'event-spec-persisted',
+          turn_id: 'turn-assistant-persisted',
+          sequence: 1,
+          timestamp: '2026-03-05T14:02:00Z',
+          kind: 'spec_edit_proposal_created',
           artifact_id: 'proposal-persisted-spec-project',
+          message: 'Drafted spec edit proposal proposal-persisted-spec-project.',
         },
       ],
       spec_edit_proposals: [
