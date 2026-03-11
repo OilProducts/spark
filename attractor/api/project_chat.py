@@ -1214,26 +1214,51 @@ class CodexAppServerChatSession:
         return [
             {
                 "name": "draft_spec_proposal",
-                "title": "Draft spec proposal",
+                "title": "Draft spec edit proposal",
                 "description": (
-                    "Draft a structured spec proposal when the conversation has converged on a concrete "
-                    "user-story or specification change."
+                    "Capture a concrete spec edit proposal for an existing spec file. Prefer the smallest "
+                    "grounded before/after spans that express the agreed change. Do not replace the whole "
+                    "file unless the entire file is intentionally changing, and do not invent speculative "
+                    "new features without user direction."
                 ),
                 "inputSchema": {
                     "type": "object",
                     "required": ["summary", "changes"],
                     "properties": {
-                        "summary": {"type": "string"},
-                        "rationale": {"type": "string"},
+                        "summary": {
+                            "type": "string",
+                            "description": "Short description of the exact spec edit being proposed.",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": (
+                                "Why this edit is needed, grounded in the user's request or observed repository context."
+                            ),
+                        },
                         "changes": {
                             "type": "array",
+                            "description": "One or more minimal-span edits to existing spec text.",
                             "items": {
                                 "type": "object",
                                 "required": ["path", "before", "after"],
                                 "properties": {
-                                    "path": {"type": "string"},
-                                    "before": {"type": "string"},
-                                    "after": {"type": "string"},
+                                    "path": {
+                                        "type": "string",
+                                        "description": "Absolute or project-relative path of the spec file being edited.",
+                                    },
+                                    "before": {
+                                        "type": "string",
+                                        "description": (
+                                            "The smallest existing text span to replace. Do not send the whole file unless "
+                                            "the whole file is intentionally being rewritten."
+                                        ),
+                                    },
+                                    "after": {
+                                        "type": "string",
+                                        "description": (
+                                            "Replacement text for the selected span. Keep the edit as narrow and local as possible."
+                                        ),
+                                    },
                                 },
                             },
                         },
@@ -2072,7 +2097,7 @@ class ProjectChatService:
 
         summary = str(spec_proposal_payload.get("summary", "")).strip() or assistant_message_fallback
         if not summary:
-            summary = "Draft spec proposal"
+            summary = "Draft spec edit proposal"
 
         proposals_by_id = {proposal.id: proposal for proposal in state.spec_edit_proposals}
         for event in state.turn_events:
@@ -2258,18 +2283,18 @@ class ProjectChatService:
         if tool_name != "draft_spec_proposal":
             raise ValueError(f"Unsupported dynamic tool: {tool_name}")
         payload = _extract_spec_proposal_payload(arguments)
-        summary = _as_non_empty_string(payload.get("summary")) or "Draft spec proposal"
+        summary = _as_non_empty_string(payload.get("summary")) or "Draft spec edit proposal"
         return DynamicToolInvocationResult(
             tool_call=ToolCallRecord(
                 id=call_id,
                 kind="dynamic_tool",
                 status="completed",
-                title="Draft spec proposal",
+                title="Draft spec edit proposal",
                 output=summary,
             ),
             response={
                 "success": True,
-                "contentItems": [{"type": "inputText", "text": f"Drafted spec proposal: {summary}"}],
+                "contentItems": [{"type": "inputText", "text": f"Drafted spec edit proposal: {summary}"}],
             },
             spec_proposal_payload=payload,
         )
@@ -2797,7 +2822,7 @@ class ProjectChatService:
         flow_source: Optional[str],
     ) -> dict[str, Any]:
         with self._lock:
-            state = self._read_state(conversation_id, normalized_project_path)
+            state = self._read_state(conversation_id)
             if state is None:
                 raise ValueError("Unknown conversation.")
             state.execution_workflow = ExecutionWorkflowState(

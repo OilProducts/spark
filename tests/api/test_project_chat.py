@@ -44,7 +44,8 @@ def test_project_chat_service_creates_default_prompt_templates_file(tmp_path: Pa
     prompt_text = prompts_path.read_text(encoding="utf-8")
     assert "[project_chat]" in prompt_text
     assert "Help the user understand the project" in prompt_text
-    assert "call the draft_spec_proposal tool" in prompt_text
+    assert "Prefer precise edits to existing spec text over speculative new features." in prompt_text
+    assert "call the draft_spec_proposal tool to capture the minimal spec edit proposal." in prompt_text
     assert service._prompt_templates.chat
 
 
@@ -112,6 +113,18 @@ def test_extract_spec_proposal_payload_requires_summary_and_changes() -> None:
     assert payload["summary"] == "Tighten the top bar."
     assert payload["rationale"] == "Reduce chrome noise."
     assert payload["changes"][0]["path"] == "specs/ui-spec.md"
+
+
+def test_dynamic_tool_spec_emphasizes_minimal_grounded_spec_edits() -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+
+    spec = session._dynamic_tool_specs()[0]
+
+    assert spec["title"] == "Draft spec edit proposal"
+    assert "smallest grounded before/after spans" in spec["description"]
+    assert "do not invent speculative new features" in spec["description"]
+    assert spec["inputSchema"]["properties"]["changes"]["description"] == "One or more minimal-span edits to existing spec text."
+    assert "Do not send the whole file" in spec["inputSchema"]["properties"]["changes"]["items"]["properties"]["before"]["description"]
 
 
 def test_extract_file_paths_deduplicates_nested_entries() -> None:
@@ -1120,6 +1133,29 @@ def test_run_prepared_turn_does_not_duplicate_live_persisted_spec_proposal(tmp_p
 
     assert len(snapshot["spec_edit_proposals"]) == 1
     assert len([event for event in snapshot["turn_events"] if event["kind"] == "spec_edit_proposal_created"]) == 1
+
+
+def test_mark_execution_workflow_started_loads_conversation_without_project_argument(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    service._write_state(
+        project_chat.ConversationState(
+            conversation_id="conversation-test",
+            project_path=str(tmp_path),
+            title="Workflow state test",
+            created_at="2026-03-11T02:00:00Z",
+            updated_at="2026-03-11T02:00:00Z",
+        )
+    )
+
+    snapshot = service.mark_execution_workflow_started(
+        "conversation-test",
+        "workflow-123",
+        "spec_edit_approval",
+    )
+
+    assert snapshot["execution_workflow"]["run_id"] == "workflow-123"
+    assert snapshot["execution_workflow"]["status"] == "running"
+    assert snapshot["execution_workflow"]["flow_source"] == "spec_edit_approval"
 
 
 def test_chat_session_ignores_duplicate_codex_agent_delta_channel(monkeypatch) -> None:
