@@ -137,6 +137,16 @@ The UI MUST treat project scope as a first-class operational boundary.
 - Cross-project context/file leakage MUST be prevented by default.
 - Home workspace SHOULD provide direct access to project-scoped conversation, spec-edit, and execution-card artifacts.
 
+### 4.2.1 Prompt Template Configuration
+
+Project-chat and execution-planning system prompts MUST be user-configurable through the Spark Spawn config file at `~/.sparkspawn/config/prompts.toml`.
+
+- The runtime MUST ensure `prompts.toml` exists by writing default templates on first startup.
+- After creation, `prompts.toml` is the authoritative prompt source for project chat and execution planning.
+- Built-in prompt strings in application code exist only as bootstrap values for first-run file creation.
+- If `prompts.toml` cannot be parsed, is missing the `[project_chat]` section, or omits required templates, Spark Spawn MUST surface a visible configuration error rather than silently falling back to built-in defaults.
+- Prompt configuration errors MUST block affected AI workflows until the file is corrected, so users can trust the live system prompt they are editing.
+
 ### 4.3 Home Workspace Requirements
 
 The Home area MUST provide:

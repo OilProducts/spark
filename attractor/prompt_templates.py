@@ -66,18 +66,22 @@ def load_prompt_templates(config_dir: Path) -> PromptTemplates:
     prompts_path = ensure_prompt_templates(config_dir)
     try:
         payload = tomllib.loads(prompts_path.read_text(encoding="utf-8"))
-    except Exception:
-        return DEFAULT_PROMPT_TEMPLATES
+    except Exception as exc:
+        raise RuntimeError(f"Invalid prompt templates file: {prompts_path}") from exc
     prompts_section = payload.get("project_chat")
     if not isinstance(prompts_section, dict):
-        return DEFAULT_PROMPT_TEMPLATES
+        raise RuntimeError(f"Prompt templates file is missing [project_chat]: {prompts_path}")
+    missing_keys = [
+        key
+        for key in (CHAT_TEMPLATE_KEY, EXECUTION_PLANNING_TEMPLATE_KEY)
+        if not isinstance(prompts_section.get(key), str) or not str(prompts_section.get(key)).strip()
+    ]
+    if missing_keys:
+        missing = ", ".join(missing_keys)
+        raise RuntimeError(f"Prompt templates file is missing required templates ({missing}): {prompts_path}")
     return PromptTemplates(
-        chat=_read_template(prompts_section, CHAT_TEMPLATE_KEY, DEFAULT_PROMPT_TEMPLATES.chat),
-        execution_planning=_read_template(
-            prompts_section,
-            EXECUTION_PLANNING_TEMPLATE_KEY,
-            DEFAULT_PROMPT_TEMPLATES.execution_planning,
-        ),
+        chat=_read_template(prompts_section, CHAT_TEMPLATE_KEY),
+        execution_planning=_read_template(prompts_section, EXECUTION_PLANNING_TEMPLATE_KEY),
     )
 
 
@@ -88,12 +92,14 @@ def render_prompt_template(template: str, values: dict[str, str]) -> str:
     return rendered
 
 
-def _read_template(section: dict[object, object], key: str, default: str) -> str:
+def _read_template(section: dict[object, object], key: str) -> str:
     value = section.get(key)
     if not isinstance(value, str):
-        return default
+        raise RuntimeError(f"Prompt template {key!r} must be a string.")
     trimmed = value.strip()
-    return trimmed or default
+    if not trimmed:
+        raise RuntimeError(f"Prompt template {key!r} must not be empty.")
+    return trimmed
 
 
 def _toml_multiline(value: str) -> str:

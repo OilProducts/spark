@@ -96,6 +96,33 @@ def test_project_chat_service_uses_custom_prompt_templates(tmp_path: Path) -> No
     assert execution_prompt.endswith(":: Needs refinement")
 
 
+def test_project_chat_service_rejects_malformed_prompt_templates(tmp_path: Path) -> None:
+    prompts_path = tmp_path / "config" / PROMPTS_FILE_NAME
+    prompts_path.parent.mkdir(parents=True, exist_ok=True)
+    prompts_path.write_text("[project_chat]\nchat = '''unterminated\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Invalid prompt templates file"):
+        project_chat.ProjectChatService(tmp_path)
+
+
+def test_project_chat_service_rejects_prompt_templates_missing_required_keys(tmp_path: Path) -> None:
+    prompts_path = tmp_path / "config" / PROMPTS_FILE_NAME
+    prompts_path.parent.mkdir(parents=True, exist_ok=True)
+    prompts_path.write_text(
+        "\n".join(
+            [
+                "[project_chat]",
+                "chat = '''CHAT {{project_path}}'''",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="missing required templates"):
+        project_chat.ProjectChatService(tmp_path)
+
+
 def test_extract_spec_proposal_payload_requires_summary_and_changes() -> None:
     payload = project_chat._extract_spec_proposal_payload(
         {
