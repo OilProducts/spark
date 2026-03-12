@@ -20,6 +20,10 @@ Execution artifacts stay outside this folder:
   Core runtime and DSL specification.
 - `sparkspawn-attractor-extensions.md`
   Spark Spawn-specific extensions to the core Attractor runtime.
+- `sparkspawn-workspace.md`
+  Canonical workspace-layer specification above Attractor: projects, conversations, review artifacts, approvals, and provenance.
+- `sparkspawn-frontend.md`
+  Canonical frontend-client specification: presentation boundaries, data-source separation, and client-state rules.
 - `ui-spec.md`
   Canonical web UI specification.
 - `ui-user-stories.md`
