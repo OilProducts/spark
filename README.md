@@ -1,105 +1,191 @@
 # Spark Spawn
 
-Spark Spawn is a DOT-driven workflow runner for multi-stage AI pipelines, with a FastAPI backend and React UI for authoring, execution, and run inspection.
+Spark Spawn is a project-scoped workflow workbench for AI-assisted software delivery. It combines a FastAPI backend and React UI for registering local projects, authoring DOT workflows, running them, and reviewing planning artifacts produced inside project conversations.
 
-## Description
+## What Spark Spawn Does
 
-Spark Spawn lets you define workflows as directed graphs (DOT), run them with built-in handlers (codergen, tool, conditional, fan-in, parallel, human gate), and inspect status, events, checkpoints, context, and artifacts from the web UI.
+- Register local project directories and persist per-project workspace state
+- Author workflows as DOT graphs, either visually or in raw DOT
+- Parse, canonicalize, validate, and save flows through the backend
+- Run project-aware pipelines with built-in handlers such as `codergen`, `tool`, `conditional`, `parallel`, `parallel.fan_in`, `wait.human`, and `stack.manager_loop`
+- Stream live run events, inspect checkpoints and context, browse artifacts, and answer human-gate questions
+- Work inside project-scoped AI conversation threads that can produce spec-edit proposals and execution cards
+- Review and approve or reject spec edits, then review, revise, or approve execution plans for execution
 
-## Features
+## Main User Workflow
 
-- DOT-first workflow model with parser, formatter, and validator
-- Live run monitoring with SSE and run history
-- Human-in-the-loop question/answer flow over HTTP
-- Artifact browsing, including Graphviz pipeline render output
-- Wheel distribution with `sparkspawn` CLI entrypoint
+1. Register or select a local project in Home.
+2. Open or resume a project conversation thread.
+3. Ask Spark Spawn to help draft or refine a spec.
+4. Review the resulting spec-edit proposal.
+5. Approve the proposal to trigger execution planning.
+6. Review the generated execution card.
+7. Approve the execution card and launch a project-scoped workflow run.
+8. Monitor execution in the Execution and Runs views.
 
-## Installation
+The UI also supports a direct authoring workflow: Home -> Editor -> Execution -> Runs.
 
-Build and install from source:
+## Architecture
+
+- [attractor/](/Users/chris/tinker/sparkspawn/attractor): FastAPI server, CLI, DOT parser/validator, execution engine, handlers, runtime storage
+- [frontend/](/Users/chris/tinker/sparkspawn/frontend): React 19 + Vite UI
+- [flows/](/Users/chris/tinker/sparkspawn/flows): sample and reference `.dot` flows, including planning flows
+- [tests/](/Users/chris/tinker/sparkspawn/tests): backend tests, UI contracts, and acceptance assets
+- [specs/](/Users/chris/tinker/sparkspawn/specs): product notes and workflow references
+
+## Requirements
+
+- Python 3.10+
+- [`uv`](https://docs.astral.sh/uv/)
+- Node.js 20+ and npm
+- Graphviz `dot` on `PATH` for graph artifacts
+- `codex` CLI on `PATH` with working auth for Codex-backed handlers and project chat flows
+- `just` is optional, but the repo commands assume it when available
+
+## Local Development
+
+Install dependencies:
 
 ```bash
-npm --prefix frontend run build
-./scripts/sync_ui_dist.sh
-uv build
-pip install dist/sparkspawn-0.1.0-py3-none-any.whl
+uv sync --dev
+npm --prefix frontend install
 ```
 
-Runtime prerequisites:
-
-- `codex` CLI on `PATH` (for codergen backends)
-- Graphviz `dot` on `PATH` (for graph SVG artifacts)
-
-## Usage
-
-Start the server:
-
-```bash
-sparkspawn serve --host 127.0.0.1 --port 8000
-```
-
-For local full-stack development without Docker:
+Run the full stack locally:
 
 ```bash
 just run
 ```
 
-This starts the backend on `127.0.0.1:8000` and the Vite frontend dev server with API proxying enabled.
-The backend runs with auto-reload enabled in this mode, so Python/API changes are picked up without restarting `just run`.
-If the backend cannot bind to `127.0.0.1:8000`, `sparkspawn serve` reports that failure directly and `just run` tears down the frontend process.
+This starts:
 
-Optional runtime path overrides (CLI args or env vars):
+- the backend on `127.0.0.1:8000`
+- the Vite frontend on `127.0.0.1:5173`
+
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173) for live frontend development.
+
+For Docker-based development:
+
+```bash
+just dev
+```
+
+That starts the backend on port `8000` and the frontend on port `5173` via `docker compose`.
+
+## Backend-Only Usage
+
+Start the server directly:
+
+```bash
+uv run sparkspawn serve --host 127.0.0.1 --port 8000
+```
+
+Useful development flags:
+
+```bash
+uv run sparkspawn serve \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --reload \
+  --data-dir ~/.sparkspawn \
+  --flows-dir ./flows \
+  --ui-dir ./frontend/dist
+```
+
+When a built UI is available, the backend serves it at [http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+## Runtime Data and Configuration
+
+By default, Spark Spawn stores runtime data under `~/.sparkspawn`:
+
+- `config/`
+- `runtime/`
+- `logs/`
+- `projects/`
+- `flows/`
+
+Important path overrides:
 
 - `SPARKSPAWN_HOME`
 - `SPARKSPAWN_FLOWS_DIR`
 - `SPARKSPAWN_UI_DIR`
 
-`SPARKSPAWN_HOME/config/prompts.toml` stores user-configurable Spark Spawn chat prompts.
-That file is created with defaults on first startup.
+`~/.sparkspawn/config/prompts.toml` stores user-configurable prompt templates and is created on first startup.
 
-Open: [http://127.0.0.1:8000](http://127.0.0.1:8000)
+## API Overview
 
-## API
+The canonical route inventory lives in [attractor/api/server.py](/Users/chris/tinker/sparkspawn/attractor/api/server.py). Current API groups include:
 
-Key endpoints:
+- Runtime and runs: `GET /status`, `GET /runs`
+- Pipeline execution: `POST /pipelines`, `POST /run`, `GET /pipelines/{id}`, `POST /pipelines/{id}/cancel`
+- Pipeline inspection: `GET /pipelines/{id}/events`, `GET /pipelines/{id}/checkpoint`, `GET /pipelines/{id}/context`, `GET /pipelines/{id}/graph`, `GET /pipelines/{id}/artifacts`
+- Human-gate actions: `GET /pipelines/{id}/questions`, `POST /pipelines/{id}/questions/{question_id}/answer`
+- Flow management: `GET /api/flows`, `POST /api/flows`, `GET /api/flows/{name}`, `DELETE /api/flows/{name}`
+- Project management: `GET /api/projects`, `POST /api/projects/register`, `PATCH /api/projects/state`, `DELETE /api/projects`
+- Project metadata and directory selection: `GET /api/projects/metadata`, `POST /api/projects/pick-directory`
+- Project conversations: `GET /api/projects/conversations`, `GET /api/conversations/{conversation_id}`, `GET /api/conversations/{conversation_id}/events`, `POST /api/conversations/{conversation_id}/turns`, `DELETE /api/conversations/{conversation_id}`
+- Review workflows: `POST /api/conversations/{conversation_id}/spec-edit-proposals/{proposal_id}/approve`, `POST /api/conversations/{conversation_id}/spec-edit-proposals/{proposal_id}/reject`, `POST /api/conversations/{conversation_id}/execution-cards/{execution_card_id}/review`
 
-- `POST /pipelines`
-- `GET /pipelines/{id}`
-- `GET /pipelines/{id}/events`
-- `GET /pipelines/{id}/graph`
-- `GET /pipelines/{id}/checkpoint`
-- `GET /pipelines/{id}/context`
-- `GET /runs`
-- `GET /api/flows`, `POST /api/flows`, `GET /api/flows/{name}`, `DELETE /api/flows/{name}`
+## Repository Commands
+
+Useful `just` targets from [justfile](/Users/chris/tinker/sparkspawn/justfile):
+
+- `just run`: backend + Vite frontend for local development
+- `just dev`: `docker compose up --build`
+- `just test`: full Python test suite
+- `just frontend-unit`: frontend unit tests
+- `just ui-smoke`: Playwright smoke checks
+- `just dot-lint`: DOT formatting lint regression
+- `just build`: frontend build, UI dist sync, and wheel build
 
 ## Testing
 
+Backend suite:
+
 ```bash
 uv run pytest -q
+```
+
+Frontend unit tests:
+
+```bash
 npm --prefix frontend run test:unit
 ```
 
-## Roadmap
+Frontend smoke tests:
 
-- Improve packaging ergonomics (release workflow, docs polish)
-- Add runtime `doctor` checks for external binary dependencies
-- Continue UI parity and contract hardening
+```bash
+npm --prefix frontend run ui:smoke
+```
 
-## Contributing
+## Packaging
 
-- Fork and create a feature branch.
-- Keep changes scoped and test-backed.
-- Run `uv run pytest -q` before opening a PR.
+Build the packaged UI and wheel:
 
-## Support
+```bash
+just build
+```
 
-Open an issue in this repository with reproduction steps, expected behavior, and logs/screenshots where relevant.
+Or run the steps manually:
 
-## Acknowledgments
+```bash
+npm --prefix frontend run build
+./scripts/sync_ui_dist.sh
+uv build
+```
 
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [React Flow](https://reactflow.dev/)
-- [Graphviz](https://graphviz.org/)
+Install the resulting wheel:
+
+```bash
+pip install dist/*.whl
+```
+
+## Notes
+
+- Flow files are stored as canonical DOT and validated before save.
+- The editor supports both structured editing and raw DOT editing, including semantic-equivalence safety checks during handoff.
+- The Runs view is intended for historical inspection, diagnostics, artifact browsing, and replaying execution context.
+- Example planning flows live in [flows/plan-generation.dot](/Users/chris/tinker/sparkspawn/flows/plan-generation.dot) and [flows/implement-spec.dot](/Users/chris/tinker/sparkspawn/flows/implement-spec.dot).
 
 ## Project Status
 

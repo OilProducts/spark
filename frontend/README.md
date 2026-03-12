@@ -1,73 +1,60 @@
-# React + TypeScript + Vite
+# Spark Spawn Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This directory contains the React 19 + Vite frontend for Spark Spawn.
 
-Currently, two official plugins are available:
+The UI is responsible for:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- project registration and project-scoped Home workflows
+- conversation threads, spec-edit review, and execution-card review
+- DOT authoring in both structured and raw modes
+- execution controls, live run streaming, and run inspection
+- settings, diagnostics, and responsive shell layout
 
-## React Compiler
+## Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Install frontend dependencies:
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Run the frontend in dev mode:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run dev
 ```
+
+By default, the Vite dev server proxies API requests to `http://127.0.0.1:8000`.
+Override that with `VITE_BACKEND_URL` if needed.
+
+From the repo root, `just run` is the normal full-stack workflow.
+
+## Scripts
+
+- `npm run dev`: start the Vite dev server
+- `npm run build`: type-check and produce a production build in `dist/`
+- `npm run lint`: run ESLint
+- `npm run preview`: serve the production build locally
+- `npm run test:unit`: run Vitest unit tests
+- `npm run test:unit:watch`: run Vitest in watch mode
+- `npm run ui:smoke`: run Playwright smoke checks
+
+## Build Output
+
+Production assets are emitted to `frontend/dist/`.
+To bundle them into the Python package, sync them into [attractor/ui_dist/](/Users/chris/tinker/sparkspawn/attractor/ui_dist) from the repo root:
+
+```bash
+./scripts/sync_ui_dist.sh
+```
+
+Or use:
+
+```bash
+just sync-ui-dist
+```
+
+## Related Docs
+
+- Root project overview: [README.md](/Users/chris/tinker/sparkspawn/README.md)
+- UI workflow acceptance assets: [tests/acceptance/agent-workflows/README.md](/Users/chris/tinker/sparkspawn/tests/acceptance/agent-workflows/README.md)
