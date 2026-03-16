@@ -137,6 +137,7 @@ The canonical top-level shape is:
   "segments": [],
   "event_log": [],
   "spec_edit_proposals": [],
+  "flow_run_requests": [],
   "execution_cards": [],
   "execution_workflow": {}
 }
@@ -175,7 +176,7 @@ Examples:
 - one system separator
 - one inline artifact anchor
 
-### 5.3 `spec_edit_proposals` and `execution_cards`
+### 5.3 `spec_edit_proposals`, `flow_run_requests`, and `execution_cards`
 
 Artifacts are durable workspace objects.
 
@@ -183,7 +184,23 @@ They are not just render fragments.
 
 Initial artifact collections:
 - `spec_edit_proposals`
+- `flow_run_requests`
 - `execution_cards`
+
+Each `flow_run_request` record MUST persist at least:
+- `id`
+- `created_at`
+- `status`
+- `flow_name`
+- `summary`
+- `project_path`
+- `conversation_id`
+- `source_turn_id`
+- `source_segment_id` when known
+- `goal` when provided
+- `model` when provided
+- `run_id` when launched
+- `launch_error` when launch failed
 
 ### 5.4 `execution_workflow`
 
@@ -319,6 +336,7 @@ Initial canonical segment kinds:
 - `assistant_message`
 - `reasoning`
 - `tool_call`
+- `flow_run_request`
 - `artifact_anchor`
 - `system_separator`
 
@@ -467,6 +485,20 @@ A spec proposal created by MCP or another tool should follow this durable flow:
 
 This avoids the current failure mode where a proposal card cannot appear until after unrelated heuristics or turn finalization.
 
+### 10.4 Flow Run Request Example
+
+An agent-requested flow launch should follow this durable flow:
+
+1. the assistant creates a `flow_run_request` artifact
+2. Spark Spawn persists the artifact with `status = pending`
+3. Spark Spawn creates or updates the inline `flow_run_request` segment at the originating conversation position
+4. a human review action updates the artifact to `approved` or `rejected`
+5. if approved, Spark Spawn launches the Attractor run
+6. on successful launch, the artifact stores `run_id` and `status = launched`
+7. on launch failure, the artifact stores `status = launch_failed` and `launch_error`
+
+The artifact is the durable conversation object. The Attractor run remains a separate engine object linked by provenance.
+
 ---
 
 ## 11. Rendering Rules
@@ -543,21 +575,13 @@ That future decision must not be made preemptively.
 
 ---
 
-## 14. Migration Expectations
+## 14. Historical State
 
-Older conversation formats may store:
-- turn-centric event lists
-- artifact pseudo-turns
-- heuristic reasoning/message grouping
+Historical `state.json` payloads that do not satisfy this schema are unsupported.
 
-Migration to this model SHOULD:
-- preserve conversation and artifact identity
-- materialize stable segments from old durable history where possible
-- avoid inventing fake fine-grained segment structure that was never durable
+Spark Spawn may reject them instead of attempting migration or best-effort reconstruction.
 
-For legacy records, exact restart reconstruction may be best-effort.
-
-For new records written under this schema, precise segment reconstruction is mandatory.
+For records written under this schema, precise segment reconstruction is mandatory.
 
 ---
 

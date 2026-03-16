@@ -54,6 +54,7 @@ Spark Spawn owns:
 - project registration and active project scope
 - project conversations
 - spec edit proposals
+- flow run requests
 - execution cards
 - human review decisions for Spark Spawn artifacts
 - provenance links from workspace artifacts to Attractor flows and runs
@@ -134,18 +135,39 @@ It contains:
 
 Approving an execution card is a human decision point.
 
-### 4.5 Provenance Record
+### 4.5 Flow Run Request
+
+A flow run request is a Spark Spawn review artifact for agent-requested Attractor execution.
+
+It contains:
+- stable flow run request id
+- flow name
+- summary
+- optional goal/prompt
+- optional model override
+- review status (`pending`, `approved`, `rejected`, `launch_failed`, `launched`)
+- provenance to the originating conversation turn
+- optional reference to the launched Attractor run
+
+Creating a flow run request does not start execution.
+
+Approving a flow run request is a human decision point.
+
+### 4.6 Provenance Record
 
 Spark Spawn MUST retain explicit provenance links:
 - conversation -> proposal
+- conversation -> flow run request
 - proposal -> execution card
+- flow run request -> flow reference
+- flow run request -> launched Attractor run
 - execution card -> flow reference
 - execution card -> launched Attractor run
 - Attractor run -> produced artifacts
 
 These links MUST be durable and queryable without reconstructing them from rendered UI history.
 
-### 4.6 Flow Association
+### 4.7 Flow Association
 
 Flow documents remain Attractor resources.
 
@@ -169,6 +191,8 @@ Spark Spawn conversations interact with Attractor through explicit artifacts rat
 The main conversational touch points are:
 - create spec edit proposal
 - review spec edit proposal
+- create flow run request
+- review flow run request
 - generate execution card from approved proposal
 - review execution card
 - launch Attractor workflow from approved execution card
@@ -180,28 +204,30 @@ Spark Spawn MAY expose a narrowly-scoped first-party CLI surface for agent-creat
 
 This CLI surface exists to provide a stable, Spark Spawn-owned mutation boundary for agent workflows without relying on experimental runtime-specific tool transports.
 
-The initial supported mutating command is:
+The initial supported mutating commands are:
 
 ```text
-sparkspawn spec-proposal create --conversation <adjective-noun> --json <payload.json>
+sparkspawn-workspace spec-proposal --conversation <adjective-noun> --json <payload.json>
+sparkspawn-workspace flow-run --conversation <adjective-noun> --flow <flow_name> --summary <text> [--goal-file <path>|--goal -] [--model <model>]
 ```
 
-This command creates a pending spec edit proposal artifact within an existing project conversation.
+These commands create pending review artifacts within an existing project conversation.
 
-It MUST NOT:
+They MUST NOT:
 - approve a proposal
 - reject a proposal
 - apply the proposal to the repository
+- approve or reject a flow run request
 - launch downstream execution by itself
 
 Those actions remain separate human or workflow decisions.
 
 Rationale:
 - the assistant needs one reliable way to create workspace artifacts
-- proposal creation is a workspace concern, not an Attractor concern
+- proposal creation and flow-run requests are workspace concerns, not raw Attractor concerns
 - the command surface should stay minimal until additional agent-facing actions are clearly justified
 
-### 5.1.2 `sparkspawn spec-proposal create`
+### 5.1.2 `sparkspawn-workspace spec-proposal`
 
 The command input contract is JSON-based.
 
@@ -259,14 +285,69 @@ The command help SHOULD also instruct the agent to:
 
 The CLI help is the implementation-facing source of truth for command usage. Prompts may instruct an agent to use the command, but prompts MUST NOT be the only specification of the payload contract.
 
-### 5.1.3 Automatic Placement
+### 5.1.3 `sparkspawn-workspace flow-run`
+
+The command line MUST include:
+- `--conversation <handle>`
+- `--flow <flow_name>`
+- `--summary <text>`
+
+The command SHOULD include:
+- `--goal-file <path>` or `--goal -` when the selected flow requires launch context
+
+The command MAY include:
+- `--model <model>`
+
+The command creates a pending `flow_run_request` artifact. It does not start the Attractor run immediately.
+
+The flow-run request artifact itself MUST persist:
+- a concise human-readable summary of why the run is being requested
+- the selected flow name
+- optional goal text
+- optional model override
+- review status
+- run id only after approval and successful launch
+
+If the user approves the request, Spark Spawn launches the Attractor flow and updates the artifact with the resulting run id. If the launch fails, Spark Spawn records `launch_failed` and the error.
+
+The workspace service SHOULD expose:
+
+```text
+POST /workspace/api/conversations/by-handle/{handle}/flow-run-requests
+POST /workspace/api/conversations/{conversation_id}/flow-run-requests/{request_id}/review
+```
+
+The create request MUST include:
+- `flow_name`
+- `summary`
+
+The create request MAY include:
+- `goal`
+- `model`
+
+The review request MUST include:
+- `project_path`
+- `disposition`
+
+The review request MAY include:
+- `message`
+- `flow_name` when the reviewer intentionally overrides the originally requested flow
+- `model`
+
+Review dispositions are:
+- `approved`
+- `rejected`
+
+On approval, Spark Spawn launches the Attractor run, records the resulting `run_id`, and updates the linked `flow_run_request` artifact. On rejection, Spark Spawn records the rejection without launching anything.
+
+### 5.1.4 Automatic Placement
 
 The agent MUST NOT supply a workspace `turn_id`.
 
 Instead, the workspace service MUST:
 1. resolve the referenced conversation handle
 2. resolve the appropriate assistant turn automatically
-3. attach the proposal artifact to that turn
+3. attach the artifact to that turn
 4. create the corresponding inline conversation segment and workspace event
 
 If no valid assistant turn exists for placement, the command MUST fail with a clear validation error.
@@ -276,7 +357,7 @@ Rationale:
 - requiring the agent to supply it creates unnecessary coupling to workspace internals
 - automatic placement lets Spark Spawn preserve a stable artifact-rendering model even if turn-level internals evolve
 
-### 5.1.4 Conversation Handles
+### 5.1.5 Conversation Handles
 
 Each conversation has:
 - an internal storage id
@@ -294,7 +375,7 @@ The external handle is not the user-editable title.
 
 Workspace ordering and sorting SHOULD use `created_at`, not the handle.
 
-### 5.1.5 Prompt Framing
+### 5.1.6 Prompt Framing
 
 Prompt assembly for the chat agent is split into:
 - a fixed non-user-editable system frame
@@ -335,6 +416,7 @@ The assistant MAY create candidate artifacts.
 The assistant MUST NOT auto-approve:
 - spec edit proposals
 - execution cards
+- flow run requests
 
 Those approvals are reserved for human users, even when the assistant believes the artifact is correct.
 
@@ -345,6 +427,8 @@ When a workspace artifact launches execution:
 - Spark Spawn calls the Attractor execution surface
 - Spark Spawn stores the resulting run id as provenance on the relevant artifact
 - Spark Spawn does not reinterpret the Attractor run model into a separate execution model
+
+For agent-requested flow execution, the relevant artifact is the approved `flow_run_request`, not an implicit chat action.
 
 ---
 
@@ -369,6 +453,7 @@ Spark Spawn owns:
 - conversation handle index
 - spec edit proposals
 - execution cards
+- flow run requests
 - artifact review decisions
 - project-to-flow associations
 - trigger-to-flow bindings
@@ -436,6 +521,7 @@ The workspace service API SHOULD expose resource-oriented operations for:
 - conversation events
 - spec edit proposals
 - execution cards
+- flow run requests
 - artifact review actions
 - provenance lookups
 
@@ -467,6 +553,10 @@ Examples:
 - reasoning summary
 - tool call lifecycle
 - spec edit proposal created
+- flow run request created
+- flow run request approved
+- flow run request rejected
+- flow run request launch failed
 - execution card created
 - review decision recorded
 
@@ -511,5 +601,6 @@ The preferred long-term architecture is:
 2. Spark Spawn workspace remains a separate orchestration/product layer.
 3. The frontend talks to both layers through explicit contracts rather than one blended API.
 4. Conversation artifacts are the primary bridge from collaborative planning into Attractor execution.
+5. Agent-requested flow launches must become explicit review artifacts before they become Attractor runs.
 
 This document is the source of truth when ownership, provenance, approval boundaries, or workspace-vs-engine responsibilities are ambiguous.

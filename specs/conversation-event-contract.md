@@ -69,9 +69,12 @@ Segment kinds:
 - `reasoning`
 - `tool_call`
 - `spec_edit_proposal`
+- `flow_run_request`
 - `execution_card`
 
 One upstream item becomes one segment.
+
+Workspace-created review artifacts may also produce `segment_upsert` updates even when they do not originate from app-server `item/*` notifications. Those segments are still canonical workspace render units and must be upserted by `segment.id`.
 
 Identity rules:
 - assistant segments are keyed by `app_turn_id + item_id` when upstream identity exists
@@ -84,6 +87,7 @@ Rules:
 - completion updates the same segment instead of creating another one
 - multiple assistant commentary items in one turn remain distinct cards
 - the final answer remains its own distinct assistant card
+- artifact review actions update the existing artifact segment rather than creating duplicate approval/result cards
 
 ### `conversation_snapshot`
 
@@ -143,6 +147,16 @@ Rules:
 - tool output mutates the existing `tool_call` segment for that item/call
 - repeated output updates the same segment
 - completion/failure updates the same segment instead of creating a new row
+
+### Flow Run Requests
+
+`flow_run_request` is a workspace artifact segment, not an app-server item stream.
+
+Rules:
+- creating a flow run request emits a pending inline artifact card
+- approval, rejection, launch success, and launch failure update that same artifact segment and linked artifact record
+- the conversation card is not a live Attractor status mirror
+- the card may expose a link or affordance to inspect the launched run elsewhere in the UI once `run_id` exists
 
 ## Frontend Rendering Contract
 

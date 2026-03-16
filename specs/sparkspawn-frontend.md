@@ -112,6 +112,7 @@ Workspace-oriented surfaces include:
 - conversation list
 - project chat
 - inline spec proposal cards
+- inline flow-run request cards
 - inline execution cards
 - proposal and card review controls
 
@@ -127,12 +128,15 @@ Attractor-oriented surfaces include:
 - artifact inspection
 - human-question answering
 
+When the user reaches run inspection from a project workspace surface, the frontend SHOULD preserve project framing by default rather than dropping the user into an unscoped global run context.
+
 ### 4.3 Bridge Surfaces
 
 Bridge surfaces show how workspace artifacts connect to Attractor execution.
 
 Examples:
 - an approved execution card references the flow it will launch
+- an approved flow-run request references the Attractor run it launched
 - a project surface can show which flows are associated with the project or bound to triggers
 - a launched execution card shows the resulting Attractor run id
 - a proposal or execution card may link to downstream run outcomes
@@ -185,7 +189,7 @@ The conversation surface should show:
 - assistant turns
 - thinking blocks
 - tool activity
-- inline workspace artifacts such as spec proposals and execution cards
+- inline workspace artifacts such as spec proposals, flow-run requests, and execution cards
 
 The frontend should not require knowledge of whether an artifact was created through:
 - Codex app-server
@@ -200,7 +204,7 @@ It only needs the normalized workspace conversation event contract.
 
 ### 7.1 Human Review
 
-Spec edit proposal approval and execution-card approval are explicit human actions.
+Spec edit proposal approval, flow-run request approval, and execution-card approval are explicit human actions.
 
 The frontend MUST present these as review controls, not as automatic assistant continuations.
 
@@ -210,6 +214,9 @@ When a human approval causes downstream execution, the frontend SHOULD display:
 - what artifact was approved
 - what flow was launched
 - what Attractor run id was created
+- an affordance to open that run in the project-scoped execution or run-inspection UI
+
+For `flow_run_request` cards, the frontend does not need to mirror ongoing Attractor run status inline after launch. The inline card may remain a provenance/approval record once `run_id` exists.
 
 ### 7.3 No Implicit Approval
 
@@ -231,6 +238,8 @@ The inspector must render:
 - pending questions when present
 
 Workspace state may link the user into a specific run, but the inspector still operates on the Attractor run contract.
+
+When entered from a project conversation or another project-scoped workspace surface, the run inspector SHOULD preserve that project scope in surrounding navigation and run-list context where practical.
 
 ---
 
