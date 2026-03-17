@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import workspace.project_chat as project_chat
+import workspace.project_chat_models as project_chat_models
 import attractor.api.server as server
 
 
@@ -294,7 +295,7 @@ def test_execution_planning_approval_launches_real_pipeline_backed_run(
                     id="proposal-1",
                     created_at="2026-03-11T02:00:00Z",
                     summary="Summary",
-                    changes=[project_chat.SpecEditProposalChange(path="specs/project.md", before="old", after="new")],
+                    changes=[project_chat_models.SpecEditProposalChange(path="specs/project.md", before="old", after="new")],
                     status="pending",
                 )
             ],
@@ -422,7 +423,7 @@ def test_execution_planning_approval_uses_project_trigger_binding_when_present(
                     id="proposal-1",
                     created_at="2026-03-11T02:00:00Z",
                     summary="Summary",
-                    changes=[project_chat.SpecEditProposalChange(path="specs/project.md", before="old", after="new")],
+                    changes=[project_chat_models.SpecEditProposalChange(path="specs/project.md", before="old", after="new")],
                     status="pending",
                 )
             ],

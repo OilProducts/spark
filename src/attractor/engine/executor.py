@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
-from attractor.dsl.models import DotGraph
+from attractor.dsl.models import DotEdge, DotGraph
 from attractor.dsl.models import Duration
 from attractor.transforms.runtime_preamble import RuntimePreambleTransform
 

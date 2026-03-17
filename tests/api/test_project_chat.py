@@ -10,6 +10,7 @@ import pytest
 import attractor.api.server as server
 import sparkspawn_common.codex_app_server as codex_app_server
 import workspace.project_chat as project_chat
+import workspace.project_chat_models as project_chat_models
 import workspace.project_chat_session as project_chat_session
 import workspace.attractor_client as attractor_client
 from workspace.prompt_templates import PROMPTS_FILE_NAME
@@ -86,7 +87,7 @@ def test_project_chat_service_uses_custom_prompt_templates(tmp_path: Path) -> No
             id="proposal-1",
             created_at="2026-03-08T12:01:00Z",
             summary="Summary",
-            changes=[project_chat.SpecEditProposalChange(path="specs/sparkspawn-frontend.md", before="old", after="new")],
+            changes=[project_chat_models.SpecEditProposalChange(path="specs/sparkspawn-frontend.md", before="old", after="new")],
             status="approved",
         ),
         "Needs refinement",
@@ -192,7 +193,7 @@ def test_process_turn_message_ignores_legacy_reasoning_event_family() -> None:
 
 
 def test_tool_call_from_command_execution_item_uses_completed_payload() -> None:
-    tool_call = project_chat._tool_call_from_item(
+    tool_call = project_chat_session._tool_call_from_item(
         {
             "type": "commandExecution",
             "id": "call_123",
@@ -212,7 +213,7 @@ def test_tool_call_from_command_execution_item_uses_completed_payload() -> None:
 
 
 def test_tool_call_from_file_change_item_collects_paths() -> None:
-    tool_call = project_chat._tool_call_from_item(
+    tool_call = project_chat_session._tool_call_from_item(
         {
             "type": "fileChange",
             "status": "inProgress",
@@ -294,6 +295,45 @@ def test_conversation_state_rejects_legacy_event_only_snapshot_shape() -> None:
                 "turn_events": [],
             }
         )
+
+
+def test_list_conversations_skips_unsupported_local_state_files(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    project_path = str(tmp_path.resolve())
+    service._write_state(
+        project_chat.ConversationState(
+            conversation_id="conversation-valid",
+            project_path=project_path,
+            title="Valid thread",
+            created_at="2026-03-13T10:00:00Z",
+            updated_at="2026-03-13T10:01:00Z",
+            turns=[
+                project_chat.ConversationTurn(
+                    id="turn-user-1",
+                    role="user",
+                    content="Latest valid thread",
+                    timestamp="2026-03-13T10:00:00Z",
+                ),
+            ],
+        )
+    )
+    legacy_state_path = service._conversation_state_path("conversation-legacy", project_path)
+    legacy_state_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_state_path.write_text(
+        json.dumps(
+            {
+                "conversation_id": "conversation-legacy",
+                "project_path": project_path,
+                "title": "Legacy thread",
+                "turns": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summaries = service.list_conversations(project_path)
+
+    assert [summary["conversation_id"] for summary in summaries] == ["conversation-valid"]
 
 
 def test_materialize_segment_for_live_event_completes_matching_assistant_item_by_item_id(tmp_path: Path) -> None:
@@ -766,8 +806,8 @@ def test_chat_session_initialize_enables_experimental_api(monkeypatch) -> None:
         def register(self, fileobj, events) -> None:
             return None
 
-    monkeypatch.setattr(project_chat.subprocess, "Popen", lambda *args, **kwargs: DummyProc())
-    monkeypatch.setattr(project_chat.selectors, "DefaultSelector", lambda: DummySelector())
+    monkeypatch.setattr(project_chat_session.subprocess, "Popen", lambda *args, **kwargs: DummyProc())
+    monkeypatch.setattr(project_chat_session.selectors, "DefaultSelector", lambda: DummySelector())
     monkeypatch.setattr(session, "_send_json", lambda payload: notifications.append(payload))
 
     def fake_send_request(method: str, params: dict[str, object] | None) -> dict[str, object]:
@@ -1370,7 +1410,7 @@ def test_prepare_execution_workflow_launch_builds_prompt_from_approved_proposal(
                 id="proposal-1",
                 created_at="2026-03-11T02:00:00Z",
                 summary="Summary",
-                changes=[project_chat.SpecEditProposalChange(path="specs/project.md", before="old", after="new")],
+                changes=[project_chat_models.SpecEditProposalChange(path="specs/project.md", before="old", after="new")],
                 status="applied",
                 canonical_spec_edit_id="spec-edit-collatz-001",
             )
@@ -1405,12 +1445,12 @@ def test_complete_execution_workflow_creates_execution_card_and_clears_matching_
                 id="proposal-1",
                 created_at="2026-03-11T02:00:00Z",
                 summary="Summary",
-                changes=[project_chat.SpecEditProposalChange(path="specs/project.md", before="old", after="new")],
+                changes=[project_chat_models.SpecEditProposalChange(path="specs/project.md", before="old", after="new")],
                 status="applied",
                 canonical_spec_edit_id="spec-edit-collatz-001",
             )
         ],
-        execution_workflow=project_chat.ExecutionWorkflowState(
+        execution_workflow=project_chat_models.ExecutionWorkflowState(
             run_id="workflow-123",
             status="running",
             flow_source="plan-generation.dot",
@@ -1459,7 +1499,7 @@ def test_fail_execution_workflow_marks_matching_run_failed(tmp_path: Path) -> No
         title="Workflow run test",
         created_at="2026-03-11T02:00:00Z",
         updated_at="2026-03-11T02:00:00Z",
-        execution_workflow=project_chat.ExecutionWorkflowState(
+        execution_workflow=project_chat_models.ExecutionWorkflowState(
             run_id="workflow-123",
             status="running",
             flow_source="plan-generation.dot",
@@ -1650,6 +1690,80 @@ def test_chat_session_emits_assistant_completed_from_item_completed(monkeypatch)
     assert captured_events[1].item_id == "msg-1"
     assert captured_events[1].phase == "final_answer"
     assert captured_events[-1].content_delta == "Ack"
+
+
+def test_chat_session_handles_command_output_delta_without_reasoning_fallback_helper(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    lines = iter(
+        [
+            json.dumps(
+                {
+                    "method": "item/reasoning/summaryTextDelta",
+                    "params": {"delta": "Thinking...", "itemId": "rs-1", "summaryIndex": 0},
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "item/commandExecution/outputDelta",
+                    "params": {"delta": "output", "itemId": "cmd-1"},
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {"delta": "Ack", "itemId": "msg-1"},
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "AgentMessage",
+                            "id": "msg-1",
+                            "content": [{"type": "Text", "text": "Ack"}],
+                            "phase": "final_answer",
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "completed",
+                        }
+                    },
+                }
+            ),
+        ]
+    )
+    captured_events: list[project_chat.ChatTurnLiveEvent] = []
+
+    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+
+    def fake_ensure_thread(model: str | None) -> None:
+        session._thread_id = "thread-123"
+        session._thread_initialized = True
+
+    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
+    monkeypatch.setattr(
+        session,
+        "_send_request",
+        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
+    )
+    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+
+    result = session.turn(
+        "hello",
+        None,
+        on_event=lambda event: captured_events.append(event),
+    )
+
+    assert result.assistant_message == "Ack"
+    assert [event.kind for event in captured_events] == ["reasoning_summary", "assistant_delta", "assistant_completed"]
 
 
 def test_chat_session_emits_assistant_completed_for_commentary_item(monkeypatch) -> None:

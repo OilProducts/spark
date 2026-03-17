@@ -315,21 +315,8 @@ const getLatestExecutionCard = (snapshot: ConversationSnapshotResponse | null) =
 
 type OptimisticSendState = {
     conversationId: string
-    projectPath: string
     message: string
     createdAt: string
-}
-
-const hasAcknowledgedAssistantTurn = (
-    snapshot: ConversationSnapshotResponse,
-    optimisticSend: OptimisticSendState | null,
-) => {
-    if (!optimisticSend || snapshot.conversation_id !== optimisticSend.conversationId) {
-        return false
-    }
-    return snapshot.turns.some((turn) => (
-        turn.role === "assistant" && turn.timestamp >= optimisticSend.createdAt
-    ))
 }
 
 const ensureConversationSnapshotShell = (
@@ -656,23 +643,15 @@ const buildConversationTimelineEntries = (
         return timeline
     }
 
-    const hasMatchingUserTurn = timeline.some((entry) => (
-        entry.kind === "message"
-        && entry.role === "user"
-        && entry.content === optimisticSend.message
-        && entry.timestamp >= optimisticSend.createdAt
-    ))
     const optimisticEntries: ConversationTimelineEntry[] = []
-    if (!hasMatchingUserTurn) {
-        optimisticEntries.push({
-            id: `${optimisticSend.conversationId}:optimistic:user`,
-            kind: "message",
-            role: "user",
-            content: optimisticSend.message,
-            timestamp: optimisticSend.createdAt,
-            status: "complete",
-        })
-    }
+    optimisticEntries.push({
+        id: `${optimisticSend.conversationId}:optimistic:user`,
+        kind: "message",
+        role: "user",
+        content: optimisticSend.message,
+        timestamp: optimisticSend.createdAt,
+        status: "complete",
+    })
     return [...timeline, ...optimisticEntries]
 }
 
@@ -715,7 +694,6 @@ export function HomePanel() {
     const [projectConversationSummaries, setProjectConversationSummaries] = useState<Record<string, ConversationSummaryResponse[]>>({})
     const [chatDraft, setChatDraft] = useState("")
     const [panelError, setPanelError] = useState<string | null>(null)
-    const [isSendingChat, setIsSendingChat] = useState(false)
     const [optimisticSend, setOptimisticSend] = useState<OptimisticSendState | null>(null)
     const [pendingSpecProposalId, setPendingSpecProposalId] = useState<string | null>(null)
     const [pendingFlowRunRequestId, setPendingFlowRunRequestId] = useState<string | null>(null)
@@ -779,12 +757,8 @@ export function HomePanel() {
     const hasActiveAssistantTurn = (activeConversationSnapshot?.turns || []).some((turn) => (
         turn.role === "assistant" && (turn.status === "pending" || turn.status === "streaming")
     ))
-    const isChatInputDisabled = isSendingChat || hasActiveAssistantTurn
-    const chatSendButtonLabel = hasActiveAssistantTurn
-        ? "Thinking..."
-        : isSendingChat
-            ? "Sending..."
-            : "Send"
+    const isChatInputDisabled = hasActiveAssistantTurn
+    const chatSendButtonLabel = hasActiveAssistantTurn ? "Thinking..." : "Send"
 
     const orderedProjects = (() => {
         const seenProjectPaths = new Set<string>()
@@ -875,8 +849,7 @@ export function HomePanel() {
             setProjectConversationSummaryList(projectPath, summaries)
             return summaries
         } catch {
-            setProjectConversationSummaryList(projectPath, [])
-            return []
+            return projectConversationSummaries[projectPath] || []
         }
     }
 
@@ -941,11 +914,6 @@ export function HomePanel() {
             turnCount: snapshot.turns.length,
             turns: summarizeConversationTurnsForDebug(snapshot.turns),
         })
-        if (hasAcknowledgedAssistantTurn(snapshot, optimisticSend)) {
-            setIsSendingChat(false)
-            setOptimisticSend(null)
-        }
-
         setProjectConversationSnapshots((current) => ({
             ...current,
             [snapshot.conversation_id]: snapshot,
@@ -1060,10 +1028,6 @@ export function HomePanel() {
         const updatedSnapshot = nextSnapshot as ConversationSnapshotResponse | null
         if (updatedSnapshot === null) {
             return
-        }
-        if (hasAcknowledgedAssistantTurn(updatedSnapshot, optimisticSend)) {
-            setIsSendingChat(false)
-            setOptimisticSend(null)
         }
         setProjectConversationSummaries((current) => ({
             ...current,
@@ -1719,12 +1683,10 @@ export function HomePanel() {
         }
         const optimisticCreatedAt = new Date().toISOString()
 
-        setIsSendingChat(true)
         setPanelError(null)
         setChatDraft("")
         setOptimisticSend({
             conversationId,
-            projectPath: activeProjectPath,
             message: trimmed,
             createdAt: optimisticCreatedAt,
         })
@@ -1734,6 +1696,7 @@ export function HomePanel() {
                 message: trimmed,
                 model: model.trim() || null,
             })
+            setOptimisticSend(null)
             const latestProjectScope = useStore.getState().projectScopedWorkspaces[activeProjectPath]
             const shouldKeepFocusOnReplyThread = latestProjectScope?.conversationId === conversationId
             applyConversationSnapshot(activeProjectPath, snapshot, "send-response", {
@@ -1744,7 +1707,6 @@ export function HomePanel() {
             setPanelError(message)
             appendLocalProjectEvent(`Project chat turn failed: ${message}`)
         } finally {
-            setIsSendingChat(false)
             setOptimisticSend(null)
         }
     }

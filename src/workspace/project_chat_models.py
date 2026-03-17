@@ -6,7 +6,6 @@ from pathlib import Path
 import threading
 from time import gmtime, strftime
 from typing import Any, Optional
-import uuid
 
 
 CHAT_SESSION_VERSION = 2

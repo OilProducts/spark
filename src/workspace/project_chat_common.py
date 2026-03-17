@@ -5,13 +5,12 @@ import logging
 import os
 import re
 import time
-from pathlib import Path
 from typing import Any, Optional
 
 from sparkspawn_common.runtime import (
-    build_codex_runtime_environment,
+    build_codex_runtime_environment as _build_codex_runtime_environment,
     normalize_project_path,
-    resolve_runtime_workspace_path,
+    resolve_runtime_workspace_path as _resolve_runtime_workspace_path,
 )
 from workspace.project_chat_models import ConversationTurn
 
@@ -37,6 +36,14 @@ def truncate_text(value: str, limit: int) -> str:
 
 def normalize_project_path_value(value: str) -> str:
     return normalize_project_path(value)
+
+
+def resolve_runtime_workspace_path(value: str) -> str:
+    return _resolve_runtime_workspace_path(value)
+
+
+def build_codex_runtime_environment() -> dict[str, str]:
+    return _build_codex_runtime_environment()
 
 
 def as_non_empty_string(value: Any) -> Optional[str]:

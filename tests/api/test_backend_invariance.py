@@ -7,11 +7,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 import attractor.api.codex_backends as codex_backends_module
-import workspace.project_chat as project_chat
 import attractor.api.server as server
 from attractor.engine import Context, load_checkpoint
 from attractor.engine.outcome import Outcome, OutcomeStatus
-from sparkspawn_common.runtime import build_project_id
+from sparkspawn_common.runtime import (
+    build_codex_runtime_environment,
+    build_project_id,
+    resolve_runtime_workspace_path,
+)
 from tests.api._support import (
     SIMPLE_FLOW as FLOW,
     close_task_immediately as _close_task_immediately,
@@ -241,7 +244,7 @@ def test_resolve_runtime_workspace_path_maps_host_repo_root_override_to_runtime_
     runtime_repo_root = Path(server.__file__).resolve().parents[3]
     monkeypatch.setenv("ATTRACTOR_HOST_REPO_ROOT", "/Users/chris/tinker/sparkspawn")
     monkeypatch.setenv("ATTRACTOR_RUNTIME_REPO_ROOT", str(runtime_repo_root))
-    translated = project_chat.resolve_runtime_workspace_path("/home/chris/tinker/sparkspawn/frontend")
+    translated = resolve_runtime_workspace_path("/home/chris/tinker/sparkspawn/frontend")
 
     assert translated == str((runtime_repo_root / "frontend").resolve(strict=False))
 
@@ -261,7 +264,7 @@ def test_build_codex_runtime_environment_isolates_home_and_seeds_runtime_state(
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
-    env = project_chat.build_codex_runtime_environment()
+    env = build_codex_runtime_environment()
 
     assert env["HOME"] == str(runtime_root)
     assert env["CODEX_HOME"] == str(runtime_root / ".codex")
@@ -289,7 +292,7 @@ def test_build_codex_runtime_environment_falls_back_to_host_codex_home_when_seed
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
-    env = project_chat.build_codex_runtime_environment()
+    env = build_codex_runtime_environment()
 
     assert env["CODEX_HOME"] == str(runtime_root / ".codex")
     assert (runtime_root / ".codex" / "auth.json").read_text(encoding="utf-8") == '{"token":"host-seed"}'

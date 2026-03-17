@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import shutil
 import threading
-import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -315,7 +314,10 @@ class ProjectChatRepository:
         with self._lock:
             summaries: list[ConversationSummary] = []
             for state_path in project_paths.conversations_dir.glob("*/state.json"):
-                state = self.read_state(state_path.parent.name, normalized_project_path)
+                try:
+                    state = self.read_state(state_path.parent.name, normalized_project_path)
+                except ValueError:
+                    continue
                 if state is None:
                     continue
                 if state.project_path != normalized_project_path:

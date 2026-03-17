@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 from attractor.engine import Checkpoint, save_checkpoint

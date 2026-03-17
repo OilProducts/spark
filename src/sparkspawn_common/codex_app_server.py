@@ -290,7 +290,6 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
         return events
 
     if method == "item/commandExecution/outputDelta":
-        events.extend(drain_pending_reasoning_fallback())
         delta = as_non_empty_string(params.get("delta"))
         if delta:
             state.command_chunks.append(delta)

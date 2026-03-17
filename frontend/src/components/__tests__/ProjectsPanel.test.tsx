@@ -456,7 +456,7 @@ describe('ProjectsPanel', () => {
 
     expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Show this message immediately.')
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Thinking...')
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Sending...')
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Send')
 
     resolveTurnResponse?.(
       new Response(
