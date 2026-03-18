@@ -559,7 +559,7 @@ def test_chat_session_turn_uses_final_answer_item_but_waits_for_turn_completed(m
     assert result.assistant_message == '{"assistant_message":"Ack"}'
 
 
-def test_chat_session_turn_accepts_final_answer_item_without_turn_completed_after_idle(monkeypatch) -> None:
+def test_chat_session_turn_accepts_final_answer_item_without_turn_completed_after_short_quiet_period(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
         [
@@ -585,7 +585,7 @@ def test_chat_session_turn_accepts_final_answer_item_without_turn_completed_afte
             None,
         ]
     )
-    monotonic_values = iter([0.0, 0.1, 0.2, 1.3])
+    monotonic_values = iter([0.0, 0.1, 0.2, 0.8])
 
     monkeypatch.setattr(session, "_ensure_process", lambda: None)
 
@@ -593,7 +593,8 @@ def test_chat_session_turn_accepts_final_answer_item_without_turn_completed_afte
         session._thread_id = "thread-123"
         session._thread_initialized = True
 
-    monkeypatch.setattr(project_chat_session, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(project_chat_session, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 60.0)
+    monkeypatch.setattr(project_chat_session, "FINAL_ANSWER_SETTLE_TIMEOUT_SECONDS", 0.5)
     monkeypatch.setattr(project_chat_session.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
     monkeypatch.setattr(
@@ -890,7 +891,7 @@ def test_chat_session_turn_completes_on_turn_completed_after_final_answer(monkey
     assert result.assistant_message == '{"assistant_message":"Ack"}'
 
 
-def test_chat_session_turn_accepts_final_answer_without_turn_completed_after_idle(monkeypatch) -> None:
+def test_chat_session_turn_accepts_final_answer_without_turn_completed_after_short_quiet_period(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
         [
@@ -916,7 +917,7 @@ def test_chat_session_turn_accepts_final_answer_without_turn_completed_after_idl
             None,
         ]
     )
-    monotonic_values = iter([0.0, 0.1, 0.2, 1.3])
+    monotonic_values = iter([0.0, 0.1, 0.2, 0.8])
 
     monkeypatch.setattr(session, "_ensure_process", lambda: None)
 
@@ -924,7 +925,8 @@ def test_chat_session_turn_accepts_final_answer_without_turn_completed_after_idl
         session._thread_id = "thread-123"
         session._thread_initialized = True
 
-    monkeypatch.setattr(project_chat_session, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(project_chat_session, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 60.0)
+    monkeypatch.setattr(project_chat_session, "FINAL_ANSWER_SETTLE_TIMEOUT_SECONDS", 0.5)
     monkeypatch.setattr(project_chat_session.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
     monkeypatch.setattr(
@@ -1296,8 +1298,9 @@ def test_flow_run_request_routes_create_and_approve_launch(
     server.PROJECT_CHAT._write_state(state)
     snapshot = server.PROJECT_CHAT.get_snapshot(conversation_id, str(project_dir))
 
-    async def fake_flow_exists(self, flow_name: str) -> bool:
-        return flow_name == "implement-spec.dot"
+    flows_dir = server.get_settings().flows_dir
+    flows_dir.mkdir(parents=True, exist_ok=True)
+    (flows_dir / "implement-spec.dot").write_text("digraph implement_spec { start -> done; }\n", encoding="utf-8")
 
     start_calls: list[dict[str, object | None]] = []
 
@@ -1325,7 +1328,6 @@ def test_flow_run_request_routes_create_and_approve_launch(
         )
         return {"status": "started", "run_id": "run-flow-123"}
 
-    monkeypatch.setattr(attractor_client.AttractorApiClient, "flow_exists", fake_flow_exists)
     monkeypatch.setattr(attractor_client.AttractorApiClient, "start_pipeline", fake_start_pipeline)
 
     create_response = api_client.post(

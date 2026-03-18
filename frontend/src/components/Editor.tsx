@@ -654,37 +654,51 @@ export function Editor() {
                     ) : null}
                 </div>
             ) : (
-                <ReactFlow
-                    className="flow-canvas"
-                    style={{ background: 'transparent' }}
-                    nodes={nodes}
-                    edges={edges}
-                    onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
-                    onConnect={onConnect}
-                    onSelectionChange={onSelectionChange}
-                    nodeTypes={nodeTypes}
-                    edgeTypes={edgeTypes}
-                    defaultEdgeOptions={{
-                        type: EDGE_TYPE,
-                        className: EDGE_CLASS,
-                        interactionWidth: EDGE_INTERACTION_WIDTH,
-                    }}
-                    elevateEdgesOnSelect
-                    fitView
-                    colorMode="light"
-                    onlyRenderVisibleElements={onlyRenderVisibleElements}
-                    minZoom={0.1}
-                    maxZoom={1.5}
-                >
-                    <Controls />
-                    <MiniMap
-                        nodeColor="hsl(var(--muted))"
-                        maskColor="hsl(var(--background)/0.5)"
-                        className="flow-minimap"
-                    />
-                    <Background gap={20} size={1} color="hsl(var(--border))" />
-                </ReactFlow>
+                flowName ? (
+                    <ReactFlow
+                        className="flow-canvas"
+                        style={{ background: 'transparent' }}
+                        nodes={nodes}
+                        edges={edges}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        onConnect={onConnect}
+                        onSelectionChange={onSelectionChange}
+                        nodeTypes={nodeTypes}
+                        edgeTypes={edgeTypes}
+                        defaultEdgeOptions={{
+                            type: EDGE_TYPE,
+                            className: EDGE_CLASS,
+                            interactionWidth: EDGE_INTERACTION_WIDTH,
+                        }}
+                        elevateEdgesOnSelect
+                        fitView
+                        colorMode="light"
+                        onlyRenderVisibleElements={onlyRenderVisibleElements}
+                        minZoom={0.1}
+                        maxZoom={1.5}
+                    >
+                        <Controls />
+                        <MiniMap
+                            nodeColor="hsl(var(--muted))"
+                            maskColor="hsl(var(--background)/0.5)"
+                            className="flow-minimap"
+                        />
+                        <Background gap={20} size={1} color="hsl(var(--border))" />
+                    </ReactFlow>
+                ) : (
+                    <div
+                        data-testid="editor-no-flow-state"
+                        className="flex h-full items-center justify-center p-6"
+                    >
+                        <div className="max-w-md rounded-lg border border-dashed border-border bg-background/70 px-6 py-5 text-center shadow-sm">
+                            <p className="text-sm font-medium text-foreground">Select a flow to begin authoring.</p>
+                            <p className="mt-2 text-sm text-muted-foreground">
+                                Flows are shared authoring assets. Choose one from the Flows panel.
+                            </p>
+                        </div>
+                    </div>
+                )
             )}
 
             {viewMode === 'editor' && flowName && (

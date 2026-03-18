@@ -8,6 +8,11 @@ import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { resolveModelStylesheetPreview, type ModelValueSource } from '@/lib/modelStylesheetPreview'
 import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
+import {
+    fetchWorkspaceFlowValidated,
+    updateWorkspaceFlowLaunchPolicyValidated,
+    type FlowLaunchPolicy,
+} from '@/lib/workspaceClient'
 import { InspectorScaffold } from './InspectorScaffold'
 import { StylesheetEditor } from './StylesheetEditor'
 import { AdvancedKeyValueEditor } from './AdvancedKeyValueEditor'
@@ -17,6 +22,8 @@ interface GraphSettingsProps {
 }
 
 const GRAPH_ATTR_HELP: Record<string, string> = {
+    'sparkspawn.title': 'Human-friendly flow title stored in the DOT metadata.',
+    'sparkspawn.description': 'Short flow description stored in the DOT metadata.',
     goal: 'Primary graph intent used by handlers that read graph-level goal context.',
     label: 'Display label for graph metadata; does not override node labels.',
     default_max_retry: 'Used only when a node omits max_retries. Node max_retries takes precedence.',
@@ -38,6 +45,8 @@ const MODEL_VALUE_SOURCE_LABEL: Record<ModelValueSource, string> = {
 }
 
 const CORE_GRAPH_ATTR_KEYS = new Set<string>([
+    'sparkspawn.title',
+    'sparkspawn.description',
     'goal',
     'label',
     'model_stylesheet',
@@ -53,6 +62,12 @@ const CORE_GRAPH_ATTR_KEYS = new Set<string>([
     'ui_default_llm_provider',
     'ui_default_reasoning_effort',
 ])
+
+const FLOW_LAUNCH_POLICY_LABELS: Record<FlowLaunchPolicy, string> = {
+    agent_requestable: 'Agent Requestable',
+    trigger_only: 'Trigger Only',
+    disabled: 'Disabled',
+}
 
 export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [isOpen, setIsOpen] = useState(false)
@@ -75,6 +90,14 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const saveTimer = useRef<number | null>(null)
     const hasPendingSave = useRef(false)
     const autosaveScopeRef = useRef<string | null>(null)
+    const activeFlowRef = useRef<string | null>(activeFlow)
+    const [launchPolicy, setLaunchPolicy] = useState<FlowLaunchPolicy>('disabled')
+    const [launchPolicySource, setLaunchPolicySource] = useState<FlowLaunchPolicy | null>(null)
+    const [launchPolicyEffective, setLaunchPolicyEffective] = useState<FlowLaunchPolicy>('disabled')
+    const [launchPolicyLoadState, setLaunchPolicyLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+    const [launchPolicyLoadError, setLaunchPolicyLoadError] = useState<string | null>(null)
+    const [launchPolicySaveState, setLaunchPolicySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+    const [launchPolicySaveError, setLaunchPolicySaveError] = useState<string | null>(null)
     const flowProviderFallback = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
     const canApplyDefaults = !!activeProjectPath && !!activeFlow && viewMode === 'editor'
     const toolHookPreWarning = getToolHookCommandWarning(graphAttrs['tool_hooks.pre'] || '')
@@ -87,6 +110,39 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         () => toExtensionAttrEntries(graphAttrs as Record<string, unknown>, CORE_GRAPH_ATTR_KEYS),
         [graphAttrs],
     )
+    const launchPolicyStatusMessage = useMemo(() => {
+        if (!activeFlow) {
+            return 'Select a flow to manage workspace launch policy.'
+        }
+        if (launchPolicyLoadState === 'idle' || launchPolicyLoadState === 'loading') {
+            return 'Loading workspace launch policy...'
+        }
+        if (launchPolicyLoadState === 'error') {
+            return launchPolicyLoadError || 'Unable to load workspace launch policy.'
+        }
+        if (launchPolicySaveState === 'saving') {
+            return 'Saving workspace launch policy...'
+        }
+        if (launchPolicySaveState === 'error') {
+            return launchPolicySaveError || 'Unable to save workspace launch policy.'
+        }
+        if (launchPolicySaveState === 'saved') {
+            return `Workspace launch policy saved as ${FLOW_LAUNCH_POLICY_LABELS[launchPolicy]}.`
+        }
+        if (launchPolicySource === null) {
+            return `No catalog entry yet. Effective policy is ${FLOW_LAUNCH_POLICY_LABELS[launchPolicyEffective]}.`
+        }
+        return `Effective policy: ${FLOW_LAUNCH_POLICY_LABELS[launchPolicyEffective]}.`
+    }, [
+        activeFlow,
+        launchPolicy,
+        launchPolicyEffective,
+        launchPolicyLoadError,
+        launchPolicyLoadState,
+        launchPolicySaveError,
+        launchPolicySaveState,
+        launchPolicySource,
+    ])
     const stylesheetPreview = useMemo(() => {
         return resolveModelStylesheetPreview(
             graphAttrs.model_stylesheet || '',
@@ -144,6 +200,90 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
 
         const dot = generateDot(activeFlow, updatedNodes, getEdges(), graphAttrs)
         void saveFlowContent(activeFlow, dot)
+    }
+
+    useEffect(() => {
+        activeFlowRef.current = activeFlow
+    }, [activeFlow])
+
+    useEffect(() => {
+        if (!activeFlow) {
+            setLaunchPolicy('disabled')
+            setLaunchPolicySource(null)
+            setLaunchPolicyEffective('disabled')
+            setLaunchPolicyLoadState('idle')
+            setLaunchPolicyLoadError(null)
+            setLaunchPolicySaveState('idle')
+            setLaunchPolicySaveError(null)
+            return
+        }
+
+        let cancelled = false
+        setLaunchPolicyLoadState('loading')
+        setLaunchPolicyLoadError(null)
+        setLaunchPolicySaveState('idle')
+        setLaunchPolicySaveError(null)
+
+        void (async () => {
+            try {
+                const response = await fetchWorkspaceFlowValidated(activeFlow, 'human')
+                if (cancelled || activeFlowRef.current !== activeFlow) {
+                    return
+                }
+                const nextLaunchPolicy = response.launch_policy ?? response.effective_launch_policy
+                setLaunchPolicy(nextLaunchPolicy)
+                setLaunchPolicySource(response.launch_policy)
+                setLaunchPolicyEffective(response.effective_launch_policy)
+                setLaunchPolicyLoadState('ready')
+            } catch (error) {
+                if (cancelled || activeFlowRef.current !== activeFlow) {
+                    return
+                }
+                setLaunchPolicy('disabled')
+                setLaunchPolicySource(null)
+                setLaunchPolicyEffective('disabled')
+                setLaunchPolicyLoadState('error')
+                setLaunchPolicyLoadError(error instanceof Error ? error.message : 'Unable to load workspace launch policy.')
+            }
+        })()
+
+        return () => {
+            cancelled = true
+        }
+    }, [activeFlow])
+
+    const handleLaunchPolicyChange = async (nextPolicy: FlowLaunchPolicy) => {
+        if (!activeFlow || launchPolicyLoadState !== 'ready') {
+            return
+        }
+        const flowName = activeFlow
+        const previousPolicy = launchPolicy
+        const previousSource = launchPolicySource
+        const previousEffective = launchPolicyEffective
+        setLaunchPolicy(nextPolicy)
+        setLaunchPolicySaveState('saving')
+        setLaunchPolicySaveError(null)
+
+        try {
+            const response = await updateWorkspaceFlowLaunchPolicyValidated(flowName, nextPolicy)
+            if (activeFlowRef.current !== flowName) {
+                return
+            }
+            const savedPolicy = response.launch_policy ?? response.effective_launch_policy
+            setLaunchPolicy(savedPolicy)
+            setLaunchPolicySource(response.launch_policy)
+            setLaunchPolicyEffective(response.effective_launch_policy)
+            setLaunchPolicySaveState('saved')
+        } catch (error) {
+            if (activeFlowRef.current !== flowName) {
+                return
+            }
+            setLaunchPolicy(previousPolicy)
+            setLaunchPolicySource(previousSource)
+            setLaunchPolicyEffective(previousEffective)
+            setLaunchPolicySaveState('error')
+            setLaunchPolicySaveError(error instanceof Error ? error.message : 'Unable to save workspace launch policy.')
+        }
     }
 
     useEffect(() => {
@@ -267,6 +407,73 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                         className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         placeholder="./test-app"
                     />
+                </div>
+            </div>
+
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Flow Metadata
+            </div>
+            <div className="mt-3 space-y-3">
+                <div className="space-y-1">
+                    <label htmlFor="graph-attr-sparkspawn-title" className="text-xs font-medium text-foreground">
+                        Title
+                    </label>
+                    <input
+                        id="graph-attr-sparkspawn-title"
+                        value={graphAttrs['sparkspawn.title'] || ''}
+                        onChange={(event) => updateGraphAttr('sparkspawn.title', event.target.value)}
+                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        placeholder="Execution Planning"
+                    />
+                    <p data-testid="graph-attr-help-sparkspawn.title" className="text-[11px] text-muted-foreground">
+                        {GRAPH_ATTR_HELP['sparkspawn.title']}
+                    </p>
+                </div>
+                <div className="space-y-1">
+                    <label htmlFor="graph-attr-sparkspawn-description" className="text-xs font-medium text-foreground">
+                        Description
+                    </label>
+                    <textarea
+                        id="graph-attr-sparkspawn-description"
+                        value={graphAttrs['sparkspawn.description'] || ''}
+                        onChange={(event) => updateGraphAttr('sparkspawn.description', event.target.value)}
+                        rows={3}
+                        className="min-h-20 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        placeholder="Turn an approved spec edit proposal into an execution plan."
+                    />
+                    <p data-testid="graph-attr-help-sparkspawn.description" className="text-[11px] text-muted-foreground">
+                        {GRAPH_ATTR_HELP['sparkspawn.description']}
+                    </p>
+                </div>
+            </div>
+
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Workspace Launch Policy
+            </div>
+            <div className="mt-3 space-y-2">
+                <div className="space-y-1">
+                    <label htmlFor="graph-launch-policy" className="text-xs font-medium text-foreground">
+                        Launch Policy
+                    </label>
+                    <select
+                        id="graph-launch-policy"
+                        value={launchPolicy}
+                        onChange={(event) => void handleLaunchPolicyChange(event.target.value as FlowLaunchPolicy)}
+                        disabled={!activeFlow || launchPolicyLoadState !== 'ready' || launchPolicySaveState === 'saving'}
+                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
+                    >
+                        {Object.entries(FLOW_LAUNCH_POLICY_LABELS).map(([value, label]) => (
+                            <option key={value} value={value}>
+                                {label}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+                <div
+                    data-testid="graph-launch-policy-status"
+                    className="rounded-md border border-border/70 bg-muted/20 px-2 py-1 text-[11px] text-muted-foreground"
+                >
+                    {launchPolicyStatusMessage}
                 </div>
             </div>
 

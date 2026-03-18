@@ -12,7 +12,7 @@ from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.interviewer import Answer, QueueInterviewer
 
 BRANCHING_CONDITION_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "branching_condition_workflow.dot"
-REFERENCE_WORKFLOW_FIXTURE = Path(__file__).resolve().parents[2] / "flows" / "reference-1.1-01.dot"
+REFERENCE_WORKFLOW_FIXTURE = Path(__file__).resolve().parents[2] / "starter-flows" / "parallel-review.dot"
 
 
 class _WorkflowBackend:

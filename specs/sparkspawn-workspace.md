@@ -271,9 +271,14 @@ Spark Spawn may expose a narrow first-party CLI surface for agent-created worksp
 ```text
 sparkspawn-workspace spec-proposal --conversation <adjective-noun> --json <payload.json>
 sparkspawn-workspace flow-run --conversation <adjective-noun> --flow <flow_name> --summary <text> [--goal-file <path>|--goal -] [--model <model>]
+sparkspawn-workspace list-flows [--text]
+sparkspawn-workspace describe-flow --flow <flow_name> [--text]
+sparkspawn-workspace get-flow --flow <flow_name> [--text]
 ```
 
-These commands create pending review artifacts. They must not approve, reject, or launch downstream execution by themselves.
+The artifact-creation commands create pending review artifacts. They must not approve, reject, or launch downstream execution by themselves.
+
+The flow-discovery commands are read-only. They expose only workspace-requestable flows to the agent surface by default, while the workspace retains separate global policy for flows that are trigger-only or disabled.
 
 ### 13.2 Automatic Placement
 

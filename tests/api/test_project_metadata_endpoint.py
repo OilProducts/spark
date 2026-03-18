@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import attractor.api.server as server
+import workspace.storage as workspace_storage
 
 
 def _write_flow(name: str, content: str = "digraph G { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }\n") -> None:
@@ -163,6 +164,34 @@ def test_project_registry_endpoints_persist_project_metadata(
     assert project_file.exists()
     project_text = project_file.read_text(encoding="utf-8")
     assert f'project_path = "{project_dir}"' in project_text
+
+
+def test_project_registry_logs_malformed_project_records(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken_project_dir = server.get_settings().projects_dir / "broken-project"
+    broken_project_dir.mkdir(parents=True, exist_ok=True)
+    broken_project_file = broken_project_dir / "project.toml"
+    broken_project_file.write_text('project_path = "unterminated\n', encoding="utf-8")
+
+    logged_messages: list[str] = []
+
+    def fake_warning(message: str, *args: object) -> None:
+        if args:
+            logged_messages.append(message % args)
+            return
+        logged_messages.append(message)
+
+    monkeypatch.setattr(workspace_storage.LOGGER, "warning", fake_warning)
+
+    response = api_client.get("/workspace/api/projects")
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert len(logged_messages) == 2
+    assert f"Failed to read project record from {broken_project_file}:" in logged_messages[0]
+    assert logged_messages[1] == f"Skipping project record with missing or invalid project_path in {broken_project_file}"
 
 
 def test_project_state_endpoint_updates_favorite_and_conversation_metadata(

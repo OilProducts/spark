@@ -130,5 +130,6 @@ describe('App shell behavior', () => {
     expect(useStore.getState().viewMode).toBe('editor')
     expect(screen.getByTestId('canvas-workspace-primary')).toBeVisible()
     expect(screen.getByTestId('inspector-panel')).toBeVisible()
+    expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
   })
 })

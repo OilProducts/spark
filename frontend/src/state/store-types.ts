@@ -36,6 +36,8 @@ export interface LogEntry {
 }
 
 export interface GraphAttrs {
+    'sparkspawn.title'?: string
+    'sparkspawn.description'?: string
     goal?: string
     label?: string
     model_stylesheet?: string

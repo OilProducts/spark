@@ -35,10 +35,10 @@ digraph G {
 """
 
 SPEC_VALID_NO_OP_SAVE_FIXTURES: tuple[str, ...] = (
-    "flows/reference-1.1-03-graph-attrs.dot",
-    "flows/reference-1.1-03-manager-and-human.dot",
+    "tests/fixtures/flows/reference-1.1-03-graph-attrs.dot",
+    "starter-flows/manager-human.dot",
     "tests/fixtures/reference-1.1-03-subgraph-defaults.dot",
-    "flows/reference-1.1-03-extension-attrs.dot",
+    "tests/fixtures/flows/reference-1.1-03-extension-attrs.dot",
 )
 
 ADVANCED_ATTR_ROUND_TRIP_FLOW = """

@@ -4,13 +4,13 @@ from attractor.dsl import DiagnosticSeverity, parse_dot, validate_graph
 
 
 BASELINE_FIXTURES: dict[str, tuple[str, ...]] = {
-    "flows/reference-1.1-03-graph-attrs.dot": (
+    "tests/fixtures/flows/reference-1.1-03-graph-attrs.dot": (
         "stack.child_dotfile",
         "stack.child_workdir",
         "tool_hooks.pre",
         "tool_hooks.post",
     ),
-    "flows/reference-1.1-03-manager-and-human.dot": (
+    "starter-flows/manager-human.dot": (
         "manager.poll_interval",
         "manager.max_cycles",
         "manager.stop_condition",
@@ -22,7 +22,7 @@ BASELINE_FIXTURES: dict[str, tuple[str, ...]] = {
         "node [",
         "edge [",
     ),
-    "flows/reference-1.1-03-extension-attrs.dot": (
+    "tests/fixtures/flows/reference-1.1-03-extension-attrs.dot": (
         "ui_extension.graph_policy",
         "custom.node_behavior",
         "custom.edge_hint",
@@ -45,4 +45,3 @@ def test_raw_dot_baseline_fixture_set_exists_and_is_spec_valid() -> None:
         diagnostics = validate_graph(graph)
         error_rules = {d.rule_id for d in diagnostics if d.severity == DiagnosticSeverity.ERROR}
         assert error_rules == set(), f"Fixture {rel_path} has validation errors: {sorted(error_rules)}"
-

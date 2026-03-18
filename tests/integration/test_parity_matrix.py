@@ -210,7 +210,7 @@ class TestParityMatrixSubset:
         assert graph.nodes["task"].attrs["llm_model"].value == "gpt-5"
 
     def test_reference_workflow_includes_llm_conditions_human_and_parallel(self):
-        flow_path = Path(__file__).resolve().parents[2] / "flows" / "reference-1.1-01.dot"
+        flow_path = Path(__file__).resolve().parents[2] / "starter-flows" / "parallel-review.dot"
         assert flow_path.exists(), f"Missing reference workflow: {flow_path}"
 
         graph = parse_dot(flow_path.read_text(encoding="utf-8"))
@@ -254,7 +254,7 @@ class TestParityMatrixSubset:
         assert {"branch_docs", "branch_tests"}.issubset(branch_ids)
 
     def test_reference_workflow_cancel_branch_exits_before_parallel(self):
-        flow_path = Path(__file__).resolve().parents[2] / "flows" / "reference-1.1-01.dot"
+        flow_path = Path(__file__).resolve().parents[2] / "starter-flows" / "parallel-review.dot"
         graph = parse_dot(flow_path.read_text(encoding="utf-8"))
 
         interviewer = QueueInterviewer([Answer(selected_values=["Cancel"])])

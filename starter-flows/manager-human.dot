@@ -1,5 +1,5 @@
-digraph reference_1_1_03_manager_and_human {
-  graph [label="Raw DOT manager and human baseline", stack.child_dotfile="child/manager.dot", stack.child_workdir="/tmp/project-child", ui_default_llm_model="gpt-5.3-codex-spark", ui_default_llm_provider="openai"];
+digraph manager_human {
+  graph [label="Manager + Human", stack.child_dotfile="child/manager.dot", stack.child_workdir="/tmp/project-child", ui_default_llm_model="gpt-5.3-codex-spark", ui_default_llm_provider="openai"];
   approval [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, human.default_choice="Approve", join_policy="wait_all", label="approval", max_parallel=4, prompt="Approve rollout?", reasoning_effort="high", shape="hexagon"];
   exit [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="exit", max_parallel=4, reasoning_effort="high", shape="Msquare"];
   implement [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="implement", max_parallel=4, prompt="Implement approved updates", reasoning_effort="high", shape="box"];

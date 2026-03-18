@@ -10,10 +10,12 @@ from attractor.dsl.dot_lint import (
 
 
 def test_flows_are_canonical_dot() -> None:
-    flows_dir = Path(__file__).resolve().parents[2] / "flows"
-    dot_paths = find_dot_paths(flows_dir)
+    repo_root = Path(__file__).resolve().parents[2]
+    starter_flows_dir = repo_root / "starter-flows"
+    fixture_flows_dir = repo_root / "tests" / "fixtures" / "flows"
+    dot_paths = find_dot_paths(starter_flows_dir) + find_dot_paths(fixture_flows_dir)
 
-    assert dot_paths, "expected at least one .dot file under flows/"
+    assert dot_paths, "expected at least one .dot file under starter-flows/ or tests/fixtures/flows/"
     non_canonical = find_non_canonical_dot_diffs(dot_paths)
 
     assert not non_canonical, "non-canonical .dot files detected:\n" + "\n".join(non_canonical)

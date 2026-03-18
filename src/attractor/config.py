@@ -40,11 +40,7 @@ def resolve_settings(
     default_config_dir = default_data_dir / "config"
     default_runtime_dir = default_data_dir / "runtime"
     default_logs_dir = default_data_dir / "logs"
-    default_flows_dir = (
-        (project_root / "flows")
-        if (project_root / ".git").exists()
-        else default_data_dir / "flows"
-    )
+    default_flows_dir = default_data_dir / "flows"
 
     default_ui_dir = _resolve_default_ui_dir(project_root)
     legacy_ui_index = project_root / "index.html"
@@ -126,7 +122,7 @@ def ensure_writable_directory(path: Path, label: str) -> None:
 
 
 def _detect_project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def _resolve_default_ui_dir(project_root: Path) -> Optional[Path]:

@@ -195,6 +195,50 @@ describe('ProjectsPanel', () => {
     })
   })
 
+  it('surfaces a project registry bootstrap error on refresh', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects') && !url.includes('/workspace/api/projects/conversations') && !url.includes('/workspace/api/projects/metadata') && !url.includes('/workspace/api/projects/register') && !url.includes('/workspace/api/projects/pick-directory')) {
+          return new Response(JSON.stringify({ detail: 'workspace registry unavailable' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/projects/pick-directory')) {
+          return new Response(JSON.stringify({ status: 'canceled' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abcdef0' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    render(<ProjectsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-panel-error')).toHaveTextContent('workspace registry unavailable')
+    })
+    expect(useStore.getState().projectRegistry).toEqual({})
+  })
+
   it('lets the operator resize sidebar sections in desktop layout', async () => {
     render(<ProjectsPanel />)
 

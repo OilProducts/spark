@@ -8,11 +8,24 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
+from attractor.api.flow_sources import resolve_flow_path
 from sparkspawn_common.runtime import normalize_project_path, resolve_runtime_workspace_path
 from workspace.attractor_client import AttractorApiClient, AttractorApiError
+from workspace.flow_catalog import (
+    ALLOWED_LAUNCH_POLICIES,
+    LAUNCH_POLICY_AGENT_REQUESTABLE,
+    FlowDescription,
+    FlowSummary,
+    list_flow_summaries,
+    normalize_launch_policy,
+    read_flow_description,
+    read_flow_launch_policy,
+    read_flow_raw,
+    set_flow_launch_policy,
+)
 from workspace.project_chat import ProjectChatService, TurnInProgressError
 from workspace.storage import (
     delete_project_flow_binding,
@@ -85,6 +98,10 @@ class ProjectFlowBindingUpsertRequest(BaseModel):
     flow_name: str
 
 
+class FlowLaunchPolicyUpdateRequest(BaseModel):
+    launch_policy: str
+
+
 class ExecutionCardReviewRequest(BaseModel):
     project_path: str
     disposition: str
@@ -95,6 +112,8 @@ class ExecutionCardReviewRequest(BaseModel):
 
 class WorkspaceSettings(Protocol):
     data_dir: Path
+    config_dir: Path
+    flows_dir: Path
 
 
 @dataclass(frozen=True)
@@ -158,15 +177,47 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"Unknown workspace flow trigger: {trigger}")
         return normalized_trigger
 
+    def _validate_flow_surface(surface: Optional[str]) -> str:
+        normalized_surface = str(surface or "human").strip().lower()
+        if normalized_surface not in {"human", "agent"}:
+            raise HTTPException(status_code=400, detail="Flow surface must be 'human' or 'agent'.")
+        return normalized_surface
+
     async def _resolve_trigger_flow(project_path: str, trigger: str, fallback_flow: str) -> str:
         project = await asyncio.to_thread(read_project_record, deps.get_settings().data_dir, project_path)
         flow_bindings = project.flow_bindings if project is not None else {}
         return (flow_bindings.get(trigger) or "").strip() or fallback_flow
 
     async def _ensure_flow_exists(flow_name: str) -> None:
-        exists = await deps.get_attractor_client().flow_exists(flow_name)
-        if not exists:
+        flow_path = resolve_flow_path(deps.get_settings().flows_dir, flow_name)
+        if not flow_path.exists():
             raise HTTPException(status_code=404, detail=f"Unknown flow: {flow_name}")
+
+    def _serialize_flow_summary(flow: FlowSummary) -> dict[str, object]:
+        return {
+            "name": flow.name,
+            "title": flow.title,
+            "description": flow.description,
+            "launch_policy": flow.launch_policy,
+            "effective_launch_policy": flow.effective_launch_policy,
+            "graph_label": flow.graph_label,
+            "graph_goal": flow.graph_goal,
+        }
+
+    def _serialize_flow_description(flow: FlowDescription) -> dict[str, object]:
+        return {
+            **_serialize_flow_summary(flow),
+            "node_count": flow.node_count,
+            "edge_count": flow.edge_count,
+            "features": {
+                "has_human_gate": flow.features.has_human_gate,
+                "has_manager_loop": flow.features.has_manager_loop,
+            },
+        }
+
+    def _filter_flow_surface_or_404(flow: FlowSummary | FlowDescription, surface: str) -> None:
+        if surface == "agent" and flow.effective_launch_policy != LAUNCH_POLICY_AGENT_REQUESTABLE:
+            raise HTTPException(status_code=404, detail=f"Unknown flow: {flow.name}")
 
     async def _wait_for_pipeline_terminal_status(run_id: str) -> dict[str, Any]:
         client = deps.get_attractor_client()
@@ -407,6 +458,73 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
     async def list_projects():
         projects = await asyncio.to_thread(list_project_records, deps.get_settings().data_dir)
         return [_serialize_project_record(project) for project in projects]
+
+    @router.get("/api/flows")
+    async def list_workspace_flows(surface: Optional[str] = None):
+        normalized_surface = _validate_flow_surface(surface)
+        flows = await asyncio.to_thread(
+            list_flow_summaries,
+            deps.get_settings().flows_dir,
+            deps.get_settings().config_dir,
+        )
+        if normalized_surface == "agent":
+            flows = [flow for flow in flows if flow.effective_launch_policy == LAUNCH_POLICY_AGENT_REQUESTABLE]
+        return [_serialize_flow_summary(flow) for flow in flows]
+
+    @router.get("/api/flows/{flow_name}")
+    async def get_workspace_flow(flow_name: str, surface: Optional[str] = None):
+        normalized_surface = _validate_flow_surface(surface)
+        try:
+            flow = await asyncio.to_thread(
+                read_flow_description,
+                deps.get_settings().flows_dir,
+                deps.get_settings().config_dir,
+                flow_name,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown flow: {flow_name}") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _filter_flow_surface_or_404(flow, normalized_surface)
+        return _serialize_flow_description(flow)
+
+    @router.get("/api/flows/{flow_name}/raw")
+    async def get_workspace_flow_raw(flow_name: str, surface: Optional[str] = None):
+        normalized_surface = _validate_flow_surface(surface)
+        try:
+            policy_state = await asyncio.to_thread(read_flow_launch_policy, deps.get_settings().config_dir, flow_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _filter_flow_surface_or_404(policy_state, normalized_surface)
+        try:
+            resolved_flow_name, raw_content = await asyncio.to_thread(
+                read_flow_raw,
+                deps.get_settings().flows_dir,
+                flow_name,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown flow: {flow_name}") from exc
+        return PlainTextResponse(raw_content, media_type="text/vnd.graphviz", headers={"X-Sparkspawn-Flow-Name": resolved_flow_name})
+
+    @router.put("/api/flows/{flow_name}/launch-policy")
+    async def put_workspace_flow_launch_policy(flow_name: str, req: FlowLaunchPolicyUpdateRequest):
+        try:
+            normalized_launch_policy = normalize_launch_policy(req.launch_policy)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await _ensure_flow_exists(flow_name)
+        policy_state = await asyncio.to_thread(
+            set_flow_launch_policy,
+            deps.get_settings().config_dir,
+            flow_name,
+            normalized_launch_policy,
+        )
+        return {
+            "name": policy_state.name,
+            "launch_policy": policy_state.launch_policy,
+            "effective_launch_policy": policy_state.effective_launch_policy,
+            "allowed_launch_policies": sorted(ALLOWED_LAUNCH_POLICIES),
+        }
 
     @router.post("/api/projects/register")
     async def register_project(req: ProjectRegistrationRequest):

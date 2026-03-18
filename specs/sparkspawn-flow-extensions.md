@@ -58,6 +58,8 @@ The following graph attributes are persisted Spark Spawn metadata:
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
+| `sparkspawn.title` | String | `""` | Spark Spawn display title for flow discovery and authoring surfaces. Falls back to graph `label` when unset. |
+| `sparkspawn.description` | String | `""` | Spark Spawn short description for flow discovery and authoring surfaces. Falls back to graph `goal` when unset. |
 | `ui_default_llm_model` | String | `""` | Flow-level default model id shown or seeded by Spark Spawn authoring tools. |
 | `ui_default_llm_provider` | String | `""` | Flow-level default provider key shown or seeded by Spark Spawn authoring tools. |
 | `ui_default_reasoning_effort` | String | `""` | Flow-level default reasoning-effort value shown or seeded by Spark Spawn authoring tools. |
@@ -93,7 +95,22 @@ This is the critical distinction:
 - `ui_default_*` is metadata
 - explicit node attrs are semantic runtime inputs
 
-## 8. Validation and Ignore Rules
+## 8. Workspace Launch Policy
+
+Whether an agent may independently initiate a flow is not stored in DOT.
+
+Launch policy is a workspace-global Spark Spawn setting, currently modeled outside the flow file in the workspace flow catalog. This keeps the flow file self-describing while preserving host-product control over exposure policy.
+
+Current launch-policy values are:
+- `agent_requestable`
+- `trigger_only`
+- `disabled`
+
+This is intentionally separate from persisted DOT metadata:
+- `sparkspawn.title` and `sparkspawn.description` describe the flow itself
+- launch policy describes how the workspace exposes that flow in a given installation
+
+## 9. Validation and Ignore Rules
 
 Attractor implementations that do not understand Spark Spawn extension attributes may ignore them unless a host product explicitly adopts them.
 
@@ -104,7 +121,7 @@ Spark Spawn tooling may:
 
 Unknown Spark Spawn extension attributes should have explicit handling rules in Spark Spawn tooling rather than accidental or inconsistent behavior.
 
-## 9. Compatibility and Forward-Compatibility Constraints
+## 10. Compatibility and Forward-Compatibility Constraints
 
 Flows containing only `ui_default_*` metadata remain executable as standard Attractor flows because those attributes are non-semantic.
 
@@ -115,13 +132,15 @@ Future Spark Spawn extension keys should declare:
 
 New keys should avoid accidental collision with future Attractor core attributes.
 
-## 10. Examples
+## 11. Examples
 
 Example:
 
 ```dot
 digraph Example {
     graph [
+        sparkspawn.title="Plan Generation",
+        sparkspawn.description="Generate an execution plan from approved workspace context.",
         ui_default_llm_model="gpt-5.2",
         ui_default_llm_provider="openai",
         ui_default_reasoning_effort="high"
@@ -136,6 +155,7 @@ digraph Example {
 ```
 
 In this example:
+- the `sparkspawn.title` and `sparkspawn.description` keys are persisted non-semantic discovery metadata
 - the `ui_default_*` keys are persisted non-semantic metadata
 - runtime semantics do not change unless Spark Spawn later materializes explicit node attrs
 - an Attractor-only consumer may parse the flow and ignore the Spark Spawn metadata

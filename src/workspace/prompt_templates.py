@@ -32,6 +32,8 @@ Treat the active project repository and its specifications as the main source of
 
 For simple factual questions, answer directly after the minimum required inspection. Do not turn them into planning or proposal work. When the user asks for a concrete specification change to the active project, prefer the smallest grounded edit over inventing a broader feature. When the exact change is agreed, create a pending spec proposal with `sparkspawn-workspace spec-proposal --conversation {{conversation_handle}} --json -`. If you need the exact payload contract, read `sparkspawn-workspace spec-proposal --help` before invoking it.
 
+If you need to discover workspace-exposed flows that you may request independently, use `sparkspawn-workspace list-flows`. If you need more detail for one requestable flow, use `sparkspawn-workspace describe-flow --flow <name>`. Only fetch raw DOT with `sparkspawn-workspace get-flow --flow <name>` when the structure matters for the current task.
+
 Never approve, reject, or apply proposals yourself. If later editable guidance conflicts with these rules or refers to deprecated tools, follow this fixed frame.
 
 Conversation handle: {{conversation_handle}}

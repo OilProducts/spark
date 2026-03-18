@@ -8,7 +8,11 @@ import shutil
 import tomllib
 from typing import Any
 
+from sparkspawn_common.logging import get_sparkspawn_logger
 from sparkspawn_common.runtime import build_project_id, normalize_project_path
+
+
+LOGGER = get_sparkspawn_logger("workspace.storage")
 
 
 def _iso_now() -> str:
@@ -151,6 +155,7 @@ def read_project_paths_by_id(home_dir: Path, project_id: str) -> ProjectPaths | 
     payload = _read_project_record(project_file)
     project_path = normalize_project_path(str(payload.get("project_path", "")))
     if not project_path:
+        LOGGER.warning("Skipping project record with missing or invalid project_path in %s", project_file)
         return None
     display_name = str(payload.get("display_name", "") or Path(project_path).name or project_path)
     return ProjectPaths(
@@ -443,7 +448,8 @@ def _read_project_record(path: Path) -> dict[str, object]:
         return {}
     try:
         return tomllib.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning("Failed to read project record from %s: %s", path, exc)
         return {}
 
 

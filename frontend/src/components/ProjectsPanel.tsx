@@ -1058,8 +1058,12 @@ export function HomePanel() {
                     return
                 }
                 hydrateProjectRegistry(projects.map(toHydratedProjectRecord))
-            } catch {
-                // Leave the in-memory registry untouched if the initial load fails.
+                setPanelError(null)
+            } catch (error) {
+                if (isCancelled) {
+                    return
+                }
+                setPanelError(extractApiErrorMessage(error, "Unable to load available projects."))
             }
         }
 

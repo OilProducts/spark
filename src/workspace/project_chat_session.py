@@ -24,6 +24,7 @@ from workspace.project_chat_models import (
 
 
 CHAT_TURN_IDLE_TIMEOUT_SECONDS = codex_app_server.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS
+FINAL_ANSWER_SETTLE_TIMEOUT_SECONDS = 0.5
 APP_SERVER_REQUEST_TIMEOUT_SECONDS = 15.0
 LEGACY_OPT_OUT_NOTIFICATION_METHODS = [
     "codex/event/agent_message",
@@ -363,6 +364,11 @@ class CodexAppServerChatSession:
                 line = self._read_line(0.1)
                 if line is None:
                     idle_for = time.monotonic() - last_activity_at
+                    if (
+                        stream_state.can_finalize_without_turn_completed()
+                        and idle_for >= FINAL_ANSWER_SETTLE_TIMEOUT_SECONDS
+                    ):
+                        break
                     if idle_for >= CHAT_TURN_IDLE_TIMEOUT_SECONDS:
                         if stream_state.can_finalize_without_turn_completed():
                             break

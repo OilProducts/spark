@@ -1,9 +1,10 @@
 import { GraphSettings } from '@/components/GraphSettings'
 import { SettingsPanel } from '@/components/SettingsPanel'
 import { StylesheetEditor } from '@/components/StylesheetEditor'
+import { generateDot } from '@/lib/dotUtils'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -41,10 +42,16 @@ const resetGraphSettingsState = () => {
     recentProjectPaths: ['/tmp/project-graph-settings'],
     graphAttrs: {},
     graphAttrErrors: {},
+    saveState: 'idle',
+    saveErrorMessage: null,
+    saveErrorKind: null,
     diagnostics: [],
     nodeDiagnostics: {},
     edgeDiagnostics: {},
     hasValidationErrors: false,
+    saveState: 'idle',
+    saveErrorMessage: null,
+    saveErrorKind: null,
     uiDefaults: {
       llm_provider: 'openai',
       llm_model: 'gpt-5.3',
@@ -60,12 +67,47 @@ describe('Graph and settings behavior', () => {
     resetGraphSettingsState()
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(JSON.stringify({ status: 'saved' }), {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+        const method = init?.method ?? 'GET'
+        if (url.includes('/workspace/api/flows/') && url.includes('/launch-policy') && method === 'PUT') {
+          return new Response(
+            JSON.stringify({
+              name: 'implement-spec.dot',
+              launch_policy: 'agent_requestable',
+              effective_launch_policy: 'agent_requestable',
+              allowed_launch_policies: ['agent_requestable', 'trigger_only', 'disabled'],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          )
+        }
+        if (url.includes('/workspace/api/flows/')) {
+          return new Response(
+            JSON.stringify({
+              name: 'implement-spec.dot',
+              title: 'Implement Spec',
+              description: 'Turn approved spec edits into execution plans.',
+              launch_policy: null,
+              effective_launch_policy: 'disabled',
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          )
+        }
+        return new Response(JSON.stringify({ status: 'saved' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
+        })
+      }),
     )
   })
 
@@ -151,5 +193,57 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByTestId('graph-model-stylesheet-diagnostics')).toHaveTextContent(
       'Invalid stylesheet selector syntax.',
     )
+  })
+
+  it('surfaces DOT-backed title and description fields without leaking them into extension attrs', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().setGraphAttrs({
+        'sparkspawn.title': '  Execution Planning  ',
+        'sparkspawn.description': '  Turn approved spec edits into execution plans.  ',
+        custom_attr: 'keep me',
+      } as any)
+    })
+
+    wrapWithFlowProvider(<GraphSettings inline />)
+
+    expect(screen.getByLabelText('Title')).toHaveValue('Execution Planning')
+    expect(screen.getByLabelText('Description')).toHaveValue(
+      'Turn approved spec edits into execution plans.',
+    )
+
+    await user.click(screen.getByTestId('graph-advanced-toggle'))
+    expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()
+    expect(screen.getByTestId('graph-extension-attrs-list')).toBeVisible()
+    expect(screen.getByTestId('graph-extension-attr-key-0')).toHaveValue('custom_attr')
+    expect(screen.queryByText('sparkspawn.title')).not.toBeInTheDocument()
+    expect(screen.queryByText('sparkspawn.description')).not.toBeInTheDocument()
+
+    const dot = generateDot('implement-spec.dot', [], [], useStore.getState().graphAttrs)
+    expect(dot).toContain('sparkspawn.title="Execution Planning"')
+    expect(dot).toContain('sparkspawn.description="Turn approved spec edits into execution plans."')
+  })
+
+  it('loads and saves workspace launch policy without touching flow save state', async () => {
+    const user = userEvent.setup()
+    wrapWithFlowProvider(<GraphSettings inline />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
+        'No catalog entry yet. Effective policy is Disabled.',
+      )
+    })
+    expect(screen.getByLabelText('Launch Policy')).toHaveValue('disabled')
+
+    await user.selectOptions(screen.getByLabelText('Launch Policy'), 'agent_requestable')
+
+    await waitFor(() => {
+      expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
+        'Workspace launch policy saved as Agent Requestable.',
+      )
+    })
+
+    expect(useStore.getState().saveState).toBe('idle')
+    expect(screen.getByLabelText('Launch Policy')).toHaveValue('agent_requestable')
   })
 })

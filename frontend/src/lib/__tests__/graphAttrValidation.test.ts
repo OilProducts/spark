@@ -7,6 +7,10 @@ import { describe, expect, it } from 'vitest'
 
 describe('graphAttrValidation', () => {
   it('normalizes graph attrs using key-specific rules', () => {
+    expect(normalizeGraphAttrValue('sparkspawn.title', '  Execution Planning  ')).toBe('Execution Planning')
+    expect(normalizeGraphAttrValue('sparkspawn.description', '  Turn spec edits into plans.  ')).toBe(
+      'Turn spec edits into plans.',
+    )
     expect(normalizeGraphAttrValue('goal', '  Ship release  ')).toBe('Ship release')
     expect(normalizeGraphAttrValue('default_max_retry', ' 003 ')).toBe('3')
     expect(normalizeGraphAttrValue('default_max_retry', 'abc')).toBe('abc')

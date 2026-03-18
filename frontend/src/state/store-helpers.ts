@@ -45,6 +45,8 @@ const GRAPH_FIDELITY_OPTION_SET = new Set<string>([
 ])
 
 const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
+    'sparkspawn.title',
+    'sparkspawn.description',
     'goal',
     'label',
     'retry_target',

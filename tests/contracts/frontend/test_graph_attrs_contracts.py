@@ -25,6 +25,8 @@ console.log(dot)
 
 def test_graph_attr_edit_round_trip_serializes_and_rehydrates_item_6_1_04() -> None:
     graph_attrs_input: dict[str, object] = {
+        "sparkspawn.title": "Execution Planning",
+        "sparkspawn.description": "Turn approved spec edits into execution plans.",
         "goal": "Ship release",
         "label": "Release Graph",
         "model_stylesheet": ".fast { llm_model: fast-model; }",
@@ -41,6 +43,8 @@ def test_graph_attr_edit_round_trip_serializes_and_rehydrates_item_6_1_04() -> N
     payload = preview_pipeline(flow)
     graph_attrs = payload["graph"]["graph_attrs"]
 
+    assert graph_attrs["sparkspawn.title"] == "Execution Planning"
+    assert graph_attrs["sparkspawn.description"] == "Turn approved spec edits into execution plans."
     assert graph_attrs["goal"] == "Ship release"
     assert graph_attrs["label"] == "Release Graph"
     assert graph_attrs["model_stylesheet"] == ".fast { llm_model: fast-model; }"

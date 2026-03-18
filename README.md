@@ -30,7 +30,8 @@ The UI also supports a direct authoring workflow: Home -> Editor -> Execution ->
 - [src/attractor/](/Users/chris/tinker/sparkspawn/src/attractor): Attractor runtime, pipeline engine, handlers, CLI, and mounted Attractor API
 - [src/workspace/](/Users/chris/tinker/sparkspawn/src/workspace): Spark Spawn workspace service, conversations, review artifacts, trigger bindings, and mounted Workspace API
 - [frontend/](/Users/chris/tinker/sparkspawn/frontend): React 19 + Vite UI
-- [flows/](/Users/chris/tinker/sparkspawn/flows): sample and reference `.dot` flows, including planning flows
+- [starter-flows/](/Users/chris/tinker/sparkspawn/starter-flows): curated starter `.dot` flows intended for first-run seeding
+- [tests/fixtures/flows/](/Users/chris/tinker/sparkspawn/tests/fixtures/flows): repo-only `.dot` fixtures used by tests and local development
 - [tests/](/Users/chris/tinker/sparkspawn/tests): backend tests, UI contracts, and acceptance assets
 - [specs/](/Users/chris/tinker/sparkspawn/specs): Attractor, workspace, frontend, and storage specifications
 
@@ -89,7 +90,7 @@ uv run sparkspawn serve \
   --port 8000 \
   --reload \
   --data-dir ~/.sparkspawn \
-  --flows-dir ./flows \
+  --flows-dir ~/.sparkspawn/flows \
   --ui-dir ./frontend/dist
 ```
 
@@ -191,9 +192,12 @@ pip install dist/*.whl
 ## Notes
 
 - Flow files are stored as canonical DOT and validated before save.
+- Spark Spawn flow self-description lives in DOT via `sparkspawn.title` and `sparkspawn.description`, while workspace launch policy is stored separately in `~/.sparkspawn/config/flow-catalog.toml`.
+- The agent-facing workspace CLI exposes curated flow discovery commands with JSON default output: `sparkspawn-workspace list-flows`, `sparkspawn-workspace describe-flow --flow <name>`, and `sparkspawn-workspace get-flow --flow <name>`.
 - The editor supports both structured editing and raw DOT editing, including semantic-equivalence safety checks during handoff.
 - The Runs view is intended for historical inspection, diagnostics, artifact browsing, and replaying execution context.
-- Example planning flows live in [flows/plan-generation.dot](/Users/chris/tinker/sparkspawn/flows/plan-generation.dot) and [flows/implement-spec.dot](/Users/chris/tinker/sparkspawn/flows/implement-spec.dot).
+- Starter flow templates live in [starter-flows/plan-generation.dot](/Users/chris/tinker/sparkspawn/starter-flows/plan-generation.dot), [starter-flows/parallel-review.dot](/Users/chris/tinker/sparkspawn/starter-flows/parallel-review.dot), and [starter-flows/manager-human.dot](/Users/chris/tinker/sparkspawn/starter-flows/manager-human.dot).
+- Repo-only advanced/test fixtures live under [tests/fixtures/flows/](/Users/chris/tinker/sparkspawn/tests/fixtures/flows).
 
 ## Project Status
 

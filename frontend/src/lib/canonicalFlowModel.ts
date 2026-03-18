@@ -352,6 +352,8 @@ export function sanitizeGraphId(flowName: string): string {
 }
 
 const KNOWN_GRAPH_ATTR_KEYS = new Set<string>([
+    'sparkspawn.title',
+    'sparkspawn.description',
     'goal',
     'label',
     'model_stylesheet',
@@ -476,6 +478,8 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
     let dot = `digraph ${sanitizeGraphId(flowName)} {\n`
 
     const graphAttrLines = [
+        formatGraphAttr('sparkspawn.title', readStringAttr(graphAttrs, 'sparkspawn.title')),
+        formatGraphAttr('sparkspawn.description', readStringAttr(graphAttrs, 'sparkspawn.description')),
         formatGraphAttr('goal', readStringAttr(graphAttrs, 'goal')),
         formatGraphAttr('label', readStringAttr(graphAttrs, 'label')),
         formatGraphAttr('model_stylesheet', readStringAttr(graphAttrs, 'model_stylesheet')),

@@ -27,14 +27,21 @@ import {
   fetchPipelineStatusValidated,
   fetchPreviewValidated,
   pickProjectDirectoryValidated,
+  fetchWorkspaceFlowListValidated,
+  fetchWorkspaceFlowRawValidated,
+  fetchWorkspaceFlowValidated,
   rejectSpecEditProposalValidated,
   reviewExecutionCardValidated,
+  updateWorkspaceFlowLaunchPolicyValidated,
   fetchRunsListValidated,
   sendConversationTurnValidated,
   fetchRuntimeStatusValidated,
   parseConversationSnapshotResponse,
   parseFlowListResponse,
   parseFlowPayloadResponse,
+  parseWorkspaceFlowListResponse,
+  parseWorkspaceFlowRawResponse,
+  parseWorkspaceFlowResponse,
   parsePipelineGraphResponse,
   parseProjectDirectoryPickResponse,
   parsePipelineStatusResponse,
@@ -387,6 +394,10 @@ describe('Frontend contract behavior', () => {
     const requiredEndpointPatterns: Array<{ endpoint: string; pattern: RegExp }> = [
       { endpoint: '/attractor/api/flows', pattern: /fetch\(\s*['"]\/attractor\/api\/flows['"]|fetchFlowListValidated\(/ },
       { endpoint: '/attractor/api/flows/{name}', pattern: /fetch\(\s*`\/attractor\/api\/flows\/\$\{encodeURIComponent\([^)]+\)\}`|fetchFlowPayloadValidated\(/ },
+      { endpoint: '/workspace/api/flows', pattern: /fetchWorkspaceFlowListValidated\(|fetch\(\s*`?\/workspace\/api\/flows\?surface=/ },
+      { endpoint: '/workspace/api/flows/{flow_name}', pattern: /fetchWorkspaceFlowValidated\(|fetch\(\s*`?\/workspace\/api\/flows\/\$\{encodeURIComponent\([^)]+\)\}\?surface=/ },
+      { endpoint: '/workspace/api/flows/{flow_name}/raw', pattern: /fetchWorkspaceFlowRawValidated\(|fetch\(\s*`?\/workspace\/api\/flows\/\$\{encodeURIComponent\([^)]+\)\}\/raw\?surface=/ },
+      { endpoint: '/workspace/api/flows/{flow_name}/launch-policy', pattern: /updateWorkspaceFlowLaunchPolicyValidated\(|fetch\(\s*`?\/workspace\/api\/flows\/\$\{encodeURIComponent\([^)]+\)\}\/launch-policy`/ },
       { endpoint: '/workspace/api/conversations/{id}', pattern: /fetchConversationSnapshotValidated\(/ },
       { endpoint: '/workspace/api/conversations/{id} (DELETE)', pattern: /deleteConversationValidated\(/ },
       { endpoint: '/workspace/api/projects/pick-directory', pattern: /pickProjectDirectoryValidated\(/ },
@@ -423,6 +434,9 @@ describe('Frontend contract behavior', () => {
       { requirement: 'schema assertion helper', pattern: /function\s+expectObjectRecord\s*\(/ },
       { requirement: 'flows list response validator', pattern: /function\s+parseFlowListResponse\s*\(/ },
       { requirement: 'flow payload response validator', pattern: /function\s+parseFlowPayloadResponse\s*\(/ },
+      { requirement: 'workspace flow list response validator', pattern: /function\s+parseWorkspaceFlowListResponse\s*\(/ },
+      { requirement: 'workspace flow detail response validator', pattern: /function\s+parseWorkspaceFlowResponse\s*\(/ },
+      { requirement: 'workspace flow raw response validator', pattern: /function\s+parseWorkspaceFlowRawResponse\s*\(/ },
       { requirement: 'preview response validator', pattern: /function\s+parsePreviewResponse\s*\(/ },
       { requirement: 'pipeline start response validator', pattern: /function\s+parsePipelineStartResponse\s*\(/ },
       { requirement: 'pipeline status response validator', pattern: /function\s+parsePipelineStatusResponse\s*\(/ },
@@ -439,6 +453,10 @@ describe('Frontend contract behavior', () => {
       { requirement: 'project directory picker response validator', pattern: /function\s+parseProjectDirectoryPickResponse\s*\(/ },
       { requirement: 'validated flows adapter', pattern: /function\s+fetchFlowListValidated\s*\(/ },
       { requirement: 'validated flow adapter', pattern: /function\s+fetchFlowPayloadValidated\s*\(/ },
+      { requirement: 'validated workspace flow list adapter', pattern: /function\s+fetchWorkspaceFlowListValidated\s*\(/ },
+      { requirement: 'validated workspace flow detail adapter', pattern: /function\s+fetchWorkspaceFlowValidated\s*\(/ },
+      { requirement: 'validated workspace flow raw adapter', pattern: /function\s+fetchWorkspaceFlowRawValidated\s*\(/ },
+      { requirement: 'validated workspace flow launch policy adapter', pattern: /function\s+updateWorkspaceFlowLaunchPolicyValidated\s*\(/ },
       { requirement: 'validated conversation snapshot adapter', pattern: /function\s+fetchConversationSnapshotValidated\s*\(/ },
       { requirement: 'validated conversation delete adapter', pattern: /function\s+deleteConversationValidated\s*\(/ },
       { requirement: 'validated project directory picker adapter', pattern: /function\s+pickProjectDirectoryValidated\s*\(/ },
@@ -469,6 +487,37 @@ describe('Frontend contract behavior', () => {
     expect(() => parseFlowListResponse({})).toThrow(ApiSchemaError)
     expect(parseFlowPayloadResponse({ content: 'digraph G {}' })).toEqual({ name: '', content: 'digraph G {}' })
     expect(() => parseFlowPayloadResponse({})).toThrow(ApiSchemaError)
+    expect(parseWorkspaceFlowListResponse([
+      {
+        name: 'plan-generation.dot',
+        title: 'Execution Planning',
+        description: 'Turn an approved spec edit proposal into an execution plan.',
+        launch_policy: null,
+        effective_launch_policy: 'disabled',
+      },
+    ])).toMatchObject([
+      {
+        name: 'plan-generation.dot',
+        title: 'Execution Planning',
+        description: 'Turn an approved spec edit proposal into an execution plan.',
+        launch_policy: null,
+        effective_launch_policy: 'disabled',
+      },
+    ])
+    expect(() => parseWorkspaceFlowListResponse({})).toThrow(ApiSchemaError)
+    expect(parseWorkspaceFlowResponse({
+      name: 'plan-generation.dot',
+      title: 'Execution Planning',
+      description: 'Turn an approved spec edit proposal into an execution plan.',
+      launch_policy: 'trigger_only',
+      effective_launch_policy: 'trigger_only',
+    })).toMatchObject({
+      name: 'plan-generation.dot',
+      launch_policy: 'trigger_only',
+      effective_launch_policy: 'trigger_only',
+    })
+    expect(parseWorkspaceFlowRawResponse('digraph G {}')).toBe('digraph G {}')
+    expect(() => parseWorkspaceFlowRawResponse({})).toThrow(ApiSchemaError)
     expect(parsePreviewResponse({ graph: { nodes: [], edges: [] } }).status).toBe('ok')
     expect(() => parsePreviewResponse({ graph: { nodes: {} } })).toThrow(ApiSchemaError)
     expect(parsePipelineStatusResponse({ pipeline_id: 'run-1', status: 'running' }).pipeline_id).toBe('run-1')
@@ -554,6 +603,80 @@ describe('Frontend contract behavior', () => {
             name: 'alpha flow.dot',
             content: 'digraph G {}',
           }),
+      },
+      {
+        name: 'workspace flow list',
+        invoke: () => fetchWorkspaceFlowListValidated(),
+        expectedUrl: '/workspace/api/flows?surface=human',
+        response: jsonResponse([
+          {
+            name: 'plan-generation.dot',
+            title: 'Execution Planning',
+            description: 'Turn approved spec edits into execution plans.',
+            launch_policy: null,
+            effective_launch_policy: 'disabled',
+          },
+        ]),
+        assertResult: (result) =>
+          expect(result).toMatchObject([
+            {
+              name: 'plan-generation.dot',
+              title: 'Execution Planning',
+              description: 'Turn approved spec edits into execution plans.',
+              launch_policy: null,
+              effective_launch_policy: 'disabled',
+            },
+          ]),
+      },
+      {
+        name: 'workspace flow detail',
+        invoke: () => fetchWorkspaceFlowValidated('alpha flow.dot'),
+        expectedUrl: '/workspace/api/flows/alpha%20flow.dot?surface=human',
+        response: jsonResponse({
+          name: 'alpha flow.dot',
+          title: 'Alpha Flow',
+          description: 'Run the alpha workflow.',
+          launch_policy: 'agent_requestable',
+          effective_launch_policy: 'agent_requestable',
+        }),
+        assertResult: (result) =>
+          expect(result).toMatchObject({
+            name: 'alpha flow.dot',
+            launch_policy: 'agent_requestable',
+            effective_launch_policy: 'agent_requestable',
+          }),
+      },
+      {
+        name: 'workspace flow raw',
+        invoke: () => fetchWorkspaceFlowRawValidated('alpha flow.dot'),
+        expectedUrl: '/workspace/api/flows/alpha%20flow.dot/raw?surface=human',
+        response: new Response('digraph G {}', { status: 200 }),
+        assertResult: (result) => expect(result).toBe('digraph G {}'),
+      },
+      {
+        name: 'workspace flow launch policy update',
+        invoke: () => updateWorkspaceFlowLaunchPolicyValidated('alpha flow.dot', 'agent_requestable'),
+        expectedUrl: '/workspace/api/flows/alpha%20flow.dot/launch-policy',
+        expectedMethod: 'PUT',
+        response: jsonResponse({
+          name: 'alpha flow.dot',
+          title: 'Alpha Flow',
+          description: 'Run the alpha workflow.',
+          launch_policy: 'agent_requestable',
+          effective_launch_policy: 'agent_requestable',
+        }),
+        assertResult: (result) =>
+          expect(result).toMatchObject({
+            name: 'alpha flow.dot',
+            launch_policy: 'agent_requestable',
+            effective_launch_policy: 'agent_requestable',
+          }),
+        assertBody: (init) => {
+          expect(init?.headers).toEqual({ 'Content-Type': 'application/json' })
+          expect(JSON.parse(String(init?.body))).toEqual({
+            launch_policy: 'agent_requestable',
+          })
+        },
       },
       {
         name: 'conversation snapshot',
@@ -5252,4 +5375,5 @@ digraph contract_behavior {
       'conversation-persisted-project',
     )
   })
+
 })

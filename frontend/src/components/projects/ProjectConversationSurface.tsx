@@ -47,6 +47,14 @@ export function ProjectConversationSurface({
                 <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}
                 </p>
+                {panelError ? (
+                    <p
+                        data-testid="project-panel-error"
+                        className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                    >
+                        {panelError}
+                    </p>
+                ) : null}
                 {!activeProjectPath ? (
                     <p className={`rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground ${isNarrowViewport ? '' : 'flex flex-1 items-center'}`}>
                         Select an active project to begin chatting.
@@ -102,9 +110,6 @@ export function ProjectConversationSurface({
                                     {chatSendButtonLabel}
                                 </button>
                             </div>
-                            {panelError ? (
-                                <p className="text-[11px] text-destructive">{panelError}</p>
-                            ) : null}
                         </form>
                     </div>
                 )}
