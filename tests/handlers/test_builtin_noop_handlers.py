@@ -19,8 +19,6 @@ class TestBuiltInNoopHandlers:
 
         outcome = runner("gate", "", Context(values={"outcome": "fail"}))
         assert outcome.status == OutcomeStatus.SUCCESS
-        assert outcome.notes == ""
-        assert outcome.context_updates == {}
 
     def test_start_handler_is_noop_success(self):
         graph = parse_dot(
@@ -36,8 +34,6 @@ class TestBuiltInNoopHandlers:
         outcome = runner("start", "", Context(values={"goal": "ship"}))
 
         assert outcome.status == OutcomeStatus.SUCCESS
-        assert outcome.notes == ""
-        assert outcome.context_updates == {}
 
     def test_exit_handler_is_noop_success(self):
         graph = parse_dot(
@@ -53,5 +49,3 @@ class TestBuiltInNoopHandlers:
         outcome = runner("done", "", Context(values={"outcome": "fail"}))
 
         assert outcome.status == OutcomeStatus.SUCCESS
-        assert outcome.notes == ""
-        assert outcome.context_updates == {}

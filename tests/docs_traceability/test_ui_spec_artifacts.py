@@ -1,4 +1,4 @@
-"""Documentation and spec artifact contracts for UI migration governance.
+"""Documentation and spec artifact contracts for UI traceability governance.
 
 These tests validate documentation structure and traceability contracts rather
 than exact prose wording, so editorial rewording does not cause false failures.
@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 CHECKLIST_ITEM_RE = re.compile(r"(?m)^Checklist item:\s*\[([^\]]+)\]\s*$")
 
 
@@ -81,4 +81,3 @@ def _extract_component_paths(cell_text: str) -> set[str]:
 
 def _extract_ui_spec_refs(cell_text: str) -> set[str]:
     return set(re.findall(r"\b\d+\.\d+\b", cell_text))
-

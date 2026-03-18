@@ -25,7 +25,7 @@ restart:
   docker compose up --build
 
 dot-lint:
-  uv run pytest -q tests/integration/test_dot_format_lint.py
+  uv run pytest -q tests/repo_hygiene/test_dot_format_lint.py
 
 parser-unsupported-grammar:
   uv run pytest -q tests/dsl/test_parser.py -k unsupported_grammar_regression

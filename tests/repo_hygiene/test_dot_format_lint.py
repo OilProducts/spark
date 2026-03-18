@@ -52,7 +52,7 @@ def test_justfile_exposes_dot_lint_recipe() -> None:
     content = justfile.read_text(encoding="utf-8")
 
     assert "\ndot-lint:\n" in f"\n{content}"
-    assert "uv run pytest -q tests/integration/test_dot_format_lint.py" in content
+    assert "uv run pytest -q tests/repo_hygiene/test_dot_format_lint.py" in content
 
 
 def test_ci_runs_dot_lint() -> None:
@@ -64,7 +64,7 @@ def test_ci_runs_dot_lint() -> None:
     has_dot_lint_step = False
     for path in workflow_paths:
         content = path.read_text(encoding="utf-8")
-        if "just dot-lint" in content or "tests/integration/test_dot_format_lint.py" in content:
+        if "just dot-lint" in content or "tests/repo_hygiene/test_dot_format_lint.py" in content:
             has_dot_lint_step = True
             break
 

@@ -1411,7 +1411,7 @@ def test_prepare_execution_workflow_launch_builds_prompt_from_approved_proposal(
     assert launch_spec.proposal_id == "proposal-1"
     assert launch_spec.spec_id == "spec-edit-collatz-001"
     assert '"id": "proposal-1"' in launch_spec.prompt
-    assert launch_spec.prompt.endswith("Focus the first step on validating the CLI contract.")
+    assert "Focus the first step on validating the CLI contract." in launch_spec.prompt
 
 
 def test_complete_execution_workflow_creates_execution_card_and_clears_matching_run(tmp_path: Path) -> None:

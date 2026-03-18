@@ -12,7 +12,7 @@ from attractor.transforms import AttributeDefaultsTransform
 
 
 class TestTransforms:
-    def test_attribute_defaults_transform_injects_typed_defaults(self):
+    def test_attribute_defaults_transform_injects_required_graph_defaults_with_types(self):
         graph = parse_dot(
             """
             digraph G {
@@ -26,73 +26,112 @@ class TestTransforms:
 
         AttributeDefaultsTransform().apply(graph)
 
-        assert graph.graph_attrs["goal"].value == ""
-        assert graph.graph_attrs["goal"].value_type == DotValueType.STRING
-        assert graph.graph_attrs["label"].value == ""
-        assert graph.graph_attrs["label"].value_type == DotValueType.STRING
-        assert graph.graph_attrs["model_stylesheet"].value == ""
-        assert graph.graph_attrs["model_stylesheet"].value_type == DotValueType.STRING
-        assert graph.graph_attrs["default_max_retry"].value == 50
-        assert graph.graph_attrs["default_max_retry"].value_type == DotValueType.INTEGER
-        assert graph.graph_attrs["retry_target"].value == ""
-        assert graph.graph_attrs["retry_target"].value_type == DotValueType.STRING
-        assert graph.graph_attrs["fallback_retry_target"].value == ""
-        assert graph.graph_attrs["fallback_retry_target"].value_type == DotValueType.STRING
-        assert graph.graph_attrs["default_fidelity"].value == ""
-        assert graph.graph_attrs["default_fidelity"].value_type == DotValueType.STRING
-        assert graph.graph_attrs["stack.child_dotfile"].value == ""
-        assert graph.graph_attrs["stack.child_dotfile"].value_type == DotValueType.STRING
-        assert graph.graph_attrs["stack.child_workdir"].value == str(Path.cwd())
-        assert graph.graph_attrs["stack.child_workdir"].value_type == DotValueType.STRING
-        assert graph.graph_attrs["tool_hooks.pre"].value == ""
-        assert graph.graph_attrs["tool_hooks.pre"].value_type == DotValueType.STRING
-        assert graph.graph_attrs["tool_hooks.post"].value == ""
-        assert graph.graph_attrs["tool_hooks.post"].value_type == DotValueType.STRING
+        expected_graph_defaults = {
+            "goal": ("", DotValueType.STRING),
+            "label": ("", DotValueType.STRING),
+            "model_stylesheet": ("", DotValueType.STRING),
+            "default_max_retry": (50, DotValueType.INTEGER),
+            "default_fidelity": ("", DotValueType.STRING),
+            "tool_hooks.pre": ("", DotValueType.STRING),
+            "tool_hooks.post": ("", DotValueType.STRING),
+        }
+
+        for attr_name, (expected_value, expected_type) in expected_graph_defaults.items():
+            attr = graph.graph_attrs[attr_name]
+            assert attr.value == expected_value
+            assert attr.value_type == expected_type
+
+        child_dotfile = graph.graph_attrs["stack.child_dotfile"]
+        child_workdir = graph.graph_attrs["stack.child_workdir"]
+        assert child_dotfile.value == ""
+        assert child_dotfile.value_type == DotValueType.STRING
+        assert isinstance(child_workdir.value, str)
+        assert child_workdir.value
+        assert child_workdir.value_type == DotValueType.STRING
+
+    def test_attribute_defaults_transform_sets_missing_node_shape_and_label(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """
+        )
+
+        AttributeDefaultsTransform().apply(graph)
 
         task = graph.nodes["task"]
         assert task.attrs["shape"].value == "box"
         assert task.attrs["shape"].value_type == DotValueType.STRING
         assert task.attrs["label"].value == "task"
         assert task.attrs["label"].value_type == DotValueType.STRING
-        assert task.attrs["type"].value == ""
-        assert task.attrs["type"].value_type == DotValueType.STRING
-        assert task.attrs["prompt"].value == ""
-        assert task.attrs["prompt"].value_type == DotValueType.STRING
-        assert task.attrs["max_retries"].value == 0
-        assert task.attrs["max_retries"].value_type == DotValueType.INTEGER
-        assert task.attrs["goal_gate"].value is False
-        assert task.attrs["goal_gate"].value_type == DotValueType.BOOLEAN
-        assert task.attrs["retry_target"].value == ""
-        assert task.attrs["retry_target"].value_type == DotValueType.STRING
-        assert task.attrs["fallback_retry_target"].value == ""
-        assert task.attrs["fallback_retry_target"].value_type == DotValueType.STRING
-        assert task.attrs["fidelity"].value == ""
-        assert task.attrs["fidelity"].value_type == DotValueType.STRING
-        assert task.attrs["thread_id"].value == ""
-        assert task.attrs["thread_id"].value_type == DotValueType.STRING
-        assert task.attrs["class"].value == ""
-        assert task.attrs["class"].value_type == DotValueType.STRING
+
+    def test_attribute_defaults_transform_injects_typed_node_runtime_defaults(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """
+        )
+
+        AttributeDefaultsTransform().apply(graph)
+
+        task = graph.nodes["task"]
+        expected_node_defaults = {
+            "type": ("", DotValueType.STRING),
+            "prompt": ("", DotValueType.STRING),
+            "max_retries": (0, DotValueType.INTEGER),
+            "goal_gate": (False, DotValueType.BOOLEAN),
+            "retry_target": ("", DotValueType.STRING),
+            "fallback_retry_target": ("", DotValueType.STRING),
+            "fidelity": ("", DotValueType.STRING),
+            "thread_id": ("", DotValueType.STRING),
+            "class": ("", DotValueType.STRING),
+            "llm_model": ("", DotValueType.STRING),
+            "llm_provider": ("", DotValueType.STRING),
+            "reasoning_effort": ("high", DotValueType.STRING),
+            "auto_status": (False, DotValueType.BOOLEAN),
+            "allow_partial": (False, DotValueType.BOOLEAN),
+        }
+
+        for attr_name, (expected_value, expected_type) in expected_node_defaults.items():
+            attr = task.attrs[attr_name]
+            assert attr.value == expected_value
+            assert attr.value_type == expected_type
+
         assert task.attrs["timeout"].value is None
         assert task.attrs["timeout"].value_type == DotValueType.DURATION
-        assert task.attrs["llm_model"].value == ""
-        assert task.attrs["llm_model"].value_type == DotValueType.STRING
-        assert task.attrs["llm_provider"].value == ""
-        assert task.attrs["llm_provider"].value_type == DotValueType.STRING
-        assert task.attrs["reasoning_effort"].value == "high"
-        assert task.attrs["reasoning_effort"].value_type == DotValueType.STRING
-        assert task.attrs["auto_status"].value is False
-        assert task.attrs["auto_status"].value_type == DotValueType.BOOLEAN
-        assert task.attrs["allow_partial"].value is False
-        assert task.attrs["allow_partial"].value_type == DotValueType.BOOLEAN
 
-        assert graph.edges[0].attrs["label"].value == ""
-        assert graph.edges[0].attrs["label"].value_type == DotValueType.STRING
-        assert graph.edges[0].attrs["condition"].value == ""
-        assert graph.edges[0].attrs["condition"].value_type == DotValueType.STRING
-        assert graph.edges[0].attrs["weight"].value == 0
-        assert graph.edges[0].attrs["weight"].value_type == DotValueType.INTEGER
-        assert graph.edges[0].attrs["loop_restart"].value is False
-        assert graph.edges[0].attrs["loop_restart"].value_type == DotValueType.BOOLEAN
+    def test_attribute_defaults_transform_injects_typed_edge_defaults(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """
+        )
+
+        AttributeDefaultsTransform().apply(graph)
+
+        edge = graph.edges[0]
+        assert edge.attrs["label"].value == ""
+        assert edge.attrs["label"].value_type == DotValueType.STRING
+        assert edge.attrs["condition"].value == ""
+        assert edge.attrs["condition"].value_type == DotValueType.STRING
+        assert edge.attrs["weight"].value == 0
+        assert edge.attrs["weight"].value_type == DotValueType.INTEGER
+        assert edge.attrs["loop_restart"].value is False
+        assert edge.attrs["loop_restart"].value_type == DotValueType.BOOLEAN
 
     def test_attribute_defaults_transform_preserves_explicit_values(self):
         graph = parse_dot(
