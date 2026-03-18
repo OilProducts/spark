@@ -61,6 +61,8 @@ src/attractor/ui_dist/index.html
 src/attractor/ui_dist/vite.svg
 src/attractor/ui_dist/assets/index-QzHsxlbv.css
 src/attractor/ui_dist/assets/index-YgFZEKoH.js
+src/sparkspawn/__init__.py
+src/sparkspawn/cli.py
 src/sparkspawn.egg-info/PKG-INFO
 src/sparkspawn.egg-info/SOURCES.txt
 src/sparkspawn.egg-info/dependency_links.txt
@@ -69,10 +71,13 @@ src/sparkspawn.egg-info/requires.txt
 src/sparkspawn.egg-info/top_level.txt
 src/sparkspawn_common/__init__.py
 src/sparkspawn_common/codex_app_server.py
+src/sparkspawn_common/logging.py
 src/sparkspawn_common/runtime.py
 src/workspace/__init__.py
 src/workspace/api.py
 src/workspace/attractor_client.py
+src/workspace/cli.py
+src/workspace/flow_catalog.py
 src/workspace/project_chat.py
 src/workspace/project_chat_common.py
 src/workspace/project_chat_models.py
@@ -82,3 +87,4 @@ src/workspace/project_chat_storage.py
 src/workspace/prompt_templates.py
 src/workspace/storage.py
 tests/test_cli.py
+tests/test_config.py

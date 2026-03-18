@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 import io
 
-import attractor.cli as cli
+import sparkspawn.cli as spark_cli
+import workspace.cli as workspace_cli
 
 
 def test_run_serve_uses_import_string_when_reload_enabled(monkeypatch, tmp_path: Path) -> None:
@@ -28,7 +29,7 @@ def test_run_serve_uses_import_string_when_reload_enabled(monkeypatch, tmp_path:
     args.ui_dir.mkdir(parents=True, exist_ok=True)
     (args.ui_dir / "index.html").write_text("<html></html>", encoding="utf-8")
 
-    result = cli._run_serve(args)
+    result = spark_cli._run_serve(args)
 
     assert result == 0
     assert calls == [
@@ -60,11 +61,11 @@ def test_run_serve_preserves_runtime_path_env_for_reload(monkeypatch, tmp_path: 
         command="serve",
     )
 
-    cli._run_serve(args)
+    spark_cli._run_serve(args)
 
-    assert cli.os.environ["SPARKSPAWN_HOME"] == str(data_dir.resolve(strict=False))
-    assert cli.os.environ["SPARKSPAWN_FLOWS_DIR"] == str(flows_dir.resolve(strict=False))
-    assert cli.os.environ["SPARKSPAWN_UI_DIR"] == str(ui_dir.resolve(strict=False))
+    assert spark_cli.os.environ["SPARKSPAWN_HOME"] == str(data_dir.resolve(strict=False))
+    assert spark_cli.os.environ["SPARKSPAWN_FLOWS_DIR"] == str(flows_dir.resolve(strict=False))
+    assert spark_cli.os.environ["SPARKSPAWN_UI_DIR"] == str(ui_dir.resolve(strict=False))
 
 
 def test_run_workspace_spec_proposal_posts_payload_and_prints_response(
@@ -118,9 +119,9 @@ def test_run_workspace_spec_proposal_posts_payload_and_prints_response(
             calls.append((url, json))
             return FakeResponse()
 
-    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+    monkeypatch.setattr(workspace_cli.httpx, "Client", FakeClient)
 
-    result = cli.workspace_main(
+    result = workspace_cli.main(
         [
             "spec-proposal",
             "--conversation",
@@ -167,7 +168,7 @@ def test_run_workspace_spec_proposal_rejects_payload_context_fields(
         encoding="utf-8",
     )
 
-    result = cli.workspace_main(["spec-proposal", "--conversation", "amber-otter", "--json", str(payload_path)])
+    result = workspace_cli.main(["spec-proposal", "--conversation", "amber-otter", "--json", str(payload_path)])
 
     assert result == 1
     stderr = json.loads(capsys.readouterr().err)
@@ -208,9 +209,9 @@ def test_run_workspace_spec_proposal_reads_payload_from_stdin(
             calls.append((url, json))
             return FakeResponse()
 
-    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+    monkeypatch.setattr(workspace_cli.httpx, "Client", FakeClient)
     monkeypatch.setattr(
-        cli.sys,
+        workspace_cli.sys,
         "stdin",
         io.StringIO(
             json.dumps(
@@ -228,7 +229,7 @@ def test_run_workspace_spec_proposal_reads_payload_from_stdin(
         ),
     )
 
-    result = cli.workspace_main(["spec-proposal", "--conversation", "quiet-river", "--json", "-"])
+    result = workspace_cli.main(["spec-proposal", "--conversation", "quiet-river", "--json", "-"])
 
     assert result == 0
     assert calls == [
@@ -286,9 +287,9 @@ def test_run_workspace_flow_run_posts_payload_and_prints_response(
             calls.append((url, json))
             return FakeResponse()
 
-    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+    monkeypatch.setattr(workspace_cli.httpx, "Client", FakeClient)
 
-    result = cli.workspace_main(
+    result = workspace_cli.main(
         [
             "flow-run",
             "--conversation",
@@ -355,9 +356,9 @@ def test_workspace_list_flows_defaults_to_json(
             calls.append((method, url, json))
             return FakeResponse()
 
-    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+    monkeypatch.setattr(workspace_cli.httpx, "Client", FakeClient)
 
-    result = cli.workspace_main(["list-flows", "--base-url", "http://127.0.0.1:8000"])
+    result = workspace_cli.main(["list-flows", "--base-url", "http://127.0.0.1:8000"])
 
     assert result == 0
     assert calls == [("GET", "http://127.0.0.1:8000/workspace/api/flows?surface=agent", None)]
@@ -411,9 +412,9 @@ def test_workspace_describe_flow_text_mode_formats_human_readable_output(
             assert url == "http://127.0.0.1:8000/workspace/api/flows/implement-spec.dot?surface=agent"
             return FakeResponse()
 
-    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+    monkeypatch.setattr(workspace_cli.httpx, "Client", FakeClient)
 
-    result = cli.workspace_main(
+    result = workspace_cli.main(
         [
             "describe-flow",
             "--flow",
@@ -456,9 +457,9 @@ def test_workspace_get_flow_defaults_to_json_wrapper(
             assert url == "http://127.0.0.1:8000/workspace/api/flows/implement-spec.dot/raw?surface=agent"
             return FakeResponse()
 
-    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+    monkeypatch.setattr(workspace_cli.httpx, "Client", FakeClient)
 
-    result = cli.workspace_main(
+    result = workspace_cli.main(
         [
             "get-flow",
             "--flow",
@@ -502,11 +503,11 @@ def test_workspace_flow_discovery_returns_not_found_exit_code_on_404(
             assert json is None
             return FakeResponse()
 
-    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+    monkeypatch.setattr(workspace_cli.httpx, "Client", FakeClient)
 
-    result = cli.workspace_main(["describe-flow", "--flow", "missing.dot"])
+    result = workspace_cli.main(["describe-flow", "--flow", "missing.dot"])
 
-    assert result == cli.EXIT_NOT_FOUND
+    assert result == workspace_cli.EXIT_NOT_FOUND
     stderr = json.loads(capsys.readouterr().err)
     assert stderr == {
         "ok": False,

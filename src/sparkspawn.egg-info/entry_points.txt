@@ -1,4 +1,4 @@
 [console_scripts]
-sparkspawn = attractor.cli:main
+sparkspawn = sparkspawn.cli:main
 sparkspawn-ui-release-gate = attractor.ui_release_gate:main
-sparkspawn-workspace = attractor.cli:workspace_main
+sparkspawn-workspace = workspace.cli:main

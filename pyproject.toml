@@ -16,8 +16,8 @@ dependencies = [
 ]
 
 [project.scripts]
-sparkspawn = "attractor.cli:main"
-sparkspawn-workspace = "attractor.cli:workspace_main"
+sparkspawn = "sparkspawn.cli:main"
+sparkspawn-workspace = "workspace.cli:main"
 sparkspawn-ui-release-gate = "attractor.ui_release_gate:main"
 
 [tool.setuptools]
@@ -26,7 +26,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["attractor*", "workspace*", "sparkspawn_common*"]
+include = ["attractor*", "workspace*", "sparkspawn*", "sparkspawn_common*"]
 
 [tool.setuptools.package-data]
 attractor = ["ui_dist/**"]
