@@ -922,6 +922,7 @@ Orchestrates sprint-based iteration by supervising a child pipeline. The manager
 ManagerLoopHandler:
     FUNCTION execute(node, context, graph, logs_root) -> Outcome:
         child_dotfile = graph.attrs.get("stack.child_dotfile")
+        child_workdir = graph.attrs.get("stack.child_workdir", "")
         poll_interval = parse_duration(node.attrs.get("manager.poll_interval", "45s"))
         max_cycles = integer(node.attrs.get("manager.max_cycles", "1000"))
         stop_condition = node.attrs.get("manager.stop_condition", "")
@@ -929,7 +930,14 @@ ManagerLoopHandler:
 
         -- 1. Auto-start child if configured
         IF node.attrs.get("stack.child_autostart", "true") == "true":
-            start_child_pipeline(child_dotfile)
+            resolved_child_workdir = resolve_child_workdir(child_workdir, run.cwd)
+            resolved_child_dotfile = resolve_child_dotfile(
+                child_dotfile,
+                child_workdir,
+                parent_flow_dir,
+                resolved_child_workdir,
+            )
+            start_child_pipeline(resolved_child_dotfile, cwd=resolved_child_workdir)
 
         -- 2. Observation loop
         FOR cycle FROM 1 TO max_cycles:
@@ -962,6 +970,14 @@ The manager pattern implements a **supervisor architecture** where:
 - **Observe** ingests worker telemetry (active stage, outcomes, retry counts, artifacts)
 - **Guard** scores worker progress and routes to continue, intervene, or escalate
 - **Steer** writes intervention instructions to the child's active stage directory
+
+**Child path resolution rules:**
+- `stack.child_workdir` default `cwd` means the current pipeline run working directory, not the host process launch directory.
+- If `stack.child_workdir` is explicitly set and relative, resolve it relative to the current pipeline run working directory.
+- If `stack.child_dotfile` is absolute, use it as-is.
+- If `stack.child_dotfile` is relative and `stack.child_workdir` was explicitly set, resolve it relative to the resolved child workdir.
+- If `stack.child_dotfile` is relative and `stack.child_workdir` was not explicitly set, resolve it relative to the parent flow source file directory when that directory is known.
+- If the parent flow source file directory is not available, fall back to resolving relative `stack.child_dotfile` from the current pipeline run working directory.
 
 ### 4.12 Custom Handlers
 
@@ -1994,8 +2010,8 @@ ASSERT "review" IN checkpoint.completed_nodes
 | `default_fidelity`      | String   | `""`    | Default context fidelity mode when explicitly set. Empty string means unset; runtime fallback is `compact`. |
 | `retry_target`          | String   | `""`    | Node to jump to on unsatisfied exit |
 | `fallback_retry_target` | String   | `""`    | Secondary jump target |
-| `stack.child_dotfile`   | String   | `""`    | Path to child DOT file for supervision |
-| `stack.child_workdir`   | String   | cwd     | Working directory for child run |
+| `stack.child_dotfile`   | String   | `""`    | Path to child DOT file for supervision. Absolute paths are used as-is; relative paths resolve according to the manager-loop child path rules in Section 4.11. |
+| `stack.child_workdir`   | String   | cwd     | Working directory for child run. Default `cwd` means the current pipeline run working directory. |
 | `tool_hooks.pre`        | String   | `""`    | Shell command before each tool call |
 | `tool_hooks.post`       | String   | `""`    | Shell command after each tool call |
 
