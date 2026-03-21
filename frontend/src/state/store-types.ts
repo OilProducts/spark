@@ -49,8 +49,8 @@ export interface GraphAttrs {
     default_fidelity?: string
     'stack.child_dotfile'?: string
     'stack.child_workdir'?: string
-    'tool_hooks.pre'?: string
-    'tool_hooks.post'?: string
+    'tool.hooks.pre'?: string
+    'tool.hooks.post'?: string
     ui_default_llm_model?: string
     ui_default_llm_provider?: string
     ui_default_reasoning_effort?: string

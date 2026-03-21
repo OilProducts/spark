@@ -272,9 +272,18 @@ export function Editor() {
                 label: typeof n.attrs.label === 'string' ? n.attrs.label : n.id,
                 shape: typeof n.attrs.shape === 'string' ? n.attrs.shape : 'box',
                 prompt: typeof n.attrs.prompt === 'string' ? n.attrs.prompt : '',
-                tool_command: typeof n.attrs.tool_command === 'string' ? n.attrs.tool_command : '',
-                'tool_hooks.pre': typeof n.attrs['tool_hooks.pre'] === 'string' ? n.attrs['tool_hooks.pre'] : '',
-                'tool_hooks.post': typeof n.attrs['tool_hooks.post'] === 'string' ? n.attrs['tool_hooks.post'] : '',
+                'tool.command': typeof n.attrs['tool.command'] === 'string' ? n.attrs['tool.command'] : '',
+                'tool.hooks.pre': typeof n.attrs['tool.hooks.pre'] === 'string' ? n.attrs['tool.hooks.pre'] : '',
+                'tool.hooks.post': typeof n.attrs['tool.hooks.post'] === 'string' ? n.attrs['tool.hooks.post'] : '',
+                'tool.artifacts.paths': typeof n.attrs['tool.artifacts.paths'] === 'string'
+                    ? n.attrs['tool.artifacts.paths']
+                    : '',
+                'tool.artifacts.stdout': typeof n.attrs['tool.artifacts.stdout'] === 'string'
+                    ? n.attrs['tool.artifacts.stdout']
+                    : '',
+                'tool.artifacts.stderr': typeof n.attrs['tool.artifacts.stderr'] === 'string'
+                    ? n.attrs['tool.artifacts.stderr']
+                    : '',
                 join_policy: typeof n.attrs.join_policy === 'string' ? n.attrs.join_policy : 'wait_all',
                 error_policy: typeof n.attrs.error_policy === 'string' ? n.attrs.error_policy : 'continue',
                 max_parallel: typeof n.attrs.max_parallel === 'number' || typeof n.attrs.max_parallel === 'string'

@@ -42,8 +42,8 @@ const GRAPH_ATTR_HELP: Record<string, string> = {
     fallback_retry_target: 'Second fallback when retry_target is unset at node and graph scope.',
     'stack.child_dotfile': 'Child flow DOT path used by manager-loop/stack handlers when relevant.',
     'stack.child_workdir': 'Working directory for child flow execution when stack handlers invoke child runs.',
-    'tool_hooks.pre': 'Command run before tool execution unless runtime/node-level override replaces it.',
-    'tool_hooks.post': 'Command run after tool execution unless runtime/node-level override replaces it.',
+    'tool.hooks.pre': 'Command run before tool execution unless runtime/node-level override replaces it.',
+    'tool.hooks.post': 'Command run after tool execution unless runtime/node-level override replaces it.',
 }
 
 const MODEL_VALUE_SOURCE_LABEL: Record<ModelValueSource, string> = {
@@ -66,8 +66,8 @@ const CORE_GRAPH_ATTR_KEYS = new Set<string>([
     'default_fidelity',
     'stack.child_dotfile',
     'stack.child_workdir',
-    'tool_hooks.pre',
-    'tool_hooks.post',
+    'tool.hooks.pre',
+    'tool.hooks.post',
     'ui_default_llm_model',
     'ui_default_llm_provider',
     'ui_default_reasoning_effort',
@@ -114,8 +114,8 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [launchPolicySaveError, setLaunchPolicySaveError] = useState<string | null>(null)
     const flowProviderFallback = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
     const canApplyDefaults = !!activeProjectPath && !!activeFlow && viewMode === 'editor'
-    const toolHookPreWarning = getToolHookCommandWarning(graphAttrs['tool_hooks.pre'] || '')
-    const toolHookPostWarning = getToolHookCommandWarning(graphAttrs['tool_hooks.post'] || '')
+    const toolHookPreWarning = getToolHookCommandWarning(graphAttrs['tool.hooks.pre'] || '')
+    const toolHookPostWarning = getToolHookCommandWarning(graphAttrs['tool.hooks.post'] || '')
     const stylesheetDiagnostics = diagnostics.filter((diag) => diag.rule_id === 'stylesheet_syntax')
     const hasStylesheetValue = Boolean(graphAttrs.model_stylesheet?.trim())
     const showStylesheetFeedback = hasStylesheetValue || stylesheetDiagnostics.length > 0
@@ -829,16 +829,16 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 </label>
                                 <input
                                     id="graph-attr-tool-hooks-pre"
-                                    data-testid="graph-attr-input-tool_hooks.pre"
-                                    value={graphAttrs['tool_hooks.pre'] || ''}
-                                    onChange={(event) => updateGraphAttr('tool_hooks.pre', event.target.value)}
+                                    data-testid="graph-attr-input-tool.hooks.pre"
+                                    value={graphAttrs['tool.hooks.pre'] || ''}
+                                    onChange={(event) => updateGraphAttr('tool.hooks.pre', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
-                                <p data-testid="graph-attr-help-tool_hooks.pre" className="text-[11px] text-muted-foreground">
-                                    {GRAPH_ATTR_HELP['tool_hooks.pre']}
+                                <p data-testid="graph-attr-help-tool.hooks.pre" className="text-[11px] text-muted-foreground">
+                                    {GRAPH_ATTR_HELP['tool.hooks.pre']}
                                 </p>
                                 {toolHookPreWarning && (
-                                    <p data-testid="graph-attr-warning-tool_hooks.pre" className="text-[11px] text-amber-800">
+                                    <p data-testid="graph-attr-warning-tool.hooks.pre" className="text-[11px] text-amber-800">
                                         {toolHookPreWarning}
                                     </p>
                                 )}
@@ -849,16 +849,16 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 </label>
                                 <input
                                     id="graph-attr-tool-hooks-post"
-                                    data-testid="graph-attr-input-tool_hooks.post"
-                                    value={graphAttrs['tool_hooks.post'] || ''}
-                                    onChange={(event) => updateGraphAttr('tool_hooks.post', event.target.value)}
+                                    data-testid="graph-attr-input-tool.hooks.post"
+                                    value={graphAttrs['tool.hooks.post'] || ''}
+                                    onChange={(event) => updateGraphAttr('tool.hooks.post', event.target.value)}
                                     className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
-                                <p data-testid="graph-attr-help-tool_hooks.post" className="text-[11px] text-muted-foreground">
-                                    {GRAPH_ATTR_HELP['tool_hooks.post']}
+                                <p data-testid="graph-attr-help-tool.hooks.post" className="text-[11px] text-muted-foreground">
+                                    {GRAPH_ATTR_HELP['tool.hooks.post']}
                                 </p>
                                 {toolHookPostWarning && (
-                                    <p data-testid="graph-attr-warning-tool_hooks.post" className="text-[11px] text-amber-800">
+                                    <p data-testid="graph-attr-warning-tool.hooks.post" className="text-[11px] text-amber-800">
                                         {toolHookPostWarning}
                                     </p>
                                 )}

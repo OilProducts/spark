@@ -250,7 +250,7 @@ class TestManagerLoopHandler:
             """
             digraph Child {
                 start [shape=Mdiamond]
-                task [shape=parallelogram, tool_command="pwd"]
+                task [shape=parallelogram, tool.command="pwd"]
                 done [shape=Msquare]
 
                 start -> task -> done
@@ -289,7 +289,7 @@ class TestManagerLoopHandler:
             """
             digraph Child {
                 start [shape=Mdiamond]
-                task [shape=parallelogram, tool_command="pwd"]
+                task [shape=parallelogram, tool.command="pwd"]
                 done [shape=Msquare]
 
                 start -> task -> done

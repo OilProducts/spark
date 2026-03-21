@@ -24,9 +24,18 @@ export function TaskNode({ id, data, selected }: NodeProps) {
     const [isEditingDetails, setIsEditingDetails] = useState(false);
     const [draftShape, setDraftShape] = useState<string>((data.shape as string) || 'box');
     const [draftPrompt, setDraftPrompt] = useState<string>((data.prompt as string) || '');
-    const [draftToolCommand, setDraftToolCommand] = useState<string>((data.tool_command as string) || '');
-    const [draftToolHooksPre, setDraftToolHooksPre] = useState<string>((data['tool_hooks.pre'] as string) || '');
-    const [draftToolHooksPost, setDraftToolHooksPost] = useState<string>((data['tool_hooks.post'] as string) || '');
+    const [draftToolCommand, setDraftToolCommand] = useState<string>((data['tool.command'] as string) || '');
+    const [draftToolHooksPre, setDraftToolHooksPre] = useState<string>((data['tool.hooks.pre'] as string) || '');
+    const [draftToolHooksPost, setDraftToolHooksPost] = useState<string>((data['tool.hooks.post'] as string) || '');
+    const [draftToolArtifactsPaths, setDraftToolArtifactsPaths] = useState<string>(
+        (data['tool.artifacts.paths'] as string) || ''
+    );
+    const [draftToolArtifactsStdout, setDraftToolArtifactsStdout] = useState<string>(
+        (data['tool.artifacts.stdout'] as string) || ''
+    );
+    const [draftToolArtifactsStderr, setDraftToolArtifactsStderr] = useState<string>(
+        (data['tool.artifacts.stderr'] as string) || ''
+    );
     const [draftJoinPolicy, setDraftJoinPolicy] = useState<string>((data.join_policy as string) || 'wait_all');
     const [draftErrorPolicy, setDraftErrorPolicy] = useState<string>((data.error_policy as string) || 'continue');
     const [draftMaxParallel, setDraftMaxParallel] = useState<string>(
@@ -140,9 +149,12 @@ export function TaskNode({ id, data, selected }: NodeProps) {
         event.stopPropagation();
         setDraftShape((data.shape as string) || 'box');
         setDraftPrompt((data.prompt as string) || '');
-        setDraftToolCommand((data.tool_command as string) || '');
-        setDraftToolHooksPre((data['tool_hooks.pre'] as string) || '');
-        setDraftToolHooksPost((data['tool_hooks.post'] as string) || '');
+        setDraftToolCommand((data['tool.command'] as string) || '');
+        setDraftToolHooksPre((data['tool.hooks.pre'] as string) || '');
+        setDraftToolHooksPost((data['tool.hooks.post'] as string) || '');
+        setDraftToolArtifactsPaths((data['tool.artifacts.paths'] as string) || '');
+        setDraftToolArtifactsStdout((data['tool.artifacts.stdout'] as string) || '');
+        setDraftToolArtifactsStderr((data['tool.artifacts.stderr'] as string) || '');
         setDraftJoinPolicy((data.join_policy as string) || 'wait_all');
         setDraftErrorPolicy((data.error_policy as string) || 'continue');
         setDraftMaxParallel(data.max_parallel !== undefined ? String(data.max_parallel) : '4');
@@ -176,9 +188,12 @@ export function TaskNode({ id, data, selected }: NodeProps) {
         persistNodeData({
             shape: draftShape,
             prompt: draftPrompt,
-            tool_command: draftToolCommand,
-            'tool_hooks.pre': draftToolHooksPre,
-            'tool_hooks.post': draftToolHooksPost,
+            'tool.command': draftToolCommand,
+            'tool.hooks.pre': draftToolHooksPre,
+            'tool.hooks.post': draftToolHooksPost,
+            'tool.artifacts.paths': draftToolArtifactsPaths,
+            'tool.artifacts.stdout': draftToolArtifactsStdout,
+            'tool.artifacts.stderr': draftToolArtifactsStderr,
             join_policy: draftJoinPolicy,
             error_policy: draftErrorPolicy,
             max_parallel: draftMaxParallel,
@@ -504,14 +519,14 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                                 <div className="space-y-1">
                                                     <label className="text-xs font-medium text-foreground">Pre Hook Override</label>
                                                     <input
-                                                        data-testid="node-toolbar-attr-input-tool_hooks.pre"
+                                                        data-testid="node-toolbar-attr-input-tool.hooks.pre"
                                                         value={draftToolHooksPre}
                                                         onChange={(event) => setDraftToolHooksPre(event.target.value)}
                                                         className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                         placeholder="e.g. ./hooks/pre.sh"
                                                     />
                                                     {draftToolHooksPreWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool_hooks.pre" className="text-[11px] text-amber-800">
+                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.pre" className="text-[11px] text-amber-800">
                                                             {draftToolHooksPreWarning}
                                                         </p>
                                                     )}
@@ -519,17 +534,47 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                                                 <div className="space-y-1">
                                                     <label className="text-xs font-medium text-foreground">Post Hook Override</label>
                                                     <input
-                                                        data-testid="node-toolbar-attr-input-tool_hooks.post"
+                                                        data-testid="node-toolbar-attr-input-tool.hooks.post"
                                                         value={draftToolHooksPost}
                                                         onChange={(event) => setDraftToolHooksPost(event.target.value)}
                                                         className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                         placeholder="e.g. ./hooks/post.sh"
                                                     />
                                                     {draftToolHooksPostWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool_hooks.post" className="text-[11px] text-amber-800">
+                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.post" className="text-[11px] text-amber-800">
                                                             {draftToolHooksPostWarning}
                                                         </p>
                                                     )}
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-xs font-medium text-foreground">Artifact Paths</label>
+                                                    <input
+                                                        data-testid="node-toolbar-attr-input-tool.artifacts.paths"
+                                                        value={draftToolArtifactsPaths}
+                                                        onChange={(event) => setDraftToolArtifactsPaths(event.target.value)}
+                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        placeholder="e.g. dist/**,reports/*.json"
+                                                    />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-xs font-medium text-foreground">Stdout Artifact</label>
+                                                    <input
+                                                        data-testid="node-toolbar-attr-input-tool.artifacts.stdout"
+                                                        value={draftToolArtifactsStdout}
+                                                        onChange={(event) => setDraftToolArtifactsStdout(event.target.value)}
+                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        placeholder="e.g. stdout.txt"
+                                                    />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-xs font-medium text-foreground">Stderr Artifact</label>
+                                                    <input
+                                                        data-testid="node-toolbar-attr-input-tool.artifacts.stderr"
+                                                        value={draftToolArtifactsStderr}
+                                                        onChange={(event) => setDraftToolArtifactsStderr(event.target.value)}
+                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        placeholder="e.g. stderr.txt"
+                                                    />
                                                 </div>
                                             </>
                                         )}

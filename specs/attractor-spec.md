@@ -606,13 +606,14 @@ Every node handler implements a common interface. The execution engine dispatche
 
 ```
 INTERFACE Handler:
-    FUNCTION execute(node, context, graph, logs_root) -> Outcome
+    FUNCTION execute(node, context, graph, logs_root, artifact_store) -> Outcome
 
     -- Parameters:
-    --   node      : The parsed Node with all its attributes
-    --   context   : The shared key-value Context for the pipeline run (read/write)
-    --   graph     : The full parsed Graph (for reading outgoing edges, etc.)
-    --   logs_root : Filesystem path for this run's log/artifact directory
+    --   node           : The parsed Node with all its attributes
+    --   context        : The shared key-value Context for the pipeline run (read/write)
+    --   graph          : The full parsed Graph (for reading outgoing edges, etc.)
+    --   logs_root      : Filesystem path for this run's stage-log directory
+    --   artifact_store : Filesystem-backed writer for additional run artifacts
 
     -- Returns:
     --   Outcome   : The result of execution (see Section 5.2)
@@ -917,21 +918,55 @@ Executes an external tool (shell command, API call, or other non-LLM operation) 
 
 ```
 ToolHandler:
-    FUNCTION execute(node, context, graph, logs_root) -> Outcome:
-        command = node.attrs.get("tool_command", "")
+    FUNCTION execute(node, context, graph, logs_root, artifact_store) -> Outcome:
+        command = node.attrs.get("tool.command", "")
         IF command is empty:
-            RETURN Outcome(status=FAIL, failure_reason="No tool_command specified")
+            RETURN Outcome(status=FAIL, failure_reason="No tool.command specified")
 
-        -- Execute the command
+        pre_hook = first_non_empty(node.attrs.get("tool.hooks.pre"), graph.attrs.get("tool.hooks.pre"))
+        post_hook = first_non_empty(node.attrs.get("tool.hooks.post"), graph.attrs.get("tool.hooks.post"))
+        artifact_patterns = split_csv(node.attrs.get("tool.artifacts.paths", ""))
+        stdout_artifact = node.attrs.get("tool.artifacts.stdout", "")
+        stderr_artifact = node.attrs.get("tool.artifacts.stderr", "")
+
+        IF pre_hook is not empty:
+            pre_result = run_shell_command(pre_hook)
+            IF pre_result.exit_code != 0:
+                write_stage_trace(logs_root, node.id, stdout="")
+                RETURN Outcome(
+                    status=FAIL,
+                    failure_reason="tool pre-hook blocked execution",
+                    context_updates={
+                        "context.tool.output": "",
+                        "context.tool.exit_code": -1
+                    }
+                )
+
         TRY:
             result = run_shell_command(command, timeout=node.timeout)
-            RETURN Outcome(
-                status=SUCCESS,
-                context_updates={"tool.output": result.stdout},
-                notes="Tool completed: " + command
-            )
+            write_stage_trace(logs_root, node.id, stdout=result.stdout)
         CATCH exception:
+            write_stage_trace(logs_root, node.id, stdout=exception.stdout or "")
             RETURN Outcome(status=FAIL, failure_reason=str(exception))
+
+        IF post_hook is not empty:
+            run_shell_command(post_hook)
+
+        IF stdout_artifact is not empty:
+            artifact_store.write_text(node.id, stdout_artifact, result.stdout)
+        IF stderr_artifact is not empty:
+            artifact_store.write_text(node.id, stderr_artifact, result.stderr)
+        IF artifact_patterns is not empty:
+            artifact_store.copy_matches(node.id, cwd=run.cwd, patterns=artifact_patterns)
+
+        RETURN Outcome(
+            status=SUCCESS,
+            context_updates={
+                "context.tool.output": result.stdout,
+                "context.tool.exit_code": result.exit_code
+            },
+            notes="Tool completed: " + command
+        )
 ```
 
 ### 4.11 Manager Loop Handler
@@ -1212,63 +1247,52 @@ Nodes that share the same thread key reuse the same LLM session. Nodes with diff
 
 ### 5.5 Artifact Store
 
-The artifact store provides named, typed storage for large stage outputs that do not belong in the context (which should contain only small scalar values for routing and checkpoint serialization).
+The artifact store is a thin filesystem-backed writer for durable run outputs that do not belong in the checkpointed context.
 
 ```
 ArtifactStore:
-    artifacts : Map<String, (ArtifactInfo, Any)>
-    lock      : ReadWriteLock
-    base_dir  : String or NONE   -- filesystem directory for file-backed artifacts
+    base_dir : String            -- filesystem directory for run artifacts
 
-    FUNCTION store(artifact_id, name, data) -> ArtifactInfo:
-        size = byte_size(data)
-        is_file_backed = (size > FILE_BACKING_THRESHOLD) AND (base_dir is not NONE)
-        IF is_file_backed:
-            write data to "{base_dir}/artifacts/{artifact_id}.json"
-            stored_data = file_path
-        ELSE:
-            stored_data = data
-        info = ArtifactInfo(id=artifact_id, name=name, size=size, is_file_backed=is_file_backed)
-        artifacts[artifact_id] = (info, stored_data)
-        RETURN info
+    FUNCTION write_text(node_id, relative_path, content) -> ArtifactInfo:
+        write text to "{base_dir}/{node_id}/{relative_path}"
+        RETURN metadata_for_written_file(...)
 
-    FUNCTION retrieve(artifact_id) -> Any:
-        IF artifact_id NOT IN artifacts:
-            RAISE "Artifact not found"
-        (info, data) = artifacts[artifact_id]
-        IF info.is_file_backed:
-            RETURN read_json_file(data)
-        RETURN data
+    FUNCTION copy_path(node_id, source_path, relative_path) -> ArtifactInfo:
+        copy file to "{base_dir}/{node_id}/{relative_path}"
+        RETURN metadata_for_written_file(...)
 
-    FUNCTION has(artifact_id) -> Boolean
+    FUNCTION copy_matches(node_id, cwd, patterns) -> List<ArtifactInfo>:
+        FOR EACH relative pattern in patterns:
+            copy matching files under "{base_dir}/{node_id}/captured/"
+        RETURN all_written_metadata
+
     FUNCTION list() -> List<ArtifactInfo>
-    FUNCTION remove(artifact_id)
-    FUNCTION clear()
 
 ArtifactInfo:
-    id              : String
-    name            : String
+    path            : String
     size_bytes      : Integer
-    stored_at       : Timestamp
-    is_file_backed  : Boolean
+    media_type      : String
 ```
 
-The default file-backing threshold is 100KB. Artifacts below this threshold are stored in memory; above it, they are written to disk.
+The artifact store is filesystem-backed only. It is intended for extra durable outputs such as tool-captured files, exported reports, and generated assets. It is not a separate in-memory state system, and it does not replace checkpoint/context persistence.
 
 ### 5.6 Run Directory Structure
 
-Each pipeline execution produces a directory tree for logging, checkpoints, and artifacts:
+Each pipeline execution produces a directory tree for stage logs, checkpoints, and additional artifacts:
 
 ```
-{logs_root}/
-    checkpoint.json              -- Serialized checkpoint after each node
-    manifest.json                -- Pipeline metadata (name, goal, start time)
-    {node_id}/
-        status.json              -- Node execution outcome
-        prompt.md                -- Rendered prompt sent to LLM
-        response.md              -- LLM response text
+{run_root}/
+    logs/
+        checkpoint.json          -- Serialized checkpoint after each node
+        manifest.json            -- Pipeline metadata (name, goal, start time)
+        {node_id}/
+            status.json          -- Node execution outcome
+            prompt.md            -- Rendered prompt sent to LLM
+            response.md          -- LLM response text
+            tool_output.txt      -- Tool stdout trace when applicable
     artifacts/
-        {artifact_id}.json       -- File-backed artifacts
+        {node_id}/
+            ...                  -- Files written through ArtifactStore
 ```
 
 ---
@@ -1685,10 +1709,10 @@ FOR EACH event IN pipeline.events():
 
 ### 9.7 Tool Call Hooks
 
-Graph-level or node-level attributes `tool_hooks.pre` and `tool_hooks.post` specify shell commands executed around each LLM tool call:
+Graph-level or node-level attributes `tool.hooks.pre` and `tool.hooks.post` specify shell commands executed around each tool-node command:
 
-- **Pre-hook:** Executed before every LLM tool call. Receives tool metadata via environment variables and stdin JSON. Exit code 0 means proceed; non-zero means skip the tool call.
-- **Post-hook:** Executed after every LLM tool call. Receives tool metadata and result. Primarily for logging and auditing.
+- **Pre-hook:** Executed before every tool command. Receives tool metadata via environment variables and stdin JSON. Exit code 0 means proceed; non-zero means skip the tool call.
+- **Post-hook:** Executed after every tool command. Receives tool metadata and result. Primarily for logging and auditing.
 
 Pre-hook failures (non-zero exit) skip the tool call and are recorded in the stage log. Post-hook failures do not block the tool call but are recorded.
 
@@ -1850,7 +1874,7 @@ This section defines how to validate that an implementation of this spec is comp
 
 - [ ] Engine resolves the start node and begins execution there
 - [ ] Each node's handler is resolved via shape-to-handler-type mapping
-- [ ] Handler is called with (node, context, graph, logs_root) and returns an Outcome
+- [ ] Handler is called with (node, context, graph, logs_root, artifact_store) and returns an Outcome
 - [ ] Outcome is written to `{logs_root}/{node_id}/status.json`
 - [ ] Edge selection follows the 5-step priority: condition match -> preferred label -> suggested IDs -> weight -> lexical
 - [ ] Engine loops: execute node -> select edge -> advance to next node -> repeat
@@ -1891,7 +1915,8 @@ This section defines how to validate that an implementation of this spec is comp
 - [ ] Context updates are merged after each node execution
 - [ ] Checkpoint is saved after each node completion (current_node, completed_nodes, context, retry counts)
 - [ ] Resume from checkpoint: load checkpoint -> restore state -> continue from current_node
-- [ ] Artifacts are written to `{logs_root}/{node_id}/` (prompt.md, response.md, status.json)
+- [ ] Stage trace is written to `{run_root}/logs/{node_id}/` (prompt.md, response.md, status.json)
+- [ ] Extra run artifacts are written under `{run_root}/artifacts/`
 
 ### 11.8 Human-in-the-Loop
 
@@ -2032,8 +2057,8 @@ ASSERT "review" IN checkpoint.completed_nodes
 | `fallback_retry_target` | String   | `""`    | Secondary jump target |
 | `stack.child_dotfile`   | String   | `""`    | Path to child DOT file for supervision. Absolute paths are used as-is; relative paths resolve according to the manager-loop child path rules in Section 4.11. |
 | `stack.child_workdir`   | String   | cwd     | Working directory for child run. Default `cwd` means the current pipeline run working directory. |
-| `tool_hooks.pre`        | String   | `""`    | Shell command before each tool call |
-| `tool_hooks.post`       | String   | `""`    | Shell command after each tool call |
+| `tool.hooks.pre`        | String   | `""`    | Shell command before each tool call |
+| `tool.hooks.post`       | String   | `""`    | Shell command after each tool call |
 
 ### Node Attributes
 
@@ -2056,6 +2081,12 @@ ASSERT "review" IN checkpoint.completed_nodes
 | `reasoning_effort`      | String   | `"high"`      | Reasoning depth: low/medium/high |
 | `auto_status`           | Boolean  | `false`       | Auto-generate SUCCESS if no status written |
 | `allow_partial`         | Boolean  | `false`       | Accept PARTIAL_SUCCESS on retry exhaustion |
+| `tool.command`          | String   | `""`          | Shell command executed by tool nodes. Required when a node resolves to `tool`. |
+| `tool.hooks.pre`        | String   | inherited     | Node-level pre-hook override for tool nodes. |
+| `tool.hooks.post`       | String   | inherited     | Node-level post-hook override for tool nodes. |
+| `tool.artifacts.paths`  | String   | `""`          | Comma-separated relative paths/globs copied into run artifacts after the tool and post-hook complete. |
+| `tool.artifacts.stdout` | String   | `""`          | Relative artifact path used to persist captured stdout. |
+| `tool.artifacts.stderr` | String   | `""`          | Relative artifact path used to persist captured stderr. |
 
 ### Edge Attributes
 

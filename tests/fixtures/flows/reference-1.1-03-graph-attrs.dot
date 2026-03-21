@@ -1,5 +1,5 @@
 digraph reference_1_1_03_graph_attrs {
-  graph [label="Raw DOT graph attrs baseline", stack.child_dotfile="child/attrs.dot", stack.child_workdir="/tmp/project-child", tool_hooks.post="echo post", tool_hooks.pre="echo pre", ui_default_llm_model="gpt-5.3-codex-spark", ui_default_llm_provider="openai"];
+  graph [label="Raw DOT graph attrs baseline", stack.child_dotfile="child/attrs.dot", stack.child_workdir="/tmp/project-child", tool.hooks.post="echo post", tool.hooks.pre="echo pre", ui_default_llm_model="gpt-5.3-codex-spark", ui_default_llm_provider="openai"];
   exit [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="exit", max_parallel=4, reasoning_effort="high", shape="Msquare"];
   plan [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="plan", max_parallel=4, prompt="Plan with advanced graph attrs", reasoning_effort="high", shape="box"];
   start [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="start", max_parallel=4, reasoning_effort="high", shape="Mdiamond"];

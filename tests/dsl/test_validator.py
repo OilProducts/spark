@@ -134,6 +134,42 @@ class TestDotValidator:
 
         assert "node_has_outgoing_edge" in rule_ids
 
+    def test_tool_nodes_require_tool_command(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            build [shape=parallelogram]
+            done [shape=Msquare]
+            start -> build -> done
+        }
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+        errors = [d for d in self._errors(diagnostics) if d.rule_id == "tool_command_required"]
+
+        assert len(errors) == 1
+        assert errors[0].message == "node 'build' resolves to tool and must define a non-empty tool.command"
+
+    def test_validator_rejects_legacy_tool_attrs(self):
+        dot = """
+        digraph G {
+            graph [tool_hooks.pre="echo pre"]
+            start [shape=Mdiamond]
+            build [shape=parallelogram, tool_command="make build"]
+            done [shape=Msquare]
+            start -> build -> done
+        }
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+        errors = [d for d in self._errors(diagnostics) if d.rule_id == "tool_attr_namespaced"]
+
+        assert len(errors) == 2
+        assert {error.message for error in errors} == {
+            "legacy tool attr 'tool_hooks.pre' is not supported; use 'tool.hooks.pre'",
+            "legacy tool attr 'tool_command' is not supported; use 'tool.command'",
+        }
+
     def test_condition_and_stylesheet_syntax(self):
         dot = """
         digraph G {

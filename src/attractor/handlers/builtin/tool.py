@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import subprocess
 from typing import Any
 
@@ -13,19 +14,20 @@ from ..base import HandlerRuntime
 
 class ToolHandler:
     def execute(self, runtime: HandlerRuntime) -> Outcome:
-        cmd_attr = runtime.node_attrs.get("tool_command")
+        cmd_attr = runtime.node_attrs.get("tool.command")
         if not cmd_attr or not str(cmd_attr.value).strip():
-            return Outcome(status=OutcomeStatus.FAIL, failure_reason="No tool_command specified")
+            return Outcome(status=OutcomeStatus.FAIL, failure_reason="No tool.command specified")
 
         command = str(cmd_attr.value)
+        tool_cwd = _resolve_tool_cwd(runtime)
         hook_metadata = {
             "node_id": runtime.node_id,
             "tool_command": command,
         }
 
-        pre_hook = _resolve_hook_command(runtime, "tool_hooks.pre")
+        pre_hook = _resolve_hook_command(runtime, "tool.hooks.pre")
         if pre_hook:
-            pre_hook_result = _run_hook(pre_hook, hook_phase="pre", metadata=hook_metadata)
+            pre_hook_result = _run_hook(pre_hook, hook_phase="pre", metadata=hook_metadata, cwd=tool_cwd)
             _record_hook_failure(runtime, command=pre_hook, hook_phase="pre", result=pre_hook_result)
             if pre_hook_result.returncode != 0:
                 _write_output_artifact(runtime, "")
@@ -37,48 +39,61 @@ class ToolHandler:
                         "context.tool.exit_code": -1,
                     },
                 )
-        post_hook = _resolve_hook_command(runtime, "tool_hooks.post")
+        post_hook = _resolve_hook_command(runtime, "tool.hooks.post")
 
         timeout = _to_seconds(runtime.node_attrs.get("timeout"))
+        stdout_text = ""
+        stderr_text = ""
+        outcome: Outcome
         try:
-            proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
-            _write_output_artifact(runtime, proc.stdout)
+            proc = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(tool_cwd),
+            )
+            stdout_text = proc.stdout or ""
+            stderr_text = proc.stderr or ""
+            _write_output_artifact(runtime, stdout_text)
             if proc.returncode == 0:
-                notes = proc.stdout.strip()
-                return Outcome(
+                notes = stdout_text.strip()
+                outcome = Outcome(
                     status=OutcomeStatus.SUCCESS,
                     notes=notes,
                     context_updates={
-                        "context.tool.output": proc.stdout.strip(),
+                        "context.tool.output": notes,
                         "context.tool.exit_code": proc.returncode,
                     },
                 )
-
-            reason = proc.stderr.strip() or f"tool command failed with code {proc.returncode}"
-            return Outcome(
-                status=OutcomeStatus.FAIL,
-                failure_reason=reason,
-                context_updates={
-                    "context.tool.output": proc.stdout.strip(),
-                    "context.tool.exit_code": proc.returncode,
-                },
-            )
+            else:
+                reason = stderr_text.strip() or f"tool command failed with code {proc.returncode}"
+                outcome = Outcome(
+                    status=OutcomeStatus.FAIL,
+                    failure_reason=reason,
+                    context_updates={
+                        "context.tool.output": stdout_text.strip(),
+                        "context.tool.exit_code": proc.returncode,
+                    },
+                )
         except subprocess.TimeoutExpired as exc:
-            timeout_output = str(exc.stdout or "")
-            _write_output_artifact(runtime, timeout_output)
+            stdout_text = str(exc.stdout or "")
+            stderr_text = str(exc.stderr or "")
+            _write_output_artifact(runtime, stdout_text)
             reason = str(exc) or "tool command timed out"
-            return Outcome(
+            outcome = Outcome(
                 status=OutcomeStatus.FAIL,
                 failure_reason=reason,
                 context_updates={
-                    "context.tool.output": timeout_output.strip(),
+                    "context.tool.output": stdout_text.strip(),
                     "context.tool.exit_code": -1,
                 },
             )
         except Exception as exc:
             _write_output_artifact(runtime, "")
             reason = str(exc) or "tool command execution error"
-            return Outcome(
+            outcome = Outcome(
                 status=OutcomeStatus.FAIL,
                 failure_reason=reason,
                 context_updates={
@@ -86,10 +101,25 @@ class ToolHandler:
                     "context.tool.exit_code": -1,
                 },
             )
-        finally:
-            if post_hook:
-                post_hook_result = _run_hook(post_hook, hook_phase="post", metadata=hook_metadata)
-                _record_hook_failure(runtime, command=post_hook, hook_phase="post", result=post_hook_result)
+
+        if post_hook:
+            post_hook_result = _run_hook(post_hook, hook_phase="post", metadata=hook_metadata, cwd=tool_cwd)
+            _record_hook_failure(runtime, command=post_hook, hook_phase="post", result=post_hook_result)
+
+        artifact_failure = _capture_declared_artifacts(
+            runtime,
+            cwd=tool_cwd,
+            stdout_text=stdout_text,
+            stderr_text=stderr_text,
+        )
+        if artifact_failure:
+            return Outcome(
+                status=OutcomeStatus.FAIL,
+                failure_reason=artifact_failure,
+                context_updates=dict(outcome.context_updates or {}),
+            )
+
+        return outcome
 
 
 def _resolve_hook_command(runtime: HandlerRuntime, key: str) -> str:
@@ -104,7 +134,13 @@ def _resolve_hook_command(runtime: HandlerRuntime, key: str) -> str:
     return ""
 
 
-def _run_hook(command: str, *, hook_phase: str, metadata: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _run_hook(
+    command: str,
+    *,
+    hook_phase: str,
+    metadata: dict[str, str],
+    cwd: Path,
+) -> subprocess.CompletedProcess[str]:
     payload = {
         "hook_phase": hook_phase,
         "node_id": metadata.get("node_id", ""),
@@ -126,6 +162,7 @@ def _run_hook(command: str, *, hook_phase: str, metadata: dict[str, str]) -> sub
             text=True,
             input=json.dumps(payload),
             env=env,
+            cwd=str(cwd),
         )
     except Exception as exc:
         reason = str(exc) or exc.__class__.__name__
@@ -175,6 +212,56 @@ def _write_output_artifact(runtime: HandlerRuntime, output: str) -> None:
         (stage_dir / "tool_output.txt").write_text(output, encoding="utf-8")
     except OSError:
         return
+
+
+def _resolve_tool_cwd(runtime: HandlerRuntime) -> Path:
+    raw_value = str(runtime.context.get("internal.run_workdir", "")).strip()
+    if raw_value:
+        return Path(raw_value).expanduser().resolve()
+    return Path.cwd().resolve()
+
+
+def _capture_declared_artifacts(
+    runtime: HandlerRuntime,
+    *,
+    cwd: Path,
+    stdout_text: str,
+    stderr_text: str,
+) -> str | None:
+    artifact_paths = _artifact_patterns(runtime.node_attrs.get("tool.artifacts.paths"))
+    stdout_path = _artifact_relative_path(runtime.node_attrs.get("tool.artifacts.stdout"))
+    stderr_path = _artifact_relative_path(runtime.node_attrs.get("tool.artifacts.stderr"))
+    if not artifact_paths and not stdout_path and not stderr_path:
+        return None
+    if runtime.artifact_store is None:
+        return "artifact capture unavailable: runtime does not expose an artifact store"
+
+    try:
+        if stdout_path:
+            runtime.artifact_store.write_text(runtime.node_id, stdout_path, stdout_text)
+        if stderr_path:
+            runtime.artifact_store.write_text(runtime.node_id, stderr_path, stderr_text)
+        if artifact_paths:
+            runtime.artifact_store.copy_matches(runtime.node_id, cwd, artifact_paths)
+        return None
+    except (OSError, ValueError, RuntimeError) as exc:
+        reason = str(exc).strip() or exc.__class__.__name__
+        return f"artifact capture failed: {reason}"
+
+
+def _artifact_patterns(attr: Any) -> list[str]:
+    if not attr:
+        return []
+    raw_value = str(getattr(attr, "value", "")).strip()
+    if not raw_value:
+        return []
+    return [segment.strip() for segment in raw_value.split(",") if segment.strip()]
+
+
+def _artifact_relative_path(attr: Any) -> str:
+    if not attr:
+        return ""
+    return str(getattr(attr, "value", "")).strip()
 
 
 def _to_seconds(attr: Any) -> float | None:

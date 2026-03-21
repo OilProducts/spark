@@ -18,7 +18,7 @@ class TestRegistryResolution:
             digraph G {
                 start [shape=Mdiamond]
                 human [shape=hexagon]
-                custom [shape=box, type="tool", tool_command="printf hi"]
+                custom [shape=box, type="tool", tool.command="printf hi"]
                 done [shape=Msquare]
                 start -> human [label="Approve"]
                 human -> custom [label="Go"]
@@ -74,7 +74,7 @@ class TestRegistryResolution:
     @pytest.mark.parametrize(
         ("node_attrs", "expected_handler_type"),
         [
-            ('shape=box, type="tool", tool_command="printf hi"', "tool"),
+            ('shape=box, type="tool", tool.command="printf hi"', "tool"),
             ('shape=" hexagon "', "wait.human"),
             ('shape="unknown"', "codergen"),
         ],

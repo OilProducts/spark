@@ -1,109 +1,116 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import json
+import mimetypes
 from pathlib import Path
-from typing import Any, Dict, Tuple, Type, TypeVar
+import shutil
+from typing import Iterable
 
 from .context import ReadWriteLock
 
 
-T = TypeVar("T")
-FILE_BACKING_THRESHOLD_BYTES = 100 * 1024
-
-
 @dataclass(frozen=True)
 class ArtifactInfo:
-    id: str
-    name: str
+    path: str
     size_bytes: int
-    stored_at: datetime
-    is_file_backed: bool
+    media_type: str
 
 
 class ArtifactStore:
-    def __init__(
-        self,
-        *,
-        base_dir: str | Path | None = None,
-        file_backing_threshold_bytes: int = FILE_BACKING_THRESHOLD_BYTES,
-    ) -> None:
-        self._artifacts: Dict[str, Tuple[ArtifactInfo, Any]] = {}
+    def __init__(self, *, base_dir: str | Path) -> None:
+        self._base_dir = Path(base_dir)
+        self._base_dir.mkdir(parents=True, exist_ok=True)
         self._lock = ReadWriteLock()
-        self._base_dir = Path(base_dir) if base_dir is not None else None
-        self._file_backing_threshold_bytes = file_backing_threshold_bytes
+        self._artifacts: list[ArtifactInfo] = []
 
-    def store(self, artifact_id: str, name: str, data: Any) -> ArtifactInfo:
-        size_bytes = _byte_size(data)
-        is_file_backed = size_bytes > self._file_backing_threshold_bytes and self._base_dir is not None
-        stored_data: Any = data
-        if is_file_backed:
-            artifacts_dir = self._base_dir / "artifacts"
-            artifacts_dir.mkdir(parents=True, exist_ok=True)
-            artifact_path = artifacts_dir / f"{artifact_id}.json"
-            artifact_path.write_text(
-                json.dumps(data, ensure_ascii=False, sort_keys=True),
-                encoding="utf-8",
-            )
-            stored_data = artifact_path
+    def write_text(self, node_id: str, relative_path: str, content: str) -> ArtifactInfo:
+        target_path = self._resolve_target_path(node_id, relative_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(content, encoding="utf-8")
+        return self._register(target_path)
 
-        info = ArtifactInfo(
-            id=artifact_id,
-            name=name,
-            size_bytes=size_bytes,
-            stored_at=datetime.now(timezone.utc),
-            is_file_backed=is_file_backed,
-        )
-        with self._lock.write_lock():
-            self._artifacts[artifact_id] = (info, stored_data)
-        return info
+    def copy_path(self, node_id: str, source_path: str | Path, relative_path: str) -> ArtifactInfo:
+        source = Path(source_path).resolve(strict=True)
+        if not source.is_file():
+            raise IsADirectoryError(f"Artifact source is not a file: {source}")
+        target_path = self._resolve_target_path(node_id, relative_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target_path)
+        return self._register(target_path)
 
-    def retrieve(self, artifact_id: str, expected_type: Type[T] | None = None) -> T | Any:
-        with self._lock.read_lock():
-            artifact = self._artifacts.get(artifact_id)
-        if artifact is None:
-            raise KeyError(f"Artifact not found: {artifact_id}")
+    def copy_matches(self, node_id: str, cwd: str | Path, patterns: Iterable[str]) -> list[ArtifactInfo]:
+        resolved_cwd = Path(cwd).resolve(strict=True)
+        copied: list[ArtifactInfo] = []
+        seen_paths: set[str] = set()
+        for raw_pattern in patterns:
+            pattern = raw_pattern.strip()
+            if not pattern:
+                continue
+            self._validate_source_pattern(pattern)
+            for match in sorted(resolved_cwd.glob(pattern)):
+                resolved_match = match.resolve(strict=True)
+                try:
+                    source_relative = resolved_match.relative_to(resolved_cwd)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Artifact source '{resolved_match}' resolves outside tool working directory '{resolved_cwd}'"
+                    ) from exc
 
-        info, data = artifact
-        if info.is_file_backed:
-            data = json.loads(Path(data).read_text(encoding="utf-8"))
-        if expected_type is not None and not isinstance(data, expected_type):
-            raise TypeError(
-                f"Artifact '{artifact_id}' expected type {expected_type.__name__}, "
-                f"received {type(data).__name__}"
-            )
-        return data
+                if resolved_match.is_dir():
+                    for nested in sorted(path for path in resolved_match.rglob("*") if path.is_file()):
+                        nested_resolved = nested.resolve(strict=True)
+                        nested_relative = nested_resolved.relative_to(resolved_cwd)
+                        destination = f"captured/{nested_relative.as_posix()}"
+                        if destination in seen_paths:
+                            continue
+                        copied.append(self.copy_path(node_id, nested_resolved, destination))
+                        seen_paths.add(destination)
+                    continue
 
-    def has(self, artifact_id: str) -> bool:
-        with self._lock.read_lock():
-            return artifact_id in self._artifacts
+                destination = f"captured/{source_relative.as_posix()}"
+                if destination in seen_paths:
+                    continue
+                copied.append(self.copy_path(node_id, resolved_match, destination))
+                seen_paths.add(destination)
+        return copied
 
     def list(self) -> list[ArtifactInfo]:
         with self._lock.read_lock():
-            return [info for info, _ in self._artifacts.values()]
+            return list(self._artifacts)
 
-    def remove(self, artifact_id: str) -> None:
+    def _register(self, absolute_path: Path) -> ArtifactInfo:
+        relative_path = absolute_path.relative_to(self._base_dir).as_posix()
+        media_type, _ = mimetypes.guess_type(absolute_path.name)
+        info = ArtifactInfo(
+            path=f"artifacts/{relative_path}",
+            size_bytes=absolute_path.stat().st_size,
+            media_type=media_type or "application/octet-stream",
+        )
         with self._lock.write_lock():
-            artifact = self._artifacts.pop(artifact_id, None)
-        if artifact is None:
-            return
-        info, stored_data = artifact
-        if info.is_file_backed:
-            Path(stored_data).unlink(missing_ok=True)
+            self._artifacts.append(info)
+        return info
 
-    def clear(self) -> None:
-        with self._lock.write_lock():
-            artifacts = list(self._artifacts.values())
-            self._artifacts.clear()
-        for info, stored_data in artifacts:
-            if info.is_file_backed:
-                Path(stored_data).unlink(missing_ok=True)
+    def _resolve_target_path(self, node_id: str, relative_path: str) -> Path:
+        node_key = node_id.strip()
+        if not node_key:
+            raise ValueError("Artifact writes require a node id")
+        normalized = _normalize_relative_path(relative_path)
+        return (self._base_dir / node_key / normalized).resolve()
+
+    def _validate_source_pattern(self, pattern: str) -> None:
+        candidate = Path(pattern)
+        if candidate.is_absolute():
+            raise ValueError(f"Artifact source pattern must be relative: {pattern}")
+        if any(part == ".." for part in candidate.parts):
+            raise ValueError(f"Artifact source pattern must stay within the tool working directory: {pattern}")
 
 
-def _byte_size(data: Any) -> int:
-    try:
-        payload = json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    except (TypeError, ValueError):
-        payload = repr(data).encode("utf-8")
-    return len(payload)
+def _normalize_relative_path(relative_path: str) -> Path:
+    candidate = Path(relative_path.strip())
+    if not relative_path.strip():
+        raise ValueError("Artifact path must not be empty")
+    if candidate.is_absolute():
+        raise ValueError(f"Artifact path must be relative: {relative_path}")
+    if any(part == ".." for part in candidate.parts):
+        raise ValueError(f"Artifact path must not escape the artifact root: {relative_path}")
+    return candidate

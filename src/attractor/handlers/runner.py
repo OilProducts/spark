@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from attractor.dsl.models import Duration
 from attractor.dsl.models import DotGraph
+from attractor.engine.artifacts import ArtifactStore
 from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome
 from attractor.engine.outcome import OutcomeStatus
@@ -35,6 +36,7 @@ class HandlerRunner:
     graph: DotGraph
     registry: HandlerRegistry
     logs_root: Path | None = None
+    artifact_store: ArtifactStore | None = None
     _concurrency_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _active_calls: int = field(default=0, init=False, repr=False)
     _concurrency_overrides: int = field(default=0, init=False, repr=False)
@@ -44,6 +46,7 @@ class HandlerRunner:
     def __post_init__(self) -> None:
         if self.logs_root is not None:
             self.logs_root = Path(self.logs_root)
+        self._sync_artifact_store()
 
     def __call__(self, node_id: str, prompt: str, context: Context) -> Outcome | None:
         return self._run(node_id, prompt, context, emit_event=None)
@@ -82,6 +85,7 @@ class HandlerRunner:
                 context=context,
                 graph=self.graph,
                 logs_root=self.logs_root,
+                artifact_store=self._artifact_store(),
                 runner=self,
                 event_emitter=emit_event,
             )
@@ -125,8 +129,19 @@ class HandlerRunner:
     def set_logs_root(self, logs_root: str | Path | None) -> None:
         if logs_root is None:
             self.logs_root = None
+            self.artifact_store = None
             return
         self.logs_root = Path(logs_root)
+        self._sync_artifact_store()
+
+    def _artifact_store(self) -> ArtifactStore | None:
+        return self.artifact_store
+
+    def _sync_artifact_store(self) -> None:
+        if self.logs_root is None:
+            self.artifact_store = None
+            return
+        self.artifact_store = ArtifactStore(base_dir=self.logs_root.parent / "artifacts")
 
     def _invoke_handler_with_contract(
         self, handler_type: str, handler: Any, runtime: HandlerRuntime

@@ -125,8 +125,8 @@ Documented Attractor graph attributes:
 | `default_fidelity` | string | Default context fidelity mode. |
 | `stack.child_dotfile` | string | Child flow path for manager-loop supervision. |
 | `stack.child_workdir` | string | Child run working directory. |
-| `tool_hooks.pre` | string | Shell command before tool execution. |
-| `tool_hooks.post` | string | Shell command after tool execution. |
+| `tool.hooks.pre` | string | Shell command before tool execution. |
+| `tool.hooks.post` | string | Shell command after tool execution. |
 
 Notes:
 
@@ -166,9 +166,20 @@ These attrs are only meaningful for specific node types:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `tool_command` | string | Shell command to run. |
-| `tool_hooks.pre` | string | Node-level pre-hook override. |
-| `tool_hooks.post` | string | Node-level post-hook override. |
+| `tool.command` | string | Shell command to run. |
+| `tool.hooks.pre` | string | Node-level pre-hook override. |
+| `tool.hooks.post` | string | Node-level post-hook override. |
+| `tool.artifacts.paths` | string | Comma-separated relative paths/globs copied into run artifacts after execution. |
+| `tool.artifacts.stdout` | string | Relative artifact path for captured stdout. |
+| `tool.artifacts.stderr` | string | Relative artifact path for captured stderr. |
+
+Artifact capture rules:
+
+- `tool.artifacts.paths` is a comma-separated list, not JSON.
+- Patterns are resolved relative to the tool execution working directory.
+- Captured files are copied under `artifacts/<node_id>/captured/...` for the run.
+- `tool.artifacts.stdout` and `tool.artifacts.stderr` write extra artifact files under `artifacts/<node_id>/...`.
+- Use `context.*` for small semantic facts and artifact attrs for larger durable outputs.
 
 ### `parallel`
 

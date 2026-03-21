@@ -7,6 +7,7 @@ from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 from attractor.dsl.models import DotAttribute, DotEdge, DotGraph, DotNode
 from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome
+from attractor.engine.artifacts import ArtifactStore
 
 
 @runtime_checkable
@@ -32,6 +33,7 @@ class HandlerRuntime:
     context: Context
     graph: DotGraph
     logs_root: Optional[Path]
+    artifact_store: ArtifactStore | None
     runner: Callable[[str, str, Context], Outcome]
     event_emitter: Optional[Callable[..., None]] = None
 

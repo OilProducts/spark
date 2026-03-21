@@ -23,9 +23,9 @@ const nodes = [
       label: 'Tool',
       shape: 'parallelogram',
       type: 'tool',
-      tool_command: 'echo run',
-      'tool_hooks.pre': 'echo node pre',
-      'tool_hooks.post': 'echo node post'
+      'tool.command': 'echo run',
+      'tool.hooks.pre': 'echo node pre',
+      'tool.hooks.post': 'echo node post'
     }
   },
   { id: 'end', data: { label: 'End', shape: 'Msquare' } }
@@ -35,8 +35,8 @@ const edges = [
   { id: 'e2', source: 'tool_node', target: 'end' }
 ]
 const graphAttrs = {
-  'tool_hooks.pre': 'echo graph pre',
-  'tool_hooks.post': 'echo graph post'
+  'tool.hooks.pre': 'echo graph pre',
+  'tool.hooks.post': 'echo graph post'
 }
 const dot = mod.generateDot('node_tool_hooks_probe', nodes, edges, graphAttrs)
 console.log(dot)
@@ -95,13 +95,13 @@ def test_node_tool_hook_overrides_round_trip_through_preview_item_6_6_02() -> No
     tool_node = next((node for node in nodes if node["id"] == "tool_node"), None)
 
     assert tool_node is not None
-    assert tool_node["tool_command"] == "echo run"
-    assert tool_node["tool_hooks.pre"] == "echo node pre"
-    assert tool_node["tool_hooks.post"] == "echo node post"
+    assert tool_node["tool.command"] == "echo run"
+    assert tool_node["tool.hooks.pre"] == "echo node pre"
+    assert tool_node["tool.hooks.post"] == "echo node post"
 
     graph_attrs = payload["graph"]["graph_attrs"]
-    assert graph_attrs["tool_hooks.pre"] == "echo graph pre"
-    assert graph_attrs["tool_hooks.post"] == "echo graph post"
+    assert graph_attrs["tool.hooks.pre"] == "echo graph pre"
+    assert graph_attrs["tool.hooks.post"] == "echo graph post"
 
 
 def _save_loaded_tool_hook_graph_via_generate_dot(flow_content: str) -> str:
@@ -118,9 +118,9 @@ const nodes = preview.graph.nodes.map((n) => ({
     label: n.label,
     shape: n.shape ?? 'box',
     prompt: n.prompt ?? '',
-    tool_command: n.tool_command ?? '',
-    'tool_hooks.pre': n['tool_hooks.pre'] ?? '',
-    'tool_hooks.post': n['tool_hooks.post'] ?? '',
+    'tool.command': n['tool.command'] ?? '',
+    'tool.hooks.pre': n['tool.hooks.pre'] ?? '',
+    'tool.hooks.post': n['tool.hooks.post'] ?? '',
     type: n.type ?? ''
   }
 }))
@@ -147,17 +147,17 @@ def test_tool_hook_definitions_round_trip_through_save_load_item_6_6_04() -> Non
     flow = """
 digraph tool_hook_save_load {
   graph [
-    tool_hooks.pre="python ./hooks/pre.py --mode \\\"global\\\"",
-    tool_hooks.post="./hooks/post.sh --emit report"
+    tool.hooks.pre="python ./hooks/pre.py --mode \\\"global\\\"",
+    tool.hooks.post="./hooks/post.sh --emit report"
   ];
   start [label="Start", shape=Mdiamond];
   tool_node [
     label="Tool",
     shape=parallelogram,
     type=tool,
-    tool_command="echo run",
-    tool_hooks.pre="./hooks/node_pre.sh --flag",
-    tool_hooks.post="python -c \\\"print('done')\\\""
+    tool.command="echo run",
+    tool.hooks.pre="./hooks/node_pre.sh --flag",
+    tool.hooks.post="python -c \\\"print('done')\\\""
   ];
   end [label="End", shape=Msquare];
 
@@ -170,11 +170,11 @@ digraph tool_hook_save_load {
     payload = preview_pipeline(saved_dot)
 
     graph_attrs = payload["graph"]["graph_attrs"]
-    assert graph_attrs["tool_hooks.pre"] == 'python ./hooks/pre.py --mode "global"'
-    assert graph_attrs["tool_hooks.post"] == "./hooks/post.sh --emit report"
+    assert graph_attrs["tool.hooks.pre"] == 'python ./hooks/pre.py --mode "global"'
+    assert graph_attrs["tool.hooks.post"] == "./hooks/post.sh --emit report"
 
     nodes = payload["graph"]["nodes"]
     tool_node = next((node for node in nodes if node["id"] == "tool_node"), None)
     assert tool_node is not None
-    assert tool_node["tool_hooks.pre"] == "./hooks/node_pre.sh --flag"
-    assert tool_node["tool_hooks.post"] == 'python -c "print(\'done\')"'
+    assert tool_node["tool.hooks.pre"] == "./hooks/node_pre.sh --flag"
+    assert tool_node["tool.hooks.post"] == 'python -c "print(\'done\')"'

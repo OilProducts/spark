@@ -32,8 +32,8 @@ class TestTransforms:
             "model_stylesheet": ("", DotValueType.STRING),
             "default_max_retries": (0, DotValueType.INTEGER),
             "default_fidelity": ("", DotValueType.STRING),
-            "tool_hooks.pre": ("", DotValueType.STRING),
-            "tool_hooks.post": ("", DotValueType.STRING),
+            "tool.hooks.pre": ("", DotValueType.STRING),
+            "tool.hooks.post": ("", DotValueType.STRING),
         }
 
         for attr_name, (expected_value, expected_type) in expected_graph_defaults.items():

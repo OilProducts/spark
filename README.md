@@ -99,7 +99,8 @@ Keep parent/child flows portable:
 
 Use hooks and model defaults deliberately:
 
-- A failing `tool_hooks.pre` prevents the tool command from running. Use it only when setup failure should block the tool.
+- A failing `tool.hooks.pre` prevents the tool command from running. Use it only when setup failure should block the tool.
+- Use `tool.artifacts.paths`, `tool.artifacts.stdout`, and `tool.artifacts.stderr` when a tool node needs to preserve generated files or captured streams as run artifacts.
 - `model_stylesheet` is best for broad model defaults; explicit node attrs still win over stylesheet matches.
 - Graph defaults should establish a baseline. Node attrs should capture true per-stage exceptions.
 

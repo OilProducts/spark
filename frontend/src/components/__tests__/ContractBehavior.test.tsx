@@ -2916,8 +2916,8 @@ describe('Frontend contract behavior', () => {
     renderWithFlowProvider(<GraphSettings inline />)
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
-    const preHookInput = screen.getByTestId('graph-attr-input-tool_hooks.pre')
-    const postHookInput = screen.getByTestId('graph-attr-input-tool_hooks.post')
+    const preHookInput = screen.getByTestId('graph-attr-input-tool.hooks.pre')
+    const postHookInput = screen.getByTestId('graph-attr-input-tool.hooks.post')
     expect(preHookInput).toBeVisible()
     expect(postHookInput).toBeVisible()
   })
@@ -2933,9 +2933,12 @@ describe('Frontend contract behavior', () => {
       label: 'Tool',
       shape: 'parallelogram',
       type: 'tool',
-      tool_command: 'echo run',
-      'tool_hooks.pre': 'echo node pre',
-      'tool_hooks.post': 'echo node post',
+      'tool.command': 'echo run',
+      'tool.hooks.pre': 'echo node pre',
+      'tool.hooks.post': 'echo node post',
+      'tool.artifacts.paths': 'dist/**',
+      'tool.artifacts.stdout': 'stdout.txt',
+      'tool.artifacts.stderr': 'stderr.txt',
     }
     renderSidebar([
       {
@@ -2946,8 +2949,11 @@ describe('Frontend contract behavior', () => {
     ], [])
 
     await user.click(await screen.findByRole('button', { name: 'Show Advanced' }))
-    expect(screen.getByTestId('node-attr-input-tool_hooks.pre')).toBeVisible()
-    expect(screen.getByTestId('node-attr-input-tool_hooks.post')).toBeVisible()
+    expect(screen.getByTestId('node-attr-input-tool.hooks.pre')).toBeVisible()
+    expect(screen.getByTestId('node-attr-input-tool.hooks.post')).toBeVisible()
+    expect(screen.getByTestId('node-attr-input-tool.artifacts.paths')).toBeVisible()
+    expect(screen.getByTestId('node-attr-input-tool.artifacts.stdout')).toBeVisible()
+    expect(screen.getByTestId('node-attr-input-tool.artifacts.stderr')).toBeVisible()
 
     cleanup()
     act(() => {
@@ -2964,8 +2970,11 @@ describe('Frontend contract behavior', () => {
     fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
     fireEvent.click(screen.getByText('Show Advanced', { selector: 'button' }))
 
-    expect(screen.getByTestId('node-toolbar-attr-input-tool_hooks.pre')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-input-tool_hooks.post')).toBeVisible()
+    expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.pre')).toBeVisible()
+    expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.post')).toBeVisible()
+    expect(screen.getByTestId('node-toolbar-attr-input-tool.artifacts.paths')).toBeVisible()
+    expect(screen.getByTestId('node-toolbar-attr-input-tool.artifacts.stdout')).toBeVisible()
+    expect(screen.getByTestId('node-toolbar-attr-input-tool.artifacts.stderr')).toBeVisible()
   })
 
   it('[CID:6.6.03] renders tool hook warning surfaces in graph settings and node editors', async () => {
@@ -2973,12 +2982,12 @@ describe('Frontend contract behavior', () => {
     renderWithFlowProvider(<GraphSettings inline />)
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
-    fireEvent.change(screen.getByTestId('graph-attr-input-tool_hooks.pre'), { target: { value: "echo 'unterminated" } })
-    fireEvent.change(screen.getByTestId('graph-attr-input-tool_hooks.post'), { target: { value: 'echo "unterminated' } })
+    fireEvent.change(screen.getByTestId('graph-attr-input-tool.hooks.pre'), { target: { value: "echo 'unterminated" } })
+    fireEvent.change(screen.getByTestId('graph-attr-input-tool.hooks.post'), { target: { value: 'echo "unterminated' } })
 
     await waitFor(() => {
-      expect(screen.getByTestId('graph-attr-warning-tool_hooks.pre')).toHaveTextContent('single quote')
-      expect(screen.getByTestId('graph-attr-warning-tool_hooks.post')).toHaveTextContent('double quote')
+      expect(screen.getByTestId('graph-attr-warning-tool.hooks.pre')).toHaveTextContent('single quote')
+      expect(screen.getByTestId('graph-attr-warning-tool.hooks.post')).toHaveTextContent('double quote')
     })
     act(() => {
       cleanup()
@@ -2991,9 +3000,9 @@ describe('Frontend contract behavior', () => {
       label: 'Tool',
       shape: 'parallelogram',
       type: 'tool',
-      tool_command: 'echo run',
-      'tool_hooks.pre': 'echo hi\necho there',
-      'tool_hooks.post': "echo 'unterminated",
+      'tool.command': 'echo run',
+      'tool.hooks.pre': 'echo hi\necho there',
+      'tool.hooks.post': "echo 'unterminated",
     }
     renderSidebar([
       {
@@ -3004,8 +3013,8 @@ describe('Frontend contract behavior', () => {
     ], [])
 
     await user.click(await screen.findByRole('button', { name: 'Show Advanced' }))
-    expect(screen.getByTestId('node-attr-warning-tool_hooks.pre')).toHaveTextContent('single line')
-    expect(screen.getByTestId('node-attr-warning-tool_hooks.post')).toHaveTextContent('single quote')
+    expect(screen.getByTestId('node-attr-warning-tool.hooks.pre')).toHaveTextContent('single line')
+    expect(screen.getByTestId('node-attr-warning-tool.hooks.post')).toHaveTextContent('single quote')
 
     cleanup()
     act(() => {
@@ -3022,10 +3031,10 @@ describe('Frontend contract behavior', () => {
     fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
     fireEvent.click(screen.getByText('Show Advanced', { selector: 'button' }))
 
-    expect(screen.getByTestId('node-toolbar-attr-input-tool_hooks.pre')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-input-tool_hooks.post')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-warning-tool_hooks.pre')).toHaveTextContent('single line')
-    expect(screen.getByTestId('node-toolbar-attr-warning-tool_hooks.post')).toHaveTextContent('single quote')
+    expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.pre')).toBeVisible()
+    expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.post')).toBeVisible()
+    expect(screen.getByTestId('node-toolbar-attr-warning-tool.hooks.pre')).toHaveTextContent('single line')
+    expect(screen.getByTestId('node-toolbar-attr-warning-tool.hooks.post')).toHaveTextContent('single quote')
   })
 
   it('[CID:6.7.01] renders manager-loop shape and type options in task node toolbar', () => {

@@ -497,8 +497,8 @@ line2"]
                 fallback_retry_target="plan",
                 stack.child_dotfile="child.dot",
                 stack.child_workdir="/tmp/child",
-                tool_hooks.pre="echo pre",
-                tool_hooks.post="echo post"
+                tool.hooks.pre="echo pre",
+                tool.hooks.post="echo post"
             ]
             start [shape=Mdiamond]
             exit [shape=Msquare]
@@ -517,14 +517,14 @@ line2"]
             "fallback_retry_target",
             "stack.child_dotfile",
             "stack.child_workdir",
-            "tool_hooks.pre",
-            "tool_hooks.post",
+            "tool.hooks.pre",
+            "tool.hooks.post",
         }
         assert graph.graph_attrs["default_max_retry"].value == 7
         assert graph.graph_attrs["default_max_retry"].value_type == DotValueType.INTEGER
         assert graph.graph_attrs["stack.child_dotfile"].value == "child.dot"
-        assert graph.graph_attrs["tool_hooks.pre"].value == "echo pre"
-        assert graph.graph_attrs["tool_hooks.post"].value == "echo post"
+        assert graph.graph_attrs["tool.hooks.pre"].value == "echo pre"
+        assert graph.graph_attrs["tool.hooks.post"].value == "echo post"
 
     def test_parses_all_appendix_a_node_attribute_keys(self):
         dot = """

@@ -7,8 +7,8 @@ BASELINE_FIXTURES: dict[str, tuple[str, ...]] = {
     "tests/fixtures/flows/reference-1.1-03-graph-attrs.dot": (
         "stack.child_dotfile",
         "stack.child_workdir",
-        "tool_hooks.pre",
-        "tool_hooks.post",
+        "tool.hooks.pre",
+        "tool.hooks.post",
     ),
     "tests/fixtures/flows/reference-1.1-03-manager-loop.dot": (
         "manager.poll_interval",

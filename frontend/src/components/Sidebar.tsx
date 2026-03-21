@@ -27,9 +27,12 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'label',
     'shape',
     'prompt',
-    'tool_command',
-    'tool_hooks.pre',
-    'tool_hooks.post',
+    'tool.command',
+    'tool.hooks.pre',
+    'tool.hooks.post',
+    'tool.artifacts.paths',
+    'tool.artifacts.stdout',
+    'tool.artifacts.stderr',
     'join_policy',
     'error_policy',
     'max_parallel',
@@ -264,8 +267,8 @@ export function Sidebar() {
         ? selectedNode.data['sparkspawn.writes_context']
         : ''
     const visibility = getNodeFieldVisibility(handlerType)
-    const selectedNodeToolHookPreWarning = getToolHookCommandWarning((selectedNode?.data?.["tool_hooks.pre"] as string) || "")
-    const selectedNodeToolHookPostWarning = getToolHookCommandWarning((selectedNode?.data?.["tool_hooks.post"] as string) || "")
+    const selectedNodeToolHookPreWarning = getToolHookCommandWarning((selectedNode?.data?.["tool.hooks.pre"] as string) || "")
+    const selectedNodeToolHookPostWarning = getToolHookCommandWarning((selectedNode?.data?.["tool.hooks.post"] as string) || "")
     const nodeFieldDiagnostics = useMemo(() => {
         if (!selectedNodeId) {
             return {}
@@ -618,8 +621,8 @@ export function Sidebar() {
                                     <div className="space-y-1.5">
                                         <label className="text-sm font-medium">Tool Command</label>
                                         <input
-                                            value={(selectedNode?.data?.tool_command as string) || ''}
-                                            onChange={(e) => handlePropertyChange('tool_command', e.target.value)}
+                                            value={(selectedNode?.data?.['tool.command'] as string) || ''}
+                                            onChange={(e) => handlePropertyChange('tool.command', e.target.value)}
                                             className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             placeholder="e.g. pytest -q"
                                         />
@@ -835,14 +838,14 @@ export function Sidebar() {
                                                         <div className="space-y-1.5">
                                                             <label className="text-sm font-medium">Pre Hook Override</label>
                                                             <input
-                                                                data-testid="node-attr-input-tool_hooks.pre"
-                                                                value={(selectedNode?.data?.['tool_hooks.pre'] as string) || ''}
-                                                                onChange={(e) => handlePropertyChange('tool_hooks.pre', e.target.value)}
+                                                                data-testid="node-attr-input-tool.hooks.pre"
+                                                                value={(selectedNode?.data?.['tool.hooks.pre'] as string) || ''}
+                                                                onChange={(e) => handlePropertyChange('tool.hooks.pre', e.target.value)}
                                                                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                                 placeholder="e.g. ./hooks/pre.sh"
                                                             />
                                                             {selectedNodeToolHookPreWarning && (
-                                                                <p data-testid="node-attr-warning-tool_hooks.pre" className="text-xs text-amber-800">
+                                                                <p data-testid="node-attr-warning-tool.hooks.pre" className="text-xs text-amber-800">
                                                                     {selectedNodeToolHookPreWarning}
                                                                 </p>
                                                             )}
@@ -850,17 +853,47 @@ export function Sidebar() {
                                                         <div className="space-y-1.5">
                                                             <label className="text-sm font-medium">Post Hook Override</label>
                                                             <input
-                                                                data-testid="node-attr-input-tool_hooks.post"
-                                                                value={(selectedNode?.data?.['tool_hooks.post'] as string) || ''}
-                                                                onChange={(e) => handlePropertyChange('tool_hooks.post', e.target.value)}
+                                                                data-testid="node-attr-input-tool.hooks.post"
+                                                                value={(selectedNode?.data?.['tool.hooks.post'] as string) || ''}
+                                                                onChange={(e) => handlePropertyChange('tool.hooks.post', e.target.value)}
                                                                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                                 placeholder="e.g. ./hooks/post.sh"
                                                             />
                                                             {selectedNodeToolHookPostWarning && (
-                                                                <p data-testid="node-attr-warning-tool_hooks.post" className="text-xs text-amber-800">
+                                                                <p data-testid="node-attr-warning-tool.hooks.post" className="text-xs text-amber-800">
                                                                     {selectedNodeToolHookPostWarning}
                                                                 </p>
                                                             )}
+                                                        </div>
+                                                        <div className="space-y-1.5">
+                                                            <label className="text-sm font-medium">Artifact Paths</label>
+                                                            <input
+                                                                data-testid="node-attr-input-tool.artifacts.paths"
+                                                                value={(selectedNode?.data?.['tool.artifacts.paths'] as string) || ''}
+                                                                onChange={(e) => handlePropertyChange('tool.artifacts.paths', e.target.value)}
+                                                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                                placeholder="e.g. dist/**,reports/*.json"
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-1.5">
+                                                            <label className="text-sm font-medium">Stdout Artifact</label>
+                                                            <input
+                                                                data-testid="node-attr-input-tool.artifacts.stdout"
+                                                                value={(selectedNode?.data?.['tool.artifacts.stdout'] as string) || ''}
+                                                                onChange={(e) => handlePropertyChange('tool.artifacts.stdout', e.target.value)}
+                                                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                                placeholder="e.g. stdout.txt"
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-1.5">
+                                                            <label className="text-sm font-medium">Stderr Artifact</label>
+                                                            <input
+                                                                data-testid="node-attr-input-tool.artifacts.stderr"
+                                                                value={(selectedNode?.data?.['tool.artifacts.stderr'] as string) || ''}
+                                                                onChange={(e) => handlePropertyChange('tool.artifacts.stderr', e.target.value)}
+                                                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-mono shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                                placeholder="e.g. stderr.txt"
+                                                            />
                                                         </div>
                                                     </>
                                                 )}

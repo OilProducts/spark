@@ -373,8 +373,8 @@ const KNOWN_GRAPH_ATTR_KEYS = new Set<string>([
     'default_fidelity',
     'stack.child_dotfile',
     'stack.child_workdir',
-    'tool_hooks.pre',
-    'tool_hooks.post',
+    'tool.hooks.pre',
+    'tool.hooks.post',
     'ui_default_llm_model',
     'ui_default_llm_provider',
     'ui_default_reasoning_effort',
@@ -384,9 +384,12 @@ const KNOWN_NODE_ATTR_KEYS = new Set<string>([
     'label',
     'shape',
     'prompt',
-    'tool_command',
-    'tool_hooks.pre',
-    'tool_hooks.post',
+    'tool.command',
+    'tool.hooks.pre',
+    'tool.hooks.post',
+    'tool.artifacts.paths',
+    'tool.artifacts.stdout',
+    'tool.artifacts.stderr',
     'join_policy',
     'error_policy',
     'max_parallel',
@@ -502,8 +505,8 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         formatGraphAttr('default_fidelity', readStringAttr(graphAttrs, 'default_fidelity')),
         formatGraphAttr('stack.child_dotfile', readStringAttr(graphAttrs, 'stack.child_dotfile')),
         formatGraphAttr('stack.child_workdir', readStringAttr(graphAttrs, 'stack.child_workdir')),
-        formatGraphAttr('tool_hooks.pre', readStringAttr(graphAttrs, 'tool_hooks.pre')),
-        formatGraphAttr('tool_hooks.post', readStringAttr(graphAttrs, 'tool_hooks.post')),
+        formatGraphAttr('tool.hooks.pre', readStringAttr(graphAttrs, 'tool.hooks.pre')),
+        formatGraphAttr('tool.hooks.post', readStringAttr(graphAttrs, 'tool.hooks.post')),
         formatGraphAttr('ui_default_llm_model', readStringAttr(graphAttrs, 'ui_default_llm_model')),
         formatGraphAttr('ui_default_llm_provider', readStringAttr(graphAttrs, 'ui_default_llm_provider')),
         formatGraphAttr('ui_default_reasoning_effort', readStringAttr(graphAttrs, 'ui_default_reasoning_effort')),
@@ -522,9 +525,12 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         const labelValue = readStringAttr(attrs, 'label')
         const shapeValue = readStringAttr(attrs, 'shape')
         const promptValue = readStringAttr(attrs, 'prompt')
-        const toolCommandValue = readStringAttr(attrs, 'tool_command')
-        const toolHooksPreValue = readStringAttr(attrs, 'tool_hooks.pre')
-        const toolHooksPostValue = readStringAttr(attrs, 'tool_hooks.post')
+        const toolCommandValue = readStringAttr(attrs, 'tool.command')
+        const toolHooksPreValue = readStringAttr(attrs, 'tool.hooks.pre')
+        const toolHooksPostValue = readStringAttr(attrs, 'tool.hooks.post')
+        const toolArtifactsPathsValue = readStringAttr(attrs, 'tool.artifacts.paths')
+        const toolArtifactsStdoutValue = readStringAttr(attrs, 'tool.artifacts.stdout')
+        const toolArtifactsStderrValue = readStringAttr(attrs, 'tool.artifacts.stderr')
         const joinPolicyValue = readStringAttr(attrs, 'join_policy')
         const errorPolicyValue = readStringAttr(attrs, 'error_policy')
         const maxParallelValue = readStringOrNumberAttr(attrs, 'max_parallel')
@@ -553,9 +559,18 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         const label = hasLabelAttr ? `label="${escapeDotString(labelValue)}"` : ''
         const shape = shapeValue ? `shape=${formatAttrValue(shapeValue)}` : ''
         const prompt = promptValue ? `prompt="${escapeDotString(promptValue)}"` : ''
-        const toolCommand = toolCommandValue ? `tool_command="${escapeDotString(toolCommandValue)}"` : ''
-        const toolHooksPre = toolHooksPreValue ? `tool_hooks.pre="${escapeDotString(toolHooksPreValue)}"` : ''
-        const toolHooksPost = toolHooksPostValue ? `tool_hooks.post="${escapeDotString(toolHooksPostValue)}"` : ''
+        const toolCommand = toolCommandValue ? `tool.command="${escapeDotString(toolCommandValue)}"` : ''
+        const toolHooksPre = toolHooksPreValue ? `tool.hooks.pre="${escapeDotString(toolHooksPreValue)}"` : ''
+        const toolHooksPost = toolHooksPostValue ? `tool.hooks.post="${escapeDotString(toolHooksPostValue)}"` : ''
+        const toolArtifactsPaths = toolArtifactsPathsValue
+            ? `tool.artifacts.paths="${escapeDotString(toolArtifactsPathsValue)}"`
+            : ''
+        const toolArtifactsStdout = toolArtifactsStdoutValue
+            ? `tool.artifacts.stdout="${escapeDotString(toolArtifactsStdoutValue)}"`
+            : ''
+        const toolArtifactsStderr = toolArtifactsStderrValue
+            ? `tool.artifacts.stderr="${escapeDotString(toolArtifactsStderrValue)}"`
+            : ''
         const joinPolicy = joinPolicyValue ? `join_policy=${formatAttrValue(joinPolicyValue)}` : ''
         const errorPolicy = errorPolicyValue ? `error_policy=${formatAttrValue(errorPolicyValue)}` : ''
         const maxParallel = formatIntAttr('max_parallel', maxParallelValue)
@@ -567,6 +582,9 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
             toolCommand,
             toolHooksPre,
             toolHooksPost,
+            toolArtifactsPaths,
+            toolArtifactsStdout,
+            toolArtifactsStderr,
             joinPolicy,
             errorPolicy,
             maxParallel,

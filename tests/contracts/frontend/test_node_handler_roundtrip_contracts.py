@@ -43,7 +43,10 @@ def _generate_dot_with_all_handler_types() -> str:
                 "label": "Tool",
                 "shape": "parallelogram",
                 "type": "tool",
-                "tool_command": "echo run tool",
+                "tool.command": "echo run tool",
+                "tool.artifacts.paths": "dist/**,reports/*.json",
+                "tool.artifacts.stdout": "stdout.txt",
+                "tool.artifacts.stderr": "stderr.txt",
             },
         },
         {
@@ -133,7 +136,10 @@ def test_node_attributes_round_trip_across_all_handler_types_item_6_2_04() -> No
     assert nodes_by_id["cond"]["prompt"] == "Route based on result"
     assert nodes_by_id["human"]["prompt"] == "Approve release?"
     assert nodes_by_id["human"]["human.default_choice"] == "approve"
-    assert nodes_by_id["tool"]["tool_command"] == "echo run tool"
+    assert nodes_by_id["tool"]["tool.command"] == "echo run tool"
+    assert nodes_by_id["tool"]["tool.artifacts.paths"] == "dist/**,reports/*.json"
+    assert nodes_by_id["tool"]["tool.artifacts.stdout"] == "stdout.txt"
+    assert nodes_by_id["tool"]["tool.artifacts.stderr"] == "stderr.txt"
     assert nodes_by_id["parallel"]["join_policy"] == "wait_all"
     assert nodes_by_id["parallel"]["error_policy"] == "continue"
     assert nodes_by_id["parallel"]["max_parallel"] == 3

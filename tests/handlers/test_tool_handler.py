@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import shlex
 import subprocess
 
@@ -9,12 +10,13 @@ from attractor.handlers import HandlerRunner, build_default_registry
 
 from tests.handlers._support.fakes import _StubBackend
 
+
 class TestToolHandler:
     def test_tool_handler_executes_command(self):
         graph = parse_dot(
             """
             digraph G {
-                tool_node [shape=parallelogram, tool_command="printf hello"]
+                tool_node [shape=parallelogram, tool.command="printf hello"]
             }
             """
         )
@@ -38,14 +40,14 @@ class TestToolHandler:
         runner = HandlerRunner(graph, registry)
         outcome = runner("tool_node", "", Context())
         assert outcome.status == OutcomeStatus.FAIL
-        assert outcome.failure_reason == "No tool_command specified"
+        assert outcome.failure_reason == "No tool.command specified"
 
     def test_tool_handler_passes_hook_metadata_via_env_and_stdin_json(self, monkeypatch):
         graph = parse_dot(
             """
             digraph G {
-                graph [tool_hooks.pre="pre-hook", tool_hooks.post="post-hook"]
-                tool_node [shape=parallelogram, tool_command="run-tool"]
+                graph [tool.hooks.pre="pre-hook", tool.hooks.post="post-hook"]
+                tool_node [shape=parallelogram, tool.command="run-tool"]
             }
             """
         )
@@ -83,8 +85,8 @@ class TestToolHandler:
         graph = parse_dot(
             """
             digraph G {
-                graph [tool_hooks.pre="pre-hook", tool_hooks.post="post-hook"]
-                tool_node [shape=parallelogram, tool_command="run-tool"]
+                graph [tool.hooks.pre="pre-hook", tool.hooks.post="post-hook"]
+                tool_node [shape=parallelogram, tool.command="run-tool"]
             }
             """
         )
@@ -122,8 +124,8 @@ class TestToolHandler:
         graph = parse_dot(
             """
             digraph G {
-                graph [tool_hooks.pre="pre-hook", tool_hooks.post="post-hook"]
-                tool_node [shape=parallelogram, tool_command="run-tool"]
+                graph [tool.hooks.pre="pre-hook", tool.hooks.post="post-hook"]
+                tool_node [shape=parallelogram, tool.command="run-tool"]
             }
             """
         )
@@ -161,7 +163,7 @@ class TestToolHandler:
         graph = parse_dot(
             """
             digraph G {
-                tool_node [shape=parallelogram, tool_command="echo hi"]
+                tool_node [shape=parallelogram, tool.command="echo hi"]
             }
             """
         )
@@ -187,8 +189,8 @@ class TestToolHandler:
         graph = parse_dot(
             f"""
             digraph G {{
-                graph [tool_hooks.post="{post_hook}"]
-                tool_node [shape=parallelogram, tool_command="{tool_command}"]
+                graph [tool.hooks.post="{post_hook}"]
+                tool_node [shape=parallelogram, tool.command="{tool_command}"]
             }}
             """
         )
@@ -209,8 +211,8 @@ class TestToolHandler:
         graph = parse_dot(
             f"""
             digraph G {{
-                graph [tool_hooks.pre="{pre_hook}"]
-                tool_node [shape=parallelogram, tool_command="{tool_command}"]
+                graph [tool.hooks.pre="{pre_hook}"]
+                tool_node [shape=parallelogram, tool.command="{tool_command}"]
             }}
             """
         )
@@ -227,7 +229,7 @@ class TestToolHandler:
         graph = parse_dot(
             """
             digraph G {
-                tool_node [shape=parallelogram, tool_command="sleep 5", timeout=50ms]
+                tool_node [shape=parallelogram, tool.command="sleep 5", timeout=50ms]
             }
             """
         )
@@ -255,7 +257,7 @@ class TestToolHandler:
         graph = parse_dot(
             """
             digraph G {
-                tool_node [shape=parallelogram, tool_command="printf hello"]
+                tool_node [shape=parallelogram, tool.command="printf hello"]
             }
             """
         )
@@ -269,3 +271,102 @@ class TestToolHandler:
         artifact_path = logs_root / "tool_node" / "tool_output.txt"
         assert artifact_path.exists()
         assert artifact_path.read_text(encoding="utf-8") == "hello"
+
+    def test_tool_handler_captures_declared_artifacts(self, tmp_path):
+        workdir = tmp_path / "project"
+        workdir.mkdir(parents=True, exist_ok=True)
+        graph = parse_dot(
+            """
+            digraph G {
+                tool_node [
+                    shape=parallelogram,
+                    tool.command="printf hello > report.txt && printf warn 1>&2",
+                    tool.artifacts.paths="report.txt",
+                    tool.artifacts.stdout="stdout.txt",
+                    tool.artifacts.stderr="stderr.txt"
+                ]
+            }
+            """
+        )
+        logs_root = tmp_path / "logs"
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry, logs_root=logs_root)
+        context = Context(values={"internal.run_workdir": str(workdir)})
+
+        outcome = runner("tool_node", "", context)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        artifacts_root = tmp_path / "artifacts" / "tool_node"
+        assert (artifacts_root / "stdout.txt").read_text(encoding="utf-8") == ""
+        assert (artifacts_root / "stderr.txt").read_text(encoding="utf-8") == "warn"
+        assert (artifacts_root / "captured" / "report.txt").read_text(encoding="utf-8") == "hello"
+
+    def test_tool_handler_allows_zero_match_artifact_patterns(self, tmp_path):
+        workdir = tmp_path / "project"
+        workdir.mkdir(parents=True, exist_ok=True)
+        graph = parse_dot(
+            """
+            digraph G {
+                tool_node [
+                    shape=parallelogram,
+                    tool.command="printf ok",
+                    tool.artifacts.paths="missing/**/*.json"
+                ]
+            }
+            """
+        )
+        logs_root = tmp_path / "logs"
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry, logs_root=logs_root)
+        context = Context(values={"internal.run_workdir": str(workdir)})
+
+        outcome = runner("tool_node", "", context)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert not (tmp_path / "artifacts" / "tool_node" / "captured").exists()
+
+    def test_tool_handler_fails_when_declared_artifact_destination_is_invalid(self, tmp_path):
+        workdir = tmp_path / "project"
+        workdir.mkdir(parents=True, exist_ok=True)
+        graph = parse_dot(
+            """
+            digraph G {
+                tool_node [
+                    shape=parallelogram,
+                    tool.command="printf hello",
+                    tool.artifacts.stdout="../stdout.txt"
+                ]
+            }
+            """
+        )
+        logs_root = tmp_path / "logs"
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry, logs_root=logs_root)
+        context = Context(values={"internal.run_workdir": str(workdir)})
+
+        outcome = runner("tool_node", "", context)
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.context_updates["context.tool.output"] == "hello"
+        assert "artifact capture failed" in (outcome.failure_reason or "")
+
+    def test_tool_handler_executes_in_internal_run_workdir(self, tmp_path):
+        workdir = tmp_path / "project"
+        workdir.mkdir(parents=True, exist_ok=True)
+        marker_path = workdir / "cwd.txt"
+        graph = parse_dot(
+            f"""
+            digraph G {{
+                tool_node [shape=parallelogram, tool.command="pwd > {shlex.quote(str(marker_path))} && pwd"]
+            }}
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+        context = Context(values={"internal.run_workdir": str(workdir)})
+
+        outcome = runner("tool_node", "", context)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert Path(outcome.context_updates["context.tool.output"]) == workdir
+        assert Path(marker_path.read_text(encoding="utf-8").strip()) == workdir

@@ -34,6 +34,11 @@ _KNOWN_HANDLER_TYPES = {
     "tool",
     "stack.manager_loop",
 }
+_LEGACY_TOOL_ATTR_MESSAGES = {
+    "tool_command": "legacy tool attr 'tool_command' is not supported; use 'tool.command'",
+    "tool_hooks.pre": "legacy tool attr 'tool_hooks.pre' is not supported; use 'tool.hooks.pre'",
+    "tool_hooks.post": "legacy tool attr 'tool_hooks.post' is not supported; use 'tool.hooks.post'",
+}
 _SHAPE_TO_HANDLER_TYPE = {
     "Mdiamond": "start",
     "Msquare": "exit",
@@ -234,6 +239,7 @@ def validate_graph(graph: DotGraph) -> List[Diagnostic]:
     diagnostics.extend(_validate_known_types(graph))
     diagnostics.extend(_validate_prompt_on_llm_nodes(graph))
     diagnostics.extend(_validate_stylesheet(graph))
+    diagnostics.extend(_validate_tool_handler_attrs(graph))
 
     return diagnostics
 
@@ -649,6 +655,70 @@ def _resolves_to_codergen(node: DotNode) -> bool:
 def _has_non_empty_attr(node: DotNode, key: str) -> bool:
     attr = node.attrs.get(key)
     return bool(attr and str(attr.value).strip())
+
+
+def _resolves_to_handler_type(node: DotNode) -> str:
+    explicit = node.attrs.get("type")
+    if explicit:
+        explicit_value = str(explicit.value).strip()
+        if explicit_value in _KNOWN_HANDLER_TYPES:
+            return explicit_value
+
+    shape = node.attrs.get("shape")
+    if shape:
+        mapped = _SHAPE_TO_HANDLER_TYPE.get(str(shape.value).strip())
+        if mapped is not None:
+            return mapped
+
+    return "codergen"
+
+
+def _validate_tool_handler_attrs(graph: DotGraph) -> List[Diagnostic]:
+    diagnostics: List[Diagnostic] = []
+
+    for key, message in _LEGACY_TOOL_ATTR_MESSAGES.items():
+        attr = graph.graph_attrs.get(key)
+        if not attr:
+            continue
+        diagnostics.append(
+            Diagnostic(
+                rule_id="tool_attr_namespaced",
+                severity=DiagnosticSeverity.ERROR,
+                message=message,
+                line=attr.line,
+            )
+        )
+
+    for node in graph.nodes.values():
+        for key, message in _LEGACY_TOOL_ATTR_MESSAGES.items():
+            attr = node.attrs.get(key)
+            if not attr:
+                continue
+            diagnostics.append(
+                Diagnostic(
+                    rule_id="tool_attr_namespaced",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=message,
+                    line=attr.line,
+                    node_id=node.node_id,
+                )
+            )
+
+        if _resolves_to_handler_type(node) != "tool":
+            continue
+        if _has_non_empty_attr(node, "tool.command"):
+            continue
+        diagnostics.append(
+            Diagnostic(
+                rule_id="tool_command_required",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"node '{node.node_id}' resolves to tool and must define a non-empty tool.command",
+                line=node.line,
+                node_id=node.node_id,
+            )
+        )
+
+    return diagnostics
 
 
 def _validate_stylesheet(graph: DotGraph) -> List[Diagnostic]:

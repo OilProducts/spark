@@ -37,8 +37,8 @@ def test_graph_attr_edit_round_trip_serializes_and_rehydrates_item_6_1_04() -> N
         "default_fidelity": "summary:medium",
         "stack.child_dotfile": "child.dot",
         "stack.child_workdir": "/tmp/child",
-        "tool_hooks.pre": "echo pre-hook",
-        "tool_hooks.post": "echo post-hook",
+        "tool.hooks.pre": "echo pre-hook",
+        "tool.hooks.post": "echo post-hook",
     }
     flow = _generate_dot_with_graph_attrs(graph_attrs_input)
     payload = preview_pipeline(flow)
@@ -56,5 +56,5 @@ def test_graph_attr_edit_round_trip_serializes_and_rehydrates_item_6_1_04() -> N
     assert graph_attrs["default_fidelity"] == "summary:medium"
     assert graph_attrs["stack.child_dotfile"] == "child.dot"
     assert graph_attrs["stack.child_workdir"] == "/tmp/child"
-    assert graph_attrs["tool_hooks.pre"] == "echo pre-hook"
-    assert graph_attrs["tool_hooks.post"] == "echo post-hook"
+    assert graph_attrs["tool.hooks.pre"] == "echo pre-hook"
+    assert graph_attrs["tool.hooks.post"] == "echo post-hook"

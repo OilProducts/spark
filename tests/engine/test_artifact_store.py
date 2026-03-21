@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-import json
 from pathlib import Path
 
 import pytest
@@ -9,91 +7,83 @@ import pytest
 from attractor.engine.artifacts import ArtifactInfo, ArtifactStore
 
 
-def test_store_registers_artifact_with_metadata() -> None:
-    store = ArtifactStore()
+def test_write_text_registers_filesystem_backed_artifact(tmp_path: Path) -> None:
+    store = ArtifactStore(base_dir=tmp_path)
 
-    info = store.store("artifact-1", "plan-output", {"status": "ok"})
+    info = store.write_text("tool_node", "stdout.txt", "hello")
 
     assert isinstance(info, ArtifactInfo)
-    assert info.id == "artifact-1"
-    assert info.name == "plan-output"
-    assert info.size_bytes > 0
-    assert isinstance(info.stored_at, datetime)
-    assert info.stored_at.tzinfo == timezone.utc
-    assert info.is_file_backed is False
+    assert info.path == "artifacts/tool_node/stdout.txt"
+    assert info.size_bytes == 5
+    assert info.media_type == "text/plain"
+    assert (tmp_path / "tool_node" / "stdout.txt").read_text(encoding="utf-8") == "hello"
 
 
-def test_retrieve_supports_optional_type_assertion() -> None:
-    store = ArtifactStore()
-    payload = {"result": "ready"}
-    store.store("artifact-2", "review-output", payload)
-
-    typed_value = store.retrieve("artifact-2", expected_type=dict)
-    assert typed_value == payload
-
-    with pytest.raises(TypeError):
-        store.retrieve("artifact-2", expected_type=list)
-
-
-def test_store_file_backs_large_payload_when_base_dir_present(tmp_path: Path) -> None:
+def test_copy_path_copies_file_into_node_artifact_directory(tmp_path: Path) -> None:
     store = ArtifactStore(base_dir=tmp_path)
-    payload = {"blob": "x" * (100 * 1024 + 1)}
+    source_path = tmp_path / "source.log"
+    source_path.write_text("copied", encoding="utf-8")
 
-    info = store.store("artifact-large", "large-output", payload)
+    info = store.copy_path("tool_node", source_path, "captured/source.log")
 
-    assert info.is_file_backed is True
-    artifact_path = tmp_path / "artifacts" / "artifact-large.json"
-    assert artifact_path.exists()
-    assert json.loads(artifact_path.read_text(encoding="utf-8")) == payload
-    assert store.retrieve("artifact-large", expected_type=dict) == payload
+    assert info.path == "artifacts/tool_node/captured/source.log"
+    assert (tmp_path / "tool_node" / "captured" / "source.log").read_text(encoding="utf-8") == "copied"
 
 
-def test_store_keeps_large_payload_in_memory_without_base_dir() -> None:
-    store = ArtifactStore()
-    payload = "x" * (100 * 1024 + 1)
+def test_copy_matches_copies_relative_glob_matches(tmp_path: Path) -> None:
+    store = ArtifactStore(base_dir=tmp_path / "artifacts")
+    cwd = tmp_path / "workdir"
+    (cwd / "reports" / "nested").mkdir(parents=True, exist_ok=True)
+    (cwd / "reports" / "summary.json").write_text("{}", encoding="utf-8")
+    (cwd / "reports" / "nested" / "detail.txt").write_text("detail", encoding="utf-8")
 
-    info = store.store("artifact-memory", "large-output", payload)
+    infos = store.copy_matches("tool_node", cwd, ["reports/**"])
 
-    assert info.is_file_backed is False
-    assert store.retrieve("artifact-memory", expected_type=str) == payload
-
-
-def test_has_reports_presence_by_artifact_id() -> None:
-    store = ArtifactStore()
-
-    assert store.has("artifact-1") is False
-    store.store("artifact-1", "sample", {"ok": True})
-    assert store.has("artifact-1") is True
-
-
-def test_list_returns_registered_artifact_metadata() -> None:
-    store = ArtifactStore()
-    first = store.store("artifact-1", "one", 1)
-    second = store.store("artifact-2", "two", 2)
-
-    infos = store.list()
-
-    assert infos == [first, second]
+    assert [info.path for info in infos] == [
+        "artifacts/tool_node/captured/reports/nested/detail.txt",
+        "artifacts/tool_node/captured/reports/summary.json",
+    ]
+    assert (tmp_path / "artifacts" / "tool_node" / "captured" / "reports" / "summary.json").exists()
+    assert (tmp_path / "artifacts" / "tool_node" / "captured" / "reports" / "nested" / "detail.txt").exists()
 
 
-def test_remove_deletes_registered_artifact() -> None:
-    store = ArtifactStore()
-    store.store("artifact-1", "sample", {"ok": True})
+def test_copy_matches_allows_zero_match_patterns(tmp_path: Path) -> None:
+    store = ArtifactStore(base_dir=tmp_path / "artifacts")
+    cwd = tmp_path / "workdir"
+    cwd.mkdir(parents=True, exist_ok=True)
 
-    store.remove("artifact-1")
+    infos = store.copy_matches("tool_node", cwd, ["missing/**/*.json"])
 
-    assert store.has("artifact-1") is False
-    with pytest.raises(KeyError):
-        store.retrieve("artifact-1")
+    assert infos == []
 
 
-def test_clear_removes_all_artifacts() -> None:
-    store = ArtifactStore()
-    store.store("artifact-1", "one", {"a": 1})
-    store.store("artifact-2", "two", {"b": 2})
+def test_write_text_rejects_invalid_relative_paths(tmp_path: Path) -> None:
+    store = ArtifactStore(base_dir=tmp_path)
 
-    store.clear()
+    with pytest.raises(ValueError, match="must be relative"):
+        store.write_text("tool_node", "/tmp/output.txt", "hello")
 
-    assert store.list() == []
-    assert store.has("artifact-1") is False
-    assert store.has("artifact-2") is False
+    with pytest.raises(ValueError, match="must not escape"):
+        store.write_text("tool_node", "../output.txt", "hello")
+
+
+def test_copy_matches_rejects_absolute_and_parent_patterns(tmp_path: Path) -> None:
+    store = ArtifactStore(base_dir=tmp_path / "artifacts")
+    cwd = tmp_path / "workdir"
+    cwd.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(ValueError, match="must be relative"):
+        store.copy_matches("tool_node", cwd, ["/tmp/*.json"])
+
+    with pytest.raises(ValueError, match="must stay within the tool working directory"):
+        store.copy_matches("tool_node", cwd, ["../*.json"])
+
+
+def test_list_returns_registered_artifacts_in_write_order(tmp_path: Path) -> None:
+    store = ArtifactStore(base_dir=tmp_path)
+    first = store.write_text("tool_node", "stdout.txt", "one")
+    second_path = tmp_path / "report.json"
+    second_path.write_text("{}", encoding="utf-8")
+    second = store.copy_path("tool_node", second_path, "captured/report.json")
+
+    assert store.list() == [first, second]
