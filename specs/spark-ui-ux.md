@@ -1,0 +1,348 @@
+# Spark UI/UX Specification
+
+This document is the canonical operator-facing client specification for Spark.
+
+It consolidates and supersedes the split UI documents:
+- `spark-frontend.md`
+- `ui-user-stories.md`
+- `ui-story-records.md`
+
+## 1. Purpose
+
+The Spark frontend is the operator-facing application for:
+- project-scoped collaboration
+- flow authoring
+- run inspection
+- human review and approval of workspace artifacts
+
+The frontend composes workspace data from Spark and execution data from Attractor without becoming either of them.
+
+## 2. Scope and Design Intent
+
+Spark is organized around a home-first operator workflow with two frames:
+- select a project
+- collaborate in project chat
+- review artifacts
+- author or inspect flows
+- monitor and inspect runs
+
+Project selection frames conversations, approvals, and execution context.
+Flow authoring itself operates on shared workspace flows rather than per-project copies.
+
+Story material exists to support implementation, testing, and auditing. It does not override the normative client contract sections below.
+
+## 3. Relationship to Workspace and Attractor
+
+The frontend intentionally targets two distinct backend surfaces:
+- Spark Workspace for project, conversation, and review data
+- Attractor for flow and run data
+
+Workspace artifacts and Attractor runs remain conceptually separate even when the UI shows them side by side.
+
+## 4. Client Boundaries
+
+### 4.1 The Frontend Is Not the Engine
+
+The frontend does not execute pipelines.
+
+It consumes Attractor through API surfaces for:
+- run submission
+- status
+- event streams
+- questions
+- checkpoint, context, graph, and artifacts
+
+### 4.2 The Frontend Is Not the Workspace Source of Truth
+
+The frontend does not durably own:
+- projects
+- conversations
+- proposals
+- execution cards
+- review decisions
+- provenance links
+
+### 4.3 No Hidden Local Authority
+
+The frontend must not persist local state that overrides backend truth for:
+- which artifacts exist
+- whether an artifact was approved
+- which run an artifact launched
+- which flow a trigger resolves to
+
+When local state becomes invalid relative to backend state, the backend wins.
+
+## 5. Data Sources and Service Separation
+
+### 5.1 Workspace Data
+
+The frontend consumes workspace data for:
+- project list and active project
+- project conversations
+- inline conversation artifacts
+- proposal and execution-card review state
+- trigger bindings
+- provenance references to flows and runs
+
+### 5.2 Attractor Data
+
+The frontend consumes Attractor data for:
+- flows
+- run list
+- run status
+- run events
+- checkpoint
+- context
+- graph render
+- questions
+- artifacts
+
+### 5.3 Separation Rule
+
+The frontend must preserve the conceptual separation between:
+- workspace artifacts
+- Attractor runs
+
+Workflow launch flow selection comes from workspace bindings or explicit operator overrides. It must not be inferred from whichever flow happens to be open in the editor.
+
+## 6. Primary User Workflows
+
+The primary workflows are:
+- Home and project selection
+- project-scoped conversation and artifact review
+- flow authoring and validation
+- execution monitoring
+- run inspection
+
+These workflow summaries are normative at the experience level. Detailed story records remain appendix-style support material.
+
+## 7. Navigation Model
+
+Home is the default top-level workspace for:
+- project selection
+- project framing
+- AI collaboration
+
+Navigation should preserve project framing as the operator moves from conversation to execution and run inspection whenever that framing still applies.
+The Editor may open with no active project. The Execution view may also open without a project, but run-start actions must remain locally gated on selecting a project.
+
+## 8. Presentation Surfaces
+
+### 8.1 Workspace Surfaces
+
+Workspace-oriented surfaces include:
+- project selection
+- conversation list
+- project chat
+- inline spec proposal cards
+- inline flow-run request cards
+- inline execution cards
+- review controls
+
+### 8.2 Attractor Surfaces
+
+Attractor-oriented surfaces include:
+- flow editing and validation
+- run history
+- run event timeline
+- checkpoint view
+- context view
+- graph view
+- artifact inspection
+- human-question answering
+
+### 8.3 Bridge Surfaces
+
+Bridge surfaces show how workspace artifacts connect to Attractor execution.
+
+These are provenance views, not ownership transfers.
+
+## 9. Project Selection UX
+
+The UI should support:
+- one active project at a time
+- visible active project identity
+- duplicate-path prevention
+- project metadata visible enough for safe selection
+- recent or favorite project switching when supported
+
+Project identity itself remains workspace truth even though the UI presents it.
+
+## 10. Conversation UX
+
+The frontend renders project chat from the workspace conversation contract rather than from raw model protocol messages.
+
+The conversation surface should show:
+- user turns
+- assistant turns
+- thinking or reasoning blocks
+- tool activity
+- inline workspace artifacts such as spec proposals, flow-run requests, and execution cards
+
+Conversation UX commitments include:
+- an assistant row should appear promptly after the user sends a message
+- progressive assistant output should stream into that row when available
+- tool-call rows may appear before, between, or after assistant text updates without breaking timeline order
+- a placeholder such as `Thinking...` may remain until the first assistant text arrives
+- final completion should finalize the active assistant row rather than append a duplicate
+- failure should convert the active assistant row into an explicit failure state or remove it cleanly
+
+The UI must not reconstruct chat cards from raw protocol notifications.
+
+## 11. Review and Approval UX
+
+Spec edit proposal approval, flow-run request approval, and execution-card approval are explicit human actions.
+
+The UI must present these as review controls, not as automatic assistant continuations.
+
+When approval causes downstream execution, the UI should display:
+- what artifact was approved
+- what flow was launched
+- what Attractor run id was created
+- an affordance to open the resulting run
+
+The UI must not imply approval unless the backend has recorded it explicitly.
+
+## 12. Flow Authoring UX
+
+Flow authoring is a client experience layered on top of Attractor contracts.
+It operates on shared workspace flows, not project-local flow copies.
+
+The UI may provide:
+- structured editing
+- raw DOT editing
+- validation visibility
+- preview and save workflows
+- degraded-state feedback when API or validation calls fail
+
+This section is about the authoring experience, not the DOT DSL itself.
+
+### 12.1 Flow Contract Authoring
+
+Spark authoring surfaces should make the flow's launch and context contract visible without forcing raw DOT edits for common cases.
+
+The structured graph inspector should support:
+- graph title and description
+- graph launch input declarations
+- graph defaults and advanced attrs
+
+Launch input declarations should:
+- edit the persisted `spark.launch_inputs` metadata
+- define the `context.*` values Spark should collect before a direct run
+- make required vs optional inputs explicit
+- render stable user-facing labels and descriptions instead of raw key names alone
+
+### 12.2 Node Context Contract Authoring
+
+The structured node inspector should support node-level context contract declarations.
+
+At minimum, Spark should expose:
+- `Reads Context`
+- `Writes Context`
+
+These fields should edit the persisted `spark.reads_context` and `spark.writes_context` metadata rather than inventing hidden local-only state.
+
+The primary UX purpose is to:
+- document what launch or prior-stage state a node expects
+- document what state a node is expected to produce for later stages
+- help operators understand retry loops and multi-stage feedback flows
+
+These declarations do not, by themselves, create runtime behavior. They are authoring-surface contract metadata.
+
+### 12.3 Launch Form Generation
+
+When a flow declares launch inputs, direct-run launch surfaces should render a launch form from that metadata.
+
+That launch form should:
+- appear before run submission
+- collect values using the declared field types
+- validate required inputs
+- convert the submitted values into Attractor `launch_context`
+- surface invalid launch-schema problems as explicit launch blockers rather than failing silently
+
+The frontend should not require the operator to hand-author raw JSON for routine launch input cases if the flow already declares them.
+
+## 13. Run Inspection UX
+
+The run inspector is a frontend for Attractor runs, not for workspace artifacts.
+
+It should render:
+- run summary
+- event timeline
+- checkpoint
+- context
+- graph
+- artifacts
+- pending questions when present
+
+When the user reaches run inspection from a workspace surface, the UI should preserve project framing by default rather than dropping into an unscoped global run context.
+
+## 14. Frontend State Model
+
+The frontend treats backend-provided state as authoritative for:
+- project identity
+- conversation identity
+- artifact status
+- run identity and run status
+- provenance links
+
+The frontend may keep local ephemeral state for:
+- selected tab
+- expanded or collapsed cards
+- active inspector panel
+- currently inspected run
+- draft message text
+- local filter or sort controls
+
+## 15. Error, Degraded, and Partial-Availability UX
+
+When a backend surface is unavailable or incompatible:
+- the affected UI should enter an explicit degraded state
+- unaffected surfaces should remain usable where feasible
+- the client must not fabricate missing authority from stale local state
+- save and launch paths should remain non-destructive
+
+Degraded behavior is part of the operator contract, not an implementation accident.
+
+## 16. Accessibility and Responsiveness Expectations
+
+The UI should preserve core workflows across:
+- desktop and narrow/mobile layouts
+- keyboard-accessible review and navigation flows where supported
+- readable project framing and status visibility in constrained layouts
+
+Only durable, testable UX expectations belong here.
+
+## 17. User Story Catalog
+
+The current stable story groups are:
+- Home workspace and project selection
+- project-scoped AI conversation and spec editing
+- spec -> plan -> work tracker -> build chain
+- governance, safety, and auditability
+- UX and information architecture implications
+
+Story IDs remain useful for traceability and test planning, but the catalog does not create independent backend truth.
+
+## 18. Detailed Story Records
+
+Detailed story records remain useful for:
+- rationale
+- acceptance criteria
+- non-goals
+- implementation intent
+- references
+
+Those records are appendix-style support material. They should clarify or trace the normative UX sections, not replace them.
+
+## 19. Traceability to Workspace and Attractor Contracts
+
+Each substantial UI obligation should be traceable back to:
+- a workspace contract section
+- an Attractor contract section
+- or a clearly identified client-only UX requirement
+
+That traceability exists to prevent:
+- UX sections from quietly redefining backend truth
+- stories from becoming a second source of authority
+- implementation intent from being mistaken for normative contract language

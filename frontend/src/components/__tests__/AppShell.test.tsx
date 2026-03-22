@@ -26,7 +26,7 @@ const resetAppShellState = () => {
     selectedNodeId: null,
     selectedEdgeId: null,
     projectRegistry: {},
-    projectScopedWorkspaces: {},
+    projectSessionsByPath: {},
     projectRegistrationError: null,
     recentProjectPaths: [],
     graphAttrs: {},
@@ -113,24 +113,20 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('projects-panel')).toBeVisible()
   })
 
-  it('prevents editor navigation without an active project and allows it after project selection', async () => {
+  it('allows editor navigation without an active project and keeps the empty state visible', async () => {
     const user = userEvent.setup()
     render(<App />)
-
-    await user.click(screen.getByTestId('nav-mode-editor'))
-    expect(useStore.getState().viewMode).toBe('home')
-    expect(screen.getByTestId('projects-panel')).toBeVisible()
-
-    act(() => {
-      useStore.getState().registerProject('/tmp/project-shell')
-    })
-
-    expect(screen.getByTestId('top-nav-active-project')).toHaveTextContent('/tmp/project-shell')
 
     await user.click(screen.getByTestId('nav-mode-editor'))
     expect(useStore.getState().viewMode).toBe('editor')
     expect(screen.getByTestId('canvas-workspace-primary')).toBeVisible()
     expect(screen.getByTestId('inspector-panel')).toBeVisible()
     expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-shell')
+    })
+
+    expect(screen.getByTestId('top-nav-active-project')).toHaveTextContent('/tmp/project-shell')
   })
 })

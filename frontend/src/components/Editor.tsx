@@ -122,7 +122,6 @@ export function Editor() {
     const { viewMode, selectedNodeId, selectedEdgeId, setSelectedNodeId, setSelectedEdgeId } = useStore();
     const activeFlow = useStore((state) => state.activeFlow);
     const executionFlow = useStore((state) => state.executionFlow);
-    const activeProjectPath = useStore((state) => state.activeProjectPath);
     const nodeStatuses = useStore((state) => state.nodeStatuses);
     const graphAttrs = useStore((state) => state.graphAttrs);
     const uiDefaults = useStore((state) => state.uiDefaults);
@@ -184,17 +183,17 @@ export function Editor() {
     }, [setNodes, setSelectedEdgeId, setSelectedNodeId]);
 
     const saveFlow = useCallback((nextNodes: Node[], nextEdges: Edge[], options?: SaveFlowOptions) => {
-        if (!activeProjectPath || !flowName) return;
+        if (!flowName) return;
         const dot = generateDot(flowName, nextNodes, nextEdges, graphAttrs);
         if (options) {
             void saveFlowContent(flowName, dot, options);
             return;
         }
         void saveFlowContent(flowName, dot);
-    }, [activeProjectPath, flowName, graphAttrs]);
+    }, [flowName, graphAttrs]);
 
     const scheduleSave = useCallback((nextNodes: Node[], nextEdges: Edge[], options?: SaveFlowOptions) => {
-        if (!activeProjectPath || !flowName) return;
+        if (!flowName) return;
         pendingSaveRef.current = { nodes: nextNodes, edges: nextEdges, options };
         if (saveTimer.current) {
             window.clearTimeout(saveTimer.current);
@@ -203,10 +202,10 @@ export function Editor() {
             pendingSaveRef.current = null;
             saveFlow(nextNodes, nextEdges, options);
         }, 250);
-    }, [activeProjectPath, flowName, saveFlow]);
+    }, [flowName, saveFlow]);
 
     const flushPendingSave = useCallback(() => {
-        if (!activeProjectPath || !flowName || !pendingSaveRef.current) return;
+        if (!flowName || !pendingSaveRef.current) return;
         if (saveTimer.current) {
             window.clearTimeout(saveTimer.current);
             saveTimer.current = null;
@@ -214,7 +213,7 @@ export function Editor() {
         const pending = pendingSaveRef.current;
         pendingSaveRef.current = null;
         saveFlow(pending.nodes, pending.edges, pending.options);
-    }, [activeProjectPath, flowName, saveFlow]);
+    }, [flowName, saveFlow]);
 
     const hydrateFromPreview = useCallback(async (
         preview: PreviewResponse,
@@ -445,7 +444,6 @@ export function Editor() {
         activeFlowLoadIdRef.current = loadId;
         recordFlowLoadDebug('flow-load:start', flowName, {
             loadId,
-            activeProjectPath,
             viewMode,
         });
         clearDotSerializationContext();
@@ -485,7 +483,6 @@ export function Editor() {
             }))
             .catch(console.error);
     }, [
-        activeProjectPath,
         flowName,
         clearDiagnostics,
         hydrateFromPreview,
@@ -641,7 +638,7 @@ export function Editor() {
     );
 
     const onAddNode = useCallback(() => {
-        if (!activeProjectPath || !flowName) return;
+        if (!flowName) return;
         const defaultModel = graphAttrs.ui_default_llm_model || uiDefaults.llm_model || '';
         const defaultProvider = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '';
         const defaultReasoning = graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || '';
@@ -665,10 +662,10 @@ export function Editor() {
             scheduleSave(newNodes, edges);
             return newNodes;
         });
-    }, [activeProjectPath, flowName, edges, graphAttrs, uiDefaults, setNodes, scheduleSave]);
+    }, [flowName, edges, graphAttrs, uiDefaults, setNodes, scheduleSave]);
 
     const enterRawDotMode = useCallback(() => {
-        if (!activeProjectPath || !flowName) return;
+        if (!flowName) return;
         if (editorMode === 'raw') return;
         flushPendingSave();
         const dot = generateDot(flowName, nodes, edges, graphAttrs);
@@ -676,10 +673,10 @@ export function Editor() {
         setRawDotDraft(dot);
         setRawHandoffError(null);
         setEditorMode('raw');
-    }, [activeProjectPath, flowName, editorMode, edges, flushPendingSave, graphAttrs, nodes]);
+    }, [flowName, editorMode, edges, flushPendingSave, graphAttrs, nodes]);
 
     const returnToStructuredMode = useCallback(async () => {
-        if (!activeProjectPath || !flowName) return;
+        if (!flowName) return;
         if (rawHandoffInFlightRef.current) {
             return;
         }
@@ -726,7 +723,7 @@ export function Editor() {
             rawHandoffInFlightRef.current = false;
             setIsRawHandoffInFlight(false);
         }
-    }, [activeProjectPath, flowName, hydrateFromPreview, rawDotDraft, requestPreview]);
+    }, [flowName, hydrateFromPreview, rawDotDraft, requestPreview]);
 
     const onSelectionChange = useCallback(({ nodes, edges }: OnSelectionChangeParams) => {
         const selectedNode = nodes.find(n => n.selected);

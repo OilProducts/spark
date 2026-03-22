@@ -4,38 +4,38 @@ import {
     DEFAULT_WORKING_DIRECTORY,
     loadRouteState,
     pushRecentProjectPath,
-    resolveProjectScopedWorkspace,
+    resolveProjectSessionState,
     resolveViewModeForProjectScope,
     saveRouteState,
-    selectProjectScopedArtifactState,
+    selectProjectSessionArtifactState,
 } from './store-helpers'
 import type {
     AppState,
     ProjectRegistrationResult,
-    ProjectScopedWorkspace,
+    ProjectSessionState,
     RegisteredProject,
     WorkspaceSlice,
 } from './store-types'
 
 const restoredRouteState = loadRouteState()
 const initialProjectRegistry: Record<string, RegisteredProject> = {}
-const initialProjectScopedWorkspaces: Record<string, ProjectScopedWorkspace> = restoredRouteState.activeProjectPath
+const initialProjectSessionStates: Record<string, ProjectSessionState> = restoredRouteState.activeProjectPath
     ? {
-        [restoredRouteState.activeProjectPath]: resolveProjectScopedWorkspace(
+        [restoredRouteState.activeProjectPath]: resolveProjectSessionState(
             {},
             restoredRouteState.activeProjectPath,
         ),
     }
     : {}
 const restoredProjectScope = restoredRouteState.activeProjectPath
-    ? resolveProjectScopedWorkspace(
-        initialProjectScopedWorkspaces[restoredRouteState.activeProjectPath],
+    ? resolveProjectSessionState(
+        initialProjectSessionStates[restoredRouteState.activeProjectPath],
         restoredRouteState.activeProjectPath,
     )
     : null
 
 export const initialWorkspaceEditorState = {
-    activeFlow: restoredProjectScope ? restoredProjectScope.activeFlow : null,
+    activeFlow: null,
     workingDir: restoredProjectScope ? restoredProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
 }
 
@@ -53,11 +53,11 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     activeProjectPath: restoredRouteState.activeProjectPath,
     projectRegistry: initialProjectRegistry,
     recentProjectPaths: restoredRouteState.activeProjectPath ? [restoredRouteState.activeProjectPath] : [],
-    projectScopedWorkspaces: initialProjectScopedWorkspaces,
+    projectSessionsByPath: initialProjectSessionStates,
     hydrateProjectRegistry: (projects) =>
         set((state) => {
             const nextProjectRegistry: Record<string, RegisteredProject> = {}
-            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const nextProjectSessionStates = { ...state.projectSessionsByPath }
             projects.forEach((project) => {
                 const normalizedPath = normalizeProjectPath(project.directoryPath)
                 if (!normalizedPath || !isAbsoluteProjectPath(normalizedPath)) {
@@ -69,12 +69,12 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                     lastAccessedAt: typeof project.lastAccessedAt === 'string' ? project.lastAccessedAt : null,
                     flowBindings: { ...(project.flowBindings ?? {}) },
                 }
-                nextProjectScopedWorkspaces[normalizedPath] = resolveProjectScopedWorkspace(
+                nextProjectSessionStates[normalizedPath] = resolveProjectSessionState(
                     {
-                        ...nextProjectScopedWorkspaces[normalizedPath],
+                        ...nextProjectSessionStates[normalizedPath],
                         conversationId: typeof project.activeConversationId === 'string'
                             ? project.activeConversationId
-                            : nextProjectScopedWorkspaces[normalizedPath]?.conversationId ?? null,
+                            : nextProjectSessionStates[normalizedPath]?.conversationId ?? null,
                     },
                     normalizedPath,
                 )
@@ -83,7 +83,7 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 ? state.activeProjectPath
                 : null
             const nextActiveProjectScope = nextActiveProjectPath
-                ? resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[nextActiveProjectPath], nextActiveProjectPath)
+                ? resolveProjectSessionState(nextProjectSessionStates[nextActiveProjectPath], nextActiveProjectPath)
                 : null
             saveRouteState({
                 viewMode: resolveViewModeForProjectScope(state.viewMode, nextActiveProjectPath),
@@ -91,10 +91,9 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             })
             return {
                 projectRegistry: nextProjectRegistry,
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                projectSessionsByPath: nextProjectSessionStates,
                 activeProjectPath: nextActiveProjectPath,
                 viewMode: resolveViewModeForProjectScope(state.viewMode, nextActiveProjectPath),
-                activeFlow: nextActiveProjectPath ? nextActiveProjectScope?.activeFlow || null : null,
                 executionFlow: null,
                 selectedRunId: null,
                 workingDir: nextActiveProjectPath ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY : DEFAULT_WORKING_DIRECTORY,
@@ -116,21 +115,21 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                     flowBindings: { ...(project.flowBindings ?? {}) },
                 },
             }
-            const nextProjectScopedWorkspaces = {
-                ...state.projectScopedWorkspaces,
-                [normalizedPath]: resolveProjectScopedWorkspace(
+            const nextProjectSessionStates = {
+                ...state.projectSessionsByPath,
+                [normalizedPath]: resolveProjectSessionState(
                     {
-                        ...state.projectScopedWorkspaces[normalizedPath],
+                        ...state.projectSessionsByPath[normalizedPath],
                         conversationId: typeof project.activeConversationId === 'string'
                             ? project.activeConversationId
-                            : state.projectScopedWorkspaces[normalizedPath]?.conversationId ?? null,
+                            : state.projectSessionsByPath[normalizedPath]?.conversationId ?? null,
                     },
                     normalizedPath,
                 ),
             }
             return {
                 projectRegistry: nextProjectRegistry,
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                projectSessionsByPath: nextProjectSessionStates,
                 recentProjectPaths: pushRecentProjectPath(state.recentProjectPaths, normalizedPath),
             }
         }),
@@ -144,8 +143,8 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             const nextProjectRegistry = { ...state.projectRegistry }
             delete nextProjectRegistry[normalizedPath]
 
-            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
-            delete nextProjectScopedWorkspaces[normalizedPath]
+            const nextProjectSessionStates = { ...state.projectSessionsByPath }
+            delete nextProjectSessionStates[normalizedPath]
 
             const normalizedFallbackPath = nextActiveProjectPath ? normalizeProjectPath(nextActiveProjectPath) : null
             const derivedFallbackPath = normalizedFallbackPath && nextProjectRegistry[normalizedFallbackPath]
@@ -157,7 +156,7 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 ? derivedFallbackPath
                 : state.activeProjectPath
             const nextActiveProjectScope = nextActiveProjectPathResolved
-                ? resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[nextActiveProjectPathResolved], nextActiveProjectPathResolved)
+                ? resolveProjectSessionState(nextProjectSessionStates[nextActiveProjectPathResolved], nextActiveProjectPathResolved)
                 : null
             const nextViewMode = resolveViewModeForProjectScope(state.viewMode, nextActiveProjectPathResolved)
 
@@ -168,12 +167,12 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
 
             return {
                 projectRegistry: nextProjectRegistry,
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                projectSessionsByPath: nextProjectSessionStates,
                 recentProjectPaths: state.recentProjectPaths.filter((path) => path !== normalizedPath),
                 activeProjectPath: nextActiveProjectPathResolved,
                 viewMode: nextViewMode,
-                activeFlow: nextActiveProjectPathResolved ? nextActiveProjectScope?.activeFlow || null : null,
-                executionFlow: state.activeProjectPath === normalizedPath ? null : state.executionFlow,
+                activeFlow: state.activeFlow,
+                executionFlow: state.executionFlow,
                 selectedRunId: state.activeProjectPath === normalizedPath ? null : state.selectedRunId,
                 workingDir: nextActiveProjectPathResolved ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY : DEFAULT_WORKING_DIRECTORY,
             }
@@ -187,22 +186,13 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             }
             const nextProjectPath = normalizedProjectPath
             const isProjectSwitch = nextProjectPath !== state.activeProjectPath
-            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const nextProjectSessionStates = { ...state.projectSessionsByPath }
             const nextProjectRegistry = { ...state.projectRegistry }
-            const currentScope = state.activeProjectPath
-            if (currentScope) {
-                const existingScope = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[currentScope], currentScope)
-                nextProjectScopedWorkspaces[currentScope] = {
-                    ...existingScope,
-                    activeFlow: state.activeFlow,
-                    workingDir: state.workingDir,
-                }
-            }
             const nextProjectScope = nextProjectPath
-                ? resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[nextProjectPath], nextProjectPath)
+                ? resolveProjectSessionState(nextProjectSessionStates[nextProjectPath], nextProjectPath)
                 : null
             if (nextProjectPath && nextProjectScope) {
-                nextProjectScopedWorkspaces[nextProjectPath] = nextProjectScope
+                nextProjectSessionStates[nextProjectPath] = nextProjectScope
             }
             if (nextProjectPath && nextProjectRegistry[nextProjectPath]) {
                 nextProjectRegistry[nextProjectPath] = {
@@ -219,29 +209,29 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 activeProjectPath: nextProjectPath,
                 viewMode: nextViewMode,
                 projectRegistry: nextProjectRegistry,
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                projectSessionsByPath: nextProjectSessionStates,
                 recentProjectPaths: pushRecentProjectPath(state.recentProjectPaths, nextProjectPath),
-                activeFlow: nextProjectPath && nextProjectScope ? nextProjectScope.activeFlow : null,
-                executionFlow: isProjectSwitch ? null : state.executionFlow,
+                activeFlow: state.activeFlow,
+                executionFlow: state.executionFlow,
                 selectedRunId: isProjectSwitch ? null : state.selectedRunId,
                 workingDir: nextProjectPath && nextProjectScope ? nextProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
                 runtimeStatus: isProjectSwitch ? 'idle' : state.runtimeStatus,
                 nodeStatuses: isProjectSwitch ? {} : state.nodeStatuses,
                 humanGate: isProjectSwitch ? null : state.humanGate,
                 logs: isProjectSwitch ? [] : state.logs,
-                selectedNodeId: isProjectSwitch ? null : state.selectedNodeId,
-                selectedEdgeId: isProjectSwitch ? null : state.selectedEdgeId,
-                graphAttrs: isProjectSwitch ? {} : state.graphAttrs,
-                graphAttrErrors: isProjectSwitch ? {} : state.graphAttrErrors,
-                graphAttrsUserEditVersion: isProjectSwitch ? 0 : state.graphAttrsUserEditVersion,
-                diagnostics: isProjectSwitch ? [] : state.diagnostics,
-                nodeDiagnostics: isProjectSwitch ? {} : state.nodeDiagnostics,
-                edgeDiagnostics: isProjectSwitch ? {} : state.edgeDiagnostics,
-                hasValidationErrors: isProjectSwitch ? false : state.hasValidationErrors,
-                saveState: isProjectSwitch ? 'idle' : state.saveState,
-                saveStateVersion: isProjectSwitch ? 0 : state.saveStateVersion,
-                saveErrorMessage: isProjectSwitch ? null : state.saveErrorMessage,
-                saveErrorKind: isProjectSwitch ? null : state.saveErrorKind,
+                selectedNodeId: state.selectedNodeId,
+                selectedEdgeId: state.selectedEdgeId,
+                graphAttrs: state.graphAttrs,
+                graphAttrErrors: state.graphAttrErrors,
+                graphAttrsUserEditVersion: state.graphAttrsUserEditVersion,
+                diagnostics: state.diagnostics,
+                nodeDiagnostics: state.nodeDiagnostics,
+                edgeDiagnostics: state.edgeDiagnostics,
+                hasValidationErrors: state.hasValidationErrors,
+                saveState: state.saveState,
+                saveStateVersion: state.saveStateVersion,
+                saveErrorMessage: state.saveErrorMessage,
+                saveErrorKind: state.saveErrorKind,
             }
         }),
     projectRegistrationError: null,
@@ -281,7 +271,7 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             const nextActiveProjectPath = state.activeProjectPath ?? normalizedPath
             const shouldActivateNewProject = !state.activeProjectPath
             const nowIso = shouldActivateNewProject ? new Date().toISOString() : null
-            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+            const nextProjectSessionStates = { ...state.projectSessionsByPath }
             const nextProjectRegistry = {
                 ...state.projectRegistry,
                 [normalizedPath]: {
@@ -291,12 +281,12 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                     flowBindings: {},
                 },
             }
-            nextProjectScopedWorkspaces[normalizedPath] = resolveProjectScopedWorkspace(
-                nextProjectScopedWorkspaces[normalizedPath],
+            nextProjectSessionStates[normalizedPath] = resolveProjectSessionState(
+                nextProjectSessionStates[normalizedPath],
                 normalizedPath,
             )
-            const nextActiveProjectScope = resolveProjectScopedWorkspace(
-                nextProjectScopedWorkspaces[nextActiveProjectPath],
+            const nextActiveProjectScope = resolveProjectSessionState(
+                nextProjectSessionStates[nextActiveProjectPath],
                 nextActiveProjectPath,
             )
             saveRouteState({
@@ -314,8 +304,8 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                     : state.recentProjectPaths,
                 projectRegistrationError: null,
                 activeProjectPath: nextActiveProjectPath,
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
-                activeFlow: state.activeProjectPath ? state.activeFlow : nextActiveProjectScope.activeFlow,
+                projectSessionsByPath: nextProjectSessionStates,
+                activeFlow: state.activeFlow,
                 executionFlow: state.activeProjectPath ? state.executionFlow : null,
                 selectedRunId: state.activeProjectPath ? state.selectedRunId : null,
                 workingDir: state.activeProjectPath ? state.workingDir : nextActiveProjectScope.workingDir,
@@ -371,13 +361,13 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 return { projectRegistrationError: null }
             }
 
-            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
-            const currentWorkspace = resolveProjectScopedWorkspace(
-                nextProjectScopedWorkspaces[normalizedCurrentPath],
+            const nextProjectSessionStates = { ...state.projectSessionsByPath }
+            const currentWorkspace = resolveProjectSessionState(
+                nextProjectSessionStates[normalizedCurrentPath],
                 normalizedCurrentPath,
             )
-            delete nextProjectScopedWorkspaces[normalizedCurrentPath]
-            nextProjectScopedWorkspaces[normalizedNextPath] = {
+            delete nextProjectSessionStates[normalizedCurrentPath]
+            nextProjectSessionStates[normalizedNextPath] = {
                 ...currentWorkspace,
                 workingDir: currentWorkspace.workingDir === normalizedCurrentPath
                     ? normalizedNextPath
@@ -409,7 +399,7 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             }
             return {
                 projectRegistry: nextProjectRegistry,
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                projectSessionsByPath: nextProjectSessionStates,
                 activeProjectPath: nextActiveProjectPath,
                 workingDir: nextWorkingDir,
                 recentProjectPaths: nextRecentProjectPaths,
@@ -438,36 +428,22 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
         }),
     setProjectRegistrationError: (error) => set({ projectRegistrationError: error }),
     clearProjectRegistrationError: () => set({ projectRegistrationError: null }),
-    activeFlow: restoredProjectScope ? restoredProjectScope.activeFlow : null,
+    activeFlow: initialWorkspaceEditorState.activeFlow,
     setActiveFlow: (flow) =>
-        set((state) => {
-            if (!state.activeProjectPath) {
-                return { activeFlow: null }
-            }
-            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
-            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
-            nextProjectScopedWorkspaces[state.activeProjectPath] = {
-                ...scoped,
-                activeFlow: flow,
-            }
-            return {
-                activeFlow: flow,
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
-            }
-        }),
+        set({ activeFlow: flow }),
     setConversationId: (id) =>
         set((state) => {
             if (!state.activeProjectPath) {
                 return {}
             }
-            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
-            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
-            nextProjectScopedWorkspaces[state.activeProjectPath] = {
+            const nextProjectSessionStates = { ...state.projectSessionsByPath }
+            const scoped = resolveProjectSessionState(nextProjectSessionStates[state.activeProjectPath], state.activeProjectPath)
+            nextProjectSessionStates[state.activeProjectPath] = {
                 ...scoped,
                 conversationId: id,
             }
             return {
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                projectSessionsByPath: nextProjectSessionStates,
             }
         }),
     appendProjectEventEntry: (entry) =>
@@ -475,33 +451,33 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             if (!state.activeProjectPath) {
                 return {}
             }
-            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
-            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
-            nextProjectScopedWorkspaces[state.activeProjectPath] = {
+            const nextProjectSessionStates = { ...state.projectSessionsByPath }
+            const scoped = resolveProjectSessionState(nextProjectSessionStates[state.activeProjectPath], state.activeProjectPath)
+            nextProjectSessionStates[state.activeProjectPath] = {
                 ...scoped,
                 projectEventLog: [...scoped.projectEventLog, entry],
             }
             return {
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                projectSessionsByPath: nextProjectSessionStates,
             }
         }),
-    updateProjectScopedWorkspace: (projectPath, patch) =>
+    updateProjectSessionState: (projectPath, patch) =>
         set((state) => {
             const normalizedProjectPath = normalizeProjectPath(projectPath)
             if (!normalizedProjectPath || !isAbsoluteProjectPath(normalizedProjectPath)) {
                 return {}
             }
-            const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
-            const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[normalizedProjectPath], normalizedProjectPath)
+            const nextProjectSessionStates = { ...state.projectSessionsByPath }
+            const scoped = resolveProjectSessionState(nextProjectSessionStates[normalizedProjectPath], normalizedProjectPath)
             const nextScopedWorkspace = {
                 ...scoped,
                 ...patch,
             }
-            nextProjectScopedWorkspaces[normalizedProjectPath] = nextScopedWorkspace
+            nextProjectSessionStates[normalizedProjectPath] = nextScopedWorkspace
             const isActiveScope = state.activeProjectPath === normalizedProjectPath
             if (!isActiveScope) {
                 return {
-                    projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                    projectSessionsByPath: nextProjectSessionStates,
                 }
             }
             saveRouteState({
@@ -509,8 +485,7 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 activeProjectPath: state.activeProjectPath,
             })
             return {
-                projectScopedWorkspaces: nextProjectScopedWorkspaces,
-                activeFlow: nextScopedWorkspace.activeFlow,
+                projectSessionsByPath: nextProjectSessionStates,
                 workingDir: nextScopedWorkspace.workingDir,
             }
         }),
@@ -526,30 +501,30 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
         set((state) => updateArtifactField(state, 'planStatus', status)),
     setPlanProvenance: (provenance) =>
         set((state) => updateArtifactField(state, 'planProvenance', provenance)),
-    getProjectScopedArtifactState: (projectPath) =>
-        selectProjectScopedArtifactState(get().projectScopedWorkspaces, projectPath),
+    getProjectSessionArtifactState: (projectPath) =>
+        selectProjectSessionArtifactState(get().projectSessionsByPath, projectPath),
 })
 
 const updateArtifactField = <
     Key extends keyof Pick<
-        ProjectScopedWorkspace,
+        ProjectSessionState,
         'specId' | 'specStatus' | 'specProvenance' | 'planId' | 'planStatus' | 'planProvenance'
     >,
 >(
     state: AppState,
     key: Key,
-    value: ProjectScopedWorkspace[Key],
+    value: ProjectSessionState[Key],
 ) => {
     if (!state.activeProjectPath) {
         return {}
     }
-    const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
-    const scoped = resolveProjectScopedWorkspace(nextProjectScopedWorkspaces[state.activeProjectPath], state.activeProjectPath)
-    nextProjectScopedWorkspaces[state.activeProjectPath] = {
+    const nextProjectSessionStates = { ...state.projectSessionsByPath }
+    const scoped = resolveProjectSessionState(nextProjectSessionStates[state.activeProjectPath], state.activeProjectPath)
+    nextProjectSessionStates[state.activeProjectPath] = {
         ...scoped,
         [key]: value,
     }
     return {
-        projectScopedWorkspaces: nextProjectScopedWorkspaces,
+        projectSessionsByPath: nextProjectSessionStates,
     }
 }

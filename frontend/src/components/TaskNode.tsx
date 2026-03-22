@@ -10,7 +10,6 @@ import { fetchPipelineAnswerValidated } from '@/lib/attractorClient';
 
 export function TaskNode({ id, data, selected }: NodeProps) {
     const { activeFlow, viewMode } = useStore();
-    const activeProjectPath = useStore((state) => state.activeProjectPath);
     const humanGate = useStore((state) => state.humanGate);
     const selectedRunId = useStore((state) => state.selectedRunId);
     const graphAttrs = useStore((state) => state.graphAttrs);
@@ -99,7 +98,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
     }, [isEditingLabel]);
 
     const persistNodeData = (nextData: Record<string, unknown>) => {
-        if (!activeProjectPath || !activeFlow) return;
+        if (!activeFlow) return;
 
         let updatedNodes: Node[] = [];
         setNodes((currentNodes) => {

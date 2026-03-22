@@ -30,9 +30,9 @@ interface GraphSettingsProps {
 }
 
 const GRAPH_ATTR_HELP: Record<string, string> = {
-    'sparkspawn.title': 'Human-friendly flow title stored in the DOT metadata.',
-    'sparkspawn.description': 'Short flow description stored in the DOT metadata.',
-    'sparkspawn.launch_inputs': 'Structured launch-time context fields Spark Spawn should collect before starting a run.',
+    'spark.title': 'Human-friendly flow title stored in the DOT metadata.',
+    'spark.description': 'Short flow description stored in the DOT metadata.',
+    'spark.launch_inputs': 'Structured launch-time context fields Spark should collect before starting a run.',
     goal: 'Primary stated goal for the flow. Handlers can read it as shared run context.',
     label: 'Display label for graph metadata; does not override node labels.',
     default_max_retries: 'Used only when a node omits max_retries. Node max_retries takes precedence.',
@@ -54,9 +54,9 @@ const MODEL_VALUE_SOURCE_LABEL: Record<ModelValueSource, string> = {
 }
 
 const CORE_GRAPH_ATTR_KEYS = new Set<string>([
-    'sparkspawn.title',
-    'sparkspawn.description',
-    'sparkspawn.launch_inputs',
+    'spark.title',
+    'spark.description',
+    'spark.launch_inputs',
     'goal',
     'label',
     'model_stylesheet',
@@ -85,7 +85,6 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [launchInputDrafts, setLaunchInputDrafts] = useState<LaunchInputDefinition[]>([])
     const [launchInputDraftError, setLaunchInputDraftError] = useState<string | null>(null)
     const activeFlow = useStore((state) => state.activeFlow)
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
     const diagnostics = useStore((state) => state.diagnostics)
     const graphAttrs = useStore((state) => state.graphAttrs)
     const graphAttrErrors = useStore((state) => state.graphAttrErrors)
@@ -113,7 +112,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [launchPolicySaveState, setLaunchPolicySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
     const [launchPolicySaveError, setLaunchPolicySaveError] = useState<string | null>(null)
     const flowProviderFallback = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
-    const canApplyDefaults = !!activeProjectPath && !!activeFlow && viewMode === 'editor'
+    const canApplyDefaults = !!activeFlow && viewMode === 'editor'
     const toolHookPreWarning = getToolHookCommandWarning(graphAttrs['tool.hooks.pre'] || '')
     const toolHookPostWarning = getToolHookCommandWarning(graphAttrs['tool.hooks.post'] || '')
     const stylesheetDiagnostics = diagnostics.filter((diag) => diag.rule_id === 'stylesheet_syntax')
@@ -124,8 +123,8 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         () => toExtensionAttrEntries(graphAttrs as Record<string, unknown>, CORE_GRAPH_ATTR_KEYS),
         [graphAttrs],
     )
-    const rawLaunchInputsValue = typeof graphAttrs['sparkspawn.launch_inputs'] === 'string'
-        ? graphAttrs['sparkspawn.launch_inputs']
+    const rawLaunchInputsValue = typeof graphAttrs['spark.launch_inputs'] === 'string'
+        ? graphAttrs['spark.launch_inputs']
         : ''
     const parsedLaunchInputs = useMemo(
         () => parseLaunchInputDefinitions(rawLaunchInputsValue),
@@ -198,14 +197,14 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     }, [parsedLaunchInputs.entries, parsedLaunchInputs.error])
 
     const flushPendingSave = useCallback(() => {
-        if (!activeProjectPath || !activeFlow || !hasPendingSave.current) return
+        if (!activeFlow || !hasPendingSave.current) return
         hasPendingSave.current = false
         const dot = generateDot(activeFlow, getNodes(), getEdges(), graphAttrs)
         void saveFlowContent(activeFlow, dot)
-    }, [activeProjectPath, activeFlow, getNodes, getEdges, graphAttrs])
+    }, [activeFlow, getNodes, getEdges, graphAttrs])
 
     const applyDefaultsToNodes = () => {
-        if (!activeProjectPath || !activeFlow) return
+        if (!activeFlow) return
         const defaultModel = graphAttrs.ui_default_llm_model || uiDefaults.llm_model || ''
         const defaultProvider = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
         const defaultReasoning = graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || ''
@@ -233,7 +232,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         setLaunchInputDrafts(entries)
         if (entries.length === 0) {
             setLaunchInputDraftError(null)
-            updateGraphAttr('sparkspawn.launch_inputs', '')
+            updateGraphAttr('spark.launch_inputs', '')
             return
         }
         const validationError = validateLaunchInputDefinitions(entries)
@@ -241,7 +240,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         if (validationError) {
             return
         }
-        updateGraphAttr('sparkspawn.launch_inputs', serializeLaunchInputDefinitions(entries))
+        updateGraphAttr('spark.launch_inputs', serializeLaunchInputDefinitions(entries))
     }
 
     useEffect(() => {
@@ -341,13 +340,13 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     }
 
     useEffect(() => {
-        if (!activeProjectPath || !activeFlow) {
+        if (!activeFlow) {
             autosaveScopeRef.current = null
             lastHandledGraphAttrsVersionRef.current = graphAttrsUserEditVersion
             hasPendingSave.current = false
             return
         }
-        const autosaveScope = `${activeProjectPath}::${activeFlow}`
+        const autosaveScope = activeFlow
         if (autosaveScopeRef.current !== autosaveScope) {
             autosaveScopeRef.current = autosaveScope
             lastHandledGraphAttrsVersionRef.current = graphAttrsUserEditVersion
@@ -373,7 +372,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 window.clearTimeout(saveTimer.current)
             }
         }
-    }, [activeProjectPath, activeFlow, graphAttrs, graphAttrsUserEditVersion, getNodes, getEdges])
+    }, [activeFlow, graphAttrs, graphAttrsUserEditVersion, getNodes, getEdges])
 
     useEffect(() => {
         const handleBeforeUnload = () => {
@@ -477,34 +476,34 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
             </div>
             <div className="mt-3 space-y-3">
                 <div className="space-y-1">
-                    <label htmlFor="graph-attr-sparkspawn-title" className="text-xs font-medium text-foreground">
+                    <label htmlFor="graph-attr-spark-title" className="text-xs font-medium text-foreground">
                         Title
                     </label>
                     <input
-                        id="graph-attr-sparkspawn-title"
-                        value={graphAttrs['sparkspawn.title'] || ''}
-                        onChange={(event) => updateGraphAttr('sparkspawn.title', event.target.value)}
+                        id="graph-attr-spark-title"
+                        value={graphAttrs['spark.title'] || ''}
+                        onChange={(event) => updateGraphAttr('spark.title', event.target.value)}
                         className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         placeholder="Execution Planning"
                     />
-                    <p data-testid="graph-attr-help-sparkspawn.title" className="text-[11px] text-muted-foreground">
-                        {GRAPH_ATTR_HELP['sparkspawn.title']}
+                    <p data-testid="graph-attr-help-spark.title" className="text-[11px] text-muted-foreground">
+                        {GRAPH_ATTR_HELP['spark.title']}
                     </p>
                 </div>
                 <div className="space-y-1">
-                    <label htmlFor="graph-attr-sparkspawn-description" className="text-xs font-medium text-foreground">
+                    <label htmlFor="graph-attr-spark-description" className="text-xs font-medium text-foreground">
                         Description
                     </label>
                     <textarea
-                        id="graph-attr-sparkspawn-description"
-                        value={graphAttrs['sparkspawn.description'] || ''}
-                        onChange={(event) => updateGraphAttr('sparkspawn.description', event.target.value)}
+                        id="graph-attr-spark-description"
+                        value={graphAttrs['spark.description'] || ''}
+                        onChange={(event) => updateGraphAttr('spark.description', event.target.value)}
                         rows={3}
                         className="min-h-20 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         placeholder="Turn an approved spec edit proposal into an execution plan."
                     />
-                    <p data-testid="graph-attr-help-sparkspawn.description" className="text-[11px] text-muted-foreground">
-                        {GRAPH_ATTR_HELP['sparkspawn.description']}
+                    <p data-testid="graph-attr-help-spark.description" className="text-[11px] text-muted-foreground">
+                        {GRAPH_ATTR_HELP['spark.description']}
                     </p>
                 </div>
             </div>

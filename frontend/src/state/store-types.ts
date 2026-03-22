@@ -36,9 +36,9 @@ export interface LogEntry {
 }
 
 export interface GraphAttrs {
-    'sparkspawn.title'?: string
-    'sparkspawn.description'?: string
-    'sparkspawn.launch_inputs'?: string
+    'spark.title'?: string
+    'spark.description'?: string
+    'spark.launch_inputs'?: string
     goal?: string
     label?: string
     model_stylesheet?: string
@@ -106,8 +106,7 @@ export interface RouteState {
     activeProjectPath: string | null
 }
 
-export interface ProjectScopedWorkspace {
-    activeFlow: string | null
+export interface ProjectSessionState {
     workingDir: string
     conversationId: string | null
     projectEventLog: ProjectEventLogEntry[]
@@ -119,9 +118,9 @@ export interface ProjectScopedWorkspace {
     planProvenance?: ArtifactProvenanceReference | null
 }
 
-export type ProjectScopedWorkspacePatch = Partial<ProjectScopedWorkspace>
+export type ProjectSessionStatePatch = Partial<ProjectSessionState>
 
-export interface ProjectScopedArtifactState {
+export interface ProjectSessionArtifactState {
     conversationId: string | null
     specId: string | null
     specStatus: 'draft' | 'approved'
@@ -147,7 +146,7 @@ export interface WorkspaceSlice {
     upsertProjectRegistryEntry: (project: HydratedProjectRecord) => void
     removeProject: (directoryPath: string, nextActiveProjectPath?: string | null) => void
     recentProjectPaths: string[]
-    projectScopedWorkspaces: Record<string, ProjectScopedWorkspace>
+    projectSessionsByPath: Record<string, ProjectSessionState>
     projectRegistrationError: string | null
     registerProject: (directoryPath: string) => ProjectRegistrationResult
     updateProjectPath: (currentDirectoryPath: string, nextDirectoryPath: string) => ProjectRegistrationResult
@@ -158,14 +157,14 @@ export interface WorkspaceSlice {
     setActiveFlow: (flow: string | null) => void
     setConversationId: (id: string | null) => void
     appendProjectEventEntry: (entry: ProjectEventLogEntry) => void
-    updateProjectScopedWorkspace: (projectPath: string, patch: ProjectScopedWorkspacePatch) => void
+    updateProjectSessionState: (projectPath: string, patch: ProjectSessionStatePatch) => void
     setSpecId: (id: string | null) => void
     setSpecStatus: (status: 'draft' | 'approved') => void
     setSpecProvenance: (provenance: ArtifactProvenanceReference | null) => void
     setPlanId: (id: string | null) => void
     setPlanStatus: (status: PlanStatus) => void
     setPlanProvenance: (provenance: ArtifactProvenanceReference | null) => void
-    getProjectScopedArtifactState: (projectPath: string | null) => ProjectScopedArtifactState | null
+    getProjectSessionArtifactState: (projectPath: string | null) => ProjectSessionArtifactState | null
 }
 
 export interface RunInspectorSlice {

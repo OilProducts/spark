@@ -1,11 +1,11 @@
-# Spark Spawn
+# Spark
 
-Spark Spawn is a project-scoped workflow workbench for AI-assisted software delivery. It combines a FastAPI backend and React UI for registering local projects, authoring DOT workflows, running them, and reviewing planning artifacts produced inside project conversations.
+Spark is a workspace workbench for AI-assisted software delivery. It combines a FastAPI backend and React UI for registering local projects, authoring shared DOT workflows, running them against a selected project context, and reviewing planning artifacts produced inside project conversations.
 
-## What Spark Spawn Does
+## What Spark Does
 
-- Register local project directories and persist per-project workspace state
-- Author workflows as DOT graphs, either visually or in raw DOT
+- Register local project directories and persist project-scoped conversation and review state
+- Author shared workspace workflows as DOT graphs, either visually or in raw DOT
 - Parse, canonicalize, validate, and save flows through the backend
 - Run project-aware pipelines with built-in handlers such as `codergen`, `tool`, `conditional`, `parallel`, `parallel.fan_in`, `wait.human`, and `stack.manager_loop`
 - Stream live run events, inspect checkpoints and context, browse artifacts, and answer human-gate questions
@@ -16,7 +16,7 @@ Spark Spawn is a project-scoped workflow workbench for AI-assisted software deli
 
 1. Register or select a local project in Home.
 2. Open or resume a project conversation thread.
-3. Ask Spark Spawn to help draft or refine a spec.
+3. Ask Spark to help draft or refine a spec.
 4. Review the resulting spec-edit proposal.
 5. Approve the proposal to trigger execution planning.
 6. Review the generated execution card.
@@ -24,30 +24,38 @@ Spark Spawn is a project-scoped workflow workbench for AI-assisted software deli
 8. Monitor execution in the Execution and Runs views.
 
 The UI also supports a direct authoring workflow: Home -> Editor -> Execution -> Runs.
+Flow authoring is workspace-global rather than project-owned: you can open the Editor without selecting a project, while the Execution view keeps run-start actions disabled until a project context is selected.
 
-For agent-facing raw DOT editing guidance, see [src/sparkspawn/guides/dot-authoring.md](/Users/chris/tinker/sparkspawn/src/sparkspawn/guides/dot-authoring.md). After direct flow edits, validate with `sparkspawn-workspace validate-flow --flow <name> --text`.
+For flow authoring, use this progression:
+
+- Hands-on tutorial: [docs/first-flow-tutorial.md](/Users/chris/projects/spark/docs/first-flow-tutorial.md)
+- Product overview and authoring heuristics: this README
+- Full raw DOT reference: [src/spark/guides/dot-authoring.md](/Users/chris/projects/spark/src/spark/guides/dot-authoring.md)
+
+After direct flow edits, validate with `spark-workspace validate-flow --flow <name> --text`.
 
 ## Flow Building Guide
 
 Start with the smallest flow that matches the job:
 
-- [starter-flows/simple-linear.dot](/Users/chris/tinker/sparkspawn/starter-flows/simple-linear.dot): one pass through plan -> implement -> summarize
-- [starter-flows/implement-review-loop.dot](/Users/chris/tinker/sparkspawn/starter-flows/implement-review-loop.dot): plan -> implement -> review with an actual retry loop
-- [starter-flows/human-review-loop.dot](/Users/chris/tinker/sparkspawn/starter-flows/human-review-loop.dot): explicit human approval or requested fixes
-- [starter-flows/parallel-review.dot](/Users/chris/tinker/sparkspawn/starter-flows/parallel-review.dot): fan-out / fan-in structure
-- [starter-flows/supervised-implementation.dot](/Users/chris/tinker/sparkspawn/starter-flows/supervised-implementation.dot): parent/child composition with `stack.manager_loop`
+- [starter-flows/simple-linear.dot](/Users/chris/projects/spark/starter-flows/simple-linear.dot): one pass through plan -> implement -> summarize
+- [starter-flows/implement-review-loop.dot](/Users/chris/projects/spark/starter-flows/implement-review-loop.dot): plan -> implement -> review with an actual retry loop
+- [starter-flows/implement-spec.dot](/Users/chris/projects/spark/starter-flows/implement-spec.dot): spec-driven orchestration that keeps flow-authored queue state under `.spark/specflow/`
+- [starter-flows/human-review-loop.dot](/Users/chris/projects/spark/starter-flows/human-review-loop.dot): explicit human approval or requested fixes
+- [starter-flows/parallel-review.dot](/Users/chris/projects/spark/starter-flows/parallel-review.dot): fan-out / fan-in structure
+- [starter-flows/supervised-implementation.dot](/Users/chris/projects/spark/starter-flows/supervised-implementation.dot): parent/child composition with `stack.manager_loop`
 
 Use the flow `goal` as the user-facing stated goal for the run:
 
 - In prompts and flow descriptions, write to the “stated goal”, not internal engine names like `graph.goal`.
 - Direct runs from the editor currently use the flow's saved `goal`.
-- Workspace chat flow-run requests and `sparkspawn-workspace flow-run --goal/--goal-file` can override that stated goal per run.
+- Workspace chat flow-run requests and `spark-workspace flow-run --goal/--goal-file` can override that stated goal per run.
 
 Use `launch_context` when one goal string is not enough:
 
 - `launch_context` is first-class initial run state under `context.*`, not a prompt-only hack.
 - Use it for structured launch details like request summaries, target paths, constraints, and acceptance criteria.
-- Workspace flow-run requests accept `launch_context`, and `sparkspawn-workspace flow-run --launch-context-json/--launch-context-file` can populate it.
+- Workspace flow-run requests accept `launch_context`, and `spark-workspace flow-run --launch-context-json/--launch-context-file` can populate it.
 - Keep launch keys stable and semantic, for example `context.request.summary`, `context.request.target_paths`, and `context.request.acceptance_criteria`.
 - In the flow editor, declare these inputs in Graph Settings -> Launch Inputs so direct execution can render a launch form from the flow itself.
 
@@ -106,13 +114,13 @@ Use hooks and model defaults deliberately:
 
 ## Architecture
 
-- [src/attractor/](/Users/chris/tinker/sparkspawn/src/attractor): Attractor runtime, pipeline engine, handlers, CLI, and mounted Attractor API
-- [src/workspace/](/Users/chris/tinker/sparkspawn/src/workspace): Spark Spawn workspace service, conversations, review artifacts, trigger bindings, and mounted Workspace API
-- [frontend/](/Users/chris/tinker/sparkspawn/frontend): React 19 + Vite UI
-- [starter-flows/](/Users/chris/tinker/sparkspawn/starter-flows): curated starter `.dot` flows intended for first-run seeding
-- [tests/fixtures/flows/](/Users/chris/tinker/sparkspawn/tests/fixtures/flows): repo-only `.dot` fixtures used by tests and local development
-- [tests/](/Users/chris/tinker/sparkspawn/tests): backend tests, UI contracts, and acceptance assets
-- [specs/](/Users/chris/tinker/sparkspawn/specs): Attractor, workspace, frontend, and storage specifications
+- [src/attractor/](/Users/chris/projects/spark/src/attractor): Attractor runtime, pipeline engine, handlers, CLI, and mounted Attractor API
+- [src/workspace/](/Users/chris/projects/spark/src/workspace): Spark workspace service, conversations, review artifacts, trigger bindings, and mounted Workspace API
+- [frontend/](/Users/chris/projects/spark/frontend): React 19 + Vite UI
+- [starter-flows/](/Users/chris/projects/spark/starter-flows): curated starter `.dot` flows intended for first-run seeding
+- [tests/fixtures/flows/](/Users/chris/projects/spark/tests/fixtures/flows): repo-only `.dot` fixtures used by tests and local development
+- [tests/](/Users/chris/projects/spark/tests): backend tests, UI contracts, and acceptance assets
+- [specs/](/Users/chris/projects/spark/specs): Attractor, workspace, frontend, and storage specifications
 
 ## Requirements
 
@@ -135,7 +143,7 @@ npm --prefix frontend install
 Initialize the runtime tree and seed starter flows:
 
 ```bash
-uv run sparkspawn init
+uv run spark init
 ```
 
 Run the full stack locally:
@@ -164,18 +172,18 @@ That starts the backend on port `8000` and the frontend on port `5173` via `dock
 Start the server directly:
 
 ```bash
-uv run sparkspawn serve --host 127.0.0.1 --port 8000
+uv run spark serve --host 127.0.0.1 --port 8000
 ```
 
 Useful development flags:
 
 ```bash
-uv run sparkspawn serve \
+uv run spark serve \
   --host 127.0.0.1 \
   --port 8000 \
   --reload \
-  --data-dir ~/.sparkspawn \
-  --flows-dir ~/.sparkspawn/flows \
+  --data-dir ~/.spark \
+  --flows-dir ~/.spark/flows \
   --ui-dir ./frontend/dist
 ```
 
@@ -183,7 +191,7 @@ When a built UI is available, the backend serves it at [http://127.0.0.1:8000](h
 
 ## Runtime Data and Configuration
 
-By default, Spark Spawn stores runtime data under `~/.sparkspawn`:
+By default, Spark stores runtime data under `~/.spark`:
 
 - `config/`
 - `runtime/`
@@ -194,15 +202,15 @@ By default, Spark Spawn stores runtime data under `~/.sparkspawn`:
 
 Important path overrides:
 
-- `SPARKSPAWN_HOME`
-- `SPARKSPAWN_FLOWS_DIR`
-- `SPARKSPAWN_UI_DIR`
+- `SPARK_HOME`
+- `SPARK_FLOWS_DIR`
+- `SPARK_UI_DIR`
 
-`~/.sparkspawn/config/prompts.toml` stores user-configurable prompt templates and is created on first startup.
+`~/.spark/config/prompts.toml` stores user-configurable prompt templates and is created on first startup.
 
 ## API Overview
 
-The canonical route inventory lives in [app.py](/Users/chris/tinker/sparkspawn/src/sparkspawn_app/app.py), [server.py](/Users/chris/tinker/sparkspawn/src/attractor/api/server.py), and [api.py](/Users/chris/tinker/sparkspawn/src/workspace/api.py).
+The canonical route inventory lives in [app.py](/Users/chris/projects/spark/src/spark_app/app.py), [server.py](/Users/chris/projects/spark/src/attractor/api/server.py), and [api.py](/Users/chris/projects/spark/src/workspace/api.py).
 
 The root app is a mount host only. Canonical public API surfaces are:
 - Attractor docs/OpenAPI under `/attractor/docs` and `/attractor/openapi.json`
@@ -222,7 +230,7 @@ Current API groups include:
 
 ## Repository Commands
 
-Useful `just` targets from [justfile](/Users/chris/tinker/sparkspawn/justfile):
+Useful `just` targets from [justfile](/Users/chris/projects/spark/justfile):
 
 - `just run`: backend + Vite frontend for local development
 - `just dev`: `docker compose up --build`
@@ -277,12 +285,12 @@ pip install dist/*.whl
 ## Notes
 
 - Flow files are stored as canonical DOT and validated before save.
-- Spark Spawn flow self-description lives in DOT via `sparkspawn.title` and `sparkspawn.description`, while workspace launch policy is stored separately in `~/.sparkspawn/config/flow-catalog.toml`.
-- The agent-facing workspace CLI exposes curated flow discovery commands with JSON default output: `sparkspawn-workspace list-flows`, `sparkspawn-workspace describe-flow --flow <name>`, and `sparkspawn-workspace get-flow --flow <name>`.
+- Spark flow self-description lives in DOT via `spark.title` and `spark.description`, while workspace launch policy is stored separately in `~/.spark/config/flow-catalog.toml`.
+- The agent-facing workspace CLI exposes curated flow discovery commands with JSON default output: `spark-workspace list-flows`, `spark-workspace describe-flow --flow <name>`, and `spark-workspace get-flow --flow <name>`.
 - The editor supports both structured editing and raw DOT editing, including semantic-equivalence safety checks during handoff.
 - The Runs view is intended for historical inspection, diagnostics, artifact browsing, and replaying execution context.
-- Starter flow templates live in [starter-flows/plan-generation.dot](/Users/chris/tinker/sparkspawn/starter-flows/plan-generation.dot), [starter-flows/parallel-review.dot](/Users/chris/tinker/sparkspawn/starter-flows/parallel-review.dot), [starter-flows/simple-linear.dot](/Users/chris/tinker/sparkspawn/starter-flows/simple-linear.dot), [starter-flows/human-review-loop.dot](/Users/chris/tinker/sparkspawn/starter-flows/human-review-loop.dot), [starter-flows/implement-review-loop.dot](/Users/chris/tinker/sparkspawn/starter-flows/implement-review-loop.dot), [starter-flows/implementation-worker.dot](/Users/chris/tinker/sparkspawn/starter-flows/implementation-worker.dot), and [starter-flows/supervised-implementation.dot](/Users/chris/tinker/sparkspawn/starter-flows/supervised-implementation.dot).
-- Repo-only advanced/test fixtures live under [tests/fixtures/flows/](/Users/chris/tinker/sparkspawn/tests/fixtures/flows).
+- Starter flow templates live in [starter-flows/plan-generation.dot](/Users/chris/projects/spark/starter-flows/plan-generation.dot), [starter-flows/parallel-review.dot](/Users/chris/projects/spark/starter-flows/parallel-review.dot), [starter-flows/simple-linear.dot](/Users/chris/projects/spark/starter-flows/simple-linear.dot), [starter-flows/human-review-loop.dot](/Users/chris/projects/spark/starter-flows/human-review-loop.dot), [starter-flows/implement-review-loop.dot](/Users/chris/projects/spark/starter-flows/implement-review-loop.dot), [starter-flows/implement-spec.dot](/Users/chris/projects/spark/starter-flows/implement-spec.dot), [starter-flows/implementation-worker.dot](/Users/chris/projects/spark/starter-flows/implementation-worker.dot), and [starter-flows/supervised-implementation.dot](/Users/chris/projects/spark/starter-flows/supervised-implementation.dot).
+- Repo-only advanced/test fixtures live under [tests/fixtures/flows/](/Users/chris/projects/spark/tests/fixtures/flows).
 
 ## Project Status
 

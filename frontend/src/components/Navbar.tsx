@@ -4,7 +4,6 @@ import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Settings2 } from "lucide-react"
 
 const NAV_MODE_ORDER: ViewMode[] = ['home', 'editor', 'execution', 'settings', 'runs']
-const NAV_MODES_REQUIRING_ACTIVE_PROJECT = new Set<ViewMode>(['editor', 'execution'])
 
 export function Navbar() {
     const { viewMode, setViewMode } = useStore()
@@ -12,10 +11,7 @@ export function Navbar() {
     const activeProjectPath = useStore((state) => state.activeProjectPath)
 
     const resolveNextKeyboardMode = (mode: ViewMode, direction: -1 | 1): ViewMode => {
-        const selectableModes = NAV_MODE_ORDER.filter(
-            (candidate) => activeProjectPath || !NAV_MODES_REQUIRING_ACTIVE_PROJECT.has(candidate)
-        )
-        const modeCycle: ViewMode[] = selectableModes.length > 0 ? selectableModes : ['home']
+        const modeCycle: ViewMode[] = NAV_MODE_ORDER
         const currentIndex = modeCycle.indexOf(mode)
         const startIndex = currentIndex >= 0 ? currentIndex : 0
         const nextIndex = (startIndex + direction + modeCycle.length) % modeCycle.length
@@ -50,7 +46,7 @@ export function Navbar() {
             <div className={isNarrowViewport ? 'flex flex-col gap-2' : 'flex items-center gap-8'}>
                 <div className="flex items-center gap-2">
                     <Settings2 className="w-5 h-5" />
-                    <span className="font-semibold tracking-tight">Spark Spawn</span>
+                    <span className="font-semibold tracking-tight">Spark</span>
                 </div>
 
                 <div

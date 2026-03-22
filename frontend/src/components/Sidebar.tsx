@@ -55,8 +55,8 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'manager.stop_condition',
     'manager.actions',
     'human.default_choice',
-    'sparkspawn.reads_context',
-    'sparkspawn.writes_context',
+    'spark.reads_context',
+    'spark.writes_context',
 ])
 const CORE_EDGE_ATTR_KEYS = new Set<string>([
     'label',
@@ -99,7 +99,6 @@ export function Sidebar() {
         setSelectedEdgeId,
     } = useStore()
     const isNarrowViewport = useNarrowViewport()
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
     const diagnostics = useStore((state) => state.diagnostics)
     const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)
     const humanGate = useStore((state) => state.humanGate)
@@ -132,7 +131,6 @@ export function Sidebar() {
     }, [])
 
     const createNewFlow = async () => {
-        if (!activeProjectPath) return
         const name = prompt("Enter flow name (e.g., demo.dot)");
         if (!name) return;
 
@@ -160,7 +158,6 @@ export function Sidebar() {
 
     const handleDeleteFlow = async (e: React.MouseEvent, fileName: string) => {
         e.stopPropagation();
-        if (!activeProjectPath) return
         if (!window.confirm(`Are you sure you want to delete ${fileName}?`)) return;
 
         await deleteFlowValidated(fileName);
@@ -177,7 +174,7 @@ export function Sidebar() {
     };
 
     const scheduleSave = (nextNodes: Node[], nextEdges: Edge[]) => {
-        if (!activeProjectPath || !displayedFlow) return
+        if (!displayedFlow) return
 
         pendingSaveRef.current = { nodes: nextNodes, edges: nextEdges }
         if (saveTimer.current) {
@@ -192,7 +189,7 @@ export function Sidebar() {
     }
 
     const flushPendingSave = useCallback(() => {
-        if (!activeProjectPath || !displayedFlow || !pendingSaveRef.current) return
+        if (!displayedFlow || !pendingSaveRef.current) return
         if (saveTimer.current) {
             window.clearTimeout(saveTimer.current)
             saveTimer.current = null
@@ -201,10 +198,10 @@ export function Sidebar() {
         pendingSaveRef.current = null
         const dot = generateDot(displayedFlow, pending.nodes, pending.edges, graphAttrs)
         void saveFlowContent(displayedFlow, dot)
-    }, [activeProjectPath, displayedFlow, graphAttrs])
+    }, [displayedFlow, graphAttrs])
 
     const updateNodeProperty = (nodeId: string, key: string, value: string | boolean) => {
-        if (!activeProjectPath || !displayedFlow) return;
+        if (!displayedFlow) return;
 
         let newNodes: Node[] = [];
         setNodes(nds => {
@@ -260,11 +257,11 @@ export function Sidebar() {
         (selectedNode?.data?.shape as string) || '',
         (selectedNode?.data?.type as string) || ''
     )
-    const selectedNodeReadsContextRaw = typeof selectedNode?.data?.['sparkspawn.reads_context'] === 'string'
-        ? selectedNode.data['sparkspawn.reads_context']
+    const selectedNodeReadsContextRaw = typeof selectedNode?.data?.['spark.reads_context'] === 'string'
+        ? selectedNode.data['spark.reads_context']
         : ''
-    const selectedNodeWritesContextRaw = typeof selectedNode?.data?.['sparkspawn.writes_context'] === 'string'
-        ? selectedNode.data['sparkspawn.writes_context']
+    const selectedNodeWritesContextRaw = typeof selectedNode?.data?.['spark.writes_context'] === 'string'
+        ? selectedNode.data['spark.writes_context']
         : ''
     const visibility = getNodeFieldVisibility(handlerType)
     const selectedNodeToolHookPreWarning = getToolHookCommandWarning((selectedNode?.data?.["tool.hooks.pre"] as string) || "")
@@ -303,7 +300,7 @@ export function Sidebar() {
     }, [selectedNodeId, selectedNodeWritesContextRaw])
 
     const handleEdgePropertyChange = (key: string, value: string | boolean) => {
-        if (!activeProjectPath || !selectedEdgeId || !displayedFlow) return;
+        if (!selectedEdgeId || !displayedFlow) return;
 
         let newEdges: Edge[] = [];
         setEdges((eds) => {
@@ -325,7 +322,7 @@ export function Sidebar() {
     };
 
     const updateSelectedNodeAttrs = (transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
-        if (!activeProjectPath || !displayedFlow || !selectedNodeId) {
+        if (!displayedFlow || !selectedNodeId) {
             return
         }
         let newNodes: Node[] = []
@@ -361,7 +358,7 @@ export function Sidebar() {
         if (parsed.error) {
             return
         }
-        handlePropertyChange('sparkspawn.reads_context', serializeContextKeyList(parsed.keys))
+        handlePropertyChange('spark.reads_context', serializeContextKeyList(parsed.keys))
     }
 
     const handleWritesContextChange = (value: string) => {
@@ -371,7 +368,7 @@ export function Sidebar() {
         if (parsed.error) {
             return
         }
-        handlePropertyChange('sparkspawn.writes_context', serializeContextKeyList(parsed.keys))
+        handlePropertyChange('spark.writes_context', serializeContextKeyList(parsed.keys))
     }
 
     const handleNodeExtensionRemove = (key: string) => {
@@ -389,7 +386,7 @@ export function Sidebar() {
     }
 
     const updateSelectedEdgeAttrs = (transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
-        if (!activeProjectPath || !displayedFlow || !selectedEdgeId) {
+        if (!displayedFlow || !selectedEdgeId) {
             return
         }
         let newEdges: Edge[] = []
@@ -505,7 +502,6 @@ export function Sidebar() {
                                 <div key={f} className="relative group">
                                     <button
                                         onClick={() => {
-                                            if (!activeProjectPath) return
                                             if (viewMode === 'execution') {
                                                 setExecutionFlow(f)
                                                 return

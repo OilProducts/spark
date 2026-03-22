@@ -17,8 +17,7 @@ let lastSaveRequest: { name: string; content: string; options?: SaveFlowOptions 
 const persistedBaselineByScope = new Map<string, string>()
 
 function getSaveScopeKey(name: string): string {
-    const activeProjectPath = useStore.getState().activeProjectPath ?? '__no_project__'
-    return `${activeProjectPath}::${name}`
+    return name
 }
 
 function parseErrorDetail(payload: unknown): SaveFlowErrorDetail {

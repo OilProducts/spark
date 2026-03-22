@@ -264,7 +264,7 @@ const isProjectChatDebugEnabled = () => {
         if (params.get("debugProjectChat") === "1") {
             return true
         }
-        return window.localStorage.getItem("sparkspawn.debug.project_chat") === "1"
+        return window.localStorage.getItem("spark.debug.project_chat") === "1"
     } catch {
         return false
     }
@@ -674,7 +674,7 @@ export function HomePanel() {
     const projects = Object.values(projectRegistry)
     const recentProjectPaths = useStore((state) => state.recentProjectPaths)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
-    const projectScopedWorkspaces = useStore((state) => state.projectScopedWorkspaces)
+    const projectSessionsByPath = useStore((state) => state.projectSessionsByPath)
     const projectRegistrationError = useStore((state) => state.projectRegistrationError)
     const registerProject = useStore((state) => state.registerProject)
     const removeProject = useStore((state) => state.removeProject)
@@ -683,7 +683,7 @@ export function HomePanel() {
     const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
     const setConversationId = useStore((state) => state.setConversationId)
     const appendProjectEventEntry = useStore((state) => state.appendProjectEventEntry)
-    const updateProjectScopedWorkspace = useStore((state) => state.updateProjectScopedWorkspace)
+    const updateProjectSessionState = useStore((state) => state.updateProjectSessionState)
     const model = useStore((state) => state.model)
     const setExecutionFlow = useStore((state) => state.setExecutionFlow)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
@@ -715,7 +715,7 @@ export function HomePanel() {
     const applyConversationStreamEventRef = useRef<((projectPath: string, event: ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse, source?: string) => void) | null>(null)
 
     const isNarrowViewport = useNarrowViewport()
-    const activeProjectScope = activeProjectPath ? projectScopedWorkspaces[activeProjectPath] : null
+    const activeProjectScope = activeProjectPath ? projectSessionsByPath[activeProjectPath] : null
     const activeProjectLabel = activeProjectPath ? formatProjectListLabel(activeProjectPath) : null
     const activeProjectGitMetadata = activeProjectPath
         ? projectGitMetadata[activeProjectPath] || EMPTY_PROJECT_GIT_METADATA
@@ -828,7 +828,7 @@ export function HomePanel() {
         })
         setOptimisticSend(null)
         setConversationId(conversationId)
-        updateProjectScopedWorkspace(projectPath, {
+        updateProjectSessionState(projectPath, {
             conversationId,
             specId: null,
             specStatus: "draft",
@@ -900,7 +900,7 @@ export function HomePanel() {
             })
             return
         }
-        const latestProjectScope = useStore.getState().projectScopedWorkspaces[projectPath]
+        const latestProjectScope = useStore.getState().projectSessionsByPath[projectPath]
         const shouldSyncActiveWorkspace = options?.forceWorkspaceSync === true
             || latestProjectScope?.conversationId === snapshot.conversation_id
         const latestApprovedProposal = getLatestApprovedSpecEditProposal(snapshot)
@@ -934,7 +934,7 @@ export function HomePanel() {
         }))
 
         if (shouldSyncActiveWorkspace) {
-            updateProjectScopedWorkspace(projectPath, {
+            updateProjectSessionState(projectPath, {
                 conversationId: snapshot.conversation_id,
                 projectEventLog: snapshot.event_log.map((entry) => ({
                     message: entry.message,
@@ -1390,15 +1390,15 @@ export function HomePanel() {
         } catch (error) {
             useStore.setState((state) => {
                 const nextProjectRegistry = { ...state.projectRegistry }
-                const nextProjectScopedWorkspaces = { ...state.projectScopedWorkspaces }
+                const nextProjectSessionStates = { ...state.projectSessionsByPath }
                 delete nextProjectRegistry[normalizedProjectPath]
-                delete nextProjectScopedWorkspaces[normalizedProjectPath]
+                delete nextProjectSessionStates[normalizedProjectPath]
                 const nextActiveProjectPath = state.activeProjectPath === normalizedProjectPath ? null : state.activeProjectPath
                 return {
                     projectRegistry: nextProjectRegistry,
-                    projectScopedWorkspaces: nextProjectScopedWorkspaces,
+                    projectSessionsByPath: nextProjectSessionStates,
                     activeProjectPath: nextActiveProjectPath,
-                    activeFlow: nextActiveProjectPath ? state.activeFlow : null,
+                    activeFlow: state.activeFlow,
                     selectedRunId: nextActiveProjectPath ? state.selectedRunId : null,
                     workingDir: nextActiveProjectPath ? state.workingDir : "./test-app",
                 }
@@ -1591,7 +1591,7 @@ export function HomePanel() {
                 setOptimisticSend(null)
                 setConversationId(fallbackConversationId)
                 if (fallbackConversationId) {
-                    updateProjectScopedWorkspace(activeProjectPath, {
+                    updateProjectSessionState(activeProjectPath, {
                         conversationId: fallbackConversationId,
                     })
                 }
@@ -1614,7 +1614,7 @@ export function HomePanel() {
         if (
             typeof window !== "undefined"
             && !window.confirm(
-                `Remove project "${projectLabel}" from Spark Spawn? This deletes its local threads, workflow history, and runs, but does not delete the project files.`,
+                `Remove project "${projectLabel}" from Spark? This deletes its local threads, workflow history, and runs, but does not delete the project files.`,
             )
         ) {
             return
@@ -1701,7 +1701,7 @@ export function HomePanel() {
                 model: model.trim() || null,
             })
             setOptimisticSend(null)
-            const latestProjectScope = useStore.getState().projectScopedWorkspaces[activeProjectPath]
+            const latestProjectScope = useStore.getState().projectSessionsByPath[activeProjectPath]
             const shouldKeepFocusOnReplyThread = latestProjectScope?.conversationId === conversationId
             applyConversationSnapshot(activeProjectPath, snapshot, "send-response", {
                 forceWorkspaceSync: shouldKeepFocusOnReplyThread,

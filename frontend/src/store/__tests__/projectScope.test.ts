@@ -13,7 +13,7 @@ const resetStore = () => {
     selectedRunId: null,
     workingDir: DEFAULT_WORKING_DIRECTORY,
     projectRegistry: {},
-    projectScopedWorkspaces: {},
+    projectSessionsByPath: {},
     projectRegistrationError: null,
     recentProjectPaths: [],
     graphAttrs: {},
@@ -27,11 +27,11 @@ describe('project scope store behavior', () => {
     resetStore()
   })
 
-  it('forces home mode when selecting editor without an active project', () => {
+  it('allows selecting editor without an active project', () => {
     const store = useStore.getState()
     store.setViewMode('editor')
 
-    expect(useStore.getState().viewMode).toBe('home')
+    expect(useStore.getState().viewMode).toBe('editor')
   })
 
   it('rejects non-absolute project paths', () => {
@@ -60,13 +60,14 @@ describe('project scope store behavior', () => {
     expect(duplicateResult.error).toBe('Project already registered: /tmp/demo/project')
   })
 
-  it('resets execution context when switching active projects', () => {
+  it('resets run state but preserves selected flows when switching active projects', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')
     store.registerProject('/tmp/project-b')
 
     store.setRuntimeStatus('running')
     store.setSelectedRunId('run-a')
+    store.setActiveFlow('preferred.dot')
     store.setExecutionFlow('run-flow-a.dot')
     store.addLog({ time: '12:00', msg: 'running', type: 'info' })
     store.setSelectedNodeId('node-a')
@@ -84,13 +85,9 @@ describe('project scope store behavior', () => {
     const next = useStore.getState()
     expect(next.runtimeStatus).toBe('idle')
     expect(next.selectedRunId).toBeNull()
-    expect(next.executionFlow).toBeNull()
+    expect(next.activeFlow).toBe('preferred.dot')
+    expect(next.executionFlow).toBe('run-flow-a.dot')
     expect(next.logs).toEqual([])
-    expect(next.selectedNodeId).toBeNull()
-    expect(next.diagnostics).toEqual([])
-    expect(next.graphAttrs).toEqual({})
-    expect(next.graphAttrsUserEditVersion).toBe(0)
-    expect(next.saveState).toBe('idle')
   })
 
   it('tracks user graph attr edits separately from hydrated replacements', () => {
@@ -122,7 +119,7 @@ describe('project scope store behavior', () => {
     store.setSelectedRunId('run-a')
 
     expect(useStore.getState().selectedRunId).toBe('run-a')
-    expect(useStore.getState().projectScopedWorkspaces['/tmp/project-a']).toBeDefined()
+    expect(useStore.getState().projectSessionsByPath['/tmp/project-a']).toBeDefined()
   })
 
   it('keeps the inspected execution flow separate from the current editor flow', () => {
@@ -135,7 +132,7 @@ describe('project scope store behavior', () => {
     const next = useStore.getState()
     expect(next.activeFlow).toBe('preferred.dot')
     expect(next.executionFlow).toBe('run-opened.dot')
-    expect(next.projectScopedWorkspaces['/tmp/project-a']?.activeFlow).toBe('preferred.dot')
+    expect(next.projectSessionsByPath['/tmp/project-a']?.activeFlow).toBeUndefined()
   })
 
   it('hydrates backend project metadata without deriving a project flow preference', () => {
@@ -156,7 +153,7 @@ describe('project scope store behavior', () => {
       lastAccessedAt: null,
       flowBindings: {},
     })
-    expect(next.projectScopedWorkspaces['/tmp/project-a']?.activeFlow).toBeNull()
+    expect(next.projectSessionsByPath['/tmp/project-a']?.activeFlow).toBeUndefined()
     expect(next.activeFlow).toBeNull()
   })
 

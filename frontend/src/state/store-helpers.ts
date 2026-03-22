@@ -2,8 +2,8 @@ import type {
     DiagnosticEntry,
     GraphAttrErrors,
     GraphAttrs,
-    ProjectScopedArtifactState,
-    ProjectScopedWorkspace,
+    ProjectSessionArtifactState,
+    ProjectSessionState,
     RouteState,
     UiDefaults,
     ViewMode,
@@ -16,14 +16,13 @@ export const DEFAULT_UI_DEFAULTS: UiDefaults = {
     reasoning_effort: '',
 }
 
-export const UI_DEFAULTS_STORAGE_KEY = 'sparkspawn.ui_defaults'
-export const ROUTE_STATE_STORAGE_KEY = 'sparkspawn.ui_route_state'
+export const UI_DEFAULTS_STORAGE_KEY = 'spark.ui_defaults'
+export const ROUTE_STATE_STORAGE_KEY = 'spark.ui_route_state'
 export const DEFAULT_WORKING_DIRECTORY = './test-app'
 export const RECENT_PROJECT_LIMIT = 5
 export const VIEW_MODES: ViewMode[] = ['home', 'projects', 'editor', 'execution', 'settings', 'runs']
 
-export const DEFAULT_PROJECT_SCOPED_WORKSPACE: ProjectScopedWorkspace = {
-    activeFlow: null,
+export const DEFAULT_PROJECT_SESSION_STATE: ProjectSessionState = {
     workingDir: DEFAULT_WORKING_DIRECTORY,
     conversationId: null,
     projectEventLog: [],
@@ -45,9 +44,9 @@ const GRAPH_FIDELITY_OPTION_SET = new Set<string>([
 ])
 
 const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
-    'sparkspawn.title',
-    'sparkspawn.description',
-    'sparkspawn.launch_inputs',
+    'spark.title',
+    'spark.description',
+    'spark.launch_inputs',
     'goal',
     'label',
     'retry_target',
@@ -65,14 +64,10 @@ const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
 const DEFAULT_MAX_RETRIES_KEY: keyof GraphAttrs = 'default_max_retries'
 const LEGACY_DEFAULT_MAX_RETRY_KEY: keyof GraphAttrs = 'default_max_retry'
 
-const modeRequiresActiveProject = (mode: ViewMode) => mode === 'editor' || mode === 'execution'
-
 export const normalizeViewMode = (mode: ViewMode): ViewMode => (mode === 'projects' ? 'home' : mode)
 
-export const resolveViewModeForProjectScope = (mode: ViewMode, activeProjectPath: string | null): ViewMode => {
-    const normalizedMode = normalizeViewMode(mode)
-    return modeRequiresActiveProject(normalizedMode) && !activeProjectPath ? 'home' : normalizedMode
-}
+export const resolveViewModeForProjectScope = (mode: ViewMode, _activeProjectPath: string | null): ViewMode =>
+    normalizeViewMode(mode)
 
 export const pushRecentProjectPath = (recentProjectPaths: string[], projectPath: string | null) => {
     if (!projectPath) {
@@ -199,22 +194,22 @@ export const deriveGraphAttrErrors = (attrs: GraphAttrs): GraphAttrErrors => {
     return errors
 }
 
-export const resolveProjectScopedWorkspace = (
-    workspace: Partial<ProjectScopedWorkspace> | undefined,
+export const resolveProjectSessionState = (
+    workspace: Partial<ProjectSessionState> | undefined,
     projectPath: string | null,
-): ProjectScopedWorkspace => {
+): ProjectSessionState => {
     const defaultWorkingDir = projectPath || DEFAULT_WORKING_DIRECTORY
     return {
-        ...DEFAULT_PROJECT_SCOPED_WORKSPACE,
+        ...DEFAULT_PROJECT_SESSION_STATE,
         ...workspace,
         workingDir: workspace?.workingDir || defaultWorkingDir,
     }
 }
 
-export const selectProjectScopedArtifactState = (
-    projectScopedWorkspaces: Record<string, ProjectScopedWorkspace>,
+export const selectProjectSessionArtifactState = (
+    projectSessionsByPath: Record<string, ProjectSessionState>,
     projectPath: string | null,
-): ProjectScopedArtifactState | null => {
+): ProjectSessionArtifactState | null => {
     if (!projectPath) {
         return null
     }
@@ -222,11 +217,11 @@ export const selectProjectScopedArtifactState = (
     if (!normalizedProjectPath || !isAbsoluteProjectPath(normalizedProjectPath)) {
         return null
     }
-    const loadedWorkspace = projectScopedWorkspaces[normalizedProjectPath]
+    const loadedWorkspace = projectSessionsByPath[normalizedProjectPath]
     if (!loadedWorkspace) {
         return null
     }
-    const workspace = resolveProjectScopedWorkspace(loadedWorkspace, normalizedProjectPath)
+    const workspace = resolveProjectSessionState(loadedWorkspace, normalizedProjectPath)
     return {
         conversationId: workspace.conversationId,
         specId: workspace.specId,
