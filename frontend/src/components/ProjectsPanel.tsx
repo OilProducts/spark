@@ -1,32 +1,19 @@
 import { type PlanStatus, type ProjectRegistrationResult, useStore } from "@/store"
-import { type ChangeEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react"
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react"
 import {
     ApiHttpError,
-    type ConversationSegmentResponse,
     type ConversationSegmentUpsertEventResponse,
     type ConversationSummaryResponse,
     type ConversationSnapshotResponse,
     type ConversationTurnUpsertEventResponse,
-    type ConversationTurnResponse,
     deleteConversationValidated,
     deleteProjectValidated,
     type ExecutionCardResponse,
-    type FlowRunRequestResponse,
-    type SpecEditProposalResponse,
-    approveSpecEditProposalValidated,
-    conversationEventsUrl,
-    fetchConversationSnapshotValidated,
     fetchProjectRegistryValidated,
     fetchProjectConversationListValidated,
     fetchProjectMetadataValidated,
     pickProjectDirectoryValidated,
-    parseConversationSnapshotResponse,
-    parseConversationStreamEventResponse,
-    rejectSpecEditProposalValidated,
     registerProjectValidated,
-    reviewExecutionCardValidated,
-    reviewFlowRunRequestValidated,
-    sendConversationTurnValidated,
     updateProjectStateValidated,
 } from "@/lib/workspaceClient"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
@@ -34,8 +21,24 @@ import { isAbsoluteProjectPath, normalizeProjectPath } from "@/lib/projectPaths"
 import { ProjectConversationHistory } from "@/components/projects/ProjectConversationHistory"
 import { ProjectConversationSurface } from "@/components/projects/ProjectConversationSurface"
 import { ProjectsSidebar } from "@/components/projects/ProjectsSidebar"
-import type { ConversationTimelineEntry } from "@/components/projects/types"
 import type { ProjectGitMetadata } from "@/components/projects/presentation"
+import {
+    compareConversationSnapshotFreshness,
+    ensureConversationSnapshotShell,
+    getLatestApprovedSpecEditProposal,
+    getLatestExecutionCard,
+    sanitizeStreamingTurnUpsert,
+    sortConversationSummaries,
+    type OptimisticSendState,
+    upsertConversationSegment,
+    upsertConversationSummary,
+    upsertConversationTurn,
+} from "@/components/projects/conversationState"
+import { buildConversationTimelineEntries } from "@/components/projects/conversationTimeline"
+import { useHomeSidebarLayout } from "@/components/projects/hooks/useHomeSidebarLayout"
+import { useConversationStream } from "@/components/projects/hooks/useConversationStream"
+import { useConversationComposer } from "@/components/projects/hooks/useConversationComposer"
+import { useConversationReviews } from "@/components/projects/hooks/useConversationReviews"
 
 const buildProjectConversationId = (projectPath: string) => {
     const normalizedProjectKey = projectPath
@@ -48,12 +51,6 @@ const buildProjectConversationId = (projectPath: string) => {
         : Math.random().toString(36).slice(2, 10)
     return `conversation-${suffix}-${randomSuffix}`
 }
-
-const DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT = 320
-const HOME_SIDEBAR_MIN_PRIMARY_HEIGHT = 208
-const HOME_SIDEBAR_MIN_SECONDARY_HEIGHT = 208
-const HOME_SIDEBAR_RESIZE_HANDLE_HEIGHT = 12
-const CONVERSATION_BOTTOM_THRESHOLD_PX = 24
 
 type PickerFileWithPath = File & {
     path?: string
@@ -232,17 +229,6 @@ const formatConversationAgeShort = (value: string) => {
     return `${Math.max(1, Math.round(deltaMs / weekMs))}w`
 }
 
-const clampHomeSidebarPrimaryHeight = (height: number, containerHeight: number) => {
-    if (containerHeight <= 0) {
-        return Math.max(height, HOME_SIDEBAR_MIN_PRIMARY_HEIGHT)
-    }
-    const maxPrimaryHeight = Math.max(
-        HOME_SIDEBAR_MIN_PRIMARY_HEIGHT,
-        containerHeight - HOME_SIDEBAR_MIN_SECONDARY_HEIGHT - HOME_SIDEBAR_RESIZE_HANDLE_HEIGHT,
-    )
-    return Math.min(Math.max(height, HOME_SIDEBAR_MIN_PRIMARY_HEIGHT), maxPrimaryHeight)
-}
-
 const extractApiErrorMessage = (error: unknown, fallback: string) => {
     if (error instanceof ApiHttpError && error.detail) {
         return error.detail
@@ -291,392 +277,7 @@ const debugProjectChat = (message: string, details?: Record<string, unknown>) =>
     console.debug(`[project-chat] ${message}`)
 }
 
-const getLatestApprovedSpecEditProposal = (snapshot: ConversationSnapshotResponse | null) => {
-    if (!snapshot) {
-        return null
-    }
-    for (let index = snapshot.spec_edit_proposals.length - 1; index >= 0; index -= 1) {
-        const proposal = snapshot.spec_edit_proposals[index]
-        if (proposal?.status === "applied") {
-            return proposal
-        }
-    }
-    return null
-}
-
-const getLatestExecutionCard = (snapshot: ConversationSnapshotResponse | null) => {
-    if (!snapshot || snapshot.execution_cards.length === 0) {
-        return null
-    }
-    return snapshot.execution_cards[snapshot.execution_cards.length - 1] || null
-}
-
-type OptimisticSendState = {
-    conversationId: string
-    message: string
-    createdAt: string
-}
-
-const ensureConversationSnapshotShell = (
-    conversationId: string,
-    projectPath: string,
-    title = "New thread",
-): ConversationSnapshotResponse => ({
-    schema_version: 4,
-    conversation_id: conversationId,
-    conversation_handle: "",
-    project_path: projectPath,
-    title,
-    created_at: "",
-    updated_at: "",
-    turns: [],
-    segments: [],
-    event_log: [],
-    spec_edit_proposals: [],
-    flow_run_requests: [],
-    flow_launches: [],
-    execution_cards: [],
-    execution_workflow: {
-        status: "idle",
-        run_id: null,
-        error: null,
-        flow_source: null,
-    },
-})
-
-const upsertConversationTurn = (
-    snapshot: ConversationSnapshotResponse,
-    turn: ConversationTurnResponse,
-): ConversationSnapshotResponse => {
-    const nextTurns = [...snapshot.turns]
-    const existingIndex = nextTurns.findIndex((entry) => entry.id === turn.id)
-    if (existingIndex >= 0) {
-        nextTurns[existingIndex] = turn
-    } else {
-        nextTurns.push(turn)
-    }
-    return {
-        ...snapshot,
-        turns: nextTurns,
-    }
-}
-
-const upsertConversationSegment = (
-    snapshot: ConversationSnapshotResponse,
-    segment: ConversationSegmentResponse,
-): ConversationSnapshotResponse => {
-    const nextSegments = [...snapshot.segments]
-    const existingIndex = nextSegments.findIndex((entry) => entry.id === segment.id)
-    if (existingIndex >= 0) {
-        nextSegments[existingIndex] = segment
-    } else {
-        nextSegments.push(segment)
-    }
-    nextSegments.sort((left, right) => {
-        if (left.turn_id === right.turn_id) {
-            const orderDelta = left.order - right.order
-            if (orderDelta !== 0) {
-                return orderDelta
-            }
-            const timestampDelta = left.timestamp.localeCompare(right.timestamp)
-            if (timestampDelta !== 0) {
-                return timestampDelta
-            }
-            return left.id.localeCompare(right.id)
-        }
-        return left.timestamp.localeCompare(right.timestamp)
-    })
-    return {
-        ...snapshot,
-        segments: nextSegments,
-    }
-}
-
-const sanitizeStreamingTurnUpsert = (
-    currentTurn: ConversationTurnResponse | null,
-    incomingTurn: ConversationTurnResponse,
-): ConversationTurnResponse => {
-    if (incomingTurn.role !== 'assistant') {
-        return incomingTurn
-    }
-    if (incomingTurn.status !== 'pending' && incomingTurn.status !== 'streaming') {
-        return incomingTurn
-    }
-    if (incomingTurn.content.trim().length > 0) {
-        return incomingTurn
-    }
-    return {
-        ...incomingTurn,
-        content: currentTurn?.content ?? '',
-    }
-}
-
-const scoreConversationSnapshotFreshness = (snapshot: ConversationSnapshotResponse): number => {
-    const turnStatusScore = snapshot.turns.reduce((score, turn) => {
-        if (turn.status === 'failed') {
-            return score + 4
-        }
-        if (turn.status === 'complete') {
-            return score + 3
-        }
-        if (turn.status === 'streaming') {
-            return score + 2
-        }
-        return score + 1
-    }, 0)
-    const contentScore = snapshot.turns.reduce((score, turn) => score + turn.content.length, 0)
-    return (
-        snapshot.turns.length * 100000
-        + snapshot.segments.length * 1000
-        + turnStatusScore * 100
-        + contentScore
-    )
-}
-
-const compareConversationSnapshotFreshness = (
-    left: ConversationSnapshotResponse,
-    right: ConversationSnapshotResponse,
-): number => {
-    const updatedAtCompare = left.updated_at.localeCompare(right.updated_at)
-    if (updatedAtCompare !== 0) {
-        return updatedAtCompare
-    }
-    return scoreConversationSnapshotFreshness(left) - scoreConversationSnapshotFreshness(right)
-}
-
-const formatWorkedDuration = (elapsedSeconds: number): string => {
-    if (elapsedSeconds < 60) {
-        return `${elapsedSeconds}s`
-    }
-    if (elapsedSeconds < 3600) {
-        const minutes = Math.floor(elapsedSeconds / 60)
-        const seconds = elapsedSeconds % 60
-        return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`
-    }
-    const hours = Math.floor(elapsedSeconds / 3600)
-    const minutes = Math.floor((elapsedSeconds % 3600) / 60)
-    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
-}
-
-const resolveWorkedElapsedSeconds = (
-    turn: ConversationTurnResponse,
-    turnSegments: ConversationSegmentResponse[],
-    completedTimestamp: string,
-): number | null => {
-    const completedMs = Date.parse(completedTimestamp)
-    if (Number.isNaN(completedMs)) {
-        return null
-    }
-    const candidateTimestamps = [turn.timestamp, ...turnSegments.map((segment) => segment.timestamp)]
-        .map((value) => Date.parse(value))
-        .filter((value) => !Number.isNaN(value) && value <= completedMs)
-    if (candidateTimestamps.length === 0) {
-        return null
-    }
-    const startedMs = Math.min(...candidateTimestamps)
-    return Math.max(0, Math.round((completedMs - startedMs) / 1000))
-}
-
-const buildAssistantTimelineEntries = (
-    turn: ConversationTurnResponse,
-    turnSegments: ConversationSegmentResponse[],
-): ConversationTimelineEntry[] => {
-    const entries: ConversationTimelineEntry[] = []
-    let hadWorkActivity = false
-    let insertedFinalSeparator = false
-    const sortedSegments = [...turnSegments].sort((left, right) => left.order - right.order)
-
-    sortedSegments.forEach((segment) => {
-        if (!insertedFinalSeparator && hadWorkActivity && segment.kind === "assistant_message") {
-            const elapsedSeconds = resolveWorkedElapsedSeconds(turn, turnSegments, segment.timestamp)
-            const label = elapsedSeconds === null
-                ? "Worked"
-                : `Worked for ${formatWorkedDuration(elapsedSeconds)}`
-            entries.push({
-                id: `${turn.id}:final-separator:${entries.length}`,
-                kind: "final_separator",
-                role: "system",
-                timestamp: segment.timestamp,
-                label,
-            })
-            insertedFinalSeparator = true
-        }
-        if (segment.kind === "assistant_message") {
-            entries.push({
-                id: segment.id,
-                kind: "message",
-                role: "assistant",
-                content: segment.content,
-                timestamp: segment.timestamp,
-                status: segment.status === "running" ? "streaming" : segment.status,
-                error: segment.error ?? null,
-            })
-            return
-        }
-        if (segment.kind === "reasoning") {
-            entries.push({
-                id: segment.id,
-                kind: "message",
-                role: "assistant",
-                content: segment.content,
-                timestamp: segment.timestamp,
-                status: segment.status === "running" ? "streaming" : segment.status,
-                error: segment.error ?? null,
-                presentation: "thinking",
-            })
-            return
-        }
-        if (segment.kind === "tool_call" && segment.tool_call) {
-            entries.push({
-                id: segment.id,
-                kind: "tool_call",
-                role: "system",
-                timestamp: segment.timestamp,
-                toolCall: {
-                    id: segment.tool_call.id,
-                    kind: segment.tool_call.kind,
-                    status: segment.tool_call.status,
-                    title: segment.tool_call.title,
-                    command: segment.tool_call.command ?? null,
-                    output: segment.tool_call.output ?? null,
-                    filePaths: segment.tool_call.file_paths,
-                },
-            })
-            hadWorkActivity = true
-            return
-        }
-        if (segment.kind === "spec_edit_proposal" && segment.artifact_id) {
-            entries.push({
-                id: segment.id,
-                kind: "spec_edit_proposal",
-                role: "system",
-                artifactId: segment.artifact_id,
-                timestamp: segment.timestamp,
-            })
-            return
-        }
-        if (segment.kind === "flow_run_request" && segment.artifact_id) {
-            entries.push({
-                id: segment.id,
-                kind: "flow_run_request",
-                role: "system",
-                artifactId: segment.artifact_id,
-                timestamp: segment.timestamp,
-            })
-            return
-        }
-        if (segment.kind === "flow_launch" && segment.artifact_id) {
-            entries.push({
-                id: segment.id,
-                kind: "flow_launch",
-                role: "system",
-                artifactId: segment.artifact_id,
-                timestamp: segment.timestamp,
-            })
-            return
-        }
-        if (segment.kind === "execution_card" && segment.artifact_id) {
-            entries.push({
-                id: segment.id,
-                kind: "execution_card",
-                role: "system",
-                artifactId: segment.artifact_id,
-                timestamp: segment.timestamp,
-            })
-        }
-    })
-
-    if (entries.length === 0) {
-        const presentation = turn.status === "complete" || turn.status === "failed" ? "default" : "thinking"
-        entries.push({
-            id: `${turn.id}:${presentation}:placeholder`,
-            kind: "message",
-            role: "assistant",
-            content: turn.content,
-            timestamp: turn.timestamp,
-            status: turn.status,
-            error: turn.error ?? null,
-            presentation,
-        })
-    }
-
-    return entries
-}
-
-const buildConversationTimelineEntries = (
-    snapshot: ConversationSnapshotResponse | null,
-    optimisticSend: OptimisticSendState | null,
-): ConversationTimelineEntry[] => {
-    if (!snapshot) {
-        if (!optimisticSend) {
-            return []
-        }
-        return [
-            {
-                id: `${optimisticSend.conversationId}:optimistic:user`,
-                kind: "message",
-                role: "user",
-                content: optimisticSend.message,
-                timestamp: optimisticSend.createdAt,
-                status: "complete",
-            },
-        ]
-    }
-
-    const timeline: ConversationTimelineEntry[] = []
-    const segmentsByTurn = new Map<string, ConversationSegmentResponse[]>()
-    snapshot.segments.forEach((segment) => {
-        const entries = segmentsByTurn.get(segment.turn_id) || []
-        entries.push(segment)
-        segmentsByTurn.set(segment.turn_id, entries)
-    })
-    snapshot.turns.forEach((turn) => {
-        if (turn.role === "user" || turn.role === "assistant") {
-            if (turn.role === "assistant") {
-                timeline.push(...buildAssistantTimelineEntries(turn, segmentsByTurn.get(turn.id) || []))
-                return
-            }
-            timeline.push({
-                id: turn.id,
-                kind: "message",
-                role: turn.role,
-                content: turn.content,
-                timestamp: turn.timestamp,
-                status: turn.status,
-                error: turn.error ?? null,
-            })
-        }
-    })
-
-    if (!optimisticSend) {
-        return timeline
-    }
-
-    const optimisticEntries: ConversationTimelineEntry[] = []
-    optimisticEntries.push({
-        id: `${optimisticSend.conversationId}:optimistic:user`,
-        kind: "message",
-        role: "user",
-        content: optimisticSend.message,
-        timestamp: optimisticSend.createdAt,
-        status: "complete",
-    })
-    return [...timeline, ...optimisticEntries]
-}
-
-const sortConversationSummaries = (items: ConversationSummaryResponse[]) => (
-    [...items].sort((left, right) => right.updated_at.localeCompare(left.updated_at))
-)
-
-const upsertConversationSummary = (
-    items: ConversationSummaryResponse[],
-    summary: ConversationSummaryResponse,
-) => sortConversationSummaries([
-    summary,
-    ...items.filter((entry) => entry.conversation_id !== summary.conversation_id),
-])
-
-export function HomePanel() {
+export function ProjectsPanel() {
     const projectRegistry = useStore((state) => state.projectRegistry)
     const hydrateProjectRegistry = useStore((state) => state.hydrateProjectRegistry)
     const upsertProjectRegistryEntry = useStore((state) => state.upsertProjectRegistryEntry)
@@ -704,24 +305,15 @@ export function HomePanel() {
     const [chatDraft, setChatDraft] = useState("")
     const [panelError, setPanelError] = useState<string | null>(null)
     const [optimisticSend, setOptimisticSend] = useState<OptimisticSendState | null>(null)
-    const [pendingSpecProposalId, setPendingSpecProposalId] = useState<string | null>(null)
-    const [pendingFlowRunRequestId, setPendingFlowRunRequestId] = useState<string | null>(null)
-    const [pendingExecutionCardId, setPendingExecutionCardId] = useState<string | null>(null)
     const [pendingDeleteConversationId, setPendingDeleteConversationId] = useState<string | null>(null)
     const [pendingDeleteProjectPath, setPendingDeleteProjectPath] = useState<string | null>(null)
     const [expandedProposalChanges, setExpandedProposalChanges] = useState<Record<string, boolean>>({})
     const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({})
     const [expandedThinkingEntries, setExpandedThinkingEntries] = useState<Record<string, boolean>>({})
-    const [homeSidebarPrimaryHeight, setHomeSidebarPrimaryHeight] = useState(DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT)
-    const [isHomeSidebarResizing, setIsHomeSidebarResizing] = useState(false)
-    const [isConversationPinnedToBottom, setIsConversationPinnedToBottom] = useState(true)
 
     const projectDirectoryPickerInputRef = useRef<HTMLInputElement | null>(null)
-    const homeSidebarRef = useRef<HTMLDivElement | null>(null)
-    const homeSidebarResizeRef = useRef<{ startY: number; startHeight: number } | null>(null)
-    const conversationBodyRef = useRef<HTMLDivElement | null>(null)
-    const applyConversationSnapshotRef = useRef<((projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => void) | null>(null)
-    const applyConversationStreamEventRef = useRef<((projectPath: string, event: ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse, source?: string) => void) | null>(null)
+    const projectSessionsRef = useRef(projectSessionsByPath)
+    projectSessionsRef.current = projectSessionsByPath
 
     const isNarrowViewport = useNarrowViewport()
     const activeProjectScope = activeProjectPath ? projectSessionsByPath[activeProjectPath] : null
@@ -774,6 +366,17 @@ export function HomePanel() {
     ))
     const isChatInputDisabled = hasActiveAssistantTurn
     const chatSendButtonLabel = hasActiveAssistantTurn ? "Thinking..." : "Send"
+    const {
+        conversationBodyRef,
+        homeSidebarRef,
+        homeSidebarPrimaryHeight,
+        isConversationPinnedToBottom,
+        isHomeSidebarResizing,
+        onHomeSidebarResizeKeyDown,
+        onHomeSidebarResizePointerDown,
+        scrollConversationToBottom,
+        syncConversationPinnedState,
+    } = useHomeSidebarLayout(isNarrowViewport, activeProjectPath)
 
     const orderedProjects = (() => {
         const seenProjectPaths = new Set<string>()
@@ -841,7 +444,7 @@ export function HomePanel() {
             projectPath,
             conversationId,
         })
-        setOptimisticSend(null)
+        resetComposer()
         setConversationId(conversationId)
         updateProjectSessionState(projectPath, {
             conversationId,
@@ -866,27 +469,6 @@ export function HomePanel() {
         } catch {
             return projectConversationSummaries[projectPath] || []
         }
-    }
-
-    const syncConversationPinnedState = () => {
-        const node = conversationBodyRef.current
-        if (!node) {
-            return
-        }
-        const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight
-        setIsConversationPinnedToBottom(distanceFromBottom <= CONVERSATION_BOTTOM_THRESHOLD_PX)
-    }
-
-    const scrollConversationToBottom = () => {
-        const node = conversationBodyRef.current
-        if (!node) {
-            return
-        }
-        node.scrollTo({
-            top: node.scrollHeight,
-            behavior: "smooth",
-        })
-        setIsConversationPinnedToBottom(true)
     }
 
     const applyConversationSnapshot = (
@@ -915,7 +497,7 @@ export function HomePanel() {
             })
             return
         }
-        const latestProjectScope = useStore.getState().projectSessionsByPath[projectPath]
+        const latestProjectScope = projectSessionsRef.current[projectPath]
         const shouldSyncActiveWorkspace = options?.forceWorkspaceSync === true
             || latestProjectScope?.conversationId === snapshot.conversation_id
         const latestApprovedProposal = getLatestApprovedSpecEditProposal(snapshot)
@@ -1060,8 +642,16 @@ export function HomePanel() {
         }))
     }
 
-    applyConversationSnapshotRef.current = applyConversationSnapshot
-    applyConversationStreamEventRef.current = applyConversationStreamEvent
+    // Event stream contract remains the same after hook extraction: new EventSource(eventStreamUrl)
+    useConversationStream({
+        activeConversationId,
+        activeProjectPath,
+        appendLocalProjectEvent,
+        applyConversationSnapshot,
+        applyConversationStreamEvent,
+        formatErrorMessage: extractApiErrorMessage,
+        setPanelError,
+    })
 
     useEffect(() => {
         let isCancelled = false
@@ -1161,9 +751,8 @@ export function HomePanel() {
     }, [activeConversationId, activeProjectPath])
 
     useEffect(() => {
-        setChatDraft("")
+        resetComposer()
         setPanelError(null)
-        setOptimisticSend(null)
     }, [activeProjectPath])
 
     useEffect(() => {
@@ -1187,66 +776,6 @@ export function HomePanel() {
     }, [])
 
     useEffect(() => {
-        if (isNarrowViewport) {
-            setIsHomeSidebarResizing(false)
-            homeSidebarResizeRef.current = null
-            return
-        }
-
-        const syncSidebarHeight = () => {
-            const containerHeight = homeSidebarRef.current?.getBoundingClientRect().height || 0
-            if (containerHeight <= 0) {
-                return
-            }
-            setHomeSidebarPrimaryHeight((current) => clampHomeSidebarPrimaryHeight(current, containerHeight))
-        }
-
-        syncSidebarHeight()
-        window.addEventListener("resize", syncSidebarHeight)
-        return () => {
-            window.removeEventListener("resize", syncSidebarHeight)
-        }
-    }, [isNarrowViewport])
-
-    useEffect(() => {
-        if (!isHomeSidebarResizing) {
-            return
-        }
-
-        const stopHomeSidebarResize = () => {
-            setIsHomeSidebarResizing(false)
-            homeSidebarResizeRef.current = null
-            document.body.style.cursor = ""
-            document.body.style.userSelect = ""
-        }
-
-        const handleHomeSidebarPointerMove = (event: PointerEvent) => {
-            const resizeState = homeSidebarResizeRef.current
-            const containerHeight = homeSidebarRef.current?.getBoundingClientRect().height || 0
-            if (!resizeState || containerHeight <= 0) {
-                return
-            }
-            const nextHeight = resizeState.startHeight + (event.clientY - resizeState.startY)
-            setHomeSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(nextHeight, containerHeight))
-        }
-
-        window.addEventListener("pointermove", handleHomeSidebarPointerMove)
-        window.addEventListener("pointerup", stopHomeSidebarResize)
-        window.addEventListener("pointercancel", stopHomeSidebarResize)
-        return () => {
-            window.removeEventListener("pointermove", handleHomeSidebarPointerMove)
-            window.removeEventListener("pointerup", stopHomeSidebarResize)
-            window.removeEventListener("pointercancel", stopHomeSidebarResize)
-            document.body.style.cursor = ""
-            document.body.style.userSelect = ""
-        }
-    }, [isHomeSidebarResizing])
-
-    useEffect(() => {
-        setIsConversationPinnedToBottom(true)
-    }, [activeProjectPath])
-
-    useEffect(() => {
         if (!isConversationPinnedToBottom) {
             return
         }
@@ -1261,67 +790,6 @@ export function HomePanel() {
             window.cancelAnimationFrame(frame)
         }
     }, [activeConversationHistory, activeProjectPath, isConversationPinnedToBottom])
-
-    useEffect(() => {
-        if (!activeProjectPath || !activeConversationId) {
-            return
-        }
-
-        let isCancelled = false
-        let eventSource: EventSource | null = null
-
-        const loadSnapshot = async () => {
-            try {
-                const snapshot = await fetchConversationSnapshotValidated(activeConversationId, activeProjectPath)
-                if (isCancelled) {
-                    return
-                }
-                applyConversationSnapshotRef.current?.(activeProjectPath, snapshot, "snapshot-fetch")
-            } catch (error) {
-                if (isCancelled) {
-                    return
-                }
-                if (error instanceof ApiHttpError && error.status === 404) {
-                    return
-                }
-                const message = extractApiErrorMessage(error, "Unable to load project conversation.")
-                setPanelError(message)
-                appendLocalProjectEvent(`Project chat sync failed: ${message}`)
-            }
-        }
-
-        void loadSnapshot()
-
-        if (typeof EventSource !== "undefined") {
-            const eventStreamUrl = conversationEventsUrl(activeConversationId, activeProjectPath)
-            eventSource = new EventSource(eventStreamUrl)
-            eventSource.onmessage = (event) => {
-                if (isCancelled) {
-                    return
-                }
-                try {
-                    const payload = JSON.parse(event.data) as { type?: string; state?: unknown }
-                    if (payload.type === "conversation_snapshot") {
-                        const snapshot = parseConversationSnapshotResponse(payload.state, "/workspace/api/conversations/{id}/events")
-                        applyConversationSnapshotRef.current?.(activeProjectPath, snapshot, "event-stream-snapshot")
-                        return
-                    }
-                    const parsedEvent = parseConversationStreamEventResponse(payload, "/workspace/api/conversations/{id}/events")
-                    if (!parsedEvent) {
-                        return
-                    }
-                    applyConversationStreamEventRef.current?.(activeProjectPath, parsedEvent, "event-stream")
-                } catch {
-                    // Ignore malformed stream events.
-                }
-            }
-        }
-
-        return () => {
-            isCancelled = true
-            eventSource?.close()
-        }
-    }, [activeConversationId, activeProjectPath])
 
     const resolveProjectPathValidation = (rawPath: string): ProjectRegistrationResult => {
         const normalizedPath = normalizeProjectPath(rawPath)
@@ -1452,58 +920,6 @@ export function HomePanel() {
         projectDirectoryPickerInputRef.current.click()
     }
 
-    const adjustHomeSidebarPrimaryHeight = (delta: number) => {
-        const containerHeight = homeSidebarRef.current?.getBoundingClientRect().height || 0
-        if (containerHeight <= 0) {
-            return
-        }
-        setHomeSidebarPrimaryHeight((current) => clampHomeSidebarPrimaryHeight(current + delta, containerHeight))
-    }
-
-    const onHomeSidebarResizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-        if (isNarrowViewport) {
-            return
-        }
-        homeSidebarResizeRef.current = {
-            startY: event.clientY,
-            startHeight: homeSidebarPrimaryHeight,
-        }
-        setIsHomeSidebarResizing(true)
-        document.body.style.cursor = "row-resize"
-        document.body.style.userSelect = "none"
-        event.preventDefault()
-    }
-
-    const onHomeSidebarResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-        if (event.key === "ArrowUp") {
-            event.preventDefault()
-            adjustHomeSidebarPrimaryHeight(-24)
-            return
-        }
-        if (event.key === "ArrowDown") {
-            event.preventDefault()
-            adjustHomeSidebarPrimaryHeight(24)
-            return
-        }
-        if (event.key === "Home") {
-            event.preventDefault()
-            const containerHeight = homeSidebarRef.current?.getBoundingClientRect().height || 0
-            if (containerHeight <= 0) {
-                return
-            }
-            setHomeSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(HOME_SIDEBAR_MIN_PRIMARY_HEIGHT, containerHeight))
-            return
-        }
-        if (event.key === "End") {
-            event.preventDefault()
-            const containerHeight = homeSidebarRef.current?.getBoundingClientRect().height || 0
-            if (containerHeight <= 0) {
-                return
-            }
-            setHomeSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(containerHeight, containerHeight))
-        }
-    }
-
     const onProjectDirectorySelected = (event: ChangeEvent<HTMLInputElement>) => {
         const files = event.target.files
         const selectedProjectPath = deriveProjectPathFromDirectorySelection(files)
@@ -1603,7 +1019,7 @@ export function HomePanel() {
 
             if (activeConversationId === conversationId) {
                 const fallbackConversationId = remainingSummaries[0]?.conversation_id || null
-                setOptimisticSend(null)
+                resetComposer()
                 setConversationId(fallbackConversationId)
                 if (fallbackConversationId) {
                     updateProjectSessionState(activeProjectPath, {
@@ -1684,187 +1100,42 @@ export function HomePanel() {
         activateConversationThread(activeProjectPath, conversationId, "ensure-conversation")
         return conversationId
     }
+    const {
+        onChatComposerKeyDown,
+        onChatComposerSubmit,
+        resetComposer,
+    } = useConversationComposer({
+        activeProjectPath,
+        chatDraft,
+        isChatInputDisabled,
+        model,
+        ensureConversationId,
+        getCurrentConversationId: (projectPath) => projectSessionsRef.current[projectPath]?.conversationId ?? null,
+        applyConversationSnapshot,
+        appendLocalProjectEvent,
+        formatErrorMessage: extractApiErrorMessage,
+        setChatDraft,
+        setPanelError,
+        setOptimisticSend,
+    })
 
-    const onSendChatMessage = async () => {
-        if (!activeProjectPath) {
-            return
-        }
-        if (isChatInputDisabled) {
-            return
-        }
-        const trimmed = chatDraft.trim()
-        if (!trimmed) {
-            return
-        }
-        const conversationId = ensureConversationId()
-        if (!conversationId) {
-            return
-        }
-        const optimisticCreatedAt = new Date().toISOString()
-
-        setPanelError(null)
-        setChatDraft("")
-        setOptimisticSend({
-            conversationId,
-            message: trimmed,
-            createdAt: optimisticCreatedAt,
-        })
-        try {
-            const snapshot = await sendConversationTurnValidated(conversationId, {
-                project_path: activeProjectPath,
-                message: trimmed,
-                model: model.trim() || null,
-            })
-            setOptimisticSend(null)
-            const latestProjectScope = useStore.getState().projectSessionsByPath[activeProjectPath]
-            const shouldKeepFocusOnReplyThread = latestProjectScope?.conversationId === conversationId
-            applyConversationSnapshot(activeProjectPath, snapshot, "send-response", {
-                forceWorkspaceSync: shouldKeepFocusOnReplyThread,
-            })
-        } catch (error) {
-            const message = extractApiErrorMessage(error, "Unable to send the project chat turn.")
-            setPanelError(message)
-            appendLocalProjectEvent(`Project chat turn failed: ${message}`)
-        } finally {
-            setOptimisticSend(null)
-        }
-    }
-
-    const onChatComposerSubmit = (event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault()
-        void onSendChatMessage()
-    }
-
-    const onChatComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-        if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault()
-            void onSendChatMessage()
-        }
-    }
-
-    const onApproveSpecEditProposal = async (proposal: SpecEditProposalResponse) => {
-        if (!activeProjectPath || !activeConversationId) {
-            return
-        }
-        if (!window.confirm("Approve these spec edits, commit them to git, and start execution planning?")) {
-            return
-        }
-
-        setPendingSpecProposalId(proposal.id)
-        setPanelError(null)
-        try {
-            const snapshot = await approveSpecEditProposalValidated(activeConversationId, proposal.id, {
-                project_path: activeProjectPath,
-                model: model.trim() || null,
-            })
-            applyConversationSnapshot(activeProjectPath, snapshot, "spec-approve")
-        } catch (error) {
-            const message = extractApiErrorMessage(error, "Unable to approve the spec edit proposal.")
-            setPanelError(message)
-            appendLocalProjectEvent(`Spec edit approval failed: ${message}`)
-        } finally {
-            setPendingSpecProposalId(null)
-        }
-    }
-
-    const onRejectSpecEditProposal = async (proposal: SpecEditProposalResponse) => {
-        if (!activeProjectPath || !activeConversationId) {
-            return
-        }
-
-        setPendingSpecProposalId(proposal.id)
-        setPanelError(null)
-        try {
-            const snapshot = await rejectSpecEditProposalValidated(activeConversationId, proposal.id, {
-                project_path: activeProjectPath,
-            })
-            applyConversationSnapshot(activeProjectPath, snapshot, "spec-reject")
-        } catch (error) {
-            const message = extractApiErrorMessage(error, "Unable to reject the spec edit proposal.")
-            setPanelError(message)
-            appendLocalProjectEvent(`Spec edit rejection failed: ${message}`)
-        } finally {
-            setPendingSpecProposalId(null)
-        }
-    }
-
-    const onReviewExecutionCard = async (
-        executionCard: ExecutionCardResponse,
-        disposition: "approved" | "rejected" | "revision_requested",
-    ) => {
-        if (!activeProjectPath || !activeConversationId) {
-            return
-        }
-
-        const reviewMessage = disposition === "approved"
-            ? "Approved for dispatch."
-            : window.prompt(
-                disposition === "revision_requested"
-                    ? "Describe what should change before execution planning is regenerated."
-                    : "Describe why this execution card should be rejected.",
-                "",
-            )?.trim() || ""
-
-        if (!reviewMessage) {
-            return
-        }
-
-        setPendingExecutionCardId(executionCard.id)
-        setPanelError(null)
-        try {
-            const snapshot = await reviewExecutionCardValidated(activeConversationId, executionCard.id, {
-                project_path: activeProjectPath,
-                disposition,
-                message: reviewMessage,
-                model: model.trim() || null,
-            })
-            applyConversationSnapshot(activeProjectPath, snapshot, "execution-review")
-        } catch (error) {
-            const message = extractApiErrorMessage(error, "Unable to review the execution card.")
-            setPanelError(message)
-            appendLocalProjectEvent(`Execution card review failed: ${message}`)
-        } finally {
-            setPendingExecutionCardId(null)
-        }
-    }
-
-    const onReviewFlowRunRequest = async (
-        flowRunRequest: FlowRunRequestResponse,
-        disposition: "approved" | "rejected",
-    ) => {
-        if (!activeProjectPath || !activeConversationId) {
-            return
-        }
-
-        const reviewMessage = disposition === "approved"
-            ? "Approved for launch."
-            : window.prompt(
-                "Describe why this flow run request should be rejected.",
-                "",
-            )?.trim() || ""
-
-        if (!reviewMessage) {
-            return
-        }
-
-        setPendingFlowRunRequestId(flowRunRequest.id)
-        setPanelError(null)
-        try {
-            const snapshot = await reviewFlowRunRequestValidated(activeConversationId, flowRunRequest.id, {
-                project_path: activeProjectPath,
-                disposition,
-                message: reviewMessage,
-                model: model.trim() || null,
-            })
-            applyConversationSnapshot(activeProjectPath, snapshot, "flow-run-request-review")
-        } catch (error) {
-            const message = extractApiErrorMessage(error, "Unable to review the flow run request.")
-            setPanelError(message)
-            appendLocalProjectEvent(`Flow run request review failed: ${message}`)
-        } finally {
-            setPendingFlowRunRequestId(null)
-        }
-    }
+    const {
+        onApproveSpecEditProposal,
+        onRejectSpecEditProposal,
+        onReviewExecutionCard,
+        onReviewFlowRunRequest,
+        pendingExecutionCardId,
+        pendingFlowRunRequestId,
+        pendingSpecProposalId,
+    } = useConversationReviews({
+        activeConversationId,
+        activeProjectPath,
+        appendLocalProjectEvent,
+        applyConversationSnapshot,
+        formatErrorMessage: extractApiErrorMessage,
+        model,
+        setPanelError,
+    })
 
     const onOpenFlowRun = (request: { run_id?: string | null; flow_name: string }) => {
         if (!request.run_id) {
@@ -1998,5 +1269,3 @@ export function HomePanel() {
         </section>
     )
 }
-
-export const ProjectsPanel = HomePanel

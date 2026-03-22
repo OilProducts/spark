@@ -9,7 +9,8 @@ import { saveFlowContent } from '@/lib/flowPersistence';
 import { fetchPipelineAnswerValidated } from '@/lib/attractorClient';
 
 export function TaskNode({ id, data, selected }: NodeProps) {
-    const { activeFlow, viewMode } = useStore();
+    const activeFlow = useStore((state) => state.activeFlow);
+    const viewMode = useStore((state) => state.viewMode);
     const humanGate = useStore((state) => state.humanGate);
     const selectedRunId = useStore((state) => state.selectedRunId);
     const graphAttrs = useStore((state) => state.graphAttrs);

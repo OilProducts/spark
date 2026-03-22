@@ -5,7 +5,7 @@ import { Editor } from "./components/Editor"
 import { RunStream } from "./components/RunStream"
 import { SettingsPanel } from "./components/SettingsPanel"
 import { RunsPanel } from "./components/RunsPanel"
-import { HomePanel } from "./components/ProjectsPanel"
+import { ProjectsPanel } from "./components/ProjectsPanel"
 import { TriggersPanel } from "./components/TriggersPanel"
 import { ReactFlowProvider } from "@xyflow/react"
 import { useStore } from "@/store"
@@ -68,7 +68,7 @@ function App() {
             ) : viewMode === 'settings' ? (
               <SettingsPanel />
             ) : isHomeMode ? (
-              <HomePanel />
+              <ProjectsPanel />
             ) : viewMode === 'runs' ? (
               <RunsPanel />
             ) : null}

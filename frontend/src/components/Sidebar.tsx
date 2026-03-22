@@ -87,17 +87,15 @@ function resolveInspectorScope({
 }
 
 export function Sidebar() {
-    const {
-        viewMode,
-        activeFlow,
-        executionFlow,
-        setActiveFlow,
-        setExecutionFlow,
-        selectedNodeId,
-        selectedEdgeId,
-        setSelectedNodeId,
-        setSelectedEdgeId,
-    } = useStore()
+    const viewMode = useStore((state) => state.viewMode)
+    const activeFlow = useStore((state) => state.activeFlow)
+    const executionFlow = useStore((state) => state.executionFlow)
+    const setActiveFlow = useStore((state) => state.setActiveFlow)
+    const setExecutionFlow = useStore((state) => state.setExecutionFlow)
+    const selectedNodeId = useStore((state) => state.selectedNodeId)
+    const selectedEdgeId = useStore((state) => state.selectedEdgeId)
+    const setSelectedNodeId = useStore((state) => state.setSelectedNodeId)
+    const setSelectedEdgeId = useStore((state) => state.setSelectedEdgeId)
     const isNarrowViewport = useNarrowViewport()
     const diagnostics = useStore((state) => state.diagnostics)
     const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)

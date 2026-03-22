@@ -57,5 +57,6 @@ export {
     parseWorkspaceFlowLaunchPolicyResponse,
     parseWorkspaceFlowRawResponse,
     parseWorkspaceFlowResponse,
+    launchWorkspaceRunValidated,
 } from "./api/workspaceApi"
-export { ApiHttpError, ApiSchemaError } from "./api/shared"
+export { ApiHttpError, ApiSchemaError } from "./api/apiErrors"

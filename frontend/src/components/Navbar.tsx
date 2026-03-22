@@ -6,7 +6,8 @@ import { Settings2 } from "lucide-react"
 const NAV_MODE_ORDER: ViewMode[] = ['home', 'editor', 'execution', 'triggers', 'settings', 'runs']
 
 export function Navbar() {
-    const { viewMode, setViewMode } = useStore()
+    const viewMode = useStore((state) => state.viewMode)
+    const setViewMode = useStore((state) => state.setViewMode)
     const isNarrowViewport = useNarrowViewport()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
 

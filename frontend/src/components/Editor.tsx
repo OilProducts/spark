@@ -119,7 +119,11 @@ function nowMs(): number {
 }
 
 export function Editor() {
-    const { viewMode, selectedNodeId, selectedEdgeId, setSelectedNodeId, setSelectedEdgeId } = useStore();
+    const viewMode = useStore((state) => state.viewMode);
+    const selectedNodeId = useStore((state) => state.selectedNodeId);
+    const selectedEdgeId = useStore((state) => state.selectedEdgeId);
+    const setSelectedNodeId = useStore((state) => state.setSelectedNodeId);
+    const setSelectedEdgeId = useStore((state) => state.setSelectedEdgeId);
     const activeFlow = useStore((state) => state.activeFlow);
     const executionFlow = useStore((state) => state.executionFlow);
     const nodeStatuses = useStore((state) => state.nodeStatuses);
