@@ -513,6 +513,8 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-editor'))
     expect(screen.getByTestId('inspector-panel')).toBeVisible()
     expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
+    expect(screen.getByTestId('editor-workspace')).toBeVisible()
+    expect(screen.getByTestId('execution-workspace').className).toContain('hidden')
 
     await user.click(await screen.findByRole('button', { name: /simple-linear\.dot/i }))
     await waitFor(() => {

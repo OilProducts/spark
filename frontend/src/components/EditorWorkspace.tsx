@@ -15,7 +15,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
             data-session-active={String(isActive)}
             aria-hidden={!isActive}
             className={`absolute inset-0 ${
-                isActive ? 'visible pointer-events-auto' : 'invisible pointer-events-none'
+                isActive ? 'block pointer-events-auto' : 'hidden pointer-events-none'
             }`}
         >
             <div className={`flex h-full overflow-hidden ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}>

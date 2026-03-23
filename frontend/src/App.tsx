@@ -53,7 +53,7 @@ function App() {
             data-testid="canvas-workspace-primary"
             data-canvas-active={String(isCanvasMode)}
             className={`absolute inset-0 ${
-              isCanvasMode ? 'visible pointer-events-auto' : 'invisible pointer-events-none'
+              isCanvasMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
             }`}
           >
             <EditorWorkspace isActive={viewMode === 'editor'} />
