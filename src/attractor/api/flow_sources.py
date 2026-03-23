@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from fastapi import HTTPException
@@ -14,20 +14,34 @@ def ensure_flows_dir(flows_dir: Path) -> Path:
     return flows_dir
 
 
-def resolve_flow_path(flows_dir: Path, flow_name: str) -> Path:
-    raw_name = flow_name.strip()
+def normalize_flow_name(flow_name: str) -> str:
+    raw_name = flow_name.strip().replace("\\", "/")
     if not raw_name:
         raise HTTPException(status_code=400, detail="Flow name is required.")
+    if raw_name.endswith("/"):
+        raise HTTPException(status_code=400, detail="Flow name must reference a file.")
 
-    candidate = Path(raw_name)
-    if candidate.is_absolute() or ".." in candidate.parts or len(candidate.parts) != 1:
-        raise HTTPException(status_code=400, detail="Flow name must be a single file name.")
+    candidate = PurePosixPath(raw_name)
+    if candidate.is_absolute() or ".." in candidate.parts or "." in candidate.parts or not candidate.parts:
+        raise HTTPException(status_code=400, detail="Flow name must be a relative path inside flows_dir.")
 
-    normalized_name = candidate.name
-    if not normalized_name.endswith(".dot"):
-        normalized_name = f"{normalized_name}.dot"
+    leaf_name = candidate.name
+    if not leaf_name:
+        raise HTTPException(status_code=400, detail="Flow name must reference a file.")
+    if not leaf_name.endswith(".dot"):
+        leaf_name = f"{leaf_name}.dot"
 
-    return ensure_flows_dir(flows_dir) / normalized_name
+    return PurePosixPath(*candidate.parts[:-1], leaf_name).as_posix()
+
+
+def resolve_flow_path(flows_dir: Path, flow_name: str) -> Path:
+    normalized_name = normalize_flow_name(flow_name)
+    return ensure_flows_dir(flows_dir) / Path(*PurePosixPath(normalized_name).parts)
+
+
+def flow_name_from_path(flows_dir: Path, flow_path: Path) -> str:
+    root = ensure_flows_dir(flows_dir)
+    return flow_path.relative_to(root).as_posix()
 
 
 def inject_pipeline_goal(flow_content: str, goal: str) -> str:

@@ -1,5 +1,5 @@
 import { useStore, type DiagnosticEntry } from "@/store"
-import { FilePlus, Trash2 } from "lucide-react"
+import { FilePlus } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
 import { generateDot, sanitizeGraphId } from "@/lib/dotUtils"
@@ -16,6 +16,7 @@ import { InspectorScaffold, InspectorEmptyState } from './InspectorScaffold'
 import { GraphSettings } from './GraphSettings'
 import { AdvancedKeyValueEditor } from './AdvancedKeyValueEditor'
 import { ContextKeyListEditor } from './ContextKeyListEditor'
+import { FlowTree } from './FlowTree'
 import {
     parseContextKeyDraft,
     parseContextKeyList,
@@ -136,7 +137,7 @@ export function Sidebar() {
     }, [])
 
     const createNewFlow = async () => {
-        const name = prompt("Enter flow name (e.g., demo.dot)");
+        const name = prompt("Enter flow path (e.g., demos/demo.dot)");
         if (!name) return;
 
         // Auto-append .dot if missing
@@ -460,30 +461,13 @@ export function Sidebar() {
                         </button>
                     </div>
                     <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-4">
-                        <div className="space-y-1">
-                            {flows.map(f => (
-                                <div key={f} className="relative group">
-                                    <button
-                                        onClick={() => {
-                                            setActiveFlow(f)
-                                        }}
-                                        className={`w-full text-left px-3 py-2 pr-8 rounded-md text-sm transition-colors ${activeFlow === f
-                                            ? 'bg-secondary text-secondary-foreground font-medium'
-                                            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                                            }`}
-                                    >
-                                        <span className="flex items-center gap-2">{f}</span>
-                                    </button>
-                                    <button
-                                        onClick={(e) => handleDeleteFlow(e, f)}
-                                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive transition-all"
-                                        title="Delete Flow"
-                                    >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
+                        <FlowTree
+                            dataTestId="editor-flow-tree"
+                            flows={flows}
+                            selectedFlow={activeFlow}
+                            onSelectFlow={setActiveFlow}
+                            onDeleteFlow={handleDeleteFlow}
+                        />
                         {activeInspectorScope === 'graph' && (
                             <GraphSettings inline />
                         )}
@@ -638,7 +622,7 @@ export function Sidebar() {
                                                 value={(selectedNode?.data?.['manager.stop_condition'] as string) || ''}
                                                 onChange={(e) => handlePropertyChange('manager.stop_condition', e.target.value)}
                                                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                placeholder='child.status == "success"'
+                                                placeholder='child.outcome == "success"'
                                             />
                                         </div>
                                         <div className="space-y-1.5">

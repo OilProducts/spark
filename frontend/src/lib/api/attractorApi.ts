@@ -1,4 +1,5 @@
 import type { CanonicalPreviewGraphPayload } from '@/lib/canonicalFlowModel'
+import { encodeFlowPath } from '@/lib/flowPaths'
 import type { PipelineStartPayload } from '@/lib/pipelineStartPayload'
 import {
     ApiSchemaError,
@@ -57,6 +58,9 @@ export interface PipelineStartResponse {
 export interface PipelineStatusResponse {
     pipeline_id: string
     status: string
+    outcome?: 'success' | 'failure' | null
+    outcome_reason_code?: string | null
+    outcome_reason_message?: string | null
     flow_name?: string
     working_directory?: string
     model?: string
@@ -64,7 +68,6 @@ export interface PipelineStatusResponse {
     completed_nodes?: string[]
     started_at?: string
     ended_at?: string | null
-    result?: string | null
 }
 
 export interface PipelineCancelResponse {
@@ -98,7 +101,9 @@ export interface RunRecordResponse {
     run_id: string
     flow_name: string
     status: string
-    result?: string | null
+    outcome?: 'success' | 'failure' | null
+    outcome_reason_code?: string | null
+    outcome_reason_message?: string | null
     working_directory: string
     project_path?: string
     git_branch?: string | null
@@ -118,6 +123,9 @@ export interface RunsListResponse {
 
 export interface RuntimeStatusResponse {
     status: string
+    outcome?: 'success' | 'failure' | null
+    outcome_reason_code?: string | null
+    outcome_reason_message?: string | null
     last_error?: string | null
     last_working_directory?: string | null
     last_model?: string | null
@@ -197,6 +205,9 @@ export function parsePipelineStatusResponse(payload: unknown, endpoint = '/attra
     return {
         pipeline_id: expectString(record.pipeline_id, endpoint, 'pipeline_id'),
         status: expectString(record.status, endpoint, 'status'),
+        outcome: asOptionalNullableString(record.outcome) as PipelineStatusResponse['outcome'],
+        outcome_reason_code: asOptionalNullableString(record.outcome_reason_code),
+        outcome_reason_message: asOptionalNullableString(record.outcome_reason_message),
         flow_name: asOptionalString(record.flow_name),
         working_directory: asOptionalString(record.working_directory),
         model: asOptionalString(record.model),
@@ -204,7 +215,6 @@ export function parsePipelineStatusResponse(payload: unknown, endpoint = '/attra
         completed_nodes: asOptionalStringArray(record.completed_nodes),
         started_at: asOptionalString(record.started_at),
         ended_at: asOptionalNullableString(record.ended_at),
-        result: asOptionalNullableString(record.result),
     }
 }
 
@@ -285,7 +295,9 @@ function parseRunRecord(payload: unknown): RunRecordResponse | null {
         run_id: record.run_id,
         flow_name: typeof record.flow_name === 'string' ? record.flow_name : '',
         status: record.status,
-        result: asOptionalNullableString(record.result),
+        outcome: asOptionalNullableString(record.outcome) as RunRecordResponse['outcome'],
+        outcome_reason_code: asOptionalNullableString(record.outcome_reason_code),
+        outcome_reason_message: asOptionalNullableString(record.outcome_reason_message),
         working_directory: typeof record.working_directory === 'string' ? record.working_directory : '',
         project_path: asOptionalString(record.project_path),
         git_branch: asOptionalNullableString(record.git_branch),
@@ -320,6 +332,9 @@ export function parseRuntimeStatusResponse(payload: unknown, endpoint = '/attrac
     const record = expectObjectRecord(payload, endpoint)
     return {
         status: expectString(record.status, endpoint, 'status'),
+        outcome: asOptionalNullableString(record.outcome) as RuntimeStatusResponse['outcome'],
+        outcome_reason_code: asOptionalNullableString(record.outcome_reason_code),
+        outcome_reason_message: asOptionalNullableString(record.outcome_reason_message),
         last_error: asOptionalNullableString(record.last_error),
         last_working_directory: asOptionalNullableString(record.last_working_directory),
         last_model: asOptionalNullableString(record.last_model),
@@ -334,7 +349,7 @@ export async function fetchFlowListValidated(): Promise<string[]> {
 }
 
 export async function fetchFlowPayloadValidated(flowName: string): Promise<FlowPayloadResponse> {
-    const url = attractorUrl(`/api/flows/${encodeURIComponent(flowName)}`)
+    const url = attractorUrl(`/api/flows/${encodeFlowPath(flowName)}`)
     return fetchJsonWithValidation(url, undefined, '/attractor/api/flows/{name}', parseFlowPayloadResponse)
 }
 
@@ -366,7 +381,7 @@ export async function saveFlowValidated(
 }
 
 export async function deleteFlowValidated(flowName: string): Promise<void> {
-    const url = attractorUrl(`/api/flows/${encodeURIComponent(flowName)}`)
+    const url = attractorUrl(`/api/flows/${encodeFlowPath(flowName)}`)
     await fetchJsonWithValidation(url, { method: 'DELETE' }, '/attractor/api/flows/{name}', () => undefined)
 }
 

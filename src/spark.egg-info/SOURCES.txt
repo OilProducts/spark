@@ -71,11 +71,11 @@ src/spark/guides/spark-flow-extensions.md
 src/spark/starter_flows/human-review-loop.dot
 src/spark/starter_flows/implement-review-loop.dot
 src/spark/starter_flows/implement-spec.dot
-src/spark/starter_flows/implementation-worker.dot
 src/spark/starter_flows/parallel-review.dot
 src/spark/starter_flows/plan-generation.dot
 src/spark/starter_flows/simple-linear.dot
-src/spark/starter_flows/supervised-implementation.dot
+src/spark/starter_flows/supervision/implementation-worker.dot
+src/spark/starter_flows/supervision/supervised-implementation.dot
 src/spark_app/__init__.py
 src/spark_app/app.py
 src/spark_app/ui.py
@@ -83,11 +83,12 @@ src/spark_app/ui_release_gate.py
 src/spark_app/ui_dist/index.html
 src/spark_app/ui_dist/vite.svg
 src/spark_app/ui_dist/assets/index-Bg9pnfSz.css
-src/spark_app/ui_dist/assets/index-Kew4vieU.js
+src/spark_app/ui_dist/assets/index-tXLYRM8k.js
 src/spark_common/__init__.py
 src/spark_common/codex_app_server.py
 src/spark_common/launch_context.py
 src/spark_common/logging.py
+src/spark_common/process_line_reader.py
 src/spark_common/runtime.py
 src/spark_common/settings.py
 src/spark_server/__init__.py

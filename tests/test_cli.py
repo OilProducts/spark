@@ -143,18 +143,52 @@ def test_run_init_force_overwrites_existing_starter_flows(
     assert "created=1 updated=1 skipped=0" in output
 
 
+def test_run_init_creates_nested_starter_flow_directories(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    flows_dir = tmp_path / "flows"
+    flows_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        starter_assets,
+        "load_starter_flow_assets",
+        lambda *, project_root=None: (
+            starter_assets.StarterFlowAsset("supervision/implementation-worker.dot", "worker\n"),
+            starter_assets.StarterFlowAsset("supervision/supervised-implementation.dot", "parent\n"),
+        ),
+    )
+
+    result = spark_server_cli.main(
+        [
+            "init",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--flows-dir",
+            str(flows_dir),
+        ]
+    )
+
+    assert result == 0
+    assert (flows_dir / "supervision" / "implementation-worker.dot").read_text(encoding="utf-8") == "worker\n"
+    assert (flows_dir / "supervision" / "supervised-implementation.dot").read_text(encoding="utf-8") == "parent\n"
+    output = capsys.readouterr().out
+    assert "created=2 updated=0 skipped=0" in output
+
+
 def test_packaged_starter_flows_match_repo_starter_flows() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     repo_starter_dir = repo_root / "starter-flows"
     packaged_starter_dir = repo_root / "src" / "spark" / "starter_flows"
 
     repo_payload = {
-        path.name: path.read_text(encoding="utf-8")
-        for path in sorted(repo_starter_dir.glob("*.dot"))
+        path.relative_to(repo_starter_dir).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(repo_starter_dir.rglob("*.dot"))
     }
     packaged_payload = {
-        path.name: path.read_text(encoding="utf-8")
-        for path in sorted(packaged_starter_dir.glob("*.dot"))
+        path.relative_to(packaged_starter_dir).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(packaged_starter_dir.rglob("*.dot"))
     }
 
     assert packaged_payload == repo_payload

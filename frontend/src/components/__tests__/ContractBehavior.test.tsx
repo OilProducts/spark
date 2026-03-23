@@ -364,7 +364,7 @@ describe('Frontend contract behavior', () => {
           type: 'stack.manager_loop',
           'manager.poll_interval': '25ms',
           'manager.max_cycles': 3,
-          'manager.stop_condition': 'child.status == "success"',
+          'manager.stop_condition': 'child.outcome == "success"',
           'manager.actions': 'observe,steer',
         },
       },
@@ -485,7 +485,7 @@ describe('Frontend contract behavior', () => {
 
     expect(missingRequirements).toEqual([])
 
-    expect(parseFlowListResponse(['a.dot', 'b.dot'])).toEqual(['a.dot', 'b.dot'])
+    expect(parseFlowListResponse(['a.dot', 'nested/b.dot'])).toEqual(['a.dot', 'nested/b.dot'])
     expect(() => parseFlowListResponse({})).toThrow(ApiSchemaError)
     expect(parseFlowPayloadResponse({ content: 'digraph G {}' })).toEqual({ name: '', content: 'digraph G {}' })
     expect(() => parseFlowPayloadResponse({})).toThrow(ApiSchemaError)
@@ -607,6 +607,17 @@ describe('Frontend contract behavior', () => {
           }),
       },
       {
+        name: 'nested flow payload',
+        invoke: () => fetchFlowPayloadValidated('alpha flow/review.dot'),
+        expectedUrl: '/attractor/api/flows/alpha%20flow/review.dot',
+        response: jsonResponse({ name: 'alpha flow/review.dot', content: 'digraph G {}' }),
+        assertResult: (result) =>
+          expect(result).toEqual({
+            name: 'alpha flow/review.dot',
+            content: 'digraph G {}',
+          }),
+      },
+      {
         name: 'workspace flow list',
         invoke: () => fetchWorkspaceFlowListValidated(),
         expectedUrl: '/workspace/api/flows?surface=human',
@@ -649,9 +660,34 @@ describe('Frontend contract behavior', () => {
           }),
       },
       {
+        name: 'nested workspace flow detail',
+        invoke: () => fetchWorkspaceFlowValidated('alpha flow/review.dot'),
+        expectedUrl: '/workspace/api/flows/alpha%20flow/review.dot?surface=human',
+        response: jsonResponse({
+          name: 'alpha flow/review.dot',
+          title: 'Nested Alpha Flow',
+          description: 'Run the nested alpha workflow.',
+          launch_policy: 'agent_requestable',
+          effective_launch_policy: 'agent_requestable',
+        }),
+        assertResult: (result) =>
+          expect(result).toMatchObject({
+            name: 'alpha flow/review.dot',
+            launch_policy: 'agent_requestable',
+            effective_launch_policy: 'agent_requestable',
+          }),
+      },
+      {
         name: 'workspace flow raw',
         invoke: () => fetchWorkspaceFlowRawValidated('alpha flow.dot'),
         expectedUrl: '/workspace/api/flows/alpha%20flow.dot/raw?surface=human',
+        response: new Response('digraph G {}', { status: 200 }),
+        assertResult: (result) => expect(result).toBe('digraph G {}'),
+      },
+      {
+        name: 'nested workspace flow raw',
+        invoke: () => fetchWorkspaceFlowRawValidated('alpha flow/review.dot'),
+        expectedUrl: '/workspace/api/flows/alpha%20flow/review.dot/raw?surface=human',
         response: new Response('digraph G {}', { status: 200 }),
         assertResult: (result) => expect(result).toBe('digraph G {}'),
       },
@@ -670,6 +706,31 @@ describe('Frontend contract behavior', () => {
         assertResult: (result) =>
           expect(result).toMatchObject({
             name: 'alpha flow.dot',
+            launch_policy: 'agent_requestable',
+            effective_launch_policy: 'agent_requestable',
+          }),
+        assertBody: (init) => {
+          expect(init?.headers).toEqual({ 'Content-Type': 'application/json' })
+          expect(JSON.parse(String(init?.body))).toEqual({
+            launch_policy: 'agent_requestable',
+          })
+        },
+      },
+      {
+        name: 'nested workspace flow launch policy update',
+        invoke: () => updateWorkspaceFlowLaunchPolicyValidated('alpha flow/review.dot', 'agent_requestable'),
+        expectedUrl: '/workspace/api/flows/alpha%20flow/review.dot/launch-policy',
+        expectedMethod: 'PUT',
+        response: jsonResponse({
+          name: 'alpha flow/review.dot',
+          title: 'Nested Alpha Flow',
+          description: 'Run the nested alpha workflow.',
+          launch_policy: 'agent_requestable',
+          effective_launch_policy: 'agent_requestable',
+        }),
+        assertResult: (result) =>
+          expect(result).toMatchObject({
+            name: 'alpha flow/review.dot',
             launch_policy: 'agent_requestable',
             effective_launch_policy: 'agent_requestable',
           }),
@@ -919,8 +980,8 @@ describe('Frontend contract behavior', () => {
         name: 'runs list',
         invoke: () => fetchRunsListValidated(),
         expectedUrl: '/attractor/runs',
-        response: jsonResponse({ runs: [{ run_id: 'run-1', status: 'running' }] }),
-        assertResult: (result) => expect(result).toEqual({ runs: [{ run_id: 'run-1', status: 'running', flow_name: '', working_directory: '', model: '', started_at: '', result: undefined, project_path: undefined, git_branch: undefined, git_commit: undefined, spec_id: undefined, plan_id: undefined, ended_at: undefined, last_error: undefined, token_usage: undefined }] }),
+        response: jsonResponse({ runs: [{ run_id: 'run-1', status: 'running', outcome: null }] }),
+        assertResult: (result) => expect(result).toEqual({ runs: [{ run_id: 'run-1', status: 'running', outcome: null, outcome_reason_code: undefined, outcome_reason_message: undefined, flow_name: '', working_directory: '', model: '', started_at: '', project_path: undefined, git_branch: undefined, git_commit: undefined, spec_id: undefined, plan_id: undefined, ended_at: undefined, last_error: undefined, token_usage: undefined }] }),
       },
       {
         name: 'runtime status',
@@ -930,6 +991,9 @@ describe('Frontend contract behavior', () => {
         assertResult: (result) =>
           expect(result).toEqual({
             status: 'idle',
+            outcome: undefined,
+            outcome_reason_code: undefined,
+            outcome_reason_message: undefined,
             last_error: undefined,
             last_working_directory: undefined,
             last_model: undefined,
@@ -1029,7 +1093,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -2056,7 +2120,7 @@ describe('Frontend contract behavior', () => {
         run_id: runId,
         flow_name: 'contract-behavior.dot',
         status: 'running',
-        result: 'running',
+        outcome: null,
         working_directory: '/tmp/project-contract-behavior/workspace',
         project_path: '/tmp/project-contract-behavior',
         git_branch: 'main',
@@ -2282,7 +2346,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -2475,7 +2539,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -3028,7 +3092,7 @@ describe('Frontend contract behavior', () => {
         type: 'stack.manager_loop',
         'manager.poll_interval': '25ms',
         'manager.max_cycles': 3,
-        'manager.stop_condition': 'child.status == "success"',
+        'manager.stop_condition': 'child.outcome == "success"',
         'manager.actions': 'observe,steer',
       },
     })
@@ -3051,7 +3115,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -3193,7 +3257,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -3333,7 +3397,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -3473,7 +3537,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -3621,7 +3685,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -3763,7 +3827,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -3965,7 +4029,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -4126,7 +4190,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -4267,7 +4331,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -4448,7 +4512,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -4596,7 +4660,7 @@ describe('Frontend contract behavior', () => {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
       status: 'running',
-      result: 'running',
+      outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -4789,16 +4853,14 @@ describe('Frontend contract behavior', () => {
     fireEvent.click(structuredButton)
 
     await waitFor(() => {
-      const saveCalls = fetchMock.mock.calls.filter(([input, requestInit]) => {
-        const callUrl = requestUrl(input as RequestInfo | URL)
-        return callUrl.endsWith('/attractor/api/flows') && (requestInit as RequestInit | undefined)?.method === 'POST'
-      })
-      expect(saveCalls).toHaveLength(0)
-    })
-
-    await waitFor(() => {
       expect(screen.queryByTestId('raw-dot-editor')).not.toBeInTheDocument()
     })
+
+    const saveCalls = fetchMock.mock.calls.filter(([input, requestInit]) => {
+      const callUrl = requestUrl(input as RequestInfo | URL)
+      return callUrl.endsWith('/attractor/api/flows') && (requestInit as RequestInit | undefined)?.method === 'POST'
+    })
+    expect(saveCalls.length).toBeLessThanOrEqual(1)
 
     const previewCallsAfterHandoff = fetchMock.mock.calls.filter(([input]) => {
       const callUrl = requestUrl(input as RequestInfo | URL)

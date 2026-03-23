@@ -49,6 +49,7 @@ from attractor.api.codex_backends import (
 )
 from attractor.api.flow_sources import (
     ensure_flows_dir as _ensure_flows_dir_impl,
+    flow_name_from_path as _flow_name_from_path_impl,
     inject_pipeline_goal as _inject_pipeline_goal_impl,
     load_execution_planning_flow_content as _load_execution_planning_flow_content_impl,
     load_flow_content as _load_flow_content_impl,
@@ -237,7 +238,16 @@ def _list_run_output_artifacts(run_root: Path) -> List[Dict[str, object]]:
     return pipeline_runs.list_run_output_artifacts(run_root)
 
 
-def _record_run_end(run_id: str, working_directory: str, status: str, last_error: str = "") -> None:
+def _record_run_end(
+    run_id: str,
+    working_directory: str,
+    status: str,
+    last_error: str = "",
+    *,
+    outcome: str | None = None,
+    outcome_reason_code: str | None = None,
+    outcome_reason_message: str | None = None,
+) -> None:
     pipeline_runs.record_run_end(
         get_settings,
         RUN_HISTORY_LOCK,
@@ -245,16 +255,30 @@ def _record_run_end(run_id: str, working_directory: str, status: str, last_error
         working_directory=working_directory,
         status=status,
         last_error=last_error,
+        outcome=outcome,
+        outcome_reason_code=outcome_reason_code,
+        outcome_reason_message=outcome_reason_message,
     )
 
 
-def _record_run_status(run_id: str, status: str, last_error: str = "") -> None:
+def _record_run_status(
+    run_id: str,
+    status: str,
+    last_error: str = "",
+    *,
+    outcome: str | None = None,
+    outcome_reason_code: str | None = None,
+    outcome_reason_message: str | None = None,
+) -> None:
     pipeline_runs.record_run_status(
         get_settings,
         RUN_HISTORY_LOCK,
         run_id=run_id,
         status=status,
         last_error=last_error,
+        outcome=outcome,
+        outcome_reason_code=outcome_reason_code,
+        outcome_reason_message=outcome_reason_message,
     )
 
 
@@ -283,6 +307,26 @@ def _set_active_run_status(run_id: str, status: str, *, last_error: Optional[str
         run.status = status
         if last_error is not None:
             run.last_error = last_error
+        if status not in {"completed"}:
+            run.outcome = None
+            run.outcome_reason_code = None
+            run.outcome_reason_message = None
+
+
+def _set_active_run_outcome(
+    run_id: str,
+    *,
+    outcome: str | None,
+    outcome_reason_code: str | None,
+    outcome_reason_message: str | None,
+) -> None:
+    with ACTIVE_RUNS_LOCK:
+        run = ACTIVE_RUNS.get(run_id)
+        if not run:
+            return
+        run.outcome = outcome
+        run.outcome_reason_code = outcome_reason_code
+        run.outcome_reason_message = outcome_reason_message
 
 
 def _set_active_run_completed_nodes(run_id: str, completed_nodes: List[str]) -> None:
@@ -388,6 +432,9 @@ async def websocket_endpoint(websocket: WebSocket):
 async def get_status():
     return {
         "status": RUNTIME.status,
+        "outcome": RUNTIME.outcome,
+        "outcome_reason_code": RUNTIME.outcome_reason_code,
+        "outcome_reason_message": RUNTIME.outcome_reason_message,
         "last_error": RUNTIME.last_error,
         "last_working_directory": RUNTIME.last_working_directory,
         "last_model": RUNTIME.last_model,
@@ -415,7 +462,9 @@ async def list_runs(project_path: Optional[str] = None):
             run_id=run_id,
             flow_name="",
             status="unknown",
-            result=None,
+            outcome=None,
+            outcome_reason_code=None,
+            outcome_reason_message=None,
             working_directory="",
             model="",
             started_at="",
@@ -651,6 +700,9 @@ async def _start_pipeline(
         graph = parse_dot(flow_content)
     except DotParseError as exc:
         RUNTIME.status = "validation_error"
+        RUNTIME.outcome = None
+        RUNTIME.outcome_reason_code = None
+        RUNTIME.outcome_reason_message = None
         RUNTIME.last_error = str(exc)
         parse_diag = {
             "rule": "parse_error",
@@ -677,6 +729,9 @@ async def _start_pipeline(
     error_payloads = [_diagnostic_payload(d) for d in errors]
     if errors:
         RUNTIME.status = "validation_error"
+        RUNTIME.outcome = None
+        RUNTIME.outcome_reason_code = None
+        RUNTIME.outcome_reason_message = None
         RUNTIME.last_error = errors[0].message
         return {
             "status": "validation_error",
@@ -691,6 +746,9 @@ async def _start_pipeline(
         )
     except ValueError as exc:
         RUNTIME.status = "validation_error"
+        RUNTIME.outcome = None
+        RUNTIME.outcome_reason_code = None
+        RUNTIME.outcome_reason_message = None
         RUNTIME.last_error = str(exc)
         return {
             "status": "validation_error",
@@ -774,6 +832,9 @@ async def _start_pipeline(
         )
 
     RUNTIME.status = "running"
+    RUNTIME.outcome = None
+    RUNTIME.outcome_reason_code = None
+    RUNTIME.outcome_reason_message = None
     RUNTIME.last_error = ""
     RUNTIME.last_working_directory = working_dir
     RUNTIME.last_model = display_model
@@ -789,7 +850,16 @@ async def _start_pipeline(
         plan_id=(req.plan_id or "").strip() or None,
     )
 
-    await _publish_run_event(run_id, {"type": "runtime", "status": RUNTIME.status})
+    await _publish_run_event(
+        run_id,
+        {
+            "type": "runtime",
+            "status": RUNTIME.status,
+            "outcome": RUNTIME.outcome,
+            "outcome_reason_code": RUNTIME.outcome_reason_code,
+            "outcome_reason_message": RUNTIME.outcome_reason_message,
+        },
+    )
 
     await _publish_run_event(
         run_id,
@@ -839,21 +909,73 @@ async def _start_pipeline(
                 resume=True,
             )
             final_status = normalize_run_status(result.status)
+            final_outcome = result.outcome
+            final_outcome_reason_code = result.outcome_reason_code
+            final_outcome_reason_message = result.outcome_reason_message
             _set_active_run_status(run_id, final_status)
+            _set_active_run_outcome(
+                run_id,
+                outcome=final_outcome,
+                outcome_reason_code=final_outcome_reason_code,
+                outcome_reason_message=final_outcome_reason_message,
+            )
             _set_active_run_completed_nodes(run_id, result.completed_nodes)
             RUNTIME.status = final_status
+            RUNTIME.outcome = final_outcome
+            RUNTIME.outcome_reason_code = final_outcome_reason_code
+            RUNTIME.outcome_reason_message = final_outcome_reason_message
             RUNTIME.last_completed_nodes = result.completed_nodes
-            await _publish_run_event(run_id, {"type": "runtime", "status": final_status})
-            _record_run_end(run_id, working_dir, final_status)
-            await _publish_run_event(run_id, {"type": "log", "msg": f"Pipeline {final_status}"})
+            await _publish_run_event(
+                run_id,
+                {
+                    "type": "runtime",
+                    "status": final_status,
+                    "outcome": final_outcome,
+                    "outcome_reason_code": final_outcome_reason_code,
+                    "outcome_reason_message": final_outcome_reason_message,
+                },
+            )
+            _record_run_end(
+                run_id,
+                working_dir,
+                final_status,
+                outcome=final_outcome,
+                outcome_reason_code=final_outcome_reason_code,
+                outcome_reason_message=final_outcome_reason_message,
+            )
+            if final_status == "completed" and final_outcome:
+                outcome_summary = f"Pipeline completed ({final_outcome})"
+                if final_outcome_reason_message:
+                    outcome_summary = f"{outcome_summary}: {final_outcome_reason_message}"
+                await _publish_run_event(run_id, {"type": "log", "msg": outcome_summary})
+            else:
+                await _publish_run_event(run_id, {"type": "log", "msg": f"Pipeline {final_status}"})
         except Exception as exc:  # noqa: BLE001
             import traceback
             traceback.print_exc()
             _set_active_run_status(run_id, "failed", last_error=str(exc))
+            _set_active_run_outcome(
+                run_id,
+                outcome=None,
+                outcome_reason_code=None,
+                outcome_reason_message=None,
+            )
             RUNTIME.status = "failed"
+            RUNTIME.outcome = None
+            RUNTIME.outcome_reason_code = None
+            RUNTIME.outcome_reason_message = None
             RUNTIME.last_error = str(exc)
-            await _publish_run_event(run_id, {"type": "runtime", "status": "failed"})
-            _record_run_end(run_id, working_dir, "failed", str(exc))
+            await _publish_run_event(
+                run_id,
+                {
+                    "type": "runtime",
+                    "status": "failed",
+                    "outcome": None,
+                    "outcome_reason_code": None,
+                    "outcome_reason_message": None,
+                },
+            )
+            _record_run_end(run_id, working_dir, "failed", str(exc), outcome=None)
             await _publish_run_event(run_id, {"type": "log", "msg": f"⚠️ Pipeline Failed: {exc}"})
         finally:
             await _publish_lifecycle_phase(run_id, PIPELINE_LIFECYCLE_PHASES[5])
@@ -894,6 +1016,9 @@ async def get_pipeline(pipeline_id: str):
         return {
             "pipeline_id": pipeline_id,
             "status": active.status,
+            "outcome": active.outcome,
+            "outcome_reason_code": active.outcome_reason_code,
+            "outcome_reason_message": active.outcome_reason_message,
             "flow_name": active.flow_name,
             "working_directory": active.working_directory,
             "model": active.model,
@@ -908,6 +1033,9 @@ async def get_pipeline(pipeline_id: str):
     return {
         "pipeline_id": pipeline_id,
         "status": record.status,
+        "outcome": record.outcome,
+        "outcome_reason_code": record.outcome_reason_code,
+        "outcome_reason_message": record.outcome_reason_message,
         "flow_name": record.flow_name,
         "working_directory": record.working_directory,
         "model": record.model,
@@ -916,7 +1044,6 @@ async def get_pipeline(pipeline_id: str):
         "progress": _pipeline_progress_payload(checkpoint_current_node, checkpoint_completed_nodes),
         "started_at": record.started_at,
         "ended_at": record.ended_at,
-        "result": record.result,
     }
 
 
@@ -1037,8 +1164,20 @@ async def cancel_pipeline(pipeline_id: str):
     _set_active_run_status(pipeline_id, "cancel_requested", last_error="cancel_requested_by_user")
     _record_run_status(pipeline_id, "cancel_requested", "cancel_requested_by_user")
     RUNTIME.status = "cancel_requested"
+    RUNTIME.outcome = None
+    RUNTIME.outcome_reason_code = None
+    RUNTIME.outcome_reason_message = None
     RUNTIME.last_error = "cancel_requested_by_user"
-    await _publish_run_event(pipeline_id, {"type": "runtime", "status": "cancel_requested"})
+    await _publish_run_event(
+        pipeline_id,
+        {
+            "type": "runtime",
+            "status": "cancel_requested",
+            "outcome": None,
+            "outcome_reason_code": None,
+            "outcome_reason_message": None,
+        },
+    )
     await _publish_run_event(
         pipeline_id,
         {"type": "log", "msg": "[System] Cancel requested. Stopping after current node."},
@@ -1125,7 +1264,11 @@ def _record_run_metadata(run_id: str, *, spec_id: Optional[str] = None, plan_id:
 @attractor_router.get("/api/flows")
 async def list_flows():
     flows_dir = _flows_dir()
-    return [f.name for f in flows_dir.glob("*.dot")]
+    flow_paths = sorted(
+        (path for path in flows_dir.rglob("*.dot") if path.is_file()),
+        key=lambda path: _flow_name_from_path_impl(flows_dir, path),
+    )
+    return [_flow_name_from_path_impl(flows_dir, flow_path) for flow_path in flow_paths]
 
 
 def _flows_dir() -> Path:
@@ -1136,12 +1279,15 @@ def _resolve_flow_path(flow_name: str) -> Path:
     return _resolve_flow_path_impl(_flows_dir(), flow_name)
 
 
-@attractor_router.get("/api/flows/{name}")
+@attractor_router.get("/api/flows/{name:path}")
 async def get_flow(name: str):
     flow_path = _resolve_flow_path(name)
     if not flow_path.exists():
         raise HTTPException(status_code=404, detail="Flow not found.")
-    return {"name": flow_path.name, "content": flow_path.read_text(encoding="utf-8")}
+    return {
+        "name": _flow_name_from_path_impl(_flows_dir(), flow_path),
+        "content": flow_path.read_text(encoding="utf-8"),
+    }
 
 
 def _semantic_signature(dot_content: str) -> str:
@@ -1207,14 +1353,18 @@ async def save_flow(req: SaveFlowRequest):
                 },
             )
 
+    flow_path.parent.mkdir(parents=True, exist_ok=True)
     flow_path.write_text(canonical_content, encoding="utf-8")
-    response: Dict[str, object] = {"status": "saved", "name": flow_path.name}
+    response: Dict[str, object] = {
+        "status": "saved",
+        "name": _flow_name_from_path_impl(_flows_dir(), flow_path),
+    }
     if semantic_equivalent_to_existing is not None:
         response["semantic_equivalent_to_existing"] = semantic_equivalent_to_existing
     return response
 
 
-@attractor_router.delete("/api/flows/{flow_name}")
+@attractor_router.delete("/api/flows/{flow_name:path}")
 async def delete_flow(flow_name: str):
     filepath = _resolve_flow_path(flow_name)
     if filepath.exists():

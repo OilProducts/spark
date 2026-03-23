@@ -1,3 +1,4 @@
+import { encodeFlowPath } from '@/lib/flowPaths'
 import {
     ApiSchemaError,
     asOptionalNullableString,
@@ -126,7 +127,7 @@ export async function fetchWorkspaceFlowValidated(
     surface: 'human' | 'agent' = 'human',
 ): Promise<WorkspaceFlowResponse> {
     return fetchWorkspaceJsonValidated(
-        `/flows/${encodeURIComponent(flowName)}?surface=${encodeURIComponent(surface)}`,
+        `/flows/${encodeFlowPath(flowName)}?surface=${encodeURIComponent(surface)}`,
         undefined,
         '/workspace/api/flows/{flow_name}',
         parseWorkspaceFlowResponse,
@@ -138,7 +139,7 @@ export async function fetchWorkspaceFlowRawValidated(
     surface: 'human' | 'agent' = 'human',
 ): Promise<string> {
     return fetchWorkspaceTextValidated(
-        `/flows/${encodeURIComponent(flowName)}/raw?surface=${encodeURIComponent(surface)}`,
+        `/flows/${encodeFlowPath(flowName)}/raw?surface=${encodeURIComponent(surface)}`,
         undefined,
         '/workspace/api/flows/{flow_name}/raw',
         parseWorkspaceFlowRawResponse,
@@ -150,7 +151,7 @@ export async function updateWorkspaceFlowLaunchPolicyValidated(
     launchPolicy: FlowLaunchPolicy,
 ): Promise<WorkspaceFlowLaunchPolicyResponse> {
     return fetchWorkspaceJsonValidated(
-        `/flows/${encodeURIComponent(flowName)}/launch-policy`,
+        `/flows/${encodeFlowPath(flowName)}/launch-policy`,
         {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },

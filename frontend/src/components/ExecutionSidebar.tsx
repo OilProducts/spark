@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useStore } from '@/store'
 import { fetchFlowListValidated } from '@/lib/attractorClient'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
+import { FlowTree } from './FlowTree'
 
 export function ExecutionSidebar() {
     const executionFlow = useStore((state) => state.executionFlow)
@@ -12,6 +13,7 @@ export function ExecutionSidebar() {
     const resetNodeStatuses = useStore((state) => state.resetNodeStatuses)
     const clearHumanGate = useStore((state) => state.clearHumanGate)
     const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
+    const setRuntimeOutcome = useStore((state) => state.setRuntimeOutcome)
     const humanGate = useStore((state) => state.humanGate)
     const isNarrowViewport = useNarrowViewport()
     const [flows, setFlows] = useState<string[]>([])
@@ -23,6 +25,7 @@ export function ExecutionSidebar() {
         setExecutionFlow(flowName)
         setSelectedRunId(null)
         setRuntimeStatus('idle')
+        setRuntimeOutcome(null)
         clearLogs()
         resetNodeStatuses()
         clearHumanGate()
@@ -68,29 +71,20 @@ export function ExecutionSidebar() {
                 </p>
             </div>
             <div className="flex-1 overflow-y-auto px-3 pb-4">
-                <div className="space-y-1">
-                    {flows.map((flowName) => (
-                        <button
-                            key={flowName}
-                            onClick={() => handleSelectFlow(flowName)}
-                            className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                                executionFlow === flowName
-                                    ? 'bg-secondary text-secondary-foreground font-medium'
-                                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                            }`}
-                        >
-                            <span className="flex items-center gap-2">
-                                {humanGate?.flowName === flowName ? (
-                                    <span
-                                        className="h-2 w-2 rounded-full bg-amber-500"
-                                        title="Needs human input"
-                                    />
-                                ) : null}
-                                {flowName}
-                            </span>
-                        </button>
-                    ))}
-                </div>
+                <FlowTree
+                    dataTestId="execution-flow-tree"
+                    flows={flows}
+                    selectedFlow={executionFlow}
+                    onSelectFlow={handleSelectFlow}
+                    renderFlowIndicator={(flowName) => (
+                        humanGate?.flowName === flowName ? (
+                            <span
+                                className="h-2 w-2 rounded-full bg-amber-500"
+                                title="Needs human input"
+                            />
+                        ) : null
+                    )}
+                />
             </div>
         </nav>
     )

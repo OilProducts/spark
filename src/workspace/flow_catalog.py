@@ -6,7 +6,12 @@ import tomllib
 
 from fastapi import HTTPException
 
-from attractor.api.flow_sources import ensure_flows_dir, resolve_flow_path
+from attractor.api.flow_sources import (
+    ensure_flows_dir,
+    flow_name_from_path,
+    normalize_flow_name as _normalize_flow_name_impl,
+    resolve_flow_path,
+)
 from attractor.dsl import parse_dot
 from attractor.dsl.models import DotGraph, DotNode
 
@@ -132,15 +137,17 @@ def set_flow_launch_policy(config_dir: Path, flow_name: str, launch_policy: str)
 def list_flow_summaries(flows_dir: Path, config_dir: Path) -> list[FlowSummary]:
     catalog = load_flow_catalog(config_dir)
     summaries: list[FlowSummary] = []
-    for flow_path in sorted(ensure_flows_dir(flows_dir).glob("*.dot")):
-        summaries.append(_build_flow_summary(flow_path, catalog.get(flow_path.name)))
+    for flow_path in _iter_flow_paths(flows_dir):
+        flow_name = flow_name_from_path(flows_dir, flow_path)
+        summaries.append(_build_flow_summary(flow_path, flow_name, catalog.get(flow_name)))
     return summaries
 
 
 def read_flow_summary(flows_dir: Path, config_dir: Path, flow_name: str) -> FlowSummary:
     flow_path = _resolve_existing_flow_path(flows_dir, flow_name)
     catalog = load_flow_catalog(config_dir)
-    return _build_flow_summary(flow_path, catalog.get(flow_path.name))
+    normalized_flow_name = flow_name_from_path(flows_dir, flow_path)
+    return _build_flow_summary(flow_path, normalized_flow_name, catalog.get(normalized_flow_name))
 
 
 def read_flow_description(flows_dir: Path, config_dir: Path, flow_name: str) -> FlowDescription:
@@ -149,11 +156,12 @@ def read_flow_description(flows_dir: Path, config_dir: Path, flow_name: str) -> 
     try:
         graph = parse_dot(raw_content)
     except Exception as exc:
-        raise RuntimeError(f"Invalid flow file: {flow_path.name}") from exc
-    policy_state = read_flow_launch_policy(config_dir, flow_path.name)
-    title, description, graph_label, graph_goal = _resolve_flow_metadata(graph, flow_path.name)
+        raise RuntimeError(f"Invalid flow file: {flow_name_from_path(flows_dir, flow_path)}") from exc
+    normalized_flow_name = flow_name_from_path(flows_dir, flow_path)
+    policy_state = read_flow_launch_policy(config_dir, normalized_flow_name)
+    title, description, graph_label, graph_goal = _resolve_flow_metadata(graph, normalized_flow_name)
     return FlowDescription(
-        name=flow_path.name,
+        name=normalized_flow_name,
         title=title,
         description=description,
         launch_policy=policy_state.launch_policy,
@@ -171,12 +179,12 @@ def read_flow_description(flows_dir: Path, config_dir: Path, flow_name: str) -> 
 
 def read_flow_raw(flows_dir: Path, flow_name: str) -> tuple[str, str]:
     flow_path = _resolve_existing_flow_path(flows_dir, flow_name)
-    return flow_path.name, flow_path.read_text(encoding="utf-8")
+    return flow_name_from_path(flows_dir, flow_path), flow_path.read_text(encoding="utf-8")
 
 
 def normalize_flow_name(flow_name: str) -> str:
     try:
-        return resolve_flow_path(Path("."), flow_name).name
+        return _normalize_flow_name_impl(flow_name)
     except HTTPException as exc:
         raise ValueError(str(exc.detail)) from exc
 
@@ -192,28 +200,36 @@ def normalize_launch_policy(launch_policy: str) -> str:
 def _resolve_existing_flow_path(flows_dir: Path, flow_name: str) -> Path:
     flow_path = resolve_flow_path(flows_dir, flow_name)
     if not flow_path.exists():
-        raise FileNotFoundError(flow_path.name)
+        raise FileNotFoundError(normalize_flow_name(flow_name))
     return flow_path
 
 
-def _build_flow_summary(flow_path: Path, launch_policy: str | None) -> FlowSummary:
+def _build_flow_summary(flow_path: Path, flow_name: str, launch_policy: str | None) -> FlowSummary:
     graph_label = ""
     graph_goal = ""
     title = flow_path.stem
     description = ""
     try:
         graph = parse_dot(flow_path.read_text(encoding="utf-8"))
-        title, description, graph_label, graph_goal = _resolve_flow_metadata(graph, flow_path.name)
+        title, description, graph_label, graph_goal = _resolve_flow_metadata(graph, flow_name)
     except Exception:
         pass
     return FlowSummary(
-        name=flow_path.name,
+        name=flow_name,
         title=title,
         description=description,
         launch_policy=launch_policy,
         effective_launch_policy=launch_policy or LAUNCH_POLICY_DISABLED,
         graph_label=graph_label,
         graph_goal=graph_goal,
+    )
+
+
+def _iter_flow_paths(flows_dir: Path) -> list[Path]:
+    root = ensure_flows_dir(flows_dir)
+    return sorted(
+        (path for path in root.rglob("*.dot") if path.is_file()),
+        key=lambda path: flow_name_from_path(root, path),
     )
 
 

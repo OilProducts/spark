@@ -96,6 +96,48 @@ digraph fallback {
     ]
 
 
+def test_list_workspace_flows_preserves_nested_relative_paths(
+    product_api_client: TestClient,
+) -> None:
+    _write_flow("alpha.dot", "digraph alpha { start -> done; }\n")
+    _write_flow(
+        "ops/review/nested.dot",
+        """
+digraph nested {
+  graph [spark.title="Nested Flow", spark.description="Nested flow description"];
+  start [shape=Mdiamond];
+  done [shape=Msquare];
+  start -> done;
+}
+""".strip()
+        + "\n",
+    )
+
+    response = product_api_client.get("/workspace/api/flows", params={"surface": "human"})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "name": "alpha.dot",
+            "title": "alpha",
+            "description": "",
+            "launch_policy": None,
+            "effective_launch_policy": "disabled",
+            "graph_label": "",
+            "graph_goal": "",
+        },
+        {
+            "name": "ops/review/nested.dot",
+            "title": "Nested Flow",
+            "description": "Nested flow description",
+            "launch_policy": None,
+            "effective_launch_policy": "disabled",
+            "graph_label": "",
+            "graph_goal": "",
+        },
+    ]
+
+
 def test_list_workspace_flows_agent_surface_filters_non_requestable_flows(
     product_api_client: TestClient,
 ) -> None:
@@ -161,6 +203,43 @@ digraph inspectable {
             "has_manager_loop": True,
         },
     }
+
+
+def test_workspace_flow_endpoints_support_nested_relative_paths(
+    product_api_client: TestClient,
+) -> None:
+    flow_content = """
+digraph nested {
+  graph [label="Nested Inspectable", goal="Inspect nested graph behavior"];
+  start [shape=Mdiamond];
+  human_review [shape=hexagon];
+  done [shape=Msquare];
+  start -> human_review;
+  human_review -> done;
+}
+""".strip() + "\n"
+    _write_flow("ops/review/inspectable.dot", flow_content)
+    set_flow_launch_policy(server.get_settings().config_dir, "ops/review/inspectable.dot", "agent_requestable")
+
+    describe_response = product_api_client.get("/workspace/api/flows/ops/review/inspectable.dot", params={"surface": "agent"})
+    raw_response = product_api_client.get("/workspace/api/flows/ops/review/inspectable.dot/raw", params={"surface": "agent"})
+    validate_response = product_api_client.get("/workspace/api/flows/ops/review/inspectable.dot/validate")
+    policy_response = product_api_client.put(
+        "/workspace/api/flows/ops/review/inspectable.dot/launch-policy",
+        json={"launch_policy": "trigger_only"},
+    )
+
+    assert describe_response.status_code == 200
+    assert describe_response.json()["name"] == "ops/review/inspectable.dot"
+    assert raw_response.status_code == 200
+    assert raw_response.headers["x-spark-flow-name"] == "ops/review/inspectable.dot"
+    assert raw_response.text == flow_content
+    assert validate_response.status_code == 200
+    assert validate_response.json()["name"] == "ops/review/inspectable.dot"
+    assert validate_response.json()["path"].endswith("/ops/review/inspectable.dot")
+    assert policy_response.status_code == 200
+    assert policy_response.json()["name"] == "ops/review/inspectable.dot"
+    assert read_flow_launch_policy(server.get_settings().config_dir, "ops/review/inspectable.dot").launch_policy == "trigger_only"
 
 
 def test_workspace_flow_agent_surface_hides_non_requestable_describe_and_raw(

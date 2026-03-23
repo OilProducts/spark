@@ -259,6 +259,47 @@ def test_save_flow_persists_valid_dot(attractor_api_client: TestClient, tmp_path
     )
 
 
+def test_save_flow_persists_valid_dot_in_nested_directory(attractor_api_client: TestClient, tmp_path: Path) -> None:
+    response = attractor_api_client.post(
+        "/api/flows",
+        json={
+            "name": "nested/review/good.dot",
+            "content": VALID_FLOW,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "saved"
+    assert payload["name"] == "nested/review/good.dot"
+    assert (tmp_path / "flows" / "nested" / "review" / "good.dot").read_text(encoding="utf-8") == canonicalize_dot(
+        VALID_FLOW
+    )
+
+
+def test_list_and_get_flow_preserve_nested_relative_paths(
+    attractor_api_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    nested_flow_path = tmp_path / "flows" / "nested" / "review" / "beta.dot"
+    nested_flow_path.parent.mkdir(parents=True, exist_ok=True)
+    nested_flow_path.write_text(VALID_FLOW, encoding="utf-8")
+    top_level_flow_path = tmp_path / "flows" / "alpha.dot"
+    top_level_flow_path.write_text(VALID_FLOW, encoding="utf-8")
+
+    list_response = attractor_api_client.get("/api/flows")
+    assert list_response.status_code == 200
+    assert list_response.json() == [
+        "alpha.dot",
+        "nested/review/beta.dot",
+    ]
+
+    get_response = attractor_api_client.get("/api/flows/nested/review/beta.dot")
+    assert get_response.status_code == 200
+    assert get_response.json()["name"] == "nested/review/beta.dot"
+    assert get_response.json()["content"] == VALID_FLOW
+
+
 def test_save_flow_reports_semantic_equivalence_for_no_behavior_change(
     attractor_api_client: TestClient,
     tmp_path: Path,
@@ -517,7 +558,21 @@ def test_delete_flow_deletes_existing_flow_and_raises_404_for_missing(
     assert missing_response.json()["detail"] == "Flow not found."
 
 
-def test_flow_name_must_be_single_file_name(attractor_api_client: TestClient) -> None:
+def test_delete_flow_supports_nested_relative_paths(
+    attractor_api_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    flow_path = tmp_path / "flows" / "nested" / "delete-me.dot"
+    flow_path.parent.mkdir(parents=True, exist_ok=True)
+    flow_path.write_text(VALID_FLOW, encoding="utf-8")
+
+    delete_response = attractor_api_client.delete("/api/flows/nested/delete-me.dot")
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"status": "deleted"}
+    assert not flow_path.exists()
+
+
+def test_flow_name_must_stay_inside_flows_dir(attractor_api_client: TestClient) -> None:
     response = attractor_api_client.post(
         "/api/flows",
         json={
@@ -527,4 +582,4 @@ def test_flow_name_must_be_single_file_name(attractor_api_client: TestClient) ->
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Flow name must be a single file name."
+    assert response.json()["detail"] == "Flow name must be a relative path inside flows_dir."
