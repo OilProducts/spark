@@ -105,6 +105,39 @@ export interface RouteState {
     activeProjectPath: string | null
 }
 
+export interface CanvasViewportState {
+    x: number
+    y: number
+    zoom: number
+}
+
+export interface EditorViewSession {
+    flowName: string | null
+    selectedNodeId: string | null
+    selectedEdgeId: string | null
+    viewport: CanvasViewportState | null
+    graphAttrs: GraphAttrs
+    diagnostics: DiagnosticEntry[]
+    hasValidationErrors: boolean
+    rawDotDraft: string
+    rawHandoffError: string | null
+    rawMode: 'structured' | 'raw'
+    saveState: SaveState
+}
+
+export interface ExecutionViewSession {
+    flowName: string | null
+    selectedRunId: string | null
+    selectedNodeId: string | null
+    selectedEdgeId: string | null
+    viewport: CanvasViewportState | null
+    graphAttrs: GraphAttrs
+    diagnostics: DiagnosticEntry[]
+    hasValidationErrors: boolean
+    launchInputValues: Record<string, string>
+    launchError: string | null
+}
+
 export interface ProjectSessionState {
     workingDir: string
     conversationId: string | null
@@ -170,6 +203,14 @@ export interface RunInspectorSlice {
     setExecutionFlow: (flow: string | null) => void
     selectedRunId: string | null
     setSelectedRunId: (id: string | null) => void
+    executionGraphAttrs: GraphAttrs
+    replaceExecutionGraphAttrs: (attrs: GraphAttrs) => void
+    executionDiagnostics: DiagnosticEntry[]
+    setExecutionDiagnostics: (diagnostics: DiagnosticEntry[]) => void
+    clearExecutionDiagnostics: () => void
+    executionNodeDiagnostics: Record<string, DiagnosticEntry[]>
+    executionEdgeDiagnostics: Record<string, DiagnosticEntry[]>
+    executionHasValidationErrors: boolean
     logs: LogEntry[]
     addLog: (entry: LogEntry) => void
     clearLogs: () => void

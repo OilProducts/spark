@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react';
 import { useStore } from '@/store';
+import { useCanvasSessionMode } from './canvasSessionContext';
 
 const WARNING_STROKE = 'hsl(38 92% 50%)';
 
@@ -17,7 +18,10 @@ export function ValidationEdge({
     sourcePosition,
     targetPosition,
 }: EdgeProps) {
-    const edgeDiagnostics = useStore((state) => state.edgeDiagnostics);
+    const canvasMode = useCanvasSessionMode();
+    const edgeDiagnostics = useStore((state) =>
+        canvasMode === 'editor' ? state.edgeDiagnostics : state.executionEdgeDiagnostics,
+    );
     const diagnosticsForEdge = edgeDiagnostics[`${source}->${target}`] || [];
     const hasError = diagnosticsForEdge.some((diag) => diag.severity === 'error');
     const hasWarning = diagnosticsForEdge.some((diag) => diag.severity === 'warning');

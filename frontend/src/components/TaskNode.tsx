@@ -7,16 +7,20 @@ import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility';
 import { getToolHookCommandWarning } from '@/lib/graphAttrValidation';
 import { saveFlowContent } from '@/lib/flowPersistence';
 import { fetchPipelineAnswerValidated } from '@/lib/attractorClient';
+import { useCanvasSessionMode } from './canvasSessionContext';
 
 export function TaskNode({ id, data, selected }: NodeProps) {
-    const activeFlow = useStore((state) => state.activeFlow);
-    const viewMode = useStore((state) => state.viewMode);
-    const humanGate = useStore((state) => state.humanGate);
-    const selectedRunId = useStore((state) => state.selectedRunId);
-    const graphAttrs = useStore((state) => state.graphAttrs);
-    const nodeDiagnostics = useStore((state) => state.nodeDiagnostics);
+    const canvasMode = useCanvasSessionMode();
+    const isEditorCanvas = canvasMode === 'editor';
+    const isExecutionCanvas = canvasMode === 'execution';
+    const flowName = useStore((state) => isEditorCanvas ? state.activeFlow : state.executionFlow);
+    const executionHumanGate = useStore((state) => state.humanGate);
+    const selectedRunId = useStore((state) => isExecutionCanvas ? state.selectedRunId : null);
+    const graphAttrs = useStore((state) => isEditorCanvas ? state.graphAttrs : state.executionGraphAttrs);
+    const nodeDiagnostics = useStore((state) => isEditorCanvas ? state.nodeDiagnostics : state.executionNodeDiagnostics);
     const { setNodes, getEdges } = useReactFlow();
     const inputRef = useRef<HTMLInputElement>(null);
+    const humanGate = isExecutionCanvas ? executionHumanGate : null;
 
     const displayLabel = (data.label as string) || 'Task Node';
     const [isEditingLabel, setIsEditingLabel] = useState(false);
@@ -99,7 +103,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
     }, [isEditingLabel]);
 
     const persistNodeData = (nextData: Record<string, unknown>) => {
-        if (!activeFlow) return;
+        if (!isEditorCanvas || !flowName) return;
 
         let updatedNodes: Node[] = [];
         setNodes((currentNodes) => {
@@ -111,12 +115,13 @@ export function TaskNode({ id, data, selected }: NodeProps) {
         });
 
         if (updatedNodes.length > 0) {
-            const dot = generateDot(activeFlow, updatedNodes, getEdges(), graphAttrs);
-            void saveFlowContent(activeFlow, dot);
+            const dot = generateDot(flowName, updatedNodes, getEdges(), graphAttrs);
+            void saveFlowContent(flowName, dot);
         }
     };
 
     const startEditLabel = (event: React.MouseEvent<HTMLDivElement>) => {
+        if (!isEditorCanvas) return;
         event.stopPropagation();
         setDraftLabel(displayLabel);
         setIsEditingLabel(true);
@@ -220,7 +225,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
         setIsEditingDetails(false);
     };
 
-    const isWaiting = humanGate?.nodeId === id || status === 'waiting';
+    const isWaiting = isExecutionCanvas && (humanGate?.nodeId === id || status === 'waiting');
 
     let borderColor = 'border-border';
     if (status === 'success') borderColor = 'border-green-500';
@@ -237,7 +242,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
             <Handle type="target" position={Position.Top} className="w-3 h-3 bg-muted-foreground border-border" />
 
             <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
-                {selected && viewMode === 'editor' && (
+                {selected && isEditorCanvas && (
                     <button
                         onClick={openDetailsEditor}
                         className="rounded border border-border bg-background/90 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
@@ -691,7 +696,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
                 </div>
             </NodeToolbar>
 
-            {humanGate?.nodeId === id && viewMode === 'execution' && (
+            {humanGate?.nodeId === id && isExecutionCanvas && (
                 <NodeToolbar
                     isVisible
                     position={Position.Bottom}

@@ -74,17 +74,14 @@ const CORE_EDGE_ATTR_KEYS = new Set<string>([
 const EXCLUDED_NODE_EXTENSION_ATTR_KEYS = new Set<string>(['status'])
 
 function resolveInspectorScope({
-    viewMode,
     activeFlow,
     selectedNodeId,
     selectedEdgeId,
 }: {
-    viewMode: string
     activeFlow: string | null
     selectedNodeId: string | null
     selectedEdgeId: string | null
 }): InspectorScope {
-    if (viewMode !== 'editor') return 'none'
     if (selectedEdgeId) return 'edge'
     if (selectedNodeId) return 'node'
     if (activeFlow) return 'graph'
@@ -92,7 +89,6 @@ function resolveInspectorScope({
 }
 
 export function Sidebar() {
-    const viewMode = useStore((state) => state.viewMode)
     const activeFlow = useStore((state) => state.activeFlow)
     const executionFlow = useStore((state) => state.executionFlow)
     const setActiveFlow = useStore((state) => state.setActiveFlow)
@@ -104,7 +100,6 @@ export function Sidebar() {
     const isNarrowViewport = useNarrowViewport()
     const diagnostics = useStore((state) => state.diagnostics)
     const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)
-    const humanGate = useStore((state) => state.humanGate)
     const graphAttrs = useStore((state) => state.graphAttrs)
     const uiDefaults = useStore((state) => state.uiDefaults)
     const [flows, setFlows] = useState<string[]>([])
@@ -116,9 +111,8 @@ export function Sidebar() {
     const { getNodes, setNodes, getEdges, setEdges } = useReactFlow()
     const nodes = useReactFlowStore((state) => state.nodes)
     const edges = useReactFlowStore((state) => state.edges)
-    const displayedFlow = viewMode === 'execution' ? executionFlow || activeFlow : activeFlow
     const { scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
-        flowName: displayedFlow,
+        flowName: activeFlow,
         debounceMs: INSPECTOR_SAVE_DEBOUNCE_MS,
         buildContent: (snapshot, currentFlowName) => generateDot(
             currentFlowName,
@@ -164,7 +158,6 @@ export function Sidebar() {
 
         await loadFlows();
         setActiveFlow(fileName);
-        setExecutionFlow(fileName);
     }
 
     const handleDeleteFlow = async (e: React.MouseEvent, fileName: string) => {
@@ -178,14 +171,12 @@ export function Sidebar() {
         }
         if (executionFlow === fileName) {
             setExecutionFlow(null)
-            setNodes([]);
-            setEdges([]);
         }
         await loadFlows();
     };
 
     const updateNodeProperty = (nodeId: string, key: string, value: string | boolean) => {
-        if (!displayedFlow) return;
+        if (!activeFlow) return;
 
         let newNodes: Node[] = [];
         setNodes(nds => {
@@ -263,8 +254,7 @@ export function Sidebar() {
         return resolveEdgeFieldDiagnostics(diagnostics, selectedEdge.source, selectedEdge.target)
     }, [diagnostics, selectedEdge])
     const activeInspectorScope = resolveInspectorScope({
-        viewMode,
-        activeFlow: displayedFlow,
+        activeFlow,
         selectedNodeId,
         selectedEdgeId,
     })
@@ -284,7 +274,7 @@ export function Sidebar() {
     }, [selectedNodeId, selectedNodeWritesContextRaw])
 
     const handleEdgePropertyChange = (key: string, value: string | boolean) => {
-        if (!selectedEdgeId || !displayedFlow) return;
+        if (!selectedEdgeId || !activeFlow) return;
 
         let newEdges: Edge[] = [];
         setEdges((eds) => {
@@ -306,7 +296,7 @@ export function Sidebar() {
     };
 
     const updateSelectedNodeAttrs = (transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
-        if (!displayedFlow || !selectedNodeId) {
+        if (!activeFlow || !selectedNodeId) {
             return
         }
         let newNodes: Node[] = []
@@ -370,7 +360,7 @@ export function Sidebar() {
     }
 
     const updateSelectedEdgeAttrs = (transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
-        if (!displayedFlow || !selectedEdgeId) {
+        if (!activeFlow || !selectedEdgeId) {
             return
         }
         let newEdges: Edge[] = []
@@ -475,26 +465,14 @@ export function Sidebar() {
                                 <div key={f} className="relative group">
                                     <button
                                         onClick={() => {
-                                            if (viewMode === 'execution') {
-                                                setExecutionFlow(f)
-                                                return
-                                            }
                                             setActiveFlow(f)
                                         }}
-                                        className={`w-full text-left px-3 py-2 pr-8 rounded-md text-sm transition-colors ${displayedFlow === f
+                                        className={`w-full text-left px-3 py-2 pr-8 rounded-md text-sm transition-colors ${activeFlow === f
                                             ? 'bg-secondary text-secondary-foreground font-medium'
                                             : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                                             }`}
                                     >
-                                        <span className="flex items-center gap-2">
-                                            {humanGate?.flowName === f && (
-                                                <span
-                                                    className="h-2 w-2 rounded-full bg-amber-500"
-                                                    title="Needs human input"
-                                                />
-                                            )}
-                                            {f}
-                                        </span>
+                                        <span className="flex items-center gap-2">{f}</span>
                                     </button>
                                     <button
                                         onClick={(e) => handleDeleteFlow(e, f)}

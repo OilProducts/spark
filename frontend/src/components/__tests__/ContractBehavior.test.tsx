@@ -1794,7 +1794,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('project-event-log-list')).toHaveTextContent('Requested revision for execution card')
   })
 
-  it('[CID:12.4.05] integrates build invocation-from-approved-plan contract and error paths', async () => {
+  it('[CID:12.4.05] integrates direct execution launch contract and error paths', async () => {
     const buildLaunchFailureMessage = 'build launch contract failure'
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
@@ -1821,7 +1821,7 @@ describe('Frontend contract behavior', () => {
         ...state,
         viewMode: 'execution',
         activeProjectPath: '/tmp/project-contract-behavior',
-        activeFlow: 'contract-behavior.dot',
+        executionFlow: 'contract-behavior.dot',
         projectSessionsByPath: {
           ...state.projectSessionsByPath,
           '/tmp/project-contract-behavior': {
@@ -1839,33 +1839,10 @@ describe('Frontend contract behavior', () => {
     await user.click(screen.getByTestId('execute-button'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('build-workflow-failure-diagnostics')).toHaveTextContent(
-        'Build workflow launch requires an approved plan state.',
-      )
+      expect(screen.getByTestId('launch-failure-message')).toHaveTextContent(buildLaunchFailureMessage)
     })
-    expect(screen.getByTestId('build-workflow-rerun-button')).toBeDisabled()
-    expect(fetchMock).not.toHaveBeenCalled()
-
-    act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        projectSessionsByPath: {
-          ...state.projectSessionsByPath,
-          '/tmp/project-contract-behavior': {
-            ...state.projectSessionsByPath['/tmp/project-contract-behavior'],
-            planStatus: 'approved',
-          },
-        },
-      }))
-    })
-
-    await user.click(screen.getByTestId('execute-button'))
-
-    await waitFor(() => {
-      expect(screen.getByTestId('build-workflow-failure-message')).toHaveTextContent(buildLaunchFailureMessage)
-    })
-    expect(screen.getByTestId('build-workflow-failure-message')).toHaveTextContent(buildLaunchFailureMessage)
-    expect(screen.getByTestId('build-workflow-rerun-button')).toBeEnabled()
+    expect(screen.getByTestId('launch-failure-diagnostics')).toHaveTextContent(buildLaunchFailureMessage)
+    expect(screen.getByTestId('launch-retry-button')).toBeEnabled()
 
     const pipelineCall = fetchMock.mock.calls.find(
       ([request, init]) => requestUrl(request as RequestInfo | URL).endsWith('/attractor/pipelines') && init?.method === 'POST',

@@ -46,6 +46,7 @@ Workspace does not own:
 - project canonical source documents, code, or tests
 
 The frontend is a client of the workspace surface. It is not the durable owner of workspace truth.
+Editor and Execution view-session state are client-ephemeral only; they are not part of workspace durable state.
 
 ## 3. Relationship to Attractor
 
@@ -219,6 +220,10 @@ Spark persists two different conversation authorities:
 - inline workspace artifacts
 - execution workflow state
 - event log
+
+It does not need to persist frontend-only view sessions such as:
+- editor canvas selection, viewport, or draft DOT mode
+- execution canvas selection, inspected run focus, or launch-form draft values
 
 `state.json` is a materialized view, not a raw transcript.
 

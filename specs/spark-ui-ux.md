@@ -2,11 +2,6 @@
 
 This document is the canonical operator-facing client specification for Spark.
 
-It consolidates and supersedes the split UI documents:
-- `spark-frontend.md`
-- `ui-user-stories.md`
-- `ui-story-records.md`
-
 ## 1. Purpose
 
 The Spark frontend is the operator-facing application for:
@@ -127,6 +122,9 @@ Navigation should preserve project framing as the operator moves from conversati
 The Editor may open with no active project. The Execution view may also open without a project, but run-start actions must remain locally gated on selecting a project.
 Triggers are a first-class top-level workspace view because they are global automations rather than project settings.
 
+Editor and Execution are separate in-memory UI sessions.
+Switching between them must restore each mode exactly as the operator left it rather than deriving one mode's local state from the other.
+
 ## 8. Presentation Surfaces
 
 ### 8.1 Workspace Surfaces
@@ -218,6 +216,9 @@ The UI may provide:
 
 This section is about the authoring experience, not the DOT DSL itself.
 
+Authoring session state is editor-local.
+The frontend must not infer editor selection, inspector scope, draft DOT, validation state, or save state from whichever flow is currently open in Execution.
+
 ### 12.1 Flow Contract Authoring
 
 Spark authoring surfaces should make the flow's launch and context contract visible without forcing raw DOT edits for common cases.
@@ -263,6 +264,9 @@ That launch form should:
 
 The frontend should not require the operator to hand-author raw JSON for routine launch input cases if the flow already declares them.
 
+Launch-form state is execution-local.
+Selecting or editing a flow in the Editor must not overwrite the currently selected execution flow, launch draft values, or launch failure state.
+
 ## 13. Run Inspection UX
 
 The run inspector is a frontend for Attractor runs, not for workspace artifacts.
@@ -278,6 +282,9 @@ It should render:
 
 When the user reaches run inspection from a workspace surface, the UI should preserve project framing by default rather than dropping into an unscoped global run context.
 
+Run-inspection state is execution-local.
+The currently selected execution flow, run, node or edge selection, launch form draft, and runtime inspection context must not be inferred from the Editor session.
+
 ## 14. Frontend State Model
 
 The frontend treats backend-provided state as authoritative for:
@@ -290,10 +297,17 @@ The frontend treats backend-provided state as authoritative for:
 The frontend may keep local ephemeral state for:
 - selected tab
 - expanded or collapsed cards
-- active inspector panel
-- currently inspected run
+- editor session state
+- execution session state
 - draft message text
 - local filter or sort controls
+
+At minimum, the frontend should model two independent mode-local sessions:
+- `editorSession`
+- `executionSession`
+
+These sessions are client-ephemeral only.
+They are not backend-authoritative, and in v1 they do not need to survive a full reload or restart.
 
 ## 15. Error, Degraded, and Partial-Availability UX
 

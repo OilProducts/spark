@@ -141,7 +141,7 @@ describe('Execution controls behavior', () => {
     expect(screen.queryByTestId('execution-footer-run-status')).not.toBeInTheDocument()
   })
 
-  it('launches from the inspected execution flow without overwriting project flow preference', async () => {
+  it('launches from the inspected execution flow without requiring an approved plan', async () => {
     const user = userEvent.setup()
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
@@ -189,7 +189,7 @@ describe('Execution controls behavior', () => {
           specStatus: null,
           specProvenance: null,
           planId: 'plan-123',
-          planStatus: 'approved',
+          planStatus: 'draft',
           planProvenance: null,
         },
       },
@@ -249,8 +249,8 @@ describe('Execution controls behavior', () => {
       ...state,
       viewMode: 'execution',
       activeProjectPath: '/tmp/project',
-      activeFlow: 'implement-review-loop.dot',
-      graphAttrs: {
+      executionFlow: 'implement-review-loop.dot',
+      executionGraphAttrs: {
         'spark.launch_inputs': JSON.stringify([
           {
             key: 'context.request.summary',
@@ -277,7 +277,7 @@ describe('Execution controls behavior', () => {
           specStatus: null,
           specProvenance: null,
           planId: 'plan-123',
-          planStatus: 'approved',
+          planStatus: 'draft',
           planProvenance: null,
         },
       },

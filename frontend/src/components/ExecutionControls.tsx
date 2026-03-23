@@ -17,7 +17,7 @@ import {
     type LaunchInputFormValues,
 } from '@/lib/flowContracts'
 
-type WorkflowFailureDiagnostics = {
+type LaunchFailureDiagnostics = {
     message: string
     failedAt: string
     flowSource: string | null
@@ -90,13 +90,12 @@ export function ExecutionControls() {
     const activeProjectScope = useStore((state) =>
         state.activeProjectPath ? state.projectSessionsByPath[state.activeProjectPath] : null
     )
-    const activeFlow = useStore((state) => state.activeFlow)
     const executionFlow = useStore((state) => state.executionFlow)
     const workingDir = useStore((state) => state.workingDir)
     const model = useStore((state) => state.model)
-    const graphAttrs = useStore((state) => state.graphAttrs)
-    const diagnostics = useStore((state) => state.diagnostics)
-    const hasValidationErrors = useStore((state) => state.hasValidationErrors)
+    const graphAttrs = useStore((state) => state.executionGraphAttrs)
+    const diagnostics = useStore((state) => state.executionDiagnostics)
+    const hasValidationErrors = useStore((state) => state.executionHasValidationErrors)
     const runtimeStatus = useStore((state) => state.runtimeStatus)
     const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
     const selectedRunId = useStore((state) => state.selectedRunId)
@@ -106,10 +105,10 @@ export function ExecutionControls() {
     const hasValidationWarnings = diagnostics.some((diag) => diag.severity === 'warning')
     const showValidationWarningBanner = hasValidationWarnings && !hasValidationErrors
     const [runStartError, setRunStartError] = useState<string | null>(null)
-    const [lastBuildWorkflowFailure, setLastBuildWorkflowFailure] = useState<WorkflowFailureDiagnostics | null>(null)
+    const [lastLaunchFailure, setLastLaunchFailure] = useState<LaunchFailureDiagnostics | null>(null)
     const [runStartGitPolicyWarning, setRunStartGitPolicyWarning] = useState<string | null>(null)
     const [launchInputValues, setLaunchInputValues] = useState<LaunchInputFormValues>({})
-    const executionFlowName = executionFlow || activeFlow
+    const executionFlowName = executionFlow
     const parsedLaunchInputs = useMemo(
         () => parseLaunchInputDefinitions(graphAttrs['spark.launch_inputs']),
         [graphAttrs],
@@ -124,9 +123,7 @@ export function ExecutionControls() {
         specArtifactId: activeProjectScope?.specId || null,
         planArtifactId: activeProjectScope?.planId || null,
     }
-    const buildWorkflowLaunchReady = Boolean(activeProjectScope?.planId) && activeProjectScope?.planStatus === 'approved'
-    const canRerunBuildWorkflow =
-        Boolean(activeProjectPath) && Boolean(executionFlowName) && !hasValidationErrors && buildWorkflowLaunchReady
+    const canRetryLaunch = Boolean(activeProjectPath) && Boolean(executionFlowName) && !hasValidationErrors
 
     const runIsActive = ACTIVE_RUNTIME_STATUSES.has(runtimeStatus)
     const shouldShowFooter = viewMode === 'execution'
@@ -157,6 +154,12 @@ export function ExecutionControls() {
     useEffect(() => {
         setLaunchInputValues((current) => initializeLaunchInputFormValues(parsedLaunchInputs.entries, current))
     }, [parsedLaunchInputs.entries])
+
+    useEffect(() => {
+        setRunStartError(null)
+        setLastLaunchFailure(null)
+        setRunStartGitPolicyWarning(null)
+    }, [executionFlowName])
 
     if (!shouldShowFooter) return null
 
@@ -199,16 +202,6 @@ export function ExecutionControls() {
             setRunStartError(launchContextErrors.join(' '))
             return
         }
-        if (!buildWorkflowLaunchReady) {
-            const launchGateMessage = 'Build workflow launch requires an approved plan state.'
-            setRunStartError(launchGateMessage)
-            setLastBuildWorkflowFailure({
-                message: launchGateMessage,
-                failedAt: new Date().toISOString(),
-                flowSource: runInitiationForm.flowSource || null,
-            })
-            return
-        }
         try {
             const gitPolicyGateAllowed = await confirmGitPolicyGate()
             if (!gitPolicyGateAllowed) {
@@ -235,7 +228,7 @@ export function ExecutionControls() {
             }
             setRuntimeStatus('running')
 
-            setLastBuildWorkflowFailure(null)
+            setLastLaunchFailure(null)
         } catch (error) {
             logUnexpectedExecutionError(error)
             const errorMessage = error instanceof ApiHttpError && error.detail
@@ -244,7 +237,7 @@ export function ExecutionControls() {
                     ? error.message
                     : 'Failed to start pipeline run.'
             setRunStartError(errorMessage)
-            setLastBuildWorkflowFailure({
+            setLastLaunchFailure({
                 message: errorMessage,
                 failedAt: new Date().toISOString(),
                 flowSource: runInitiationForm.flowSource || null,
@@ -396,32 +389,32 @@ export function ExecutionControls() {
                         Failed to start run: {runStartError}
                     </p>
                 ) : null}
-                {lastBuildWorkflowFailure ? (
+                {lastLaunchFailure ? (
                     <div
-                        data-testid="build-workflow-failure-diagnostics"
+                        data-testid="launch-failure-diagnostics"
                         className="max-w-sm rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
                     >
-                        <p className="font-medium">Last build launch failure</p>
-                        <p data-testid="build-workflow-failure-message" className="truncate">
-                            {lastBuildWorkflowFailure.message}
+                        <p className="font-medium">Last launch failure</p>
+                        <p data-testid="launch-failure-message" className="truncate">
+                            {lastLaunchFailure.message}
                         </p>
                         <p className="truncate">
-                            Flow source: <span className="font-mono">{lastBuildWorkflowFailure.flowSource || 'none'}</span>
+                            Flow source: <span className="font-mono">{lastLaunchFailure.flowSource || 'none'}</span>
                         </p>
-                        <p>Failed at: {new Date(lastBuildWorkflowFailure.failedAt).toLocaleString()}</p>
+                        <p>Failed at: {new Date(lastLaunchFailure.failedAt).toLocaleString()}</p>
                         <button
-                            data-testid="build-workflow-rerun-button"
+                            data-testid="launch-retry-button"
                             onClick={() => {
                                 void requestStart()
                             }}
-                            disabled={!canRerunBuildWorkflow}
+                            disabled={!canRetryLaunch}
                             className="mt-1 rounded border border-destructive/40 bg-background px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                            Rerun build workflow
+                            Retry launch
                         </button>
-                        {!canRerunBuildWorkflow ? (
-                            <p data-testid="build-workflow-rerun-disabled-reason" className="mt-1">
-                                Resolve launch blockers to rerun build.
+                        {!canRetryLaunch ? (
+                            <p data-testid="launch-retry-disabled-reason" className="mt-1">
+                                Resolve launch blockers to retry.
                             </p>
                         ) : null}
                     </div>
