@@ -271,6 +271,13 @@ describe('Execution controls behavior', () => {
             required: true,
           },
           {
+            key: 'context.request.target_paths',
+            label: 'Target Paths',
+            type: 'string[]',
+            description: 'Optional files or directories to focus on.',
+            required: false,
+          },
+          {
             key: 'context.request.acceptance_criteria',
             label: 'Acceptance Criteria',
             type: 'string[]',
@@ -299,11 +306,22 @@ describe('Execution controls behavior', () => {
     expect(screen.getByTestId('execution-launch-inputs')).toBeVisible()
     expect(screen.getByTestId('execution-launch-inputs')).toHaveClass('max-w-3xl')
     expect(screen.getByTestId('execution-launch-inputs-body')).toHaveClass('max-h-[min(42vh,20rem)]')
-    expect(screen.getByTestId('execution-launch-inputs-grid')).toHaveClass('grid-cols-2')
+    expect(screen.getByTestId('execution-canvas-primary-action')).toHaveClass('top-4', 'right-4')
+    expect(screen.getByTestId('execution-canvas-primary-action')).toContainElement(screen.getByTestId('execute-button'))
+    expect(screen.queryByTestId('execution-launch-inputs-header')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('execution-launch-inputs-count')).not.toBeInTheDocument()
+    expect(screen.getByTestId('execution-launch-inputs-grid')).toHaveClass('lg:grid-cols-12')
+    expect(screen.getByTestId('execution-launch-input-field-context.request.summary')).toHaveClass('lg:col-span-12')
+    expect(screen.getByTestId('execution-launch-input-field-context.request.target_paths')).toHaveClass('lg:col-span-6')
+    expect(screen.getByTestId('execution-launch-input-field-context.request.acceptance_criteria')).toHaveClass('lg:col-span-6')
 
     await user.type(
       screen.getByTestId('execution-launch-input-context.request.summary'),
       'Add a health check endpoint',
+    )
+    await user.type(
+      screen.getByTestId('execution-launch-input-context.request.target_paths'),
+      'src/api/health.ts',
     )
     await user.type(
       screen.getByTestId('execution-launch-input-context.request.acceptance_criteria'),
@@ -331,6 +349,9 @@ describe('Execution controls behavior', () => {
     const requestBody = JSON.parse(String(pipelineCall?.[1]?.body))
     expect(requestBody.launch_context).toEqual({
       'context.request.summary': 'Add a health check endpoint',
+      'context.request.target_paths': [
+        'src/api/health.ts',
+      ],
       'context.request.acceptance_criteria': [
         'GET /healthz returns 200',
         'Response body contains status ok',

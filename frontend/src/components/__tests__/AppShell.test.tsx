@@ -542,9 +542,12 @@ describe('App shell behavior', () => {
 
     const executionCanvasPanel = await screen.findByTestId('execution-canvas-panel')
     const executionFooterControls = screen.getByTestId('execution-footer-controls')
+    const executionCanvasPrimaryAction = screen.getByTestId('execution-canvas-primary-action')
 
     expect(executionCanvasPanel).toHaveClass('relative')
     expect(executionCanvasPanel.parentElement).toHaveClass('min-w-0')
     expect(executionCanvasPanel).toContainElement(executionFooterControls)
+    expect(executionCanvasPanel).toContainElement(executionCanvasPrimaryAction)
+    expect(executionFooterControls).not.toContainElement(executionCanvasPrimaryAction)
   })
 })

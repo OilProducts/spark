@@ -84,6 +84,39 @@ const logUnexpectedExecutionError = (error: unknown) => {
     console.error(error)
 }
 
+const launchInputTypeLabel = (type: string) => {
+    switch (type) {
+        case 'string':
+            return 'Text'
+        case 'string[]':
+            return 'List'
+        case 'number':
+            return 'Number'
+        case 'boolean':
+            return 'Boolean'
+        default:
+            return 'JSON'
+    }
+}
+
+const launchInputDesktopSpanClass = (
+    type: string,
+    index: number,
+    totalEntries: number,
+    required: boolean,
+) => {
+    if (totalEntries === 1) {
+        return 'lg:col-span-12'
+    }
+    if (type === 'boolean' || type === 'number') {
+        return 'lg:col-span-4'
+    }
+    if (index === 0 && required && type === 'string' && totalEntries <= 3) {
+        return 'lg:col-span-12'
+    }
+    return 'lg:col-span-6'
+}
+
 export function ExecutionControls() {
     const viewMode = useStore((state) => state.viewMode)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -124,6 +157,7 @@ export function ExecutionControls() {
         planArtifactId: activeProjectScope?.planId || null,
     }
     const canRetryLaunch = Boolean(activeProjectPath) && Boolean(executionFlowName) && !hasValidationErrors
+    const launchInputCount = parsedLaunchInputs.entries.length
 
     const runIsActive = ACTIVE_RUNTIME_STATUSES.has(runtimeStatus)
     const shouldShowFooter = viewMode === 'execution'
@@ -264,44 +298,88 @@ export function ExecutionControls() {
     }
 
     return (
-        <div
-            data-testid="execution-footer-controls"
-            data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
-            className={`absolute bottom-4 z-20 rounded-md border border-border bg-background/95 shadow-lg backdrop-blur ${isNarrowViewport
-                ? 'left-2 right-2 px-3 py-3'
-                : 'left-1/2 w-[calc(100%-2rem)] max-w-[960px] -translate-x-1/2 px-4 py-3'
-                }`}
-        >
+        <>
+            <div
+                data-testid="execution-canvas-primary-action"
+                className={`absolute z-20 ${isNarrowViewport ? 'top-2 right-2' : 'top-4 right-4'}`}
+            >
+                <button
+                    data-testid="execute-button"
+                    onClick={() => {
+                        void requestStart()
+                    }}
+                    disabled={!activeProjectPath || !executionFlowName || hasValidationErrors}
+                    title={executeDisabledReason}
+                    className="inline-flex h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-lg transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                >
+                    <Play className="h-4 w-4" />
+                    Execute
+                </button>
+            </div>
+            <div
+                data-testid="execution-footer-controls"
+                data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
+                className={`absolute bottom-4 z-20 rounded-md border border-border bg-background/95 shadow-lg backdrop-blur ${isNarrowViewport
+                    ? 'left-2 right-2 px-3 py-3'
+                    : 'left-1/2 w-[calc(100%-2rem)] max-w-[960px] -translate-x-1/2 px-4 py-3'
+                    }`}
+            >
             {parsedLaunchInputs.entries.length > 0 ? (
                 <div
                     data-testid="execution-launch-inputs"
-                    className="mx-auto mb-3 w-full max-w-3xl rounded-md border border-border/80 bg-muted/20 px-3 py-3"
+                    className="mx-auto mb-3 w-full max-w-3xl"
                 >
-                    <div className="mb-3 space-y-1">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            Launch Inputs
+                    {parsedLaunchInputs.error ? (
+                        <p
+                            data-testid="execution-launch-inputs-schema-error"
+                            className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive"
+                        >
+                            {parsedLaunchInputs.error}
                         </p>
-                        <p className="text-[11px] text-muted-foreground">
-                            These values populate `context.*` at run start.
-                        </p>
-                        {parsedLaunchInputs.error ? (
-                            <p className="text-[11px] text-destructive">{parsedLaunchInputs.error}</p>
-                        ) : null}
-                    </div>
+                    ) : null}
                     <div
                         data-testid="execution-launch-inputs-body"
-                        className="max-h-[min(42vh,20rem)] overflow-y-auto overscroll-contain pr-1"
+                        className="max-h-[min(42vh,20rem)] overflow-y-auto overscroll-contain"
                     >
                         <div
                             data-testid="execution-launch-inputs-grid"
-                            className={`grid gap-3 ${isNarrowViewport ? 'grid-cols-1' : 'grid-cols-2'}`}
+                            className={`grid gap-x-4 gap-y-3 ${isNarrowViewport ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-12'}`}
                         >
-                            {parsedLaunchInputs.entries.map((entry) => (
-                                <div key={entry.key} className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">
-                                        {entry.label}
-                                        {entry.required ? ' *' : ''}
-                                    </label>
+                            {parsedLaunchInputs.entries.map((entry, index) => (
+                                <div
+                                    key={entry.key}
+                                    data-testid={`execution-launch-input-field-${entry.key}`}
+                                    className={`space-y-1.5 ${
+                                        isNarrowViewport
+                                            ? 'col-span-1'
+                                            : launchInputDesktopSpanClass(
+                                                entry.type,
+                                                index,
+                                                launchInputCount,
+                                                entry.required,
+                                            )
+                                    }`}
+                                >
+                                    <div
+                                        className={`border-b border-border/40 pb-1 ${
+                                            isNarrowViewport ? 'space-y-1' : 'flex items-start justify-between gap-3'
+                                        }`}
+                                    >
+                                        <div className="min-w-0">
+                                            <label className="text-xs font-medium text-foreground">
+                                                {entry.label}
+                                            </label>
+                                            {entry.description ? (
+                                                <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                                                    {entry.description}
+                                                </p>
+                                            ) : null}
+                                        </div>
+                                        <p className="shrink-0 text-[10px] leading-4 text-muted-foreground">
+                                            {launchInputTypeLabel(entry.type)}
+                                            {entry.required ? ' · Required' : ''}
+                                        </p>
+                                    </div>
                                     {entry.type === 'string' ? (
                                         <input
                                             data-testid={`execution-launch-input-${entry.key}`}
@@ -359,13 +437,10 @@ export function ExecutionControls() {
                                                 [entry.key]: event.target.value,
                                             }))}
                                             rows={3}
-                                            className="min-h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                            className="min-h-20 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             placeholder='{"key":"value"}'
                                         />
                                     )}
-                                    {entry.description ? (
-                                        <p className="text-[11px] text-muted-foreground">{entry.description}</p>
-                                    ) : null}
                                 </div>
                             ))}
                         </div>
@@ -427,18 +502,6 @@ export function ExecutionControls() {
                         ) : null}
                     </div>
                 ) : null}
-                <button
-                    data-testid="execute-button"
-                    onClick={() => {
-                        void requestStart()
-                    }}
-                    disabled={!activeProjectPath || !executionFlowName || hasValidationErrors}
-                    title={executeDisabledReason}
-                    className="inline-flex h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-                >
-                    <Play className="h-4 w-4" />
-                    Execute
-                </button>
             </div>
             {showRunStatusRow ? (
                 <>
@@ -501,6 +564,7 @@ export function ExecutionControls() {
                     </div>
                 </>
             ) : null}
-        </div>
+            </div>
+        </>
     )
 }
