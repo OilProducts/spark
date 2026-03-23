@@ -6,6 +6,16 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
+const DEFAULT_VIEWPORT_WIDTH = 1280
+
+const setViewportWidth = (width: number) => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: width,
+  })
+  window.dispatchEvent(new Event('resize'))
+}
 
 const resetExecutionState = () => {
   useStore.setState((state) => ({
@@ -35,6 +45,7 @@ const resetExecutionState = () => {
 
 describe('Execution controls behavior', () => {
   beforeEach(() => {
+    setViewportWidth(DEFAULT_VIEWPORT_WIDTH)
     resetExecutionState()
   })
 
@@ -286,6 +297,9 @@ describe('Execution controls behavior', () => {
     render(<ExecutionControls />)
 
     expect(screen.getByTestId('execution-launch-inputs')).toBeVisible()
+    expect(screen.getByTestId('execution-launch-inputs')).toHaveClass('max-w-3xl')
+    expect(screen.getByTestId('execution-launch-inputs-body')).toHaveClass('max-h-[min(42vh,20rem)]')
+    expect(screen.getByTestId('execution-launch-inputs-grid')).toHaveClass('grid-cols-2')
 
     await user.type(
       screen.getByTestId('execution-launch-input-context.request.summary'),

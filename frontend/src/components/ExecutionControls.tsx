@@ -269,27 +269,33 @@ export function ExecutionControls() {
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
             className={`absolute bottom-4 z-20 rounded-md border border-border bg-background/95 shadow-lg backdrop-blur ${isNarrowViewport
                 ? 'left-2 right-2 px-3 py-3'
-                : 'left-1/2 w-[min(92vw,1040px)] -translate-x-1/2 px-4 py-3'
+                : 'left-1/2 w-[calc(100%-2rem)] max-w-[960px] -translate-x-1/2 px-4 py-3'
                 }`}
         >
-            <div className={`flex ${isNarrowViewport ? 'flex-col items-stretch gap-2' : 'flex-wrap items-center gap-2'}`}>
-                {parsedLaunchInputs.entries.length > 0 ? (
+            {parsedLaunchInputs.entries.length > 0 ? (
+                <div
+                    data-testid="execution-launch-inputs"
+                    className="mx-auto mb-3 w-full max-w-3xl rounded-md border border-border/80 bg-muted/20 px-3 py-3"
+                >
+                    <div className="mb-3 space-y-1">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Launch Inputs
+                        </p>
+                        <p className="text-[11px] text-muted-foreground">
+                            These values populate `context.*` at run start.
+                        </p>
+                        {parsedLaunchInputs.error ? (
+                            <p className="text-[11px] text-destructive">{parsedLaunchInputs.error}</p>
+                        ) : null}
+                    </div>
                     <div
-                        data-testid="execution-launch-inputs"
-                        className="w-full rounded-md border border-border/80 bg-muted/20 px-3 py-3"
+                        data-testid="execution-launch-inputs-body"
+                        className="max-h-[min(42vh,20rem)] overflow-y-auto overscroll-contain pr-1"
                     >
-                        <div className="mb-3 space-y-1">
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                Launch Inputs
-                            </p>
-                            <p className="text-[11px] text-muted-foreground">
-                                These values populate `context.*` at run start.
-                            </p>
-                            {parsedLaunchInputs.error ? (
-                                <p className="text-[11px] text-destructive">{parsedLaunchInputs.error}</p>
-                            ) : null}
-                        </div>
-                        <div className="grid gap-3">
+                        <div
+                            data-testid="execution-launch-inputs-grid"
+                            className={`grid gap-3 ${isNarrowViewport ? 'grid-cols-1' : 'grid-cols-2'}`}
+                        >
                             {parsedLaunchInputs.entries.map((entry) => (
                                 <div key={entry.key} className="space-y-1">
                                     <label className="text-xs font-medium text-foreground">
@@ -314,8 +320,8 @@ export function ExecutionControls() {
                                                 ...current,
                                                 [entry.key]: event.target.value,
                                             }))}
-                                            rows={3}
-                                            className="min-h-20 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                            rows={2}
+                                            className="min-h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             placeholder="One item per line"
                                         />
                                     ) : entry.type === 'boolean' ? (
@@ -352,8 +358,8 @@ export function ExecutionControls() {
                                                 ...current,
                                                 [entry.key]: event.target.value,
                                             }))}
-                                            rows={4}
-                                            className="min-h-20 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                            rows={3}
+                                            className="min-h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             placeholder='{"key":"value"}'
                                         />
                                     )}
@@ -364,7 +370,9 @@ export function ExecutionControls() {
                             ))}
                         </div>
                     </div>
-                ) : null}
+                </div>
+            ) : null}
+            <div className={`flex ${isNarrowViewport ? 'flex-col items-stretch gap-2' : 'flex-wrap items-center gap-2'}`}>
                 {showValidationWarningBanner ? (
                     <p
                         data-testid="execute-warning-banner"
