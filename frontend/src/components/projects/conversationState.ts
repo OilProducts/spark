@@ -134,6 +134,51 @@ export function sanitizeStreamingTurnUpsert(
 }
 
 function scoreConversationSnapshotFreshness(snapshot: ConversationSnapshotResponse): number {
+    const specEditProposalScore = snapshot.spec_edit_proposals.reduce((score, proposal) => {
+        if (proposal.status === 'applied') {
+            return score + 30
+        }
+        if (proposal.status === 'rejected') {
+            return score + 20
+        }
+        return score + 10
+    }, 0)
+    const flowRunRequestScore = snapshot.flow_run_requests.reduce((score, request) => {
+        if (request.status === 'launched') {
+            return score + 50
+        }
+        if (request.status === 'launch_failed') {
+            return score + 40
+        }
+        if (request.status === 'approved') {
+            return score + 30
+        }
+        if (request.status === 'rejected') {
+            return score + 20
+        }
+        return score + 10
+    }, 0)
+    const flowLaunchScore = snapshot.flow_launches.reduce((score, launch) => {
+        if (launch.status === 'launched') {
+            return score + 30
+        }
+        if (launch.status === 'launch_failed') {
+            return score + 20
+        }
+        return score + 10
+    }, 0)
+    const executionCardScore = snapshot.execution_cards.reduce((score, executionCard) => {
+        if (executionCard.status === 'approved') {
+            return score + 40
+        }
+        if (executionCard.status === 'revision-requested') {
+            return score + 30
+        }
+        if (executionCard.status === 'rejected') {
+            return score + 20
+        }
+        return score + 10
+    }, 0)
     const turnStatusScore = snapshot.turns.reduce((score, turn) => {
         if (turn.status === 'failed') {
             return score + 4
@@ -147,11 +192,27 @@ function scoreConversationSnapshotFreshness(snapshot: ConversationSnapshotRespon
         return score + 1
     }, 0)
     const contentScore = snapshot.turns.reduce((score, turn) => score + turn.content.length, 0)
+    const eventLogScore = snapshot.event_log.reduce(
+        (score, entry) => score + 25 + Math.min(entry.message.length, 200),
+        0,
+    )
+    const executionWorkflowScore = (
+        (snapshot.execution_workflow.status === 'failed' ? 30 : snapshot.execution_workflow.status === 'running' ? 20 : 10)
+        + (snapshot.execution_workflow.run_id ? 5 : 0)
+        + (snapshot.execution_workflow.flow_source ? 5 : 0)
+        + (snapshot.execution_workflow.error ? Math.min(snapshot.execution_workflow.error.length, 100) : 0)
+    )
     return (
         snapshot.turns.length * 100000
         + snapshot.segments.length * 1000
         + turnStatusScore * 100
         + contentScore
+        + eventLogScore
+        + specEditProposalScore
+        + flowRunRequestScore
+        + flowLaunchScore
+        + executionCardScore
+        + executionWorkflowScore
     )
 }
 

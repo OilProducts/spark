@@ -367,7 +367,7 @@ def test_codex_app_server_backend_does_not_cache_empty_thread_key(tmp_path: Path
     assert created == ["thread-1", "thread-2"]
 
 
-def test_codex_app_server_backend_accepts_item_completed_without_turn_completed_after_idle(
+def test_codex_app_server_backend_drains_notifications_queued_during_turn_start_response(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -407,31 +407,16 @@ def test_codex_app_server_backend_accepts_item_completed_without_turn_completed_
         def kill(self) -> None:
             return None
 
-    class FakeSelector:
-        def __init__(self) -> None:
-            self._stdout = None
-
-        def register(self, stdout, events) -> None:
-            self._stdout = stdout
-
-        def select(self, timeout: float | None = None):
-            if self._stdout is not None and getattr(self._stdout, "_lines", None):
-                return [(object(), object())]
-            return []
-
     lines = [
         '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"experimentalApi":true}}}',
         '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-123"}}}',
-        '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn-123","status":"inProgress","items":[]}}}',
         '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"Ack"}}',
         '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"AgentMessage","id":"msg-1","content":[{"type":"Text","text":"Ack"}],"phase":"final_answer"}}}',
+        '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn-123","status":"inProgress","items":[]}}}',
+        '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-123","status":"completed"}}}',
     ]
-    monotonic_values = iter([0.0, 0.1, 0.2, 0.3, 0.4, 1.6])
 
     monkeypatch.setattr(codex_backends_module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess(lines))
-    monkeypatch.setattr(codex_backends_module.selectors, "DefaultSelector", FakeSelector)
-    monkeypatch.setattr(codex_backends_module.codex_app_server, "APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
-    monkeypatch.setattr(codex_backends_module.time, "monotonic", lambda: next(monotonic_values))
 
     result = backend.run("plan", "hello", Context())
 
@@ -479,31 +464,16 @@ def test_codex_app_server_backend_parses_structured_outcome_agent_text(
         def kill(self) -> None:
             return None
 
-    class FakeSelector:
-        def __init__(self) -> None:
-            self._stdout = None
-
-        def register(self, stdout, events) -> None:
-            self._stdout = stdout
-
-        def select(self, timeout: float | None = None):
-            if self._stdout is not None and getattr(self._stdout, "_lines", None):
-                return [(object(), object())]
-            return []
-
     lines = [
         '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"experimentalApi":true}}}',
         '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-123"}}}',
         '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn-123","status":"inProgress","items":[]}}}',
         '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"{\\"outcome\\":\\"fail\\",\\"notes\\":\\"needs fixes\\",\\"failure_reason\\":\\"review requested changes\\",\\"context_updates\\":{\\"context.review.summary\\":\\"missing validation\\"}}"}}',
         '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"AgentMessage","id":"msg-1","content":[{"type":"Text","text":"{\\"outcome\\":\\"fail\\",\\"notes\\":\\"needs fixes\\",\\"failure_reason\\":\\"review requested changes\\",\\"context_updates\\":{\\"context.review.summary\\":\\"missing validation\\"}}"}],"phase":"final_answer"}}}',
+        '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-123","status":"completed"}}}',
     ]
-    monotonic_values = iter([0.0, 0.1, 0.2, 0.3, 0.4, 1.6])
 
     monkeypatch.setattr(codex_backends_module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess(lines))
-    monkeypatch.setattr(codex_backends_module.selectors, "DefaultSelector", FakeSelector)
-    monkeypatch.setattr(codex_backends_module.codex_app_server, "APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
-    monkeypatch.setattr(codex_backends_module.time, "monotonic", lambda: next(monotonic_values))
 
     result = backend.run("review", "hello", Context())
 
@@ -512,3 +482,63 @@ def test_codex_app_server_backend_parses_structured_outcome_agent_text(
     assert result.notes == "needs fixes"
     assert result.failure_reason == "review requested changes"
     assert result.context_updates == {"context.review.summary": "missing validation"}
+
+
+def test_codex_app_server_backend_requires_turn_completed_after_final_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: List[dict] = []
+    backend = server.CodexAppServerBackend(str(tmp_path), events.append, model=None)
+
+    class FakeStdout:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = list(lines)
+
+        def readline(self) -> str:
+            if not self._lines:
+                return ""
+            return f"{self._lines.pop(0)}\n"
+
+    class FakeStdin:
+        def write(self, text: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    class FakeProcess:
+        def __init__(self, lines: list[str]) -> None:
+            self.stdout = FakeStdout(lines)
+            self.stdin = FakeStdin()
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> None:
+            return None
+
+        def kill(self) -> None:
+            return None
+
+    lines = [
+        '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"experimentalApi":true}}}',
+        '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-123"}}}',
+        '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn-123","status":"inProgress","items":[]}}}',
+        '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"Ack"}}',
+        '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"AgentMessage","id":"msg-1","content":[{"type":"Text","text":"Ack"}],"phase":"final_answer"}}}',
+    ]
+    monotonic_values = iter([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.6, 1.7])
+
+    monkeypatch.setattr(codex_backends_module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess(lines))
+    monkeypatch.setattr(codex_backends_module.codex_app_server, "APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(codex_backends_module.time, "monotonic", lambda: next(monotonic_values))
+
+    result = backend.run("plan", "hello", Context())
+
+    assert isinstance(result, Outcome)
+    assert result.status == OutcomeStatus.FAIL
+    assert result.failure_reason == "app-server turn timed out waiting for activity"

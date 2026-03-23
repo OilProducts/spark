@@ -9,6 +9,7 @@ import pytest
 
 import attractor.api.server as server
 import spark_common.codex_app_server as codex_app_server
+import spark_common.process_line_reader as process_line_reader
 from spark.authoring_assets import (
     attractor_spec_path,
     dot_authoring_guide_path,
@@ -506,7 +507,7 @@ def test_chat_session_starts_new_durable_thread_when_resume_fails(monkeypatch) -
     assert updated_thread_ids == ["thread-fresh"]
 
 
-def test_chat_session_turn_uses_final_answer_item_but_waits_for_turn_completed(monkeypatch) -> None:
+def test_chat_session_turn_drains_notifications_queued_during_turn_start_response(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
         [
@@ -531,6 +532,19 @@ def test_chat_session_turn_uses_final_answer_item_but_waits_for_turn_completed(m
             ),
             json.dumps(
                 {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "inProgress",
+                            "items": [],
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
                     "method": "turn/completed",
                     "params": {
                         "turn": {
@@ -544,25 +558,23 @@ def test_chat_session_turn_uses_final_answer_item_but_waits_for_turn_completed(m
     )
 
     monkeypatch.setattr(session, "_ensure_process", lambda: None)
+    monkeypatch.setattr(session, "_send_json", lambda payload: None)
+    session._proc = type("DummyProc", (), {"poll": lambda self: None})()
 
     def fake_ensure_thread(model: str | None) -> None:
         session._thread_id = "thread-123"
         session._thread_initialized = True
 
     monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
     monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
 
     result = session.turn("hello", None)
 
     assert result.assistant_message == '{"assistant_message":"Ack"}'
+    assert not session._pending_messages
 
 
-def test_chat_session_turn_accepts_final_answer_item_without_turn_completed_after_short_quiet_period(monkeypatch) -> None:
+def test_chat_session_turn_times_out_after_final_answer_without_turn_completed(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
         [
@@ -588,7 +600,7 @@ def test_chat_session_turn_accepts_final_answer_item_without_turn_completed_afte
             None,
         ]
     )
-    monotonic_values = iter([0.0, 0.1, 0.2, 0.8])
+    monotonic_values = iter([0.0, 0.1, 0.2, 1.3])
 
     monkeypatch.setattr(session, "_ensure_process", lambda: None)
 
@@ -596,8 +608,7 @@ def test_chat_session_turn_accepts_final_answer_item_without_turn_completed_afte
         session._thread_id = "thread-123"
         session._thread_initialized = True
 
-    monkeypatch.setattr(project_chat_session, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 60.0)
-    monkeypatch.setattr(project_chat_session, "FINAL_ANSWER_SETTLE_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(project_chat_session, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(project_chat_session.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
     monkeypatch.setattr(
@@ -607,9 +618,8 @@ def test_chat_session_turn_accepts_final_answer_item_without_turn_completed_afte
     )
     monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
 
-    result = session.turn("hello", None)
-
-    assert result.assistant_message == "Ack"
+    with pytest.raises(RuntimeError, match="timed out waiting for activity"):
+        session.turn("hello", None)
 
 
 def test_chat_session_raw_rpc_logger_records_transport_lines(monkeypatch) -> None:
@@ -791,13 +801,31 @@ def test_chat_session_surfaces_reasoning_summary_text_deltas(monkeypatch) -> Non
     )
 
 
-def test_chat_session_initialize_enables_experimental_api(monkeypatch) -> None:
+def test_process_line_reader_drains_buffered_lines_in_order() -> None:
+    class FakeStdout:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = list(lines)
+
+        def readline(self) -> str:
+            if not self._lines:
+                return ""
+            return self._lines.pop(0)
+
+    reader = process_line_reader.ProcessLineReader(FakeStdout(["one\n", "two\n"]))
+
+    assert reader.read_line(0.1) == "one"
+    assert reader.read_line(0.1) == "two"
+    assert reader.read_line(0.1) is None
+
+
+def test_chat_session_initialize_uses_stable_api_surface(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     requests: list[tuple[str, dict[str, object] | None]] = []
     notifications: list[dict[str, object]] = []
 
     class DummyStdout:
-        pass
+        def readline(self) -> str:
+            return ""
 
     class DummyProc:
         stdout = DummyStdout()
@@ -806,12 +834,7 @@ def test_chat_session_initialize_enables_experimental_api(monkeypatch) -> None:
         def poll(self) -> int | None:
             return None
 
-    class DummySelector:
-        def register(self, fileobj, events) -> None:
-            return None
-
     monkeypatch.setattr(project_chat_session.subprocess, "Popen", lambda *args, **kwargs: DummyProc())
-    monkeypatch.setattr(project_chat_session.selectors, "DefaultSelector", lambda: DummySelector())
     monkeypatch.setattr(session, "_send_json", lambda payload: notifications.append(payload))
 
     def fake_send_request(method: str, params: dict[str, object] | None) -> dict[str, object]:
@@ -828,9 +851,6 @@ def test_chat_session_initialize_enables_experimental_api(monkeypatch) -> None:
             "initialize",
             {
                 "clientInfo": {"name": "spark", "version": "0.1"},
-                "capabilities": {
-                    "experimentalApi": True,
-                },
             },
         )
     ]
@@ -893,14 +913,14 @@ def test_chat_session_turn_completes_on_turn_completed_after_final_answer(monkey
     assert result.assistant_message == '{"assistant_message":"Ack"}'
 
 
-def test_chat_session_turn_accepts_final_answer_without_turn_completed_after_short_quiet_period(monkeypatch) -> None:
+def test_chat_session_turn_ignores_non_matching_turn_completed(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
     lines = iter(
         [
             json.dumps(
                 {
                     "method": "item/agentMessage/delta",
-                    "params": {"delta": "Ack"},
+                    "params": {"delta": "Ack", "itemId": "msg-123"},
                 }
             ),
             json.dumps(
@@ -916,10 +936,30 @@ def test_chat_session_turn_accepts_final_answer_without_turn_completed_after_sho
                     },
                 }
             ),
-            None,
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-stale",
+                            "status": "completed",
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn-123",
+                            "status": "completed",
+                        }
+                    },
+                }
+            ),
         ]
     )
-    monotonic_values = iter([0.0, 0.1, 0.2, 0.8])
 
     monkeypatch.setattr(session, "_ensure_process", lambda: None)
 
@@ -927,9 +967,6 @@ def test_chat_session_turn_accepts_final_answer_without_turn_completed_after_sho
         session._thread_id = "thread-123"
         session._thread_initialized = True
 
-    monkeypatch.setattr(project_chat_session, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 60.0)
-    monkeypatch.setattr(project_chat_session, "FINAL_ANSWER_SETTLE_TIMEOUT_SECONDS", 0.5)
-    monkeypatch.setattr(project_chat_session.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
     monkeypatch.setattr(
         session,
@@ -984,10 +1021,11 @@ def test_chat_session_turn_times_out_after_live_assistant_quiet_period_without_t
         session.turn("hello", None)
 
 
-def test_send_turn_retries_when_app_server_request_times_out_before_progress(tmp_path: Path, monkeypatch) -> None:
+def test_send_turn_marks_assistant_failed_after_timeout_without_retry(tmp_path: Path, monkeypatch) -> None:
     service = project_chat.ProjectChatService(tmp_path)
+    calls: list[str] = []
 
-    class TimedOutSession:
+    class TimeoutSession:
         def turn(
             self,
             prompt: str,
@@ -996,20 +1034,7 @@ def test_send_turn_retries_when_app_server_request_times_out_before_progress(tmp
             on_event=None,
             on_dynamic_tool_call=None,
         ) -> project_chat.ChatTurnResult:
-            raise RuntimeError("codex app-server request timed out waiting for response")
-
-        def _close(self) -> None:
-            return None
-
-    class FreshSession:
-        def turn(
-            self,
-            prompt: str,
-            model: str | None,
-            *,
-            on_event=None,
-            on_dynamic_tool_call=None,
-        ) -> project_chat.ChatTurnResult:
+            calls.append(prompt)
             if on_event is not None:
                 on_event(
                     project_chat.ChatTurnLiveEvent(
@@ -1020,25 +1045,28 @@ def test_send_turn_retries_when_app_server_request_times_out_before_progress(tmp
                         phase="final_answer",
                     )
                 )
-            return project_chat.ChatTurnResult(
-                assistant_message='{"assistant_message":"hi"}',
-            )
+            raise RuntimeError("codex app-server turn timed out waiting for activity")
 
         def _close(self) -> None:
             return None
 
-    sessions = [TimedOutSession(), FreshSession()]
-    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: sessions.pop(0))
-    monkeypatch.setattr(
-        service,
-        "_replace_session",
-        lambda conversation_id, project_path, persisted_thread_id=None: sessions.pop(0),
-    )
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: TimeoutSession())
 
-    snapshot = service.send_turn("conversation-test", str(tmp_path), "hi", None)
+    with pytest.raises(RuntimeError, match="timed out waiting for activity"):
+        service.send_turn("conversation-test", str(tmp_path), "hi", None)
 
-    assert snapshot["turns"][-1]["role"] == "assistant"
-    assert snapshot["turns"][-1]["content"] == "hi"
+    state = service._read_state("conversation-test", str(tmp_path))
+    assert state is not None
+    assert len(calls) == 1
+    assert "Latest user message:\nhi" in calls[0]
+    assert state.turns[-1].role == "assistant"
+    assert state.turns[-1].status == "failed"
+    assert state.turns[-1].error == "codex app-server turn timed out waiting for activity"
+    assistant_segments = [segment for segment in state.segments if segment.turn_id == state.turns[-1].id]
+    assert len(assistant_segments) == 1
+    assert assistant_segments[0].kind == "assistant_message"
+    assert assistant_segments[0].status == "failed"
+    assert assistant_segments[0].content == "hi"
 
 
 def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch) -> None:
@@ -1957,63 +1985,6 @@ def test_build_session_ignores_unsupported_persisted_thread_state(tmp_path: Path
 
     assert captured["working_dir"] == project_path
     assert captured["persisted_thread_id"] is None
-
-
-def test_send_turn_retries_with_fresh_session_after_timeout(tmp_path: Path, monkeypatch) -> None:
-    service = project_chat.ProjectChatService(tmp_path)
-
-    class TimedOutSession:
-        def turn(
-            self,
-            prompt: str,
-            model: str | None,
-            *,
-            on_event=None,
-            on_dynamic_tool_call=None,
-        ) -> project_chat.ChatTurnResult:
-            raise RuntimeError("codex app-server turn timed out waiting for activity")
-
-        def _close(self) -> None:
-            return None
-
-    class FreshSession:
-        def turn(
-            self,
-            prompt: str,
-            model: str | None,
-            *,
-            on_event=None,
-            on_dynamic_tool_call=None,
-        ) -> project_chat.ChatTurnResult:
-            if on_event is not None:
-                on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
-                        content_delta="Recovered.",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
-                        phase="final_answer",
-                    )
-                )
-            return project_chat.ChatTurnResult(
-                assistant_message='{"assistant_message":"Recovered."}',
-            )
-
-        def _close(self) -> None:
-            return None
-
-    sessions = [TimedOutSession(), FreshSession()]
-    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: sessions.pop(0))
-    monkeypatch.setattr(
-        service,
-        "_replace_session",
-        lambda conversation_id, project_path, persisted_thread_id=None: sessions.pop(0),
-    )
-
-    snapshot = service.send_turn("conversation-test", str(tmp_path), "hello", None)
-
-    assert snapshot["turns"][-1]["role"] == "assistant"
-    assert snapshot["turns"][-1]["content"] == "Recovered."
 
 
 def test_send_turn_writes_raw_jsonrpc_log(tmp_path: Path, monkeypatch) -> None:

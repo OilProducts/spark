@@ -74,7 +74,8 @@ export function useConversationStream({
         void loadSnapshot()
 
         if (typeof EventSource !== 'undefined') {
-            eventSource = new EventSource(conversationEventsUrl(activeConversationId, activeProjectPath))
+            const eventStreamUrl = conversationEventsUrl(activeConversationId, activeProjectPath)
+            eventSource = new EventSource(eventStreamUrl)
             eventSource.onmessage = (event) => {
                 if (isCancelled) {
                     return

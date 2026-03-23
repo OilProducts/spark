@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
+import uuid
 
 
 def _utc_timestamp() -> str:
@@ -44,13 +45,31 @@ class Checkpoint:
 
 def save_checkpoint(path: Path, checkpoint: Checkpoint) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(checkpoint.to_dict(), f, indent=2, sort_keys=True)
+    # Write atomically so readers never observe a partially written checkpoint file.
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(checkpoint.to_dict(), handle, indent=2, sort_keys=True)
+            handle.flush()
+        tmp_path.replace(path)
+    finally:
+        # Best-effort cleanup if the write fails before replace().
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
 
 
 def load_checkpoint(path: Path) -> Optional[Checkpoint]:
     if not path.exists():
         return None
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except json.JSONDecodeError:
+        # Readers can race with writers; treat invalid/empty JSON as "not ready yet".
+        return None
+    if not isinstance(data, dict):
+        return None
     return Checkpoint.from_dict(data)

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
-import selectors
 import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from spark_common import codex_app_server
+from spark_common.process_line_reader import ProcessLineReader
 from workspace.project_chat_common import (
     as_non_empty_string,
     build_codex_runtime_environment,
@@ -24,7 +25,6 @@ from workspace.project_chat_models import (
 
 
 CHAT_TURN_IDLE_TIMEOUT_SECONDS = codex_app_server.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS
-FINAL_ANSWER_SETTLE_TIMEOUT_SECONDS = 0.5
 APP_SERVER_REQUEST_TIMEOUT_SECONDS = 15.0
 
 
@@ -91,21 +91,18 @@ class CodexAppServerChatSession:
         self.requested_working_dir = normalize_project_path_value(working_dir)
         self.working_dir = resolve_runtime_workspace_path(working_dir)
         self._proc: Optional[subprocess.Popen[str]] = None
-        self._selector: Optional[selectors.DefaultSelector] = None
+        self._stdout_reader: Optional[ProcessLineReader] = None
         self._request_id = 0
         self._thread_id: Optional[str] = persisted_thread_id
         self._thread_initialized = False
         self._on_thread_id_updated = on_thread_id_updated
         self._raw_rpc_logger: Optional[Callable[[str, str], None]] = None
+        self._pending_messages: deque[dict[str, Any]] = deque()
         self._lock = threading.Lock()
 
     def _close(self) -> None:
-        if self._selector is not None:
-            try:
-                self._selector.close()
-            except Exception:
-                pass
-            self._selector = None
+        stdout_reader = self._stdout_reader
+        self._stdout_reader = None
         if self._proc is not None:
             try:
                 if self._proc.poll() is None:
@@ -117,6 +114,12 @@ class CodexAppServerChatSession:
             except Exception:
                 pass
             self._proc = None
+        if stdout_reader is not None:
+            try:
+                stdout_reader.join(timeout=0.5)
+            except Exception:
+                pass
+        self._pending_messages.clear()
         self._thread_initialized = False
 
     def close(self) -> None:
@@ -152,22 +155,17 @@ class CodexAppServerChatSession:
                     f"requested {self.requested_working_dir or self.working_dir}, resolved {self.working_dir}"
                 ) from exc
             raise RuntimeError("codex app-server not found on PATH") from exc
-        selector = selectors.DefaultSelector()
         if proc.stdout is None:
             self._close()
             raise RuntimeError("codex app-server did not expose stdout")
-        selector.register(proc.stdout, selectors.EVENT_READ)
         self._proc = proc
-        self._selector = selector
+        self._stdout_reader = ProcessLineReader(proc.stdout)
         self._request_id = 0
         self._thread_initialized = False
         init_response = self._send_request(
             "initialize",
             {
                 "clientInfo": {"name": "spark", "version": "0.1"},
-                "capabilities": {
-                    "experimentalApi": True,
-                },
             },
         )
         if init_response.get("error"):
@@ -192,15 +190,9 @@ class CodexAppServerChatSession:
         })
 
     def _read_line(self, wait: float) -> Optional[str]:
-        if self._proc is None or self._selector is None or self._proc.stdout is None:
+        if self._proc is None or self._stdout_reader is None:
             return None
-        events = self._selector.select(timeout=max(wait, 0))
-        if not events:
-            return None
-        line = self._proc.stdout.readline()
-        if not line:
-            return None
-        return line.rstrip("\n")
+        return self._stdout_reader.read_line(wait)
 
     def _handle_server_request(self, message: dict[str, Any]) -> None:
         method = message.get("method")
@@ -232,9 +224,44 @@ class CodexAppServerChatSession:
             except json.JSONDecodeError:
                 continue
             if "id" in message and "method" in message:
+                self._pending_messages.append(
+                    {
+                        "jsonrpc": message.get("jsonrpc", "2.0"),
+                        "method": message.get("method"),
+                        "params": message.get("params") or {},
+                    }
+                )
                 self._handle_server_request(message)
                 continue
             if message.get("id") == target_id:
+                return message
+            if "method" in message:
+                self._pending_messages.append(message)
+
+    def _next_message(self, wait: float) -> Optional[dict[str, Any]]:
+        if self._pending_messages:
+            return self._pending_messages.popleft()
+        deadline = time.monotonic() + max(wait, 0)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            line = self._read_line(remaining)
+            if line is None:
+                return None
+            if self._raw_rpc_logger is not None:
+                self._raw_rpc_logger("incoming", line)
+            message = codex_app_server.parse_jsonrpc_line(line)
+            if message is None:
+                continue
+            if "id" in message and "method" in message:
+                self._handle_server_request(message)
+                return {
+                    "jsonrpc": message.get("jsonrpc", "2.0"),
+                    "method": message.get("method"),
+                    "params": message.get("params") or {},
+                }
+            if "method" in message:
                 return message
 
     def _send_request(self, method: str, params: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -339,82 +366,74 @@ class CodexAppServerChatSession:
             response = self._send_request("turn/start", params)
             if response.get("error"):
                 raise RuntimeError("codex app-server turn/start failed")
+            turn = (response.get("result") or {}).get("turn") or {}
+            expected_turn_id = as_non_empty_string(turn.get("id"))
+            if not expected_turn_id:
+                raise RuntimeError("codex app-server did not return a turn id")
+            current_app_turn_id = expected_turn_id
 
             while True:
-                line = self._read_line(0.1)
-                if line is None:
+                message = self._next_message(0.1)
+                if message is None:
                     idle_for = time.monotonic() - last_activity_at
-                    if (
-                        stream_state.can_finalize_without_turn_completed()
-                        and idle_for >= FINAL_ANSWER_SETTLE_TIMEOUT_SECONDS
-                    ):
-                        break
                     if idle_for >= CHAT_TURN_IDLE_TIMEOUT_SECONDS:
-                        if stream_state.can_finalize_without_turn_completed():
-                            break
                         self._close()
                         raise RuntimeError("codex app-server turn timed out waiting for activity")
                     if self._proc is not None and self._proc.poll() is not None:
-                        if stream_state.can_finalize_without_turn_completed():
-                            break
                         self._close()
                         raise RuntimeError("codex app-server exited before turn completion")
                     continue
                 last_activity_at = time.monotonic()
-                if self._raw_rpc_logger is not None:
-                    self._raw_rpc_logger("incoming", line)
-                message = codex_app_server.parse_jsonrpc_line(line)
-                if message is None:
-                    continue
                 extracted_turn_id = _extract_app_turn_id(message)
-                if extracted_turn_id:
+                if extracted_turn_id and extracted_turn_id == expected_turn_id:
                     current_app_turn_id = extracted_turn_id
-                if "id" in message and "method" in message:
-                    request_method = message.get("method")
-                    request_params = message.get("params") or {}
-                    if request_method == "item/commandExecution/requestApproval":
-                        command = codex_app_server.extract_command_text(request_params)
-                        item_id = as_non_empty_string(request_params.get("itemId")) or f"tool-{uuid.uuid4().hex}"
-                        tool_call = ToolCallRecord(
-                            id=item_id,
-                            kind="command_execution",
-                            status="running",
-                            title="Run command",
-                            command=command,
-                        )
-                        tool_calls_by_id[item_id] = tool_call
-                        self._emit_live_event(
-                            on_event,
-                            ChatTurnLiveEvent(
-                                kind="tool_call_started",
-                                tool_call_id=item_id,
-                                tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
-                                app_turn_id=current_app_turn_id,
-                                item_id=item_id,
-                            ),
-                        )
-                    elif request_method == "item/fileChange/requestApproval":
-                        file_paths = codex_app_server.extract_file_paths(request_params)
-                        item_id = as_non_empty_string(request_params.get("itemId")) or f"tool-{uuid.uuid4().hex}"
-                        tool_call = ToolCallRecord(
-                            id=item_id,
-                            kind="file_change",
-                            status="running",
-                            title="Apply file changes",
-                            file_paths=file_paths,
-                        )
-                        tool_calls_by_id[item_id] = tool_call
-                        self._emit_live_event(
-                            on_event,
-                            ChatTurnLiveEvent(
-                                kind="tool_call_started",
-                                tool_call_id=item_id,
-                                tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
-                                app_turn_id=current_app_turn_id,
-                                item_id=item_id,
-                            ),
-                        )
-                    self._handle_server_request(message)
+                if extracted_turn_id and extracted_turn_id != expected_turn_id:
+                    continue
+                request_method = message.get("method")
+                request_params = message.get("params") or {}
+                if request_method == "item/commandExecution/requestApproval":
+                    command = codex_app_server.extract_command_text(request_params)
+                    item_id = as_non_empty_string(request_params.get("itemId")) or f"tool-{uuid.uuid4().hex}"
+                    tool_call = ToolCallRecord(
+                        id=item_id,
+                        kind="command_execution",
+                        status="running",
+                        title="Run command",
+                        command=command,
+                    )
+                    tool_calls_by_id[item_id] = tool_call
+                    self._emit_live_event(
+                        on_event,
+                        ChatTurnLiveEvent(
+                            kind="tool_call_started",
+                            tool_call_id=item_id,
+                            tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
+                            app_turn_id=current_app_turn_id,
+                            item_id=item_id,
+                        ),
+                    )
+                    continue
+                if request_method == "item/fileChange/requestApproval":
+                    file_paths = codex_app_server.extract_file_paths(request_params)
+                    item_id = as_non_empty_string(request_params.get("itemId")) or f"tool-{uuid.uuid4().hex}"
+                    tool_call = ToolCallRecord(
+                        id=item_id,
+                        kind="file_change",
+                        status="running",
+                        title="Apply file changes",
+                        file_paths=file_paths,
+                    )
+                    tool_calls_by_id[item_id] = tool_call
+                    self._emit_live_event(
+                        on_event,
+                        ChatTurnLiveEvent(
+                            kind="tool_call_started",
+                            tool_call_id=item_id,
+                            tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
+                            app_turn_id=current_app_turn_id,
+                            item_id=item_id,
+                        ),
+                    )
                     continue
                 normalized_events = codex_app_server.process_turn_message(message, stream_state)
                 for normalized_event in normalized_events:
@@ -506,8 +525,10 @@ class CodexAppServerChatSession:
                         )
                         continue
                     if normalized_event.kind == "turn_completed":
+                        if extracted_turn_id != expected_turn_id:
+                            continue
                         break
-                if any(event.kind == "turn_completed" for event in normalized_events):
+                if any(event.kind == "turn_completed" for event in normalized_events) and extracted_turn_id == expected_turn_id:
                     break
             for tool_call in tool_calls_by_id.values():
                 if tool_call.status == "running":

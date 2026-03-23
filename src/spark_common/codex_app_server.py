@@ -112,10 +112,6 @@ def extract_agent_message_phase(item: dict[str, Any]) -> Optional[str]:
     return normalized or None
 
 
-def is_final_answer_phase(phase: Optional[str]) -> bool:
-    return phase in {None, "", "final_answer", "finalanswer"}
-
-
 def is_tool_item(item: dict[str, Any]) -> bool:
     item_type = str(item.get("type") or "").strip()
     return item_type in {"commandExecution", "fileChange"}
@@ -142,16 +138,8 @@ class CodexAppServerTurnState:
     turn_status: Optional[str] = None
     turn_error: Optional[str] = None
     last_error: Optional[str] = None
-    saw_final_answer_completion: bool = False
     reasoning_summary_buffer: str = ""
     agent_message_phases: dict[str, str] = field(default_factory=dict)
-
-    def has_terminal_message(self) -> bool:
-        response_text = self.final_agent_message if self.final_agent_message is not None else "".join(self.agent_chunks)
-        return bool(response_text.strip())
-
-    def can_finalize_without_turn_completed(self) -> bool:
-        return self.saw_final_answer_completion and self.has_terminal_message()
 
     def resolved_agent_text(self) -> str:
         response_text = self.final_agent_message if self.final_agent_message is not None else "".join(self.agent_chunks)
@@ -200,8 +188,6 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
             if agent_message_text:
                 phase = remember_agent_message_phase(item) or extract_agent_message_phase(item)
                 state.final_agent_message = agent_message_text
-                if is_final_answer_phase(phase):
-                    state.saw_final_answer_completion = True
                 events.append(
                     CodexAppServerTurnEvent(
                         kind="assistant_message_completed",

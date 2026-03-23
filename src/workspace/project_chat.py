@@ -555,14 +555,6 @@ class ProjectChatService:
             if current_state is None:
                 return
             current_assistant_turn = self._get_turn(current_state, prepared.assistant_turn.id)
-            if current_assistant_turn is not None and self._completed_final_answer_segment(current_state, current_assistant_turn.id) is not None:
-                _log_project_chat_debug(
-                    "suppressing assistant failure after completed message",
-                    conversation_id=prepared.conversation_id,
-                    assistant_turn_id=prepared.assistant_turn.id,
-                    error=error_message,
-                )
-                return
             if current_assistant_turn is None:
                 current_assistant_turn = ConversationTurn(
                     id=prepared.assistant_turn.id,
@@ -579,8 +571,6 @@ class ProjectChatService:
             for segment in current_state.segments:
                 if segment.turn_id != current_assistant_turn.id or segment.kind != "assistant_message":
                     continue
-                if segment.status == "complete":
-                    continue
                 segment.status = "failed"
                 segment.error = error_message
                 segment.updated_at = _iso_now()
@@ -594,7 +584,7 @@ class ProjectChatService:
             self._publish_progress_payload(progress_callback, payload)
         self._publish_progress_payload(progress_callback, assistant_upsert_payload)
 
-    def _execute_turn_with_retry(
+    def _execute_turn(
         self,
         prepared: PreparedChatTurn,
         persist_live_event: Callable[[ChatTurnLiveEvent], None],
@@ -627,27 +617,7 @@ class ProjectChatService:
                 clear_raw_rpc_logger(target_session)
 
         session = self._build_session(prepared.conversation_id, prepared.project_path)
-        try:
-            return run_session(session)
-        except RuntimeError as exc:
-            if "timed out" not in str(exc).lower():
-                raise
-            with self._lock:
-                current_state = self._read_state(prepared.conversation_id, prepared.project_path)
-                if current_state is not None:
-                    self._touch_conversation_state(current_state)
-                    self._write_state(current_state)
-                    _log_project_chat_debug(
-                        "retrying turn after timeout",
-                        conversation_id=prepared.conversation_id,
-                        turns=_summarize_turns_for_debug(current_state.turns),
-                    )
-            retry_session = self._replace_session(
-                prepared.conversation_id,
-                prepared.project_path,
-                persisted_thread_id=None,
-            )
-            return run_session(retry_session)
+        return run_session(session)
 
     def _run_prepared_turn(
         self,
@@ -720,7 +690,7 @@ class ProjectChatService:
                 self._publish_progress_payload(progress_callback, payload)
 
         try:
-            turn_result = self._execute_turn_with_retry(prepared, persist_live_event, progress_callback)
+            turn_result = self._execute_turn(prepared, persist_live_event, progress_callback)
         except RuntimeError as exc:
             self._persist_assistant_turn_failure(prepared, str(exc), progress_callback)
             raise
@@ -800,29 +770,6 @@ class ProjectChatService:
                 return session
             persisted_session = self._read_session_state(conversation_id, project_path)
             persisted_thread_id = persisted_session.thread_id if persisted_session is not None else None
-            session = CodexAppServerChatSession(
-                project_path,
-                persisted_thread_id=persisted_thread_id,
-                on_thread_id_updated=lambda thread_id: self._persist_session_thread(
-                    conversation_id,
-                    project_path,
-                    thread_id,
-                ),
-            )
-            self._sessions[conversation_id] = session
-            return session
-
-    def _replace_session(
-        self,
-        conversation_id: str,
-        project_path: str,
-        *,
-        persisted_thread_id: Optional[str] = None,
-    ) -> CodexAppServerChatSession:
-        with self._sessions_lock:
-            existing = self._sessions.pop(conversation_id, None)
-            if existing is not None:
-                existing._close()
             session = CodexAppServerChatSession(
                 project_path,
                 persisted_thread_id=persisted_thread_id,

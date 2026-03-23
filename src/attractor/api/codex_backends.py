@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from pathlib import Path
-import selectors
 import subprocess
 import threading
 import time
@@ -12,6 +12,7 @@ from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome, OutcomeStatus
 from attractor.handlers.base import CodergenBackend
 from spark_common import codex_app_server
+from spark_common.process_line_reader import ProcessLineReader
 from spark_common.runtime import build_codex_runtime_environment, resolve_runtime_workspace_path
 
 _STRUCTURED_OUTCOME_KEYS = {
@@ -24,6 +25,21 @@ _STRUCTURED_OUTCOME_KEYS = {
     "failure_reason",
     "retryable",
 }
+
+
+def _extract_turn_id(message: dict[str, Any]) -> str | None:
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return None
+    direct = codex_app_server.as_non_empty_string(params.get("turnId"))
+    if direct:
+        return direct
+    turn = params.get("turn")
+    if isinstance(turn, dict):
+        nested = codex_app_server.as_non_empty_string(turn.get("id"))
+        if nested:
+            return nested
+    return None
 
 
 class CodexAppServerBackend(CodergenBackend):
@@ -74,6 +90,7 @@ class CodexAppServerBackend(CodergenBackend):
         deadline = time.monotonic() + timeout if timeout else None
         last_activity_at = time.monotonic()
         stream_state = codex_app_server.CodexAppServerTurnState()
+        pending_messages: deque[dict[str, Any]] = deque()
 
         def log_line(message: str) -> None:
             if message:
@@ -103,9 +120,7 @@ class CodexAppServerBackend(CodergenBackend):
                 )
             return fail("codex app-server not found on PATH")
 
-        selector = selectors.DefaultSelector()
-        if proc.stdout is not None:
-            selector.register(proc.stdout, selectors.EVENT_READ)
+        stdout_reader = ProcessLineReader(proc.stdout) if proc.stdout is not None else None
 
         def send_json(payload: dict) -> None:
             if proc.stdin is None:
@@ -133,17 +148,9 @@ class CodexAppServerBackend(CodergenBackend):
             send_json(payload)
 
         def read_line(wait: float) -> Optional[str]:
-            if proc.stdout is None:
+            if stdout_reader is None:
                 return None
-            if wait < 0:
-                wait = 0
-            events = selector.select(timeout=wait)
-            if not events:
-                return None
-            line = proc.stdout.readline()
-            if not line:
-                return None
-            return line.rstrip("\n")
+            return stdout_reader.read_line(wait)
 
         def handle_server_request(message: dict) -> None:
             method = message.get("method")
@@ -170,12 +177,44 @@ class CodexAppServerBackend(CodergenBackend):
                     log_line(line)
                     continue
                 if "id" in message and "method" in message:
+                    pending_messages.append(
+                        {
+                            "jsonrpc": message.get("jsonrpc", "2.0"),
+                            "method": message.get("method"),
+                            "params": message.get("params") or {},
+                        }
+                    )
                     handle_server_request(message)
                     continue
                 if message.get("id") == target_id:
                     return message
                 if "method" in message:
-                    codex_app_server.process_turn_message(message, stream_state)
+                    pending_messages.append(message)
+
+        def next_message(wait: float) -> Optional[dict]:
+            if pending_messages:
+                return pending_messages.popleft()
+            deadline_at = time.monotonic() + max(wait, 0)
+            while True:
+                remaining = deadline_at - time.monotonic()
+                if remaining <= 0:
+                    return None
+                line = read_line(remaining)
+                if line is None:
+                    return None
+                message = codex_app_server.parse_jsonrpc_line(line)
+                if message is None:
+                    log_line(line)
+                    continue
+                if "id" in message and "method" in message:
+                    handle_server_request(message)
+                    return {
+                        "jsonrpc": message.get("jsonrpc", "2.0"),
+                        "method": message.get("method"),
+                        "params": message.get("params") or {},
+                    }
+                if "method" in message:
+                    return message
 
         try:
             init_id = send_request(
@@ -185,6 +224,9 @@ class CodexAppServerBackend(CodergenBackend):
             init_response = wait_for_response(init_id)
             if not init_response or init_response.get("error"):
                 return fail("app-server initialize failed")
+            # Per the app-server protocol, the client must acknowledge the `initialize`
+            # handshake with an `initialized` notification before other requests.
+            send_json({"jsonrpc": "2.0", "method": "initialized", "params": {}})
 
             def start_thread() -> str | None:
                 thread_params = {
@@ -222,34 +264,30 @@ class CodexAppServerBackend(CodergenBackend):
             turn_response = wait_for_response(turn_request_id)
             if not turn_response or turn_response.get("error"):
                 return fail("app-server turn/start failed")
+            turn = (turn_response.get("result") or {}).get("turn") or {}
+            expected_turn_id = codex_app_server.as_non_empty_string(turn.get("id"))
+            if not expected_turn_id:
+                return fail("app-server turn/start did not return a turn id")
 
             while True:
                 if deadline is not None and time.monotonic() > deadline:
                     return fail(f"app-server turn timed out after {timeout:g}s")
-                line = read_line(0.1)
-                if line is None:
+                message = next_message(0.1)
+                if message is None:
                     idle_for = time.monotonic() - last_activity_at
                     if idle_for >= codex_app_server.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS:
-                        if stream_state.can_finalize_without_turn_completed():
-                            break
                         return fail("app-server turn timed out waiting for activity")
                     if proc.poll() is not None:
-                        if stream_state.can_finalize_without_turn_completed():
-                            break
                         return fail("app-server turn exited before completion")
                     continue
                 last_activity_at = time.monotonic()
-                message = codex_app_server.parse_jsonrpc_line(line)
-                if message is None:
-                    log_line(line)
+                extracted_turn_id = _extract_turn_id(message)
+                if extracted_turn_id and extracted_turn_id != expected_turn_id:
                     continue
-                if "id" in message and "method" in message:
-                    handle_server_request(message)
-                    continue
-                if "method" not in message:
+                if message.get("method") in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
                     continue
                 normalized_events = codex_app_server.process_turn_message(message, stream_state)
-                if any(event.kind == "turn_completed" for event in normalized_events):
+                if any(event.kind == "turn_completed" for event in normalized_events) and extracted_turn_id == expected_turn_id:
                     break
 
             if stream_state.turn_status and stream_state.turn_status != "completed":
@@ -280,6 +318,11 @@ class CodexAppServerBackend(CodergenBackend):
                         proc.kill()
             except Exception:
                 pass
+            if stdout_reader is not None:
+                try:
+                    stdout_reader.join(timeout=0.5)
+                except Exception:
+                    pass
 
 
 def build_codergen_backend(
