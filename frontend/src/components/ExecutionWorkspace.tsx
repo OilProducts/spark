@@ -24,8 +24,11 @@ export function ExecutionWorkspace({ isActive }: { isActive: boolean }) {
                 <ReactFlowProvider>
                     <CanvasSessionModeProvider mode="execution">
                         <ExecutionSidebar />
-                        <div className="flex-1 flex flex-col overflow-hidden">
-                            <div className="flex-1 w-full h-full bg-background/50">
+                        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                            <div
+                                data-testid="execution-canvas-panel"
+                                className="relative flex-1 w-full h-full bg-background/50"
+                            >
                                 <ExecutionCanvas />
                                 <ExecutionControls />
                             </div>

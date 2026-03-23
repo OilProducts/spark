@@ -530,4 +530,21 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-editor'))
     expect((await screen.findByTestId('raw-dot-editor') as HTMLTextAreaElement).value).toContain('// editor draft note')
   })
+
+  it('anchors execution launch inputs to the canvas panel instead of the sidebar shell', async () => {
+    const user = userEvent.setup()
+    installCanvasWorkspaceFetchMock()
+
+    render(<App />)
+
+    await user.click(screen.getByTestId('nav-mode-execution'))
+    await user.click(await screen.findByRole('button', { name: /implement-review-loop\.dot/i }))
+
+    const executionCanvasPanel = await screen.findByTestId('execution-canvas-panel')
+    const executionFooterControls = screen.getByTestId('execution-footer-controls')
+
+    expect(executionCanvasPanel).toHaveClass('relative')
+    expect(executionCanvasPanel.parentElement).toHaveClass('min-w-0')
+    expect(executionCanvasPanel).toContainElement(executionFooterControls)
+  })
 })
