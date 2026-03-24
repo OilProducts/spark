@@ -1,4 +1,4 @@
-import { buildHydratedFlowGraph } from '@/components/flowCanvasShared'
+import { buildHydratedFlowGraph, layoutWithElk } from '@/components/flowCanvasShared'
 import type { PreviewResponsePayload } from '@/lib/attractorClient'
 import { describe, expect, it } from 'vitest'
 
@@ -51,5 +51,41 @@ describe('flowCanvasShared', () => {
                 data: { shape: 'ellipse' },
             },
         ])
+    })
+
+    it('attaches ELK route geometry to hydrated edges during layout', async () => {
+        const preview: PreviewResponsePayload = {
+            status: 'ok',
+            graph: {
+                graph_attrs: {},
+                nodes: [
+                    { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                    { id: 'left', label: 'Left', shape: 'box' },
+                    { id: 'right', label: 'Right', shape: 'box' },
+                    { id: 'join', label: 'Join', shape: 'tripleoctagon' },
+                ],
+                edges: [
+                    { from: 'start', to: 'left' },
+                    { from: 'start', to: 'right' },
+                    { from: 'left', to: 'join' },
+                    { from: 'right', to: 'join' },
+                ],
+            },
+        }
+
+        const hydrated = buildHydratedFlowGraph('routing-canvas.dot', preview, {
+            llm_model: '',
+            llm_provider: '',
+            reasoning_effort: '',
+        })
+
+        expect(hydrated).not.toBeNull()
+        const layoutGraph = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [])
+
+        expect(layoutGraph.nodes).toHaveLength(4)
+        expect(layoutGraph.edges).toHaveLength(4)
+        expect(
+            layoutGraph.edges.every((edge) => Array.isArray((edge.data as { layoutRoute?: unknown[] } | undefined)?.layoutRoute)),
+        ).toBe(true)
     })
 })

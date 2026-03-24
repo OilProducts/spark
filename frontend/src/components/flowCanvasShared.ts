@@ -9,6 +9,7 @@ import {
     getReactFlowNodeTypeForShape,
     getShapeNodeStyle,
 } from '@/lib/workflowNodeShape'
+import { flattenElkSectionToRoute, type ElkEdgeSectionLike } from '@/lib/edgeRouting'
 
 import {
     ConditionalNode,
@@ -49,6 +50,7 @@ const DEFAULT_NODE_HEIGHT = 110
 const ELK_OPTIONS = {
     'elk.algorithm': 'layered',
     'elk.direction': 'DOWN',
+    'elk.edgeRouting': 'ORTHOGONAL',
     'elk.layered.spacing.nodeNodeBetweenLayers': '30',
     'elk.spacing.nodeNode': '20',
     'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
@@ -66,11 +68,16 @@ export type HydratedFlowGraph = {
     subgraphs: ReturnType<typeof buildCanonicalFlowModelFromPreviewGraph>['subgraphs']
 }
 
+export type LaidOutFlowGraph = {
+    nodes: Node[]
+    edges: Edge[]
+}
+
 export function normalizeLegacyDot(content: string): string {
     return content.replace(/\blabel=label=/g, 'label=')
 }
 
-export async function layoutWithElk(nodes: Node[], edges: Edge[]): Promise<Node[]> {
+export async function layoutWithElk(nodes: Node[], edges: Edge[]): Promise<LaidOutFlowGraph> {
     const graph = {
         id: 'root',
         layoutOptions: ELK_OPTIONS,
@@ -88,8 +95,16 @@ export async function layoutWithElk(nodes: Node[], edges: Edge[]): Promise<Node[
 
     const layout = await elk.layout(graph)
     const layoutMap = new Map((layout.children ?? []).map((child) => [child.id, child]))
+    const layoutEdgeMap = new Map(
+        (
+            (layout as { edges?: Array<{ id?: string; sections?: readonly ElkEdgeSectionLike[] }> }).edges
+            ?? []
+        )
+            .filter((edge): edge is { id: string; sections?: readonly ElkEdgeSectionLike[] } => typeof edge.id === 'string')
+            .map((edge) => [edge.id, flattenElkSectionToRoute(edge.sections)]),
+    )
 
-    return nodes.map((node) => {
+    const laidOutNodes = nodes.map((node) => {
         const layoutNode = layoutMap.get(node.id)
         if (!layoutNode) return node
         return {
@@ -100,6 +115,25 @@ export async function layoutWithElk(nodes: Node[], edges: Edge[]): Promise<Node[
             },
         }
     })
+
+    const laidOutEdges = edges.map((edge) => {
+        const layoutRoute = layoutEdgeMap.get(edge.id)
+        if (!layoutRoute) {
+            return edge
+        }
+        return {
+            ...edge,
+            data: {
+                ...(edge.data ?? {}),
+                layoutRoute,
+            },
+        }
+    })
+
+    return {
+        nodes: laidOutNodes,
+        edges: laidOutEdges,
+    }
 }
 
 export function nowMs(): number {

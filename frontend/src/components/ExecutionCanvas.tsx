@@ -81,8 +81,11 @@ export function ExecutionCanvas() {
         const layoutStart = nowMs()
         let layoutDurationMs = 0
         let laidOutNodes = hydratedGraph.nodes
+        let laidOutEdges = hydratedGraph.edges
         try {
-            laidOutNodes = await layoutWithElk(hydratedGraph.nodes, hydratedGraph.edges)
+            const layoutGraph = await layoutWithElk(hydratedGraph.nodes, hydratedGraph.edges)
+            laidOutNodes = layoutGraph.nodes
+            laidOutEdges = layoutGraph.edges
         } catch (error) {
             console.error('ELK layout failed, using fallback positions.', error)
         } finally {
@@ -91,12 +94,12 @@ export function ExecutionCanvas() {
         }
 
         setNodes(laidOutNodes)
-        setEdges(hydratedGraph.edges)
+        setEdges(laidOutEdges)
         recordFlowLoadDebug('hydrate:complete', executionFlow, {
             loadId: debugContext?.loadId ?? null,
             source: debugContext?.source ?? 'flow-load-source-dot',
             nodeCount: laidOutNodes.length,
-            edgeCount: hydratedGraph.edges.length,
+            edgeCount: laidOutEdges.length,
             layoutMs: layoutDurationMs,
             session: 'execution',
         })

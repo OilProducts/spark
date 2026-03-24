@@ -41,6 +41,7 @@ import {
     normalizeLegacyDot,
     nowMs,
 } from './flowCanvasShared';
+import { stripEdgeLayoutRoutes } from '@/lib/edgeRouting';
 import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
 
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
@@ -177,10 +178,12 @@ export function Editor() {
         const layoutStart = nowMs();
         let layoutDurationMs = 0;
         let serializedNodes = hydratedGraph.nodes;
+        let laidOutEdges = hydratedGraph.edges;
         try {
-            const layoutNodes = await layoutWithElk(hydratedGraph.nodes, hydratedGraph.edges);
-            setNodes(layoutNodes);
-            serializedNodes = layoutNodes;
+            const layoutGraph = await layoutWithElk(hydratedGraph.nodes, hydratedGraph.edges);
+            setNodes(layoutGraph.nodes);
+            laidOutEdges = layoutGraph.edges;
+            serializedNodes = layoutGraph.nodes;
         } catch (error) {
             console.error('ELK layout failed, using fallback positions.', error);
             setNodes(hydratedGraph.nodes);
@@ -189,17 +192,17 @@ export function Editor() {
             layoutDurationMs = Math.max(0, nowMs() - layoutStart);
             setLastLayoutMs(layoutDurationMs);
         }
-        setEdges(hydratedGraph.edges);
+        setEdges(laidOutEdges);
         primeFlowSaveBaseline(
             flowName ?? 'flow',
-            generateDot(flowName ?? 'flow', serializedNodes, hydratedGraph.edges, hydratedGraph.graphAttrs),
+            generateDot(flowName ?? 'flow', serializedNodes, laidOutEdges, hydratedGraph.graphAttrs),
         )
         hydratedRef.current = true;
         recordFlowLoadDebug('hydrate:complete', flowName, {
             loadId: debugContext?.loadId ?? null,
             source: debugContext?.source ?? 'flow-load-source-dot',
             nodeCount: hydratedGraph.nodes.length,
-            edgeCount: hydratedGraph.edges.length,
+            edgeCount: laidOutEdges.length,
             layoutMs: layoutDurationMs,
         })
         return true;
@@ -379,6 +382,10 @@ export function Editor() {
 
     // Handle new connections via UI
     const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
+        const shouldClearEdgeRoutes = changes.some((change) => change.type !== 'select');
+        if (shouldClearEdgeRoutes) {
+            setEdges((currentEdges) => stripEdgeLayoutRoutes(currentEdges));
+        }
         setNodes((currentNodes) => {
             const updatedNodes = applyNodeChanges(changes, currentNodes);
             const latestSelectedNodeChange = [...changes].reverse().find(
@@ -425,7 +432,7 @@ export function Editor() {
             }
             return nextNodes;
         });
-    }, [setNodes, scheduleSave, edges, enforceSingleSelectedNode]);
+    }, [setEdges, setNodes, scheduleSave, edges, enforceSingleSelectedNode]);
 
     const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
         setEdges((currentEdges) => {

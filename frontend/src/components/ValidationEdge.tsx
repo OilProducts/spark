@@ -1,13 +1,59 @@
-import type { CSSProperties } from 'react';
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react';
-import { useStore } from '@/store';
-import { useCanvasSessionMode } from './canvasSessionContext';
+import type { CSSProperties } from 'react'
+import { BaseEdge, EdgeLabelRenderer, type EdgeProps, type InternalNode, useStore as useFlowStore } from '@xyflow/react'
 
-const WARNING_STROKE = 'hsl(38 92% 50%)';
+import {
+    buildFallbackOrthogonalRoute,
+    buildPolylinePath,
+    getRouteMidpoint,
+    type EdgeRoute,
+    type NodeRect,
+} from '@/lib/edgeRouting'
+import { useStore as useAppStore } from '@/store'
+
+import { useCanvasSessionMode } from './canvasSessionContext'
+
+const WARNING_STROKE = 'hsl(38 92% 50%)'
+
+function readNodeRect(node?: InternalNode): NodeRect | null {
+    if (!node) {
+        return null
+    }
+
+    const position = node.internals.positionAbsolute
+    const width = node.measured.width ?? node.width ?? node.initialWidth ?? 0
+    const height = node.measured.height ?? node.height ?? node.initialHeight ?? 0
+
+    if (!Number.isFinite(position.x) || !Number.isFinite(position.y) || width <= 0 || height <= 0) {
+        return null
+    }
+
+    return {
+        x: position.x,
+        y: position.y,
+        width,
+        height,
+    }
+}
+
+function readLayoutRoute(value: unknown): EdgeRoute | null {
+    if (!Array.isArray(value)) {
+        return null
+    }
+
+    const route = value.filter(
+        (point): point is { x: number; y: number } =>
+            Boolean(point)
+            && typeof point === 'object'
+            && Number.isFinite((point as { x?: unknown }).x)
+            && Number.isFinite((point as { y?: unknown }).y),
+    )
+    return route.length >= 2 ? route : null
+}
 
 export function ValidationEdge({
     source,
     target,
+    data,
     markerEnd,
     style,
     selected,
@@ -15,40 +61,49 @@ export function ValidationEdge({
     sourceY,
     targetX,
     targetY,
-    sourcePosition,
-    targetPosition,
 }: EdgeProps) {
-    const canvasMode = useCanvasSessionMode();
-    const edgeDiagnostics = useStore((state) =>
+    const canvasMode = useCanvasSessionMode()
+    const edgeDiagnostics = useAppStore((state) =>
         canvasMode === 'editor' ? state.edgeDiagnostics : state.executionEdgeDiagnostics,
-    );
-    const diagnosticsForEdge = edgeDiagnostics[`${source}->${target}`] || [];
-    const hasError = diagnosticsForEdge.some((diag) => diag.severity === 'error');
-    const hasWarning = diagnosticsForEdge.some((diag) => diag.severity === 'warning');
-    const hasInfo = diagnosticsForEdge.some((diag) => diag.severity === 'info');
+    )
+    const sourceNode = useFlowStore((state) => state.nodeLookup.get(source))
+    const targetNode = useFlowStore((state) => state.nodeLookup.get(target))
+    const diagnosticsForEdge = edgeDiagnostics[`${source}->${target}`] || []
+    const hasError = diagnosticsForEdge.some((diag) => diag.severity === 'error')
+    const hasWarning = diagnosticsForEdge.some((diag) => diag.severity === 'warning')
+    const hasInfo = diagnosticsForEdge.some((diag) => diag.severity === 'info')
+    const sourceRect = readNodeRect(sourceNode)
+    const targetRect = readNodeRect(targetNode)
+    const layoutRoute = readLayoutRoute((data as { layoutRoute?: unknown } | undefined)?.layoutRoute)
+    const fallbackRoute = sourceRect && targetRect
+        ? buildFallbackOrthogonalRoute(sourceRect, targetRect)
+        : [
+            { x: sourceX, y: sourceY },
+            { x: sourceX, y: (sourceY + targetY) / 2 },
+            { x: targetX, y: (sourceY + targetY) / 2 },
+            { x: targetX, y: targetY },
+        ]
+    const route = layoutRoute ?? fallbackRoute
+    const edgePath = buildPolylinePath(route)
+    const labelPoint = getRouteMidpoint(route)
 
-    const [edgePath, labelX, labelY] = getBezierPath({
-        sourceX,
-        sourceY,
-        targetX,
-        targetY,
-        sourcePosition,
-        targetPosition,
-    });
-
-    const edgeStyle: CSSProperties = { ...style };
+    const edgeStyle: CSSProperties = {
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        ...style,
+    }
     if (hasError) {
-        edgeStyle.stroke = 'hsl(var(--destructive))';
-        edgeStyle.strokeWidth = selected ? 4 : 3;
-        edgeStyle.opacity = 1;
+        edgeStyle.stroke = 'hsl(var(--destructive))'
+        edgeStyle.strokeWidth = selected ? 4 : 3
+        edgeStyle.opacity = 1
     } else if (hasWarning) {
-        edgeStyle.stroke = WARNING_STROKE;
-        edgeStyle.strokeWidth = selected ? 4 : 3;
-        edgeStyle.opacity = 0.95;
+        edgeStyle.stroke = WARNING_STROKE
+        edgeStyle.strokeWidth = selected ? 4 : 3
+        edgeStyle.opacity = 0.95
     } else if (selected) {
-        edgeStyle.stroke = 'hsl(var(--primary))';
-        edgeStyle.strokeWidth = 4;
-        edgeStyle.opacity = 1;
+        edgeStyle.stroke = 'hsl(var(--primary))'
+        edgeStyle.strokeWidth = 4
+        edgeStyle.opacity = 1
     }
 
     if (selected) {
@@ -56,25 +111,31 @@ export function ValidationEdge({
             ? 'hsl(var(--destructive) / 0.55)'
             : hasWarning
                 ? 'hsl(38 92% 50% / 0.4)'
-                : 'hsl(var(--primary) / 0.6)';
-        edgeStyle.filter = `drop-shadow(0 0 7px ${shadowColor})`;
+                : 'hsl(var(--primary) / 0.6)'
+        edgeStyle.filter = `drop-shadow(0 0 7px ${shadowColor})`
     }
 
     const badgeClass = hasError
         ? 'bg-destructive/15 text-destructive'
         : hasWarning
             ? 'bg-amber-500/15 text-amber-800'
-            : 'bg-sky-500/15 text-sky-700';
+            : 'bg-sky-500/15 text-sky-700'
 
     return (
         <>
-            <BaseEdge path={edgePath} markerEnd={markerEnd} style={edgeStyle} interactionWidth={16} />
+            <BaseEdge
+                path={edgePath}
+                markerEnd={markerEnd}
+                style={edgeStyle}
+                interactionWidth={16}
+                data-testid="validation-edge-path"
+            />
             {diagnosticsForEdge.length > 0 && (
                 <EdgeLabelRenderer>
                     <div
                         className="nodrag nopan"
                         style={{
-                            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+                            transform: `translate(-50%, -50%) translate(${labelPoint.x}px, ${labelPoint.y}px)`,
                         }}
                     >
                         <div
@@ -88,5 +149,5 @@ export function ValidationEdge({
                 </EdgeLabelRenderer>
             )}
         </>
-    );
+    )
 }

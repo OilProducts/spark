@@ -225,7 +225,7 @@ describe('TaskNode', () => {
             },
         })
 
-        renderWithFlowProvider(
+        const { container } = renderWithFlowProvider(
             <SingleNodeHarness
                 mode="execution"
                 node={{
@@ -244,5 +244,10 @@ describe('TaskNode', () => {
         expect(screen.getByTestId('workflow-node-frame-hexagon')).toBeInTheDocument()
         expect(screen.getByText('Needs Input')).toBeInTheDocument()
         expect(screen.getByTestId('node-diagnostic-badge')).toHaveTextContent('1 Warn')
+        expect(
+            [...container.querySelectorAll('.react-flow__handle')].every((handle) =>
+                handle.className.includes('pointer-events-none'),
+            ),
+        ).toBe(true)
     })
 })

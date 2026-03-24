@@ -149,6 +149,13 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const framePalette = getWorkflowNodeFramePalette({ status, selected, isWaiting })
     const overlayOffsetClassName = getWorkflowNodeOverlayOffsetClassName(renderedShape)
     const containerStyle = getWorkflowNodeContainerStyle(renderedShape)
+    const handleClassName = cn(
+        'h-2.5 w-2.5 transition-opacity',
+        isEditorCanvas
+            ? 'border-border/70 bg-background/90 opacity-0 group-hover:opacity-100'
+            : 'pointer-events-none border-transparent bg-transparent opacity-0',
+        selected && isEditorCanvas ? 'opacity-100' : null,
+    )
 
     useEffect(() => {
         if (isEditingLabel) {
@@ -297,7 +304,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         <div
             data-testid={`workflow-node-${renderedShape}`}
             data-workflow-shape={renderedShape}
-            className="relative select-none"
+            className="group relative select-none"
             style={containerStyle}
         >
             <WorkflowNodeFrame shape={renderedShape} palette={framePalette} />
@@ -305,7 +312,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             <Handle
                 type="target"
                 position={Position.Top}
-                className="h-3 w-3 border-border bg-muted-foreground"
+                className={handleClassName}
             />
 
             <div className={cn('absolute left-2 right-2 z-20 flex items-start justify-between', overlayOffsetClassName)}>
@@ -381,7 +388,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             <Handle
                 type="source"
                 position={Position.Bottom}
-                className="h-3 w-3 border-border bg-muted-foreground"
+                className={handleClassName}
             />
 
             <NodeToolbar isVisible={isEditingDetails} position={Position.Bottom} className="nodrag nopan">
