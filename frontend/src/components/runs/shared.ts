@@ -2,7 +2,9 @@ export interface RunRecord {
     run_id: string
     flow_name: string
     status: string
-    result?: string | null
+    outcome?: 'success' | 'failure' | null
+    outcome_reason_code?: string | null
+    outcome_reason_message?: string | null
     working_directory: string
     project_path?: string
     git_branch?: string | null
@@ -162,6 +164,7 @@ export const RUN_HISTORY_GRID_TEMPLATE = 'grid-cols-[minmax(112px,0.9fr)_minmax(
 
 export const STATUS_STYLES: Record<string, string> = {
     running: 'bg-sky-500/15 text-sky-700',
+    completed: 'bg-green-500/15 text-green-800',
     success: 'bg-green-500/15 text-green-800',
     failed: 'bg-destructive/15 text-destructive',
     fail: 'bg-destructive/15 text-destructive',
@@ -175,11 +178,20 @@ export const STATUS_STYLES: Record<string, string> = {
 }
 
 export const STATUS_LABELS: Record<string, string> = {
+    completed: 'Completed',
+    failed: 'Failed',
     pause_requested: 'Pausing',
     abort_requested: 'Canceling',
     cancel_requested: 'Canceling',
     aborted: 'Canceled',
     canceled: 'Canceled',
+}
+
+export const formatOutcomeLabel = (value?: string | null) => {
+    if (!value) return '—'
+    if (value === 'success') return 'Success'
+    if (value === 'failure') return 'Failure'
+    return value
 }
 
 export const formatTimestamp = (value?: string | null) => {

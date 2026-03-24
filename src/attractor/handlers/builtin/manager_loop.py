@@ -147,9 +147,11 @@ def _autostart_child_pipeline(runtime: HandlerRuntime) -> Outcome | None:
             failure_reason=f"Unable to run child pipeline from {child_workdir_path}: {exc}",
         )
 
-    child_status = "completed" if child_result.status == "success" else "failed"
+    child_status = "completed" if child_result.status == "completed" else "failed"
     runtime.context.set("context.stack.child.status", child_status)
-    runtime.context.set("context.stack.child.outcome", child_result.status)
+    runtime.context.set("context.stack.child.outcome", child_result.outcome or "")
+    runtime.context.set("context.stack.child.outcome_reason_code", child_result.outcome_reason_code or "")
+    runtime.context.set("context.stack.child.outcome_reason_message", child_result.outcome_reason_message or "")
     runtime.context.set("context.stack.child.active_stage", child_result.current_node)
     runtime.context.set("context.stack.child.completed_nodes", list(child_result.completed_nodes))
     runtime.context.set("context.stack.child.route_trace", list(child_result.route_trace))
@@ -301,8 +303,14 @@ def _resolve_child_status(context: Context) -> Outcome | None:
         return None
 
     child_outcome = str(context.get("context.stack.child.outcome", "")).strip().lower()
-    if child_outcome == OutcomeStatus.SUCCESS.value:
+    if child_status == "completed" and child_outcome == OutcomeStatus.SUCCESS.value:
         return Outcome(status=OutcomeStatus.SUCCESS, notes="Child completed")
+    if child_status == "completed" and child_outcome == "failure":
+        failure_reason = str(context.get("context.stack.child.outcome_reason_message", "")).strip()
+        return Outcome(
+            status=OutcomeStatus.FAIL,
+            failure_reason=failure_reason or "Child completed with failure outcome",
+        )
     if child_status == "failed":
         return Outcome(status=OutcomeStatus.FAIL, failure_reason="Child failed")
     return None

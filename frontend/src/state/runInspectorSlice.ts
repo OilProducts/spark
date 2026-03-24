@@ -46,6 +46,15 @@ export const createRunInspectorSlice: StateCreator<AppState, [], [], RunInspecto
     clearLogs: () => set({ logs: [] }),
     runtimeStatus: 'idle',
     setRuntimeStatus: (status) => set({ runtimeStatus: status }),
+    runtimeOutcome: null,
+    runtimeOutcomeReasonCode: null,
+    runtimeOutcomeReasonMessage: null,
+    setRuntimeOutcome: (outcome, outcomeReasonCode = null, outcomeReasonMessage = null) =>
+        set({
+            runtimeOutcome: outcome,
+            runtimeOutcomeReasonCode: outcomeReasonCode,
+            runtimeOutcomeReasonMessage: outcomeReasonMessage,
+        }),
     nodeStatuses: {},
     setNodeStatus: (nodeId, status) =>
         set((state) => ({ nodeStatuses: { ...state.nodeStatuses, [nodeId]: status } })),

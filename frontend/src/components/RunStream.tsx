@@ -36,7 +36,7 @@ const RUNTIME_STATUS_SET = new Set<RuntimeStatus>([
     'canceled',
     'failed',
     'validation_error',
-    'success',
+    'completed',
 ])
 
 function isRuntimeStatus(value: string): value is RuntimeStatus {
@@ -51,6 +51,7 @@ export function RunStream() {
     const clearHumanGate = useStore((state) => state.clearHumanGate)
     const resetNodeStatuses = useStore((state) => state.resetNodeStatuses)
     const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
+    const setRuntimeOutcome = useStore((state) => state.setRuntimeOutcome)
     const selectedRunId = useStore((state) => state.selectedRunId)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const saveState = useStore((state) => state.saveState)
@@ -90,7 +91,8 @@ export function RunStream() {
         clearHumanGate()
         clearLogs()
         setRuntimeStatus('idle')
-    }, [selectedRunId, resetNodeStatuses, clearHumanGate, clearLogs, setRuntimeStatus])
+        setRuntimeOutcome(null)
+    }, [selectedRunId, resetNodeStatuses, clearHumanGate, clearLogs, setRuntimeStatus, setRuntimeOutcome])
 
     useEffect(() => {
         if (savedToastFadeTimerRef.current) {
@@ -250,9 +252,15 @@ export function RunStream() {
                     resetNodeStatuses()
                     clearHumanGate()
                     setRuntimeStatus('running')
+                    setRuntimeOutcome(null)
                 }
                 if (data.type === 'runtime' && typeof data.status === 'string' && isRuntimeStatus(data.status)) {
                     setRuntimeStatus(data.status)
+                    setRuntimeOutcome(
+                        data.outcome === 'success' || data.outcome === 'failure' ? data.outcome : null,
+                        typeof data.outcome_reason_code === 'string' ? data.outcome_reason_code : null,
+                        typeof data.outcome_reason_message === 'string' ? data.outcome_reason_message : null,
+                    )
                 }
             } catch {
                 // ignore malformed events
@@ -284,6 +292,11 @@ export function RunStream() {
 
             if (typeof data?.status === 'string' && isRuntimeStatus(data.status)) {
                 setRuntimeStatus(data.status)
+                setRuntimeOutcome(
+                    data.outcome === 'success' || data.outcome === 'failure' ? data.outcome : null,
+                    typeof data.outcome_reason_code === 'string' ? data.outcome_reason_code : null,
+                    typeof data.outcome_reason_message === 'string' ? data.outcome_reason_message : null,
+                )
             }
             if (metadataAbort.signal.aborted) return
 
@@ -297,7 +310,7 @@ export function RunStream() {
         return () => {
             source.close()
         }
-    }, [selectedRunId, addLog, setNodeStatus, clearHumanGate, resetNodeStatuses, setHumanGate, setRuntimeStatus, setSelectedRunId])
+    }, [selectedRunId, addLog, setNodeStatus, clearHumanGate, resetNodeStatuses, setHumanGate, setRuntimeStatus, setRuntimeOutcome, setSelectedRunId])
 
     const handleRetrySave = () => {
         void retryLastSaveContent()

@@ -183,7 +183,7 @@ The `shape` attribute on a node determines which handler executes it, unless ove
 | Shape             | Handler Type          | Description |
 |-------------------|-----------------------|-------------|
 | `Mdiamond`        | `start`               | Pipeline entry point. No-op handler. Every graph must have exactly one. |
-| `Msquare`         | `exit`                | Pipeline exit point. No-op handler. Goal gate enforcement is handled by the execution engine (Section 3.4). Every graph must have exactly one. |
+| `Msquare`         | `exit`                | Pipeline completion point. No-op handler. Goal gate enforcement and final workflow-outcome resolution are handled by the execution engine (Section 3.4). Every graph must have exactly one. |
 | `box`             | `codergen`            | LLM task (code generation, analysis, planning). The default for all nodes without an explicit shape. |
 | `hexagon`         | `wait.human`          | Human-in-the-loop gate. Blocks until a human selects an option. |
 | `diamond`         | `conditional`         | Conditional routing point. Routes based on edge conditions against current context. |
@@ -380,11 +380,24 @@ FUNCTION run(graph, config):
                     current_node = graph.nodes[retry_target]
                     CONTINUE
                 ELSE:
-                    RETURN Outcome(
-                        status=FAIL,
-                        failure_reason="Goal gate unsatisfied and no retry target"
+                    RETURN PipelineResult(
+                        status=COMPLETED,
+                        outcome=FAILURE,
+                        outcome_reason_code="goal_gate_unsatisfied",
+                        outcome_reason_message="Goal gate unsatisfied and no retry target"
                     )
-            RETURN Outcome(status=SUCCESS, notes="Pipeline completed")
+            terminal_outcome = resolve_terminal_workflow_outcome(context)
+            IF terminal_outcome is INVALID:
+                RETURN PipelineResult(
+                    status=FAILED,
+                    failure_reason="Invalid context.workflow_outcome value"
+                )
+            RETURN PipelineResult(
+                status=COMPLETED,
+                outcome=terminal_outcome.outcome,
+                outcome_reason_code=terminal_outcome.reason_code,
+                outcome_reason_message=terminal_outcome.reason_message
+            )
 
         -- Step 2: Execute node handler with retry policy
         retry_policy = build_retry_policy(node, graph)
@@ -409,8 +422,8 @@ FUNCTION run(graph, config):
         next_edge = select_edge(node, outcome, context, graph)
         IF next_edge is NONE:
             IF outcome.status == FAIL:
-                RETURN outcome
-            RETURN Outcome(status=SUCCESS, notes="Pipeline completed")
+                RETURN PipelineResult(status=FAILED, failure_reason=outcome.failure_reason)
+            RETURN PipelineResult(status=COMPLETED, outcome=SUCCESS)
 
         -- Step 7: Handle loop_restart
         IF next_edge has loop_restart=true:
@@ -420,7 +433,7 @@ FUNCTION run(graph, config):
         -- Step 8: Advance to next node
         current_node = graph.nodes[next_edge.to_node]
 
-    RETURN Outcome(status=SUCCESS, notes="Pipeline completed")
+    RETURN PipelineResult(status=COMPLETED, outcome=SUCCESS)
 ```
 
 ### 3.3 Edge Selection Algorithm
@@ -478,14 +491,26 @@ FUNCTION best_by_weight_then_lexical(edges):
     RETURN edges[0]
 ```
 
-### 3.4 Goal Gate Enforcement
+### 3.4 Goal Gate Enforcement and Terminal Outcome Resolution
 
-Nodes with `goal_gate=true` represent critical stages that must succeed before the pipeline can exit. When the traversal reaches a terminal node (shape=Msquare):
+Nodes with `goal_gate=true` represent critical stages that must succeed before the pipeline can complete successfully. When the traversal reaches a terminal node (shape=Msquare):
 
 1. Check all visited nodes that have `goal_gate=true`.
-2. If any goal gate node has a non-success outcome (not SUCCESS or PARTIAL_SUCCESS), the pipeline cannot exit.
+2. If any goal gate node has a non-success outcome (not SUCCESS or PARTIAL_SUCCESS), the pipeline cannot complete yet.
 3. Instead, jump to the `retry_target` of the unsatisfied goal gate node. If that is not set, try `fallback_retry_target`. If that is also not set, try the graph-level `retry_target` and `fallback_retry_target`.
-4. If no retry target exists at any level, the pipeline ends with a FAIL outcome.
+4. If no retry target exists at any level, finalize the run as `status=completed`, `outcome=failure`, `outcome_reason_code=goal_gate_unsatisfied`.
+5. If all goal gates are satisfied, resolve the workflow outcome from reserved context keys written before the terminal node:
+   - `context.workflow_outcome`
+   - `context.workflow_outcome_reason_code`
+   - `context.workflow_outcome_reason_message`
+6. If those keys are absent, default the workflow outcome to `success`.
+7. If `context.workflow_outcome` is present but not one of `success` or `failure`, finalize the run as `status=failed`.
+
+Model business failures such as blocked, rejected, or incomplete work as:
+- a regular node writes the reserved `context.workflow_outcome*` keys
+- that node routes to the single terminal node
+
+Do not model business-failure completion as a dangling non-terminal sink.
 
 ```
 FUNCTION check_goal_gates(graph, node_outcomes):
@@ -664,7 +689,7 @@ Every graph must have exactly one start node (shape=Mdiamond or id matching `sta
 
 ### 4.4 Exit Handler
 
-A no-op handler for the pipeline exit point. Returns SUCCESS immediately. Goal gate enforcement is handled by the execution engine (Section 3.4), not by this handler.
+A no-op handler for the pipeline completion point. It returns `SUCCESS` as a node outcome immediately, but the execution engine is responsible for converting terminal reachability into a final pipeline result (`status=completed|failed`, `outcome=success|failure`) after goal-gate enforcement and terminal workflow-outcome resolution.
 
 ```
 ExitHandler:
@@ -1140,9 +1165,17 @@ Context:
 | `human.gate.*`| Human interaction state                        |
 | `work.*`      | Per-item context for parallel work items       |
 
+**Reserved terminal workflow outcome keys:**
+
+| Key                                      | Type    | Set By     | Description |
+|------------------------------------------|---------|------------|-------------|
+| `context.workflow_outcome`               | String  | Flow nodes | Optional workflow/business outcome for terminal completion. Allowed values: `success`, `failure`. |
+| `context.workflow_outcome_reason_code`   | String  | Flow nodes | Optional machine-readable terminal outcome code such as `blocked`, `rejected`, or `goal_gate_unsatisfied`. |
+| `context.workflow_outcome_reason_message`| String  | Flow nodes | Optional human-readable explanation shown with a completed failure outcome. |
+
 ### 5.2 Outcome
 
-The outcome is the result of executing a node handler. It drives routing decisions and state updates.
+The outcome is the result of executing a node handler. It drives routing decisions and state updates. It is not the same thing as the pipeline's final lifecycle status or workflow outcome.
 
 ```
 Outcome:
@@ -1163,6 +1196,25 @@ Outcome:
 | `RETRY`            | Stage requests re-execution. Engine increments retry counter and re-executes if within limits. |
 | `FAIL`             | Stage failed permanently. Engine looks for a fail edge or terminates the pipeline. |
 | `SKIPPED`          | Stage was skipped (e.g., condition not met). Proceed without recording an outcome. |
+
+### 5.2.1 Pipeline Result
+
+Final pipeline state separates execution lifecycle from workflow/business outcome.
+
+```
+PipelineResult:
+    status                 : RunStatus         -- completed, failed, paused, canceled
+    outcome                : WorkflowOutcome?  -- success, failure, or null when no workflow outcome applies
+    outcome_reason_code    : String?           -- optional machine-readable outcome reason
+    outcome_reason_message : String?           -- optional human-readable outcome explanation
+    failure_reason         : String            -- runtime/engine failure reason when status is FAILED
+```
+
+Rules:
+- `status=completed` means the graph reached an intentional terminal completion path.
+- `status=failed` is reserved for runtime/engine failure: validation failure, handler crash, infrastructure failure, or unhandled FAIL with no modeled route.
+- `status=completed, outcome=failure` is a valid completed run, not a runtime failure.
+- If no node sets the reserved `context.workflow_outcome*` keys, terminal completion defaults to `outcome=success`.
 
 ### 5.3 Checkpoint
 
@@ -1672,7 +1724,7 @@ The engine emits typed events during execution for UI, logging, and metrics inte
 
 **Pipeline lifecycle events:**
 - `PipelineStarted(name, id)` -- pipeline begins
-- `PipelineCompleted(duration, artifact_count)` -- pipeline succeeded
+- `PipelineCompleted(duration, artifact_count, outcome, outcome_reason_code?, outcome_reason_message?)` -- graph reached terminal completion
 - `PipelineFailed(error, duration)` -- pipeline failed
 
 **Stage lifecycle events:**
@@ -1878,15 +1930,16 @@ This section defines how to validate that an implementation of this spec is comp
 - [ ] Outcome is written to `{logs_root}/{node_id}/status.json`
 - [ ] Edge selection follows the 5-step priority: condition match -> preferred label -> suggested IDs -> weight -> lexical
 - [ ] Engine loops: execute node -> select edge -> advance to next node -> repeat
-- [ ] Terminal node (shape=Msquare) stops execution
-- [ ] Pipeline outcome is "success" if all goal_gate nodes reached `SUCCESS` or `PARTIAL_SUCCESS`, "fail" otherwise
+- [ ] Terminal node (shape=Msquare) stops execution and finalizes `status=completed` unless terminal outcome resolution itself is invalid
+- [ ] Terminal completion defaults to `outcome=success` when no reserved `context.workflow_outcome*` keys are set
 
 ### 11.4 Goal Gate Enforcement
 
 - [ ] Nodes with `goal_gate=true` are tracked throughout execution
 - [ ] Before allowing exit via a terminal node, the engine checks all goal gate nodes have status `SUCCESS` or `PARTIAL_SUCCESS`
 - [ ] If any goal gate node has not succeeded, the engine routes to `retry_target` (if configured) instead of exiting
-- [ ] If no retry_target and goal gates unsatisfied, pipeline outcome is "fail"
+- [ ] If no retry_target and goal gates are unsatisfied, finalize `status=completed`, `outcome=failure`, `outcome_reason_code=goal_gate_unsatisfied`
+- [ ] If `context.workflow_outcome` is present, it must be `success` or `failure`; otherwise finalize `status=failed`
 
 ### 11.5 Retry Logic
 
@@ -1899,7 +1952,7 @@ This section defines how to validate that an implementation of this spec is comp
 ### 11.6 Node Handlers
 
 - [ ] **Start handler:** Returns SUCCESS immediately (no-op)
-- [ ] **Exit handler:** Returns SUCCESS immediately (no-op, engine checks goal gates)
+- [ ] **Exit handler:** Returns SUCCESS immediately as a node outcome; the engine resolves final pipeline `status` and `outcome`
 - [ ] **Codergen handler:** Expands `$goal` in prompt, calls `CodergenBackend.run()`, writes prompt.md and response.md to stage dir
 - [ ] **Wait.human handler:** Presents outgoing edge labels as choices to the interviewer, returns selected label as preferred_label
 - [ ] **Conditional handler:** Passes through; engine evaluates edge conditions against outcome/context
@@ -2023,7 +2076,8 @@ context = Context()
 outcome = run_pipeline(graph, context, llm_callback = real_llm_callback)
 
 -- 4. Verify
-ASSERT outcome.status == "success"
+ASSERT outcome.status == "completed"
+ASSERT outcome.outcome == "success"
 ASSERT "implement" in outcome.completed_nodes
 ASSERT artifacts_exist(logs_root, "plan", ["prompt.md", "response.md", "status.json"])
 ASSERT artifacts_exist(logs_root, "implement", ["prompt.md", "response.md", "status.json"])
@@ -2106,7 +2160,7 @@ ASSERT "review" IN checkpoint.completed_nodes
 | Shape           | Handler Type        | Default Behavior |
 |-----------------|---------------------|------------------|
 | `Mdiamond`      | `start`             | No-op entry point |
-| `Msquare`       | `exit`              | No-op exit point (goal gate check in engine) |
+| `Msquare`       | `exit`              | No-op completion point (goal gate and workflow-outcome resolution in engine) |
 | `box`           | `codergen`          | LLM task (default for all nodes) |
 | `hexagon`       | `wait.human`        | Blocks for human selection |
 | `diamond`       | `conditional`       | Pass-through; engine evaluates edge conditions |

@@ -77,6 +77,9 @@ const timelineSeverityFromEvent = (type: string, payload: Record<string, unknown
     if (normalized === 'info' || normalized === 'warning' || normalized === 'error') {
         return normalized
     }
+    if (type === 'PipelineCompleted') {
+        return payload.outcome === 'failure' ? 'warning' : 'info'
+    }
     if (type === 'PipelineFailed' || type === 'StageFailed') {
         return 'error'
     }
@@ -138,7 +141,21 @@ const timelineSummaryFromEvent = (type: string, payload: Record<string, unknown>
         return `Pipeline started at ${nodeId || 'start'}`
     }
     if (type === 'PipelineCompleted') {
-        return `Pipeline completed at ${nodeId || 'exit'}`
+        const outcome = asTrimmedString(payload.outcome)
+        const reasonCode = asTrimmedString(payload.outcome_reason_code)
+        const reasonMessage = asTrimmedString(payload.outcome_reason_message)
+        if (outcome === 'failure') {
+            if (reasonMessage) {
+                return `Pipeline completed at ${nodeId || 'exit'} (failure: ${reasonMessage})`
+            }
+            if (reasonCode) {
+                return `Pipeline completed at ${nodeId || 'exit'} (failure: ${reasonCode})`
+            }
+            return `Pipeline completed at ${nodeId || 'exit'} (failure)`
+        }
+        return outcome
+            ? `Pipeline completed at ${nodeId || 'exit'} (${outcome})`
+            : `Pipeline completed at ${nodeId || 'exit'}`
     }
     if (type === 'PipelineFailed') {
         const error = typeof payload.error === 'string' && payload.error.trim().length > 0

@@ -41,7 +41,7 @@ export const EMPTY_TRIGGER_FORM: TriggerFormState = {
     pollItemsPath: 'items',
     pollItemIdPath: 'id',
     flowEventFlowName: '',
-    flowEventStatuses: 'success,failed',
+    flowEventStatuses: 'completed,failed',
 }
 
 export const SHARED_WEBHOOK_ENDPOINT = '/workspace/api/webhooks'
@@ -138,6 +138,6 @@ export function triggerToFormState(trigger: TriggerResponse): TriggerFormState {
         pollItemsPath: typeof source.items_path === 'string' ? source.items_path : 'items',
         pollItemIdPath: typeof source.item_id_path === 'string' ? source.item_id_path : 'id',
         flowEventFlowName: typeof source.flow_name === 'string' ? source.flow_name : '',
-        flowEventStatuses: Array.isArray(source.statuses) ? source.statuses.map((entry) => String(entry)).join(',') : 'success,failed',
+        flowEventStatuses: Array.isArray(source.statuses) ? source.statuses.map((entry) => String(entry)).join(',') : 'completed,failed',
     }
 }

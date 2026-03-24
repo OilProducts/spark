@@ -1,6 +1,7 @@
 export type ViewMode = 'home' | 'projects' | 'editor' | 'execution' | 'triggers' | 'settings' | 'runs'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'failed' | 'waiting'
 export type DiagnosticSeverity = 'error' | 'warning' | 'info'
+export type RunOutcome = 'success' | 'failure'
 export type RuntimeStatus =
     | 'idle'
     | 'running'
@@ -10,7 +11,7 @@ export type RuntimeStatus =
     | 'canceled'
     | 'failed'
     | 'validation_error'
-    | 'success'
+    | 'completed'
 export type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict'
 export type SaveErrorKind = 'parse_error' | 'validation_error' | 'conflict' | 'network' | 'http' | 'unknown'
 export type PlanStatus = 'draft' | 'approved' | 'rejected' | 'revision-requested'
@@ -217,6 +218,14 @@ export interface RunInspectorSlice {
     clearLogs: () => void
     runtimeStatus: RuntimeStatus
     setRuntimeStatus: (status: RuntimeStatus) => void
+    runtimeOutcome: RunOutcome | null
+    runtimeOutcomeReasonCode: string | null
+    runtimeOutcomeReasonMessage: string | null
+    setRuntimeOutcome: (
+        outcome: RunOutcome | null,
+        outcomeReasonCode?: string | null,
+        outcomeReasonMessage?: string | null,
+    ) => void
     nodeStatuses: Record<string, NodeStatus>
     setNodeStatus: (nodeId: string, status: NodeStatus) => void
     resetNodeStatuses: () => void

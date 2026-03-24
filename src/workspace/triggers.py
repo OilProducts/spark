@@ -30,7 +30,7 @@ WORKSPACE_TRIGGER_EVENTS = {
     "execution_card_revision_requested",
 }
 TERMINAL_PIPELINE_STATUSES = {
-    "success",
+    "completed",
     "failed",
     "validation_error",
     "canceled",

@@ -279,7 +279,7 @@ def _check_execute_linear_pipeline() -> bool:
     backend = _Backend({"start": True, "plan": True, "implement": True})
     registry = build_default_registry(codergen_backend=backend)
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "success" and result.completed_nodes == ["start", "plan", "implement"]
+    return result.status == "completed" and result.completed_nodes == ["start", "plan", "implement"]
 
 
 def _check_execute_conditional_success_fail() -> bool:
@@ -300,7 +300,7 @@ def _check_execute_conditional_success_fail() -> bool:
     backend = _Backend({"start": True, "gate": False, "fix": True})
     registry = build_default_registry(codergen_backend=backend)
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "success" and "fix" in result.completed_nodes
+    return result.status == "completed" and "fix" in result.completed_nodes
 
 
 def _check_retry_max_retries_two() -> bool:
@@ -319,7 +319,7 @@ def _check_retry_max_retries_two() -> bool:
     flaky = _FlakyHandler()
     registry.register("flaky", flaky)
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "success" and flaky.calls == 3
+    return result.status == "completed" and flaky.calls == 3
 
 
 def _check_goal_gate_blocks_exit() -> bool:
@@ -336,7 +336,11 @@ def _check_goal_gate_blocks_exit() -> bool:
     backend = _Backend({"start": True, "implement": False})
     registry = build_default_registry(codergen_backend=backend)
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "fail" and "Goal gate unsatisfied" in result.failure_reason
+    return (
+        result.status == "completed"
+        and result.outcome == "failure"
+        and result.outcome_reason_code == "goal_gate_unsatisfied"
+    )
 
 
 def _check_goal_gate_allows_exit() -> bool:
@@ -353,7 +357,7 @@ def _check_goal_gate_allows_exit() -> bool:
     backend = _Backend({"start": True, "implement": True})
     registry = build_default_registry(codergen_backend=backend)
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "success"
+    return result.status == "completed"
 
 
 def _check_wait_human_routes_on_selection() -> bool:
@@ -376,7 +380,7 @@ def _check_wait_human_routes_on_selection() -> bool:
     interviewer = QueueInterviewer([Answer(selected_values=["Fix"])])
     registry = build_default_registry(codergen_backend=_Backend({"start": True, "fix": True}), interviewer=interviewer)
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "success" and "fix" in result.completed_nodes
+    return result.status == "completed" and "fix" in result.completed_nodes
 
 
 def _check_edge_condition_over_weight() -> bool:
@@ -446,7 +450,7 @@ def _check_context_updates_visible_to_next() -> bool:
     registry.register("ctx.write", _ContextWriterHandler())
     registry.register("ctx.read", _ContextReaderHandler())
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "success"
+    return result.status == "completed"
 
 
 def _check_checkpoint_resume_same_result() -> bool:
@@ -485,7 +489,7 @@ def _check_checkpoint_resume_same_result() -> bool:
 
     return bool(
         paused.status == "paused"
-        and resumed.status == "success"
+        and resumed.status == "completed"
         and resumed.status == full.status
         and resumed.current_node == full.current_node
         and resumed.completed_nodes == full.completed_nodes
@@ -548,7 +552,7 @@ def _check_parallel_fan_out_and_fan_in() -> bool:
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
     parallel_results = result.context.get("parallel.results", [])
     branch_ids = {entry.get("id", "") for entry in parallel_results if isinstance(entry, dict)}
-    return bool(result.status == "success" and {"branch_docs", "branch_tests"}.issubset(branch_ids))
+    return bool(result.status == "completed" and {"branch_docs", "branch_tests"}.issubset(branch_ids))
 
 
 def _check_custom_handler_registration() -> bool:
@@ -566,7 +570,7 @@ def _check_custom_handler_registration() -> bool:
     registry.handlers = build_default_registry(codergen_backend=_Backend({})).handlers.copy()
     registry.register("custom.handler", _CustomHandler())
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "success" and result.context.get("custom.handler.ran", "") == "true"
+    return result.status == "completed" and result.context.get("custom.handler.ran", "") == "true"
 
 
 def _check_pipeline_with_ten_nodes() -> bool:
@@ -583,4 +587,4 @@ def _check_pipeline_with_ten_nodes() -> bool:
 
     registry = build_default_registry(codergen_backend=_Backend({}))
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "success" and len(result.completed_nodes) == 11
+    return result.status == "completed" and len(result.completed_nodes) == 11

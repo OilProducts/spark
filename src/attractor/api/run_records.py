@@ -11,7 +11,9 @@ class RunRecord:
     run_id: str
     flow_name: str
     status: str
-    result: Optional[str]
+    outcome: Optional[str]
+    outcome_reason_code: Optional[str]
+    outcome_reason_message: Optional[str]
     working_directory: str
     model: str
     started_at: str
@@ -28,8 +30,10 @@ class RunRecord:
         return {
             "run_id": self.run_id,
             "flow_name": self.flow_name,
-            "status": self.status,
-            "result": self.result,
+            "status": normalize_run_status(self.status),
+            "outcome": self.outcome,
+            "outcome_reason_code": self.outcome_reason_code,
+            "outcome_reason_message": self.outcome_reason_message,
             "working_directory": self.working_directory,
             "model": self.model,
             "started_at": self.started_at,
@@ -48,8 +52,14 @@ class RunRecord:
         return cls(
             run_id=str(data.get("run_id", "")),
             flow_name=str(data.get("flow_name", "")),
-            status=str(data.get("status", "unknown")),
-            result=data.get("result") if data.get("result") is not None else None,
+            status=normalize_run_status(str(data.get("status", "unknown"))),
+            outcome=data.get("outcome") if data.get("outcome") is not None else None,
+            outcome_reason_code=(
+                data.get("outcome_reason_code") if data.get("outcome_reason_code") is not None else None
+            ),
+            outcome_reason_message=(
+                data.get("outcome_reason_message") if data.get("outcome_reason_message") is not None else None
+            ),
             working_directory=str(data.get("working_directory", "")),
             model=str(data.get("model", "")),
             started_at=str(data.get("started_at", "")),
@@ -65,6 +75,8 @@ class RunRecord:
 
 
 def normalize_run_status(status: str) -> str:
+    if status == "success":
+        return "completed"
     if status == "fail":
         return "failed"
     if status in {"aborted", "abort_requested"}:
@@ -175,8 +187,6 @@ def hydrate_run_record_from_log(record: RunRecord, run_root: Path) -> None:
 
     if log_status and record.status in {"", "unknown", "running"}:
         record.status = log_status
-    if log_status and record.result is None:
-        record.result = log_status
     if log_status and not record.ended_at:
         last_timestamp = RUN_LOG_TIMESTAMP_RE.search(lines[-1])
         if last_timestamp:

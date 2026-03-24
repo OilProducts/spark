@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { OctagonX, Play } from 'lucide-react'
+import { ChevronDown, ChevronUp, OctagonX, Play } from 'lucide-react'
 import { useStore, type RuntimeStatus } from '@/store'
 import { buildPipelineStartPayload, type PipelineStartPayload } from '@/lib/pipelineStartPayload'
 import {
@@ -31,7 +31,7 @@ const STATUS_LABELS: Record<string, string> = {
     canceled: 'Canceled',
     failed: 'Failed',
     validation_error: 'Validation Error',
-    success: 'Complete',
+    completed: 'Completed',
     idle: 'Idle',
 }
 
@@ -43,7 +43,7 @@ const CANCEL_ACTION_LABELS: Record<string, string> = {
     canceled: 'Canceled',
     failed: 'Cancel',
     validation_error: 'Cancel',
-    success: 'Cancel',
+    completed: 'Cancel',
     idle: 'Cancel',
 }
 
@@ -70,7 +70,7 @@ const ACTIVE_RUNTIME_STATUSES = new Set<RuntimeStatus>([
     'abort_requested',
 ])
 const TERMINAL_RUNTIME_STATUSES = new Set<RuntimeStatus>([
-    'success',
+    'completed',
     'failed',
     'validation_error',
     'canceled',
@@ -131,6 +131,10 @@ export function ExecutionControls() {
     const hasValidationErrors = useStore((state) => state.executionHasValidationErrors)
     const runtimeStatus = useStore((state) => state.runtimeStatus)
     const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
+    const runtimeOutcome = useStore((state) => state.runtimeOutcome)
+    const runtimeOutcomeReasonCode = useStore((state) => state.runtimeOutcomeReasonCode)
+    const runtimeOutcomeReasonMessage = useStore((state) => state.runtimeOutcomeReasonMessage)
+    const setRuntimeOutcome = useStore((state) => state.setRuntimeOutcome)
     const selectedRunId = useStore((state) => state.selectedRunId)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const humanGate = useStore((state) => state.humanGate)
@@ -141,6 +145,7 @@ export function ExecutionControls() {
     const [lastLaunchFailure, setLastLaunchFailure] = useState<LaunchFailureDiagnostics | null>(null)
     const [runStartGitPolicyWarning, setRunStartGitPolicyWarning] = useState<string | null>(null)
     const [launchInputValues, setLaunchInputValues] = useState<LaunchInputFormValues>({})
+    const [collapsedLaunchInputsByFlow, setCollapsedLaunchInputsByFlow] = useState<Record<string, boolean>>({})
     const executionFlowName = executionFlow
     const parsedLaunchInputs = useMemo(
         () => parseLaunchInputDefinitions(graphAttrs['spark.launch_inputs']),
@@ -169,12 +174,30 @@ export function ExecutionControls() {
     const runIdentityLabel = selectedRunId ? `Run ${selectedRunId}` : 'Run id loading…'
     const isTerminalState = TERMINAL_RUNTIME_STATUSES.has(runtimeStatus)
     const terminalStateLabel = isTerminalState ? `Terminal: ${statusLabel}` : null
+    const outcomeLabel = runtimeOutcome === 'success' ? 'Success' : runtimeOutcome === 'failure' ? 'Failure' : '—'
     const cancelActionLabel = CANCEL_ACTION_LABELS[runtimeStatus] || 'Cancel'
     const transitionHint = TRANSITION_HINTS[runtimeStatus] || null
     const cancelDisabledReason = !selectedRunId
         ? 'Run id is still loading.'
         : CANCEL_DISABLED_REASONS[runtimeStatus] || transitionHint || DEFAULT_CANCEL_DISABLED_REASON
     const showRunStatusRow = runIsActive || Boolean(selectedRunId) || Boolean(humanGate)
+    const showLaunchInputs = parsedLaunchInputs.entries.length > 0 || Boolean(parsedLaunchInputs.error)
+    const canCollapseLaunchInputs = parsedLaunchInputs.entries.length > 0
+    const launchInputsCollapsed = executionFlowName ? (collapsedLaunchInputsByFlow[executionFlowName] ?? false) : false
+    const hasFooterAuxiliaryContent = (
+        showValidationWarningBanner
+        || Boolean(runStartGitPolicyWarning)
+        || Boolean(runStartError)
+        || Boolean(lastLaunchFailure)
+        || showRunStatusRow
+    )
+    const showFooterSurface = (
+        showLaunchInputs
+        || hasFooterAuxiliaryContent
+    )
+    const footerDesktopWidthClass = showLaunchInputs && !hasFooterAuxiliaryContent
+        ? 'w-[calc(100%-2rem)] max-w-3xl'
+        : 'w-[calc(100%-2rem)] max-w-[960px]'
     const executeDisabledReason = !activeProjectPath
         ? 'Select an active project before running.'
         : !executionFlowName
@@ -261,6 +284,7 @@ export function ExecutionControls() {
                 setSelectedRunId(runData.pipeline_id)
             }
             setRuntimeStatus('running')
+            setRuntimeOutcome(null)
 
             setLastLaunchFailure(null)
         } catch (error) {
@@ -288,6 +312,7 @@ export function ExecutionControls() {
             return
         }
         setRuntimeStatus('cancel_requested')
+        setRuntimeOutcome(null)
         try {
             await fetchPipelineCancelValidated(selectedRunId)
         } catch (error) {
@@ -316,19 +341,55 @@ export function ExecutionControls() {
                     Execute
                 </button>
             </div>
-            <div
-                data-testid="execution-footer-controls"
-                data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
-                className={`absolute bottom-4 z-20 rounded-md border border-border bg-background/95 shadow-lg backdrop-blur ${isNarrowViewport
-                    ? 'left-2 right-2 px-3 py-3'
-                    : 'left-1/2 w-[calc(100%-2rem)] max-w-[960px] -translate-x-1/2 px-4 py-3'
-                    }`}
-            >
-            {parsedLaunchInputs.entries.length > 0 ? (
+            {showFooterSurface ? (
+                <div
+                    data-testid="execution-footer-controls"
+                    data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
+                    className={`absolute bottom-4 z-20 rounded-md border border-border bg-background/95 shadow-lg backdrop-blur ${isNarrowViewport
+                        ? 'left-2 right-2 px-3 py-3'
+                        : `left-1/2 ${footerDesktopWidthClass} -translate-x-1/2 px-4 py-3`
+                        }`}
+                >
+            {showLaunchInputs ? (
                 <div
                     data-testid="execution-launch-inputs"
-                    className="mx-auto mb-3 w-full max-w-3xl"
+                    className="mb-3 w-full"
                 >
+                    <div
+                        data-testid="execution-launch-inputs-toolbar"
+                        className="mb-2 flex items-center justify-between gap-3"
+                    >
+                        <p
+                            data-testid="execution-launch-inputs-title"
+                            className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+                        >
+                            Launch Inputs
+                        </p>
+                        {canCollapseLaunchInputs ? (
+                            <button
+                                type="button"
+                                data-testid="execution-launch-inputs-toggle"
+                                aria-label={launchInputsCollapsed ? 'Expand launch inputs' : 'Collapse launch inputs'}
+                                title={launchInputsCollapsed ? 'Expand launch inputs' : 'Collapse launch inputs'}
+                                onClick={() => {
+                                    if (!executionFlowName) {
+                                        return
+                                    }
+                                    setCollapsedLaunchInputsByFlow((current) => ({
+                                        ...current,
+                                        [executionFlowName]: !launchInputsCollapsed,
+                                    }))
+                                }}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            >
+                                {launchInputsCollapsed ? (
+                                    <ChevronUp className="h-3.5 w-3.5" />
+                                ) : (
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                )}
+                            </button>
+                        ) : null}
+                    </div>
                     {parsedLaunchInputs.error ? (
                         <p
                             data-testid="execution-launch-inputs-schema-error"
@@ -337,114 +398,116 @@ export function ExecutionControls() {
                             {parsedLaunchInputs.error}
                         </p>
                     ) : null}
-                    <div
-                        data-testid="execution-launch-inputs-body"
-                        className="max-h-[min(42vh,20rem)] overflow-y-auto overscroll-contain"
-                    >
+                    {!launchInputsCollapsed ? (
                         <div
-                            data-testid="execution-launch-inputs-grid"
-                            className={`grid gap-x-4 gap-y-3 ${isNarrowViewport ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-12'}`}
+                            data-testid="execution-launch-inputs-body"
+                            className="max-h-[min(42vh,20rem)] overflow-y-auto overscroll-contain"
                         >
-                            {parsedLaunchInputs.entries.map((entry, index) => (
-                                <div
-                                    key={entry.key}
-                                    data-testid={`execution-launch-input-field-${entry.key}`}
-                                    className={`space-y-1.5 ${
-                                        isNarrowViewport
-                                            ? 'col-span-1'
-                                            : launchInputDesktopSpanClass(
-                                                entry.type,
-                                                index,
-                                                launchInputCount,
-                                                entry.required,
-                                            )
-                                    }`}
-                                >
+                            <div
+                                data-testid="execution-launch-inputs-grid"
+                                className={`grid gap-x-4 gap-y-3 ${isNarrowViewport ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-12'}`}
+                            >
+                                {parsedLaunchInputs.entries.map((entry, index) => (
                                     <div
-                                        className={`border-b border-border/40 pb-1 ${
-                                            isNarrowViewport ? 'space-y-1' : 'flex items-start justify-between gap-3'
+                                        key={entry.key}
+                                        data-testid={`execution-launch-input-field-${entry.key}`}
+                                        className={`space-y-1.5 ${
+                                            isNarrowViewport
+                                                ? 'col-span-1'
+                                                : launchInputDesktopSpanClass(
+                                                    entry.type,
+                                                    index,
+                                                    launchInputCount,
+                                                    entry.required,
+                                                )
                                         }`}
                                     >
-                                        <div className="min-w-0">
-                                            <label className="text-xs font-medium text-foreground">
-                                                {entry.label}
-                                            </label>
-                                            {entry.description ? (
-                                                <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
-                                                    {entry.description}
-                                                </p>
-                                            ) : null}
-                                        </div>
-                                        <p className="shrink-0 text-[10px] leading-4 text-muted-foreground">
-                                            {launchInputTypeLabel(entry.type)}
-                                            {entry.required ? ' · Required' : ''}
-                                        </p>
-                                    </div>
-                                    {entry.type === 'string' ? (
-                                        <input
-                                            data-testid={`execution-launch-input-${entry.key}`}
-                                            value={launchInputValues[entry.key] ?? ''}
-                                            onChange={(event) => setLaunchInputValues((current) => ({
-                                                ...current,
-                                                [entry.key]: event.target.value,
-                                            }))}
-                                            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        />
-                                    ) : entry.type === 'string[]' ? (
-                                        <textarea
-                                            data-testid={`execution-launch-input-${entry.key}`}
-                                            value={launchInputValues[entry.key] ?? ''}
-                                            onChange={(event) => setLaunchInputValues((current) => ({
-                                                ...current,
-                                                [entry.key]: event.target.value,
-                                            }))}
-                                            rows={2}
-                                            className="min-h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            placeholder="One item per line"
-                                        />
-                                    ) : entry.type === 'boolean' ? (
-                                        <select
-                                            data-testid={`execution-launch-input-${entry.key}`}
-                                            value={launchInputValues[entry.key] ?? ''}
-                                            onChange={(event) => setLaunchInputValues((current) => ({
-                                                ...current,
-                                                [entry.key]: event.target.value,
-                                            }))}
-                                            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        <div
+                                            className={`border-b border-border/40 pb-1 ${
+                                                isNarrowViewport ? 'space-y-1' : 'flex items-start justify-between gap-3'
+                                            }`}
                                         >
-                                            <option value="">Unset</option>
-                                            <option value="true">True</option>
-                                            <option value="false">False</option>
-                                        </select>
-                                    ) : entry.type === 'number' ? (
-                                        <input
-                                            data-testid={`execution-launch-input-${entry.key}`}
-                                            type="number"
-                                            value={launchInputValues[entry.key] ?? ''}
-                                            onChange={(event) => setLaunchInputValues((current) => ({
-                                                ...current,
-                                                [entry.key]: event.target.value,
-                                            }))}
-                                            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            placeholder="42"
-                                        />
-                                    ) : (
-                                        <textarea
-                                            data-testid={`execution-launch-input-${entry.key}`}
-                                            value={launchInputValues[entry.key] ?? ''}
-                                            onChange={(event) => setLaunchInputValues((current) => ({
-                                                ...current,
-                                                [entry.key]: event.target.value,
-                                            }))}
-                                            rows={3}
-                                            className="min-h-20 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            placeholder='{"key":"value"}'
-                                        />
-                                    )}
-                                </div>
-                            ))}
+                                            <div className="min-w-0">
+                                                <label className="text-xs font-medium text-foreground">
+                                                    {entry.label}
+                                                </label>
+                                                {entry.description ? (
+                                                    <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                                                        {entry.description}
+                                                    </p>
+                                                ) : null}
+                                            </div>
+                                            <p className="shrink-0 text-[10px] leading-4 text-muted-foreground">
+                                                {launchInputTypeLabel(entry.type)}
+                                                {entry.required ? ' · Required' : ''}
+                                            </p>
+                                        </div>
+                                        {entry.type === 'string' ? (
+                                            <input
+                                                data-testid={`execution-launch-input-${entry.key}`}
+                                                value={launchInputValues[entry.key] ?? ''}
+                                                onChange={(event) => setLaunchInputValues((current) => ({
+                                                    ...current,
+                                                    [entry.key]: event.target.value,
+                                                }))}
+                                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                            />
+                                        ) : entry.type === 'string[]' ? (
+                                            <textarea
+                                                data-testid={`execution-launch-input-${entry.key}`}
+                                                value={launchInputValues[entry.key] ?? ''}
+                                                onChange={(event) => setLaunchInputValues((current) => ({
+                                                    ...current,
+                                                    [entry.key]: event.target.value,
+                                                }))}
+                                                rows={2}
+                                                className="min-h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                placeholder="One item per line"
+                                            />
+                                        ) : entry.type === 'boolean' ? (
+                                            <select
+                                                data-testid={`execution-launch-input-${entry.key}`}
+                                                value={launchInputValues[entry.key] ?? ''}
+                                                onChange={(event) => setLaunchInputValues((current) => ({
+                                                    ...current,
+                                                    [entry.key]: event.target.value,
+                                                }))}
+                                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                            >
+                                                <option value="">Unset</option>
+                                                <option value="true">True</option>
+                                                <option value="false">False</option>
+                                            </select>
+                                        ) : entry.type === 'number' ? (
+                                            <input
+                                                data-testid={`execution-launch-input-${entry.key}`}
+                                                type="number"
+                                                value={launchInputValues[entry.key] ?? ''}
+                                                onChange={(event) => setLaunchInputValues((current) => ({
+                                                    ...current,
+                                                    [entry.key]: event.target.value,
+                                                }))}
+                                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                placeholder="42"
+                                            />
+                                        ) : (
+                                            <textarea
+                                                data-testid={`execution-launch-input-${entry.key}`}
+                                                value={launchInputValues[entry.key] ?? ''}
+                                                onChange={(event) => setLaunchInputValues((current) => ({
+                                                    ...current,
+                                                    [entry.key]: event.target.value,
+                                                }))}
+                                                rows={3}
+                                                className="min-h-20 w-full rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                placeholder='{"key":"value"}'
+                                            />
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
                         </div>
-                    </div>
+                    ) : null}
                 </div>
             ) : null}
             <div className={`flex ${isNarrowViewport ? 'flex-col items-stretch gap-2' : 'flex-wrap items-center gap-2'}`}>
@@ -521,11 +584,26 @@ export function ExecutionControls() {
                         <span data-testid="execution-footer-run-identity" className="text-xs font-mono text-muted-foreground">
                             {runIdentityLabel}
                         </span>
+                        {runtimeOutcome ? (
+                            <span data-testid="execution-footer-run-outcome" className="text-xs font-medium text-muted-foreground">
+                                Outcome: {outcomeLabel}
+                            </span>
+                        ) : null}
                         {terminalStateLabel && (
                             <span data-testid="execution-footer-terminal-state" className="text-xs font-medium text-muted-foreground">
                                 {terminalStateLabel}
                             </span>
                         )}
+                        {runtimeOutcomeReasonCode ? (
+                            <span data-testid="execution-footer-outcome-reason-code" className="text-xs text-muted-foreground">
+                                Reason: {runtimeOutcomeReasonCode}
+                            </span>
+                        ) : null}
+                        {runtimeOutcomeReasonMessage ? (
+                            <span data-testid="execution-footer-outcome-reason-message" className="text-xs text-muted-foreground">
+                                {runtimeOutcomeReasonMessage}
+                            </span>
+                        ) : null}
                         {transitionHint && (
                             <span className="text-xs text-muted-foreground">{transitionHint}</span>
                         )}
@@ -564,7 +642,8 @@ export function ExecutionControls() {
                     </div>
                 </>
             ) : null}
-            </div>
+                </div>
+            ) : null}
         </>
     )
 }

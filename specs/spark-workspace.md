@@ -53,7 +53,7 @@ Editor and Execution view-session state are client-ephemeral only; they are not 
 Attractor remains authoritative for:
 - flow definitions and validation
 - pipeline submission and execution
-- run lifecycle
+- run lifecycle and workflow outcome
 - checkpoint, context, artifacts, and event streams
 - human-gate questions and answers defined by the runtime contract
 

@@ -229,6 +229,9 @@ class ActiveRun:
     working_directory: str
     model: str
     status: str = "running"
+    outcome: str | None = None
+    outcome_reason_code: str | None = None
+    outcome_reason_message: str | None = None
     last_error: str = ""
     completed_nodes: List[str] = field(default_factory=list)
     control: ExecutionControl = field(default_factory=ExecutionControl)
@@ -237,6 +240,9 @@ class ActiveRun:
 @dataclass
 class RuntimeState:
     status: str = "idle"
+    outcome: str | None = None
+    outcome_reason_code: str | None = None
+    outcome_reason_message: str | None = None
     last_error: str = ""
     last_working_directory: str = ""
     last_model: str = ""

@@ -13,7 +13,6 @@ from attractor.engine.outcome import Outcome, OutcomeStatus
 from ..base import HandlerRuntime
 
 
-SUCCESS_STATUSES = {"success", "paused"}
 SUPPORTED_JOIN_POLICIES = {"wait_all", "k_of_n", "first_success", "quorum"}
 SUPPORTED_ERROR_POLICIES = {"fail_fast", "continue", "ignore"}
 
@@ -55,6 +54,9 @@ class ParallelHandler:
             payload = {
                 "id": target,
                 "status": result.status,
+                "outcome": result.outcome,
+                "outcome_reason_code": result.outcome_reason_code,
+                "outcome_reason_message": result.outcome_reason_message,
                 "current_node": result.current_node,
                 "completed_nodes": result.completed_nodes,
                 "context": result.context,
@@ -66,7 +68,7 @@ class ParallelHandler:
                 branch=target,
                 index=branch_order.get(target, -1),
                 duration=(time.perf_counter() - branch_started_at),
-                success=result.status in SUCCESS_STATUSES,
+                success=_branch_succeeded(payload),
             )
             return target, payload
 
@@ -99,10 +101,10 @@ class ParallelHandler:
                         _, payload = future.result()
                         results.append(payload)
 
-                        if error_policy == "fail_fast" and payload["status"] == "fail":
+                        if error_policy == "fail_fast" and _branch_failed(payload):
                             terminated_early = True
 
-                        if join_policy == "first_success" and payload["status"] in SUCCESS_STATUSES:
+                        if join_policy == "first_success" and _branch_succeeded(payload):
                             terminated_early = True
 
                     if terminated_early:
@@ -113,15 +115,15 @@ class ParallelHandler:
                     while len(pending) < max_parallel and submit_next():
                         pass
 
-        event_success_count = sum(1 for r in results if r["status"] in SUCCESS_STATUSES)
-        event_fail_count = sum(1 for r in results if r["status"] == "fail")
+        event_success_count = sum(1 for r in results if _branch_succeeded(r))
+        event_fail_count = sum(1 for r in results if _branch_failed(r))
 
         results_for_policy = list(results)
         if error_policy == "ignore":
-            results_for_policy = [r for r in results_for_policy if r["status"] in SUCCESS_STATUSES]
+            results_for_policy = [r for r in results_for_policy if _branch_succeeded(r)]
 
-        success_count = sum(1 for r in results_for_policy if r["status"] in SUCCESS_STATUSES)
-        fail_count = sum(1 for r in results_for_policy if r["status"] == "fail")
+        success_count = sum(1 for r in results_for_policy if _branch_succeeded(r))
+        fail_count = sum(1 for r in results_for_policy if _branch_failed(r))
         runtime.emit(
             "ParallelCompleted",
             duration=(time.perf_counter() - started_at),
@@ -147,6 +149,18 @@ class ParallelHandler:
             context_updates={"parallel.results": results_for_policy if error_policy == "ignore" else results},
             notes="parallel fan-out completed",
         )
+
+
+def _branch_succeeded(payload: Dict[str, Any]) -> bool:
+    return str(payload.get("status", "")).strip().lower() == "completed" and str(
+        payload.get("outcome", "")
+    ).strip().lower() == "success"
+
+
+def _branch_failed(payload: Dict[str, Any]) -> bool:
+    status = str(payload.get("status", "")).strip().lower()
+    outcome = str(payload.get("outcome", "")).strip().lower()
+    return status == "failed" or (status == "completed" and outcome == "failure")
 
 
 def _fan_in_nodes(graph) -> set[str]:

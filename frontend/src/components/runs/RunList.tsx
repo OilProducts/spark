@@ -1,6 +1,13 @@
 import { Eye, OctagonX } from 'lucide-react'
 import type { RunRecord } from '@/components/runs/shared'
-import { RUN_HISTORY_GRID_TEMPLATE, STATUS_LABELS, STATUS_STYLES, formatDuration, formatTimestamp } from '@/components/runs/shared'
+import {
+    RUN_HISTORY_GRID_TEMPLATE,
+    STATUS_LABELS,
+    STATUS_STYLES,
+    formatDuration,
+    formatOutcomeLabel,
+    formatTimestamp,
+} from '@/components/runs/shared'
 
 interface RunListProps {
     activeProjectPath: string | null
@@ -32,7 +39,7 @@ export function RunList({
                     <div className="min-w-[1320px]">
                         <div className={`grid ${RUN_HISTORY_GRID_TEMPLATE} gap-3 border-b bg-muted/20 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground`}>
                             <span className="min-w-0">Status</span>
-                            <span className="min-w-0">Result</span>
+                            <span className="min-w-0">Outcome</span>
                             <span className="min-w-0">Flow</span>
                             <span className="min-w-0">Started</span>
                             <span className="min-w-0">Ended</span>
@@ -71,8 +78,11 @@ export function RunList({
                                         >
                                             {STATUS_LABELS[run.status] || run.status}
                                         </span>
-                                        <span className="min-w-0 truncate pt-1 text-xs text-muted-foreground" title={run.result || undefined}>
-                                            {run.result || '—'}
+                                        <span
+                                            className="min-w-0 truncate pt-1 text-xs text-muted-foreground"
+                                            title={run.outcome_reason_message || run.outcome || undefined}
+                                        >
+                                            {formatOutcomeLabel(run.outcome)}
                                         </span>
                                         <div className="min-w-0 space-y-1">
                                             <div className="truncate font-medium text-foreground" title={run.flow_name || 'Untitled'}>

@@ -45,12 +45,17 @@ _NON_CODEGEN_SHAPES = {
     "house",
 }
 GOAL_GATE_NO_RETRY_TARGET_REASON = "Goal gate unsatisfied and no retry target"
+GOAL_GATE_UNSATISFIED_OUTCOME_CODE = "goal_gate_unsatisfied"
 STATUS_FILE_ALLOWED_OUTCOMES = {
     OutcomeStatus.SUCCESS,
     OutcomeStatus.RETRY,
     OutcomeStatus.FAIL,
     OutcomeStatus.PARTIAL_SUCCESS,
 }
+WORKFLOW_OUTCOME_KEY = "context.workflow_outcome"
+WORKFLOW_OUTCOME_REASON_CODE_KEY = "context.workflow_outcome_reason_code"
+WORKFLOW_OUTCOME_REASON_MESSAGE_KEY = "context.workflow_outcome_reason_message"
+WORKFLOW_OUTCOME_VALUES = {"success", "failure"}
 
 
 def _utc_timestamp() -> str:
@@ -129,6 +134,9 @@ class PipelineResult:
     node_outcomes: Dict[str, Outcome] = field(default_factory=dict)
     route_trace: List[str] = field(default_factory=list)
     failure_reason: str = ""
+    outcome: str | None = None
+    outcome_reason_code: str | None = None
+    outcome_reason_message: str | None = None
 
 
 def goal_gate_satisfied(graph: DotGraph, result: PipelineResult, node_id: str) -> bool:
@@ -192,6 +200,8 @@ class PipelineExecutor:
             self._stage_status_transitions = {}
 
         ctx = context or Context()
+        if not resume:
+            self._reset_workflow_outcome_context(ctx)
         completed: List[str] = []
         outcomes: Dict[str, Outcome] = {}
         retry_counts: Dict[str, int] = {}
@@ -280,20 +290,47 @@ class PipelineExecutor:
                             prompt,
                             Outcome(status=OutcomeStatus.SUCCESS),
                         )
+                        completion_result = self._resolve_terminal_workflow_outcome(ctx)
+                        if completion_result is None:
+                            invalid_reason = self._invalid_workflow_outcome_reason(ctx)
+                            self._finalize_run(
+                                current_node=current,
+                                completed_nodes=completed,
+                                context=ctx,
+                                retry_counts=retry_counts,
+                                event_type="PipelineFailed",
+                                error=invalid_reason,
+                            )
+                            return self._build_result(
+                                status="failed",
+                                current_node=current,
+                                completed_nodes=completed,
+                                context=ctx,
+                                node_outcomes=outcomes,
+                                route_trace=route_trace,
+                                failure_reason=invalid_reason,
+                            )
+                        outcome, outcome_reason_code, outcome_reason_message = completion_result
                         self._finalize_run(
                             current_node=current,
                             completed_nodes=completed,
                             context=ctx,
                             retry_counts=retry_counts,
                             event_type="PipelineCompleted",
+                            outcome=outcome,
+                            outcome_reason_code=outcome_reason_code,
+                            outcome_reason_message=outcome_reason_message,
                         )
-                        return PipelineResult(
-                            status="success",
+                        return self._build_result(
+                            status="completed",
                             current_node=current,
                             completed_nodes=completed,
-                            context=dict(ctx.values),
+                            context=ctx,
                             node_outcomes=outcomes,
                             route_trace=route_trace,
+                            outcome=outcome,
+                            outcome_reason_code=outcome_reason_code,
+                            outcome_reason_message=outcome_reason_message,
                         )
 
                     retry_target = self._resolve_goal_gate_retry_target(failed_gate_node)
@@ -310,22 +347,52 @@ class PipelineExecutor:
                         )
                         continue
 
+                    completion_result = self._resolve_terminal_workflow_outcome(
+                        ctx,
+                        default_outcome="failure",
+                        default_reason_code=GOAL_GATE_UNSATISFIED_OUTCOME_CODE,
+                        default_reason_message=GOAL_GATE_NO_RETRY_TARGET_REASON,
+                    )
+                    if completion_result is None:
+                        invalid_reason = self._invalid_workflow_outcome_reason(ctx)
+                        self._finalize_run(
+                            current_node=current,
+                            completed_nodes=completed,
+                            context=ctx,
+                            retry_counts=retry_counts,
+                            event_type="PipelineFailed",
+                            error=invalid_reason,
+                        )
+                        return self._build_result(
+                            status="failed",
+                            current_node=current,
+                            completed_nodes=completed,
+                            context=ctx,
+                            node_outcomes=outcomes,
+                            route_trace=route_trace,
+                            failure_reason=invalid_reason,
+                        )
+                    outcome, outcome_reason_code, outcome_reason_message = completion_result
                     self._finalize_run(
                         current_node=current,
                         completed_nodes=completed,
                         context=ctx,
                         retry_counts=retry_counts,
-                        event_type="PipelineFailed",
-                        error=GOAL_GATE_NO_RETRY_TARGET_REASON,
+                        event_type="PipelineCompleted",
+                        outcome=outcome,
+                        outcome_reason_code=outcome_reason_code,
+                        outcome_reason_message=outcome_reason_message,
                     )
-                    return PipelineResult(
-                        status="fail",
+                    return self._build_result(
+                        status="completed",
                         current_node=current,
                         completed_nodes=completed,
-                        context=dict(ctx.values),
+                        context=ctx,
                         node_outcomes=outcomes,
                         route_trace=route_trace,
-                        failure_reason=GOAL_GATE_NO_RETRY_TARGET_REASON,
+                        outcome=outcome,
+                        outcome_reason_code=outcome_reason_code,
+                        outcome_reason_message=outcome_reason_message,
                     )
 
                 node = self.graph.nodes[current]
@@ -460,11 +527,11 @@ class PipelineExecutor:
                             event_type="PipelineFailed",
                             error=failure_reason,
                         )
-                        return PipelineResult(
-                            status="fail",
+                        return self._build_result(
+                            status="failed",
                             current_node=node.node_id,
                             completed_nodes=completed,
-                            context=dict(ctx.values),
+                            context=ctx,
                             node_outcomes=outcomes,
                             route_trace=route_trace,
                             failure_reason=failure_reason,
@@ -475,14 +542,16 @@ class PipelineExecutor:
                         context=ctx,
                         retry_counts=retry_counts,
                         event_type="PipelineCompleted",
+                        outcome="success",
                     )
-                    return PipelineResult(
-                        status="success",
+                    return self._build_result(
+                        status="completed",
                         current_node=node.node_id,
                         completed_nodes=completed,
-                        context=dict(ctx.values),
+                        context=ctx,
                         node_outcomes=outcomes,
                         route_trace=route_trace,
+                        outcome="success",
                     )
 
                 if _edge_attr_bool(next_edge, "loop_restart"):
@@ -551,6 +620,7 @@ class PipelineExecutor:
         self._stage_status_transitions = {}
 
         ctx = context or Context()
+        self._reset_workflow_outcome_context(ctx)
         self._mirror_graph_attrs(ctx)
         completed: List[str] = []
         outcomes: Dict[str, Outcome] = {}
@@ -612,20 +682,47 @@ class PipelineExecutor:
                             prompt,
                             Outcome(status=OutcomeStatus.SUCCESS),
                         )
+                        completion_result = self._resolve_terminal_workflow_outcome(ctx)
+                        if completion_result is None:
+                            invalid_reason = self._invalid_workflow_outcome_reason(ctx)
+                            self._finalize_run(
+                                current_node=current,
+                                completed_nodes=completed,
+                                context=ctx,
+                                retry_counts=retry_counts,
+                                event_type="PipelineFailed",
+                                error=invalid_reason,
+                            )
+                            return self._build_result(
+                                status="failed",
+                                current_node=current,
+                                completed_nodes=completed,
+                                context=ctx,
+                                node_outcomes=outcomes,
+                                route_trace=route_trace,
+                                failure_reason=invalid_reason,
+                            )
+                        outcome, outcome_reason_code, outcome_reason_message = completion_result
                         self._finalize_run(
                             current_node=current,
                             completed_nodes=completed,
                             context=ctx,
                             retry_counts=retry_counts,
                             event_type="PipelineCompleted",
+                            outcome=outcome,
+                            outcome_reason_code=outcome_reason_code,
+                            outcome_reason_message=outcome_reason_message,
                         )
-                        return PipelineResult(
-                            status="success",
+                        return self._build_result(
+                            status="completed",
                             current_node=current,
                             completed_nodes=completed,
-                            context=dict(ctx.values),
+                            context=ctx,
                             node_outcomes=outcomes,
                             route_trace=route_trace,
+                            outcome=outcome,
+                            outcome_reason_code=outcome_reason_code,
+                            outcome_reason_message=outcome_reason_message,
                         )
 
                     retry_target = self._resolve_goal_gate_retry_target(failed_gate_node)
@@ -642,22 +739,52 @@ class PipelineExecutor:
                         )
                         continue
 
+                    completion_result = self._resolve_terminal_workflow_outcome(
+                        ctx,
+                        default_outcome="failure",
+                        default_reason_code=GOAL_GATE_UNSATISFIED_OUTCOME_CODE,
+                        default_reason_message=GOAL_GATE_NO_RETRY_TARGET_REASON,
+                    )
+                    if completion_result is None:
+                        invalid_reason = self._invalid_workflow_outcome_reason(ctx)
+                        self._finalize_run(
+                            current_node=current,
+                            completed_nodes=completed,
+                            context=ctx,
+                            retry_counts=retry_counts,
+                            event_type="PipelineFailed",
+                            error=invalid_reason,
+                        )
+                        return self._build_result(
+                            status="failed",
+                            current_node=current,
+                            completed_nodes=completed,
+                            context=ctx,
+                            node_outcomes=outcomes,
+                            route_trace=route_trace,
+                            failure_reason=invalid_reason,
+                        )
+                    outcome, outcome_reason_code, outcome_reason_message = completion_result
                     self._finalize_run(
                         current_node=current,
                         completed_nodes=completed,
                         context=ctx,
                         retry_counts=retry_counts,
-                        event_type="PipelineFailed",
-                        error=GOAL_GATE_NO_RETRY_TARGET_REASON,
+                        event_type="PipelineCompleted",
+                        outcome=outcome,
+                        outcome_reason_code=outcome_reason_code,
+                        outcome_reason_message=outcome_reason_message,
                     )
-                    return PipelineResult(
-                        status="fail",
+                    return self._build_result(
+                        status="completed",
                         current_node=current,
                         completed_nodes=completed,
-                        context=dict(ctx.values),
+                        context=ctx,
                         node_outcomes=outcomes,
                         route_trace=route_trace,
-                        failure_reason=GOAL_GATE_NO_RETRY_TARGET_REASON,
+                        outcome=outcome,
+                        outcome_reason_code=outcome_reason_code,
+                        outcome_reason_message=outcome_reason_message,
                     )
 
                 if current in stop_nodes:
@@ -667,14 +794,16 @@ class PipelineExecutor:
                         context=ctx,
                         retry_counts=retry_counts,
                         event_type="PipelineCompleted",
+                        outcome="success",
                     )
-                    return PipelineResult(
-                        status="success",
+                    return self._build_result(
+                        status="completed",
                         current_node=current,
                         completed_nodes=completed,
-                        context=dict(ctx.values),
+                        context=ctx,
                         node_outcomes=outcomes,
                         route_trace=route_trace,
+                        outcome="success",
                     )
 
                 node = self.graph.nodes[current]
@@ -806,11 +935,11 @@ class PipelineExecutor:
                             event_type="PipelineFailed",
                             error=failure_reason,
                         )
-                        return PipelineResult(
-                            status="fail",
+                        return self._build_result(
+                            status="failed",
                             current_node=node.node_id,
                             completed_nodes=completed,
-                            context=dict(ctx.values),
+                            context=ctx,
                             node_outcomes=outcomes,
                             route_trace=route_trace,
                             failure_reason=failure_reason,
@@ -821,14 +950,16 @@ class PipelineExecutor:
                         context=ctx,
                         retry_counts=retry_counts,
                         event_type="PipelineCompleted",
+                        outcome="success",
                     )
-                    return PipelineResult(
-                        status="success",
+                    return self._build_result(
+                        status="completed",
                         current_node=node.node_id,
                         completed_nodes=completed,
-                        context=dict(ctx.values),
+                        context=ctx,
                         node_outcomes=outcomes,
                         route_trace=route_trace,
+                        outcome="success",
                     )
 
                 if _edge_attr_bool(next_edge, "loop_restart"):
@@ -941,6 +1072,9 @@ class PipelineExecutor:
         retry_counts: Dict[str, int],
         event_type: str,
         error: str = "",
+        outcome: str | None = None,
+        outcome_reason_code: str | None = None,
+        outcome_reason_message: str | None = None,
     ) -> None:
         self._save_checkpoint(
             current_node=current_node,
@@ -954,8 +1088,44 @@ class PipelineExecutor:
         if event_type in {"PipelineCompleted", "PipelineFailed"}:
             event_payload["duration"] = self._pipeline_duration_seconds()
             event_payload["artifact_count"] = len(self._artifact_node_ids)
+        if event_type == "PipelineCompleted":
+            event_payload["status"] = "completed"
+            event_payload["outcome"] = outcome or "success"
+            if outcome_reason_code:
+                event_payload["outcome_reason_code"] = outcome_reason_code
+            if outcome_reason_message:
+                event_payload["outcome_reason_message"] = outcome_reason_message
+        elif event_type == "PipelineFailed":
+            event_payload["status"] = "failed"
         self._emit_event(event_type, **event_payload)
         self._cleanup_resources()
+
+    def _build_result(
+        self,
+        *,
+        status: str,
+        current_node: str,
+        completed_nodes: List[str],
+        context: Context,
+        node_outcomes: Dict[str, Outcome],
+        route_trace: List[str],
+        failure_reason: str = "",
+        outcome: str | None = None,
+        outcome_reason_code: str | None = None,
+        outcome_reason_message: str | None = None,
+    ) -> PipelineResult:
+        return PipelineResult(
+            status=status,
+            current_node=current_node,
+            completed_nodes=list(completed_nodes),
+            context=dict(context.values),
+            node_outcomes=node_outcomes,
+            route_trace=list(route_trace),
+            failure_reason=failure_reason,
+            outcome=outcome,
+            outcome_reason_code=outcome_reason_code,
+            outcome_reason_message=outcome_reason_message,
+        )
 
     def _cleanup_resources(self) -> None:
         self._close_if_supported(self.runner)
@@ -1063,6 +1233,7 @@ class PipelineExecutor:
         context.set(NODE_OUTCOMES_KEY, {})
         context.set("outcome", "")
         context.set("preferred_label", "")
+        self._reset_workflow_outcome_context(context)
         context.set("current_node", restart_node)
 
         self._rotate_logs_root_for_restart()
@@ -1278,6 +1449,46 @@ class PipelineExecutor:
         if value is None:
             return ""
         return str(value)
+
+    def _context_optional_text(self, context: Context, key: str) -> str | None:
+        value = context.get(key, None)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _reset_workflow_outcome_context(self, context: Context) -> None:
+        context.set(WORKFLOW_OUTCOME_KEY, "")
+        context.set(WORKFLOW_OUTCOME_REASON_CODE_KEY, "")
+        context.set(WORKFLOW_OUTCOME_REASON_MESSAGE_KEY, "")
+
+    def _resolve_terminal_workflow_outcome(
+        self,
+        context: Context,
+        *,
+        default_outcome: str = "success",
+        default_reason_code: str | None = None,
+        default_reason_message: str | None = None,
+    ) -> tuple[str, str | None, str | None] | None:
+        raw_outcome = self._context_optional_text(context, WORKFLOW_OUTCOME_KEY)
+        if raw_outcome is None:
+            return default_outcome, default_reason_code, default_reason_message
+
+        normalized_outcome = raw_outcome.lower()
+        if normalized_outcome not in WORKFLOW_OUTCOME_VALUES:
+            return None
+
+        outcome_reason_code = self._context_optional_text(context, WORKFLOW_OUTCOME_REASON_CODE_KEY)
+        outcome_reason_message = self._context_optional_text(context, WORKFLOW_OUTCOME_REASON_MESSAGE_KEY)
+        return (
+            normalized_outcome,
+            outcome_reason_code or default_reason_code,
+            outcome_reason_message or default_reason_message,
+        )
+
+    def _invalid_workflow_outcome_reason(self, context: Context) -> str:
+        value = self._context_optional_text(context, WORKFLOW_OUTCOME_KEY)
+        return f"invalid context.workflow_outcome: {value or '<empty>'}"
 
     def _node_ids_for_shape(self, shape: str) -> set[str]:
         matches: set[str] = set()

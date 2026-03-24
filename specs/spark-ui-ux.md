@@ -280,10 +280,24 @@ It should render:
 - artifacts
 - pending questions when present
 
+Run history and run inspection must render lifecycle status separately from workflow outcome.
+Examples:
+- `Status: Completed`, `Outcome: Success`
+- `Status: Completed`, `Outcome: Failure`
+- `Status: Failed`, `Outcome: —`
+
 When the user reaches run inspection from a workspace surface, the UI should preserve project framing by default rather than dropping into an unscoped global run context.
 
 Run-inspection state is execution-local.
 The currently selected execution flow, run, node or edge selection, launch form draft, and runtime inspection context must not be inferred from the Editor session.
+
+`Completed + failure outcome` is not a runtime failure surface.
+It should be presented as a completed workflow that reached a negative business conclusion, optionally with a reason code or reason message supplied by Attractor.
+
+Timeline and lifecycle summaries for `PipelineCompleted` should include:
+- workflow outcome
+- optional outcome reason code
+- optional outcome reason message
 
 ## 14. Frontend State Model
 
@@ -291,7 +305,9 @@ The frontend treats backend-provided state as authoritative for:
 - project identity
 - conversation identity
 - artifact status
-- run identity and run status
+- run identity
+- run lifecycle status
+- run workflow outcome
 - provenance links
 
 The frontend may keep local ephemeral state for:

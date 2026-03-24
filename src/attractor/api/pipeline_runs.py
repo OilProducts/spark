@@ -207,7 +207,9 @@ def record_run_start(
         run_id=run_id,
         flow_name=flow_name,
         status="running",
-        result=None,
+        outcome=None,
+        outcome_reason_code=None,
+        outcome_reason_message=None,
         working_directory=working_directory,
         model=model,
         started_at=datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -316,6 +318,9 @@ def record_run_end(
     working_directory: str,
     status: str,
     last_error: str = "",
+    outcome: str | None = None,
+    outcome_reason_code: str | None = None,
+    outcome_reason_message: str | None = None,
 ) -> None:
     normalized_status = normalize_run_status(status)
     with run_history_lock:
@@ -325,14 +330,18 @@ def record_run_end(
                 run_id=run_id,
                 flow_name="",
                 status=normalized_status,
-                result=normalized_status,
+                outcome=outcome,
+                outcome_reason_code=outcome_reason_code,
+                outcome_reason_message=outcome_reason_message,
                 working_directory=working_directory,
                 model="",
                 started_at="",
                 project_path=working_directory,
             )
         record.status = normalized_status
-        record.result = normalized_status
+        record.outcome = outcome
+        record.outcome_reason_code = outcome_reason_code
+        record.outcome_reason_message = outcome_reason_message
         record.ended_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
         record.last_error = last_error
         record.token_usage = extract_token_usage(run_root(get_settings, run_id), run_id)
@@ -346,6 +355,9 @@ def record_run_status(
     run_id: str,
     status: str,
     last_error: str = "",
+    outcome: str | None = None,
+    outcome_reason_code: str | None = None,
+    outcome_reason_message: str | None = None,
 ) -> None:
     normalized_status = normalize_run_status(status)
     with run_history_lock:
@@ -353,7 +365,12 @@ def record_run_status(
         if not record:
             return
         record.status = normalized_status
-        record.result = normalized_status
+        if outcome is not None or normalized_status != "running":
+            record.outcome = outcome
+        if outcome_reason_code is not None or normalized_status != "running":
+            record.outcome_reason_code = outcome_reason_code
+        if outcome_reason_message is not None or normalized_status != "running":
+            record.outcome_reason_message = outcome_reason_message
         if last_error:
             record.last_error = last_error
         write_run_meta(get_settings, record)
