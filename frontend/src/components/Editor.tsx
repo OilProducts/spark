@@ -41,6 +41,7 @@ import {
     normalizeLegacyDot,
     nowMs,
 } from './flowCanvasShared';
+import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
 
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
@@ -464,13 +465,15 @@ export function Editor() {
         const defaultProvider = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '';
         const defaultReasoning = graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || '';
         const newNodeId = `node_${Math.floor(Math.random() * 10000)}`;
+        const shape = 'box'
         const newNode: Node = {
             id: newNodeId,
-            type: 'customTask',
+            type: getReactFlowNodeTypeForShape(shape),
+            style: getShapeNodeStyle(shape),
             position: { x: Math.random() * 200 + 100, y: Math.random() * 200 + 100 },
             data: {
                 label: 'New Node',
-                shape: 'box',
+                shape,
                 status: 'idle',
                 llm_model: defaultModel,
                 llm_provider: defaultProvider,

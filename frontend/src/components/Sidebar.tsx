@@ -8,6 +8,13 @@ import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
 import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
 import { toExtensionAttrEntries } from "@/lib/extensionAttrs"
+import {
+    WORKFLOW_NODE_SHAPE_OPTIONS,
+    getReactFlowNodeTypeForShape,
+    getShapeNodeStyle,
+    getShapeTypeMismatchWarning,
+    normalizeWorkflowNodeShape,
+} from '@/lib/workflowNodeShape'
 import { saveFlowContent } from "@/lib/flowPersistence"
 import { deleteFlowValidated, fetchFlowListValidated } from '@/lib/attractorClient'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -176,6 +183,16 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         await loadFlows();
     };
 
+    const applyNodeVisualState = (node: Node, nextData: Record<string, unknown>) => {
+        const nextShape = normalizeWorkflowNodeShape((nextData.shape as string) || (node.data?.shape as string) || 'box')
+        return {
+            ...node,
+            type: getReactFlowNodeTypeForShape(nextShape),
+            style: getShapeNodeStyle(nextShape),
+            data: nextData,
+        }
+    }
+
     const updateNodeProperty = (nodeId: string, key: string, value: string | boolean) => {
         if (!activeFlow) return;
 
@@ -183,7 +200,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         setNodes(nds => {
             newNodes = nds.map(node => {
                 if (node.id === nodeId) {
-                    return { ...node, data: { ...node.data, [key]: value } };
+                    return applyNodeVisualState(node, { ...node.data, [key]: value });
                 }
                 return node;
             });
@@ -242,6 +259,10 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const visibility = getNodeFieldVisibility(handlerType)
     const selectedNodeToolHookPreWarning = getToolHookCommandWarning((selectedNode?.data?.["tool.hooks.pre"] as string) || "")
     const selectedNodeToolHookPostWarning = getToolHookCommandWarning((selectedNode?.data?.["tool.hooks.post"] as string) || "")
+    const selectedNodeShapeTypeMismatchWarning = getShapeTypeMismatchWarning(
+        (selectedNode?.data?.shape as string) || '',
+        (selectedNode?.data?.type as string) || '',
+    )
     const nodeFieldDiagnostics = useMemo(() => {
         if (!selectedNodeId) {
             return {}
@@ -307,10 +328,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                     return node
                 }
                 const nextData = transform({ ...((node.data || {}) as Record<string, unknown>) })
-                return {
-                    ...node,
-                    data: nextData,
-                }
+                return applyNodeVisualState(node, nextData)
             })
             return newNodes
         })
@@ -505,15 +523,11 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                                         onChange={(e) => handlePropertyChange('shape', e.target.value)}
                                         className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     >
-                                        <option value="box">Codergen (Task)</option>
-                                        <option value="hexagon">Wait for Human</option>
-                                        <option value="diamond">Condition</option>
-                                        <option value="component">Parallel (Fan Out)</option>
-                                        <option value="tripleoctagon">Parallel (Fan In)</option>
-                                        <option value="parallelogram">Tool</option>
-                                        <option value="house">Manager Loop</option>
-                                        <option value="Mdiamond">Start Node</option>
-                                        <option value="Msquare">End Node</option>
+                                        {WORKFLOW_NODE_SHAPE_OPTIONS.map((option) => (
+                                            <option key={option.value} value={option.value}>
+                                                {option.label}
+                                            </option>
+                                        ))}
                                     </select>
                                 </div>
 
@@ -700,6 +714,11 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                                             <option value="tool">tool</option>
                                             <option value="stack.manager_loop">stack.manager_loop</option>
                                         </datalist>
+                                        {selectedNodeShapeTypeMismatchWarning && (
+                                            <p data-testid="node-shape-type-warning" className="text-xs text-amber-800">
+                                                {selectedNodeShapeTypeMismatchWarning}
+                                            </p>
+                                        )}
                                         {renderFieldDiagnostics('node', 'type', nodeFieldDiagnostics, 'node-field-diagnostics-type')}
                                     </div>
                                 )}

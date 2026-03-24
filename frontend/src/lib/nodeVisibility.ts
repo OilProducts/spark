@@ -1,3 +1,5 @@
+import { getShapeHandlerType } from './workflowNodeShape'
+
 export type HandlerType =
     | 'start'
     | 'exit'
@@ -10,26 +12,12 @@ export type HandlerType =
     | 'stack.manager_loop'
     | 'unknown'
 
-const SHAPE_TO_HANDLER: Record<string, HandlerType> = {
-    Mdiamond: 'start',
-    Msquare: 'exit',
-    box: 'codergen',
-    hexagon: 'wait.human',
-    diamond: 'conditional',
-    component: 'parallel',
-    tripleoctagon: 'parallel.fan_in',
-    parallelogram: 'tool',
-    house: 'stack.manager_loop',
-}
-
 export function getHandlerType(shape?: string, typeOverride?: string): HandlerType {
     const trimmedType = (typeOverride || '').trim()
     if (trimmedType) {
         return trimmedType as HandlerType
     }
-    const trimmedShape = (shape || '').trim()
-    if (!trimmedShape) return 'codergen'
-    return SHAPE_TO_HANDLER[trimmedShape] ?? 'codergen'
+    return getShapeHandlerType(shape)
 }
 
 export function getNodeFieldVisibility(handlerType: HandlerType) {
