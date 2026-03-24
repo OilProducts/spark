@@ -683,6 +683,7 @@ describe('Project-scoped workflow behavior', () => {
 
     const currentSnapshot = cloneSnapshot(conversationSnapshots[conversationId!])
     const failureSnapshot = createConversationSnapshot(conversationId!, '/tmp/event-log-project', {
+      updated_at: '2026-03-06T15:02:30Z',
       turns: currentSnapshot.turns,
       event_log: [
         ...currentSnapshot.event_log,

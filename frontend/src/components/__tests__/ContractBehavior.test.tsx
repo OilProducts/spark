@@ -122,7 +122,9 @@ const readRuntimeUiSource = (): string => {
   const srcRoot = resolveFrontendSrcRoot()
   const files = [
     ...collectRuntimeSourceFiles(join(srcRoot, 'components')),
+    ...collectRuntimeSourceFiles(join(srcRoot, 'features')),
     ...collectRuntimeSourceFiles(join(srcRoot, 'lib')),
+    ...collectRuntimeSourceFiles(join(srcRoot, 'ui')),
   ]
   return files
     .sort((left, right) => left.localeCompare(right))

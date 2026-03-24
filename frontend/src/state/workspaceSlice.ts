@@ -1,6 +1,12 @@
 import { type StateCreator } from 'zustand'
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
 import {
+    buildHydrateProjectRegistryTransition,
+    buildRemoveProjectTransition,
+    buildSetActiveProjectTransition,
+    saveProjectScopeRouteState,
+} from './projectScopeTransitions'
+import {
     DEFAULT_WORKING_DIRECTORY,
     loadRouteState,
     pushRecentProjectPath,
@@ -56,51 +62,9 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     projectSessionsByPath: initialProjectSessionStates,
     hydrateProjectRegistry: (projects) =>
         set((state) => {
-            const nextProjectRegistry: Record<string, RegisteredProject> = {}
-            const nextProjectSessionStates = { ...state.projectSessionsByPath }
-            projects.forEach((project) => {
-                const normalizedPath = normalizeProjectPath(project.directoryPath)
-                if (!normalizedPath || !isAbsoluteProjectPath(normalizedPath)) {
-                    return
-                }
-                nextProjectRegistry[normalizedPath] = {
-                    directoryPath: normalizedPath,
-                    isFavorite: project.isFavorite === true,
-                    lastAccessedAt: typeof project.lastAccessedAt === 'string' ? project.lastAccessedAt : null,
-                }
-                nextProjectSessionStates[normalizedPath] = resolveProjectSessionState(
-                    {
-                        ...nextProjectSessionStates[normalizedPath],
-                        conversationId: typeof project.activeConversationId === 'string'
-                            ? project.activeConversationId
-                            : nextProjectSessionStates[normalizedPath]?.conversationId ?? null,
-                    },
-                    normalizedPath,
-                )
-            })
-            const nextActiveProjectPath = state.activeProjectPath && nextProjectRegistry[state.activeProjectPath]
-                ? state.activeProjectPath
-                : null
-            const nextActiveProjectScope = nextActiveProjectPath
-                ? resolveProjectSessionState(nextProjectSessionStates[nextActiveProjectPath], nextActiveProjectPath)
-                : null
-            saveRouteState({
-                viewMode: resolveViewModeForProjectScope(state.viewMode, nextActiveProjectPath),
-                activeProjectPath: nextActiveProjectPath,
-            })
-            return {
-                projectRegistry: nextProjectRegistry,
-                projectSessionsByPath: nextProjectSessionStates,
-                activeProjectPath: nextActiveProjectPath,
-                viewMode: resolveViewModeForProjectScope(state.viewMode, nextActiveProjectPath),
-                executionFlow: null,
-                selectedRunId: null,
-                runtimeOutcome: null,
-                runtimeOutcomeReasonCode: null,
-                runtimeOutcomeReasonMessage: null,
-                workingDir: nextActiveProjectPath ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY : DEFAULT_WORKING_DIRECTORY,
-                recentProjectPaths: nextActiveProjectPath ? pushRecentProjectPath(state.recentProjectPaths, nextActiveProjectPath) : state.recentProjectPaths,
-            }
+            const nextState = buildHydrateProjectRegistryTransition(state, projects)
+            saveRouteState(saveProjectScopeRouteState(nextState))
+            return nextState
         }),
     upsertProjectRegistryEntry: (project) =>
         set((state) => {
@@ -136,110 +100,21 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
         }),
     removeProject: (directoryPath, nextActiveProjectPath = null) =>
         set((state) => {
-            const normalizedPath = normalizeProjectPath(directoryPath)
-            if (!normalizedPath || !state.projectRegistry[normalizedPath]) {
+            const nextState = buildRemoveProjectTransition(state, directoryPath, nextActiveProjectPath)
+            if (!nextState) {
                 return state
             }
-
-            const nextProjectRegistry = { ...state.projectRegistry }
-            delete nextProjectRegistry[normalizedPath]
-
-            const nextProjectSessionStates = { ...state.projectSessionsByPath }
-            delete nextProjectSessionStates[normalizedPath]
-
-            const normalizedFallbackPath = nextActiveProjectPath ? normalizeProjectPath(nextActiveProjectPath) : null
-            const derivedFallbackPath = normalizedFallbackPath && nextProjectRegistry[normalizedFallbackPath]
-                ? normalizedFallbackPath
-                : state.recentProjectPaths.find((path) => path !== normalizedPath && Boolean(nextProjectRegistry[path]))
-                    || Object.keys(nextProjectRegistry)[0]
-                    || null
-            const nextActiveProjectPathResolved = state.activeProjectPath === normalizedPath
-                ? derivedFallbackPath
-                : state.activeProjectPath
-            const nextActiveProjectScope = nextActiveProjectPathResolved
-                ? resolveProjectSessionState(nextProjectSessionStates[nextActiveProjectPathResolved], nextActiveProjectPathResolved)
-                : null
-            const nextViewMode = resolveViewModeForProjectScope(state.viewMode, nextActiveProjectPathResolved)
-
-            saveRouteState({
-                viewMode: nextViewMode,
-                activeProjectPath: nextActiveProjectPathResolved,
-            })
-
-            return {
-                projectRegistry: nextProjectRegistry,
-                projectSessionsByPath: nextProjectSessionStates,
-                recentProjectPaths: state.recentProjectPaths.filter((path) => path !== normalizedPath),
-                activeProjectPath: nextActiveProjectPathResolved,
-                viewMode: nextViewMode,
-                activeFlow: state.activeFlow,
-                executionFlow: state.executionFlow,
-                selectedRunId: state.activeProjectPath === normalizedPath ? null : state.selectedRunId,
-                runtimeOutcome: state.activeProjectPath === normalizedPath ? null : state.runtimeOutcome,
-                runtimeOutcomeReasonCode: state.activeProjectPath === normalizedPath ? null : state.runtimeOutcomeReasonCode,
-                runtimeOutcomeReasonMessage: state.activeProjectPath === normalizedPath ? null : state.runtimeOutcomeReasonMessage,
-                workingDir: nextActiveProjectPathResolved ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY : DEFAULT_WORKING_DIRECTORY,
-            }
+            saveRouteState(saveProjectScopeRouteState(nextState))
+            return nextState
         }),
     setActiveProjectPath: (projectPath) =>
         set((state) => {
-            const normalizedProjectPath =
-                typeof projectPath === 'string' ? normalizeProjectPath(projectPath) : null
-            if (projectPath !== null && (!normalizedProjectPath || !isAbsoluteProjectPath(normalizedProjectPath))) {
+            const nextState = buildSetActiveProjectTransition(state, projectPath)
+            if (!nextState) {
                 return state
             }
-            const nextProjectPath = normalizedProjectPath
-            const isProjectSwitch = nextProjectPath !== state.activeProjectPath
-            const nextProjectSessionStates = { ...state.projectSessionsByPath }
-            const nextProjectRegistry = { ...state.projectRegistry }
-            const nextProjectScope = nextProjectPath
-                ? resolveProjectSessionState(nextProjectSessionStates[nextProjectPath], nextProjectPath)
-                : null
-            if (nextProjectPath && nextProjectScope) {
-                nextProjectSessionStates[nextProjectPath] = nextProjectScope
-            }
-            if (nextProjectPath && nextProjectRegistry[nextProjectPath]) {
-                nextProjectRegistry[nextProjectPath] = {
-                    ...nextProjectRegistry[nextProjectPath],
-                    lastAccessedAt: new Date().toISOString(),
-                }
-            }
-            const nextViewMode = resolveViewModeForProjectScope(state.viewMode, nextProjectPath)
-            saveRouteState({
-                viewMode: nextViewMode,
-                activeProjectPath: nextProjectPath,
-            })
-            return {
-                activeProjectPath: nextProjectPath,
-                viewMode: nextViewMode,
-                projectRegistry: nextProjectRegistry,
-                projectSessionsByPath: nextProjectSessionStates,
-                recentProjectPaths: pushRecentProjectPath(state.recentProjectPaths, nextProjectPath),
-                activeFlow: state.activeFlow,
-                executionFlow: state.executionFlow,
-                selectedRunId: isProjectSwitch ? null : state.selectedRunId,
-                workingDir: nextProjectPath && nextProjectScope ? nextProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
-                runtimeStatus: isProjectSwitch ? 'idle' : state.runtimeStatus,
-                runtimeOutcome: isProjectSwitch ? null : state.runtimeOutcome,
-                runtimeOutcomeReasonCode: isProjectSwitch ? null : state.runtimeOutcomeReasonCode,
-                runtimeOutcomeReasonMessage: isProjectSwitch ? null : state.runtimeOutcomeReasonMessage,
-                nodeStatuses: isProjectSwitch ? {} : state.nodeStatuses,
-                humanGate: isProjectSwitch ? null : state.humanGate,
-                logs: isProjectSwitch ? [] : state.logs,
-                selectedNodeId: state.selectedNodeId,
-                selectedEdgeId: state.selectedEdgeId,
-                graphAttrs: state.graphAttrs,
-                graphAttrErrors: state.graphAttrErrors,
-                graphAttrsUserEditVersion: state.graphAttrsUserEditVersion,
-                diagnostics: state.diagnostics,
-                nodeDiagnostics: state.nodeDiagnostics,
-                edgeDiagnostics: state.edgeDiagnostics,
-                hasValidationErrors: state.hasValidationErrors,
-                saveState: state.saveState,
-                saveStateVersion: state.saveStateVersion,
-                saveErrorMessage: state.saveErrorMessage,
-                saveErrorKind: state.saveErrorKind,
-            }
+            saveRouteState(saveProjectScopeRouteState(nextState))
+            return nextState
         }),
     projectRegistrationError: null,
     registerProject: (directoryPath) => {

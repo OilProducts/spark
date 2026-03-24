@@ -91,7 +91,7 @@ function orderElkSections(sections: readonly ElkEdgeSectionLike[]): ElkEdgeSecti
             visited.add(current.id)
         }
         ordered.push(current)
-        const nextSectionId = current.outgoingSections?.find((sectionId) => sectionById.has(sectionId))
+        const nextSectionId: string | undefined = current.outgoingSections?.find((sectionId) => sectionById.has(sectionId))
         current = nextSectionId ? sectionById.get(nextSectionId) : undefined
     }
 
