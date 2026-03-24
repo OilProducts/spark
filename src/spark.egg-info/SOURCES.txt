@@ -74,6 +74,8 @@ src/spark/starter_flows/implement-spec.dot
 src/spark/starter_flows/parallel-review.dot
 src/spark/starter_flows/plan-generation.dot
 src/spark/starter_flows/simple-linear.dot
+src/spark/starter_flows/spec-implementation/implement-milestone.dot
+src/spark/starter_flows/spec-implementation/implement-spec.dot
 src/spark/starter_flows/supervision/implementation-worker.dot
 src/spark/starter_flows/supervision/supervised-implementation.dot
 src/spark_app/__init__.py
