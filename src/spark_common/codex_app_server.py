@@ -19,6 +19,21 @@ def as_non_empty_string(value: Any) -> Optional[str]:
     return None
 
 
+def extract_turn_id(message: dict[str, Any]) -> Optional[str]:
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return None
+    direct = as_non_empty_string(params.get("turnId"))
+    if direct:
+        return direct
+    turn = params.get("turn")
+    if isinstance(turn, dict):
+        nested = as_non_empty_string(turn.get("id"))
+        if nested:
+            return nested
+    return None
+
+
 def extract_command_text(payload: dict[str, Any]) -> Optional[str]:
     for key in ("command", "commandLine", "command_line", "cmd", "commandText"):
         value = payload.get(key)
@@ -165,6 +180,29 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
         if item_id and phase:
             state.agent_message_phases[item_id] = phase
         return phase
+
+    if method == "item/commandExecution/requestApproval":
+        if isinstance(params, dict):
+            events.append(
+                CodexAppServerTurnEvent(
+                    kind="command_approval_requested",
+                    text=extract_command_text(params),
+                    item=dict(params),
+                    item_id=as_non_empty_string(params.get("itemId")),
+                )
+            )
+        return events
+
+    if method == "item/fileChange/requestApproval":
+        if isinstance(params, dict):
+            events.append(
+                CodexAppServerTurnEvent(
+                    kind="file_change_approval_requested",
+                    item=dict(params),
+                    item_id=as_non_empty_string(params.get("itemId")),
+                )
+            )
+        return events
 
     if method == "item/started":
         item = params.get("item")

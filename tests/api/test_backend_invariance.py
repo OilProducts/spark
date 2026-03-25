@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 from typing import List
 
@@ -424,6 +425,43 @@ def test_codex_app_server_backend_drains_notifications_queued_during_turn_start_
     assert {"type": "log", "msg": "[plan] Ack"} in events
 
 
+def test_codex_app_server_backend_logs_token_usage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: List[dict] = []
+    backend = server.CodexAppServerBackend(str(tmp_path), events.append, model=None)
+
+    class FakeResult:
+        assistant_message = "Ack"
+        command_text = ""
+        token_total = 321
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def ensure_process(self, **kwargs) -> None:
+            return None
+
+        def start_thread(self, **kwargs) -> str:
+            return "thread-123"
+
+        def run_turn(self, **kwargs) -> FakeResult:
+            return FakeResult()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(codex_backends_module, "CodexAppServerClient", FakeClient)
+
+    result = backend.run("plan", "hello", Context())
+
+    assert result == "Ack"
+    assert {"type": "log", "msg": "[plan] Ack"} in events
+    assert {"type": "log", "msg": "[plan] tokens used: 321"} in events
+
+
 def test_codex_app_server_backend_parses_structured_outcome_agent_text(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -531,7 +569,7 @@ def test_codex_app_server_backend_requires_turn_completed_after_final_answer(
         '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"Ack"}}',
         '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"AgentMessage","id":"msg-1","content":[{"type":"Text","text":"Ack"}],"phase":"final_answer"}}}',
     ]
-    monotonic_values = iter([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.6, 1.7])
+    monotonic_values = itertools.count(0.0, 0.1)
 
     monkeypatch.setattr(codex_backends_module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess(lines))
     monkeypatch.setattr(codex_backends_module.codex_app_server, "APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
@@ -541,4 +579,4 @@ def test_codex_app_server_backend_requires_turn_completed_after_final_answer(
 
     assert isinstance(result, Outcome)
     assert result.status == OutcomeStatus.FAIL
-    assert result.failure_reason == "app-server turn timed out waiting for activity"
+    assert result.failure_reason == "codex app-server turn timed out waiting for activity"

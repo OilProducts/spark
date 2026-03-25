@@ -4,10 +4,12 @@ import json
 import threading
 import time
 from pathlib import Path
+from typing import Any, Callable, Optional
 
 import pytest
 
 import attractor.api.server as server
+from spark_common.codex_app_client import CodexAppServerTurnResult
 import spark_common.codex_app_server as codex_app_server
 import spark_common.process_line_reader as process_line_reader
 from spark.authoring_assets import (
@@ -26,6 +28,100 @@ from workspace.storage import conversation_handles_path, ensure_project_paths
 
 TEST_PLANNING_FLOW = "test-planning.dot"
 TEST_DISPATCH_FLOW = "test-dispatch.dot"
+
+
+def _completed_turn_result(
+    *,
+    thread_id: str = "thread-123",
+    turn_id: str = "turn-123",
+    assistant_message: str = "Ack",
+    command_text: str = "",
+    token_total: Optional[int] = None,
+    error: Optional[str] = None,
+) -> CodexAppServerTurnResult:
+    state = codex_app_server.CodexAppServerTurnState()
+    state.final_agent_message = assistant_message
+    state.turn_status = "completed"
+    if command_text:
+        state.command_chunks.append(command_text)
+    if token_total is not None:
+        state.last_token_total = token_total
+    if error:
+        state.turn_status = "failed"
+        state.turn_error = error
+        state.last_error = error
+    return CodexAppServerTurnResult(thread_id=thread_id, turn_id=turn_id, state=state)
+
+
+class StubChatClient:
+    def __init__(self) -> None:
+        self.proc: object | None = None
+        self.ensure_process_calls = 0
+        self.resume_calls: list[dict[str, Any]] = []
+        self.start_calls: list[dict[str, Any]] = []
+        self.run_turn_calls: list[dict[str, Any]] = []
+        self.resume_result: Optional[str] = None
+        self.start_result: str = "thread-123"
+        self.run_turn_handler: Optional[Callable[..., CodexAppServerTurnResult]] = None
+        self.raw_logger = None
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+        self.proc = None
+
+    def clear_raw_rpc_logger(self) -> None:
+        self.raw_logger = None
+
+    def ensure_process(self, *, popen_factory) -> None:
+        self.ensure_process_calls += 1
+        if self.proc is None:
+            self.proc = object()
+
+    def resume_thread(
+        self,
+        thread_id: str,
+        *,
+        model: str | None,
+        cwd: str | None = None,
+        approval_policy: str = "never",
+    ) -> Optional[str]:
+        self.resume_calls.append(
+            {
+                "thread_id": thread_id,
+                "model": model,
+                "cwd": cwd,
+                "approval_policy": approval_policy,
+            }
+        )
+        return self.resume_result
+
+    def run_turn(self, **kwargs) -> CodexAppServerTurnResult:
+        self.run_turn_calls.append(kwargs)
+        if self.run_turn_handler is not None:
+            return self.run_turn_handler(**kwargs)
+        return _completed_turn_result(thread_id=kwargs["thread_id"])
+
+    def set_raw_rpc_logger(self, callback) -> None:
+        self.raw_logger = callback
+
+    def start_thread(
+        self,
+        *,
+        model: str | None,
+        cwd: str | None = None,
+        approval_policy: str = "never",
+        ephemeral: bool,
+    ) -> str:
+        self.start_calls.append(
+            {
+                "model": model,
+                "cwd": cwd,
+                "approval_policy": approval_policy,
+                "ephemeral": ephemeral,
+            }
+        )
+        return self.start_result
 
 
 def _seed_flow(name: str) -> None:
@@ -469,21 +565,16 @@ def test_chat_session_resumes_persisted_thread_before_starting(monkeypatch) -> N
         persisted_thread_id="thread-existing",
         on_thread_id_updated=updated_thread_ids.append,
     )
-    calls: list[tuple[str, dict[str, object] | None]] = []
-
-    def fake_send_request(method: str, params: dict[str, object] | None) -> dict[str, object]:
-        calls.append((method, params))
-        if method == "thread/resume":
-            return {"result": {"thread": {"id": "thread-existing"}}}
-        raise AssertionError(f"unexpected method {method}")
-
-    monkeypatch.setattr(session, "_send_request", fake_send_request)
+    client = StubChatClient()
+    client.resume_result = "thread-existing"
+    session._client = client
 
     session._ensure_thread("gpt-test")
 
-    assert [method for method, _ in calls] == ["thread/resume"]
-    assert calls[0][1] is not None
-    assert calls[0][1]["threadId"] == "thread-existing"
+    assert len(client.resume_calls) == 1
+    assert client.resume_calls[0]["thread_id"] == "thread-existing"
+    assert client.resume_calls[0]["model"] == "gpt-test"
+    assert client.start_calls == []
     assert session._thread_id == "thread-existing"
     assert updated_thread_ids == ["thread-existing"]
 
@@ -495,239 +586,72 @@ def test_chat_session_starts_new_durable_thread_when_resume_fails(monkeypatch) -
         persisted_thread_id="thread-stale",
         on_thread_id_updated=updated_thread_ids.append,
     )
-    calls: list[tuple[str, dict[str, object] | None]] = []
-
-    def fake_send_request(method: str, params: dict[str, object] | None) -> dict[str, object]:
-        calls.append((method, params))
-        if method == "thread/resume":
-            return {"error": {"code": -32600, "message": "no rollout found"}}
-        if method == "thread/start":
-            return {"result": {"thread": {"id": "thread-fresh"}}}
-        raise AssertionError(f"unexpected method {method}")
-
-    monkeypatch.setattr(session, "_send_request", fake_send_request)
+    client = StubChatClient()
+    client.resume_result = None
+    client.start_result = "thread-fresh"
+    session._client = client
 
     session._ensure_thread("gpt-test")
 
-    assert [method for method, _ in calls] == ["thread/resume", "thread/start"]
-    assert calls[1][1] is not None
-    assert calls[1][1]["ephemeral"] is False
+    assert len(client.resume_calls) == 1
+    assert len(client.start_calls) == 1
+    assert client.start_calls[0]["ephemeral"] is False
     assert session._thread_id == "thread-fresh"
     assert updated_thread_ids == ["thread-fresh"]
 
 
-def test_chat_session_turn_drains_notifications_queued_during_turn_start_response(monkeypatch) -> None:
+def test_chat_session_reuses_initialized_thread_across_turns(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {"delta": '{"assistant_message":"Ack"}'},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "agentMessage",
-                            "id": "msg-123",
-                            "phase": "final_answer",
-                            "text": '{"assistant_message":"Ack"}',
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "result": {
-                        "turn": {
-                            "id": "turn-123",
-                            "status": "inProgress",
-                            "items": [],
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "turn": {
-                            "id": "turn-123",
-                            "status": "completed",
-                        }
-                    },
-                }
-            ),
-        ]
-    )
+    client = StubChatClient()
+    client.resume_result = "thread-existing"
+    client.run_turn_handler = lambda **kwargs: _completed_turn_result(thread_id=kwargs["thread_id"])
+    session._client = client
+    session._thread_id = "thread-existing"
 
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
-    monkeypatch.setattr(session, "_send_json", lambda payload: None)
-    session._proc = type("DummyProc", (), {"poll": lambda self: None})()
+    first = session.turn("hello", None)
+    second = session.turn("again", None)
 
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
-
-    result = session.turn("hello", None)
-
-    assert result.assistant_message == '{"assistant_message":"Ack"}'
-    assert not session._pending_messages
-
-
-def test_chat_session_turn_times_out_after_final_answer_without_turn_completed(monkeypatch) -> None:
-    session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {"delta": "Ack", "itemId": "msg-1"},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "agentMessage",
-                            "id": "msg-1",
-                            "phase": "final_answer",
-                            "text": "Ack",
-                        }
-                    },
-                }
-            ),
-            None,
-        ]
-    )
-    monotonic_values = iter([0.0, 0.1, 0.2, 1.3])
-
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
-
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(project_chat_session, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
-    monkeypatch.setattr(project_chat_session.time, "monotonic", lambda: next(monotonic_values))
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
-
-    with pytest.raises(RuntimeError, match="timed out waiting for activity"):
-        session.turn("hello", None)
-
-
-def test_chat_session_raw_rpc_logger_records_transport_lines(monkeypatch) -> None:
-    session = project_chat.CodexAppServerChatSession("/tmp/project")
-    outgoing_lines: list[str] = []
-    captured: list[tuple[str, str]] = []
-
-    class DummyStdin:
-        def write(self, text: str) -> None:
-            outgoing_lines.append(text)
-
-        def flush(self) -> None:
-            return None
-
-    class DummyProc:
-        stdin = DummyStdin()
-
-        def poll(self) -> int | None:
-            return None
-
-    session._proc = DummyProc()
-    session.set_raw_rpc_logger(lambda direction, line: captured.append((direction, line)))
-
-    session._send_json({"jsonrpc": "2.0", "id": 7, "method": "ping"})
-    monkeypatch.setattr(session, "_read_line", lambda wait: '{"jsonrpc":"2.0","id":7,"result":{}}')
-
-    response = session._wait_for_response(7)
-
-    assert outgoing_lines == ['{"jsonrpc": "2.0", "id": 7, "method": "ping"}\n']
-    assert response == {"jsonrpc": "2.0", "id": 7, "result": {}}
-    assert captured == [
-        ("outgoing", '{"jsonrpc": "2.0", "id": 7, "method": "ping"}'),
-        ("incoming", '{"jsonrpc":"2.0","id":7,"result":{}}'),
-    ]
+    assert first.assistant_message == "Ack"
+    assert second.assistant_message == "Ack"
+    assert len(client.resume_calls) == 1
+    assert client.start_calls == []
+    assert [call["thread_id"] for call in client.run_turn_calls] == ["thread-existing", "thread-existing"]
 
 
 def test_chat_session_surfaces_reasoning_summary_progress(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/reasoning/summaryPartAdded",
-                    "params": {
-                        "part": {
-                            "text": "Scanning the repository structure.",
-                        },
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {
-                        "delta": "I found the main entry points.",
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "agentMessage",
-                            "id": "msg-123",
-                            "phase": "final_answer",
-                            "text": "I found the main entry points.",
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "turn": {
-                            "id": "turn-123",
-                            "status": "completed",
-                        }
-                    },
-                }
-            ),
-        ]
-    )
     progress_updates: list[project_chat.ChatTurnLiveEvent] = []
+    client = StubChatClient()
+    session._client = client
 
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+    def run_turn(**kwargs) -> CodexAppServerTurnResult:
+        on_event = kwargs["on_event"]
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="reasoning_delta",
+                text="Scanning the repository structure.",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_delta",
+                text="I found the main entry points.",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_message_completed",
+                text="I found the main entry points.",
+                item_id="msg-123",
+                phase="final_answer",
+            )
+        )
+        return _completed_turn_result(
+            thread_id=kwargs["thread_id"],
+            assistant_message="I found the main entry points.",
+        )
 
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+    client.run_turn_handler = run_turn
 
     result = session.turn("hello", None, on_event=progress_updates.append)
 
@@ -740,65 +664,38 @@ def test_chat_session_surfaces_reasoning_summary_progress(monkeypatch) -> None:
 
 def test_chat_session_surfaces_reasoning_summary_text_deltas(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/reasoning/summaryTextDelta",
-                    "params": {
-                        "delta": "Draft draft that minimal proposal a best think",
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {
-                        "delta": "I’m checking the project structure first.",
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "agentMessage",
-                            "id": "msg-123",
-                            "phase": "final_answer",
-                            "text": "I’m checking the project structure first.",
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "turn": {
-                            "id": "turn-123",
-                            "status": "completed",
-                        }
-                    },
-                }
-            ),
-        ]
-    )
     progress_updates: list[project_chat.ChatTurnLiveEvent] = []
+    client = StubChatClient()
+    session._client = client
 
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+    def run_turn(**kwargs) -> CodexAppServerTurnResult:
+        on_event = kwargs["on_event"]
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="reasoning_delta",
+                text="Draft draft that minimal proposal a best think",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_delta",
+                text="I’m checking the project structure first.",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_message_completed",
+                text="I’m checking the project structure first.",
+                item_id="msg-123",
+                phase="final_answer",
+            )
+        )
+        return _completed_turn_result(
+            thread_id=kwargs["thread_id"],
+            assistant_message="I’m checking the project structure first.",
+        )
 
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+    client.run_turn_handler = run_turn
 
     result = session.turn("hello", None, on_event=progress_updates.append)
 
@@ -825,209 +722,6 @@ def test_process_line_reader_drains_buffered_lines_in_order() -> None:
     assert reader.read_line(0.1) == "one"
     assert reader.read_line(0.1) == "two"
     assert reader.read_line(0.1) is None
-
-
-def test_chat_session_initialize_uses_stable_api_surface(monkeypatch) -> None:
-    session = project_chat.CodexAppServerChatSession("/tmp/project")
-    requests: list[tuple[str, dict[str, object] | None]] = []
-    notifications: list[dict[str, object]] = []
-
-    class DummyStdout:
-        def readline(self) -> str:
-            return ""
-
-    class DummyProc:
-        stdout = DummyStdout()
-        stdin = object()
-
-        def poll(self) -> int | None:
-            return None
-
-    monkeypatch.setattr(project_chat_session.subprocess, "Popen", lambda *args, **kwargs: DummyProc())
-    monkeypatch.setattr(session, "_send_json", lambda payload: notifications.append(payload))
-
-    def fake_send_request(method: str, params: dict[str, object] | None) -> dict[str, object]:
-        requests.append((method, params))
-        if method == "initialize":
-            return {"result": {}}
-        raise AssertionError(f"unexpected request: {method}")
-
-    monkeypatch.setattr(session, "_send_request", fake_send_request)
-    session._ensure_process()
-
-    assert requests == [
-        (
-            "initialize",
-            {
-                "clientInfo": {"name": "spark", "version": "0.1"},
-            },
-        )
-    ]
-    assert notifications == [{"jsonrpc": "2.0", "method": "initialized", "params": {}}]
-
-
-def test_chat_session_turn_completes_on_turn_completed_after_final_answer(monkeypatch) -> None:
-    session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {"delta": '{"assistant_message":"Ack"}'},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "agentMessage",
-                            "id": "msg-123",
-                            "phase": "final_answer",
-                            "text": '{"assistant_message":"Ack"}',
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "turn": {
-                            "id": "turn-123",
-                            "status": "completed",
-                        }
-                    },
-                }
-            ),
-        ]
-    )
-
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
-
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
-
-    result = session.turn("hello", None)
-
-    assert result.assistant_message == '{"assistant_message":"Ack"}'
-
-
-def test_chat_session_turn_ignores_non_matching_turn_completed(monkeypatch) -> None:
-    session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {"delta": "Ack", "itemId": "msg-123"},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "agentMessage",
-                            "id": "msg-123",
-                            "phase": "final_answer",
-                            "text": "Ack",
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "turn": {
-                            "id": "turn-stale",
-                            "status": "completed",
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "turn": {
-                            "id": "turn-123",
-                            "status": "completed",
-                        }
-                    },
-                }
-            ),
-        ]
-    )
-
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
-
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
-
-    result = session.turn("hello", None)
-
-    assert result.assistant_message == "Ack"
-
-
-def test_chat_session_turn_times_out_after_live_assistant_quiet_period_without_terminal_event(monkeypatch) -> None:
-    session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {"delta": "{\"assistant_message\":\"Ack"},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {"delta": "\"}"},
-                }
-            ),
-            None,
-        ]
-    )
-    monotonic_values = iter([0.0, 0.1, 0.2, 1.3])
-
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
-
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(project_chat_session, "CHAT_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
-    monkeypatch.setattr(project_chat_session.time, "monotonic", lambda: next(monotonic_values))
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
-
-    with pytest.raises(RuntimeError, match="timed out waiting for activity"):
-        session.turn("hello", None)
 
 
 def test_send_turn_marks_assistant_failed_after_timeout_without_retry(tmp_path: Path, monkeypatch) -> None:
@@ -1734,55 +1428,24 @@ def test_note_execution_card_dispatched_records_event(tmp_path: Path) -> None:
 
 def test_chat_session_emits_assistant_completed_from_item_completed(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {"delta": "Ack"},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "AgentMessage",
-                            "id": "msg-1",
-                            "content": [{"type": "Text", "text": "Ack"}],
-                            "phase": "final_answer",
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "turn": {
-                            "id": "turn-123",
-                            "status": "completed",
-                        }
-                    },
-                }
-            ),
-        ]
-    )
     captured_events: list[project_chat.ChatTurnLiveEvent] = []
+    client = StubChatClient()
+    session._client = client
 
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+    def run_turn(**kwargs) -> CodexAppServerTurnResult:
+        on_event = kwargs["on_event"]
+        on_event(codex_app_server.CodexAppServerTurnEvent(kind="assistant_delta", text="Ack"))
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_message_completed",
+                text="Ack",
+                item_id="msg-1",
+                phase="final_answer",
+            )
+        )
+        return _completed_turn_result(thread_id=kwargs["thread_id"], assistant_message="Ack")
 
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+    client.run_turn_handler = run_turn
 
     result = session.turn(
         "hello",
@@ -1799,67 +1462,45 @@ def test_chat_session_emits_assistant_completed_from_item_completed(monkeypatch)
 
 def test_chat_session_handles_command_output_delta_without_reasoning_fallback_helper(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/reasoning/summaryTextDelta",
-                    "params": {"delta": "Thinking...", "itemId": "rs-1", "summaryIndex": 0},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/commandExecution/outputDelta",
-                    "params": {"delta": "output", "itemId": "cmd-1"},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {"delta": "Ack", "itemId": "msg-1"},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "AgentMessage",
-                            "id": "msg-1",
-                            "content": [{"type": "Text", "text": "Ack"}],
-                            "phase": "final_answer",
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "turn": {
-                            "id": "turn-123",
-                            "status": "completed",
-                        }
-                    },
-                }
-            ),
-        ]
-    )
     captured_events: list[project_chat.ChatTurnLiveEvent] = []
+    client = StubChatClient()
+    session._client = client
 
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+    def run_turn(**kwargs) -> CodexAppServerTurnResult:
+        on_event = kwargs["on_event"]
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="reasoning_delta",
+                text="Thinking...",
+                item_id="rs-1",
+                summary_index=0,
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="command_output_delta",
+                text="output",
+                item_id="cmd-1",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_delta",
+                text="Ack",
+                item_id="msg-1",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_message_completed",
+                text="Ack",
+                item_id="msg-1",
+                phase="final_answer",
+            )
+        )
+        return _completed_turn_result(thread_id=kwargs["thread_id"], assistant_message="Ack")
 
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+    client.run_turn_handler = run_turn
 
     result = session.turn(
         "hello",
@@ -1873,77 +1514,45 @@ def test_chat_session_handles_command_output_delta_without_reasoning_fallback_he
 
 def test_chat_session_emits_assistant_completed_for_commentary_item(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    lines = iter(
-        [
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {"delta": "I’m drafting the proposal now.", "itemId": "msg-1"},
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "AgentMessage",
-                            "id": "msg-1",
-                            "content": [{"type": "Text", "text": "I’m drafting the proposal now."}],
-                            "phase": "commentary",
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/agentMessage/delta",
-                    "params": {
-                        "delta": "Done.",
-                        "itemId": "msg-2",
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "item": {
-                            "type": "AgentMessage",
-                            "id": "msg-2",
-                            "content": [{"type": "Text", "text": "Done."}],
-                            "phase": "final_answer",
-                        }
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "turn": {
-                            "id": "turn-123",
-                            "status": "completed",
-                        }
-                    },
-                }
-            ),
-        ]
-    )
     captured_events: list[project_chat.ChatTurnLiveEvent] = []
+    client = StubChatClient()
+    session._client = client
 
-    monkeypatch.setattr(session, "_ensure_process", lambda: None)
+    def run_turn(**kwargs) -> CodexAppServerTurnResult:
+        on_event = kwargs["on_event"]
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_delta",
+                text="I’m drafting the proposal now.",
+                item_id="msg-1",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_message_completed",
+                text="I’m drafting the proposal now.",
+                item_id="msg-1",
+                phase="commentary",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_delta",
+                text="Done.",
+                item_id="msg-2",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_message_completed",
+                text="Done.",
+                item_id="msg-2",
+                phase="final_answer",
+            )
+        )
+        return _completed_turn_result(thread_id=kwargs["thread_id"], assistant_message="Done.")
 
-    def fake_ensure_thread(model: str | None) -> None:
-        session._thread_id = "thread-123"
-        session._thread_initialized = True
-
-    monkeypatch.setattr(session, "_ensure_thread", fake_ensure_thread)
-    monkeypatch.setattr(
-        session,
-        "_send_request",
-        lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress", "items": []}}},
-    )
-    monkeypatch.setattr(session, "_read_line", lambda wait: next(lines, None))
+    client.run_turn_handler = run_turn
 
     result = session.turn("hello", None, on_event=captured_events.append)
 

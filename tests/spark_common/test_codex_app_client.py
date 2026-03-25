@@ -1,0 +1,264 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from spark_common.codex_app_client import CodexAppServerClient
+import spark_common.codex_app_server as codex_app_server
+
+
+def test_shared_client_ensure_process_initializes_with_stable_api_surface() -> None:
+    client = CodexAppServerClient("/tmp/project")
+    requests: list[tuple[str, dict[str, object] | None]] = []
+    notifications: list[dict[str, object]] = []
+
+    class DummyStdout:
+        def readline(self) -> str:
+            return ""
+
+    class DummyProc:
+        stdout = DummyStdout()
+        stdin = object()
+
+        def poll(self) -> int | None:
+            return None
+
+    def fake_send_request(method: str, params: dict[str, object] | None, **kwargs) -> dict[str, object]:
+        requests.append((method, params))
+        if method == "initialize":
+            return {"result": {}}
+        raise AssertionError(f"unexpected request: {method}")
+
+    client.send_json = lambda payload: notifications.append(payload)  # type: ignore[method-assign]
+    client.send_request = fake_send_request  # type: ignore[method-assign]
+
+    client.ensure_process(
+        popen_factory=lambda *args, **kwargs: DummyProc(),
+        runtime_environment_builder=lambda: {},
+    )
+
+    assert requests == [
+        (
+            "initialize",
+            {
+                "clientInfo": {"name": "spark", "version": "0.1"},
+            },
+        )
+    ]
+    assert notifications == [{"jsonrpc": "2.0", "method": "initialized", "params": {}}]
+
+
+def test_shared_client_wait_for_response_auto_approves_requests_and_queues_normalized_message() -> None:
+    client = CodexAppServerClient("/tmp/project")
+    outgoing_lines: list[str] = []
+    rpc_log: list[tuple[str, str]] = []
+    lines = iter(
+        [
+            '{"jsonrpc":"2.0","id":2,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-1","command":["git","status"]}}',
+            '{"jsonrpc":"2.0","id":7,"result":{}}',
+        ]
+    )
+
+    class DummyStdin:
+        def write(self, text: str) -> None:
+            outgoing_lines.append(text)
+
+        def flush(self) -> None:
+            return None
+
+    class DummyProc:
+        stdin = DummyStdin()
+
+        def poll(self) -> int | None:
+            return None
+
+    client.proc = DummyProc()  # type: ignore[assignment]
+    client.set_raw_rpc_logger(lambda direction, line: rpc_log.append((direction, line)))
+
+    response = client.wait_for_response(7, read_line=lambda wait: next(lines, None))
+
+    assert response == {"jsonrpc": "2.0", "id": 7, "result": {}}
+    assert json.loads(outgoing_lines[0]) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {"decision": "acceptForSession"},
+    }
+    queued_message = client.pending_messages.popleft()
+    events = codex_app_server.process_turn_message(
+        queued_message,
+        codex_app_server.CodexAppServerTurnState(),
+    )
+    assert len(events) == 1
+    assert events[0].kind == "command_approval_requested"
+    assert events[0].text == "git status"
+    assert rpc_log == [
+        ("incoming", '{"jsonrpc":"2.0","id":2,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-1","command":["git","status"]}}'),
+        ("outgoing", '{"jsonrpc": "2.0", "id": 2, "result": {"decision": "acceptForSession"}}'),
+        ("incoming", '{"jsonrpc":"2.0","id":7,"result":{}}'),
+    ]
+
+
+def test_shared_client_run_turn_drains_notifications_queued_during_turn_start_response() -> None:
+    client = CodexAppServerClient("/tmp/project")
+    lines = iter(
+        [
+            '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"Ack"}}',
+            '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"AgentMessage","id":"msg-1","content":[{"type":"Text","text":"Ack"}],"phase":"final_answer"}}}',
+            '{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"turn-123","status":"inProgress","items":[]}}}',
+            '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-123","status":"completed"}}}',
+        ]
+    )
+    emitted_events: list[codex_app_server.CodexAppServerTurnEvent] = []
+
+    class DummyStdin:
+        def write(self, text: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    class DummyProc:
+        stdin = DummyStdin()
+
+        def poll(self) -> int | None:
+            return None
+
+    client.proc = DummyProc()  # type: ignore[assignment]
+    client.read_line = lambda wait: next(lines, None)  # type: ignore[method-assign]
+
+    result = client.run_turn(
+        thread_id="thread-123",
+        prompt="hello",
+        model=None,
+        on_event=emitted_events.append,
+    )
+
+    assert result.assistant_message == "Ack"
+    assert [event.kind for event in emitted_events] == [
+        "assistant_delta",
+        "assistant_message_completed",
+        "turn_completed",
+    ]
+    assert not client.pending_messages
+
+
+def test_shared_client_run_turn_requires_turn_completed_after_final_answer() -> None:
+    client = CodexAppServerClient("/tmp/project")
+    lines = iter(
+        [
+            '{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"turn-123","status":"inProgress","items":[]}}}',
+            '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"Ack"}}',
+            '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"AgentMessage","id":"msg-1","content":[{"type":"Text","text":"Ack"}],"phase":"final_answer"}}}',
+            None,
+        ]
+    )
+    monotonic_values = iter([0.0, 0.1, 0.2, 0.3, 0.4, 1.6])
+
+    class DummyStdin:
+        def write(self, text: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    class DummyProc:
+        stdin = DummyStdin()
+
+        def poll(self) -> int | None:
+            return None
+
+    client.proc = DummyProc()  # type: ignore[assignment]
+    client.read_line = lambda wait: next(lines, None)  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="timed out waiting for activity"):
+        client.run_turn(
+            thread_id="thread-123",
+            prompt="hello",
+            model=None,
+            idle_timeout_seconds=1.0,
+            now=lambda: next(monotonic_values),
+        )
+
+
+def test_shared_client_run_turn_ignores_non_matching_turn_completed() -> None:
+    client = CodexAppServerClient("/tmp/project")
+    lines = iter(
+        [
+            '{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"turn-123","status":"inProgress","items":[]}}}',
+            '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"Ack","itemId":"msg-1"}}',
+            '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"AgentMessage","id":"msg-1","content":[{"type":"Text","text":"Ack"}],"phase":"final_answer"}}}',
+            '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-stale","status":"completed"}}}',
+            '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-123","status":"completed"}}}',
+        ]
+    )
+    emitted_events: list[codex_app_server.CodexAppServerTurnEvent] = []
+
+    class DummyStdin:
+        def write(self, text: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    class DummyProc:
+        stdin = DummyStdin()
+
+        def poll(self) -> int | None:
+            return None
+
+    client.proc = DummyProc()  # type: ignore[assignment]
+    client.read_line = lambda wait: next(lines, None)  # type: ignore[method-assign]
+
+    result = client.run_turn(
+        thread_id="thread-123",
+        prompt="hello",
+        model=None,
+        on_event=emitted_events.append,
+    )
+
+    assert result.assistant_message == "Ack"
+    assert [event.kind for event in emitted_events] == [
+        "assistant_delta",
+        "assistant_message_completed",
+        "turn_completed",
+    ]
+
+
+def test_shared_client_run_turn_raises_when_process_exits_before_completion() -> None:
+    client = CodexAppServerClient("/tmp/project")
+    lines = iter(
+        [
+            '{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"turn-123","status":"inProgress","items":[]}}}',
+            None,
+        ]
+    )
+
+    class DummyStdin:
+        def write(self, text: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    class DummyProc:
+        stdin = DummyStdin()
+
+        def __init__(self) -> None:
+            self._poll_count = 0
+
+        def poll(self) -> int | None:
+            self._poll_count += 1
+            if self._poll_count == 1:
+                return None
+            return 0
+
+    client.proc = DummyProc()  # type: ignore[assignment]
+    client.read_line = lambda wait: next(lines, None)  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="exited before turn completion"):
+        client.run_turn(
+            thread_id="thread-123",
+            prompt="hello",
+            model=None,
+        )
