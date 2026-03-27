@@ -253,32 +253,126 @@ describe('RunsPanel', () => {
     act(() => {
       useStore.getState().registerProject('/tmp/project-one')
       useStore.getState().setActiveProjectPath('/tmp/project-one')
-      useStore.getState().setSelectedRunId('run-selected')
     })
 
+    const user = userEvent.setup()
     render(<RunsPanel />)
 
     await waitFor(() => {
       expect(screen.getByTestId('run-list-panel')).toBeVisible()
-      expect(screen.getByTestId('run-summary-panel')).toBeVisible()
+      expect(screen.getAllByTestId('run-history-row')).toHaveLength(2)
     })
 
     expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'split')
 
     const runListPanel = screen.getByTestId('run-list-panel')
-    const runSummaryPanel = screen.getByTestId('run-summary-panel')
     expect(runListPanel).toHaveClass('border-r')
-    expect(
-      runListPanel.compareDocumentPosition(runSummaryPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
 
     const scrollRegion = screen.getByTestId('run-list-scroll-region')
     expect(scrollRegion).toHaveClass('flex-1')
     expect(scrollRegion).toHaveClass('overflow-y-auto')
 
-    expect(screen.getAllByTestId('run-history-row')).toHaveLength(2)
     expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(2)
     expect(screen.getAllByRole('button', { name: 'Cancel' }).some((button) => !button.hasAttribute('disabled'))).toBe(true)
     expect(screen.queryByText('history table')).not.toBeInTheDocument()
+
+    await user.click(screen.getAllByTestId('run-history-row')[0]!)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-panel')).toBeVisible()
+    })
+
+    const runSummaryPanel = screen.getByTestId('run-summary-panel')
+    expect(
+      runListPanel.compareDocumentPosition(runSummaryPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it('selects a run in place when clicking the card without leaving the runs tab', async () => {
+    const primaryRun = makeRun({
+      run_id: 'run-primary',
+      flow_name: 'primary.dot',
+      project_path: '/tmp/project-one',
+    })
+    const selectedRun = makeRun({
+      run_id: 'run-selected',
+      flow_name: 'selected.dot',
+      status: 'running',
+      ended_at: null,
+      project_path: '/tmp/project-one',
+    })
+
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({
+          runs: [primaryRun, selectedRun],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-selected/checkpoint')) {
+        return jsonResponse({
+          pipeline_id: 'run-selected',
+          checkpoint: {
+            completed_nodes: ['prepare'],
+            current_node: 'validate',
+          },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-selected/context')) {
+        return jsonResponse({
+          pipeline_id: 'run-selected',
+          context: {
+            active_item: 'REQ-001',
+          },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-selected/artifacts')) {
+        return jsonResponse({
+          pipeline_id: 'run-selected',
+          artifacts: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-selected/graph')) {
+        return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
+          status: 200,
+          headers: { 'Content-Type': 'image/svg+xml' },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-selected/questions')) {
+        return jsonResponse({
+          pipeline_id: 'run-selected',
+          questions: [],
+        })
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    render(<RunsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+
+    const runCards = screen.getAllByTestId('run-history-row')
+    await user.click(runCards[1]!)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-panel')).toBeVisible()
+      expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('selected.dot')
+    })
+
+    expect(useStore.getState().viewMode).toBe('runs')
+    expect(useStore.getState().selectedRunId).toBe('run-selected')
   })
 })

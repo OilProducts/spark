@@ -32,14 +32,11 @@ export function RunsPanel() {
         fetchRuns,
         isLoading,
         metadataFreshness,
-        metadataFreshnessLabel,
-        metadataFreshnessStyle,
         now,
         scopedRuns,
         selectedRunSummary,
         setRuns,
         summary,
-        updatedAtLabel,
     } = useRunsList({
         activeProjectPath,
         scopeMode,
@@ -133,6 +130,10 @@ export function RunsPanel() {
         setViewMode('execution')
     }
 
+    const selectRun = (run: RunRecord) => {
+        setSelectedRunId(run.run_id)
+    }
+
     const openRunArtifact = (run: RunRecord, artifactType: 'spec' | 'plan') => {
         const artifactId = artifactType === 'spec' ? run.spec_id : run.plan_id
         if (!artifactId) {
@@ -161,14 +162,13 @@ export function RunsPanel() {
                     error={error}
                     isLoading={isLoading}
                     metadataFreshness={metadataFreshness}
-                    metadataFreshnessLabel={metadataFreshnessLabel}
-                    metadataFreshnessStyle={metadataFreshnessStyle}
                     onRefresh={() => {
                         void fetchRuns()
                     }}
                     scopeMode={scopeMode}
                     onScopeModeChange={setScopeMode}
                     now={now}
+                    onSelectRun={selectRun}
                     onOpenRun={openRun}
                     onOpenRunArtifact={openRunArtifact}
                     onRequestCancel={(runId, currentStatus) => {
@@ -177,7 +177,6 @@ export function RunsPanel() {
                     runs={scopedRuns}
                     selectedRunId={selectedRunId}
                     summaryLabel={`${summary.total} total runs · ${summary.running} running`}
-                    updatedAtLabel={updatedAtLabel}
                 />
                 <div className={`min-w-0 ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col overflow-hidden pl-6'}`}>
                     <div className={isNarrowViewport ? 'space-y-6' : 'min-h-0 flex-1 space-y-6 overflow-auto pr-2'}>

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchRunsListValidated } from '@/lib/attractorClient'
 import {
     computeRunMetadataFreshness,
-    formatRunMetadataLastUpdated,
     RUN_METADATA_STALE_AFTER_MS,
 } from '@/lib/runMetadataFreshness'
 import type { RunRecord } from '../model/shared'
@@ -104,20 +103,6 @@ export function useRunsList({
         nowMs: now,
         staleAfterMs: metadataStaleAfterMs,
     })
-    const metadataFreshnessLabel =
-        metadataFreshness === 'refreshing'
-            ? 'Refreshing'
-            : metadataFreshness === 'stale'
-                ? 'Stale'
-                : metadataFreshness === 'fresh'
-                    ? 'Fresh'
-                    : 'Never'
-    const metadataFreshnessStyle =
-        metadataFreshness === 'stale'
-            ? 'border-amber-500/40 bg-amber-500/10 text-amber-800'
-            : metadataFreshness === 'fresh'
-                ? 'border-green-500/40 bg-green-500/10 text-green-800'
-                : 'border-border bg-muted text-muted-foreground'
 
     return {
         error,
@@ -125,14 +110,11 @@ export function useRunsList({
         isLoading,
         lastFetchedAtMs,
         metadataFreshness,
-        metadataFreshnessLabel,
-        metadataFreshnessStyle,
         now,
         scopedRuns,
         selectedRunSummary,
         setRuns,
         summary,
-        updatedAtLabel: formatRunMetadataLastUpdated({ lastFetchedAtMs, nowMs: now }),
         usesActiveProjectScope,
     }
 }

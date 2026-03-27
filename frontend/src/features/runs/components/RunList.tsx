@@ -15,20 +15,18 @@ interface RunListProps {
     activeProjectPath: string | null
     error: string | null
     isLoading: boolean
-    metadataFreshness: 'fresh' | 'stale'
-    metadataFreshnessLabel: string
-    metadataFreshnessStyle: string
+    metadataFreshness: 'never' | 'refreshing' | 'fresh' | 'stale'
     onRefresh: () => void
     scopeMode: 'active' | 'all'
     onScopeModeChange: (mode: 'active' | 'all') => void
     now: number
+    onSelectRun: (run: RunRecord) => void
     onOpenRun: (run: RunRecord) => void
     onOpenRunArtifact: (run: RunRecord, artifactType: 'spec' | 'plan') => void
     onRequestCancel: (runId: string, currentStatus: string) => void
     runs: RunRecord[]
     selectedRunId: string | null
     summaryLabel: string
-    updatedAtLabel: string
 }
 
 export function RunList({
@@ -36,19 +34,17 @@ export function RunList({
     error,
     isLoading,
     metadataFreshness,
-    metadataFreshnessLabel,
-    metadataFreshnessStyle,
     onRefresh,
     scopeMode,
     onScopeModeChange,
     now,
+    onSelectRun,
     onOpenRun,
     onOpenRunArtifact,
     onRequestCancel,
     runs,
     selectedRunId,
     summaryLabel,
-    updatedAtLabel,
 }: RunListProps) {
     const isNarrowViewport = useNarrowViewport()
     const scopeDescription = scopeMode === 'all'
@@ -114,20 +110,9 @@ export function RunList({
                         Refresh
                     </Button>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span
-                        data-testid="run-metadata-freshness-indicator"
-                        className={`inline-flex items-center rounded-md border px-2 py-1 font-semibold uppercase tracking-wide ${metadataFreshnessStyle}`}
-                    >
-                        {metadataFreshnessLabel}
-                    </span>
-                    <span data-testid="run-metadata-last-updated" className="text-muted-foreground">
-                        {updatedAtLabel}
-                    </span>
-                </div>
                 {metadataFreshness === 'stale' && (
                     <InlineNotice data-testid="run-metadata-stale-indicator" tone="warning">
-                        Run metadata may be stale. Refresh to load the latest run status.
+                        Run history may be out of date. Refresh to load the latest status.
                     </InlineNotice>
                 )}
                 {error ? (
@@ -178,8 +163,18 @@ export function RunList({
                                 <article
                                     key={run.run_id}
                                     data-testid="run-history-row"
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-pressed={selectedRunId === run.run_id}
+                                    onClick={() => onSelectRun(run)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault()
+                                            onSelectRun(run)
+                                        }
+                                    }}
                                     className={cn(
-                                        'rounded-lg border border-border/80 bg-card/80 p-3 shadow-sm',
+                                        'rounded-lg border border-border/80 bg-card/80 p-3 shadow-sm outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer',
                                         selectedRunId === run.run_id && 'border-primary/50 bg-muted/30 ring-1 ring-primary/20',
                                     )}
                                 >
@@ -241,7 +236,10 @@ export function RunList({
                                                     <Button
                                                         type="button"
                                                         data-testid="run-history-row-spec-artifact-link"
-                                                        onClick={() => onOpenRunArtifact(run, 'spec')}
+                                                        onClick={(event) => {
+                                                            event.stopPropagation()
+                                                            onOpenRunArtifact(run, 'spec')
+                                                        }}
                                                         variant="link"
                                                         size="xs"
                                                         className="h-auto truncate px-0 py-0 font-mono"
@@ -254,7 +252,10 @@ export function RunList({
                                                     <Button
                                                         type="button"
                                                         data-testid="run-history-row-plan-artifact-link"
-                                                        onClick={() => onOpenRunArtifact(run, 'plan')}
+                                                        onClick={(event) => {
+                                                            event.stopPropagation()
+                                                            onOpenRunArtifact(run, 'plan')
+                                                        }}
                                                         variant="link"
                                                         size="xs"
                                                         className="h-auto truncate px-0 py-0 font-mono"
@@ -266,7 +267,10 @@ export function RunList({
                                             </div>
                                             <div className="flex shrink-0 flex-wrap items-center gap-2">
                                                 <Button
-                                                    onClick={() => onOpenRun(run)}
+                                                    onClick={(event) => {
+                                                        event.stopPropagation()
+                                                        onOpenRun(run)
+                                                    }}
                                                     variant="outline"
                                                     size="xs"
                                                     className="h-7 gap-1.5 border-border bg-card text-[11px] text-muted-foreground hover:text-foreground"
@@ -275,7 +279,10 @@ export function RunList({
                                                     Open
                                                 </Button>
                                                 <Button
-                                                    onClick={() => onRequestCancel(run.run_id, run.status)}
+                                                    onClick={(event) => {
+                                                        event.stopPropagation()
+                                                        onRequestCancel(run.run_id, run.status)
+                                                    }}
                                                     disabled={!canCancel}
                                                     title={canCancel ? undefined : cancelDisabledReason}
                                                     size="xs"
