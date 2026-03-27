@@ -30,6 +30,7 @@ import { Button, EmptyState, InlineNotice, Panel, PanelContent, PanelHeader, Sec
 
 import type { RunRecord } from '../model/shared'
 import { loadRunGraphPreview } from '../services/runGraphTransport'
+import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 type RunGraphCanvasInnerProps = {
     run: RunRecord
@@ -185,6 +186,7 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
     const [refreshToken, setRefreshToken] = useState(0)
     const [isLoading, setIsLoading] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
+    const [collapsed, setCollapsed] = useState(false)
 
     return (
         <Panel data-testid="run-graph-panel">
@@ -193,18 +195,26 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
                     title="Run Graph"
                     description="Snapshot-accurate workflow graph captured from the run's stored DOT source."
                     action={(
-                        <Button
-                            onClick={() => setRefreshToken((current) => current + 1)}
-                            data-testid="run-graph-refresh-button"
-                            variant="outline"
-                            size="xs"
-                        >
-                            {isLoading ? 'Refreshing…' : 'Refresh'}
-                        </Button>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                onClick={() => setRefreshToken((current) => current + 1)}
+                                data-testid="run-graph-refresh-button"
+                                variant="outline"
+                                size="xs"
+                            >
+                                {isLoading ? 'Refreshing…' : 'Refresh'}
+                            </Button>
+                            <RunSectionToggleButton
+                                collapsed={collapsed}
+                                onToggle={() => setCollapsed((current) => !current)}
+                                testId="run-graph-toggle-button"
+                            />
+                        </div>
                     )}
                 />
             </PanelHeader>
-            <PanelContent className="space-y-3">
+            {!collapsed ? (
+                <PanelContent className="space-y-3">
                 {loadError ? (
                     <InlineNotice tone="error" data-testid="run-graph-error">
                         {loadError}
@@ -239,7 +249,8 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
                         />
                     </ReactFlowProvider>
                 </CanvasSessionModeProvider>
-            </PanelContent>
+                </PanelContent>
+            ) : null}
         </Panel>
     )
 }

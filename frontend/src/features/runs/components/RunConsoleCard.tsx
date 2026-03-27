@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useStore } from '@/store'
 import {
@@ -11,6 +11,7 @@ import {
 } from '@/ui'
 
 import { useRunExplainability } from '../hooks/useRunExplainability'
+import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 export function RunConsoleCard() {
     const selectedRunId = useStore((state) => state.selectedRunId)
@@ -20,6 +21,7 @@ export function RunConsoleCard() {
     const latestLog = useMemo(() => logs.at(-1) ?? null, [logs])
     const logsEndRef = useRef<HTMLDivElement>(null)
     const { failureDecisions, retryDecisions, routingDecisions } = useRunExplainability(selectedRunId)
+    const [collapsed, setCollapsed] = useState(false)
 
     useEffect(() => {
         logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -47,11 +49,17 @@ export function RunConsoleCard() {
                             >
                                 Clear
                             </Button>
+                            <RunSectionToggleButton
+                                collapsed={collapsed}
+                                onToggle={() => setCollapsed((current) => !current)}
+                                testId="run-console-toggle-button"
+                            />
                         </div>
                     )}
                 />
             </PanelHeader>
-            <PanelContent className="space-y-4">
+            {!collapsed ? (
+                <PanelContent className="space-y-4">
                 <div className="grid gap-3 xl:grid-cols-3">
                     <section data-testid="routing-explainability-view" className="rounded-md border border-border bg-background/80 p-3">
                         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Routing Decisions</h3>
@@ -134,7 +142,8 @@ export function RunConsoleCard() {
                         </div>
                     )}
                 </div>
-            </PanelContent>
+                </PanelContent>
+            ) : null}
         </Panel>
     )
 }

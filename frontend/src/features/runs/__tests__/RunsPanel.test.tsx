@@ -313,6 +313,20 @@ describe('RunsPanel', () => {
     expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
     expect(screen.getByTestId('run-graph-panel')).toBeVisible()
     expect(screen.getByTestId('run-console-panel')).toBeVisible()
+    expect(screen.getByTestId('run-summary-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-graph-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-console-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-checkpoint-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-context-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-artifact-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-event-timeline-toggle-button')).toBeVisible()
+
+    await user.click(screen.getByTestId('run-graph-toggle-button'))
+    expect(screen.queryByTestId('run-graph-canvas')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('run-console-toggle-button'))
+    expect(screen.queryByTestId('run-console-output')).not.toBeInTheDocument()
+
     expect(
       runListPanel.compareDocumentPosition(runSummaryPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()

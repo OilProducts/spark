@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import type {
     GroupedTimelineEntry,
     PendingInterviewGate,
@@ -25,6 +27,7 @@ import {
     SectionHeader,
 } from '@/ui'
 import { RunQuestionsPanel } from './RunQuestionsPanel'
+import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunEventTimelineCardProps {
     isNarrowViewport: boolean
@@ -77,6 +80,8 @@ export function RunEventTimelineCard({
     onFreeformAnswerChange,
     onSubmitPendingGateAnswer,
 }: RunEventTimelineCardProps) {
+    const [collapsed, setCollapsed] = useState(false)
+
     return (
         <Panel
             data-testid="run-event-timeline-panel"
@@ -88,19 +93,27 @@ export function RunEventTimelineCard({
                     title="Event Timeline"
                     description="Live typed events, filter controls, and pending human gates."
                     action={(
-                        <span
-                            className={`inline-flex rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                                isTimelineLive
-                                    ? 'border-sky-500/40 bg-sky-500/10 text-sky-700'
-                                    : 'border-border bg-muted text-muted-foreground'
-                            }`}
-                        >
-                            {isTimelineLive ? 'Live' : 'Idle'}
-                        </span>
+                        <div className="flex items-center gap-2">
+                            <span
+                                className={`inline-flex rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                                    isTimelineLive
+                                        ? 'border-sky-500/40 bg-sky-500/10 text-sky-700'
+                                        : 'border-border bg-muted text-muted-foreground'
+                                }`}
+                            >
+                                {isTimelineLive ? 'Live' : 'Idle'}
+                            </span>
+                            <RunSectionToggleButton
+                                collapsed={collapsed}
+                                onToggle={() => setCollapsed((current) => !current)}
+                                testId="run-event-timeline-toggle-button"
+                            />
+                        </div>
                     )}
                 />
             </PanelHeader>
-            <PanelContent className="space-y-3">
+            {!collapsed ? (
+                <PanelContent className="space-y-3">
                 <div
                     data-testid="timeline-update-performance-budget"
                     data-budget-ms={TIMELINE_UPDATE_BUDGET_MS}
@@ -269,7 +282,8 @@ export function RunEventTimelineCard({
                         ))}
                     </div>
                 )}
-            </PanelContent>
+                </PanelContent>
+            ) : null}
         </Panel>
     )
 }

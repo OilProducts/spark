@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import type {
     ArtifactErrorState,
     ArtifactListEntry,
@@ -11,6 +13,7 @@ import {
     PanelHeader,
     SectionHeader,
 } from '@/ui'
+import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunArtifactsCardProps {
     isLoading: boolean
@@ -41,6 +44,8 @@ export function RunArtifactsCard({
     onViewArtifact,
     artifactDownloadHref,
 }: RunArtifactsCardProps) {
+    const [collapsed, setCollapsed] = useState(false)
+
     return (
         <Panel data-testid="run-artifact-panel">
             <PanelHeader>
@@ -48,19 +53,27 @@ export function RunArtifactsCard({
                     title="Artifacts"
                     description="Browse generated files, inspect previews, and download outputs."
                     action={(
-                        <Button
-                            onClick={onRefresh}
-                            data-testid="run-artifact-refresh-button"
-                            variant="outline"
-                            size="xs"
-                            className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                            {isLoading ? 'Refreshing…' : 'Refresh'}
-                        </Button>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                onClick={onRefresh}
+                                data-testid="run-artifact-refresh-button"
+                                variant="outline"
+                                size="xs"
+                                className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                            >
+                                {isLoading ? 'Refreshing…' : 'Refresh'}
+                            </Button>
+                            <RunSectionToggleButton
+                                collapsed={collapsed}
+                                onToggle={() => setCollapsed((current) => !current)}
+                                testId="run-artifact-toggle-button"
+                            />
+                        </div>
                     )}
                 />
             </PanelHeader>
-            <PanelContent className="space-y-3">
+            {!collapsed ? (
+                <PanelContent className="space-y-3">
             {artifactError && (
                 <InlineNotice tone="error" className="space-y-1">
                     <div data-testid="run-artifact-error">{artifactError.message}</div>
@@ -166,7 +179,8 @@ export function RunArtifactsCard({
                     </div>
                 </div>
             )}
-            </PanelContent>
+                </PanelContent>
+            ) : null}
         </Panel>
     )
 }

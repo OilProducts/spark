@@ -1,8 +1,11 @@
+import { useState } from 'react'
+
 import type {
     CheckpointErrorState,
     CheckpointResponse,
 } from '../model/shared'
 import { Button, InlineNotice, Panel, PanelContent, PanelHeader, SectionHeader } from '@/ui'
+import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunCheckpointCardProps {
     isLoading: boolean
@@ -23,6 +26,8 @@ export function RunCheckpointCard({
     checkpointRetryCounters,
     onRefresh,
 }: RunCheckpointCardProps) {
+    const [collapsed, setCollapsed] = useState(false)
+
     return (
         <Panel data-testid="run-checkpoint-panel">
             <PanelHeader>
@@ -30,19 +35,27 @@ export function RunCheckpointCard({
                     title="Checkpoint"
                     description="Latest persisted runtime position and retry counters."
                     action={(
-                        <Button
-                            onClick={onRefresh}
-                            data-testid="run-checkpoint-refresh-button"
-                            variant="outline"
-                            size="xs"
-                            className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                            {isLoading ? 'Refreshing…' : 'Refresh'}
-                        </Button>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                onClick={onRefresh}
+                                data-testid="run-checkpoint-refresh-button"
+                                variant="outline"
+                                size="xs"
+                                className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                            >
+                                {isLoading ? 'Refreshing…' : 'Refresh'}
+                            </Button>
+                            <RunSectionToggleButton
+                                collapsed={collapsed}
+                                onToggle={() => setCollapsed((current) => !current)}
+                                testId="run-checkpoint-toggle-button"
+                            />
+                        </div>
                     )}
                 />
             </PanelHeader>
-            <PanelContent className="space-y-3">
+            {!collapsed ? (
+                <PanelContent className="space-y-3">
             {checkpointError && (
                 <InlineNotice tone="error" className="space-y-1">
                     <div data-testid="run-checkpoint-error">{checkpointError.message}</div>
@@ -72,7 +85,8 @@ export function RunCheckpointCard({
                     </pre>
                 </div>
             )}
-            </PanelContent>
+                </PanelContent>
+            ) : null}
         </Panel>
     )
 }

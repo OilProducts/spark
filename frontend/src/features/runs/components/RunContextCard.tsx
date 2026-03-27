@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import type { ContextErrorState, RunContextRow } from '../model/shared'
 import {
     Button,
@@ -8,6 +10,7 @@ import {
     PanelHeader,
     SectionHeader,
 } from '@/ui'
+import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunContextCardProps {
     isLoading: boolean
@@ -34,6 +37,7 @@ export function RunContextCard({
     onCopy,
     onSearchQueryChange,
 }: RunContextCardProps) {
+    const [collapsed, setCollapsed] = useState(false)
     const exportButton = contextExportHref ? (
         <Button
             asChild
@@ -90,11 +94,17 @@ export function RunContextCard({
                                 Copy JSON
                             </Button>
                             {exportButton}
+                            <RunSectionToggleButton
+                                collapsed={collapsed}
+                                onToggle={() => setCollapsed((current) => !current)}
+                                testId="run-context-toggle-button"
+                            />
                         </div>
                     )}
                 />
             </PanelHeader>
-            <PanelContent className="space-y-3">
+            {!collapsed ? (
+                <PanelContent className="space-y-3">
             {contextCopyStatus && (
                 <div data-testid="run-context-copy-status" className="text-xs text-muted-foreground">
                     {contextCopyStatus}
@@ -166,7 +176,8 @@ export function RunContextCard({
                     </table>
                 </div>
             )}
-            </PanelContent>
+                </PanelContent>
+            ) : null}
         </Panel>
     )
 }

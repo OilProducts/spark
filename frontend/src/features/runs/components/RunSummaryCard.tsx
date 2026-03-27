@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import { Button } from '@/ui'
 import type { RunRecord } from '../model/shared'
 import {
@@ -10,6 +12,7 @@ import {
     formatTimestamp,
 } from '../model/shared'
 import { Panel, PanelContent, PanelHeader, SectionHeader } from '@/ui'
+import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunSummaryCardProps {
     run: RunRecord
@@ -21,16 +24,27 @@ interface RunSummaryCardProps {
 
 export function RunSummaryCard({ run, activeProjectPath, now, onOpenRunArtifact, onRequestCancel }: RunSummaryCardProps) {
     const cancelAvailable = canCancelRun(run.status)
+    const [collapsed, setCollapsed] = useState(false)
     return (
         <Panel data-testid="run-summary-panel">
             <PanelHeader>
                 <SectionHeader
                     title="Run Summary"
                     description="Execution metadata, scope, and final outcome."
-                    action={<span className="text-xs text-muted-foreground">{run.run_id}</span>}
+                    action={(
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">{run.run_id}</span>
+                            <RunSectionToggleButton
+                                collapsed={collapsed}
+                                onToggle={() => setCollapsed((current) => !current)}
+                                testId="run-summary-toggle-button"
+                            />
+                        </div>
+                    )}
                 />
             </PanelHeader>
-            <PanelContent className="space-y-4">
+            {!collapsed ? (
+                <PanelContent className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
                         {run.spec_id ? (
@@ -87,7 +101,8 @@ export function RunSummaryCard({ run, activeProjectPath, now, onOpenRunArtifact,
                 <div data-testid="run-summary-last-error" className="break-all"><span className="font-medium">Last Error:</span> {run.last_error || '—'}</div>
                 <div data-testid="run-summary-token-usage"><span className="font-medium">Tokens:</span> {typeof run.token_usage === 'number' ? run.token_usage.toLocaleString() : '—'}</div>
                 </div>
-            </PanelContent>
+                </PanelContent>
+            ) : null}
         </Panel>
     )
 }
