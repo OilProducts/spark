@@ -55,11 +55,6 @@ export interface ArtifactErrorState {
     help: string
 }
 
-export interface GraphvizErrorState {
-    message: string
-    help: string
-}
-
 export interface FormattedContextValue {
     renderedValue: string
     valueType: string
@@ -183,6 +178,28 @@ export const STATUS_LABELS: Record<string, string> = {
     cancel_requested: 'Canceling',
     aborted: 'Canceled',
     canceled: 'Canceled',
+}
+
+export const canCancelRun = (status: string) => status === 'running'
+
+export const cancelRunActionLabel = (status: string) => {
+    if (status === 'cancel_requested' || status === 'abort_requested') {
+        return 'Canceling…'
+    }
+    if (status === 'canceled' || status === 'aborted') {
+        return 'Canceled'
+    }
+    return 'Cancel'
+}
+
+export const cancelRunDisabledReason = (status: string) => {
+    if (status === 'cancel_requested' || status === 'abort_requested') {
+        return 'Cancel already requested for this run.'
+    }
+    if (status === 'canceled' || status === 'aborted') {
+        return 'This run is already canceled.'
+    }
+    return 'Cancel is only available while the run is active.'
 }
 
 export const formatOutcomeLabel = (value?: string | null) => {

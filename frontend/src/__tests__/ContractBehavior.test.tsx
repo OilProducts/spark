@@ -1,10 +1,11 @@
 import App from '@/App'
 import { ExecutionControls } from '@/features/execution/ExecutionControls'
+import { ExecutionWorkspace } from '@/features/execution/ExecutionWorkspace'
 import { Editor } from '@/features/editor/Editor'
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { Navbar } from '@/app/Navbar'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
-import { RunStream } from '@/features/execution/RunStream'
+import { RunStream } from '@/features/runs/RunStream'
 import { RunsPanel } from '@/features/runs/RunsPanel'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import { Sidebar } from '@/features/editor/Sidebar'
@@ -248,12 +249,38 @@ describe('Frontend contract behavior', () => {
     resetContractState()
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(JSON.stringify(['contract-behavior.dot']), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = requestUrl(input)
+        if (url.endsWith('/attractor/api/flows')) {
+          return new Response(JSON.stringify(['contract-behavior.dot']), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/attractor/api/flows/')) {
+          return jsonResponse({
+            name: 'contract-behavior.dot',
+            content: 'digraph G { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }',
+          })
+        }
+        if (url.includes('/graph-preview')) {
+          return jsonResponse({
+            status: 'ok',
+            graph: {
+              nodes: [
+                { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                { id: 'done', label: 'Done', shape: 'Msquare' },
+              ],
+              edges: [{ source: 'start', target: 'done' }],
+              graph_attrs: {},
+              defaults: {},
+            },
+            diagnostics: [],
+            errors: [],
+          })
+        }
+        return jsonResponse({})
+      }),
     )
   })
 
@@ -909,10 +936,23 @@ describe('Frontend contract behavior', () => {
             artifacts: [],
           })
         }
-        if (url.endsWith(`${runApiPath}/graph`)) {
-          return new Response('<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10" /></svg>', {
-            status: 200,
-            headers: { 'Content-Type': 'image/svg+xml' },
+        if (url.endsWith(`${runApiPath}/graph-preview`)) {
+          return jsonResponse({
+            status: 'ok',
+            graph: {
+              graph_attrs: {
+                label: 'Contract drift handling',
+              },
+              nodes: [
+                { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                { id: 'done', label: 'Done', shape: 'Msquare' },
+              ],
+              edges: [
+                { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              ],
+            },
+            diagnostics: [],
+            errors: [],
           })
         }
         if (url.endsWith(`${runApiPath}/questions`)) {
@@ -968,7 +1008,8 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByText('run.outcome')).toBeVisible()
     expect(screen.getByTestId('run-artifact-panel')).toBeVisible()
     await waitFor(() => {
-      expect(screen.getByTestId('run-graphviz-viewer-image')).toBeVisible()
+      expect(screen.getByTestId('run-graph-panel')).toBeVisible()
+      expect(screen.getByTestId('run-graph-canvas')).toBeVisible()
     })
     expect(screen.getByTestId('run-partial-api-failure-banner')).toHaveTextContent(
       'Some run detail endpoints are unavailable.',
@@ -1768,6 +1809,8 @@ describe('Frontend contract behavior', () => {
       useStore.setState((state) => ({
         ...state,
         viewMode: 'execution',
+        activeProjectPath: '/tmp/project-contract-behavior',
+        executionFlow: 'contract-behavior.dot',
         selectedRunId: 'run-focus-audit',
         runtimeStatus: 'running',
       }))
@@ -1775,9 +1818,8 @@ describe('Frontend contract behavior', () => {
 
     render(<ExecutionControls />)
 
-    expect(screen.getByTestId('execution-footer-cancel-button').className).toContain('focus-visible')
-    expect(screen.getByTestId('execution-footer-pause-button').className).toContain('focus-visible')
-    expect(screen.getByTestId('execution-footer-resume-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('execute-button').className).toContain('focus-visible')
+    expect(screen.getByLabelText('Open in Runs after launch').className).toContain('focus-visible')
 
     cleanup()
     act(() => {
@@ -1976,11 +2018,11 @@ describe('Frontend contract behavior', () => {
           runtimeStatus: 'running',
         }))
       })
-      render(<ExecutionControls />)
+      render(<ExecutionWorkspace />)
 
-      expect(screen.getByTestId('execution-footer-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('execution-footer-cancel-button')).toBeVisible()
-      expect(screen.getByTestId('execution-footer-unsupported-controls-reason')).toBeVisible()
+      expect(screen.getByTestId('execution-workspace')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('execution-flow-panel')).toBeVisible()
+      expect(screen.getByTestId('execution-launch-panel')).toBeVisible()
 
       cleanup()
       act(() => {
@@ -2069,8 +2111,8 @@ describe('Frontend contract behavior', () => {
           runtimeStatus: 'running',
         }))
       })
-      render(<ExecutionControls />)
-      expect(screen.getByTestId('execution-footer-controls')).toHaveAttribute('data-responsive-layout', 'inline')
+      render(<ExecutionWorkspace />)
+      expect(screen.getByTestId('execution-workspace')).toHaveAttribute('data-responsive-layout', 'split')
 
       cleanup()
       setViewportWidth(760)
@@ -2083,8 +2125,8 @@ describe('Frontend contract behavior', () => {
           runtimeStatus: 'running',
         }))
       })
-      render(<ExecutionControls />)
-      expect(screen.getByTestId('execution-footer-controls')).toHaveAttribute('data-responsive-layout', 'stacked')
+      render(<ExecutionWorkspace />)
+      expect(screen.getByTestId('execution-workspace')).toHaveAttribute('data-responsive-layout', 'stacked')
     } finally {
       setViewportWidth(originalViewportWidth)
     }
@@ -2561,7 +2603,7 @@ describe('Frontend contract behavior', () => {
 
     await user.click(screen.getByTestId('nav-mode-execution'))
     expect(await screen.findByTestId('execution-project-context-chip')).toHaveTextContent('project-beta')
-    expect(screen.getByTestId('execute-button')).toHaveTextContent('Run in project-beta')
+    expect(screen.getByTestId('execution-no-flow-state')).toBeVisible()
 
     await user.click(screen.getByTestId('nav-mode-triggers'))
     expect(await screen.findByTestId('triggers-project-context-chip')).toHaveTextContent('project-beta')

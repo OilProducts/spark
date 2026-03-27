@@ -107,7 +107,7 @@ The primary workflows are:
 - Home and project selection
 - project-scoped conversation and artifact review
 - flow authoring and validation
-- execution monitoring
+- direct execution launch
 - run inspection
 
 These workflow summaries are normative at the experience level. Detailed story records remain appendix-style support material.
@@ -129,6 +129,7 @@ It must present a persistent active-project switcher cluster with:
 Navigation should preserve project framing as the operator moves from conversation to Execution and Runs whenever that framing still applies.
 Execution and Runs are project-framed views by default and should expose a compact project-context indicator near the view header.
 The Editor may open with no active project. Execution may also open without a project, but run-start actions must remain locally gated on selecting a project.
+Execution is the direct-run launch surface. Runs is the canonical selected-run monitoring and inspection surface.
 Triggers are a first-class top-level workspace view because they are global automations rather than project settings; however, new and edited trigger execution targets should default to the active project when that default is meaningful.
 Settings remain global and should not imply project ownership.
 
@@ -156,9 +157,23 @@ Attractor-oriented surfaces include:
 - run event timeline
 - checkpoint view
 - context view
-- graph view
+- run graph view
 - artifact inspection
 - human-question answering
+
+Execution owns:
+- flow selection for direct runs
+- launch-input form rendering from flow metadata
+- launch diagnostics and validation blockers
+- direct-run submission controls
+- post-launch navigation choice
+
+Runs owns:
+- selected run summary and actions
+- live run graph
+- terminal/log stream
+- run event timeline
+- checkpoint, context, artifacts, and questions
 
 ### 8.3 Bridge Surfaces
 
@@ -184,7 +199,7 @@ The active project is a shared workspace context, not a Home-only decoration.
 
 That context should propagate as follows:
 - Home shows threads for the active project rather than a standalone project list
-- Execution defaults direct runs to the active project and makes that target explicit in run-start copy
+- Execution defaults direct runs to the active project and makes that target explicit in launch copy
 - Runs defaults to active-project scope and provides a one-click `All projects` escape hatch
 - Triggers remain a global registry, but trigger execution-target controls should default to the active project and make project targeting visible in list rows and detail panels
 - Editor and Settings remain visually and conceptually global
@@ -288,6 +303,8 @@ The frontend should not require the operator to hand-author raw JSON for routine
 
 Launch-form state is execution-local.
 Selecting or editing a flow in the Editor must not overwrite the currently selected execution flow, launch draft values, or launch failure state.
+Execution should provide an explicit post-launch navigation choice such as `Open in Runs after launch`.
+That control defaults to unchecked. When unchecked, Execution remains visible after a successful launch and shows a compact success notice with a `View run` affordance.
 
 ## 13. Run Inspection UX
 
@@ -295,10 +312,12 @@ The run inspector is a frontend for Attractor runs, not for workspace artifacts.
 
 It should render:
 - run summary
+- run-level actions
+- run graph based on the stored run snapshot rather than the current named flow
+- terminal/log stream
 - event timeline
 - checkpoint
 - context
-- graph
 - artifacts
 - pending questions when present
 
@@ -310,8 +329,11 @@ Examples:
 
 When the user reaches run inspection from a workspace surface, the UI should preserve project framing by default rather than dropping into an unscoped global run context.
 
-Run-inspection state is execution-local.
-The currently selected execution flow, run, node or edge selection, launch form draft, and runtime inspection context must not be inferred from the Editor session.
+Run-inspection state is run-local and may be shared across tabs, but it is distinct from the execution launch session.
+The currently selected execution flow, selected run, launch form draft, and runtime inspection context must not be inferred from the Editor session.
+
+Runs is the canonical run-monitoring surface.
+Execution may show compact handoff notices for the currently selected run, such as a launch-success message or pending human-gate reminder, but it must not own the primary run graph or terminal surface.
 
 `Completed + failure outcome` is not a runtime failure surface.
 It should be presented as a completed workflow that reached a negative business conclusion, optionally with a reason code or reason message supplied by Attractor.
@@ -339,6 +361,7 @@ The frontend may keep local ephemeral state for:
 - expanded or collapsed cards
 - editor session state
 - execution session state
+- run inspection session state
 - draft message text
 - local filter or sort controls
 - trigger execution-target mode for the editor form
@@ -347,6 +370,8 @@ The frontend may keep local ephemeral state for:
 At minimum, the frontend should model two independent mode-local sessions:
 - `editorSession`
 - `executionSession`
+
+Run inspection state should remain separate from `executionSession` even when both surfaces can reference the same selected run id.
 
 These sessions are client-ephemeral only.
 They are not backend-authoritative, and in v1 they do not need to survive a full reload or restart.

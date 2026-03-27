@@ -1,5 +1,6 @@
 import { RunsPanel } from '@/features/runs/RunsPanel'
 import { useStore } from '@/store'
+import { DialogProvider } from '@/ui'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -28,6 +29,13 @@ const resetRunsState = () => {
   })
 }
 
+const renderRunsPanel = () =>
+  render(
+    <DialogProvider>
+      <RunsPanel />
+    </DialogProvider>,
+  )
+
 const makeRun = (overrides: Partial<Record<string, unknown>> = {}) => ({
   run_id: String(overrides.run_id ?? 'run-1'),
   flow_name: String(overrides.flow_name ?? 'review.dot'),
@@ -37,15 +45,15 @@ const makeRun = (overrides: Partial<Record<string, unknown>> = {}) => ({
   outcome_reason_message: null,
   working_directory: String(overrides.working_directory ?? '/tmp/workdir'),
   project_path: String(overrides.project_path ?? '/tmp/project-one'),
-  git_branch: 'main',
-  git_commit: 'abcdef0',
-  spec_id: null,
-  plan_id: null,
-  model: 'gpt-5.3-codex-spark',
-  started_at: '2026-03-22T00:00:00Z',
-  ended_at: '2026-03-22T00:05:00Z',
-  last_error: null,
-  token_usage: 1234,
+  git_branch: (overrides.git_branch as string | null | undefined) ?? 'main',
+  git_commit: (overrides.git_commit as string | null | undefined) ?? 'abcdef0',
+  spec_id: (overrides.spec_id as string | null | undefined) ?? null,
+  plan_id: (overrides.plan_id as string | null | undefined) ?? null,
+  model: String(overrides.model ?? 'gpt-5.3-codex-spark'),
+  started_at: String(overrides.started_at ?? '2026-03-22T00:00:00Z'),
+  ended_at: (overrides.ended_at as string | null | undefined) ?? '2026-03-22T00:05:00Z',
+  last_error: (overrides.last_error as string | null | undefined) ?? null,
+  token_usage: (overrides.token_usage as number | null | undefined) ?? 1234,
 })
 
 describe('RunsPanel', () => {
@@ -122,7 +130,7 @@ describe('RunsPanel', () => {
     })
 
     const user = userEvent.setup()
-    render(<RunsPanel />)
+    renderRunsPanel()
 
     await waitFor(() => {
       expect(screen.getByText('project-one.dot')).toBeVisible()
@@ -168,7 +176,7 @@ describe('RunsPanel', () => {
     })
 
     const user = userEvent.setup()
-    render(<RunsPanel />)
+    renderRunsPanel()
 
     expect(screen.getByText('Choose an active project or switch to all projects to view run history.')).toBeVisible()
     expect(fetchMock).not.toHaveBeenCalled()
@@ -181,7 +189,7 @@ describe('RunsPanel', () => {
     expect(fetchMock).toHaveBeenCalled()
   })
 
-  it('keeps the run selector ahead of the detail stack and constrains it to a scroll region', async () => {
+  it('keeps the run selector ahead of the detail stack, removes row actions, and shows graph plus console in the detail pane', async () => {
     window.innerWidth = 1400
     window.dispatchEvent(new Event('resize'))
 
@@ -235,10 +243,25 @@ describe('RunsPanel', () => {
           artifacts: [],
         })
       }
-      if (url.includes('/attractor/pipelines/run-selected/graph')) {
-        return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
-          status: 200,
-          headers: { 'Content-Type': 'image/svg+xml' },
+      if (url.includes('/attractor/pipelines/run-selected/graph-preview')) {
+        return jsonResponse({
+          status: 'ok',
+          graph: {
+            graph_attrs: {
+              label: 'Selected graph',
+            },
+            nodes: [
+              { id: 'start', label: 'Start', shape: 'Mdiamond' },
+              { id: 'validate', label: 'Validate', shape: 'box' },
+              { id: 'done', label: 'Done', shape: 'Msquare' },
+            ],
+            edges: [
+              { from: 'start', to: 'validate', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'validate', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+            ],
+          },
+          diagnostics: [],
+          errors: [],
         })
       }
       if (url.includes('/attractor/pipelines/run-selected/questions')) {
@@ -256,7 +279,7 @@ describe('RunsPanel', () => {
     })
 
     const user = userEvent.setup()
-    render(<RunsPanel />)
+    renderRunsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-list-panel')).toBeVisible()
@@ -272,17 +295,24 @@ describe('RunsPanel', () => {
     expect(scrollRegion).toHaveClass('flex-1')
     expect(scrollRegion).toHaveClass('overflow-y-auto')
 
-    expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(2)
-    expect(screen.getAllByRole('button', { name: 'Cancel' }).some((button) => !button.hasAttribute('disabled'))).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Open' })).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('button', { name: 'Cancel' })).toHaveLength(0)
     expect(screen.queryByText('history table')).not.toBeInTheDocument()
 
-    await user.click(screen.getAllByTestId('run-history-row')[0]!)
+    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    expect(selectedRunCard).not.toBeNull()
+    await user.click(selectedRunCard!)
 
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-panel')).toBeVisible()
     })
 
     const runSummaryPanel = screen.getByTestId('run-summary-panel')
+    expect(screen.getByTestId('run-summary-spec-artifact-link')).toBeVisible()
+    expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
+    expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
+    expect(screen.getByTestId('run-graph-panel')).toBeVisible()
+    expect(screen.getByTestId('run-console-panel')).toBeVisible()
     expect(
       runListPanel.compareDocumentPosition(runSummaryPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
@@ -337,10 +367,21 @@ describe('RunsPanel', () => {
           artifacts: [],
         })
       }
-      if (url.includes('/attractor/pipelines/run-selected/graph')) {
-        return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
-          status: 200,
-          headers: { 'Content-Type': 'image/svg+xml' },
+      if (url.includes('/attractor/pipelines/run-selected/graph-preview')) {
+        return jsonResponse({
+          status: 'ok',
+          graph: {
+            graph_attrs: {},
+            nodes: [
+              { id: 'start', label: 'Start', shape: 'Mdiamond' },
+              { id: 'done', label: 'Done', shape: 'Msquare' },
+            ],
+            edges: [
+              { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+            ],
+          },
+          diagnostics: [],
+          errors: [],
         })
       }
       if (url.includes('/attractor/pipelines/run-selected/questions')) {
@@ -358,7 +399,7 @@ describe('RunsPanel', () => {
     })
 
     const user = userEvent.setup()
-    render(<RunsPanel />)
+    renderRunsPanel()
 
     await waitFor(() => {
       expect(screen.getByText('selected.dot')).toBeVisible()

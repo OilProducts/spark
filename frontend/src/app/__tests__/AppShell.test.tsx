@@ -267,6 +267,25 @@ const installCanvasWorkspaceFetchMock = () => {
 describe('App shell behavior', () => {
   beforeEach(() => {
     resetAppShellState()
+    class MockEventSource {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSED = 2
+      readonly url: string
+      readyState = MockEventSource.OPEN
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      constructor(url: string | URL) {
+        this.url = String(url)
+      }
+
+      close() {
+        this.readyState = MockEventSource.CLOSED
+      }
+    }
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -529,7 +548,7 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('nav-mode-execution'))
     expect(await screen.findByTestId('execution-project-context-chip')).toHaveTextContent('project-two')
-    expect(screen.getByTestId('execute-button')).toHaveTextContent('Run in project-two')
+    expect(screen.getByTestId('execution-no-flow-state')).toBeVisible()
 
     await user.click(screen.getByTestId('nav-mode-triggers'))
     expect(await screen.findByTestId('triggers-project-context-chip')).toHaveTextContent('project-two')
@@ -632,6 +651,50 @@ describe('App shell behavior', () => {
           runs: [buildRunRecord({ flowName: 'review-two.dot', projectPath: '/tmp/project-two', runId: 'run-two' })],
         })
       }
+      if (url.includes('/attractor/pipelines/run-two/checkpoint')) {
+        return jsonResponse({
+          pipeline_id: 'run-two',
+          checkpoint: {
+            completed_nodes: ['prepare'],
+            current_node: 'review',
+          },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-two/context')) {
+        return jsonResponse({
+          pipeline_id: 'run-two',
+          context: {},
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-two/artifacts')) {
+        return jsonResponse({
+          pipeline_id: 'run-two',
+          artifacts: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-two/graph-preview')) {
+        return jsonResponse({
+          status: 'ok',
+          graph: {
+            graph_attrs: {},
+            nodes: [
+              { id: 'start', label: 'Start', shape: 'Mdiamond' },
+              { id: 'done', label: 'Done', shape: 'Msquare' },
+            ],
+            edges: [
+              { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+            ],
+          },
+          diagnostics: [],
+          errors: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-two/questions')) {
+        return jsonResponse({
+          pipeline_id: 'run-two',
+          questions: [],
+        })
+      }
       return jsonResponse({})
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -655,14 +718,16 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByText('review-two.dot')).toBeVisible()
     })
-    await user.click(screen.getByRole('button', { name: 'Open' }))
+    const runTwoCard = screen.getByText('review-two.dot').closest('[data-testid="run-history-row"]')
+    expect(runTwoCard).not.toBeNull()
+    await user.click(runTwoCard!)
 
     await waitFor(() => {
-      expect(useStore.getState().viewMode).toBe('execution')
+      expect(useStore.getState().viewMode).toBe('runs')
     })
     expect(useStore.getState().selectedRunId).toBe('run-two')
-    expect(useStore.getState().executionFlow).toBe('review-two.dot')
 
+    await user.click(screen.getByTestId('nav-mode-projects'))
     await user.click(screen.getByTestId('nav-mode-runs'))
     await waitFor(() => {
       const activeScopeFetchCount = fetchMock.mock.calls.filter(([request]) =>
@@ -1073,7 +1138,7 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('inspector-panel')).toBeVisible()
     expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
     expect(screen.getByTestId('editor-workspace')).toBeVisible()
-    expect(screen.getByTestId('execution-workspace').className).toContain('hidden')
+    expect(screen.queryByTestId('execution-workspace')).not.toBeInTheDocument()
 
     const editorFlowTree = await screen.findByTestId('editor-flow-tree')
     await user.click(within(editorFlowTree).getByRole('button', { name: LINEAR_FLOW_NAME }))
@@ -1085,13 +1150,14 @@ describe('App shell behavior', () => {
     await user.type(rawDotEditor, '\n// editor draft note')
 
     await user.click(screen.getByTestId('nav-mode-execution'))
-    expect(await screen.findByTestId('execution-launch-input-context.request.summary')).toHaveValue('Review the auth flow')
+    expect(await screen.findByTestId('execution-launch-flow-name')).toHaveTextContent(REVIEW_FLOW_NAME)
+    expect(screen.getByTestId('execution-launch-input-context.request.summary')).toHaveValue('')
 
     await user.click(screen.getByTestId('nav-mode-editor'))
     expect((await screen.findByTestId('raw-dot-editor') as HTMLTextAreaElement).value).toContain('// editor draft note')
   })
 
-  it('anchors execution launch inputs to the canvas panel instead of the sidebar shell', async () => {
+  it('keeps execution as a launch surface with the primary action inside the launch panel', async () => {
     const user = userEvent.setup()
     installCanvasWorkspaceFetchMock()
 
@@ -1101,14 +1167,13 @@ describe('App shell behavior', () => {
     const executionFlowTree = await screen.findByTestId('execution-flow-tree')
     await user.click(within(executionFlowTree).getByRole('button', { name: REVIEW_FLOW_NAME }))
 
-    const executionCanvasPanel = await screen.findByTestId('execution-canvas-panel')
-    const executionFooterControls = screen.getByTestId('execution-footer-controls')
-    const executionCanvasPrimaryAction = screen.getByTestId('execution-canvas-primary-action')
+    const executionWorkspace = await screen.findByTestId('execution-workspace')
+    const executionLaunchPanel = screen.getByTestId('execution-launch-panel')
+    const executionPrimaryAction = screen.getByTestId('execution-launch-primary-action')
 
-    expect(executionCanvasPanel).toHaveClass('relative')
-    expect(executionCanvasPanel.parentElement).toHaveClass('min-w-0')
-    expect(executionCanvasPanel).toContainElement(executionFooterControls)
-    expect(executionCanvasPanel).toContainElement(executionCanvasPrimaryAction)
-    expect(executionFooterControls).not.toContainElement(executionCanvasPrimaryAction)
+    expect(executionWorkspace).toHaveAttribute('data-responsive-layout', 'split')
+    expect(executionLaunchPanel).toContainElement(executionPrimaryAction)
+    expect(screen.queryByTestId('execution-canvas-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('execution-footer-controls')).not.toBeInTheDocument()
   })
 })

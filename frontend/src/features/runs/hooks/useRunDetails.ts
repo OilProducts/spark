@@ -8,7 +8,6 @@ import {
     buildContextExportPayload,
     buildContextRows,
     buildDegradedDetailPanels,
-    buildGraphvizViewerSrc,
     filterContextRows,
 } from '../model/runDetailsModel'
 import { useRunDetailResources } from './useRunDetailResources'
@@ -34,14 +33,10 @@ export function useRunDetails({ selectedRunSummary, viewMode }: UseRunDetailsArg
         fetchArtifacts,
         fetchCheckpoint,
         fetchContext,
-        fetchGraphviz,
-        graphvizError,
-        graphvizMarkup,
         isArtifactLoading,
         isArtifactViewerLoading,
         isCheckpointLoading,
         isContextLoading,
-        isGraphvizLoading,
         pendingQuestionSnapshots,
         selectedArtifactPath,
         setContextCopyStatus,
@@ -94,18 +89,14 @@ export function useRunDetails({ selectedRunSummary, viewMode }: UseRunDetailsArg
         () => buildArtifactDerivedState(artifactData, selectedArtifactPath),
         [artifactData, selectedArtifactPath],
     )
-    const graphvizViewerSrc = useMemo(() => {
-        return buildGraphvizViewerSrc(graphvizMarkup)
-    }, [graphvizMarkup])
 
     const degradedDetailPanels = useMemo(() => {
         return buildDegradedDetailPanels({
             checkpointError,
             contextError,
             artifactError,
-            graphvizError,
         })
-    }, [artifactError, checkpointError, contextError, graphvizError])
+    }, [artifactError, checkpointError, contextError])
 
     return {
         artifactDownloadHref,
@@ -126,15 +117,11 @@ export function useRunDetails({ selectedRunSummary, viewMode }: UseRunDetailsArg
         fetchArtifacts,
         fetchCheckpoint,
         fetchContext,
-        fetchGraphviz,
         filteredContextRows,
-        graphvizError,
-        graphvizViewerSrc,
         isArtifactLoading,
         isArtifactViewerLoading,
         isCheckpointLoading,
         isContextLoading,
-        isGraphvizLoading,
         missingCoreArtifacts,
         pendingQuestionSnapshots,
         selectedArtifactEntry,

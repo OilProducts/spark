@@ -1,15 +1,29 @@
 import { buildPipelineStartPayload } from '@/lib/pipelineStartPayload'
 import { ExecutionControls } from '@/features/execution/ExecutionControls'
 import { useStore } from '@/store'
+import { DialogProvider } from '@/ui'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
-const DEFAULT_VIEWPORT_WIDTH = 1280
 const TEST_LINEAR_FLOW = 'test-linear.dot'
 const TEST_REVIEW_FLOW = 'test-review-loop.dot'
 const TEST_SPEC_FLOW = 'test-spec-implementation.dot'
+
+const jsonResponse = (payload: unknown, init?: ResponseInit) =>
+  new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+    ...init,
+  })
+
+const renderExecutionControls = () =>
+  render(
+    <DialogProvider>
+      <ExecutionControls />
+    </DialogProvider>,
+  )
 
 const setViewportWidth = (width: number) => {
   Object.defineProperty(window, 'innerWidth', {
@@ -20,6 +34,58 @@ const setViewportWidth = (width: number) => {
   window.dispatchEvent(new Event('resize'))
 }
 
+const buildPreviewPayload = (graphAttrs: Record<string, unknown> = {}) => ({
+  status: 'ok',
+  graph: {
+    graph_attrs: graphAttrs,
+    nodes: [
+      { id: 'start', label: 'Start', shape: 'Mdiamond' },
+      { id: 'task', label: 'Task', shape: 'box', prompt: 'Review request.' },
+      { id: 'done', label: 'Done', shape: 'Msquare' },
+    ],
+    edges: [
+      { from: 'start', to: 'task', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+      { from: 'task', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+    ],
+  },
+  diagnostics: [],
+  errors: [],
+})
+
+const installExecutionFetchMock = (options?: {
+  flowName?: string
+  flowContent?: string
+  graphAttrs?: Record<string, unknown>
+  pipelineId?: string
+}) => {
+  const flowName = options?.flowName ?? TEST_LINEAR_FLOW
+  const flowContent = options?.flowContent ?? 'digraph simple_linear { start -> done }'
+  const graphAttrs = options?.graphAttrs ?? {}
+  const pipelineId = options?.pipelineId ?? 'run-123'
+
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    if (url.includes('/workspace/api/projects/metadata')) {
+      return jsonResponse({ branch: 'main' })
+    }
+    if (url.endsWith(`/attractor/api/flows/${flowName}`)) {
+      return jsonResponse({
+        name: flowName,
+        content: flowContent,
+      })
+    }
+    if (url.endsWith('/attractor/preview') && init?.method === 'POST') {
+      return jsonResponse(buildPreviewPayload(graphAttrs))
+    }
+    if (url.endsWith('/attractor/pipelines') && init?.method === 'POST') {
+      return jsonResponse({ status: 'started', pipeline_id: pipelineId }, { status: 202 })
+    }
+    return jsonResponse({})
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
 const resetExecutionState = () => {
   useStore.setState((state) => ({
     ...state,
@@ -27,18 +93,22 @@ const resetExecutionState = () => {
     activeProjectPath: null,
     activeFlow: null,
     executionFlow: null,
+    executionGraphAttrs: {},
+    executionDiagnostics: [],
+    executionNodeDiagnostics: {},
+    executionEdgeDiagnostics: {},
+    executionHasValidationErrors: false,
     selectedRunId: null,
     workingDir: DEFAULT_WORKING_DIRECTORY,
     runtimeStatus: 'idle',
+    runtimeOutcome: null,
+    runtimeOutcomeReasonCode: null,
+    runtimeOutcomeReasonMessage: null,
     humanGate: null,
     projectRegistry: {},
     projectSessionsByPath: {},
     projectRegistrationError: null,
     recentProjectPaths: [],
-    diagnostics: [],
-    nodeDiagnostics: {},
-    edgeDiagnostics: {},
-    hasValidationErrors: false,
     logs: [],
     nodeStatuses: {},
     selectedNodeId: null,
@@ -48,7 +118,7 @@ const resetExecutionState = () => {
 
 describe('Execution controls behavior', () => {
   beforeEach(() => {
-    setViewportWidth(DEFAULT_VIEWPORT_WIDTH)
+    setViewportWidth(1280)
     resetExecutionState()
   })
 
@@ -115,158 +185,27 @@ describe('Execution controls behavior', () => {
     })
   })
 
-  it('hides footer when execution mode is inactive and no run context exists', () => {
-    useStore.setState((state) => ({
-      ...state,
-      viewMode: 'projects',
-      runtimeStatus: 'idle',
-      selectedRunId: null,
-    }))
-
-    render(<ExecutionControls />)
-    expect(screen.queryByTestId('execution-footer-controls')).not.toBeInTheDocument()
-  })
-
-  it('shows only the canvas execute action for flows without launch inputs before a run starts', () => {
+  it('shows a launch-only empty state when no flow is selected', () => {
     useStore.setState((state) => ({
       ...state,
       viewMode: 'execution',
       activeProjectPath: '/tmp/project',
-      executionFlow: TEST_LINEAR_FLOW,
-      projectSessionsByPath: {
-        '/tmp/project': {
-          workingDir: '/tmp/project',
-          conversationId: null,
-          projectEventLog: [],
-          specId: 'spec-123',
-          specStatus: 'approved',
-          specProvenance: null,
-          planId: 'plan-456',
-          planStatus: 'approved',
-          planProvenance: null,
-        },
-      },
     }))
 
-    render(<ExecutionControls />)
+    renderExecutionControls()
 
-    expect(screen.getByTestId('execute-button')).toBeVisible()
-    expect(screen.getByTestId('execution-canvas-primary-action')).toBeVisible()
-    expect(screen.queryByTestId('execution-footer-controls')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('execution-launch-inputs')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('execution-footer-run-status')).not.toBeInTheDocument()
-  })
-
-  it('launches from the inspected execution flow without requiring an approved plan', async () => {
-    const user = userEvent.setup()
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      if (url.includes('/workspace/api/projects/metadata')) {
-        return new Response(JSON.stringify({ branch: 'main' }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      if (url.endsWith('/attractor/api/flows/run-opened.dot')) {
-        return new Response(JSON.stringify({
-          name: 'run-opened.dot',
-          content: 'digraph run_opened { start -> done }',
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      if (url.endsWith('/attractor/pipelines') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ status: 'started', pipeline_id: 'run-123' }), {
-          status: 202,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      return new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-
-    useStore.setState((state) => ({
-      ...state,
-      viewMode: 'execution',
-      activeProjectPath: '/tmp/project',
-      activeFlow: 'preferred.dot',
-      executionFlow: 'run-opened.dot',
-      projectSessionsByPath: {
-        '/tmp/project': {
-          workingDir: '/tmp/project',
-          conversationId: null,
-          projectEventLog: [],
-          specId: null,
-          specStatus: null,
-          specProvenance: null,
-          planId: 'plan-123',
-          planStatus: 'draft',
-          planProvenance: null,
-        },
-      },
-    }))
-
-    render(<ExecutionControls />)
-
-    await user.click(screen.getByTestId('execute-button'))
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        '/attractor/pipelines',
-        expect.objectContaining({
-          method: 'POST',
-          body: expect.stringContaining('"flow_name":"run-opened.dot"'),
-        }),
-      )
-    })
-    expect(useStore.getState().activeFlow).toBe('preferred.dot')
-    expect(useStore.getState().executionFlow).toBe('run-opened.dot')
+    expect(screen.getByTestId('execution-launch-panel')).toBeVisible()
+    expect(screen.getByTestId('execution-no-flow-state')).toHaveTextContent('Select a flow to launch.')
+    expect(screen.queryByTestId('run-console-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-graph-panel')).not.toBeInTheDocument()
   })
 
   it('renders declared launch inputs and submits them as launch_context', async () => {
     const user = userEvent.setup()
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      if (url.includes('/workspace/api/projects/metadata')) {
-        return new Response(JSON.stringify({ branch: 'main' }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      if (url.endsWith(`/attractor/api/flows/${TEST_REVIEW_FLOW}`)) {
-        return new Response(JSON.stringify({
-          name: TEST_REVIEW_FLOW,
-          content: 'digraph implement_review_loop { start -> done }',
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      if (url.endsWith('/attractor/pipelines') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ status: 'started', pipeline_id: 'run-555' }), {
-          status: 202,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      return new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-
-    useStore.setState((state) => ({
-      ...state,
-      viewMode: 'execution',
-      activeProjectPath: '/tmp/project',
-      executionFlow: TEST_REVIEW_FLOW,
-      executionGraphAttrs: {
+    const fetchMock = installExecutionFetchMock({
+      flowName: TEST_REVIEW_FLOW,
+      flowContent: 'digraph implement_review_loop { start -> done }',
+      graphAttrs: {
         'spark.launch_inputs': JSON.stringify([
           {
             key: 'context.request.summary',
@@ -291,6 +230,14 @@ describe('Execution controls behavior', () => {
           },
         ]),
       },
+      pipelineId: 'run-555',
+    })
+
+    useStore.setState((state) => ({
+      ...state,
+      viewMode: 'execution',
+      activeProjectPath: '/tmp/project',
+      executionFlow: TEST_REVIEW_FLOW,
       projectSessionsByPath: {
         '/tmp/project': {
           workingDir: '/tmp/project',
@@ -306,26 +253,12 @@ describe('Execution controls behavior', () => {
       },
     }))
 
-    render(<ExecutionControls />)
+    renderExecutionControls()
 
-    expect(screen.getByTestId('execution-launch-inputs')).toBeVisible()
-    expect(screen.getByTestId('execution-footer-controls')).toHaveClass('max-w-3xl')
-    expect(screen.getByTestId('execution-launch-inputs')).toHaveClass('w-full')
-    expect(screen.getByTestId('execution-launch-inputs-toolbar')).toBeVisible()
-    expect(screen.getByTestId('execution-launch-inputs-toolbar')).toHaveClass('justify-between')
-    expect(screen.getByTestId('execution-launch-inputs-title')).toHaveTextContent('Launch Inputs')
-    expect(screen.queryByTestId('execution-launch-inputs-summary')).not.toBeInTheDocument()
-    expect(screen.getByTestId('execution-launch-inputs-toggle')).toHaveAttribute('aria-label', 'Collapse launch inputs')
-    expect(screen.getByTestId('execution-launch-inputs-toggle')).not.toHaveClass('border')
-    expect(screen.getByTestId('execution-launch-inputs-body')).toHaveClass('max-h-[min(42vh,20rem)]')
-    expect(screen.getByTestId('execution-canvas-primary-action')).toHaveClass('top-4', 'right-4')
-    expect(screen.getByTestId('execution-canvas-primary-action')).toContainElement(screen.getByTestId('execute-button'))
-    expect(screen.queryByTestId('execution-launch-inputs-header')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('execution-launch-inputs-count')).not.toBeInTheDocument()
-    expect(screen.getByTestId('execution-launch-inputs-grid')).toHaveClass('lg:grid-cols-12')
-    expect(screen.getByTestId('execution-launch-input-field-context.request.summary')).toHaveClass('lg:col-span-12')
-    expect(screen.getByTestId('execution-launch-input-field-context.request.target_paths')).toHaveClass('lg:col-span-6')
-    expect(screen.getByTestId('execution-launch-input-field-context.request.acceptance_criteria')).toHaveClass('lg:col-span-6')
+    expect(await screen.findByTestId('execution-launch-inputs')).toBeVisible()
+    expect(screen.getByTestId('execution-launch-primary-action')).toContainElement(screen.getByTestId('execute-button'))
+    expect(screen.getByTestId('execute-button')).toHaveTextContent('Run in project')
+    expect(screen.getByRole('checkbox', { name: 'Open in Runs after launch' })).not.toBeChecked()
 
     await user.type(
       screen.getByTestId('execution-launch-input-context.request.summary'),
@@ -351,12 +284,10 @@ describe('Execution controls behavior', () => {
       )
     })
 
-    const pipelineCall = fetchMock.mock.calls.find(
-      ([input, init]) => {
-        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-        return url.endsWith('/attractor/pipelines') && init?.method === 'POST'
-      },
-    )
+    const pipelineCall = fetchMock.mock.calls.find(([input, init]) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      return url.endsWith('/attractor/pipelines') && init?.method === 'POST'
+    })
     expect(pipelineCall).toBeDefined()
     const requestBody = JSON.parse(String(pipelineCall?.[1]?.body))
     expect(requestBody.launch_context).toEqual({
@@ -369,41 +300,24 @@ describe('Execution controls behavior', () => {
         'Response body contains status ok',
       ],
     })
+
+    expect(useStore.getState().selectedRunId).toBe('run-555')
+    expect(useStore.getState().viewMode).toBe('execution')
+    expect(screen.getByTestId('execution-launch-success-notice')).toBeVisible()
   })
 
-  it('lets the operator collapse and re-expand launch inputs without losing draft values', async () => {
+  it('stays on execution by default after launch and can jump to runs from the success notice', async () => {
     const user = userEvent.setup()
+    installExecutionFetchMock({
+      flowName: TEST_LINEAR_FLOW,
+      pipelineId: 'run-stay',
+    })
 
     useStore.setState((state) => ({
       ...state,
       viewMode: 'execution',
       activeProjectPath: '/tmp/project',
-      executionFlow: TEST_SPEC_FLOW,
-      executionGraphAttrs: {
-        'spark.launch_inputs': JSON.stringify([
-          {
-            key: 'context.request.spec_path',
-            label: 'Spec Path',
-            type: 'string',
-            description: 'Path to the written spec in the repo.',
-            required: true,
-          },
-          {
-            key: 'context.request.constraints',
-            label: 'Constraints',
-            type: 'string[]',
-            description: 'Optional constraints.',
-            required: false,
-          },
-          {
-            key: 'context.request.validation_command',
-            label: 'Validation Command',
-            type: 'string',
-            description: 'Optional validation shell command.',
-            required: false,
-          },
-        ]),
-      },
+      executionFlow: TEST_LINEAR_FLOW,
       projectSessionsByPath: {
         '/tmp/project': {
           workingDir: '/tmp/project',
@@ -419,121 +333,62 @@ describe('Execution controls behavior', () => {
       },
     }))
 
-    render(<ExecutionControls />)
+    renderExecutionControls()
 
-    await user.type(
-      screen.getByTestId('execution-launch-input-context.request.spec_path'),
-      'specs/feature.md',
-    )
-    await user.click(screen.getByTestId('execution-launch-inputs-toggle'))
+    await screen.findByTestId('execute-button')
+    expect(screen.getByRole('checkbox', { name: 'Open in Runs after launch' })).not.toBeChecked()
 
-    expect(screen.queryByTestId('execution-launch-inputs-body')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('execution-launch-inputs-summary')).not.toBeInTheDocument()
-    expect(screen.getByTestId('execution-launch-inputs-title')).toHaveTextContent('Launch Inputs')
-    expect(screen.getByTestId('execution-launch-inputs-toggle')).toHaveAttribute('aria-label', 'Expand launch inputs')
-    expect(screen.getByTestId('execution-footer-controls')).toHaveClass('max-w-3xl')
-    expect(screen.getByTestId('execution-footer-controls')).not.toHaveClass('w-auto')
-
-    await user.click(screen.getByTestId('execution-launch-inputs-toggle'))
-
-    expect(screen.getByTestId('execution-launch-inputs-body')).toBeVisible()
-    expect(screen.getByTestId('execution-footer-controls')).toHaveClass('max-w-3xl')
-    expect(screen.getByTestId('execution-footer-controls')).not.toHaveClass('w-auto')
-    expect(screen.getByTestId('execution-launch-inputs-toggle')).toHaveAttribute('aria-label', 'Collapse launch inputs')
-    expect(screen.getByTestId('execution-launch-input-context.request.spec_path')).toHaveValue('specs/feature.md')
-  })
-
-  it('renders runtime state and disables unsupported pause/resume controls', () => {
-    useStore.setState((state) => ({
-      ...state,
-      viewMode: 'execution',
-      runtimeStatus: 'running',
-      selectedRunId: 'run-42',
-    }))
-
-    render(<ExecutionControls />)
-
-    expect(screen.getByTestId('execution-footer-controls')).toBeVisible()
-    expect(screen.getByTestId('execution-footer-run-status')).toHaveTextContent('Running')
-    expect(screen.getByTestId('execution-footer-run-identity')).toHaveTextContent('run-42')
-    expect(screen.getByTestId('execution-footer-cancel-button')).toBeEnabled()
-    expect(screen.getByTestId('execution-footer-pause-button')).toBeDisabled()
-    expect(screen.getByTestId('execution-footer-resume-button')).toBeDisabled()
-    expect(screen.getByTestId('execution-footer-unsupported-controls-reason')).toHaveTextContent(
-      'Pause/Resume is unavailable',
-    )
-  })
-
-  it('requests cancel and transitions runtime status to cancel_requested', async () => {
-    const user = userEvent.setup()
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ status: 'accepted', pipeline_id: 'run-99' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    )
-    vi.stubGlobal('fetch', fetchMock)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-
-    useStore.setState((state) => ({
-      ...state,
-      viewMode: 'execution',
-      runtimeStatus: 'running',
-      selectedRunId: 'run-99',
-    }))
-
-    render(<ExecutionControls />)
-    await user.click(screen.getByTestId('execution-footer-cancel-button'))
+    await user.click(screen.getByTestId('execute-button'))
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/attractor/pipelines/run-99/cancel', { method: 'POST' })
+      expect(screen.getByTestId('execution-launch-success-notice')).toBeVisible()
     })
-    expect(useStore.getState().runtimeStatus).toBe('cancel_requested')
+    expect(useStore.getState().viewMode).toBe('execution')
+
+    await user.click(screen.getByTestId('execution-launch-success-view-run-button'))
+    expect(useStore.getState().viewMode).toBe('runs')
+    expect(useStore.getState().selectedRunId).toBe('run-stay')
   })
 
-  it('restores running state and alerts when cancel request fails', async () => {
+  it('navigates to runs immediately when the post-launch checkbox is enabled', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 500 })))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-
-    useStore.setState((state) => ({
-      ...state,
-      viewMode: 'execution',
-      runtimeStatus: 'running',
-      selectedRunId: 'run-13',
-    }))
-
-    render(<ExecutionControls />)
-    await user.click(screen.getByTestId('execution-footer-cancel-button'))
-
-    await waitFor(() => {
-      expect(useStore.getState().runtimeStatus).toBe('running')
+    installExecutionFetchMock({
+      flowName: TEST_LINEAR_FLOW,
+      pipelineId: 'run-open-in-runs',
     })
-    expect(consoleErrorSpy).not.toHaveBeenCalled()
-    expect(alertSpy).toHaveBeenCalledWith('Failed to request cancel. Check backend logs for details.')
-  })
 
-  it('shows pending human gate context when available', () => {
     useStore.setState((state) => ({
       ...state,
       viewMode: 'execution',
-      runtimeStatus: 'running',
-      selectedRunId: 'run-77',
-      humanGate: {
-        id: 'gate-1',
-        runId: 'run-77',
-        nodeId: 'node_review',
-        prompt: 'Approve deployment?',
-        options: [],
+      activeProjectPath: '/tmp/project',
+      executionFlow: TEST_LINEAR_FLOW,
+      projectSessionsByPath: {
+        '/tmp/project': {
+          workingDir: '/tmp/project',
+          conversationId: null,
+          projectEventLog: [],
+          specId: null,
+          specStatus: null,
+          specProvenance: null,
+          planId: null,
+          planStatus: 'draft',
+          planProvenance: null,
+        },
       },
     }))
 
-    render(<ExecutionControls />)
+    renderExecutionControls()
 
-    expect(screen.getByTestId('execution-pending-human-gate-banner')).toHaveTextContent(
-      'Pending human gate: Approve deployment?',
-    )
+    await screen.findByTestId('execute-button')
+    await user.click(screen.getByRole('checkbox', { name: 'Open in Runs after launch' }))
+    expect(screen.getByRole('checkbox', { name: 'Open in Runs after launch' })).toBeChecked()
+
+    await user.click(screen.getByTestId('execute-button'))
+
+    await waitFor(() => {
+      expect(useStore.getState().viewMode).toBe('runs')
+    })
+    expect(useStore.getState().selectedRunId).toBe('run-open-in-runs')
+    expect(screen.queryByTestId('execution-launch-success-notice')).not.toBeInTheDocument()
   })
 })

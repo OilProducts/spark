@@ -4,7 +4,7 @@ import {
     type PreviewResponsePayload,
 } from '@/lib/attractorClient'
 
-export type ExecutionCanvasPreviewResponse = PreviewResponsePayload
+export type ExecutionPreviewResponse = PreviewResponsePayload
 
 export const loadExecutionFlowPayload = fetchFlowPayloadValidated
-export const loadExecutionCanvasPreview = fetchPreviewValidated
+export const loadExecutionFlowPreview = fetchPreviewValidated

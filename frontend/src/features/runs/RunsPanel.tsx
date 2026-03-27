@@ -7,9 +7,10 @@ import { useRunDetails } from './hooks/useRunDetails'
 import { useRunTimeline } from './hooks/useRunTimeline'
 import { RunArtifactsCard } from './components/RunArtifactsCard'
 import { RunCheckpointCard } from './components/RunCheckpointCard'
+import { RunConsoleCard } from './components/RunConsoleCard'
 import { RunContextCard } from './components/RunContextCard'
 import { RunEventTimelineCard } from './components/RunEventTimelineCard'
-import { RunGraphvizCard } from './components/RunGraphvizCard'
+import { RunGraphCard } from './components/RunGraphCard'
 import { RunList } from './components/RunList'
 import { RunSummaryCard } from './components/RunSummaryCard'
 import type { RunRecord } from './model/shared'
@@ -23,7 +24,6 @@ export function RunsPanel() {
     const selectedRunId = useStore((state) => state.selectedRunId)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const setViewMode = useStore((state) => state.setViewMode)
-    const setExecutionFlow = useStore((state) => state.setExecutionFlow)
     const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
     const setSpecId = useStore((state) => state.setSpecId)
     const setPlanId = useStore((state) => state.setPlanId)
@@ -67,15 +67,11 @@ export function RunsPanel() {
         fetchArtifacts,
         fetchCheckpoint,
         fetchContext,
-        fetchGraphviz,
         filteredContextRows,
-        graphvizError,
-        graphvizViewerSrc,
         isArtifactLoading,
         isArtifactViewerLoading,
         isCheckpointLoading,
         isContextLoading,
-        isGraphvizLoading,
         missingCoreArtifacts,
         pendingQuestionSnapshots,
         selectedArtifactEntry,
@@ -124,12 +120,6 @@ export function RunsPanel() {
         && scopedRuns.length > 0
         && !selectedRunSummary
 
-    const openRun = (run: RunRecord) => {
-        setSelectedRunId(run.run_id)
-        setExecutionFlow(run.flow_name || null)
-        setViewMode('execution')
-    }
-
     const selectRun = (run: RunRecord) => {
         setSelectedRunId(run.run_id)
     }
@@ -169,11 +159,6 @@ export function RunsPanel() {
                     onScopeModeChange={setScopeMode}
                     now={now}
                     onSelectRun={selectRun}
-                    onOpenRun={openRun}
-                    onOpenRunArtifact={openRunArtifact}
-                    onRequestCancel={(runId, currentStatus) => {
-                        void requestCancel(runId, currentStatus)
-                    }}
                     runs={scopedRuns}
                     selectedRunId={selectedRunId}
                     summaryLabel={`${summary.total} total runs · ${summary.running} running`}
@@ -189,6 +174,10 @@ export function RunsPanel() {
                             <RunSummaryCard
                                 activeProjectPath={activeProjectPath}
                                 now={now}
+                                onOpenRunArtifact={openRunArtifact}
+                                onRequestCancel={(runId, currentStatus) => {
+                                    void requestCancel(runId, currentStatus)
+                                }}
                                 run={selectedRunSummary}
                             />
                         )}
@@ -207,6 +196,14 @@ export function RunsPanel() {
                             <InlineNotice>
                                 No runs have been recorded yet.
                             </InlineNotice>
+                        )}
+                        {selectedRunSummary && (
+                            <RunGraphCard
+                                run={selectedRunSummary}
+                            />
+                        )}
+                        {selectedRunSummary && (
+                            <RunConsoleCard />
                         )}
                         {selectedRunSummary && (
                             <RunCheckpointCard
@@ -258,17 +255,6 @@ export function RunsPanel() {
                                 }}
                                 selectedArtifactEntry={selectedArtifactEntry}
                                 showPartialRunArtifactNote={showPartialRunArtifactNote}
-                            />
-                        )}
-                        {selectedRunSummary && (
-                            <RunGraphvizCard
-                                graphvizError={graphvizError}
-                                graphvizViewerSrc={graphvizViewerSrc || null}
-                                isGraphvizLoading={isGraphvizLoading}
-                                onRefresh={() => {
-                                    void fetchGraphviz()
-                                }}
-                                runId={selectedRunSummary.run_id}
                             />
                         )}
                         {selectedRunSummary && (

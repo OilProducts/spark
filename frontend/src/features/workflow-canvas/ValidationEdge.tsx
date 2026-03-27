@@ -72,7 +72,11 @@ export function ValidationEdge({
 }: EdgeProps) {
     const canvasMode = useCanvasSessionMode()
     const edgeDiagnostics = useAppStore((state) =>
-        canvasMode === 'editor' ? state.edgeDiagnostics : state.executionEdgeDiagnostics,
+        canvasMode === 'editor'
+            ? state.edgeDiagnostics
+            : canvasMode === 'runs'
+                ? state.runEdgeDiagnostics
+                : state.executionEdgeDiagnostics,
     )
     const sourceNode = useFlowStore((state) => state.nodeLookup.get(source))
     const targetNode = useFlowStore((state) => state.nodeLookup.get(target))

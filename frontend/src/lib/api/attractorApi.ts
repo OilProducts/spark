@@ -96,6 +96,7 @@ export interface PipelineAnswerResponse {
 }
 
 export type PipelineGraphResponse = string
+export type PipelineGraphPreviewResponse = PreviewResponsePayload
 
 export interface RunRecordResponse {
     run_id: string
@@ -281,6 +282,13 @@ export function parsePipelineGraphResponse(payload: unknown, endpoint = '/attrac
         throw new ApiSchemaError(endpoint, 'Expected non-empty SVG/text response body.')
     }
     return payload
+}
+
+export function parsePipelineGraphPreviewResponse(
+    payload: unknown,
+    endpoint = '/attractor/pipelines/{id}/graph-preview',
+): PipelineGraphPreviewResponse {
+    return parsePreviewResponse(payload, endpoint)
 }
 
 function parseRunRecord(payload: unknown): RunRecordResponse | null {
@@ -472,6 +480,19 @@ export async function fetchPipelineAnswerValidated(
 export async function fetchPipelineGraphValidated(pipelineId: string): Promise<PipelineGraphResponse> {
     const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/graph`)
     return fetchTextWithValidation(url, undefined, '/attractor/pipelines/{id}/graph', parsePipelineGraphResponse)
+}
+
+export async function fetchPipelineGraphPreviewValidated(
+    pipelineId: string,
+    init?: RequestInit,
+): Promise<PipelineGraphPreviewResponse> {
+    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/graph-preview`)
+    return fetchJsonWithValidation(
+        url,
+        init,
+        '/attractor/pipelines/{id}/graph-preview',
+        parsePipelineGraphPreviewResponse,
+    )
 }
 
 export async function fetchRunsListValidated(projectPath?: string | null): Promise<RunsListResponse> {

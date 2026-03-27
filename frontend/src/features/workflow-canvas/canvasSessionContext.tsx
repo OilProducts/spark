@@ -1,6 +1,6 @@
 import { createContext, useContext, type ReactNode } from 'react'
 
-export type CanvasSessionMode = 'editor' | 'execution'
+export type CanvasSessionMode = 'editor' | 'execution' | 'runs'
 
 const CanvasSessionModeContext = createContext<CanvasSessionMode>('editor')
 

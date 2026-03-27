@@ -1,8 +1,8 @@
 import { Navbar } from "@/app/Navbar"
 import { EditorWorkspace } from "@/features/editor"
-import { ExecutionWorkspace, RunStream } from "@/features/execution"
+import { ExecutionWorkspace } from "@/features/execution"
 import { ProjectsPanel } from "@/features/projects"
-import { RunsPanel } from "@/features/runs"
+import { RunStream, RunsPanel } from "@/features/runs"
 import { SettingsPanel } from "@/features/settings"
 import { TriggersPanel } from "@/features/triggers"
 import { useStore } from "@/store"
@@ -11,7 +11,7 @@ import { DialogProvider } from "@/ui"
 function App() {
   const viewMode = useStore((state) => state.viewMode)
   const isHomeMode = viewMode === 'home' || viewMode === 'projects'
-  const isCanvasMode = viewMode === 'editor' || viewMode === 'execution'
+  const isCanvasMode = viewMode === 'editor'
 
   return (
     <DialogProvider>
@@ -27,7 +27,6 @@ function App() {
             }`}
           >
             <EditorWorkspace isActive={viewMode === 'editor'} />
-            <ExecutionWorkspace isActive={viewMode === 'execution'} />
           </div>
           {viewMode === 'triggers' ? (
             <TriggersPanel />
@@ -35,6 +34,8 @@ function App() {
             <SettingsPanel />
           ) : isHomeMode ? (
             <ProjectsPanel />
+          ) : viewMode === 'execution' ? (
+            <ExecutionWorkspace />
           ) : viewMode === 'runs' ? (
             <RunsPanel />
           ) : null}

@@ -8,7 +8,6 @@ import type {
     ContextExportEntry,
     ContextResponse,
     FormattedContextValue,
-    GraphvizErrorState,
     PendingQuestionOption,
     PendingQuestionSnapshot,
     RunContextRow,
@@ -211,26 +210,6 @@ const artifactPreviewErrorFromResponse = (status: number, detail: string | null)
         : `Unable to load artifact preview (HTTP ${status}).`
 }
 
-const graphvizErrorFromResponse = (status: number, detail: string | null): GraphvizErrorState => {
-    const normalizedDetail = detail?.toLowerCase()
-    if (status === 404 && normalizedDetail === 'unknown pipeline') {
-        return {
-            message: 'Run is no longer available.',
-            help: 'The selected run could not be found. Refresh run history and pick a different run.',
-        }
-    }
-    if (status === 404 && normalizedDetail === 'graph visualization unavailable') {
-        return {
-            message: 'Graph visualization unavailable for this run.',
-            help: 'This run may not have produced a Graphviz SVG yet.',
-        }
-    }
-    return {
-        message: `Unable to load graph visualization (HTTP ${status}).`,
-        help: detail ? `Backend returned: ${detail}.` : 'Retry, and check backend availability if this keeps failing.',
-    }
-}
-
 const formatContextValue = (value: unknown): FormattedContextValue => {
     if (value === null) {
         return {
@@ -364,23 +343,14 @@ const buildArtifactDerivedState = (
     }
 }
 
-const buildGraphvizViewerSrc = (graphvizMarkup: string) => {
-    if (!graphvizMarkup) {
-        return ''
-    }
-    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(graphvizMarkup)}`
-}
-
 const buildDegradedDetailPanels = ({
     checkpointError,
     contextError,
     artifactError,
-    graphvizError,
 }: {
     checkpointError: CheckpointErrorState | null
     contextError: ContextErrorState | null
     artifactError: ArtifactErrorState | null
-    graphvizError: GraphvizErrorState | null
 }) => {
     const panels: string[] = []
     if (checkpointError) {
@@ -391,9 +361,6 @@ const buildDegradedDetailPanels = ({
     }
     if (artifactError) {
         panels.push('artifacts')
-    }
-    if (graphvizError) {
-        panels.push('graph visualization')
     }
     return panels
 }
@@ -407,12 +374,10 @@ export {
     buildContextExportPayload,
     buildContextRows,
     buildDegradedDetailPanels,
-    buildGraphvizViewerSrc,
     buildCheckpointSummary,
     checkpointErrorFromResponse,
     contextErrorFromResponse,
     filterContextRows,
     formatContextValue,
-    graphvizErrorFromResponse,
     logUnexpectedRunError,
 }

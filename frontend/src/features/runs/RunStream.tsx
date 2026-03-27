@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { useStore, type RuntimeStatus } from '@/store'
+
 import { retryLastSaveContent } from '@/lib/flowPersistence'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
+import { useStore, type RuntimeStatus } from '@/store'
 import { Button } from '@/ui'
+
 import { ApiHttpError, buildRunEventsUrl, loadSelectedRunStatus } from './services/runStreamTransport'
 
 function classifyLog(message: string): 'info' | 'success' | 'error' {
@@ -20,8 +22,10 @@ const RUNTIME_STAGE_STATUS_MAP: Record<string, 'running' | 'success' | 'failed'>
     StageCompleted: 'success',
     StageFailed: 'failed',
 }
+
 const SELECTED_RUN_STATUS_DEGRADED_MESSAGE =
     'Selected run status endpoint is unavailable or incompatible. Live event streaming preflight is in degraded mode.'
+
 interface RuntimeStageCursor {
     stageIndex: number
     status: 'running' | 'success' | 'failed'
@@ -73,9 +77,9 @@ export function RunStream() {
                 ? 'Saved'
                 : saveState === 'conflict'
                     ? 'Save Conflict'
-                : saveState === 'error'
-                    ? 'Save Failed'
-                    : ''
+                    : saveState === 'error'
+                        ? 'Save Failed'
+                        : ''
     const remediation = resolveSaveRemediation(saveState, saveErrorKind)
     const shouldShowPersistentSaveIndicator = saveState === 'saving' || saveState === 'error' || saveState === 'conflict'
     const showSaveStateIndicator = (
@@ -301,9 +305,9 @@ export function RunStream() {
             }
             if (metadataAbort.signal.aborted) return
 
-            const source = new EventSource(buildRunEventsUrl(selectedRunId))
-            source.onmessage = handleMessage
-            eventSource = source
+            const eventStream = new EventSource(buildRunEventsUrl(selectedRunId))
+            eventStream.onmessage = handleMessage
+            eventSource = eventStream
         }
 
         startScopedStream().catch(() => null)
@@ -327,9 +331,9 @@ export function RunStream() {
                             ? 'border-destructive/50 bg-destructive/10 text-destructive'
                             : saveState === 'conflict'
                                 ? 'border-amber-500/50 bg-amber-500/10 text-amber-800'
-                            : saveState === 'saved'
-                                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
-                                : 'border-border bg-background/95 text-muted-foreground'
+                                : saveState === 'saved'
+                                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
+                                    : 'border-border bg-background/95 text-muted-foreground'
                     } ${shouldFadeSaveCard && fadeSavedToast ? 'opacity-0' : 'opacity-100'}`}
                     title={saveErrorMessage || undefined}
                 >

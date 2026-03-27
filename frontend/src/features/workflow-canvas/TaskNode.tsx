@@ -59,15 +59,25 @@ function getStatusBadgeClassName(status: string) {
 function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNodeProps) {
     const canvasMode = useCanvasSessionMode()
     const isEditorCanvas = canvasMode === 'editor'
-    const isExecutionCanvas = canvasMode === 'execution'
+    const isRunCanvas = canvasMode === 'execution' || canvasMode === 'runs'
     const flowName = useStore((state) => (isEditorCanvas ? state.activeFlow : state.executionFlow))
     const executionHumanGate = useStore((state) => state.humanGate)
-    const selectedRunId = useStore((state) => (isExecutionCanvas ? state.selectedRunId : null))
-    const graphAttrs = useStore((state) => (isEditorCanvas ? state.graphAttrs : state.executionGraphAttrs))
-    const nodeDiagnostics = useStore((state) => (isEditorCanvas ? state.nodeDiagnostics : state.executionNodeDiagnostics))
+    const selectedRunId = useStore((state) => (isRunCanvas ? state.selectedRunId : null))
+    const graphAttrs = useStore((state) => {
+        if (isEditorCanvas) {
+            return state.graphAttrs
+        }
+        return canvasMode === 'runs' ? state.runGraphAttrs : state.executionGraphAttrs
+    })
+    const nodeDiagnostics = useStore((state) => {
+        if (isEditorCanvas) {
+            return state.nodeDiagnostics
+        }
+        return canvasMode === 'runs' ? state.runNodeDiagnostics : state.executionNodeDiagnostics
+    })
     const { setNodes, getEdges } = useReactFlow()
     const inputRef = useRef<HTMLInputElement>(null)
-    const humanGate = isExecutionCanvas ? executionHumanGate : null
+    const humanGate = isRunCanvas ? executionHumanGate : null
 
     const currentShape = normalizeWorkflowNodeShape((data.shape as string) || defaultShape)
     const displayLabel = (data.label as string) || 'Task Node'
@@ -145,7 +155,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const hasDiagnosticError = diagnosticsForNode.some((diag) => diag.severity === 'error')
     const hasDiagnosticWarning = diagnosticsForNode.some((diag) => diag.severity === 'warning')
     const shapeTypeMismatchWarning = getShapeTypeMismatchWarning(renderedShape, draftType)
-    const isWaiting = isExecutionCanvas && (humanGate?.nodeId === id || status === 'waiting')
+    const isWaiting = isRunCanvas && (humanGate?.nodeId === id || status === 'waiting')
     const framePalette = getWorkflowNodeFramePalette({ status, selected, isWaiting })
     const overlayOffsetClassName = getWorkflowNodeOverlayOffsetClassName(renderedShape)
     const containerStyle = getWorkflowNodeContainerStyle(renderedShape)
@@ -781,7 +791,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                 </div>
             </NodeToolbar>
 
-            {humanGate?.nodeId === id && isExecutionCanvas && (
+            {humanGate?.nodeId === id && isRunCanvas && (
                 <NodeToolbar isVisible position={Position.Bottom} className="nodrag nopan">
                     <div className="mt-2 w-72 rounded-md border border-amber-200 bg-amber-50 p-3 shadow-lg">
                         <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">

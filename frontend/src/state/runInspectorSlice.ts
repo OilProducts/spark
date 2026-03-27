@@ -3,44 +3,34 @@ import { buildDiagnosticMaps, normalizeGraphAttrs } from './store-helpers'
 import type { AppState, RunInspectorSlice } from './store-types'
 
 export const createRunInspectorSlice: StateCreator<AppState, [], [], RunInspectorSlice> = (set) => ({
-    executionFlow: null,
-    setExecutionFlow: (flow) =>
-        set({
-            executionFlow: flow,
-            executionGraphAttrs: {},
-            executionDiagnostics: [],
-            executionNodeDiagnostics: {},
-            executionEdgeDiagnostics: {},
-            executionHasValidationErrors: false,
-        }),
     selectedRunId: null,
     setSelectedRunId: (id) => set({ selectedRunId: id }),
-    executionGraphAttrs: {},
-    replaceExecutionGraphAttrs: (attrs) =>
+    runGraphAttrs: {},
+    replaceRunGraphAttrs: (attrs) =>
         set({
-            executionGraphAttrs: normalizeGraphAttrs(attrs),
+            runGraphAttrs: normalizeGraphAttrs(attrs),
         }),
-    executionDiagnostics: [],
-    setExecutionDiagnostics: (diagnostics) =>
+    runDiagnostics: [],
+    setRunDiagnostics: (diagnostics) =>
         set(() => {
             const { nodeDiagnostics, edgeDiagnostics } = buildDiagnosticMaps(diagnostics)
             return {
-                executionDiagnostics: diagnostics,
-                executionNodeDiagnostics: nodeDiagnostics,
-                executionEdgeDiagnostics: edgeDiagnostics,
-                executionHasValidationErrors: diagnostics.some((diag) => diag.severity === 'error'),
+                runDiagnostics: diagnostics,
+                runNodeDiagnostics: nodeDiagnostics,
+                runEdgeDiagnostics: edgeDiagnostics,
+                runHasValidationErrors: diagnostics.some((diag) => diag.severity === 'error'),
             }
         }),
-    clearExecutionDiagnostics: () =>
+    clearRunDiagnostics: () =>
         set({
-            executionDiagnostics: [],
-            executionNodeDiagnostics: {},
-            executionEdgeDiagnostics: {},
-            executionHasValidationErrors: false,
+            runDiagnostics: [],
+            runNodeDiagnostics: {},
+            runEdgeDiagnostics: {},
+            runHasValidationErrors: false,
         }),
-    executionNodeDiagnostics: {},
-    executionEdgeDiagnostics: {},
-    executionHasValidationErrors: false,
+    runNodeDiagnostics: {},
+    runEdgeDiagnostics: {},
+    runHasValidationErrors: false,
     logs: [],
     addLog: (entry) => set((state) => ({ logs: [...state.logs, entry] })),
     clearLogs: () => set({ logs: [] }),

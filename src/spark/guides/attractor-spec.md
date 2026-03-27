@@ -1734,12 +1734,14 @@ Implementations may expose the pipeline engine as an HTTP service for web-based 
 | `GET`  | `/pipelines/{id}/events`                | SSE stream of pipeline events in real-time. |
 | `POST` | `/pipelines/{id}/cancel`                | Cancel a running pipeline. |
 | `GET`  | `/pipelines/{id}/graph`                 | Get rendered graph visualization (SVG). |
+| `GET`  | `/pipelines/{id}/graph-preview`         | Get structured graph preview JSON from the stored run DOT snapshot. |
 | `GET`  | `/pipelines/{id}/questions`             | Get pending human interaction questions. |
 | `POST` | `/pipelines/{id}/questions/{qid}/answer`| Submit answer to a pending question. |
 | `GET`  | `/pipelines/{id}/checkpoint`            | Get current checkpoint state. |
 | `GET`  | `/pipelines/{id}/context`               | Get current context key-value store. |
 
 Human gates must be operable via web controls in addition to CLI. The server maintains SSE connections for real-time event streaming.
+Implementations that expose both `/graph` and `/graph-preview` should preserve the original run DOT source as a stable artifact so run inspection can render a snapshot-accurate graph even if the named flow changes later.
 
 ### 9.6 Observability and Events
 

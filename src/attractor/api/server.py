@@ -663,10 +663,9 @@ def _prepare_graph_for_server(graph):
     )
 
 
-@attractor_router.post("/preview")
-async def preview_pipeline(req: PreviewRequest):
+def _preview_payload_from_dot_source(dot_source: str) -> dict:
     try:
-        graph = parse_dot(req.flow_content)
+        graph = parse_dot(dot_source)
     except DotParseError as exc:
         parse_diag = {
             "rule": "parse_error",
@@ -682,16 +681,20 @@ async def preview_pipeline(req: PreviewRequest):
             "diagnostics": [parse_diag],
             "errors": [parse_diag],
         }
+
     graph, diagnostics = _prepare_graph_for_server(graph)
     errors = [d for d in diagnostics if d.severity == DiagnosticSeverity.ERROR]
-
-    payload = {
+    return {
         "status": "ok" if not errors else "validation_error",
         "graph": _graph_payload(graph),
         "diagnostics": [_diagnostic_payload(d) for d in diagnostics],
         "errors": [_diagnostic_payload(d) for d in errors],
     }
-    return payload
+
+
+@attractor_router.post("/preview")
+async def preview_pipeline(req: PreviewRequest):
+    return _preview_payload_from_dot_source(req.flow_content)
 
 
 async def _start_pipeline(
@@ -906,6 +909,7 @@ async def _start_pipeline(
             "model": display_model,
             "flow_name": flow_name,
             "run_id": run_id,
+            "graph_source_path": str(graphviz_export.source_path),
             "graph_dot_path": str(graphviz_export.dot_path),
             "graph_render_path": str(graphviz_export.rendered_path) if graphviz_export.rendered_path else None,
         },
@@ -1253,6 +1257,22 @@ async def get_pipeline_graph(pipeline_id: str):
         raise HTTPException(status_code=404, detail="Graph visualization unavailable")
 
     return FileResponse(graph_svg_path, media_type="image/svg+xml")
+
+
+@attractor_router.get("/pipelines/{pipeline_id}/graph-preview")
+async def get_pipeline_graph_preview(pipeline_id: str):
+    active = _get_active_run(pipeline_id)
+    if not active and not _read_run_meta(_run_meta_path(pipeline_id)):
+        raise HTTPException(status_code=404, detail="Unknown pipeline")
+
+    graph_dir = _run_root(pipeline_id) / "artifacts" / "graphviz"
+    source_path = graph_dir / "pipeline-source.dot"
+    fallback_path = graph_dir / "pipeline.dot"
+    graph_source_path = source_path if source_path.exists() else fallback_path
+    if not graph_source_path.exists():
+        raise HTTPException(status_code=404, detail="Run graph preview unavailable")
+
+    return _preview_payload_from_dot_source(graph_source_path.read_text(encoding="utf-8"))
 
 
 @attractor_router.get("/pipelines/{pipeline_id}/questions")

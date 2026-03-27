@@ -201,18 +201,16 @@ export interface WorkspaceSlice {
 }
 
 export interface RunInspectorSlice {
-    executionFlow: string | null
-    setExecutionFlow: (flow: string | null) => void
     selectedRunId: string | null
     setSelectedRunId: (id: string | null) => void
-    executionGraphAttrs: GraphAttrs
-    replaceExecutionGraphAttrs: (attrs: GraphAttrs) => void
-    executionDiagnostics: DiagnosticEntry[]
-    setExecutionDiagnostics: (diagnostics: DiagnosticEntry[]) => void
-    clearExecutionDiagnostics: () => void
-    executionNodeDiagnostics: Record<string, DiagnosticEntry[]>
-    executionEdgeDiagnostics: Record<string, DiagnosticEntry[]>
-    executionHasValidationErrors: boolean
+    runGraphAttrs: GraphAttrs
+    replaceRunGraphAttrs: (attrs: GraphAttrs) => void
+    runDiagnostics: DiagnosticEntry[]
+    setRunDiagnostics: (diagnostics: DiagnosticEntry[]) => void
+    clearRunDiagnostics: () => void
+    runNodeDiagnostics: Record<string, DiagnosticEntry[]>
+    runEdgeDiagnostics: Record<string, DiagnosticEntry[]>
+    runHasValidationErrors: boolean
     logs: LogEntry[]
     addLog: (entry: LogEntry) => void
     clearLogs: () => void
@@ -232,6 +230,19 @@ export interface RunInspectorSlice {
     humanGate: HumanGateState | null
     setHumanGate: (gate: HumanGateState | null) => void
     clearHumanGate: () => void
+}
+
+export interface ExecutionLaunchSlice {
+    executionFlow: string | null
+    setExecutionFlow: (flow: string | null) => void
+    executionGraphAttrs: GraphAttrs
+    replaceExecutionGraphAttrs: (attrs: GraphAttrs) => void
+    executionDiagnostics: DiagnosticEntry[]
+    setExecutionDiagnostics: (diagnostics: DiagnosticEntry[]) => void
+    clearExecutionDiagnostics: () => void
+    executionNodeDiagnostics: Record<string, DiagnosticEntry[]>
+    executionEdgeDiagnostics: Record<string, DiagnosticEntry[]>
+    executionHasValidationErrors: boolean
 }
 
 export interface EditorSlice {
@@ -273,4 +284,4 @@ export interface EditorSlice {
     resetSaveState: () => void
 }
 
-export type AppState = WorkspaceSlice & RunInspectorSlice & EditorSlice
+export type AppState = WorkspaceSlice & ExecutionLaunchSlice & RunInspectorSlice & EditorSlice

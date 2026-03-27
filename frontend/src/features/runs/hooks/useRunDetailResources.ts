@@ -6,7 +6,6 @@ import {
     fetchPipelineArtifactsValidated,
     fetchPipelineCheckpointValidated,
     fetchPipelineContextValidated,
-    fetchPipelineGraphValidated,
     fetchPipelineQuestionsValidated,
     pipelineArtifactHref,
 } from '@/lib/attractorClient'
@@ -18,7 +17,6 @@ import type {
     CheckpointResponse,
     ContextErrorState,
     ContextResponse,
-    GraphvizErrorState,
     PendingQuestionSnapshot,
     RunRecord,
 } from '../model/shared'
@@ -28,7 +26,6 @@ import {
     asPendingQuestionSnapshot,
     checkpointErrorFromResponse,
     contextErrorFromResponse,
-    graphvizErrorFromResponse,
     logUnexpectedRunError,
 } from '../model/runDetailsModel'
 
@@ -53,9 +50,6 @@ export function useRunDetailResources({ selectedRunSummary, viewMode }: UseRunDe
     const [artifactViewerPayload, setArtifactViewerPayload] = useState('')
     const [artifactViewerError, setArtifactViewerError] = useState<string | null>(null)
     const [isArtifactViewerLoading, setIsArtifactViewerLoading] = useState(false)
-    const [graphvizMarkup, setGraphvizMarkup] = useState('')
-    const [isGraphvizLoading, setIsGraphvizLoading] = useState(false)
-    const [graphvizError, setGraphvizError] = useState<GraphvizErrorState | null>(null)
     const [pendingQuestionSnapshots, setPendingQuestionSnapshots] = useState<PendingQuestionSnapshot[]>([])
 
     const fetchCheckpoint = useCallback(async () => {
@@ -142,34 +136,6 @@ export function useRunDetailResources({ selectedRunSummary, viewMode }: UseRunDe
         }
     }, [selectedRunSummary])
 
-    const fetchGraphviz = useCallback(async () => {
-        if (!selectedRunSummary) {
-            setGraphvizMarkup('')
-            setGraphvizError(null)
-            setIsGraphvizLoading(false)
-            return
-        }
-        setIsGraphvizLoading(true)
-        setGraphvizError(null)
-        try {
-            const svgMarkup = await fetchPipelineGraphValidated(selectedRunSummary.run_id)
-            setGraphvizMarkup(svgMarkup)
-        } catch (err) {
-            logUnexpectedRunError(err)
-            setGraphvizMarkup('')
-            if (err instanceof ApiHttpError) {
-                setGraphvizError(graphvizErrorFromResponse(err.status, err.detail))
-                return
-            }
-            setGraphvizError({
-                message: 'Unable to load graph visualization.',
-                help: 'Check your network/backend connection and retry.',
-            })
-        } finally {
-            setIsGraphvizLoading(false)
-        }
-    }, [selectedRunSummary])
-
     const fetchPendingQuestions = useCallback(async () => {
         if (!selectedRunSummary) {
             setPendingQuestionSnapshots([])
@@ -230,16 +196,6 @@ export function useRunDetailResources({ selectedRunSummary, viewMode }: UseRunDe
 
     useEffect(() => {
         if (viewMode !== 'runs' || !selectedRunSummary) {
-            setGraphvizMarkup('')
-            setGraphvizError(null)
-            setIsGraphvizLoading(false)
-            return
-        }
-        void fetchGraphviz()
-    }, [fetchGraphviz, selectedRunSummary, viewMode])
-
-    useEffect(() => {
-        if (viewMode !== 'runs' || !selectedRunSummary) {
             setPendingQuestionSnapshots([])
             return
         }
@@ -295,14 +251,10 @@ export function useRunDetailResources({ selectedRunSummary, viewMode }: UseRunDe
         fetchArtifacts,
         fetchCheckpoint,
         fetchContext,
-        fetchGraphviz,
-        graphvizError,
-        graphvizMarkup,
         isArtifactLoading,
         isArtifactViewerLoading,
         isCheckpointLoading,
         isContextLoading,
-        isGraphvizLoading,
         pendingQuestionSnapshots,
         selectedArtifactPath,
         setContextCopyStatus,

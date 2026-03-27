@@ -348,7 +348,7 @@ export function useProjectsHomeController() {
         }
         setSelectedRunId(request.run_id)
         setExecutionFlow(request.flow_name || null)
-        setViewMode('execution')
+        setViewMode('runs')
     }
 
     return {

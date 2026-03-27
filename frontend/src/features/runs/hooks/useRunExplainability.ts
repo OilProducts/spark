@@ -35,13 +35,13 @@ function eventNodeId(data: Record<string, unknown>): string {
     return typeof candidate === 'string' ? candidate : ''
 }
 
-export function useExecutionExplainability(viewMode: string, selectedRunId: string | null) {
+export function useRunExplainability(selectedRunId: string | null) {
     const [routingDecisions, setRoutingDecisions] = useState<RoutingDecision[]>([])
     const [retryDecisions, setRetryDecisions] = useState<RetryDecision[]>([])
     const [failureDecisions, setFailureDecisions] = useState<FailureDecision[]>([])
 
     useEffect(() => {
-        if (viewMode !== 'execution' || !selectedRunId) {
+        if (!selectedRunId) {
             setRoutingDecisions([])
             setRetryDecisions([])
             setFailureDecisions([])
@@ -130,7 +130,7 @@ export function useExecutionExplainability(viewMode: string, selectedRunId: stri
         return () => {
             source.close()
         }
-    }, [selectedRunId, viewMode])
+    }, [selectedRunId])
 
     return {
         failureDecisions,

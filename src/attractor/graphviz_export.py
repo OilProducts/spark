@@ -11,6 +11,7 @@ from attractor.dsl.models import DotAttribute, DotEdge, DotGraph, DotValueType, 
 
 @dataclass(frozen=True)
 class GraphvizArtifactExport:
+    source_path: Path
     dot_path: Path
     rendered_path: Optional[Path]
     error: str = ""
@@ -20,24 +21,28 @@ def export_graphviz_artifact(dot_source: str, run_root: Path) -> GraphvizArtifac
     graph_dir = run_root / "artifacts" / "graphviz"
     graph_dir.mkdir(parents=True, exist_ok=True)
 
+    source_path = graph_dir / "pipeline-source.dot"
+    source_path.write_text(dot_source, encoding="utf-8")
+
     dot_path = graph_dir / "pipeline.dot"
     dot_path.write_text(dot_source, encoding="utf-8")
 
     rendered_path = graph_dir / "pipeline.svg"
     render_error = _render_graphviz(dot_path, rendered_path)
     if not render_error:
-        return GraphvizArtifactExport(dot_path=dot_path, rendered_path=rendered_path)
+        return GraphvizArtifactExport(source_path=source_path, dot_path=dot_path, rendered_path=rendered_path)
 
     fallback_source = _build_graphviz_preview_source(dot_source)
     if fallback_source and fallback_source != dot_source:
         dot_path.write_text(fallback_source, encoding="utf-8")
         fallback_error = _render_graphviz(dot_path, rendered_path)
         if not fallback_error:
-            return GraphvizArtifactExport(dot_path=dot_path, rendered_path=rendered_path)
+            return GraphvizArtifactExport(source_path=source_path, dot_path=dot_path, rendered_path=rendered_path)
         dot_path.write_text(dot_source, encoding="utf-8")
         render_error = fallback_error
 
     return GraphvizArtifactExport(
+        source_path=source_path,
         dot_path=dot_path,
         rendered_path=None,
         error=render_error,

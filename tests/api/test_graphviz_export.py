@@ -24,6 +24,8 @@ def test_export_graphviz_artifact_writes_dot_and_svg_when_dot_succeeds(tmp_path:
 
     result = export_graphviz_artifact(dot_source, tmp_path)
 
+    assert result.source_path.exists()
+    assert result.source_path.read_text(encoding="utf-8") == dot_source
     assert result.dot_path.exists()
     assert result.dot_path.read_text(encoding="utf-8") == dot_source
     assert result.rendered_path is not None
@@ -42,6 +44,8 @@ def test_export_graphviz_artifact_keeps_dot_when_graphviz_missing(tmp_path: Path
 
     result = export_graphviz_artifact(dot_source, tmp_path)
 
+    assert result.source_path.exists()
+    assert result.source_path.read_text(encoding="utf-8") == dot_source
     assert result.dot_path.exists()
     assert result.rendered_path is None
     assert result.error
@@ -93,6 +97,8 @@ digraph G {
     result = export_graphviz_artifact(dot_source, tmp_path)
 
     assert calls == 2
+    assert result.source_path.exists()
+    assert result.source_path.read_text(encoding="utf-8") == dot_source
     assert result.rendered_path is not None
     assert result.rendered_path.exists()
     assert result.error == ""
