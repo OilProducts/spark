@@ -1104,7 +1104,7 @@ class TestExecutor:
 
         assert graph.nodes["prepare_workspace"].attrs["max_retries"].value == 1
 
-    def test_starter_spec_implementation_replans_invalid_milestones_before_dispatch(self):
+    def test_starter_spec_implementation_replans_invalid_milestones_after_architecture_evaluation(self):
         graph = parse_dot(STARTER_SPEC_IMPLEMENTATION_FIXTURE.read_text(encoding="utf-8"))
         calls: list[str] = []
         validate_attempts = 0
@@ -1113,7 +1113,7 @@ class TestExecutor:
             nonlocal validate_attempts
             del prompt, context
             calls.append(node_id)
-            if node_id == "review_architecture":
+            if node_id == "evaluate_architecture":
                 return Outcome(status=OutcomeStatus.SUCCESS, preferred_label="Approve")
             if node_id == "validate_milestone_plan":
                 validate_attempts += 1
@@ -1142,7 +1142,7 @@ class TestExecutor:
             "prepare_workspace",
             "extract_requirements",
             "design_architecture",
-            "review_architecture",
+            "evaluate_architecture",
             "plan_milestones",
             "validate_milestone_plan",
             "plan_milestones",
