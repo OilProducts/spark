@@ -407,6 +407,64 @@ def _pipeline_progress_payload(current_node: str, completed_nodes: List[str]) ->
     return pipeline_runs.pipeline_progress_payload(current_node, completed_nodes)
 
 
+def _read_hydrated_run_record(run_id: str) -> Optional[RunRecord]:
+    record = _read_run_meta(_run_meta_path(run_id))
+    if not record:
+        return None
+    hydrate_run_record_from_log(record, _run_root(run_id))
+    return record
+
+
+def _pipeline_status_payload(run_id: str) -> Dict[str, object]:
+    checkpoint_current_node, checkpoint_completed_nodes = _read_checkpoint_progress(run_id)
+    active = _get_active_run(run_id)
+    record = _read_hydrated_run_record(run_id)
+
+    if active is None and record is None:
+        raise HTTPException(status_code=404, detail="Unknown pipeline")
+
+    if record is not None:
+        payload = record.to_dict()
+    else:
+        payload = {
+            "run_id": run_id,
+            "flow_name": active.flow_name if active else "",
+            "status": active.status if active else "unknown",
+            "outcome": active.outcome if active else None,
+            "outcome_reason_code": active.outcome_reason_code if active else None,
+            "outcome_reason_message": active.outcome_reason_message if active else None,
+            "working_directory": active.working_directory if active else "",
+            "project_path": "",
+            "git_branch": None,
+            "git_commit": None,
+            "spec_id": None,
+            "plan_id": None,
+            "model": active.model if active else "",
+            "started_at": "",
+            "ended_at": None,
+            "last_error": active.last_error if active else "",
+            "token_usage": None,
+            "continued_from_run_id": None,
+            "continued_from_node": None,
+            "continued_from_flow_mode": None,
+            "continued_from_flow_name": None,
+        }
+
+    completed_nodes = list(active.completed_nodes) if active and active.completed_nodes else checkpoint_completed_nodes
+    if active is not None:
+        payload["status"] = active.status
+        payload["outcome"] = active.outcome
+        payload["outcome_reason_code"] = active.outcome_reason_code
+        payload["outcome_reason_message"] = active.outcome_reason_message
+        payload["last_error"] = active.last_error
+
+    payload["pipeline_id"] = run_id
+    payload["run_id"] = str(payload.get("run_id") or run_id)
+    payload["completed_nodes"] = completed_nodes
+    payload["progress"] = _pipeline_progress_payload(checkpoint_current_node, completed_nodes)
+    return payload
+
+
 def _pop_active_run(run_id: str) -> Optional[ActiveRun]:
     with ACTIVE_RUNS_LOCK:
         return ACTIVE_RUNS.pop(run_id, None)
@@ -1271,51 +1329,7 @@ async def continue_pipeline(pipeline_id: str, req: PipelineContinueRequest):
 
 @attractor_router.get("/pipelines/{pipeline_id}")
 async def get_pipeline(pipeline_id: str):
-    checkpoint_current_node, checkpoint_completed_nodes = _read_checkpoint_progress(pipeline_id)
-    active = _get_active_run(pipeline_id)
-    if active:
-        record = _read_run_meta(_run_meta_path(pipeline_id))
-        completed_nodes = list(active.completed_nodes) if active.completed_nodes else checkpoint_completed_nodes
-        return {
-            "pipeline_id": pipeline_id,
-            "status": active.status,
-            "outcome": active.outcome,
-            "outcome_reason_code": active.outcome_reason_code,
-            "outcome_reason_message": active.outcome_reason_message,
-            "flow_name": active.flow_name,
-            "working_directory": active.working_directory,
-            "model": active.model,
-            "last_error": active.last_error,
-            "completed_nodes": completed_nodes,
-            "progress": _pipeline_progress_payload(checkpoint_current_node, completed_nodes),
-            "continued_from_run_id": record.continued_from_run_id if record else None,
-            "continued_from_node": record.continued_from_node if record else None,
-            "continued_from_flow_mode": record.continued_from_flow_mode if record else None,
-            "continued_from_flow_name": record.continued_from_flow_name if record else None,
-        }
-
-    record = _read_run_meta(_run_meta_path(pipeline_id))
-    if not record:
-        raise HTTPException(status_code=404, detail="Unknown pipeline")
-    return {
-        "pipeline_id": pipeline_id,
-        "status": record.status,
-        "outcome": record.outcome,
-        "outcome_reason_code": record.outcome_reason_code,
-        "outcome_reason_message": record.outcome_reason_message,
-        "flow_name": record.flow_name,
-        "working_directory": record.working_directory,
-        "model": record.model,
-        "last_error": record.last_error,
-        "completed_nodes": checkpoint_completed_nodes,
-        "progress": _pipeline_progress_payload(checkpoint_current_node, checkpoint_completed_nodes),
-        "started_at": record.started_at,
-        "ended_at": record.ended_at,
-        "continued_from_run_id": record.continued_from_run_id,
-        "continued_from_node": record.continued_from_node,
-        "continued_from_flow_mode": record.continued_from_flow_mode,
-        "continued_from_flow_name": record.continued_from_flow_name,
-    }
+    return _pipeline_status_payload(pipeline_id)
 
 
 @attractor_router.get("/pipelines/{pipeline_id}/checkpoint")

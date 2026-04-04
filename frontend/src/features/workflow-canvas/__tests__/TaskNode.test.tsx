@@ -53,6 +53,12 @@ const resetTaskNodeState = () => {
         executionNodeDiagnostics: {},
         humanGate: null,
         selectedRunId: null,
+        selectedRunRecord: null,
+        selectedRunCompletedNodes: [],
+        selectedRunStatusSync: 'idle',
+        selectedRunStatusError: null,
+        selectedRunStatusFetchedAtMs: null,
+        runRecordOverrides: {},
     })
 }
 

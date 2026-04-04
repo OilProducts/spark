@@ -150,8 +150,8 @@ def run_matches_project_scope(record: RunRecord, project_path: str) -> bool:
     return any(path_in_scope(candidate_path, normalized_scope) for candidate_path in candidate_paths)
 
 
-TOKEN_LINE_RE = re.compile(r"tokens used\\s*[:=]?\\s*(\\d[\\d,]*)", re.IGNORECASE)
-TOKEN_NUMBER_ONLY_RE = re.compile(r"^\\d[\\d,]*$")
+TOKEN_LINE_RE = re.compile(r"tokens used\s*[:=]?\s*(\d[\d,]*)", re.IGNORECASE)
+TOKEN_NUMBER_ONLY_RE = re.compile(r"^\d[\d,]*$")
 RUN_LOG_TIMESTAMP_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\]")
 
 

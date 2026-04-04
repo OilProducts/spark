@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { retryLastSaveContent } from '@/lib/flowPersistence'
+import { type PipelineStatusResponse } from '@/lib/attractorClient'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore, type RuntimeStatus } from '@/store'
 import { Button } from '@/ui'
 
+import type { RunRecord } from './model/shared'
 import { ApiHttpError, buildRunEventsUrl, loadSelectedRunStatus } from './services/runStreamTransport'
 
 function classifyLog(message: string): 'info' | 'success' | 'error' {
@@ -25,6 +27,8 @@ const RUNTIME_STAGE_STATUS_MAP: Record<string, 'running' | 'success' | 'failed'>
 
 const SELECTED_RUN_STATUS_DEGRADED_MESSAGE =
     'Selected run status endpoint is unavailable or incompatible. Live event streaming preflight is in degraded mode.'
+
+const SELECTED_RUN_STATUS_RECONCILE_MS = 5_000
 
 interface RuntimeStageCursor {
     stageIndex: number
@@ -48,6 +52,55 @@ function isRuntimeStatus(value: string): value is RuntimeStatus {
     return RUNTIME_STATUS_SET.has(value as RuntimeStatus)
 }
 
+function isActiveRunStatus(status: string | null | undefined): boolean {
+    return status === 'running' || status === 'abort_requested' || status === 'cancel_requested' || status === 'pause_requested'
+}
+
+function toRunRecord(status: PipelineStatusResponse): RunRecord {
+    return {
+        run_id: status.run_id,
+        flow_name: status.flow_name || '',
+        status: status.status,
+        outcome: status.outcome ?? null,
+        outcome_reason_code: status.outcome_reason_code ?? null,
+        outcome_reason_message: status.outcome_reason_message ?? null,
+        working_directory: status.working_directory || '',
+        project_path: status.project_path,
+        git_branch: status.git_branch ?? null,
+        git_commit: status.git_commit ?? null,
+        spec_id: status.spec_id ?? null,
+        plan_id: status.plan_id ?? null,
+        model: status.model || '',
+        started_at: status.started_at || '',
+        ended_at: status.ended_at ?? null,
+        last_error: status.last_error || '',
+        token_usage: typeof status.token_usage === 'number' || status.token_usage === null
+            ? status.token_usage
+            : undefined,
+        continued_from_run_id: status.continued_from_run_id ?? null,
+        continued_from_node: status.continued_from_node ?? null,
+        continued_from_flow_mode: status.continued_from_flow_mode ?? null,
+        continued_from_flow_name: status.continued_from_flow_name ?? null,
+    }
+}
+
+function patchRunRecordFromRuntime(record: RunRecord, runtime: {
+    status: RuntimeStatus
+    outcome: 'success' | 'failure' | null
+    outcomeReasonCode: string | null
+    outcomeReasonMessage: string | null
+    lastError?: string | null
+}): RunRecord {
+    return {
+        ...record,
+        status: runtime.status,
+        outcome: runtime.outcome,
+        outcome_reason_code: runtime.outcomeReasonCode,
+        outcome_reason_message: runtime.outcomeReasonMessage,
+        last_error: runtime.lastError ?? record.last_error,
+    }
+}
+
 export function RunStream() {
     const addLog = useStore((state) => state.addLog)
     const clearLogs = useStore((state) => state.clearLogs)
@@ -59,12 +112,16 @@ export function RunStream() {
     const setRuntimeOutcome = useStore((state) => state.setRuntimeOutcome)
     const selectedRunId = useStore((state) => state.selectedRunId)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
+    const setSelectedRunSnapshot = useStore((state) => state.setSelectedRunSnapshot)
+    const selectedRunStatusSync = useStore((state) => state.selectedRunStatusSync)
+    const selectedRunStatusError = useStore((state) => state.selectedRunStatusError)
+    const setSelectedRunStatusSync = useStore((state) => state.setSelectedRunStatusSync)
+    const setRunRecordOverride = useStore((state) => state.setRunRecordOverride)
     const saveState = useStore((state) => state.saveState)
     const saveStateVersion = useStore((state) => state.saveStateVersion)
     const saveErrorMessage = useStore((state) => state.saveErrorMessage)
     const saveErrorKind = useStore((state) => state.saveErrorKind)
     const resetSaveState = useStore((state) => state.resetSaveState)
-    const [runtimeApiDegradedMessage, setRuntimeApiDegradedMessage] = useState<string | null>(null)
     const [showSavedToast, setShowSavedToast] = useState(false)
     const [fadeSavedToast, setFadeSavedToast] = useState(false)
     const stageCursorsRef = useRef<Record<string, RuntimeStageCursor>>({})
@@ -81,6 +138,8 @@ export function RunStream() {
                         ? 'Save Failed'
                         : ''
     const remediation = resolveSaveRemediation(saveState, saveErrorKind)
+    const runtimeApiDegradedMessage =
+        selectedRunStatusSync === 'degraded' ? selectedRunStatusError || SELECTED_RUN_STATUS_DEGRADED_MESSAGE : null
     const shouldShowPersistentSaveIndicator = saveState === 'saving' || saveState === 'error' || saveState === 'conflict'
     const showSaveStateIndicator = (
         saveState === 'saved'
@@ -95,9 +154,26 @@ export function RunStream() {
         resetNodeStatuses()
         clearHumanGate()
         clearLogs()
+        if (!selectedRunId) {
+            setSelectedRunSnapshot({ record: null, completedNodes: [], fetchedAtMs: null })
+            setSelectedRunStatusSync('idle', null)
+            setRuntimeStatus('idle')
+            setRuntimeOutcome(null)
+            return
+        }
+        setSelectedRunStatusSync('loading', null)
         setRuntimeStatus('idle')
         setRuntimeOutcome(null)
-    }, [selectedRunId, resetNodeStatuses, clearHumanGate, clearLogs, setRuntimeStatus, setRuntimeOutcome])
+    }, [
+        selectedRunId,
+        resetNodeStatuses,
+        clearHumanGate,
+        clearLogs,
+        setRuntimeStatus,
+        setRuntimeOutcome,
+        setSelectedRunSnapshot,
+        setSelectedRunStatusSync,
+    ])
 
     useEffect(() => {
         if (savedToastFadeTimerRef.current) {
@@ -140,18 +216,122 @@ export function RunStream() {
 
     useEffect(() => {
         if (!selectedRunId) {
-            setRuntimeApiDegradedMessage(null)
-            setRuntimeStatus('idle')
             return
         }
 
         let eventSource: EventSource | null = null
+        let reconcileTimer: number | null = null
+        let closed = false
+        const currentSelectedRunRecord = useStore.getState().selectedRunRecord
+        let runStatus: string | null =
+            currentSelectedRunRecord?.run_id === selectedRunId ? currentSelectedRunRecord.status : null
         const metadataAbort = new AbortController()
-        const source = {
-            close: () => {
-                metadataAbort.abort()
-                eventSource?.close()
-            },
+
+        const stopReconcile = () => {
+            if (reconcileTimer !== null) {
+                window.clearInterval(reconcileTimer)
+                reconcileTimer = null
+            }
+        }
+
+        const closeStream = () => {
+            eventSource?.close()
+            eventSource = null
+            stopReconcile()
+        }
+
+        const applyStatusSnapshot = (
+            statusPayload: PipelineStatusResponse,
+            options: { syncState?: 'ready' | 'degraded' } = {},
+        ) => {
+            const record = toRunRecord(statusPayload)
+            runStatus = record.status
+            setSelectedRunSnapshot({
+                record,
+                completedNodes: statusPayload.completed_nodes ?? [],
+                fetchedAtMs: Date.now(),
+            })
+            setSelectedRunStatusSync(options.syncState ?? 'ready', null)
+            if (isRuntimeStatus(record.status)) {
+                setRuntimeStatus(record.status)
+            }
+            setRuntimeOutcome(
+                record.outcome ?? null,
+                record.outcome_reason_code ?? null,
+                record.outcome_reason_message ?? null,
+            )
+            setRunRecordOverride(record.run_id, record)
+            if (!isActiveRunStatus(record.status)) {
+                closeStream()
+            }
+        }
+
+        const refreshSelectedRunStatus = async (): Promise<PipelineStatusResponse | null> => {
+            try {
+                const data = await loadSelectedRunStatus(selectedRunId)
+                if (metadataAbort.signal.aborted || closed) {
+                    return null
+                }
+                applyStatusSnapshot(data)
+                return data
+            } catch (error) {
+                if (metadataAbort.signal.aborted || closed) {
+                    return null
+                }
+                if (error instanceof ApiHttpError && error.status === 404) {
+                    setSelectedRunSnapshot({ record: null, completedNodes: [], fetchedAtMs: null })
+                    setSelectedRunStatusSync('idle', null)
+                    setSelectedRunId(null)
+                    setRuntimeStatus('idle')
+                    setRuntimeOutcome(null)
+                    closeStream()
+                    return null
+                }
+                setSelectedRunStatusSync('degraded', SELECTED_RUN_STATUS_DEGRADED_MESSAGE)
+                return null
+            }
+        }
+
+        const ensureReconcileLoop = () => {
+            if (!isActiveRunStatus(runStatus) || reconcileTimer !== null) {
+                return
+            }
+            reconcileTimer = window.setInterval(() => {
+                void refreshSelectedRunStatus()
+            }, SELECTED_RUN_STATUS_RECONCILE_MS)
+        }
+
+        const applyRuntimePatch = (runtimeStatus: RuntimeStatus, runtime: {
+            outcome: 'success' | 'failure' | null
+            outcomeReasonCode: string | null
+            outcomeReasonMessage: string | null
+            lastError?: string | null
+        }) => {
+            runStatus = runtimeStatus
+            setRuntimeStatus(runtimeStatus)
+            setRuntimeOutcome(runtime.outcome, runtime.outcomeReasonCode, runtime.outcomeReasonMessage)
+            const currentRecord = useStore.getState().selectedRunRecord
+            if (currentRecord?.run_id === selectedRunId) {
+                const nextRecord = patchRunRecordFromRuntime(currentRecord, {
+                    status: runtimeStatus,
+                    outcome: runtime.outcome,
+                    outcomeReasonCode: runtime.outcomeReasonCode,
+                    outcomeReasonMessage: runtime.outcomeReasonMessage,
+                    lastError: runtime.lastError,
+                })
+                setSelectedRunSnapshot({
+                    record: nextRecord,
+                    completedNodes: useStore.getState().selectedRunCompletedNodes,
+                    fetchedAtMs: useStore.getState().selectedRunStatusFetchedAtMs,
+                })
+                setRunRecordOverride(selectedRunId, nextRecord)
+            }
+            if (!isActiveRunStatus(runtimeStatus)) {
+                stopReconcile()
+                void refreshSelectedRunStatus()
+            } else {
+                ensureReconcileLoop()
+            }
         }
 
         const handleMessage = (event: MessageEvent) => {
@@ -256,16 +436,19 @@ export function RunStream() {
                 if (data.type === 'run_meta') {
                     resetNodeStatuses()
                     clearHumanGate()
-                    setRuntimeStatus('running')
-                    setRuntimeOutcome(null)
+                    applyRuntimePatch('running', {
+                        outcome: null,
+                        outcomeReasonCode: null,
+                        outcomeReasonMessage: null,
+                    })
                 }
                 if (data.type === 'runtime' && typeof data.status === 'string' && isRuntimeStatus(data.status)) {
-                    setRuntimeStatus(data.status)
-                    setRuntimeOutcome(
-                        data.outcome === 'success' || data.outcome === 'failure' ? data.outcome : null,
-                        typeof data.outcome_reason_code === 'string' ? data.outcome_reason_code : null,
-                        typeof data.outcome_reason_message === 'string' ? data.outcome_reason_message : null,
-                    )
+                    applyRuntimePatch(data.status, {
+                        outcome: data.outcome === 'success' || data.outcome === 'failure' ? data.outcome : null,
+                        outcomeReasonCode: typeof data.outcome_reason_code === 'string' ? data.outcome_reason_code : null,
+                        outcomeReasonMessage: typeof data.outcome_reason_message === 'string' ? data.outcome_reason_message : null,
+                        lastError: typeof data.last_error === 'string' ? data.last_error : null,
+                    })
                 }
             } catch {
                 // ignore malformed events
@@ -273,49 +456,44 @@ export function RunStream() {
         }
 
         const startScopedStream = async () => {
-            let data: Awaited<ReturnType<typeof loadSelectedRunStatus>> | null = null
-            if (!metadataAbort.signal.aborted) {
-                try {
-                    data = await loadSelectedRunStatus(selectedRunId)
-                    setRuntimeApiDegradedMessage((current) =>
-                        current === SELECTED_RUN_STATUS_DEGRADED_MESSAGE ? null : current
-                    )
-                } catch (error) {
-                    if (!metadataAbort.signal.aborted && error instanceof ApiHttpError && error.status === 404) {
-                        setSelectedRunId(null)
-                        setRuntimeStatus('idle')
-                        setRuntimeApiDegradedMessage(null)
-                        return
-                    }
-                    if (!metadataAbort.signal.aborted) {
-                        setRuntimeApiDegradedMessage(SELECTED_RUN_STATUS_DEGRADED_MESSAGE)
-                    }
-                    return
-                }
+            const data = await refreshSelectedRunStatus()
+            if (metadataAbort.signal.aborted || closed || !data) {
+                return
             }
-            if (metadataAbort.signal.aborted) return
-
-            if (typeof data?.status === 'string' && isRuntimeStatus(data.status)) {
-                setRuntimeStatus(data.status)
-                setRuntimeOutcome(
-                    data.outcome === 'success' || data.outcome === 'failure' ? data.outcome : null,
-                    typeof data.outcome_reason_code === 'string' ? data.outcome_reason_code : null,
-                    typeof data.outcome_reason_message === 'string' ? data.outcome_reason_message : null,
-                )
+            if (!isActiveRunStatus(data.status)) {
+                return
             }
-            if (metadataAbort.signal.aborted) return
 
+            ensureReconcileLoop()
             const eventStream = new EventSource(buildRunEventsUrl(selectedRunId))
             eventStream.onmessage = handleMessage
+            eventStream.onerror = () => {
+                void refreshSelectedRunStatus()
+            }
             eventSource = eventStream
         }
 
-        startScopedStream().catch(() => null)
+        void startScopedStream()
 
         return () => {
-            source.close()
+            closed = true
+            metadataAbort.abort()
+            closeStream()
         }
-    }, [selectedRunId, addLog, setNodeStatus, clearHumanGate, resetNodeStatuses, setHumanGate, setRuntimeStatus, setRuntimeOutcome, setSelectedRunId])
+    }, [
+        selectedRunId,
+        addLog,
+        setNodeStatus,
+        clearHumanGate,
+        resetNodeStatuses,
+        setHumanGate,
+        setRuntimeStatus,
+        setRuntimeOutcome,
+        setSelectedRunId,
+        setSelectedRunSnapshot,
+        setSelectedRunStatusSync,
+        setRunRecordOverride,
+    ])
 
     const handleRetrySave = () => {
         void retryLastSaveContent()

@@ -1,4 +1,5 @@
 import { RunsPanel } from '@/features/runs/RunsPanel'
+import { RunStream } from '@/features/runs/RunStream'
 import { useStore } from '@/store'
 import { DialogProvider } from '@/ui'
 import { act, render, screen, waitFor } from '@testing-library/react'
@@ -22,6 +23,12 @@ const resetRunsState = () => {
     viewMode: 'runs',
     activeProjectPath: null,
     selectedRunId: null,
+    selectedRunRecord: null,
+    selectedRunCompletedNodes: [],
+    selectedRunStatusSync: 'idle',
+    selectedRunStatusError: null,
+    selectedRunStatusFetchedAtMs: null,
+    runRecordOverrides: {},
     executionFlow: null,
     executionContinuation: null,
     workingDir: '',
@@ -35,6 +42,14 @@ const resetRunsState = () => {
 const renderRunsPanel = () =>
   render(
     <DialogProvider>
+      <RunsPanel />
+    </DialogProvider>,
+  )
+
+const renderRunsWorkspace = () =>
+  render(
+    <DialogProvider>
+      <RunStream />
       <RunsPanel />
     </DialogProvider>,
   )
@@ -627,5 +642,122 @@ describe('RunsPanel', () => {
 
     expect(screen.queryByTestId('run-summary-continue-button')).not.toBeInTheDocument()
     expect(screen.getByTestId('run-summary-cancel-button')).toBeVisible()
+  })
+
+  it('converges the selected run summary, console, and list row on authoritative run detail state', async () => {
+    const staleRun = makeRun({
+      run_id: 'run-stale-status',
+      flow_name: 'selected.dot',
+      status: 'running',
+      outcome: null,
+      ended_at: null,
+      last_error: '',
+      project_path: '/tmp/project-one',
+    })
+
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [staleRun] })
+      }
+      if (url.includes('/attractor/pipelines/run-stale-status/checkpoint')) {
+        return jsonResponse({
+          pipeline_id: 'run-stale-status',
+          checkpoint: {
+            completed_nodes: ['prepare'],
+            current_node: 'done',
+          },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-stale-status/context')) {
+        return jsonResponse({
+          pipeline_id: 'run-stale-status',
+          context: { active_item: 'REQ-001' },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-stale-status/artifacts')) {
+        return jsonResponse({
+          pipeline_id: 'run-stale-status',
+          artifacts: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-stale-status/graph-preview')) {
+        return jsonResponse({
+          status: 'ok',
+          graph: {
+            graph_attrs: {},
+            nodes: [
+              { id: 'start', label: 'Start', shape: 'Mdiamond' },
+              { id: 'done', label: 'Done', shape: 'Msquare' },
+            ],
+            edges: [
+              { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+            ],
+          },
+          diagnostics: [],
+          errors: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-stale-status/questions')) {
+        return jsonResponse({
+          pipeline_id: 'run-stale-status',
+          questions: [],
+        })
+      }
+      if (url.endsWith('/attractor/pipelines/run-stale-status')) {
+        return jsonResponse({
+          pipeline_id: 'run-stale-status',
+          run_id: 'run-stale-status',
+          status: 'completed',
+          outcome: 'success',
+          outcome_reason_code: null,
+          outcome_reason_message: null,
+          flow_name: 'selected.dot',
+          working_directory: '/tmp/project-one/workdir',
+          project_path: '/tmp/project-one',
+          git_branch: 'main',
+          git_commit: 'abcdef0',
+          spec_id: null,
+          plan_id: null,
+          model: 'gpt-5.3-codex-spark',
+          started_at: '2026-03-22T00:00:00Z',
+          ended_at: '2026-03-22T00:05:00Z',
+          last_error: '',
+          token_usage: 1234,
+          completed_nodes: ['start', 'done'],
+          continued_from_run_id: null,
+          continued_from_node: null,
+          continued_from_flow_mode: null,
+          continued_from_flow_name: null,
+        })
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+
+    await user.click(screen.getByTestId('run-history-row'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-status')).toHaveTextContent('Completed')
+    })
+
+    expect(screen.getByTestId('run-console-status')).toHaveTextContent('Completed')
+    expect(screen.getByTestId('run-history-row')).toHaveTextContent('Completed')
   })
 })

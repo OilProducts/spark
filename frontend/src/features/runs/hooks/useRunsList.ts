@@ -4,6 +4,7 @@ import {
     computeRunMetadataFreshness,
     RUN_METADATA_STALE_AFTER_MS,
 } from '@/lib/runMetadataFreshness'
+import { useStore } from '@/store'
 import type { RunRecord } from '../model/shared'
 
 const logUnexpectedRunError = (error: unknown) => {
@@ -24,6 +25,7 @@ export function useRunsList({
     selectedRunId: string | null
     viewMode: string
 }) {
+    const runRecordOverrides = useStore((state) => state.runRecordOverrides)
     const [runs, setRuns] = useState<RunRecord[]>([])
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -82,7 +84,15 @@ export function useRunsList({
         return () => window.clearInterval(interval)
     }, [viewMode])
 
-    const scopedRuns = useMemo(() => runs, [runs])
+    const scopedRuns = useMemo(() => {
+        if (Object.keys(runRecordOverrides).length === 0) {
+            return runs
+        }
+        return runs.map((run) => {
+            const override = runRecordOverrides[run.run_id]
+            return override ? { ...run, ...override } : run
+        })
+    }, [runRecordOverrides, runs])
 
     const summary = useMemo(() => {
         const total = scopedRuns.length

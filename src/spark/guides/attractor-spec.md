@@ -1731,7 +1731,7 @@ Implementations may expose the pipeline engine as an HTTP service for web-based 
 |--------|-----------------------------------------|-------------|
 | `POST` | `/pipelines`                            | Submit a DOT source and start execution. Returns pipeline ID. |
 | `POST` | `/pipelines/{id}/continue`              | Create a derived run from an existing run, starting at a chosen node. |
-| `GET`  | `/pipelines/{id}`                       | Get pipeline status and progress. |
+| `GET`  | `/pipelines/{id}`                       | Get authoritative per-run lifecycle/detail state for inspection, including progress and persisted run metadata. |
 | `GET`  | `/pipelines/{id}/events`                | SSE stream of pipeline events in real-time. |
 | `POST` | `/pipelines/{id}/cancel`                | Cancel a running pipeline. |
 | `GET`  | `/pipelines/{id}/graph`                 | Get rendered graph visualization (SVG). |
@@ -1743,6 +1743,18 @@ Implementations may expose the pipeline engine as an HTTP service for web-based 
 
 Human gates must be operable via web controls in addition to CLI. The server maintains SSE connections for real-time event streaming.
 Implementations that expose both `/graph` and `/graph-preview` should preserve the original run DOT source as a stable artifact so run inspection can render a snapshot-accurate graph even if the named flow changes later.
+
+`GET /pipelines/{id}` is the authoritative selected-run inspection endpoint.
+It should return a full run-detail payload for both active and completed runs, including:
+- `pipeline_id` and `run_id`
+- lifecycle fields such as `status`, `outcome`, `outcome_reason_code`, `outcome_reason_message`, and `last_error`
+- timing fields such as `started_at` and `ended_at`
+- persisted run metadata such as `flow_name`, `working_directory`, `project_path`, `git_branch`, `git_commit`, `model`, `spec_id`, `plan_id`, and `token_usage`
+- continuation lineage fields when applicable
+- progress fields including `completed_nodes`
+
+For active runs, implementations should read persisted run metadata first and then overlay only the live fields that can legitimately change during execution, such as lifecycle status, outcome, last error, and current completed nodes.
+`GET /pipelines/{id}/events` is a real-time event channel for incremental updates; clients should reconcile it against `GET /pipelines/{id}` rather than treating the stream as the sole source of terminal truth.
 
 `POST /pipelines/{id}/continue` is a derived-continuation endpoint, not a same-run resume endpoint.
 It must:

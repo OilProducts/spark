@@ -57,14 +57,21 @@ export interface PipelineStartResponse {
 
 export interface PipelineStatusResponse {
     pipeline_id: string
+    run_id: string
     status: string
     outcome?: 'success' | 'failure' | null
     outcome_reason_code?: string | null
     outcome_reason_message?: string | null
     flow_name?: string
     working_directory?: string
+    project_path?: string
+    git_branch?: string | null
+    git_commit?: string | null
+    spec_id?: string | null
+    plan_id?: string | null
     model?: string
     last_error?: string | null
+    token_usage?: number | null
     completed_nodes?: string[]
     started_at?: string
     ended_at?: string | null
@@ -211,23 +218,18 @@ export function parsePipelineStartResponse(payload: unknown, endpoint = '/attrac
 
 export function parsePipelineStatusResponse(payload: unknown, endpoint = '/attractor/pipelines/{id}'): PipelineStatusResponse {
     const record = expectObjectRecord(payload, endpoint)
+    const pipelineId = expectString(record.pipeline_id, endpoint, 'pipeline_id')
+    const runRecord = parseRunRecord({
+        ...record,
+        run_id: typeof record.run_id === 'string' ? record.run_id : pipelineId,
+    })
+    if (!runRecord) {
+        throw new ApiSchemaError(endpoint, 'Expected a valid run detail payload.')
+    }
     return {
-        pipeline_id: expectString(record.pipeline_id, endpoint, 'pipeline_id'),
-        status: expectString(record.status, endpoint, 'status'),
-        outcome: asOptionalNullableString(record.outcome) as PipelineStatusResponse['outcome'],
-        outcome_reason_code: asOptionalNullableString(record.outcome_reason_code),
-        outcome_reason_message: asOptionalNullableString(record.outcome_reason_message),
-        flow_name: asOptionalString(record.flow_name),
-        working_directory: asOptionalString(record.working_directory),
-        model: asOptionalString(record.model),
-        last_error: asOptionalNullableString(record.last_error),
+        pipeline_id: pipelineId,
+        ...runRecord,
         completed_nodes: asOptionalStringArray(record.completed_nodes),
-        started_at: asOptionalString(record.started_at),
-        ended_at: asOptionalNullableString(record.ended_at),
-        continued_from_run_id: asOptionalNullableString(record.continued_from_run_id),
-        continued_from_node: asOptionalNullableString(record.continued_from_node),
-        continued_from_flow_mode: asOptionalNullableString(record.continued_from_flow_mode),
-        continued_from_flow_name: asOptionalNullableString(record.continued_from_flow_name),
     }
 }
 

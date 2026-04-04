@@ -26,6 +26,12 @@ type ProjectScopeTransitionState = Pick<
     | 'executionFlow'
     | 'executionContinuation'
     | 'selectedRunId'
+    | 'selectedRunRecord'
+    | 'selectedRunCompletedNodes'
+    | 'selectedRunStatusSync'
+    | 'selectedRunStatusError'
+    | 'selectedRunStatusFetchedAtMs'
+    | 'runRecordOverrides'
     | 'runtimeStatus'
     | 'runtimeOutcome'
     | 'runtimeOutcomeReasonCode'
@@ -72,6 +78,12 @@ const preserveExecutionSession = (state: AppState) => ({
 
 const preserveRunInspectionState = (state: AppState) => ({
     selectedRunId: state.selectedRunId,
+    selectedRunRecord: state.selectedRunRecord,
+    selectedRunCompletedNodes: state.selectedRunCompletedNodes,
+    selectedRunStatusSync: state.selectedRunStatusSync,
+    selectedRunStatusError: state.selectedRunStatusError,
+    selectedRunStatusFetchedAtMs: state.selectedRunStatusFetchedAtMs,
+    runRecordOverrides: state.runRecordOverrides,
     runtimeStatus: state.runtimeStatus,
     runtimeOutcome: state.runtimeOutcome,
     runtimeOutcomeReasonCode: state.runtimeOutcomeReasonCode,
@@ -83,6 +95,12 @@ const preserveRunInspectionState = (state: AppState) => ({
 
 const resetRunInspectionState = (runtimeStatus: RuntimeStatus = 'idle') => ({
     selectedRunId: null,
+    selectedRunRecord: null,
+    selectedRunCompletedNodes: [],
+    selectedRunStatusSync: 'idle',
+    selectedRunStatusError: null,
+    selectedRunStatusFetchedAtMs: null,
+    runRecordOverrides: {},
     runtimeStatus,
     runtimeOutcome: null,
     runtimeOutcomeReasonCode: null,
@@ -157,6 +175,12 @@ export const buildHydrateProjectRegistryTransition = (
         activeProjectPath: nextActiveProjectPath,
         viewMode: nextViewMode,
         selectedRunId: null,
+        selectedRunRecord: null,
+        selectedRunCompletedNodes: [],
+        selectedRunStatusSync: 'idle',
+        selectedRunStatusError: null,
+        selectedRunStatusFetchedAtMs: null,
+        runRecordOverrides: {},
         runtimeStatus: state.runtimeStatus,
         runtimeOutcome: null,
         runtimeOutcomeReasonCode: null,
@@ -216,6 +240,12 @@ export const buildRemoveProjectTransition = (
         activeProjectPath: nextResolvedActiveProjectPath,
         viewMode: nextViewMode,
         selectedRunId: removedActiveProject ? null : state.selectedRunId,
+        selectedRunRecord: removedActiveProject ? null : state.selectedRunRecord,
+        selectedRunCompletedNodes: removedActiveProject ? [] : state.selectedRunCompletedNodes,
+        selectedRunStatusSync: removedActiveProject ? 'idle' : state.selectedRunStatusSync,
+        selectedRunStatusError: removedActiveProject ? null : state.selectedRunStatusError,
+        selectedRunStatusFetchedAtMs: removedActiveProject ? null : state.selectedRunStatusFetchedAtMs,
+        runRecordOverrides: removedActiveProject ? {} : state.runRecordOverrides,
         runtimeStatus: state.runtimeStatus,
         runtimeOutcome: removedActiveProject ? null : state.runtimeOutcome,
         runtimeOutcomeReasonCode: removedActiveProject ? null : state.runtimeOutcomeReasonCode,
@@ -308,6 +338,12 @@ export const buildRegisterProjectTransition = (
         activeFlow: state.activeFlow,
         executionFlow: state.activeProjectPath ? state.executionFlow : null,
         selectedRunId: state.activeProjectPath ? state.selectedRunId : null,
+        selectedRunRecord: state.activeProjectPath ? state.selectedRunRecord : null,
+        selectedRunCompletedNodes: state.activeProjectPath ? state.selectedRunCompletedNodes : [],
+        selectedRunStatusSync: state.activeProjectPath ? state.selectedRunStatusSync : 'idle',
+        selectedRunStatusError: state.activeProjectPath ? state.selectedRunStatusError : null,
+        selectedRunStatusFetchedAtMs: state.activeProjectPath ? state.selectedRunStatusFetchedAtMs : null,
+        runRecordOverrides: state.activeProjectPath ? state.runRecordOverrides : {},
         workingDir: state.activeProjectPath ? state.workingDir : nextActiveProjectScope.workingDir,
     }
 }

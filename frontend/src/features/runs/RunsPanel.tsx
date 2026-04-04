@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useRunsList } from './hooks/useRunsList'
@@ -22,7 +22,9 @@ export function RunsPanel() {
     const viewMode = useStore((state) => state.viewMode)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const selectedRunId = useStore((state) => state.selectedRunId)
+    const selectedRunRecord = useStore((state) => state.selectedRunRecord)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
+    const setSelectedRunSnapshot = useStore((state) => state.setSelectedRunSnapshot)
     const setViewMode = useStore((state) => state.setViewMode)
     const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
     const setExecutionFlow = useStore((state) => state.setExecutionFlow)
@@ -51,7 +53,19 @@ export function RunsPanel() {
         fetchRuns,
         setRuns,
     })
-    const selectedRunTimelineId = selectedRunSummary?.run_id ?? null
+    const hasScopedSelectedRun = selectedRunId
+        ? scopedRuns.some((run) => run.run_id === selectedRunId)
+        : false
+    const selectedRun =
+        selectedRunSummary
+            ?? (
+                selectedRunRecord
+                && selectedRunRecord.run_id === selectedRunId
+                && (isLoading || Boolean(error) || hasScopedSelectedRun || scopedRuns.length === 0)
+                    ? selectedRunRecord
+                    : null
+            )
+    const selectedRunTimelineId = selectedRun?.run_id ?? null
     const {
         artifactDownloadHref,
         artifactEntries,
@@ -85,7 +99,7 @@ export function RunsPanel() {
         viewArtifact,
         copyContextToClipboard,
     } = useRunDetails({
-        selectedRunSummary,
+        selectedRunSummary: selectedRun,
         viewMode,
     })
     const {
@@ -122,11 +136,21 @@ export function RunsPanel() {
     const showRunSelectionEmptyState =
         ((scopeMode === 'active' && activeProjectPath) || scopeMode === 'all')
         && scopedRuns.length > 0
-        && !selectedRunSummary
+        && !selectedRun
 
     const selectRun = (run: RunRecord) => {
         setSelectedRunId(run.run_id)
+        setSelectedRunSnapshot({ record: run, completedNodes: [] })
     }
+
+    useEffect(() => {
+        if (!selectedRunId) {
+            return
+        }
+        if (selectedRunSummary && (!selectedRunRecord || selectedRunRecord.run_id !== selectedRunId)) {
+            setSelectedRunSnapshot({ record: selectedRunSummary, completedNodes: [] })
+        }
+    }, [selectedRunId, selectedRunRecord, selectedRunSummary, setSelectedRunSnapshot])
 
     const beginContinuation = (run: RunRecord) => {
         const projectPath = run.project_path || run.working_directory || null
@@ -195,7 +219,7 @@ export function RunsPanel() {
                                 Select a run from the sidebar to inspect its details.
                             </div>
                         )}
-                        {selectedRunSummary && (
+                        {selectedRun && (
                             <RunSummaryCard
                                 activeProjectPath={activeProjectPath}
                                 now={now}
@@ -204,10 +228,10 @@ export function RunsPanel() {
                                 onRequestCancel={(runId, currentStatus) => {
                                     void requestCancel(runId, currentStatus)
                                 }}
-                                run={selectedRunSummary}
+                                run={selectedRun}
                             />
                         )}
-                        {selectedRunSummary && degradedRunPanels.length > 0 && (
+                        {selectedRun && degradedRunPanels.length > 0 && (
                             <div
                                 data-testid="run-partial-api-failure-banner"
                                 className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800"
@@ -218,20 +242,20 @@ export function RunsPanel() {
                                 </span>
                             </div>
                         )}
-                        {!selectedRunSummary && scopeMode === 'all' && scopedRuns.length === 0 && (
+                        {!selectedRun && scopeMode === 'all' && scopedRuns.length === 0 && (
                             <InlineNotice>
                                 No runs have been recorded yet.
                             </InlineNotice>
                         )}
-                        {selectedRunSummary && (
+                        {selectedRun && (
                             <RunGraphCard
-                                run={selectedRunSummary}
+                                run={selectedRun}
                             />
                         )}
-                        {selectedRunSummary && (
+                        {selectedRun && (
                             <RunConsoleCard />
                         )}
-                        {selectedRunSummary && (
+                        {selectedRun && (
                             <RunCheckpointCard
                                 checkpointCompletedNodes={checkpointCompletedNodes}
                                 checkpointCurrentNode={checkpointCurrentNode}
@@ -244,7 +268,7 @@ export function RunsPanel() {
                                 }}
                             />
                         )}
-                        {selectedRunSummary && (
+                        {selectedRun && (
                             <RunContextCard
                                 contextCopyStatus={contextCopyStatus}
                                 contextError={contextError}
@@ -259,11 +283,11 @@ export function RunsPanel() {
                                     void fetchContext()
                                 }}
                                 onSearchQueryChange={setContextSearchQuery}
-                                runId={selectedRunSummary.run_id}
+                                runId={selectedRun.run_id}
                                 searchQuery={contextSearchQuery}
                             />
                         )}
-                        {selectedRunSummary && (
+                        {selectedRun && (
                             <RunArtifactsCard
                                 artifactDownloadHref={(artifactPath) => artifactDownloadHref(artifactPath) || null}
                                 artifactEntries={artifactEntries}
@@ -283,7 +307,7 @@ export function RunsPanel() {
                                 showPartialRunArtifactNote={showPartialRunArtifactNote}
                             />
                         )}
-                        {selectedRunSummary && (
+                        {selectedRun && (
                             <RunEventTimelineCard
                                 isNarrowViewport={isNarrowViewport}
                                 isTimelineLive={isTimelineLive}

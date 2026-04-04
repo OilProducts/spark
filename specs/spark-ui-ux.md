@@ -177,6 +177,10 @@ Runs owns:
 - run event timeline
 - checkpoint, context, artifacts, and questions
 
+For selected-run inspection, Runs treats backend run-detail state as authoritative.
+The selected run summary, lifecycle badge, and detail surfaces must reconcile against `GET /pipelines/{id}` rather than relying on the runs list row or event-stream-local status.
+The runs list remains an overview/navigation surface.
+
 ### 8.3 Bridge Surfaces
 
 Bridge surfaces show how workspace artifacts connect to Attractor execution.
@@ -373,6 +377,12 @@ The frontend treats backend-provided state as authoritative for:
 - run lifecycle status
 - run workflow outcome
 - provenance links
+
+For run inspection specifically:
+- the selected run detail surface is authoritative on backend run-detail state from `GET /pipelines/{id}`
+- the runs list is an overview cache and must not outrank selected-run detail state
+- event streams are additive live-update channels for logs, node status, human gates, and timeline enrichment
+- event streams must reconcile with authoritative per-run detail state so missed terminal events do not leave the UI stale
 
 The frontend may keep local ephemeral state for:
 - selected tab

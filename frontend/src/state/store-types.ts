@@ -1,3 +1,5 @@
+import type { RunRecord } from '@/features/runs/model/shared'
+
 export type ViewMode = 'home' | 'projects' | 'editor' | 'execution' | 'triggers' | 'settings' | 'runs'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'failed' | 'waiting'
 export type DiagnosticSeverity = 'error' | 'warning' | 'info'
@@ -15,6 +17,7 @@ export type RuntimeStatus =
 export type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict'
 export type SaveErrorKind = 'parse_error' | 'validation_error' | 'conflict' | 'network' | 'http' | 'unknown'
 export type PlanStatus = 'draft' | 'approved' | 'rejected' | 'revision-requested'
+export type SelectedRunStatusSync = 'idle' | 'loading' | 'ready' | 'degraded'
 
 export interface HumanGateOption {
     label: string
@@ -214,6 +217,20 @@ export interface WorkspaceSlice {
 export interface RunInspectorSlice {
     selectedRunId: string | null
     setSelectedRunId: (id: string | null) => void
+    selectedRunRecord: RunRecord | null
+    selectedRunCompletedNodes: string[]
+    selectedRunStatusSync: SelectedRunStatusSync
+    selectedRunStatusError: string | null
+    selectedRunStatusFetchedAtMs: number | null
+    setSelectedRunSnapshot: (snapshot: {
+        record: RunRecord | null
+        completedNodes?: string[]
+        fetchedAtMs?: number | null
+    }) => void
+    setSelectedRunStatusSync: (status: SelectedRunStatusSync, error?: string | null) => void
+    runRecordOverrides: Record<string, Partial<RunRecord>>
+    setRunRecordOverride: (runId: string, patch: Partial<RunRecord> | null) => void
+    clearRunRecordOverrides: () => void
     runGraphAttrs: GraphAttrs
     replaceRunGraphAttrs: (attrs: GraphAttrs) => void
     runDiagnostics: DiagnosticEntry[]

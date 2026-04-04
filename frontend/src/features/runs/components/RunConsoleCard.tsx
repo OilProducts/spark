@@ -11,13 +11,18 @@ import {
 } from '@/ui'
 
 import { useRunExplainability } from '../hooks/useRunExplainability'
+import { STATUS_LABELS } from '../model/shared'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 export function RunConsoleCard() {
     const selectedRunId = useStore((state) => state.selectedRunId)
+    const selectedRunRecord = useStore((state) => state.selectedRunRecord)
     const logs = useStore((state) => state.logs)
     const clearLogs = useStore((state) => state.clearLogs)
     const runtimeStatus = useStore((state) => state.runtimeStatus)
+    const statusLabel = selectedRunRecord?.run_id === selectedRunId
+        ? (STATUS_LABELS[selectedRunRecord.status] || selectedRunRecord.status)
+        : (STATUS_LABELS[runtimeStatus] || runtimeStatus)
     const latestLog = useMemo(() => logs.at(-1) ?? null, [logs])
     const logsEndRef = useRef<HTMLDivElement>(null)
     const { failureDecisions, retryDecisions, routingDecisions } = useRunExplainability(selectedRunId)
@@ -36,7 +41,7 @@ export function RunConsoleCard() {
                     action={(
                         <div className="flex items-center gap-2">
                             <span data-testid="run-console-status" className="rounded border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
-                                Status: {runtimeStatus}
+                                Status: {statusLabel}
                             </span>
                             <span data-testid="run-console-log-count" className="rounded border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
                                 Logs: {logs.length}

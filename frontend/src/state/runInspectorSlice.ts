@@ -5,6 +5,39 @@ import type { AppState, RunInspectorSlice } from './store-types'
 export const createRunInspectorSlice: StateCreator<AppState, [], [], RunInspectorSlice> = (set) => ({
     selectedRunId: null,
     setSelectedRunId: (id) => set({ selectedRunId: id }),
+    selectedRunRecord: null,
+    selectedRunCompletedNodes: [],
+    selectedRunStatusSync: 'idle',
+    selectedRunStatusError: null,
+    selectedRunStatusFetchedAtMs: null,
+    setSelectedRunSnapshot: ({ record, completedNodes = [], fetchedAtMs = null }) =>
+        set({
+            selectedRunRecord: record,
+            selectedRunCompletedNodes: completedNodes,
+            selectedRunStatusFetchedAtMs: fetchedAtMs,
+        }),
+    setSelectedRunStatusSync: (status, error = null) =>
+        set({
+            selectedRunStatusSync: status,
+            selectedRunStatusError: error,
+        }),
+    runRecordOverrides: {},
+    setRunRecordOverride: (runId, patch) =>
+        set((state) => {
+            const nextOverrides = { ...state.runRecordOverrides }
+            if (!patch) {
+                delete nextOverrides[runId]
+            } else {
+                nextOverrides[runId] = {
+                    ...(state.runRecordOverrides[runId] ?? {}),
+                    ...patch,
+                }
+            }
+            return {
+                runRecordOverrides: nextOverrides,
+            }
+        }),
+    clearRunRecordOverrides: () => set({ runRecordOverrides: {} }),
     runGraphAttrs: {},
     replaceRunGraphAttrs: (attrs) =>
         set({

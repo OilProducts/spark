@@ -20,6 +20,12 @@ const resetGraphSettingsState = () => {
     activeFlow: TEST_GRAPH_FLOW,
     executionFlow: null,
     selectedRunId: null,
+    selectedRunRecord: null,
+    selectedRunCompletedNodes: [],
+    selectedRunStatusSync: 'idle',
+    selectedRunStatusError: null,
+    selectedRunStatusFetchedAtMs: null,
+    runRecordOverrides: {},
     workingDir: DEFAULT_WORKING_DIRECTORY,
     projectRegistry: {
       '/tmp/project-graph-settings': {

@@ -45,7 +45,18 @@ def test_get_pipeline_returns_progress_for_active_run(
     assert response.status_code == 200
     payload = response.json()
     assert payload["pipeline_id"] == run_id
+    assert payload["run_id"] == run_id
     assert payload["status"] == "running"
+    assert "flow_name" in payload
+    assert payload["working_directory"] == str(tmp_path / "work")
+    assert payload["project_path"] == str((tmp_path / "work").resolve())
+    assert payload["git_branch"] is None
+    assert payload["git_commit"] is None
+    assert payload["spec_id"] is None
+    assert payload["plan_id"] is None
+    assert payload["started_at"]
+    assert payload["ended_at"] is None
+    assert payload["token_usage"] is None
     assert payload["completed_nodes"] == ["start"]
     assert payload["progress"] == {
         "current_node": "plan",
@@ -74,10 +85,156 @@ def test_get_pipeline_uses_checkpoint_progress_for_persisted_run(
     assert response.status_code == 200
     payload = response.json()
     assert payload["pipeline_id"] == run_id
+    assert payload["run_id"] == run_id
     assert payload["status"] == "completed"
     assert payload["outcome"] == "success"
+    assert "flow_name" in payload
+    assert payload["working_directory"] == str(tmp_path / "work")
+    assert payload["project_path"] == str((tmp_path / "work").resolve())
+    assert payload["git_branch"] is None
+    assert payload["git_commit"] is None
+    assert payload["spec_id"] is None
+    assert payload["plan_id"] is None
+    assert payload["started_at"]
+    assert payload["ended_at"]
+    assert payload["token_usage"] is None
     assert payload["completed_nodes"] == ["start", "plan"]
     assert payload["progress"] == {
         "current_node": "done",
         "completed_count": 2,
+    }
+
+
+def test_get_pipeline_preserves_persisted_metadata_while_overlaying_active_state(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runs_root = tmp_path / "runs"
+    server.configure_runtime_paths(runs_dir=runs_root)
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
+
+    run_id = "run-active-detail"
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+    server._record_run_start(
+        run_id=run_id,
+        flow_name="detail.dot",
+        working_directory=str(workdir),
+        model="gpt-detail",
+        spec_id="spec-123",
+        plan_id="plan-456",
+        continued_from_run_id="run-parent",
+        continued_from_node="Audit Milestone",
+        continued_from_flow_mode="snapshot",
+        continued_from_flow_name="implement-spec.dot",
+    )
+    run_root = server._run_root(run_id)
+    _write_checkpoint(run_root, current_node="review", completed_nodes=["start"])
+    (run_root / "run.log").write_text("tokens used: 321\n", encoding="utf-8")
+    server.ACTIVE_RUNS[run_id] = server.ActiveRun(
+        run_id=run_id,
+        flow_name="detail.dot",
+        working_directory=str(workdir),
+        model="gpt-detail",
+        status="cancel_requested",
+        last_error="waiting for graceful shutdown",
+        completed_nodes=["start", "plan"],
+    )
+
+    response = attractor_api_client.get(f"/pipelines/{run_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pipeline_id"] == run_id
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "cancel_requested"
+    assert payload["outcome"] is None
+    assert payload["outcome_reason_code"] is None
+    assert payload["outcome_reason_message"] is None
+    assert payload["flow_name"] == "detail.dot"
+    assert payload["working_directory"] == str(workdir)
+    assert payload["project_path"] == str(workdir.resolve())
+    assert payload["git_branch"] is None
+    assert payload["git_commit"] is None
+    assert payload["model"] == "gpt-detail"
+    assert payload["spec_id"] == "spec-123"
+    assert payload["plan_id"] == "plan-456"
+    assert payload["continued_from_run_id"] == "run-parent"
+    assert payload["continued_from_node"] == "Audit Milestone"
+    assert payload["continued_from_flow_mode"] == "snapshot"
+    assert payload["continued_from_flow_name"] == "implement-spec.dot"
+    assert payload["last_error"] == "waiting for graceful shutdown"
+    assert payload["completed_nodes"] == ["start", "plan"]
+    assert payload["token_usage"] == 321
+    assert payload["progress"] == {
+        "current_node": "review",
+        "completed_count": 2,
+    }
+    server.ACTIVE_RUNS.pop(run_id, None)
+
+
+def test_get_pipeline_returns_full_persisted_detail_for_completed_run(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runs_root = tmp_path / "runs"
+    server.configure_runtime_paths(runs_dir=runs_root)
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
+
+    run_id = "run-completed-detail"
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+    server._record_run_start(
+        run_id=run_id,
+        flow_name="detail.dot",
+        working_directory=str(workdir),
+        model="gpt-detail",
+        spec_id="spec-123",
+        plan_id="plan-456",
+        continued_from_run_id="run-parent",
+        continued_from_node="Audit Milestone",
+        continued_from_flow_mode="flow_name",
+        continued_from_flow_name="implement-spec.dot",
+    )
+    server._record_run_end(
+        run_id=run_id,
+        working_directory=str(workdir),
+        status="completed",
+        outcome="success",
+        outcome_reason_code=None,
+        outcome_reason_message=None,
+    )
+    run_root = server._run_root(run_id)
+    _write_checkpoint(run_root, current_node="done", completed_nodes=["start", "plan", "review"])
+    (run_root / "run.log").write_text("tokens used: 987\n", encoding="utf-8")
+
+    response = attractor_api_client.get(f"/pipelines/{run_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pipeline_id"] == run_id
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "completed"
+    assert payload["outcome"] == "success"
+    assert payload["flow_name"] == "detail.dot"
+    assert payload["working_directory"] == str(workdir)
+    assert payload["project_path"] == str(workdir.resolve())
+    assert payload["git_branch"] is None
+    assert payload["git_commit"] is None
+    assert payload["model"] == "gpt-detail"
+    assert payload["spec_id"] == "spec-123"
+    assert payload["plan_id"] == "plan-456"
+    assert payload["continued_from_run_id"] == "run-parent"
+    assert payload["continued_from_node"] == "Audit Milestone"
+    assert payload["continued_from_flow_mode"] == "flow_name"
+    assert payload["continued_from_flow_name"] == "implement-spec.dot"
+    assert payload["completed_nodes"] == ["start", "plan", "review"]
+    assert payload["token_usage"] == 987
+    assert payload["started_at"]
+    assert payload["ended_at"]
+    assert payload["progress"] == {
+        "current_node": "done",
+        "completed_count": 3,
     }
