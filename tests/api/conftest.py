@@ -12,6 +12,7 @@ import spark_app.app as product_app
 @pytest.fixture(autouse=True)
 def _reset_api_server_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("SPARK_UI_DIR", raising=False)
+    server.shutdown_attractor_runtime()
     server.configure_runtime_paths(
         data_dir=tmp_path / ".spark",
         runs_dir=None,
@@ -34,6 +35,7 @@ def _reset_api_server_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     server.RUNTIME.last_run_id = ""
     server.clear_registered_transforms()
     yield
+    server.shutdown_attractor_runtime()
     with server.ACTIVE_RUNS_LOCK:
         server.ACTIVE_RUNS.clear()
     server.clear_registered_transforms()

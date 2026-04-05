@@ -1238,6 +1238,7 @@ Rules:
 - `status=failed` is reserved for runtime/engine failure: validation failure, handler crash, infrastructure failure, or unhandled FAIL with no modeled route.
 - `status=completed, outcome=failure` is a valid completed run, not a runtime failure.
 - If no node sets the reserved `context.workflow_outcome*` keys, terminal completion defaults to `outcome=success`.
+- If the server starts and finds persisted runs with active lifecycle state but no live executor ownership, it must reconcile them to a terminal lifecycle state before serving run status. Interrupted active runs are runtime failures unless they were already in a cancel-requested transition.
 
 ### 5.3 Checkpoint
 
@@ -1754,6 +1755,7 @@ It should return a full run-detail payload for both active and completed runs, i
 - progress fields including `completed_nodes`
 
 For active runs, implementations should read persisted run metadata first and then overlay only the live fields that can legitimately change during execution, such as lifecycle status, outcome, last error, and current completed nodes.
+Implementations must not report an active lifecycle status for an orphaned run after restart; stale persisted `running` or `cancel_requested` records must be reconciled to terminal truth during startup/runtime initialization.
 `GET /pipelines/{id}/events` is a real-time event channel for incremental updates; clients should reconcile it against `GET /pipelines/{id}` rather than treating the stream as the sole source of terminal truth.
 
 `POST /pipelines/{id}/continue` is a derived-continuation endpoint, not a same-run resume endpoint.

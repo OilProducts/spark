@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import attractor.api.server as server
+import spark_app.app as product_app
 from attractor.engine import Checkpoint, save_checkpoint
 from tests.api._support import (
     close_task_immediately as _close_task_immediately,
@@ -238,3 +239,66 @@ def test_get_pipeline_returns_full_persisted_detail_for_completed_run(
         "current_node": "done",
         "completed_count": 3,
     }
+
+
+def test_attractor_startup_reconciles_orphaned_running_run(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    server.configure_runtime_paths(runs_dir=runs_root)
+
+    run_id = "run-orphaned-running"
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+    server._record_run_start(
+        run_id=run_id,
+        flow_name="detail.dot",
+        working_directory=str(workdir),
+        model="gpt-detail",
+    )
+    run_root = server._run_root(run_id)
+    _write_checkpoint(run_root, current_node="implement", completed_nodes=["start", "plan"])
+
+    with TestClient(server.attractor_app) as client:
+        response = client.get(f"/pipelines/{run_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "failed"
+    assert payload["outcome"] is None
+    assert payload["last_error"] == "Run was interrupted when the Attractor server stopped before completion."
+    assert payload["ended_at"]
+
+    persisted = server.pipeline_runs.read_run_meta(server.pipeline_runs.run_meta_path(server.get_settings, run_id))
+    assert persisted is not None
+    assert persisted.status == "failed"
+    assert persisted.ended_at
+    assert "Reconciled orphaned active run after server restart" in (run_root / "run.log").read_text(encoding="utf-8")
+
+
+def test_product_app_startup_reconciles_orphaned_cancel_requested_run(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    server.configure_runtime_paths(runs_dir=runs_root)
+
+    run_id = "run-orphaned-cancel"
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+    server._record_run_start(
+        run_id=run_id,
+        flow_name="detail.dot",
+        working_directory=str(workdir),
+        model="gpt-detail",
+    )
+    server._record_run_status(run_id, "cancel_requested", "cancel_requested_by_user")
+    run_root = server._run_root(run_id)
+    _write_checkpoint(run_root, current_node="review", completed_nodes=["start"])
+
+    with TestClient(product_app.app) as client:
+        response = client.get(f"/attractor/pipelines/{run_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "canceled"
+    assert payload["outcome"] is None
+    assert payload["last_error"] == (
+        "Run was interrupted when the Attractor server stopped before cancellation completed."
+    )
+    assert payload["ended_at"]

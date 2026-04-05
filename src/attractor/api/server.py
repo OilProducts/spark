@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import copy
 import json
 import logging
@@ -9,7 +10,7 @@ import uuid
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -147,6 +148,9 @@ EVENT_HUB = PipelineEventHub()
 RUNTIME = RuntimeState(last_completed_nodes=[])
 ACTIVE_RUNS_LOCK = threading.Lock()
 ACTIVE_RUNS: Dict[str, ActiveRun] = {}
+ATTRACTOR_RUNTIME_LOCK = threading.Lock()
+ATTRACTOR_RUNTIME_INITIALIZED = False
+ORPHANED_ACTIVE_STATUSES = {"running", "cancel_requested", "pause_requested"}
 
 
 RUN_HISTORY_LOCK = threading.Lock()
@@ -175,6 +179,80 @@ def _ensure_run_root_for_project(run_id: str, project_path: str) -> Path:
 
 def _run_root(run_id: str) -> Path:
     return pipeline_runs.run_root(get_settings, run_id)
+
+
+def _orphaned_run_terminal_state(status: str) -> tuple[str, str]:
+    normalized = normalize_run_status(status)
+    if normalized == "cancel_requested":
+        return (
+            "canceled",
+            "Run was interrupted when the Attractor server stopped before cancellation completed.",
+        )
+    if normalized == "pause_requested":
+        return (
+            "failed",
+            "Run was interrupted when the Attractor server stopped before pause completed.",
+        )
+    return (
+        "failed",
+        "Run was interrupted when the Attractor server stopped before completion.",
+    )
+
+
+def reconcile_orphaned_runs_on_startup() -> list[str]:
+    reconciled: list[str] = []
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    for run_root in _iter_run_roots():
+        record = pipeline_runs.read_run_meta(run_root / "run.json")
+        if record is None:
+            continue
+        status = normalize_run_status(record.status)
+        if status not in ORPHANED_ACTIVE_STATUSES:
+            continue
+        if _get_active_run(record.run_id) is not None:
+            continue
+        final_status, last_error = _orphaned_run_terminal_state(status)
+        _append_run_log(
+            record.run_id,
+            f"[{now} UTC] [System] Reconciled orphaned active run after server restart: {last_error}",
+        )
+        _record_run_end(
+            record.run_id,
+            record.working_directory or record.project_path,
+            final_status,
+            last_error,
+            outcome=None,
+            outcome_reason_code=None,
+            outcome_reason_message=None,
+        )
+        reconciled.append(record.run_id)
+    return reconciled
+
+
+def initialize_attractor_runtime() -> None:
+    global ATTRACTOR_RUNTIME_INITIALIZED
+    with ATTRACTOR_RUNTIME_LOCK:
+        if ATTRACTOR_RUNTIME_INITIALIZED:
+            return
+        reconcile_orphaned_runs_on_startup()
+        ATTRACTOR_RUNTIME_INITIALIZED = True
+
+
+def shutdown_attractor_runtime() -> None:
+    global ATTRACTOR_RUNTIME_INITIALIZED
+    with ATTRACTOR_RUNTIME_LOCK:
+        ATTRACTOR_RUNTIME_INITIALIZED = False
+    with ACTIVE_RUNS_LOCK:
+        ACTIVE_RUNS.clear()
+
+
+@asynccontextmanager
+async def _attractor_lifespan(_: FastAPI):
+    initialize_attractor_runtime()
+    try:
+        yield
+    finally:
+        shutdown_attractor_runtime()
 
 
 def _resolve_start_node_id(graph) -> str:
@@ -1668,4 +1746,5 @@ async def delete_flow(flow_name: str):
     raise HTTPException(status_code=404, detail="Flow not found.")
 
 
+attractor_app.router.lifespan_context = _attractor_lifespan
 attractor_app.include_router(attractor_router)

@@ -104,6 +104,15 @@ async def _workspace_lifespan(_: FastAPI):
         await TRIGGER_RUNTIME.stop()
 
 
+@asynccontextmanager
+async def _product_lifespan(_: FastAPI):
+    attractor_server.initialize_attractor_runtime()
+    try:
+        yield
+    finally:
+        attractor_server.shutdown_attractor_runtime()
+
+
 workspace_app = FastAPI(
     title="Spark Workspace API",
     docs_url="/docs",
@@ -111,6 +120,8 @@ workspace_app = FastAPI(
     openapi_url="/openapi.json",
     lifespan=_workspace_lifespan,
 )
+
+app.router.lifespan_context = _product_lifespan
 
 
 WORKSPACE_ROUTER = create_workspace_router(
