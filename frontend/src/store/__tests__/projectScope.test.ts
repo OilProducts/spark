@@ -1,4 +1,5 @@
 import { useStore } from '@/store'
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
@@ -25,8 +26,38 @@ const resetStore = () => {
     graphAttrs: {},
     graphAttrErrors: {},
     graphAttrsUserEditVersion: 0,
+    editorGraphSettingsPanelOpenByFlow: {},
+    editorShowAdvancedGraphAttrsByFlow: {},
+    editorLaunchInputDraftsByFlow: {},
+    editorLaunchInputDraftErrorByFlow: {},
+    editorNodeInspectorSessionsByNodeId: {},
   }))
 }
+
+const buildRunRecord = (runId: string, projectPath: string, flowName: string) => ({
+  run_id: runId,
+  flow_name: flowName,
+  status: 'completed' as const,
+  outcome: 'success' as const,
+  outcome_reason_code: null,
+  outcome_reason_message: null,
+  working_directory: `${projectPath}/workspace`,
+  project_path: projectPath,
+  git_branch: 'main',
+  git_commit: 'abcdef0',
+  spec_id: null,
+  plan_id: null,
+  model: 'gpt-5.4',
+  started_at: '2026-03-22T00:00:00Z',
+  ended_at: '2026-03-22T00:05:00Z',
+  last_error: null,
+  token_usage: 144,
+  current_node: 'done',
+  continued_from_run_id: null,
+  continued_from_node: null,
+  continued_from_flow_mode: null,
+  continued_from_flow_name: null,
+})
 
 describe('project scope store behavior', () => {
   beforeEach(() => {
@@ -94,6 +125,39 @@ describe('project scope store behavior', () => {
     expect(next.activeFlow).toBe('preferred.dot')
     expect(next.executionFlow).toBe('run-flow-a.dot')
     expect(next.logs).toEqual([])
+  })
+
+  it('foregrounds the remembered project-scoped selected run when switching active projects', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/project-a')
+    store.registerProject('/tmp/project-b')
+
+    store.updateRunDetailSession('run-a', {
+      summaryRecord: buildRunRecord('run-a', '/tmp/project-a', 'project-a.dot'),
+      completedNodesSnapshot: ['plan'],
+      statusFetchedAtMs: 101,
+    })
+    store.updateRunDetailSession('run-b', {
+      summaryRecord: buildRunRecord('run-b', '/tmp/project-b', 'project-b.dot'),
+      completedNodesSnapshot: ['review'],
+      statusFetchedAtMs: 202,
+    })
+    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-a'), 'run-a')
+    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-b'), 'run-b')
+
+    store.setActiveProjectPath('/tmp/project-b')
+    let next = useStore.getState()
+    expect(next.selectedRunId).toBe('run-b')
+    expect(next.selectedRunRecord?.flow_name).toBe('project-b.dot')
+    expect(next.selectedRunCompletedNodes).toEqual(['review'])
+    expect(next.selectedRunStatusFetchedAtMs).toBe(202)
+
+    store.setActiveProjectPath('/tmp/project-a')
+    next = useStore.getState()
+    expect(next.selectedRunId).toBe('run-a')
+    expect(next.selectedRunRecord?.flow_name).toBe('project-a.dot')
+    expect(next.selectedRunCompletedNodes).toEqual(['plan'])
+    expect(next.selectedRunStatusFetchedAtMs).toBe(101)
   })
 
   it('tracks user graph attr edits separately from hydrated replacements', () => {
@@ -167,11 +231,40 @@ describe('project scope store behavior', () => {
     store.registerProject('/tmp/project-a')
     store.registerProject('/tmp/project-b')
     store.setActiveProjectPath('/tmp/project-a')
+    store.updateRunDetailSession('run-a', {
+      summaryRecord: buildRunRecord('run-a', '/tmp/project-a', 'project-a.dot'),
+      completedNodesSnapshot: ['plan'],
+      statusFetchedAtMs: 101,
+    })
+    store.updateRunDetailSession('run-b', {
+      summaryRecord: buildRunRecord('run-b', '/tmp/project-b', 'project-b.dot'),
+      completedNodesSnapshot: ['review'],
+      statusFetchedAtMs: 202,
+    })
+    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-a'), 'run-a')
+    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-b'), 'run-b')
+    store.setRunRecordOverride('run-a', {
+      project_path: '/tmp/project-a',
+      current_node: 'plan',
+    })
+    store.setRunRecordOverride('run-b', {
+      project_path: '/tmp/project-b',
+      current_node: 'review',
+    })
 
     store.removeProject('/tmp/project-a', '/tmp/project-b')
 
     const next = useStore.getState()
     expect(next.projectRegistry['/tmp/project-a']).toBeUndefined()
     expect(next.activeProjectPath).toBe('/tmp/project-b')
+    expect(next.runsListSession.selectedRunIdByScopeKey[buildRunsScopeKey('active', '/tmp/project-a')]).toBeUndefined()
+    expect(next.runsListSession.selectedRunIdByScopeKey[buildRunsScopeKey('active', '/tmp/project-b')]).toBe('run-b')
+    expect(next.runDetailSessionsByRunId['run-a']).toBeUndefined()
+    expect(next.runDetailSessionsByRunId['run-b']?.summaryRecord?.run_id).toBe('run-b')
+    expect(next.runRecordOverrides['run-a']).toBeUndefined()
+    expect(next.runRecordOverrides['run-b']).toMatchObject({
+      project_path: '/tmp/project-b',
+      current_node: 'review',
+    })
   })
 })

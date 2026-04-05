@@ -3,6 +3,7 @@ import type { GroupedTimelineEntry, RunRecord } from '@/features/runs/model/shar
 import { useStore } from '@/store'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
@@ -59,6 +60,28 @@ const resetActivityState = () => {
     })
 }
 
+function ControlledRunActivityCard(props: {
+    checkpointCompletedNodes: string
+    checkpointCurrentNode: string
+    checkpointRetryCounters: string
+    groupedTimelineEntries: GroupedTimelineEntry[]
+    pendingGateCount: number
+    run: RunRecord
+}) {
+    const [collapsed, setCollapsed] = useState(false)
+    const [rawLogsCollapsed, setRawLogsCollapsed] = useState(true)
+
+    return (
+        <RunActivityCard
+            {...props}
+            collapsed={collapsed}
+            rawLogsCollapsed={rawLogsCollapsed}
+            onCollapsedChange={setCollapsed}
+            onRawLogsCollapsedChange={setRawLogsCollapsed}
+        />
+    )
+}
+
 describe('RunActivityCard', () => {
     beforeEach(() => {
         resetActivityState()
@@ -74,9 +97,13 @@ describe('RunActivityCard', () => {
                 checkpointCompletedNodes="start"
                 checkpointCurrentNode="validate"
                 checkpointRetryCounters="—"
+                collapsed={false}
                 groupedTimelineEntries={[]}
                 pendingGateCount={1}
+                rawLogsCollapsed={true}
                 run={makeRun({ status: 'running', current_node: 'review_gate' })}
+                onCollapsedChange={() => {}}
+                onRawLogsCollapsedChange={() => {}}
             />,
         )
 
@@ -87,9 +114,13 @@ describe('RunActivityCard', () => {
                 checkpointCompletedNodes="start"
                 checkpointCurrentNode="validate"
                 checkpointRetryCounters="—"
+                collapsed={false}
                 groupedTimelineEntries={[]}
                 pendingGateCount={0}
+                rawLogsCollapsed={true}
                 run={makeRun({ status: 'running', current_node: 'validate' })}
+                onCollapsedChange={() => {}}
+                onRawLogsCollapsedChange={() => {}}
             />,
         )
         expect(screen.getByTestId('run-activity-headline')).toHaveTextContent('Running validate')
@@ -99,9 +130,13 @@ describe('RunActivityCard', () => {
                 checkpointCompletedNodes="start"
                 checkpointCurrentNode="validate"
                 checkpointRetryCounters="—"
+                collapsed={false}
                 groupedTimelineEntries={[]}
                 pendingGateCount={0}
+                rawLogsCollapsed={true}
                 run={makeRun({ status: 'cancel_requested', current_node: 'validate' })}
+                onCollapsedChange={() => {}}
+                onRawLogsCollapsedChange={() => {}}
             />,
         )
         expect(screen.getByTestId('run-activity-headline')).toHaveTextContent('Cancel requested while validate winds down')
@@ -111,9 +146,13 @@ describe('RunActivityCard', () => {
                 checkpointCompletedNodes="start, done"
                 checkpointCurrentNode="done"
                 checkpointRetryCounters="—"
+                collapsed={false}
                 groupedTimelineEntries={[]}
                 pendingGateCount={0}
+                rawLogsCollapsed={true}
                 run={makeRun({ status: 'completed', outcome: 'success', current_node: 'done', ended_at: '2026-03-22T00:05:00Z' })}
+                onCollapsedChange={() => {}}
+                onRawLogsCollapsedChange={() => {}}
             />,
         )
         expect(screen.getByTestId('run-activity-headline')).toHaveTextContent('Completed successfully')
@@ -123,8 +162,10 @@ describe('RunActivityCard', () => {
                 checkpointCompletedNodes="start, done"
                 checkpointCurrentNode="done"
                 checkpointRetryCounters="—"
+                collapsed={false}
                 groupedTimelineEntries={[]}
                 pendingGateCount={0}
+                rawLogsCollapsed={true}
                 run={makeRun({
                     status: 'completed',
                     outcome: 'failure',
@@ -132,6 +173,8 @@ describe('RunActivityCard', () => {
                     outcome_reason_message: 'Missing release credentials',
                     ended_at: '2026-03-22T00:05:00Z',
                 })}
+                onCollapsedChange={() => {}}
+                onRawLogsCollapsedChange={() => {}}
             />,
         )
         expect(screen.getByTestId('run-activity-headline')).toHaveTextContent('Completed with failure outcome: Missing release credentials')
@@ -141,9 +184,13 @@ describe('RunActivityCard', () => {
                 checkpointCompletedNodes="start"
                 checkpointCurrentNode="validate"
                 checkpointRetryCounters="—"
+                collapsed={false}
                 groupedTimelineEntries={[]}
                 pendingGateCount={0}
+                rawLogsCollapsed={true}
                 run={makeRun({ status: 'validation_error', current_node: 'validate', last_error: 'Pytest failed' })}
+                onCollapsedChange={() => {}}
+                onRawLogsCollapsedChange={() => {}}
             />,
         )
         expect(screen.getByTestId('run-activity-headline')).toHaveTextContent('Failed in validate: Pytest failed')
@@ -163,7 +210,7 @@ describe('RunActivityCard', () => {
 
         const user = userEvent.setup()
         render(
-            <RunActivityCard
+            <ControlledRunActivityCard
                 checkpointCompletedNodes="start, plan"
                 checkpointCurrentNode="validate"
                 checkpointRetryCounters="validate: 1"

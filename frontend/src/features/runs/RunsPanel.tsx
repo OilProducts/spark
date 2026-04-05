@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useRunsList } from './hooks/useRunsList'
@@ -14,14 +14,53 @@ import { RunGraphCard } from './components/RunGraphCard'
 import { RunList } from './components/RunList'
 import { RunSummaryCard } from './components/RunSummaryCard'
 import type { RunRecord } from './model/shared'
+import type { RunDetailSessionState } from '@/state/viewSessionTypes'
+import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
 import { InlineNotice } from '@/ui'
+
+const runRecordsMatch = (left: RunRecord | null, right: RunRecord | null) => {
+    if (left === right) {
+        return true
+    }
+    if (!left || !right) {
+        return false
+    }
+    return [
+        'run_id',
+        'flow_name',
+        'status',
+        'outcome',
+        'outcome_reason_code',
+        'outcome_reason_message',
+        'working_directory',
+        'project_path',
+        'git_branch',
+        'git_commit',
+        'spec_id',
+        'plan_id',
+        'model',
+        'started_at',
+        'ended_at',
+        'last_error',
+        'token_usage',
+        'current_node',
+        'continued_from_run_id',
+        'continued_from_node',
+        'continued_from_flow_mode',
+        'continued_from_flow_name',
+    ].every((key) => left[key as keyof RunRecord] === right[key as keyof RunRecord])
+}
 
 export function RunsPanel() {
     const isNarrowViewport = useNarrowViewport()
-    const [scopeMode, setScopeMode] = useState<'active' | 'all'>('active')
-    const viewMode = useStore((state) => state.viewMode)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
-    const selectedRunId = useStore((state) => state.selectedRunId)
+    const runsListSession = useStore((state) => state.runsListSession)
+    const scopeMode = runsListSession.scopeMode
+    const updateRunsListSession = useStore((state) => state.updateRunsListSession)
+    const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
+    const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
+    const globalSelectedRunId = useStore((state) => state.selectedRunId)
+    const selectedRunId = getRunsSelectedRunIdForScope(runsListSession, activeProjectPath) ?? globalSelectedRunId
     const selectedRunRecord = useStore((state) => state.selectedRunRecord)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const setSelectedRunSnapshot = useStore((state) => state.setSelectedRunSnapshot)
@@ -42,27 +81,32 @@ export function RunsPanel() {
         scopedRuns,
         selectedRunSummary,
         setRuns,
+        status,
         summary,
     } = useRunsList({
         activeProjectPath,
         scopeMode,
         selectedRunId,
-        viewMode,
+        manageSync: false,
     })
     const { requestCancel } = useRunActions({
         fetchRuns,
         setRuns,
     })
+    const selectedRunDetailSession = useStore((state) => (
+        selectedRunId ? state.runDetailSessionsByRunId[selectedRunId] ?? null : null
+    ))
     const hasScopedSelectedRun = selectedRunId
         ? scopedRuns.some((run) => run.run_id === selectedRunId)
         : false
+    const selectedRunSessionRecord = selectedRunDetailSession?.summaryRecord ?? null
     const selectedRun =
         selectedRunSummary
             ?? (
-                selectedRunRecord
-                && selectedRunRecord.run_id === selectedRunId
+                selectedRunSessionRecord
+                && selectedRunSessionRecord.run_id === selectedRunId
                 && (isLoading || Boolean(error) || hasScopedSelectedRun || scopedRuns.length === 0)
-                    ? selectedRunRecord
+                    ? selectedRunSessionRecord
                     : null
             )
     const selectedRunTimelineId = selectedRun?.run_id ?? null
@@ -70,17 +114,20 @@ export function RunsPanel() {
         artifactDownloadHref,
         artifactEntries,
         artifactError,
+        artifactStatus,
         artifactViewerError,
         artifactViewerPayload,
         checkpointCompletedNodes,
         checkpointCurrentNode,
         checkpointData,
         checkpointError,
+        checkpointStatus,
         checkpointRetryCounters,
         contextCopyStatus,
         contextError,
         contextExportHref,
         contextSearchQuery,
+        contextStatus,
         degradedDetailPanels,
         fetchArtifacts,
         fetchCheckpoint,
@@ -100,7 +147,7 @@ export function RunsPanel() {
         copyContextToClipboard,
     } = useRunDetails({
         selectedRunSummary: selectedRun,
-        viewMode,
+        manageSync: false,
     })
     const {
         filteredTimelineEvents,
@@ -128,29 +175,71 @@ export function RunsPanel() {
     } = useRunTimeline({
         pendingQuestionSnapshots,
         selectedRunTimelineId,
-        viewMode,
+        manageSync: false,
     })
+    const selectedRunSessionState = useStore((state) => (
+        selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
+    ))
+    const isSummaryCollapsed = selectedRunSessionState?.isSummaryCollapsed ?? false
+    const isActivityCollapsed = selectedRunSessionState?.isActivityCollapsed ?? false
+    const isRawLogsCollapsed = selectedRunSessionState?.isRawLogsCollapsed ?? true
+    const isTimelineCollapsed = selectedRunSessionState?.isTimelineCollapsed ?? false
+    const isCheckpointCollapsed = selectedRunSessionState?.isCheckpointCollapsed ?? false
+    const isContextCollapsed = selectedRunSessionState?.isContextCollapsed ?? false
+    const isArtifactsCollapsed = selectedRunSessionState?.isArtifactsCollapsed ?? false
+    const patchSelectedRunSession = useCallback((patch: Partial<RunDetailSessionState>) => {
+        if (!selectedRun?.run_id) {
+            return
+        }
+        updateRunDetailSession(selectedRun.run_id, patch)
+    }, [selectedRun?.run_id, updateRunDetailSession])
     const degradedRunPanels = timelineError
         ? [...degradedDetailPanels, 'event timeline']
         : degradedDetailPanels
     const showRunSelectionEmptyState =
-        ((scopeMode === 'active' && activeProjectPath) || scopeMode === 'all')
+        status === 'ready'
+        && !selectedRunId
+        && (((scopeMode === 'active' && activeProjectPath) || scopeMode === 'all'))
         && scopedRuns.length > 0
         && !selectedRun
+    const showRunDetailsRestoringState =
+        Boolean(selectedRunId)
+        && !selectedRun
+        && status !== 'ready'
+        && status !== 'error'
 
     const selectRun = (run: RunRecord) => {
+        setRunsSelectedRunIdForScope(
+            buildRunsScopeKey(scopeMode, activeProjectPath),
+            run.run_id,
+        )
         setSelectedRunId(run.run_id)
         setSelectedRunSnapshot({ record: run, completedNodes: [] })
     }
 
     useEffect(() => {
-        if (!selectedRunId) {
+        if (!selectedRunId || !selectedRunSummary) {
             return
         }
-        if (selectedRunSummary && (!selectedRunRecord || selectedRunRecord.run_id !== selectedRunId)) {
-            setSelectedRunSnapshot({ record: selectedRunSummary, completedNodes: [] })
+        if (
+            !runRecordsMatch(selectedRunSessionRecord, selectedRunSummary)
+            || !runRecordsMatch(selectedRunRecord, selectedRunSummary)
+        ) {
+            setSelectedRunSnapshot({
+                record: selectedRunSummary,
+                completedNodes: selectedRunSessionState?.completedNodesSnapshot ?? [],
+                fetchedAtMs: selectedRunSessionState?.statusFetchedAtMs ?? null,
+            })
         }
-    }, [selectedRunId, selectedRunRecord, selectedRunSummary, setSelectedRunSnapshot])
+    }, [
+        selectedRunId,
+        selectedRunRecord,
+        selectedRunSessionRecord,
+        selectedRunSessionState?.completedNodesSnapshot,
+        selectedRunSessionState?.statusFetchedAtMs,
+        selectedRunSummary,
+        setSelectedRunSnapshot,
+    ])
 
     const beginContinuation = (run: RunRecord) => {
         const projectPath = run.project_path || run.working_directory || null
@@ -205,7 +294,10 @@ export function RunsPanel() {
                         void fetchRuns()
                     }}
                     scopeMode={scopeMode}
-                    onScopeModeChange={setScopeMode}
+                    onScopeModeChange={(mode) => {
+                        updateRunsListSession({ scopeMode: mode })
+                    }}
+                    status={status}
                     now={now}
                     onSelectRun={selectRun}
                     runs={scopedRuns}
@@ -219,10 +311,19 @@ export function RunsPanel() {
                                 Select a run from the sidebar to inspect its details.
                             </div>
                         )}
+                        {showRunDetailsRestoringState && (
+                            <InlineNotice data-testid="run-selection-restoring-state">
+                                Restoring the selected run session…
+                            </InlineNotice>
+                        )}
                         {selectedRun && (
                             <RunSummaryCard
                                 activeProjectPath={activeProjectPath}
+                                collapsed={isSummaryCollapsed}
                                 now={now}
+                                onCollapsedChange={(collapsed) => {
+                                    patchSelectedRunSession({ isSummaryCollapsed: collapsed })
+                                }}
                                 onContinueFromRun={beginContinuation}
                                 onOpenRunArtifact={openRunArtifact}
                                 onRequestCancel={(runId, currentStatus) => {
@@ -253,13 +354,22 @@ export function RunsPanel() {
                                 checkpointCompletedNodes={checkpointCompletedNodes}
                                 checkpointCurrentNode={checkpointCurrentNode}
                                 checkpointRetryCounters={checkpointRetryCounters}
+                                collapsed={isActivityCollapsed}
                                 groupedTimelineEntries={groupedTimelineEntries}
                                 pendingGateCount={visiblePendingInterviewGates.length}
+                                rawLogsCollapsed={isRawLogsCollapsed}
                                 run={selectedRun}
+                                onCollapsedChange={(collapsed) => {
+                                    patchSelectedRunSession({ isActivityCollapsed: collapsed })
+                                }}
+                                onRawLogsCollapsedChange={(collapsed) => {
+                                    patchSelectedRunSession({ isRawLogsCollapsed: collapsed })
+                                }}
                             />
                         )}
                         {selectedRun && (
                             <RunEventTimelineCard
+                                collapsed={isTimelineCollapsed}
                                 isNarrowViewport={isNarrowViewport}
                                 isTimelineLive={isTimelineLive}
                                 timelineDroppedCount={timelineDroppedCount}
@@ -290,19 +400,27 @@ export function RunsPanel() {
                                 onSubmitPendingGateAnswer={(gate, selectedValue) => {
                                     void submitPendingGateAnswer(gate, selectedValue)
                                 }}
+                                onCollapsedChange={(collapsed) => {
+                                    patchSelectedRunSession({ isTimelineCollapsed: collapsed })
+                                }}
                             />
                         )}
                         {selectedRun && (
                             <RunCheckpointCard
+                                collapsed={isCheckpointCollapsed}
                                 checkpointCompletedNodes={checkpointCompletedNodes}
                                 checkpointCurrentNode={checkpointCurrentNode}
                                 checkpointData={checkpointData?.checkpoint ?? null}
                                 checkpointError={checkpointError}
                                 checkpointRetryCounters={checkpointRetryCounters}
                                 isLoading={isCheckpointLoading}
+                                onCollapsedChange={(collapsed) => {
+                                    patchSelectedRunSession({ isCheckpointCollapsed: collapsed })
+                                }}
                                 onRefresh={() => {
                                     void fetchCheckpoint()
                                 }}
+                                status={checkpointStatus}
                             />
                         )}
                         {selectedRun && (
@@ -313,11 +431,15 @@ export function RunsPanel() {
                         )}
                         {selectedRun && (
                             <RunContextCard
+                                collapsed={isContextCollapsed}
                                 contextCopyStatus={contextCopyStatus}
                                 contextError={contextError}
                                 contextExportHref={contextExportHref || null}
                                 filteredContextRows={filteredContextRows}
                                 isLoading={isContextLoading}
+                                onCollapsedChange={(collapsed) => {
+                                    patchSelectedRunSession({ isContextCollapsed: collapsed })
+                                }}
                                 onCopy={() => {
                                     void copyContextToClipboard()
                                 }}
@@ -328,6 +450,7 @@ export function RunsPanel() {
                                 onSearchQueryChange={setContextSearchQuery}
                                 runId={selectedRun.run_id}
                                 searchQuery={contextSearchQuery}
+                                status={contextStatus}
                             />
                         )}
                         {selectedRun && (
@@ -337,9 +460,13 @@ export function RunsPanel() {
                                 artifactError={artifactError}
                                 artifactViewerError={artifactViewerError}
                                 artifactViewerPayload={artifactViewerPayload || null}
+                                collapsed={isArtifactsCollapsed}
                                 isArtifactViewerLoading={isArtifactViewerLoading}
                                 isLoading={isArtifactLoading}
                                 missingCoreArtifacts={missingCoreArtifacts}
+                                onCollapsedChange={(collapsed) => {
+                                    patchSelectedRunSession({ isArtifactsCollapsed: collapsed })
+                                }}
                                 onRefresh={() => {
                                     void fetchArtifacts()
                                 }}
@@ -348,6 +475,7 @@ export function RunsPanel() {
                                 }}
                                 selectedArtifactEntry={selectedArtifactEntry}
                                 showPartialRunArtifactNote={showPartialRunArtifactNote}
+                                status={artifactStatus}
                             />
                         )}
                     </div>

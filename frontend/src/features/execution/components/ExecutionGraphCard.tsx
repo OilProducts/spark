@@ -157,7 +157,8 @@ export function ExecutionGraphCard({
     onSelectStartNode,
 }: ExecutionGraphCardProps) {
     const diagnostics = useStore((state) => state.executionDiagnostics)
-    const [collapsed, setCollapsed] = useState(false)
+    const collapsed = useStore((state) => state.executionGraphCollapsed)
+    const updateExecutionSession = useStore((state) => state.updateExecutionSession)
 
     const description = isContinuationMode
         ? `Pick the restart node on the ${sourceMode === 'flow_name' ? 'installed flow override' : 'source-run snapshot'} graph.`
@@ -181,7 +182,7 @@ export function ExecutionGraphCard({
                             ) : null}
                             <RunSectionToggleButton
                                 collapsed={collapsed}
-                                onToggle={() => setCollapsed((current) => !current)}
+                                onToggle={() => updateExecutionSession({ executionGraphCollapsed: !collapsed })}
                                 testId="execution-graph-toggle-button"
                             />
                         </div>

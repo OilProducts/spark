@@ -49,6 +49,11 @@ const resetGraphSettingsState = () => {
     graphAttrs: {},
     graphAttrErrors: {},
     graphAttrsUserEditVersion: 0,
+    editorGraphSettingsPanelOpenByFlow: {},
+    editorShowAdvancedGraphAttrsByFlow: {},
+    editorLaunchInputDraftsByFlow: {},
+    editorLaunchInputDraftErrorByFlow: {},
+    editorNodeInspectorSessionsByNodeId: {},
     saveState: 'idle',
     saveStateVersion: 0,
     saveErrorMessage: null,
@@ -261,6 +266,46 @@ describe('Graph and settings behavior', () => {
     const dot = generateDot(TEST_GRAPH_FLOW, [], [], useStore.getState().graphAttrs)
     expect(dot).toContain('spark.launch_inputs=')
     expect(dot).toContain('context.request.acceptance_criteria')
+  })
+
+  it('preserves panel state, advanced toggle, and invalid launch-input drafts across remounts', async () => {
+    const user = userEvent.setup()
+    const firstRender = wrapWithFlowProvider(<GraphSettings />)
+
+    await user.click(screen.getByRole('button', { name: 'Graph Settings' }))
+    await waitFor(() => {
+      expect(screen.getByTestId('graph-structured-form')).toBeVisible()
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('graph-launch-policy-status')).toBeVisible()
+    })
+
+    await user.click(screen.getByTestId('graph-launch-input-add'))
+    fireEvent.change(screen.getByTestId('graph-launch-input-label-0'), {
+      target: { value: 'Broken Draft' },
+    })
+    fireEvent.change(screen.getByTestId('graph-launch-input-key-0'), {
+      target: { value: 'draft.invalid' },
+    })
+    await user.click(screen.getByTestId('graph-advanced-toggle'))
+
+    expect(screen.getByTestId('graph-launch-inputs-error')).toHaveTextContent(
+      'Context keys must use the context.* namespace: draft.invalid',
+    )
+    expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()
+
+    firstRender.unmount()
+    wrapWithFlowProvider(<GraphSettings />)
+
+    expect(screen.getByTestId('graph-structured-form')).toBeVisible()
+    await waitFor(() => {
+      expect(screen.getByTestId('graph-launch-policy-status')).toBeVisible()
+    })
+    expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()
+    expect(screen.getByTestId('graph-launch-input-key-0')).toHaveValue('draft.invalid')
+    expect(screen.getByTestId('graph-launch-inputs-error')).toHaveTextContent(
+      'Context keys must use the context.* namespace: draft.invalid',
+    )
   })
 
   it('loads and saves workspace launch policy without touching flow save state', async () => {

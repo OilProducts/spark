@@ -41,6 +41,7 @@ type UseProjectThreadActionsArgs = {
     resetComposer: () => void
     setConversationId: (conversationId: string | null) => void
     updateProjectSessionState: (projectPath: string, patch: Record<string, unknown>) => void
+    clearHomeConversationSession: (conversationId: string) => void
     setPanelError: (value: string | null) => void
     setPendingDeleteConversationId: (value: string | null) => void
     appendLocalProjectEvent: (message: string) => void
@@ -62,6 +63,7 @@ export function useProjectThreadActions({
     resetComposer,
     setConversationId,
     updateProjectSessionState,
+    clearHomeConversationSession,
     setPanelError,
     setPendingDeleteConversationId,
     appendLocalProjectEvent,
@@ -135,6 +137,7 @@ export function useProjectThreadActions({
         try {
             await deleteConversationValidated(conversationId, activeProjectPath)
             commitConversationCache((current) => removeConversationFromCache(current, conversationId))
+            clearHomeConversationSession(conversationId)
             const localRemainingSummaries = (
                 conversationCacheRef.current.summariesByProjectPath[activeProjectPath] || []
             ).filter((entry) => entry.conversation_id !== conversationId)
@@ -179,6 +182,7 @@ export function useProjectThreadActions({
         resetComposer,
         setConversationId,
         setConversationSummaryList,
+        clearHomeConversationSession,
         setPanelError,
         setPendingDeleteConversationId,
         updateProjectSessionState,

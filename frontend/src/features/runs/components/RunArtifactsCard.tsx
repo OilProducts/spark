@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 import type {
     ArtifactErrorState,
     ArtifactListEntry,
@@ -17,6 +15,7 @@ import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunArtifactsCardProps {
     isLoading: boolean
+    status: 'idle' | 'loading' | 'ready' | 'error'
     artifactError: ArtifactErrorState | null
     artifactEntries: ArtifactListEntry[]
     selectedArtifactEntry: ArtifactListEntry | null
@@ -28,10 +27,13 @@ interface RunArtifactsCardProps {
     onRefresh: () => void
     onViewArtifact: (artifact: ArtifactListEntry) => void | Promise<void>
     artifactDownloadHref: (artifactPath: string) => string | null
+    collapsed: boolean
+    onCollapsedChange: (collapsed: boolean) => void
 }
 
 export function RunArtifactsCard({
     isLoading,
+    status,
     artifactError,
     artifactEntries,
     selectedArtifactEntry,
@@ -43,9 +45,9 @@ export function RunArtifactsCard({
     onRefresh,
     onViewArtifact,
     artifactDownloadHref,
+    collapsed,
+    onCollapsedChange,
 }: RunArtifactsCardProps) {
-    const [collapsed, setCollapsed] = useState(false)
-
     return (
         <Panel data-testid="run-artifact-panel">
             <PanelHeader>
@@ -65,7 +67,7 @@ export function RunArtifactsCard({
                             </Button>
                             <RunSectionToggleButton
                                 collapsed={collapsed}
-                                onToggle={() => setCollapsed((current) => !current)}
+                                onToggle={() => onCollapsedChange(!collapsed)}
                                 testId="run-artifact-toggle-button"
                             />
                         </div>
@@ -82,7 +84,12 @@ export function RunArtifactsCard({
                     </div>
                 </InlineNotice>
             )}
-            {!artifactError && (
+            {!artifactError && status !== 'ready' ? (
+                <InlineNotice data-testid="run-artifact-loading">
+                    Restoring artifacts…
+                </InlineNotice>
+            ) : null}
+            {!artifactError && status === 'ready' && (
                 <div className="space-y-3">
                     {showPartialRunArtifactNote && (
                         <div

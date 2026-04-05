@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { pipelineEventsUrl } from '@/lib/attractorClient'
+import { useStore } from '@/store'
 
-import type { TimelineEventEntry } from '../model/shared'
 import {
     TIMELINE_MAX_ITEMS,
     toTimelineEvent,
@@ -10,67 +10,82 @@ import {
 
 type UseRunTimelineStreamArgs = {
     selectedRunTimelineId: string | null
-    viewMode: string
+    manageSync?: boolean
+}
+
+const DEFAULT_TIMELINE_SESSION = {
+    timelineEvents: [],
+    timelineError: null as string | null,
+    isTimelineLive: false,
+    timelineSequence: 0,
 }
 
 export function useRunTimelineStream({
     selectedRunTimelineId,
-    viewMode,
+    manageSync = true,
 }: UseRunTimelineStreamArgs) {
-    const [timelineEvents, setTimelineEvents] = useState<TimelineEventEntry[]>([])
-    const [timelineError, setTimelineError] = useState<string | null>(null)
-    const [isTimelineLive, setIsTimelineLive] = useState(false)
-    const [timelineSequence, setTimelineSequence] = useState(0)
+    const runDetailSessionsByRunId = useStore((state) => state.runDetailSessionsByRunId)
+    const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
+    const session = useMemo(() => {
+        if (!selectedRunTimelineId) {
+            return DEFAULT_TIMELINE_SESSION
+        }
+        const current = runDetailSessionsByRunId[selectedRunTimelineId]
+        return {
+            ...DEFAULT_TIMELINE_SESSION,
+            ...(current ?? {}),
+        }
+    }, [runDetailSessionsByRunId, selectedRunTimelineId])
 
     useEffect(() => {
-        if (viewMode !== 'runs' || !selectedRunTimelineId) {
-            setTimelineSequence(0)
-            setTimelineEvents([])
-            setTimelineError(null)
-            setIsTimelineLive(false)
+        if (!manageSync || !selectedRunTimelineId) {
             return
         }
 
-        setTimelineSequence(0)
-        setTimelineEvents([])
-        setTimelineError(null)
-        setIsTimelineLive(false)
-
         const source = new EventSource(pipelineEventsUrl(selectedRunTimelineId))
         source.onopen = () => {
-            setTimelineError(null)
-            setIsTimelineLive(true)
+            updateRunDetailSession(selectedRunTimelineId, {
+                timelineError: null,
+                isTimelineLive: true,
+            })
         }
         source.onmessage = (event) => {
             try {
                 const payload = JSON.parse(event.data) as unknown
-                setTimelineSequence((current) => {
-                    const timelineEvent = toTimelineEvent(payload, current)
-                    if (!timelineEvent) {
-                        return current
-                    }
-                    setTimelineEvents((timelineEntries) => [timelineEvent, ...timelineEntries].slice(0, TIMELINE_MAX_ITEMS))
-                    return current + 1
+                const currentSession = useStore.getState().runDetailSessionsByRunId[selectedRunTimelineId]
+                const currentSequence = currentSession?.timelineSequence ?? 0
+                const currentEvents = currentSession?.timelineEvents ?? []
+                const timelineEvent = toTimelineEvent(payload, currentSequence)
+                if (!timelineEvent) {
+                    return
+                }
+                updateRunDetailSession(selectedRunTimelineId, {
+                    timelineEvents: [timelineEvent, ...currentEvents].slice(0, TIMELINE_MAX_ITEMS),
+                    timelineSequence: currentSequence + 1,
                 })
             } catch {
                 // Ignore malformed events.
             }
         }
         source.onerror = () => {
-            setIsTimelineLive(false)
-            setTimelineError((current) => current || 'Event timeline stream unavailable. Reopen this run to retry.')
+            updateRunDetailSession(selectedRunTimelineId, {
+                isTimelineLive: false,
+                timelineError: 'Event timeline stream unavailable. Reopen this run to retry.',
+            })
         }
 
         return () => {
             source.close()
-            setIsTimelineLive(false)
+            updateRunDetailSession(selectedRunTimelineId, {
+                isTimelineLive: false,
+            })
         }
-    }, [selectedRunTimelineId, viewMode])
+    }, [manageSync, selectedRunTimelineId, updateRunDetailSession])
 
     return {
-        isTimelineLive,
-        timelineDroppedCount: Math.max(0, timelineSequence - timelineEvents.length),
-        timelineError,
-        timelineEvents,
+        isTimelineLive: session.isTimelineLive,
+        timelineDroppedCount: Math.max(0, session.timelineSequence - session.timelineEvents.length),
+        timelineError: session.timelineError,
+        timelineEvents: session.timelineEvents,
     }
 }

@@ -63,11 +63,15 @@ There is no generic `src/components` layer. New implementation code belongs in `
 - Global Zustand slices are reserved for cross-feature session state:
   - route and view mode
   - project identity and project sessions
+  - home session
   - editor session
   - execution session
+  - runs session
+  - triggers session
 - Project-scope transitions should be centralized in dedicated transition helpers rather than spread throughout slice methods.
 - Derived presentation state should live in feature model modules instead of growing controller hooks.
-- Feature-local UI state should remain local unless another feature genuinely needs it.
+- Feature-local UI state should remain local only when it is not operator-meaningful across top-level navigation.
+- If losing that state on tab switch would be a UX regression, it belongs in an explicit session slice rather than component-local mount state.
 
 ## Guardrails
 

@@ -1,6 +1,15 @@
 import type { RunRecord } from '@/features/runs/model/shared'
+import type { LaunchInputDefinition } from '@/lib/flowContracts'
+import type {
+    ExecutionSessionSlice,
+    HomeSessionSlice,
+    ResourceStatus,
+    RunsSessionSlice,
+    TriggersSessionSlice,
+} from './viewSessionTypes'
 
 export type ViewMode = 'home' | 'projects' | 'editor' | 'execution' | 'triggers' | 'settings' | 'runs'
+export type EditorMode = 'structured' | 'raw'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'failed' | 'waiting'
 export type DiagnosticSeverity = 'error' | 'warning' | 'info'
 export type RunOutcome = 'success' | 'failure'
@@ -18,6 +27,7 @@ export type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict'
 export type SaveErrorKind = 'parse_error' | 'validation_error' | 'conflict' | 'network' | 'http' | 'unknown'
 export type PlanStatus = 'draft' | 'approved' | 'rejected' | 'revision-requested'
 export type SelectedRunStatusSync = 'idle' | 'loading' | 'ready' | 'degraded'
+export type { ResourceStatus }
 
 export interface HumanGateOption {
     label: string
@@ -278,9 +288,23 @@ export interface ExecutionLaunchSlice {
     executionHasValidationErrors: boolean
 }
 
+export interface EditorNodeInspectorSessionState {
+    showAdvanced: boolean
+    readsContextDraft: string
+    readsContextError: string | null
+    writesContextDraft: string
+    writesContextError: string | null
+}
+
 export interface EditorSlice {
     editorSidebarWidth: number
     setEditorSidebarWidth: (width: number) => void
+    editorMode: EditorMode
+    setEditorMode: (mode: EditorMode) => void
+    rawDotDraft: string
+    setRawDotDraft: (value: string) => void
+    rawHandoffError: string | null
+    setRawHandoffError: (value: string | null) => void
     selectedNodeId: string | null
     setSelectedNodeId: (id: string | null) => void
     selectedEdgeId: string | null
@@ -310,6 +334,19 @@ export interface EditorSlice {
     saveStateVersion: number
     saveErrorMessage: string | null
     saveErrorKind: SaveErrorKind | null
+    editorGraphSettingsPanelOpenByFlow: Record<string, boolean>
+    setEditorGraphSettingsPanelOpen: (flowName: string, isOpen: boolean) => void
+    editorShowAdvancedGraphAttrsByFlow: Record<string, boolean>
+    setEditorShowAdvancedGraphAttrs: (flowName: string, showAdvanced: boolean) => void
+    editorLaunchInputDraftsByFlow: Record<string, LaunchInputDefinition[]>
+    editorLaunchInputDraftErrorByFlow: Record<string, string | null>
+    setEditorLaunchInputDraftState: (
+        flowName: string,
+        drafts: LaunchInputDefinition[],
+        error: string | null,
+    ) => void
+    editorNodeInspectorSessionsByNodeId: Record<string, EditorNodeInspectorSessionState>
+    updateEditorNodeInspectorSession: (nodeId: string, patch: Partial<EditorNodeInspectorSessionState>) => void
     markSaveInFlight: () => void
     markSaveSuccess: () => void
     markSaveConflict: (message: string) => void
@@ -317,4 +354,12 @@ export interface EditorSlice {
     resetSaveState: () => void
 }
 
-export type AppState = WorkspaceSlice & ExecutionLaunchSlice & RunInspectorSlice & EditorSlice
+export type AppState =
+    & WorkspaceSlice
+    & ExecutionLaunchSlice
+    & ExecutionSessionSlice
+    & RunInspectorSlice
+    & RunsSessionSlice
+    & TriggersSessionSlice
+    & HomeSessionSlice
+    & EditorSlice

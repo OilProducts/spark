@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 import type { ContextErrorState, RunContextRow } from '../model/shared'
 import {
     Button,
@@ -14,6 +12,7 @@ import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunContextCardProps {
     isLoading: boolean
+    status: 'idle' | 'loading' | 'ready' | 'error'
     contextError: ContextErrorState | null
     contextCopyStatus: string
     searchQuery: string
@@ -23,10 +22,13 @@ interface RunContextCardProps {
     onRefresh: () => void | Promise<void>
     onCopy: () => void | Promise<void>
     onSearchQueryChange: (value: string) => void
+    collapsed: boolean
+    onCollapsedChange: (collapsed: boolean) => void
 }
 
 export function RunContextCard({
     isLoading,
+    status,
     contextError,
     contextCopyStatus,
     searchQuery,
@@ -36,8 +38,9 @@ export function RunContextCard({
     onRefresh,
     onCopy,
     onSearchQueryChange,
+    collapsed,
+    onCollapsedChange,
 }: RunContextCardProps) {
-    const [collapsed, setCollapsed] = useState(false)
     const exportButton = contextExportHref ? (
         <Button
             asChild
@@ -96,7 +99,7 @@ export function RunContextCard({
                             {exportButton}
                             <RunSectionToggleButton
                                 collapsed={collapsed}
-                                onToggle={() => setCollapsed((current) => !current)}
+                                onToggle={() => onCollapsedChange(!collapsed)}
                                 testId="run-context-toggle-button"
                             />
                         </div>
@@ -127,7 +130,12 @@ export function RunContextCard({
                     </div>
                 </InlineNotice>
             )}
-            {!contextError && (
+            {!contextError && status !== 'ready' ? (
+                <InlineNotice data-testid="run-context-loading">
+                    Restoring context…
+                </InlineNotice>
+            ) : null}
+            {!contextError && status === 'ready' && (
                 <div className="overflow-hidden rounded-md border border-border/80">
                     <table data-testid="run-context-table" className="w-full table-fixed border-collapse text-sm">
                         <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -168,7 +176,9 @@ export function RunContextCard({
                             ) : (
                                 <tr>
                                     <td data-testid="run-context-empty" colSpan={2} className="px-3 py-4 text-sm text-muted-foreground">
-                                        No context entries match the current search.
+                                        {searchQuery.trim()
+                                            ? 'No context entries match the current search.'
+                                            : 'No context entries are available for this run yet.'}
                                     </td>
                                 </tr>
                             )}

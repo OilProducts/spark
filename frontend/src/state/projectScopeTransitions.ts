@@ -1,4 +1,5 @@
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
+import { buildRunsScopeKey } from './runsSessionScope'
 import {
     DEFAULT_WORKING_DIRECTORY,
     pushRecentProjectPath,
@@ -52,7 +53,76 @@ type ProjectScopeTransitionState = Pick<
     | 'saveStateVersion'
     | 'saveErrorMessage'
     | 'saveErrorKind'
+    | 'runsListSession'
+    | 'runDetailSessionsByRunId'
 >
+
+const pathBelongsToProject = (path: string | null | undefined, projectPath: string) => (
+    typeof path === 'string'
+    && (
+        path === projectPath
+        || path.startsWith(`${projectPath}/`)
+    )
+)
+
+const runBelongsToProject = (
+    run:
+        | {
+            project_path?: string | null
+            working_directory?: string | null
+        }
+        | null
+        | undefined,
+    projectPath: string,
+) => (
+    Boolean(run) && (
+        pathBelongsToProject(run?.project_path, projectPath)
+        || pathBelongsToProject(run?.working_directory, projectPath)
+    )
+)
+
+const pruneRunsSessionsForProject = (
+    state: Pick<AppState, 'runsListSession' | 'runDetailSessionsByRunId' | 'runRecordOverrides'>,
+    projectPath: string,
+) => {
+    const removedScopeKey = buildRunsScopeKey('active', projectPath)
+    const removedRunIds = new Set<string>()
+
+    state.runsListSession.runs.forEach((run) => {
+        if (runBelongsToProject(run, projectPath)) {
+            removedRunIds.add(run.run_id)
+        }
+    })
+
+    Object.entries(state.runDetailSessionsByRunId).forEach(([runId, session]) => {
+        if (runBelongsToProject(session.summaryRecord, projectPath)) {
+            removedRunIds.add(runId)
+        }
+    })
+
+    Object.entries(state.runRecordOverrides).forEach(([runId, patch]) => {
+        if (runBelongsToProject(patch, projectPath)) {
+            removedRunIds.add(runId)
+        }
+    })
+
+    return {
+        runsListSession: {
+            ...state.runsListSession,
+            selectedRunIdByScopeKey: Object.fromEntries(
+                Object.entries(state.runsListSession.selectedRunIdByScopeKey).filter(([scopeKey, runId]) => (
+                    scopeKey !== removedScopeKey && !removedRunIds.has(runId ?? '')
+                )),
+            ),
+        },
+        runDetailSessionsByRunId: Object.fromEntries(
+            Object.entries(state.runDetailSessionsByRunId).filter(([runId]) => !removedRunIds.has(runId)),
+        ),
+        runRecordOverrides: Object.fromEntries(
+            Object.entries(state.runRecordOverrides).filter(([runId]) => !removedRunIds.has(runId)),
+        ),
+    }
+}
 
 const preserveEditorSession = (state: AppState) => ({
     activeFlow: state.activeFlow,
@@ -97,7 +167,7 @@ const resetRunInspectionState = (runtimeStatus: RuntimeStatus = 'idle') => ({
     selectedRunId: null,
     selectedRunRecord: null,
     selectedRunCompletedNodes: [],
-    selectedRunStatusSync: 'idle',
+    selectedRunStatusSync: 'idle' as const,
     selectedRunStatusError: null,
     selectedRunStatusFetchedAtMs: null,
     runRecordOverrides: {},
@@ -109,6 +179,22 @@ const resetRunInspectionState = (runtimeStatus: RuntimeStatus = 'idle') => ({
     humanGate: null,
     logs: [],
 })
+
+const resolveForegroundRunInspectionState = (
+    state: Pick<AppState, 'runsListSession' | 'runDetailSessionsByRunId'>,
+    activeProjectPath: string | null,
+) => {
+    const scopeKey = buildRunsScopeKey(state.runsListSession.scopeMode, activeProjectPath)
+    const selectedRunId = state.runsListSession.selectedRunIdByScopeKey[scopeKey] ?? null
+    const selectedRunSession = selectedRunId ? state.runDetailSessionsByRunId[selectedRunId] ?? null : null
+
+    return {
+        selectedRunId,
+        selectedRunRecord: selectedRunSession?.summaryRecord ?? null,
+        selectedRunCompletedNodes: selectedRunSession?.completedNodesSnapshot ?? [],
+        selectedRunStatusFetchedAtMs: selectedRunSession?.statusFetchedAtMs ?? null,
+    }
+}
 
 const buildRegisteredProject = (project: HydratedProjectRecord): RegisteredProject | null => {
     const normalizedPath = normalizeProjectPath(project.directoryPath)
@@ -166,6 +252,12 @@ export const buildHydrateProjectRegistryTransition = (
         ? resolveProjectSessionState(nextProjectSessionStates[nextActiveProjectPath], nextActiveProjectPath)
         : null
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
+    const nextForegroundRunState = nextActiveProjectPath === state.activeProjectPath
+        ? preserveRunInspectionState(state)
+        : {
+            ...resetRunInspectionState(state.runtimeStatus),
+            ...resolveForegroundRunInspectionState(state, nextActiveProjectPath),
+        }
 
     return {
         ...preserveEditorSession(state),
@@ -174,26 +266,15 @@ export const buildHydrateProjectRegistryTransition = (
         projectSessionsByPath: nextProjectSessionStates,
         activeProjectPath: nextActiveProjectPath,
         viewMode: nextViewMode,
-        selectedRunId: null,
-        selectedRunRecord: null,
-        selectedRunCompletedNodes: [],
-        selectedRunStatusSync: 'idle',
-        selectedRunStatusError: null,
-        selectedRunStatusFetchedAtMs: null,
-        runRecordOverrides: {},
-        runtimeStatus: state.runtimeStatus,
-        runtimeOutcome: null,
-        runtimeOutcomeReasonCode: null,
-        runtimeOutcomeReasonMessage: null,
-        nodeStatuses: state.nodeStatuses,
-        humanGate: state.humanGate,
-        logs: state.logs,
+        ...nextForegroundRunState,
         workingDir: nextActiveProjectPath
             ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY
             : DEFAULT_WORKING_DIRECTORY,
         recentProjectPaths: nextActiveProjectPath
             ? pushRecentProjectPath(state.recentProjectPaths, nextActiveProjectPath)
             : state.recentProjectPaths,
+        runsListSession: state.runsListSession,
+        runDetailSessionsByRunId: state.runDetailSessionsByRunId,
     }
 }
 
@@ -230,6 +311,13 @@ export const buildRemoveProjectTransition = (
         : null
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
     const removedActiveProject = state.activeProjectPath === normalizedPath
+    const nextRunsSessions = pruneRunsSessionsForProject(state, normalizedPath)
+    const nextForegroundRunState = removedActiveProject
+        ? {
+            ...resetRunInspectionState(),
+            ...resolveForegroundRunInspectionState(state, nextResolvedActiveProjectPath),
+        }
+        : preserveRunInspectionState(state)
 
     return {
         ...preserveEditorSession(state),
@@ -239,20 +327,8 @@ export const buildRemoveProjectTransition = (
         recentProjectPaths: state.recentProjectPaths.filter((path) => path !== normalizedPath),
         activeProjectPath: nextResolvedActiveProjectPath,
         viewMode: nextViewMode,
-        selectedRunId: removedActiveProject ? null : state.selectedRunId,
-        selectedRunRecord: removedActiveProject ? null : state.selectedRunRecord,
-        selectedRunCompletedNodes: removedActiveProject ? [] : state.selectedRunCompletedNodes,
-        selectedRunStatusSync: removedActiveProject ? 'idle' : state.selectedRunStatusSync,
-        selectedRunStatusError: removedActiveProject ? null : state.selectedRunStatusError,
-        selectedRunStatusFetchedAtMs: removedActiveProject ? null : state.selectedRunStatusFetchedAtMs,
-        runRecordOverrides: removedActiveProject ? {} : state.runRecordOverrides,
-        runtimeStatus: state.runtimeStatus,
-        runtimeOutcome: removedActiveProject ? null : state.runtimeOutcome,
-        runtimeOutcomeReasonCode: removedActiveProject ? null : state.runtimeOutcomeReasonCode,
-        runtimeOutcomeReasonMessage: removedActiveProject ? null : state.runtimeOutcomeReasonMessage,
-        nodeStatuses: state.nodeStatuses,
-        humanGate: state.humanGate,
-        logs: state.logs,
+        ...nextForegroundRunState,
+        ...nextRunsSessions,
         workingDir: nextResolvedActiveProjectPath
             ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY
             : DEFAULT_WORKING_DIRECTORY,
@@ -288,6 +364,12 @@ export const buildSetActiveProjectTransition = (
     }
 
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
+    const nextForegroundRunState = isProjectSwitch
+        ? {
+            ...resetRunInspectionState(),
+            ...resolveForegroundRunInspectionState(state, nextProjectPath),
+        }
+        : preserveRunInspectionState(state)
 
     return {
         ...preserveEditorSession(state),
@@ -298,7 +380,9 @@ export const buildSetActiveProjectTransition = (
         activeProjectPath: nextProjectPath,
         viewMode: nextViewMode,
         workingDir: nextProjectPath && nextProjectScope ? nextProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
-        ...(isProjectSwitch ? resetRunInspectionState() : preserveRunInspectionState(state)),
+        ...nextForegroundRunState,
+        runsListSession: state.runsListSession,
+        runDetailSessionsByRunId: state.runDetailSessionsByRunId,
     }
 }
 

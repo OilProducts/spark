@@ -38,10 +38,6 @@ interface GraphSettingsProps {
 }
 
 export function GraphSettings({ inline = false }: GraphSettingsProps) {
-    const [isOpen, setIsOpen] = useState(false)
-    const [showAdvancedGraphAttrs, setShowAdvancedGraphAttrs] = useState(false)
-    const [launchInputDrafts, setLaunchInputDrafts] = useState<LaunchInputDefinition[]>([])
-    const [launchInputDraftError, setLaunchInputDraftError] = useState<string | null>(null)
     const activeFlow = useStore((state) => state.activeFlow)
     const diagnostics = useStore((state) => state.diagnostics)
     const graphAttrs = useStore((state) => state.graphAttrs)
@@ -55,6 +51,13 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const setWorkingDir = useStore((state) => state.setWorkingDir)
     const viewMode = useStore((state) => state.viewMode)
     const uiDefaults = useStore((state) => state.uiDefaults)
+    const editorGraphSettingsPanelOpenByFlow = useStore((state) => state.editorGraphSettingsPanelOpenByFlow)
+    const setEditorGraphSettingsPanelOpen = useStore((state) => state.setEditorGraphSettingsPanelOpen)
+    const editorShowAdvancedGraphAttrsByFlow = useStore((state) => state.editorShowAdvancedGraphAttrsByFlow)
+    const setEditorShowAdvancedGraphAttrs = useStore((state) => state.setEditorShowAdvancedGraphAttrs)
+    const editorLaunchInputDraftsByFlow = useStore((state) => state.editorLaunchInputDraftsByFlow)
+    const editorLaunchInputDraftErrorByFlow = useStore((state) => state.editorLaunchInputDraftErrorByFlow)
+    const setEditorLaunchInputDraftState = useStore((state) => state.setEditorLaunchInputDraftState)
     const { getNodes, getEdges, setNodes } = useReactFlow()
     const flowNodes = useNodes()
     const autosaveScopeRef = useRef<string | null>(null)
@@ -86,6 +89,20 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         () => parseLaunchInputDefinitions(rawLaunchInputsValue),
         [rawLaunchInputsValue],
     )
+    const isOpen = activeFlow ? (editorGraphSettingsPanelOpenByFlow[activeFlow] ?? false) : false
+    const showAdvancedGraphAttrs = activeFlow
+        ? (editorShowAdvancedGraphAttrsByFlow[activeFlow] ?? false)
+        : false
+    const launchInputDrafts = activeFlow
+        ? (editorLaunchInputDraftsByFlow[activeFlow] ?? parsedLaunchInputs.entries)
+        : parsedLaunchInputs.entries
+    const launchInputDraftError = activeFlow
+        ? (
+            Object.prototype.hasOwnProperty.call(editorLaunchInputDraftErrorByFlow, activeFlow)
+                ? editorLaunchInputDraftErrorByFlow[activeFlow]
+                : parsedLaunchInputs.error
+        )
+        : parsedLaunchInputs.error
     const launchPolicyStatusMessage = useMemo(() => {
         if (!activeFlow) {
             return 'Select a flow to manage workspace launch policy.'
@@ -158,11 +175,6 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         ),
     })
 
-    useEffect(() => {
-        setLaunchInputDrafts(parsedLaunchInputs.entries)
-        setLaunchInputDraftError(parsedLaunchInputs.error)
-    }, [parsedLaunchInputs.entries, parsedLaunchInputs.error])
-
     const applyDefaultsToNodes = () => {
         if (!activeFlow) return
         const defaultModel = graphAttrs.ui_default_llm_model || uiDefaults.llm_model || ''
@@ -187,14 +199,16 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     }
 
     const handleLaunchInputDefinitionsChange = (entries: LaunchInputDefinition[]) => {
-        setLaunchInputDrafts(entries)
+        if (!activeFlow) {
+            return
+        }
         if (entries.length === 0) {
-            setLaunchInputDraftError(null)
+            setEditorLaunchInputDraftState(activeFlow, entries, null)
             updateGraphAttr('spark.launch_inputs', '')
             return
         }
         const validationError = validateLaunchInputDefinitions(entries)
-        setLaunchInputDraftError(validationError)
+        setEditorLaunchInputDraftState(activeFlow, entries, validationError)
         if (validationError) {
             return
         }
@@ -415,7 +429,14 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     toolHookPostWarning={toolHookPostWarning}
                     renderFieldDiagnostics={renderFieldDiagnostics}
                     updateGraphAttr={updateGraphAttr}
-                    setShowAdvancedGraphAttrs={setShowAdvancedGraphAttrs}
+                    setShowAdvancedGraphAttrs={(value) => {
+                        if (!activeFlow) {
+                            return
+                        }
+                        setEditorShowAdvancedGraphAttrs(activeFlow, typeof value === 'function'
+                            ? value(showAdvancedGraphAttrs)
+                            : value)
+                    }}
                     onGraphExtensionValueChange={handleGraphExtensionValueChange}
                     onGraphExtensionRemove={handleGraphExtensionRemove}
                     onGraphExtensionAdd={handleGraphExtensionAdd}
@@ -439,7 +460,12 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     return (
         <div className="absolute right-4 top-4 z-20 flex flex-col items-end">
             <Button
-                onClick={() => setIsOpen((open) => !open)}
+                onClick={() => {
+                    if (!activeFlow) {
+                        return
+                    }
+                    setEditorGraphSettingsPanelOpen(activeFlow, !isOpen)
+                }}
                 variant="outline"
                 size="sm"
                 className="bg-background/90 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"

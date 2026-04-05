@@ -55,7 +55,7 @@ const installDomMatrixReadOnlyStub = () => {
     })
 }
 
-const resetSidebarState = () => {
+    const resetSidebarState = () => {
     useStore.setState({
         activeFlow: 'shape-test.dot',
         executionFlow: null,
@@ -65,6 +65,7 @@ const resetSidebarState = () => {
         edgeDiagnostics: {},
         graphAttrs: {},
         nodeDiagnostics: {},
+        editorNodeInspectorSessionsByNodeId: {},
     })
 }
 
@@ -166,5 +167,52 @@ describe('Sidebar node shape authoring', () => {
             'Shape box normally maps to codergen',
         )
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
+    })
+
+    it('preserves advanced visibility and context drafts across remounts', async () => {
+        const initialNodes: Node[] = [
+            {
+                id: 'task',
+                type: 'taskNode',
+                position: { x: 0, y: 0 },
+                selected: true,
+                style: { width: 220, height: 110 },
+                data: {
+                    label: 'Task',
+                    shape: 'box',
+                    type: 'codergen',
+                },
+            },
+        ]
+        const firstRender = renderWithFlowProvider(
+            <SidebarShapeHarness nodes={initialNodes} />,
+        )
+
+        await waitFor(() => {
+            expect(fetchFlowListMock).toHaveBeenCalled()
+        })
+
+        fireEvent.change(screen.getByTestId('node-reads-context-editor-textarea'), {
+            target: { value: 'draft.invalid' },
+        })
+        expect(screen.getByTestId('node-reads-context-editor-error')).toHaveTextContent(
+            'Context keys must use the context.* namespace: draft.invalid',
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'Show Advanced' }))
+        expect(screen.getByRole('button', { name: 'Hide Advanced' })).toBeVisible()
+        expect(screen.getByText('Max Retries')).toBeVisible()
+
+        firstRender.unmount()
+        renderWithFlowProvider(<SidebarShapeHarness nodes={initialNodes} />)
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Hide Advanced' })).toBeVisible()
+        })
+        expect(screen.getByTestId('node-reads-context-editor-textarea')).toHaveValue('draft.invalid')
+        expect(screen.getByTestId('node-reads-context-editor-error')).toHaveTextContent(
+            'Context keys must use the context.* namespace: draft.invalid',
+        )
+        expect(screen.getByText('Max Retries')).toBeVisible()
     })
 })

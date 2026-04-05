@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo } from "react"
 
 import { TriggerEditor } from "./components/TriggerEditor"
 import {
@@ -16,8 +16,10 @@ import { Badge, Button, EmptyState, InlineNotice, Panel, PanelContent, PanelHead
 
 export function TriggersPanel() {
   const activeProjectPath = useStore((state) => state.activeProjectPath)
-  const [revealedWebhookSecrets, setRevealedWebhookSecrets] = useState<Record<string, string>>({})
-  const [scopeFilter, setScopeFilter] = useState<'all' | 'active'>('all')
+  const triggersSession = useStore((state) => state.triggersSession)
+  const updateTriggersSession = useStore((state) => state.updateTriggersSession)
+  const revealedWebhookSecrets = triggersSession.revealedWebhookSecrets
+  const scopeFilter = triggersSession.scopeFilter
   const {
     customTriggers,
     error,
@@ -25,10 +27,19 @@ export function TriggersPanel() {
     refreshTriggers,
     selectedTrigger,
     selectedTriggerId,
+    status,
     setError,
     setSelectedTriggerId,
     systemTriggers,
-  } = useTriggersList()
+  } = useTriggersList({ manageSync: false })
+  const revealWebhookSecret = (triggerId: string, secret: string) => {
+    updateTriggersSession({
+      revealedWebhookSecrets: {
+        ...revealedWebhookSecrets,
+        [triggerId]: secret,
+      },
+    })
+  }
   const {
     editTriggerForm,
     newTriggerForm,
@@ -42,14 +53,14 @@ export function TriggersPanel() {
     refreshTriggers,
     selectedTrigger,
     setError,
-    setRevealedWebhookSecrets,
+    revealWebhookSecret,
     setSelectedTriggerId,
   })
   const { isRegenerating, onRegenerateWebhookSecret } = useWebhookSecretRegeneration({
     refreshTriggers,
     selectedTrigger,
     setError,
-    setRevealedWebhookSecrets,
+    revealWebhookSecret,
   })
   const filteredSystemTriggers = useMemo(
     () => scopeFilter === 'active' && activeProjectPath
@@ -70,9 +81,9 @@ export function TriggersPanel() {
 
   useEffect(() => {
     if (scopeFilter === 'active' && !activeProjectPath) {
-      setScopeFilter('all')
+      updateTriggersSession({ scopeFilter: 'all' })
     }
-  }, [activeProjectPath, scopeFilter])
+  }, [activeProjectPath, scopeFilter, updateTriggersSession])
 
   useEffect(() => {
     if (!selectedTriggerId) {
@@ -103,7 +114,7 @@ export function TriggersPanel() {
             <Button
               type="button"
               data-testid="triggers-filter-all"
-              onClick={() => setScopeFilter('all')}
+              onClick={() => updateTriggersSession({ scopeFilter: 'all' })}
               variant={scopeFilter === 'all' ? 'secondary' : 'outline'}
               size="xs"
             >
@@ -112,7 +123,7 @@ export function TriggersPanel() {
             <Button
               type="button"
               data-testid="triggers-filter-active-project"
-              onClick={() => setScopeFilter('active')}
+              onClick={() => updateTriggersSession({ scopeFilter: 'active' })}
               variant={scopeFilter === 'active' ? 'secondary' : 'outline'}
               size="xs"
             >
@@ -145,6 +156,11 @@ export function TriggersPanel() {
                 </Button>
               </PanelHeader>
               <PanelContent className="space-y-2 pt-0">
+                {status !== 'ready' && status !== 'error' ? (
+                  <InlineNotice data-testid="triggers-system-list-loading">
+                    Restoring triggers…
+                  </InlineNotice>
+                ) : null}
                 {filteredSystemTriggers.map((trigger) => (
                   <Button
                     key={trigger.id}
@@ -168,7 +184,7 @@ export function TriggersPanel() {
                     </div>
                   </Button>
                 ))}
-                {filteredSystemTriggers.length === 0 ? <EmptyState className="text-xs" description="No protected triggers in this scope." /> : null}
+                {status === 'ready' && filteredSystemTriggers.length === 0 ? <EmptyState className="text-xs" description="No protected triggers in this scope." /> : null}
               </PanelContent>
             </Panel>
 
@@ -177,6 +193,11 @@ export function TriggersPanel() {
                 <PanelTitle>Custom triggers</PanelTitle>
               </PanelHeader>
               <PanelContent className="space-y-2 pt-0">
+                {status !== 'ready' && status !== 'error' ? (
+                  <InlineNotice data-testid="triggers-custom-list-loading">
+                    Restoring triggers…
+                  </InlineNotice>
+                ) : null}
                 {filteredCustomTriggers.map((trigger) => (
                   <Button
                     key={trigger.id}
@@ -199,7 +220,7 @@ export function TriggersPanel() {
                     </div>
                   </Button>
                 ))}
-                {filteredCustomTriggers.length === 0 ? <EmptyState className="text-xs" description="No custom triggers in this scope yet." /> : null}
+                {status === 'ready' && filteredCustomTriggers.length === 0 ? <EmptyState className="text-xs" description="No custom triggers in this scope yet." /> : null}
               </PanelContent>
             </Panel>
           </div>

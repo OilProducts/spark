@@ -16,6 +16,13 @@ import { initialWorkspaceEditorState } from './workspaceSlice'
 const DEFAULT_EDITOR_SIDEBAR_WIDTH = 288
 const MIN_EDITOR_SIDEBAR_WIDTH = 256
 const MAX_EDITOR_SIDEBAR_WIDTH = 560
+const DEFAULT_EDITOR_NODE_INSPECTOR_SESSION = {
+    showAdvanced: false,
+    readsContextDraft: '',
+    readsContextError: null,
+    writesContextDraft: '',
+    writesContextError: null,
+}
 
 const graphAttrsEqual = (left: Record<string, unknown>, right: Record<string, unknown>) => {
     const leftKeys = Object.keys(left)
@@ -65,6 +72,12 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 editorSidebarWidth: nextWidth,
             }
         }),
+    editorMode: 'structured',
+    setEditorMode: (mode) => set({ editorMode: mode }),
+    rawDotDraft: '',
+    setRawDotDraft: (value) => set({ rawDotDraft: value }),
+    rawHandoffError: null,
+    setRawHandoffError: (value) => set({ rawHandoffError: value }),
     selectedNodeId: null,
     setSelectedNodeId: (id) => set({ selectedNodeId: id }),
     selectedEdgeId: null,
@@ -90,6 +103,47 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
         }),
     model: '',
     setModel: (value) => set({ model: value }),
+    editorGraphSettingsPanelOpenByFlow: {},
+    setEditorGraphSettingsPanelOpen: (flowName, isOpen) =>
+        set((state) => ({
+            editorGraphSettingsPanelOpenByFlow: {
+                ...state.editorGraphSettingsPanelOpenByFlow,
+                [flowName]: isOpen,
+            },
+        })),
+    editorShowAdvancedGraphAttrsByFlow: {},
+    setEditorShowAdvancedGraphAttrs: (flowName, showAdvanced) =>
+        set((state) => ({
+            editorShowAdvancedGraphAttrsByFlow: {
+                ...state.editorShowAdvancedGraphAttrsByFlow,
+                [flowName]: showAdvanced,
+            },
+        })),
+    editorLaunchInputDraftsByFlow: {},
+    editorLaunchInputDraftErrorByFlow: {},
+    setEditorLaunchInputDraftState: (flowName, drafts, error) =>
+        set((state) => ({
+            editorLaunchInputDraftsByFlow: {
+                ...state.editorLaunchInputDraftsByFlow,
+                [flowName]: drafts,
+            },
+            editorLaunchInputDraftErrorByFlow: {
+                ...state.editorLaunchInputDraftErrorByFlow,
+                [flowName]: error,
+            },
+        })),
+    editorNodeInspectorSessionsByNodeId: {},
+    updateEditorNodeInspectorSession: (nodeId, patch) =>
+        set((state) => ({
+            editorNodeInspectorSessionsByNodeId: {
+                ...state.editorNodeInspectorSessionsByNodeId,
+                [nodeId]: {
+                    ...DEFAULT_EDITOR_NODE_INSPECTOR_SESSION,
+                    ...(state.editorNodeInspectorSessionsByNodeId[nodeId] ?? {}),
+                    ...patch,
+                },
+            },
+        })),
     graphAttrs: {},
     graphAttrErrors: {},
     graphAttrsUserEditVersion: 0,

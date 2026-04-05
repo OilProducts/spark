@@ -1,5 +1,6 @@
 import App from '@/App'
 import { useStore } from '@/store'
+import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,6 +10,40 @@ const DEFAULT_EDITOR_SIDEBAR_WIDTH = 288
 const LINEAR_FLOW_NAME = 'test-linear.dot'
 const REVIEW_FLOW_NAME = 'test-review-loop.dot'
 const NESTED_LINEAR_FLOW_NAME = 'team/review/test-linear.dot'
+
+class MockEventSource {
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSED = 2
+  static readonly instances: MockEventSource[] = []
+  readonly url: string
+  readyState = MockEventSource.OPEN
+  onopen: ((event: Event) => void) | null = null
+  onmessage: ((event: MessageEvent<string>) => void) | null = null
+  onerror: ((event: Event) => void) | null = null
+
+  constructor(url: string | URL) {
+    this.url = String(url)
+    MockEventSource.instances.push(this)
+  }
+
+  close() {
+    this.readyState = MockEventSource.CLOSED
+  }
+
+  emitMessage(payload: unknown) {
+    this.onmessage?.(new MessageEvent('message', {
+      data: typeof payload === 'string' ? payload : JSON.stringify(payload),
+    }))
+  }
+}
+
+const findEventSource = (pattern: string) =>
+  MockEventSource.instances.find((eventSource) => eventSource.url.includes(pattern)) ?? null
+
+const resetMockEventSources = () => {
+  MockEventSource.instances.length = 0
+}
 
 const setViewportWidth = (width: number) => {
   Object.defineProperty(window, 'innerWidth', {
@@ -48,13 +83,62 @@ const resetAppShellState = () => {
     projectSessionsByPath: {},
     projectRegistrationError: null,
     recentProjectPaths: [],
+    homeConversationCache: {
+      snapshotsByConversationId: {},
+      summariesByProjectPath: {},
+    },
+    homeThreadSummariesStatusByProjectPath: {},
+    homeThreadSummariesErrorByProjectPath: {},
+    homeProjectSessionsByPath: {},
+    homeConversationSessionsById: {},
+    homeProjectGitMetadataByPath: {},
     graphAttrs: {},
     graphAttrErrors: {},
     editorSidebarWidth: DEFAULT_EDITOR_SIDEBAR_WIDTH,
+    editorMode: 'structured',
+    rawDotDraft: '',
+    rawHandoffError: null,
+    editorGraphSettingsPanelOpenByFlow: {},
+    editorShowAdvancedGraphAttrsByFlow: {},
+    editorLaunchInputDraftsByFlow: {},
+    editorLaunchInputDraftErrorByFlow: {},
+    editorNodeInspectorSessionsByNodeId: {},
     saveState: 'idle',
     saveStateVersion: 0,
     saveErrorMessage: null,
     saveErrorKind: null,
+    runsListSession: {
+      scopeMode: 'active',
+      selectedRunIdByScopeKey: {},
+      status: 'idle',
+      error: null,
+      runs: [],
+      lastFetchedAtMs: null,
+      nowMs: Date.now(),
+      metadataStaleAfterMs: 15000,
+    },
+    runDetailSessionsByRunId: {},
+    triggersSession: {
+      status: 'idle',
+      error: null,
+      triggers: [],
+      selectedTriggerId: null,
+      scopeFilter: 'all',
+      revealedWebhookSecrets: {},
+      newTriggerDraft: {
+        form: createEmptyTriggerForm(null),
+        targetBehavior: 'default',
+      },
+      editTriggerDraftsByTriggerId: {},
+    },
+    executionLaunchInputValues: {},
+    executionLaunchError: null,
+    executionLastLaunchFailure: null,
+    executionRunStartGitPolicyWarning: null,
+    executionCollapsedLaunchInputsByFlow: {},
+    executionGraphCollapsed: false,
+    executionOpenRunsAfterLaunch: false,
+    executionLaunchSuccessRunId: null,
   }))
 }
 
@@ -70,6 +154,16 @@ const jsonResponse = (payload: unknown, init?: ResponseInit) =>
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })
+
+const createDeferred = <T,>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve
+    reject = innerReject
+  })
+  return { promise, resolve, reject }
+}
 
 const buildProjectRecord = (projectPath: string) => ({
   project_id: projectPath.split('/').filter(Boolean).join('-'),
@@ -100,6 +194,47 @@ const buildConversationSummary = ({
   last_message_preview: null,
 })
 
+const buildConversationSnapshot = ({
+  conversationId,
+  projectPath,
+  title,
+  turns = [],
+  segments = [],
+}: {
+  conversationId: string
+  projectPath: string
+  title: string
+  turns?: Array<{
+    id: string
+    role: 'user' | 'assistant'
+    status: 'pending' | 'streaming' | 'complete' | 'failed'
+    content: string
+    timestamp: string
+  }>
+  segments?: Array<Record<string, unknown>>
+}) => ({
+  schema_version: 4,
+  conversation_id: conversationId,
+  conversation_handle: `${conversationId}-handle`,
+  project_path: projectPath,
+  title,
+  created_at: '2026-03-25T12:00:00Z',
+  updated_at: '2026-03-25T12:05:00Z',
+  turns,
+  segments,
+  event_log: [],
+  spec_edit_proposals: [],
+  flow_run_requests: [],
+  flow_launches: [],
+  execution_cards: [],
+  execution_workflow: {
+    status: 'idle',
+    run_id: null,
+    error: null,
+    flow_source: null,
+  },
+})
+
 const buildRunRecord = ({
   flowName,
   projectPath,
@@ -126,6 +261,40 @@ const buildRunRecord = ({
   ended_at: '2026-03-25T12:05:00Z',
   last_error: null,
   token_usage: 1234,
+})
+
+const buildTriggerRecord = ({
+  id,
+  name,
+  projectPath = null,
+  protectedTrigger = false,
+}: {
+  id: string
+  name: string
+  projectPath?: string | null
+  protectedTrigger?: boolean
+}) => ({
+  id,
+  name,
+  enabled: true,
+  protected: protectedTrigger,
+  source_type: 'schedule',
+  created_at: '2026-03-22T00:00:00Z',
+  updated_at: '2026-03-22T00:00:00Z',
+  action: {
+    flow_name: 'test-planning.dot',
+    project_path: projectPath,
+    static_context: {},
+  },
+  source: { kind: 'interval', interval_seconds: 300 },
+  state: {
+    last_fired_at: null,
+    last_result: null,
+    last_error: null,
+    next_run_at: '2026-03-22T00:05:00Z',
+    recent_history: [],
+  },
+  webhook_secret: null,
 })
 
 const installCanvasWorkspaceFetchMock = () => {
@@ -273,24 +442,7 @@ const installCanvasWorkspaceFetchMock = () => {
 describe('App shell behavior', () => {
   beforeEach(() => {
     resetAppShellState()
-    class MockEventSource {
-      static readonly CONNECTING = 0
-      static readonly OPEN = 1
-      static readonly CLOSED = 2
-      readonly url: string
-      readyState = MockEventSource.OPEN
-      onopen: ((event: Event) => void) | null = null
-      onmessage: ((event: MessageEvent<string>) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-
-      constructor(url: string | URL) {
-        this.url = String(url)
-      }
-
-      close() {
-        this.readyState = MockEventSource.CLOSED
-      }
-    }
+    resetMockEventSources()
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
     vi.stubGlobal(
       'fetch',
@@ -329,6 +481,7 @@ describe('App shell behavior', () => {
   })
 
   afterEach(() => {
+    resetMockEventSources()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -574,6 +727,565 @@ describe('App shell behavior', () => {
     expect(screen.getByText('review-two.dot')).toBeVisible()
   })
 
+  it('preserves the Home thread session across tab switches', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-home')
+      useStore.getState().setActiveProjectPath('/tmp/project-home')
+      useStore.getState().setViewMode('home')
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return jsonResponse({ branch: 'main', commit: 'abcdef0' })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return jsonResponse([
+            buildConversationSummary({
+              conversationId: 'conversation-home-one',
+              projectPath: '/tmp/project-home',
+              title: 'Thread home',
+            }),
+          ])
+        }
+        if (url.includes('/workspace/api/conversations/conversation-home-one') && !url.includes('/events')) {
+          return jsonResponse(buildConversationSnapshot({
+            conversationId: 'conversation-home-one',
+            projectPath: '/tmp/project-home',
+            title: 'Thread home',
+            turns: [
+              {
+                id: 'turn-user-1',
+                role: 'user',
+                status: 'complete',
+                content: 'Initial request',
+                timestamp: '2026-03-25T12:00:00Z',
+              },
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                status: 'complete',
+                content: 'Existing assistant reply',
+                timestamp: '2026-03-25T12:01:00Z',
+              },
+            ],
+          }))
+        }
+        if (url.includes('/workspace/api/projects')) {
+          return jsonResponse([
+            {
+              ...buildProjectRecord('/tmp/project-home'),
+              active_conversation_id: 'conversation-home-one',
+            },
+          ])
+        }
+        if (url.includes('/attractor/status')) {
+          return jsonResponse({ status: 'idle', last_run_id: null })
+        }
+        if (url.includes('/attractor/api/flows')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/attractor/runs')) {
+          return jsonResponse({ runs: [] })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Open thread Thread home' })).toBeVisible()
+      expect(screen.getByText('Existing assistant reply')).toBeVisible()
+    })
+
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Need follow-up')
+
+    await user.click(screen.getByTestId('nav-mode-runs'))
+    await user.click(screen.getByTestId('nav-mode-projects'))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Open thread Thread home' })).toBeVisible()
+    })
+    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Need follow-up')
+    expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
+  })
+
+  it('preserves Home layout, expansion, and scroll session state across tab switches', async () => {
+    const user = userEvent.setup()
+    setViewportWidth(1366)
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-home-restore')
+      useStore.getState().setActiveProjectPath('/tmp/project-home-restore')
+      useStore.getState().setViewMode('home')
+    })
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return jsonResponse({ branch: 'main', commit: 'abcdef0' })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return jsonResponse([
+            buildConversationSummary({
+              conversationId: 'conversation-home-restore',
+              projectPath: '/tmp/project-home-restore',
+              title: 'Thread restore',
+            }),
+          ])
+        }
+        if (url.includes('/workspace/api/conversations/conversation-home-restore') && !url.includes('/events')) {
+          return jsonResponse(buildConversationSnapshot({
+            conversationId: 'conversation-home-restore',
+            projectPath: '/tmp/project-home-restore',
+            title: 'Thread restore',
+            turns: [
+              {
+                id: 'turn-user-1',
+                role: 'user',
+                status: 'complete',
+                content: 'Run ls and summarize it.',
+                timestamp: '2026-03-25T12:00:00Z',
+              },
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                status: 'complete',
+                content: 'Summary after tools.',
+                timestamp: '2026-03-25T12:01:00Z',
+              },
+            ],
+            segments: [
+              {
+                id: 'segment-tool-ls',
+                turn_id: 'turn-assistant-1',
+                order: 1,
+                kind: 'tool_call',
+                role: 'system',
+                status: 'completed',
+                timestamp: '2026-03-25T12:00:30Z',
+                updated_at: '2026-03-25T12:00:30Z',
+                completed_at: '2026-03-25T12:00:30Z',
+                content: '',
+                artifact_id: null,
+                error: null,
+                tool_call: {
+                  id: 'tool-ls',
+                  kind: 'command_execution',
+                  status: 'completed',
+                  title: 'Run command',
+                  command: '/bin/zsh -lc ls',
+                  output: 'AGENTS.md\nREADME.md',
+                  file_paths: [],
+                },
+                source: null,
+              },
+              {
+                id: 'segment-assistant-summary',
+                turn_id: 'turn-assistant-1',
+                order: 2,
+                kind: 'assistant_message',
+                role: 'assistant',
+                status: 'complete',
+                timestamp: '2026-03-25T12:01:00Z',
+                updated_at: '2026-03-25T12:01:00Z',
+                completed_at: '2026-03-25T12:01:00Z',
+                content: 'Summary after tools.',
+                artifact_id: null,
+                error: null,
+                tool_call: null,
+                source: null,
+              },
+            ],
+          }))
+        }
+        if (url.includes('/workspace/api/projects')) {
+          return jsonResponse([
+            {
+              ...buildProjectRecord('/tmp/project-home-restore'),
+              active_conversation_id: 'conversation-home-restore',
+            },
+          ])
+        }
+        if (url.includes('/attractor/status')) {
+          return jsonResponse({ status: 'idle', last_run_id: null })
+        }
+        if (url.includes('/attractor/api/flows')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/attractor/runs')) {
+          return jsonResponse({ runs: [] })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-tool-call-toggle-tool-ls')).toBeVisible()
+    })
+
+    await user.click(screen.getByTestId('project-tool-call-toggle-tool-ls'))
+    expect(within(screen.getByTestId('project-ai-conversation-history')).getByText(/AGENTS\.md/)).toBeVisible()
+
+    const sidebarStack = screen.getByTestId('home-sidebar-stack')
+    const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
+    const resizeHandle = screen.getByTestId('home-sidebar-resize-handle')
+    vi.spyOn(sidebarStack, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 320,
+      bottom: 720,
+      left: 0,
+      width: 320,
+      height: 720,
+      toJSON: () => ({}),
+    } as DOMRect)
+
+    fireEvent.pointerDown(resizeHandle, { clientY: 240 })
+    fireEvent.pointerMove(window, { clientY: 300 })
+    fireEvent.pointerUp(window)
+
+    await waitFor(() => {
+      expect(sidebarPrimarySurface.style.height).toBe('380px')
+    })
+
+    const conversationBody = screen.getByTestId('project-ai-conversation-body') as HTMLDivElement
+    let scrollTop = 120
+    Object.defineProperty(conversationBody, 'clientHeight', {
+      configurable: true,
+      get: () => 200,
+    })
+    Object.defineProperty(conversationBody, 'scrollHeight', {
+      configurable: true,
+      get: () => 640,
+    })
+    Object.defineProperty(conversationBody, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      },
+    })
+
+    act(() => {
+      fireEvent.scroll(conversationBody)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-jump-to-bottom')).toBeVisible()
+    })
+
+    expect(useStore.getState().homeProjectSessionsByPath['/tmp/project-home-restore']?.sidebarPrimaryHeight).toBe(380)
+    expect(useStore.getState().homeConversationSessionsById['conversation-home-restore']?.expandedToolCalls).toMatchObject({
+      'tool-ls': true,
+    })
+    expect(useStore.getState().homeConversationSessionsById['conversation-home-restore']?.scrollTop).toBe(120)
+
+    await user.click(screen.getByTestId('nav-mode-runs'))
+    await user.click(screen.getByTestId('nav-mode-projects'))
+
+    await waitFor(() => {
+      expect(within(screen.getByTestId('project-ai-conversation-history')).getByText(/AGENTS\.md/)).toBeVisible()
+    })
+    expect(sidebarPrimarySurface.style.height).toBe('380px')
+    expect(screen.getByTestId('project-ai-conversation-jump-to-bottom')).toBeVisible()
+    expect(scrollTop).toBe(120)
+  })
+
+  it('keeps Home conversation sync live while Home is hidden', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-home-live')
+      useStore.getState().setActiveProjectPath('/tmp/project-home-live')
+      useStore.getState().setViewMode('home')
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return jsonResponse({ branch: 'main', commit: 'abcdef0' })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return jsonResponse([
+            buildConversationSummary({
+              conversationId: 'conversation-home-live',
+              projectPath: '/tmp/project-home-live',
+              title: 'Thread live',
+            }),
+          ])
+        }
+        if (url.includes('/workspace/api/conversations/conversation-home-live') && !url.includes('/events')) {
+          return jsonResponse(buildConversationSnapshot({
+            conversationId: 'conversation-home-live',
+            projectPath: '/tmp/project-home-live',
+            title: 'Thread live',
+            turns: [
+              {
+                id: 'turn-user-1',
+                role: 'user',
+                status: 'complete',
+                content: 'Initial request',
+                timestamp: '2026-03-25T12:00:00Z',
+              },
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                status: 'streaming',
+                content: 'Thinking...',
+                timestamp: '2026-03-25T12:01:00Z',
+              },
+            ],
+          }))
+        }
+        if (url.includes('/workspace/api/projects')) {
+          return jsonResponse([
+            {
+              ...buildProjectRecord('/tmp/project-home-live'),
+              active_conversation_id: 'conversation-home-live',
+            },
+          ])
+        }
+        if (url.includes('/attractor/status')) {
+          return jsonResponse({ status: 'idle', last_run_id: null })
+        }
+        if (url.includes('/attractor/api/flows')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/attractor/runs')) {
+          return jsonResponse({ runs: [] })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking...'),
+      ).toBeVisible()
+    })
+
+    const conversationEventSource = findEventSource('/workspace/api/conversations/conversation-home-live/events')
+    expect(conversationEventSource).not.toBeNull()
+
+    await user.click(screen.getByTestId('nav-mode-runs'))
+
+    act(() => {
+      conversationEventSource?.emitMessage({
+        type: 'conversation_snapshot',
+        state: buildConversationSnapshot({
+          conversationId: 'conversation-home-live',
+          projectPath: '/tmp/project-home-live',
+          title: 'Thread live',
+          turns: [
+            {
+              id: 'turn-user-1',
+              role: 'user',
+              status: 'complete',
+              content: 'Initial request',
+              timestamp: '2026-03-25T12:00:00Z',
+            },
+            {
+              id: 'turn-assistant-1',
+              role: 'assistant',
+              status: 'complete',
+              content: 'Finished while hidden',
+              timestamp: '2026-03-25T12:01:30Z',
+            },
+          ],
+        }),
+      })
+    })
+
+    await user.click(screen.getByTestId('nav-mode-projects'))
+
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Finished while hidden'),
+      ).toBeVisible()
+    })
+    expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
+  })
+
+  it('keeps Home project sessions live across active-project changes', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-home-one')
+      useStore.getState().registerProject('/tmp/project-home-two')
+      useStore.getState().setActiveProjectPath('/tmp/project-home-one')
+      useStore.getState().setViewMode('home')
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return jsonResponse({ branch: 'main', commit: 'abcdef0' })
+        }
+        if (url.includes('/workspace/api/projects/conversations?project_path=%2Ftmp%2Fproject-home-one')) {
+          return jsonResponse([
+            buildConversationSummary({
+              conversationId: 'conversation-home-one',
+              projectPath: '/tmp/project-home-one',
+              title: 'Thread one',
+            }),
+          ])
+        }
+        if (url.includes('/workspace/api/projects/conversations?project_path=%2Ftmp%2Fproject-home-two')) {
+          return jsonResponse([
+            buildConversationSummary({
+              conversationId: 'conversation-home-two',
+              projectPath: '/tmp/project-home-two',
+              title: 'Thread two',
+            }),
+          ])
+        }
+        if (url.includes('/workspace/api/conversations/conversation-home-one') && !url.includes('/events')) {
+          return jsonResponse(buildConversationSnapshot({
+            conversationId: 'conversation-home-one',
+            projectPath: '/tmp/project-home-one',
+            title: 'Thread one',
+            turns: [
+              {
+                id: 'turn-user-one',
+                role: 'user',
+                status: 'complete',
+                content: 'Project one request',
+                timestamp: '2026-03-25T12:00:00Z',
+              },
+              {
+                id: 'turn-assistant-one',
+                role: 'assistant',
+                status: 'streaming',
+                content: 'Thinking...',
+                timestamp: '2026-03-25T12:01:00Z',
+              },
+            ],
+          }))
+        }
+        if (url.includes('/workspace/api/conversations/conversation-home-two') && !url.includes('/events')) {
+          return jsonResponse(buildConversationSnapshot({
+            conversationId: 'conversation-home-two',
+            projectPath: '/tmp/project-home-two',
+            title: 'Thread two',
+            turns: [
+              {
+                id: 'turn-user-two',
+                role: 'user',
+                status: 'complete',
+                content: 'Project two request',
+                timestamp: '2026-03-25T12:02:00Z',
+              },
+              {
+                id: 'turn-assistant-two',
+                role: 'assistant',
+                status: 'complete',
+                content: 'Project two ready',
+                timestamp: '2026-03-25T12:03:00Z',
+              },
+            ],
+          }))
+        }
+        if (url.includes('/workspace/api/projects')) {
+          return jsonResponse([
+            {
+              ...buildProjectRecord('/tmp/project-home-one'),
+              active_conversation_id: 'conversation-home-one',
+            },
+            {
+              ...buildProjectRecord('/tmp/project-home-two'),
+              active_conversation_id: 'conversation-home-two',
+            },
+          ])
+        }
+        if (url.includes('/attractor/status')) {
+          return jsonResponse({ status: 'idle', last_run_id: null })
+        }
+        if (url.includes('/attractor/api/flows')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/attractor/runs')) {
+          return jsonResponse({ runs: [] })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking...'),
+      ).toBeVisible()
+    })
+
+    const projectOneEventSource = findEventSource('/workspace/api/conversations/conversation-home-one/events')
+    expect(projectOneEventSource).not.toBeNull()
+
+    await user.click(screen.getByTestId('top-nav-project-switcher'))
+    await user.click(await screen.findByText('project-home-two'))
+
+    await waitFor(() => {
+      expect(useStore.getState().activeProjectPath).toBe('/tmp/project-home-two')
+    })
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Project two ready'),
+      ).toBeVisible()
+    })
+    expect(projectOneEventSource?.readyState).toBe(MockEventSource.OPEN)
+
+    act(() => {
+      projectOneEventSource?.emitMessage({
+        type: 'conversation_snapshot',
+        state: buildConversationSnapshot({
+          conversationId: 'conversation-home-one',
+          projectPath: '/tmp/project-home-one',
+          title: 'Thread one',
+          turns: [
+            {
+              id: 'turn-user-one',
+              role: 'user',
+              status: 'complete',
+              content: 'Project one request',
+              timestamp: '2026-03-25T12:00:00Z',
+            },
+            {
+              id: 'turn-assistant-one',
+              role: 'assistant',
+              status: 'complete',
+              content: 'Finished while hidden on other project',
+              timestamp: '2026-03-25T12:04:00Z',
+            },
+          ],
+        }),
+      })
+    })
+
+    await user.click(screen.getByTestId('top-nav-project-switcher'))
+    await user.click(await screen.findByText('project-home-one'))
+
+    await waitFor(() => {
+      expect(useStore.getState().activeProjectPath).toBe('/tmp/project-home-one')
+    })
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Finished while hidden on other project'),
+      ).toBeVisible()
+    })
+    expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
+  })
+
   it('removes the active project from the navbar after confirmation', async () => {
     const user = userEvent.setup()
     act(() => {
@@ -637,7 +1349,217 @@ describe('App shell behavior', () => {
     expect(useStore.getState().activeProjectPath).toBeNull()
   })
 
-  it('returns to the active-project run scope after opening a run from all-project history', async () => {
+  it('preserves trigger selection and unsaved drafts across tab switches', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-trigger')
+      useStore.getState().setActiveProjectPath('/tmp/project-trigger')
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.endsWith('/workspace/api/triggers')) {
+          return jsonResponse([
+            buildTriggerRecord({
+              id: 'trigger-protected',
+              name: 'Protected route',
+              projectPath: '/tmp/project-trigger',
+              protectedTrigger: true,
+            }),
+            buildTriggerRecord({
+              id: 'trigger-custom',
+              name: 'Custom route',
+              projectPath: '/tmp/project-trigger',
+            }),
+          ])
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return jsonResponse({ branch: 'main', commit: 'abcdef0' })
+        }
+        if (url.includes('/workspace/api/projects')) {
+          return jsonResponse([buildProjectRecord('/tmp/project-trigger')])
+        }
+        if (url.includes('/attractor/status')) {
+          return jsonResponse({ status: 'idle', last_run_id: null })
+        }
+        if (url.includes('/attractor/api/flows')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/attractor/runs')) {
+          return jsonResponse({ runs: [] })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    render(<App />)
+
+    await user.click(screen.getByTestId('nav-mode-triggers'))
+    await waitFor(() => {
+      expect(screen.getByText('Custom route')).toBeVisible()
+    })
+
+    await user.click(screen.getByText('Custom route'))
+    const nameInputs = screen.getAllByLabelText('Name')
+    await user.type(nameInputs[0], ' Draft create')
+    await user.clear(nameInputs[1])
+    await user.type(nameInputs[1], 'Custom route edited')
+
+    await user.click(screen.getByTestId('nav-mode-projects'))
+    await user.click(screen.getByTestId('nav-mode-triggers'))
+
+    const restoredNameInputs = screen.getAllByLabelText('Name')
+    expect(restoredNameInputs[0]).toHaveValue(' Draft create')
+    expect(restoredNameInputs[1]).toHaveValue('Custom route edited')
+  })
+
+  it('preserves trigger selection and drafts across active-project changes', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-trigger-one')
+      useStore.getState().registerProject('/tmp/project-trigger-two')
+      useStore.getState().setActiveProjectPath('/tmp/project-trigger-one')
+      useStore.getState().setViewMode('triggers')
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.endsWith('/workspace/api/triggers')) {
+          return jsonResponse([
+            buildTriggerRecord({
+              id: 'trigger-shared',
+              name: 'Shared route',
+              projectPath: '/tmp/project-trigger-one',
+            }),
+          ])
+        }
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return jsonResponse({ branch: 'main', commit: 'abcdef0' })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/workspace/api/projects')) {
+          return jsonResponse([
+            buildProjectRecord('/tmp/project-trigger-one'),
+            buildProjectRecord('/tmp/project-trigger-two'),
+          ])
+        }
+        if (url.includes('/attractor/status')) {
+          return jsonResponse({ status: 'idle', last_run_id: null })
+        }
+        if (url.includes('/attractor/api/flows')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/attractor/runs')) {
+          return jsonResponse({ runs: [] })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Shared route')).toBeVisible()
+    })
+
+    await user.click(screen.getByText('Shared route'))
+    const initialNameInputs = screen.getAllByLabelText('Name')
+    await user.type(initialNameInputs[0], ' Draft create')
+    await user.clear(initialNameInputs[1])
+    await user.type(initialNameInputs[1], 'Shared route edited')
+
+    act(() => {
+      useStore.getState().setActiveProjectPath('/tmp/project-trigger-two')
+    })
+
+    await waitFor(() => {
+      const restoredNameInputs = screen.getAllByLabelText('Name')
+      expect(restoredNameInputs[0]).toHaveValue(' Draft create')
+      expect(restoredNameInputs[1]).toHaveValue('Shared route edited')
+    })
+  })
+
+  it('renders loading states before authoritative empty states for Home, Runs, and Triggers', async () => {
+    const user = userEvent.setup()
+    const homeThreadsDeferred = createDeferred<Response>()
+    const runsDeferred = createDeferred<Response>()
+    const triggersDeferred = createDeferred<Response>()
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-loading')
+      useStore.getState().setActiveProjectPath('/tmp/project-loading')
+      useStore.getState().setViewMode('home')
+    })
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return jsonResponse({ branch: 'main', commit: 'abcdef0' })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return homeThreadsDeferred.promise
+        }
+        if (url.includes('/workspace/api/projects')) {
+          return jsonResponse([
+            {
+              ...buildProjectRecord('/tmp/project-loading'),
+              active_conversation_id: null,
+            },
+          ])
+        }
+        if (url.includes('/attractor/status')) {
+          return jsonResponse({ status: 'idle', last_run_id: null })
+        }
+        if (url.includes('/attractor/api/flows')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-loading')) {
+          return runsDeferred.promise
+        }
+        if (url.endsWith('/workspace/api/triggers')) {
+          return triggersDeferred.promise
+        }
+        if (url.includes('/attractor/runs')) {
+          return jsonResponse({ runs: [] })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    render(<App />)
+
+    expect(await screen.findByTestId('project-thread-list-loading')).toBeVisible()
+    homeThreadsDeferred.resolve(jsonResponse([]))
+    await waitFor(() => {
+      expect(screen.getByText('No threads for this project yet.')).toBeVisible()
+    })
+
+    await user.click(screen.getByTestId('nav-mode-runs'))
+    expect(await screen.findByTestId('run-list-loading')).toBeVisible()
+    runsDeferred.resolve(jsonResponse({ runs: [] }))
+    await waitFor(() => {
+      expect(screen.getByText('No runs for the active project yet.')).toBeVisible()
+    })
+
+    await user.click(screen.getByTestId('nav-mode-triggers'))
+    expect(await screen.findByTestId('triggers-system-list-loading')).toBeVisible()
+    triggersDeferred.resolve(jsonResponse([]))
+    await waitFor(() => {
+      expect(screen.getByText('No protected triggers in this scope.')).toBeVisible()
+      expect(screen.getByText('No custom triggers in this scope yet.')).toBeVisible()
+    })
+  })
+
+  it('preserves runs scope and selected run across tab switches', async () => {
     const user = userEvent.setup()
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = resolveRequestUrl(input)
@@ -716,15 +1638,14 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByText('review-one.dot')).toBeVisible()
     })
-    const initialActiveScopeFetchCount = fetchMock.mock.calls.filter(([request]) =>
-      resolveRequestUrl(request as RequestInfo | URL).includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one'),
-    ).length
 
     await user.click(screen.getByTestId('runs-scope-all-projects'))
     await waitFor(() => {
       expect(screen.getByText('review-two.dot')).toBeVisible()
     })
-    const runTwoCard = screen.getByText('review-two.dot').closest('[data-testid="run-history-row"]')
+    const runTwoCard = within(screen.getByTestId('run-list-scroll-region'))
+      .getByText('review-two.dot')
+      .closest('[data-testid="run-history-row"]')
     expect(runTwoCard).not.toBeNull()
     await user.click(runTwoCard!)
 
@@ -736,14 +1657,318 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-projects'))
     await user.click(screen.getByTestId('nav-mode-runs'))
     await waitFor(() => {
-      const activeScopeFetchCount = fetchMock.mock.calls.filter(([request]) =>
-        resolveRequestUrl(request as RequestInfo | URL).includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one'),
-      ).length
-      expect(activeScopeFetchCount).toBeGreaterThan(initialActiveScopeFetchCount)
+      expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('review-two.dot')
     })
-    expect(screen.getByText('Run history for the active project.')).toBeVisible()
-    expect(screen.getByText('review-one.dot')).toBeVisible()
-    expect(screen.queryByText('review-two.dot')).not.toBeInTheDocument()
+    expect(screen.getByText('Run history across all projects.')).toBeVisible()
+    expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('review-two.dot')
+    expect(useStore.getState().selectedRunId).toBe('run-two')
+  })
+
+  it('preserves run-local inspection session state across tab switches', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/attractor/status')) {
+          return jsonResponse({ status: 'idle', last_run_id: null })
+        }
+        if (url.includes('/attractor/api/flows')) {
+          return jsonResponse([])
+        }
+        if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-runs-session')) {
+          return jsonResponse({
+            runs: [
+              buildRunRecord({
+                flowName: 'review-session.dot',
+                projectPath: '/tmp/project-runs-session',
+                runId: 'run-session',
+              }),
+            ],
+          })
+        }
+        if (url.includes('/attractor/pipelines/run-session/checkpoint')) {
+          return jsonResponse({
+            pipeline_id: 'run-session',
+            checkpoint: {
+              completed_nodes: ['prepare'],
+              current_node: 'review',
+            },
+          })
+        }
+        if (url.includes('/attractor/pipelines/run-session/context')) {
+          return jsonResponse({
+            pipeline_id: 'run-session',
+            context: {
+              alpha: 'first',
+              beta: 'second',
+            },
+          })
+        }
+        if (url.includes('/attractor/pipelines/run-session/artifacts/logs/summary.txt')) {
+          return new Response('artifact preview contents', {
+            status: 200,
+            headers: { 'Content-Type': 'text/plain' },
+          })
+        }
+        if (url.includes('/attractor/pipelines/run-session/artifacts')) {
+          return jsonResponse({
+            pipeline_id: 'run-session',
+            artifacts: [
+              {
+                path: 'logs/summary.txt',
+                size_bytes: 42,
+                media_type: 'text/plain',
+                viewable: true,
+              },
+            ],
+          })
+        }
+        if (url.includes('/attractor/pipelines/run-session/graph-preview')) {
+          return jsonResponse({
+            status: 'ok',
+            graph: {
+              graph_attrs: {},
+              nodes: [
+                { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                { id: 'review', label: 'Review', shape: 'box' },
+                { id: 'done', label: 'Done', shape: 'Msquare' },
+              ],
+              edges: [
+                { from: 'start', to: 'review', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+                { from: 'review', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              ],
+            },
+            diagnostics: [],
+            errors: [],
+          })
+        }
+        if (url.includes('/attractor/pipelines/run-session/questions')) {
+          return jsonResponse({
+            pipeline_id: 'run-session',
+            questions: [
+              {
+                question_id: 'gate-freeform',
+                question_type: 'FREEFORM',
+                node_id: 'review_gate',
+                prompt: 'Need another review pass?',
+              },
+            ],
+          })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-runs-session')
+      useStore.getState().setActiveProjectPath('/tmp/project-runs-session')
+      useStore.getState().setViewMode('runs')
+    })
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText('review-session.dot')).toBeVisible()
+    })
+
+    const runRow = within(screen.getByTestId('run-list-scroll-region'))
+      .getByText('review-session.dot')
+      .closest('[data-testid="run-history-row"]')
+    expect(runRow).not.toBeNull()
+    await user.click(runRow!)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-context-search-input')).toBeVisible()
+      expect(screen.getByTestId('run-artifact-view-button')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toBeVisible()
+    })
+
+    await waitFor(() => {
+      expect(
+        MockEventSource.instances.some((source) => source.url.includes('/attractor/pipelines/run-session/events')),
+      ).toBe(true)
+    })
+    act(() => {
+      MockEventSource.instances
+        .filter((source) => source.url.includes('/attractor/pipelines/run-session/events'))
+        .forEach((source) => source.emitMessage({
+          type: 'StageStarted',
+          node_id: 'review',
+          index: 2,
+        }))
+    })
+
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId('run-event-timeline-panel')).getByText('Stage review started'),
+      ).toBeVisible()
+    })
+
+    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-type'), 'StageStarted')
+    await user.type(screen.getByTestId('run-event-timeline-filter-node-stage'), 'review')
+    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-category'), 'stage')
+    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'info')
+    await user.clear(screen.getByTestId('run-context-search-input'))
+    await user.type(screen.getByTestId('run-context-search-input'), 'alpha')
+    await user.click(screen.getByTestId('run-artifact-view-button'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-artifact-viewer-payload')).toHaveTextContent('artifact preview contents')
+    })
+
+    await user.type(
+      screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform'),
+      'Need another pass',
+    )
+
+    expect(useStore.getState().runDetailSessionsByRunId['run-session']).toMatchObject({
+      timelineTypeFilter: 'StageStarted',
+      timelineNodeStageFilter: 'review',
+      timelineCategoryFilter: 'stage',
+      timelineSeverityFilter: 'info',
+      contextSearchQuery: 'alpha',
+      selectedArtifactPath: 'logs/summary.txt',
+      freeformAnswersByGateId: {
+        'gate-freeform': 'Need another pass',
+      },
+    })
+
+    await user.click(screen.getByTestId('nav-mode-projects'))
+    await user.click(screen.getByTestId('nav-mode-runs'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('review-session.dot')
+    })
+    expect(screen.getByTestId('run-event-timeline-filter-type')).toHaveValue('StageStarted')
+    expect(screen.getByTestId('run-event-timeline-filter-node-stage')).toHaveValue('review')
+    expect(screen.getByTestId('run-event-timeline-filter-category')).toHaveValue('stage')
+    expect(screen.getByTestId('run-event-timeline-filter-severity')).toHaveValue('info')
+    expect(screen.getByTestId('run-context-search-input')).toHaveValue('alpha')
+    expect(screen.getByTestId('run-artifact-viewer')).toHaveTextContent('Preview: logs/summary.txt')
+    expect(screen.getByTestId('run-artifact-viewer-payload')).toHaveTextContent('artifact preview contents')
+    expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toHaveValue('Need another pass')
+  })
+
+  it('keeps selected run timeline sync live while Runs is hidden', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = resolveRequestUrl(input)
+      if (url.includes('/workspace/api/projects')) {
+        return jsonResponse([buildProjectRecord('/tmp/project-hidden-runs')])
+      }
+      if (url.includes('/workspace/api/projects/conversations')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/workspace/api/projects/metadata')) {
+        return jsonResponse({ branch: 'main', commit: 'abcdef0' })
+      }
+      if (url.includes('/attractor/status')) {
+        return jsonResponse({ status: 'idle', last_run_id: null })
+      }
+      if (url.includes('/attractor/api/flows')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-hidden-runs')) {
+        return jsonResponse({
+          runs: [
+            buildRunRecord({
+              flowName: 'review-hidden.dot',
+              projectPath: '/tmp/project-hidden-runs',
+              runId: 'run-hidden',
+            }),
+          ],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-hidden/checkpoint')) {
+        return jsonResponse({
+          pipeline_id: 'run-hidden',
+          checkpoint: {
+            completed_nodes: ['prepare'],
+            current_node: 'review',
+          },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-hidden/context')) {
+        return jsonResponse({
+          pipeline_id: 'run-hidden',
+          context: { summary: 'alpha' },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-hidden/artifacts')) {
+        return jsonResponse({
+          pipeline_id: 'run-hidden',
+          artifacts: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-hidden/graph-preview')) {
+        return jsonResponse({
+          status: 'ok',
+          graph: {
+            graph_attrs: {},
+            nodes: [
+              { id: 'start', label: 'Start', shape: 'Mdiamond' },
+              { id: 'done', label: 'Done', shape: 'Msquare' },
+            ],
+            edges: [
+              { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+            ],
+          },
+          diagnostics: [],
+          errors: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-hidden/questions')) {
+        return jsonResponse({
+          pipeline_id: 'run-hidden',
+          questions: [],
+        })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-hidden-runs')
+      useStore.getState().setActiveProjectPath('/tmp/project-hidden-runs')
+      useStore.getState().setViewMode('runs')
+    })
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText('review-hidden.dot')).toBeVisible()
+    })
+
+    const selectedRunRow = within(screen.getByTestId('run-list-scroll-region'))
+      .getByText('review-hidden.dot')
+      .closest('[data-testid="run-history-row"]')
+    expect(selectedRunRow).not.toBeNull()
+    await user.click(selectedRunRow!)
+
+    const runEventSource = await waitFor(() => {
+      const source = findEventSource('/attractor/pipelines/run-hidden/events')
+      expect(source).not.toBeNull()
+      return source
+    })
+
+    await user.click(screen.getByTestId('nav-mode-projects'))
+
+    act(() => {
+      runEventSource?.emitMessage({
+        type: 'StageStarted',
+        node_id: 'review',
+        index: 2,
+      })
+    })
+
+    await user.click(screen.getByTestId('nav-mode-runs'))
+
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId('run-event-timeline-panel')).getByText('Stage review started'),
+      ).toBeVisible()
+    })
   })
 
   it('lets the operator resize the editor sidebar without affecting execution width', async () => {
@@ -1143,8 +2368,8 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-editor'))
     expect(screen.getByTestId('inspector-panel')).toBeVisible()
     expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
-    expect(screen.getByTestId('editor-workspace')).toBeVisible()
-    expect(screen.queryByTestId('execution-workspace')).not.toBeInTheDocument()
+    expect(screen.getByTestId('canvas-workspace-primary')).toHaveAttribute('data-canvas-active', 'true')
+    expect(screen.getByTestId('execution-workspace-primary')).toHaveAttribute('data-execution-active', 'false')
 
     const editorFlowTree = await screen.findByTestId('editor-flow-tree')
     await user.click(within(editorFlowTree).getByRole('button', { name: LINEAR_FLOW_NAME }))
@@ -1157,7 +2382,7 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('nav-mode-execution'))
     expect(await screen.findByTestId('execution-launch-flow-name')).toHaveTextContent(REVIEW_FLOW_NAME)
-    expect(screen.getByTestId('execution-launch-input-context.request.summary')).toHaveValue('')
+    expect(screen.getByTestId('execution-launch-input-context.request.summary')).toHaveValue('Review the auth flow')
 
     await user.click(screen.getByTestId('nav-mode-editor'))
     expect((await screen.findByTestId('raw-dot-editor') as HTMLTextAreaElement).value).toContain('// editor draft note')

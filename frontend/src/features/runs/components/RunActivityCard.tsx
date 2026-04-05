@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
 import { useStore } from '@/store'
 import { Button, EmptyState, Panel, PanelContent, PanelHeader, SectionHeader } from '@/ui'
@@ -11,9 +11,13 @@ interface RunActivityCardProps {
     checkpointCompletedNodes: string
     checkpointCurrentNode: string
     checkpointRetryCounters: string
+    collapsed: boolean
     groupedTimelineEntries: GroupedTimelineEntry[]
     pendingGateCount: number
+    rawLogsCollapsed: boolean
     run: RunRecord
+    onCollapsedChange: (collapsed: boolean) => void
+    onRawLogsCollapsedChange: (collapsed: boolean) => void
 }
 
 interface RecentActivityRow {
@@ -134,15 +138,17 @@ export function RunActivityCard({
     checkpointCompletedNodes,
     checkpointCurrentNode,
     checkpointRetryCounters,
+    collapsed,
     groupedTimelineEntries,
     pendingGateCount,
+    rawLogsCollapsed,
     run,
+    onCollapsedChange,
+    onRawLogsCollapsedChange,
 }: RunActivityCardProps) {
     const logs = useStore((state) => state.logs)
     const clearLogs = useStore((state) => state.clearLogs)
     const selectedRunCompletedNodes = useStore((state) => state.selectedRunCompletedNodes)
-    const [collapsed, setCollapsed] = useState(false)
-    const [rawLogsCollapsed, setRawLogsCollapsed] = useState(true)
     const logsEndRef = useRef<HTMLDivElement>(null)
 
     useEffect(() => {
@@ -230,7 +236,7 @@ export function RunActivityCard({
                             </span>
                             <RunSectionToggleButton
                                 collapsed={collapsed}
-                                onToggle={() => setCollapsed((current) => !current)}
+                                onToggle={() => onCollapsedChange(!collapsed)}
                                 testId="run-activity-toggle-button"
                             />
                         </div>
@@ -346,7 +352,7 @@ export function RunActivityCard({
                                 </Button>
                                 <RunSectionToggleButton
                                     collapsed={rawLogsCollapsed}
-                                    onToggle={() => setRawLogsCollapsed((current) => !current)}
+                                    onToggle={() => onRawLogsCollapsedChange(!rawLogsCollapsed)}
                                     testId="run-activity-logs-toggle-button"
                                 />
                             </div>

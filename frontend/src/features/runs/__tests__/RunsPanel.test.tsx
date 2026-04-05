@@ -1,3 +1,4 @@
+import { RunsSessionController } from '@/app/AppSessionControllers'
 import { RunsPanel } from '@/features/runs/RunsPanel'
 import { RunStream } from '@/features/runs/RunStream'
 import { useStore } from '@/store'
@@ -36,12 +37,24 @@ const resetRunsState = () => {
     projectRegistry: {},
     projectSessionsByPath: {},
     recentProjectPaths: [],
+    runsListSession: {
+      scopeMode: 'active',
+      selectedRunIdByScopeKey: {},
+      status: 'idle',
+      error: null,
+      runs: [],
+      lastFetchedAtMs: null,
+      nowMs: Date.now(),
+      metadataStaleAfterMs: 15000,
+    },
+    runDetailSessionsByRunId: {},
   })
 }
 
 const renderRunsPanel = () =>
   render(
     <DialogProvider>
+      <RunsSessionController />
       <RunsPanel />
     </DialogProvider>,
   )
@@ -49,6 +62,7 @@ const renderRunsPanel = () =>
 const renderRunsWorkspace = () =>
   render(
     <DialogProvider>
+      <RunsSessionController />
       <RunStream />
       <RunsPanel />
     </DialogProvider>,

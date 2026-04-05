@@ -1,3 +1,4 @@
+import { HomeSessionController } from '@/app/AppSessionControllers'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { type ConversationSnapshotResponse } from '@/lib/apiClient'
 import { useStore } from '@/store'
@@ -34,6 +35,14 @@ const resetProjectWorkflowState = () => {
     logs: [],
   }))
 }
+
+const renderProjectsPanel = () =>
+  render(
+    <>
+      <HomeSessionController />
+      <ProjectsPanel />
+    </>,
+  )
 
 const resolveRequestUrl = (input: RequestInfo | URL): string => {
   if (typeof input === 'string') return input
@@ -389,7 +398,7 @@ describe('Project-scoped workflow behavior', () => {
       useStore.getState().setActiveProjectPath('/tmp/workflow-project')
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
     expect(screen.getByTestId('project-ai-conversation-surface')).toBeVisible()
 
     await user.type(
@@ -517,7 +526,7 @@ describe('Project-scoped workflow behavior', () => {
       useStore.getState().setConversationId(conversationId)
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-spec-edit-proposal-preview')).toBeVisible()
@@ -534,7 +543,7 @@ describe('Project-scoped workflow behavior', () => {
       useStore.getState().setActiveProjectPath('/tmp/spark')
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-surface')).toBeVisible()
@@ -551,7 +560,7 @@ describe('Project-scoped workflow behavior', () => {
       useStore.getState().setActiveFlow('test-planning.dot')
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
     await user.type(
       screen.getByTestId('project-ai-conversation-input'),
       'Generate a plan for implementing project-home chat proposal approvals.',
@@ -673,7 +682,7 @@ describe('Project-scoped workflow behavior', () => {
       useStore.getState().setActiveFlow('test-planning.dot')
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
     await user.type(
       screen.getByTestId('project-ai-conversation-input'),
       'Draft plan steps and work items for home-first project workflow.',

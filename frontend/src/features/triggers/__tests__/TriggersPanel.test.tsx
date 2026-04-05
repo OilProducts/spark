@@ -1,4 +1,6 @@
+import { TriggersSessionController } from '@/app/AppSessionControllers'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
+import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { useStore } from '@/store'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -19,11 +21,39 @@ const resolveRequestUrl = (input: RequestInfo | URL): string => {
 
 const resetTriggerState = () => {
   useStore.setState({
+    viewMode: 'triggers',
     activeProjectPath: null,
     projectRegistry: {},
     projectSessionsByPath: {},
     recentProjectPaths: [],
+    triggersSession: {
+      status: 'idle',
+      error: null,
+      triggers: [],
+      selectedTriggerId: null,
+      scopeFilter: 'all',
+      revealedWebhookSecrets: {},
+      newTriggerDraft: {
+        form: createEmptyTriggerForm(null),
+        targetBehavior: 'default',
+      },
+      editTriggerDraftsByTriggerId: {},
+    },
   })
+}
+
+const renderTriggersPanel = () =>
+  render(
+    <>
+      <TriggersSessionController />
+      <TriggersPanel />
+    </>,
+  )
+
+const getCreateTriggerScope = () => {
+  const createCard = screen.getByTestId('trigger-create-button').closest('[data-slot="card"]')
+  expect(createCard).not.toBeNull()
+  return within(createCard as HTMLElement)
 }
 
 const makeTrigger = (overrides: Partial<Record<string, unknown>> = {}) => ({
@@ -107,11 +137,12 @@ describe('TriggersPanel', () => {
     })
 
     const user = userEvent.setup()
-    render(<TriggersPanel />)
+    renderTriggersPanel()
 
-    await user.type(screen.getByLabelText('Name'), 'Created schedule')
-    await user.clear(screen.getByLabelText('Target Flow'))
-    await user.type(screen.getByLabelText('Target Flow'), TEST_TRIGGER_FLOW)
+    const createScope = getCreateTriggerScope()
+    await user.type(createScope.getByLabelText('Name'), 'Created schedule')
+    await user.clear(createScope.getByLabelText('Target Flow'))
+    await user.type(createScope.getByLabelText('Target Flow'), TEST_TRIGGER_FLOW)
     await user.click(screen.getByTestId('trigger-create-button'))
 
     await waitFor(() => {
@@ -159,9 +190,9 @@ describe('TriggersPanel', () => {
     })
 
     const user = userEvent.setup()
-    render(<TriggersPanel />)
+    renderTriggersPanel()
 
-    expect(await screen.findByText('No project')).toBeVisible()
+    expect(screen.getByTestId('triggers-project-context-chip')).toHaveTextContent('No active project')
     await user.click(await screen.findByText('Webhook trigger'))
     expect(screen.getByText(/POST JSON to/i)).toBeVisible()
     expect(screen.getAllByText(/webhook-key-1/).length).toBeGreaterThan(0)
@@ -206,11 +237,12 @@ describe('TriggersPanel', () => {
     })
 
     const user = userEvent.setup()
-    render(<TriggersPanel />)
+    renderTriggersPanel()
 
-    const nameInput = screen.getByLabelText('Name')
-    const targetFlowInput = screen.getByLabelText('Target Flow')
-    const executionTargetSelect = screen.getByLabelText('Execution Target')
+    const createScope = getCreateTriggerScope()
+    const nameInput = createScope.getByLabelText('Name')
+    const targetFlowInput = createScope.getByLabelText('Target Flow')
+    const executionTargetSelect = createScope.getByLabelText('Execution Target')
 
     expect(executionTargetSelect).toHaveValue('active')
     expect(screen.getByText('Uses the current active project: /tmp/active-project')).toBeVisible()
@@ -260,7 +292,7 @@ describe('TriggersPanel', () => {
     await user.clear(targetFlowInput)
     await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
     await user.selectOptions(executionTargetSelect, 'custom')
-    await user.type(screen.getByLabelText('Project Path'), '/tmp/custom-project')
+    await user.type(createScope.getByLabelText('Project Path'), '/tmp/custom-project')
     await user.click(screen.getByTestId('trigger-create-button'))
 
     await waitFor(() => {
@@ -297,9 +329,11 @@ describe('TriggersPanel', () => {
     })
 
     const user = userEvent.setup()
-    render(<TriggersPanel />)
+    renderTriggersPanel()
 
-    await user.click(await screen.findByText('Custom project trigger'))
+    const customTriggersCard = screen.getByText('Custom triggers').closest('[data-slot="card"]')
+    expect(customTriggersCard).not.toBeNull()
+    await user.click(await within(customTriggersCard as HTMLElement).findByText('Custom project trigger'))
     const selectedTriggerCard = screen.getByTestId('trigger-save-button').closest('[data-slot="card"]')
     expect(selectedTriggerCard).not.toBeNull()
     const selectedTriggerScope = within(selectedTriggerCard as HTMLElement)
@@ -362,9 +396,9 @@ describe('TriggersPanel', () => {
     })
 
     const user = userEvent.setup()
-    render(<TriggersPanel />)
+    renderTriggersPanel()
 
-    await user.click(await screen.findByText('Protected planning route'))
+    await user.click(await screen.findByTestId('trigger-row-trigger-protected'))
     const selectedTriggerCard = screen.getByTestId('trigger-save-button').closest('[data-slot="card"]')
     expect(selectedTriggerCard).not.toBeNull()
     const selectedTriggerScope = within(selectedTriggerCard as HTMLElement)

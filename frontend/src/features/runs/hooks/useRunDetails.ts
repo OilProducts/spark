@@ -14,22 +14,29 @@ import { useRunDetailResources } from './useRunDetailResources'
 
 type UseRunDetailsArgs = {
     selectedRunSummary: RunRecord | null
-    viewMode: string
+    manageSync?: boolean
 }
 
-export function useRunDetails({ selectedRunSummary, viewMode }: UseRunDetailsArgs) {
+export function useRunDetails({
+    selectedRunSummary,
+    manageSync = true,
+}: UseRunDetailsArgs) {
     const {
         artifactData,
         artifactDownloadHref,
         artifactError,
+        artifactStatus,
         artifactViewerError,
         artifactViewerPayload,
+        artifactViewerStatus,
         checkpointData,
         checkpointError,
+        checkpointStatus,
         contextCopyStatus,
         contextData,
         contextError,
         contextSearchQuery,
+        contextStatus,
         fetchArtifacts,
         fetchCheckpoint,
         fetchContext,
@@ -38,11 +45,15 @@ export function useRunDetails({ selectedRunSummary, viewMode }: UseRunDetailsArg
         isCheckpointLoading,
         isContextLoading,
         pendingQuestionSnapshots,
+        questionsStatus,
         selectedArtifactPath,
         setContextCopyStatus,
         setContextSearchQuery,
         viewArtifact,
-    } = useRunDetailResources({ selectedRunSummary, viewMode })
+    } = useRunDetailResources({
+        selectedRunSummary,
+        manageSync,
+    })
     const {
         checkpointCompletedNodes,
         checkpointCurrentNode,
@@ -102,17 +113,21 @@ export function useRunDetails({ selectedRunSummary, viewMode }: UseRunDetailsArg
         artifactDownloadHref,
         artifactEntries,
         artifactError,
+        artifactStatus,
         artifactViewerError,
         artifactViewerPayload,
+        artifactViewerStatus,
         checkpointCompletedNodes,
         checkpointCurrentNode,
         checkpointData,
         checkpointError,
+        checkpointStatus,
         checkpointRetryCounters,
         contextCopyStatus,
         contextError,
         contextExportHref,
         contextSearchQuery,
+        contextStatus,
         degradedDetailPanels,
         fetchArtifacts,
         fetchCheckpoint,
@@ -124,6 +139,7 @@ export function useRunDetails({ selectedRunSummary, viewMode }: UseRunDetailsArg
         isContextLoading,
         missingCoreArtifacts,
         pendingQuestionSnapshots,
+        questionsStatus,
         selectedArtifactEntry,
         setContextCopyStatus,
         setContextSearchQuery,

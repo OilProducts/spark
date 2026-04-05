@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 
+import { useStore } from '@/store'
 import type {
     ConversationSegmentUpsertEventResponse,
     ConversationSnapshotResponse,
-    ConversationSummaryResponse,
     ConversationTurnUpsertEventResponse,
 } from '@/lib/workspaceClient'
 import { fetchProjectConversationListValidated } from '@/lib/workspaceClient'
@@ -12,10 +12,8 @@ import {
     applyConversationSnapshotToCache,
     applyConversationStreamEventToCache,
     derivePlanStatusFromExecutionCard,
-    EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
     setProjectConversationSummaryList,
     type ConversationStreamEvent,
-    type ProjectConversationCacheState,
 } from '../model/projectsHomeState'
 import { debugProjectChat, summarizeConversationTurnsForDebug } from '../model/projectChatDebug'
 
@@ -46,9 +44,9 @@ export function useProjectConversationCache({
     setProjectGitMetadata,
     updateProjectSessionState,
 }: UseProjectConversationCacheArgs) {
-    const [conversationCache, setConversationCache] = useState<ProjectConversationCacheState>(
-        EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
-    )
+    const conversationCache = useStore((state) => state.homeConversationCache)
+    const commitHomeConversationCache = useStore((state) => state.commitHomeConversationCache)
+    const setHomeThreadSummariesStatus = useStore((state) => state.setHomeThreadSummariesStatus)
     const conversationCacheRef = useRef(conversationCache)
     const projectSessionsRef = useRef(projectSessionsByPath)
 
@@ -62,34 +60,35 @@ export function useProjectConversationCache({
 
     const commitConversationCache = useCallback((
         next:
-            | ProjectConversationCacheState
-            | ((current: ProjectConversationCacheState) => ProjectConversationCacheState),
+            | typeof conversationCache
+            | ((current: typeof conversationCache) => typeof conversationCache),
     ) => {
-        const resolved = typeof next === 'function'
+        const nextCache = typeof next === 'function'
             ? next(conversationCacheRef.current)
             : next
-        conversationCacheRef.current = resolved
-        setConversationCache(resolved)
-    }, [])
+        conversationCacheRef.current = nextCache
+        commitHomeConversationCache(nextCache)
+    }, [commitHomeConversationCache])
 
-    const setConversationSummaryList = useCallback((
-        projectPath: string,
-        summaries: ConversationSummaryResponse[],
-    ) => {
-        commitConversationCache((current) => setProjectConversationSummaryList(current, projectPath, summaries))
+    const setConversationSummaryList = useCallback((projectPath: string, summaries: ProjectGitMetadata extends never ? never : import('@/lib/workspaceClient').ConversationSummaryResponse[]) => {
+        const nextCache = setProjectConversationSummaryList(conversationCacheRef.current, projectPath, summaries)
+        commitConversationCache(nextCache)
     }, [commitConversationCache])
 
-    const loadProjectConversationSummaries = async (projectPath: string) => {
+    const loadProjectConversationSummaries = useCallback(async (projectPath: string) => {
+        setHomeThreadSummariesStatus(projectPath, 'loading', null)
         try {
             const summaries = await fetchProjectConversationListValidated(projectPath)
             setConversationSummaryList(projectPath, summaries)
+            setHomeThreadSummariesStatus(projectPath, 'ready', null)
             return summaries
         } catch {
+            setHomeThreadSummariesStatus(projectPath, 'error', 'Unable to load threads.')
             return conversationCacheRef.current.summariesByProjectPath[projectPath] || []
         }
-    }
+    }, [setConversationSummaryList, setHomeThreadSummariesStatus])
 
-    const applyConversationSnapshot = (
+    const applyConversationSnapshot = useCallback((
         projectPath: string,
         snapshot: ConversationSnapshotResponse,
         source = 'unknown',
@@ -174,9 +173,9 @@ export function useProjectConversationCache({
                 },
             }))
         }
-    }
+    }, [commitConversationCache, persistProjectState, setProjectGitMetadata, updateProjectSessionState])
 
-    const applyConversationStreamEvent = (
+    const applyConversationStreamEvent = useCallback((
         projectPath: string,
         event: ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse,
         source = 'unknown',
@@ -201,7 +200,7 @@ export function useProjectConversationCache({
                 turnCount: snapshot.turns.length,
             })
         }
-    }
+    }, [commitConversationCache])
 
     return {
         applyConversationSnapshot,

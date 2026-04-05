@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 import type {
     CheckpointErrorState,
     CheckpointResponse,
@@ -9,25 +7,29 @@ import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunCheckpointCardProps {
     isLoading: boolean
+    status: 'idle' | 'loading' | 'ready' | 'error'
     checkpointError: CheckpointErrorState | null
     checkpointData: CheckpointResponse['checkpoint'] | null
     checkpointCurrentNode: string
     checkpointCompletedNodes: string
     checkpointRetryCounters: string
     onRefresh: () => void
+    collapsed: boolean
+    onCollapsedChange: (collapsed: boolean) => void
 }
 
 export function RunCheckpointCard({
     isLoading,
+    status,
     checkpointError,
     checkpointData,
     checkpointCurrentNode,
     checkpointCompletedNodes,
     checkpointRetryCounters,
     onRefresh,
+    collapsed,
+    onCollapsedChange,
 }: RunCheckpointCardProps) {
-    const [collapsed, setCollapsed] = useState(false)
-
     return (
         <Panel data-testid="run-checkpoint-panel">
             <PanelHeader>
@@ -47,7 +49,7 @@ export function RunCheckpointCard({
                             </Button>
                             <RunSectionToggleButton
                                 collapsed={collapsed}
-                                onToggle={() => setCollapsed((current) => !current)}
+                                onToggle={() => onCollapsedChange(!collapsed)}
                                 testId="run-checkpoint-toggle-button"
                             />
                         </div>
@@ -56,6 +58,11 @@ export function RunCheckpointCard({
             </PanelHeader>
             {!collapsed ? (
                 <PanelContent className="space-y-3">
+            {!checkpointError && status !== 'ready' ? (
+                <InlineNotice data-testid="run-checkpoint-loading">
+                    Restoring checkpoint…
+                </InlineNotice>
+            ) : null}
             {checkpointError && (
                 <InlineNotice tone="error" className="space-y-1">
                     <div data-testid="run-checkpoint-error">{checkpointError.message}</div>
@@ -85,6 +92,11 @@ export function RunCheckpointCard({
                     </pre>
                 </div>
             )}
+            {!checkpointError && status === 'ready' && !checkpointData ? (
+                <InlineNotice data-testid="run-checkpoint-empty">
+                    No checkpoint data is available for this run yet.
+                </InlineNotice>
+            ) : null}
                 </PanelContent>
             ) : null}
         </Panel>

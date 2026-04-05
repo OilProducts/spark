@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, type Dispatch, type SetStateAction } from 'react'
 
 import { ApiHttpError, fetchProjectMetadataValidated } from '@/lib/workspaceClient'
+import { useStore } from '@/store'
 
 import type { ProjectGitMetadata } from '../model/presentation'
 import { asProjectGitMetadataField, EMPTY_PROJECT_GIT_METADATA } from '../model/projectsHomeState'
@@ -14,7 +15,8 @@ export function useProjectGitMetadata({
     projectPaths,
     setProjectRegistrationError,
 }: UseProjectGitMetadataArgs) {
-    const [projectGitMetadata, setProjectGitMetadata] = useState<Record<string, ProjectGitMetadata>>({})
+    const projectGitMetadata = useStore((state) => state.homeProjectGitMetadataByPath)
+    const setHomeProjectGitMetadata = useStore((state) => state.setHomeProjectGitMetadata)
 
     useEffect(() => {
         const projectPathsToFetch = projectPaths.filter((projectPath) => !(projectPath in projectGitMetadata))
@@ -45,12 +47,8 @@ export function useProjectGitMetadata({
                 return
             }
 
-            setProjectGitMetadata((current) => {
-                const next = { ...current }
-                entries.forEach(([projectPath, metadata]) => {
-                    next[projectPath] = metadata
-                })
-                return next
+            entries.forEach(([projectPath, metadata]) => {
+                setHomeProjectGitMetadata(projectPath, metadata)
             })
         }
 
@@ -58,7 +56,7 @@ export function useProjectGitMetadata({
         return () => {
             isCancelled = true
         }
-    }, [projectGitMetadata, projectPaths])
+    }, [projectGitMetadata, projectPaths, setHomeProjectGitMetadata])
 
     const fetchProjectGitMetadata = async (
         projectPath: string,
@@ -82,7 +80,7 @@ export function useProjectGitMetadata({
 
     const ensureProjectGitRepository = async (projectPath: string): Promise<ProjectGitMetadata | null> => {
         const { metadata, error } = await fetchProjectGitMetadata(projectPath)
-        setProjectGitMetadata((current) => ({ ...current, [projectPath]: metadata }))
+        setHomeProjectGitMetadata(projectPath, metadata)
         if (error) {
             setProjectRegistrationError(error)
             return null
@@ -92,6 +90,16 @@ export function useProjectGitMetadata({
             return null
         }
         return metadata
+    }
+
+    const setProjectGitMetadata: Dispatch<SetStateAction<Record<string, ProjectGitMetadata>>> = (next) => {
+        const current = useStore.getState().homeProjectGitMetadataByPath
+        const resolved = typeof next === 'function'
+            ? next(current)
+            : next
+        useStore.setState(() => ({
+            homeProjectGitMetadataByPath: resolved,
+        }))
     }
 
     return {

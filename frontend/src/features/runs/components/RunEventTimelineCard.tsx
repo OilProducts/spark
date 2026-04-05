@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 import type {
     GroupedTimelineEntry,
     PendingInterviewGate,
@@ -30,6 +28,7 @@ import { RunQuestionsPanel } from './RunQuestionsPanel'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunEventTimelineCardProps {
+    collapsed: boolean
     isNarrowViewport: boolean
     isTimelineLive: boolean
     timelineEvents: Array<{ id: string }>
@@ -53,9 +52,11 @@ interface RunEventTimelineCardProps {
     onTimelineSeverityFilterChange: (value: 'all' | TimelineSeverity) => void
     onFreeformAnswerChange: (questionId: string, value: string) => void
     onSubmitPendingGateAnswer: (gate: PendingInterviewGate, answer: string) => void | Promise<void>
+    onCollapsedChange: (collapsed: boolean) => void
 }
 
 export function RunEventTimelineCard({
+    collapsed,
     isNarrowViewport,
     isTimelineLive,
     timelineEvents,
@@ -79,9 +80,8 @@ export function RunEventTimelineCard({
     onTimelineSeverityFilterChange,
     onFreeformAnswerChange,
     onSubmitPendingGateAnswer,
+    onCollapsedChange,
 }: RunEventTimelineCardProps) {
-    const [collapsed, setCollapsed] = useState(false)
-
     return (
         <Panel
             data-testid="run-event-timeline-panel"
@@ -105,7 +105,7 @@ export function RunEventTimelineCard({
                             </span>
                             <RunSectionToggleButton
                                 collapsed={collapsed}
-                                onToggle={() => setCollapsed((current) => !current)}
+                                onToggle={() => onCollapsedChange(!collapsed)}
                                 testId="run-event-timeline-toggle-button"
                             />
                         </div>

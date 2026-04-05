@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import {
     buildLaunchContextFromValues,
     initializeLaunchInputFormValues,
     parseLaunchInputDefinitions,
-    type LaunchInputFormValues,
 } from '@/lib/flowContracts'
 import {
     buildPipelineContinuePayload,
@@ -14,6 +13,7 @@ import {
 import { formatProjectListLabel } from '@/features/projects/model/projectsHomeState'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useStore } from '@/store'
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import {
     Button,
     Checkbox,
@@ -38,12 +38,6 @@ import {
     loadExecutionProjectMetadata,
     startExecutionRun,
 } from './services/executionRunService'
-
-type LaunchFailureDiagnostics = {
-    message: string
-    failedAt: string
-    flowSource: string | null
-}
 
 const logUnexpectedExecutionError = (error: unknown) => {
     if (error instanceof ApiHttpError) {
@@ -73,18 +67,20 @@ export function ExecutionControls() {
     const selectedRunId = useStore((state) => state.selectedRunId)
     const humanGate = useStore((state) => state.humanGate)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
+    const runsScopeMode = useStore((state) => state.runsListSession.scopeMode)
+    const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
     const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
     const setRuntimeOutcome = useStore((state) => state.setRuntimeOutcome)
     const setViewMode = useStore((state) => state.setViewMode)
+    const launchInputValues = useStore((state) => state.executionLaunchInputValues)
+    const runStartError = useStore((state) => state.executionLaunchError)
+    const lastLaunchFailure = useStore((state) => state.executionLastLaunchFailure)
+    const runStartGitPolicyWarning = useStore((state) => state.executionRunStartGitPolicyWarning)
+    const collapsedLaunchInputsByFlow = useStore((state) => state.executionCollapsedLaunchInputsByFlow)
+    const openRunsAfterLaunch = useStore((state) => state.executionOpenRunsAfterLaunch)
+    const launchSuccessRunId = useStore((state) => state.executionLaunchSuccessRunId)
+    const updateExecutionSession = useStore((state) => state.updateExecutionSession)
     const isNarrowViewport = useNarrowViewport()
-
-    const [runStartError, setRunStartError] = useState<string | null>(null)
-    const [lastLaunchFailure, setLastLaunchFailure] = useState<LaunchFailureDiagnostics | null>(null)
-    const [runStartGitPolicyWarning, setRunStartGitPolicyWarning] = useState<string | null>(null)
-    const [launchInputValues, setLaunchInputValues] = useState<LaunchInputFormValues>({})
-    const [collapsedLaunchInputsByFlow, setCollapsedLaunchInputsByFlow] = useState<Record<string, boolean>>({})
-    const [openRunsAfterLaunch, setOpenRunsAfterLaunch] = useState(false)
-    const [launchSuccessRunId, setLaunchSuccessRunId] = useState<string | null>(null)
 
     const executionFlowName = executionFlow
     const isContinuationMode = Boolean(executionContinuation)
@@ -146,15 +142,23 @@ export function ExecutionControls() {
     }
 
     useEffect(() => {
-        setLaunchInputValues((current) => initializeLaunchInputFormValues(parsedLaunchInputs.entries, current))
-    }, [parsedLaunchInputs.entries])
+        const nextValues = initializeLaunchInputFormValues(parsedLaunchInputs.entries, launchInputValues)
+        const sameKeys = Object.keys(nextValues).length === Object.keys(launchInputValues).length
+            && Object.entries(nextValues).every(([key, value]) => launchInputValues[key] === value)
+        if (sameKeys) {
+            return
+        }
+        updateExecutionSession({ executionLaunchInputValues: nextValues })
+    }, [launchInputValues, parsedLaunchInputs.entries, updateExecutionSession])
 
     useEffect(() => {
-        setRunStartError(null)
-        setLastLaunchFailure(null)
-        setRunStartGitPolicyWarning(null)
-        setLaunchSuccessRunId(null)
-    }, [executionFlowName, executionContinuation])
+        updateExecutionSession({
+            executionLaunchError: null,
+            executionLastLaunchFailure: null,
+            executionRunStartGitPolicyWarning: null,
+            executionLaunchSuccessRunId: null,
+        })
+    }, [executionFlowName, executionContinuation, updateExecutionSession])
 
     const confirmGitPolicyGate = async () => {
         const projectPathForGitCheck = activeProjectPath || executionContinuation?.sourceWorkingDirectory || ''
@@ -166,12 +170,12 @@ export function ExecutionControls() {
             const metadata = await loadExecutionProjectMetadata(projectPathForGitCheck)
             const branch = typeof metadata.branch === 'string' ? metadata.branch.trim() : ''
             if (branch) {
-                setRunStartGitPolicyWarning(null)
+                updateExecutionSession({ executionRunStartGitPolicyWarning: null })
                 return true
             }
 
             const warning = 'Project Git policy check failed: active project is not a Git repository.'
-            setRunStartGitPolicyWarning(warning)
+            updateExecutionSession({ executionRunStartGitPolicyWarning: warning })
             return confirm({
                 title: 'Run without Git metadata?',
                 description: `${warning} Continue with run start anyway?`,
@@ -183,7 +187,7 @@ export function ExecutionControls() {
             if (err instanceof ApiHttpError && err.detail) {
                 console.warn(err.detail)
             }
-            setRunStartGitPolicyWarning(warning)
+            updateExecutionSession({ executionRunStartGitPolicyWarning: warning })
             return confirm({
                 title: 'Unable to verify Git state',
                 description: `${warning} Continue with run start anyway?`,
@@ -198,8 +202,10 @@ export function ExecutionControls() {
             return
         }
 
-        setRunStartError(null)
-        setLaunchSuccessRunId(null)
+        updateExecutionSession({
+            executionLaunchError: null,
+            executionLaunchSuccessRunId: null,
+        })
 
         try {
             const gitPolicyGateAllowed = await confirmGitPolicyGate()
@@ -227,7 +233,9 @@ export function ExecutionControls() {
                     return
                 }
                 if (parsedLaunchInputs.error) {
-                    setRunStartError(`Flow launch input schema is invalid: ${parsedLaunchInputs.error}`)
+                    updateExecutionSession({
+                        executionLaunchError: `Flow launch input schema is invalid: ${parsedLaunchInputs.error}`,
+                    })
                     return
                 }
 
@@ -236,7 +244,9 @@ export function ExecutionControls() {
                     launchInputValues,
                 )
                 if (launchContextErrors.length > 0) {
-                    setRunStartError(launchContextErrors.join(' '))
+                    updateExecutionSession({
+                        executionLaunchError: launchContextErrors.join(' '),
+                    })
                     return
                 }
 
@@ -260,16 +270,20 @@ export function ExecutionControls() {
 
             const nextRunId = typeof runData?.pipeline_id === 'string' ? runData.pipeline_id : null
             if (nextRunId) {
+                setRunsSelectedRunIdForScope(
+                    buildRunsScopeKey(runsScopeMode, activeProjectPath),
+                    nextRunId,
+                )
                 setSelectedRunId(nextRunId)
-                setLaunchSuccessRunId(nextRunId)
+                updateExecutionSession({ executionLaunchSuccessRunId: nextRunId })
             }
             setRuntimeStatus('running')
             setRuntimeOutcome(null)
-            setLastLaunchFailure(null)
+            updateExecutionSession({ executionLastLaunchFailure: null })
 
             if (isContinuationMode && nextRunId) {
                 clearExecutionContinuation()
-                setLaunchSuccessRunId(null)
+                updateExecutionSession({ executionLaunchSuccessRunId: null })
                 setViewMode('runs')
             } else if (openRunsAfterLaunch && nextRunId) {
                 setViewMode('runs')
@@ -281,13 +295,15 @@ export function ExecutionControls() {
                 : error instanceof Error
                     ? error.message
                     : 'Failed to start pipeline run.'
-            setRunStartError(errorMessage)
-            setLastLaunchFailure({
-                message: errorMessage,
-                failedAt: new Date().toISOString(),
-                flowSource: isContinuationMode
-                    ? executionContinuation?.sourceRunId || null
-                    : runInitiationForm.flowSource || null,
+            updateExecutionSession({
+                executionLaunchError: errorMessage,
+                executionLastLaunchFailure: {
+                    message: errorMessage,
+                    failedAt: new Date().toISOString(),
+                    flowSource: isContinuationMode
+                        ? executionContinuation?.sourceRunId || null
+                        : runInitiationForm.flowSource || null,
+                },
             })
         }
     }
@@ -377,7 +393,7 @@ export function ExecutionControls() {
                                                 id="execution-open-runs-after-launch-checkbox"
                                                 checked={openRunsAfterLaunch}
                                                 onCheckedChange={(checked) => {
-                                                    setOpenRunsAfterLaunch(checked === true)
+                                                    updateExecutionSession({ executionOpenRunsAfterLaunch: checked === true })
                                                 }}
                                             />
                                             <Label
@@ -427,9 +443,9 @@ export function ExecutionControls() {
                                             size="xs"
                                             onClick={() => {
                                                 setSelectedRunId(launchSuccessRunId)
-                                                setViewMode('runs')
-                                            }}
-                                        >
+                                            setViewMode('runs')
+                                        }}
+                                    >
                                             View run
                                         </Button>
                                     </div>
@@ -561,16 +577,20 @@ export function ExecutionControls() {
                                             if (!executionFlowName) {
                                                 return
                                             }
-                                            setCollapsedLaunchInputsByFlow((current) => ({
-                                                ...current,
-                                                [executionFlowName]: !launchInputsCollapsed,
-                                            }))
+                                            updateExecutionSession({
+                                                executionCollapsedLaunchInputsByFlow: {
+                                                    ...collapsedLaunchInputsByFlow,
+                                                    [executionFlowName]: !launchInputsCollapsed,
+                                                },
+                                            })
                                         }}
                                         onInputChange={(entry, value) => {
-                                            setLaunchInputValues((current) => ({
-                                                ...current,
-                                                [entry.key]: value,
-                                            }))
+                                            updateExecutionSession({
+                                                executionLaunchInputValues: {
+                                                    ...launchInputValues,
+                                                    [entry.key]: value,
+                                                },
+                                            })
                                         }}
                                     />
                                 </div>

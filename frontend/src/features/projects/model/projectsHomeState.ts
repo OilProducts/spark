@@ -341,8 +341,14 @@ export function applyConversationSnapshotToCache(
     projectPath: string,
     snapshot: ConversationSnapshotResponse,
 ) {
-    const existingSnapshot = current.snapshotsByConversationId[snapshot.conversation_id]
-    if (existingSnapshot && compareConversationSnapshotFreshness(existingSnapshot, snapshot) >= 0) {
+    const scopedSnapshot = snapshot.project_path === projectPath
+        ? snapshot
+        : {
+            ...snapshot,
+            project_path: projectPath,
+        }
+    const existingSnapshot = current.snapshotsByConversationId[scopedSnapshot.conversation_id]
+    if (existingSnapshot && compareConversationSnapshotFreshness(existingSnapshot, scopedSnapshot) >= 0) {
         return {
             applied: false,
             cache: current,
@@ -356,18 +362,18 @@ export function applyConversationSnapshotToCache(
         cache: {
             snapshotsByConversationId: {
                 ...current.snapshotsByConversationId,
-                [snapshot.conversation_id]: snapshot,
+                [scopedSnapshot.conversation_id]: scopedSnapshot,
             },
             summariesByProjectPath: {
                 ...current.summariesByProjectPath,
                 [projectPath]: upsertConversationSummary(
                     current.summariesByProjectPath[projectPath] || [],
-                    buildConversationSummaryFromSnapshot(snapshot),
+                    buildConversationSummaryFromSnapshot(scopedSnapshot),
                 ),
             },
         },
-        latestApprovedProposal: getLatestApprovedSpecEditProposal(snapshot),
-        latestExecutionCard: getLatestExecutionCard(snapshot),
+        latestApprovedProposal: getLatestApprovedSpecEditProposal(scopedSnapshot),
+        latestExecutionCard: getLatestExecutionCard(scopedSnapshot),
     }
 }
 
@@ -377,20 +383,20 @@ export function applyConversationStreamEventToCache(
     event: ConversationStreamEvent,
 ) {
     const existingSnapshot = current.snapshotsByConversationId[event.conversation_id]
-        || ensureConversationSnapshotShell(event.conversation_id, event.project_path, event.title)
+        || ensureConversationSnapshotShell(event.conversation_id, projectPath, event.title)
     let mergedSnapshot = existingSnapshot
     if (event.type === 'turn_upsert') {
         const currentTurn = existingSnapshot.turns.find((turn) => turn.id === event.turn.id) || null
         mergedSnapshot = {
             ...upsertConversationTurn(existingSnapshot, sanitizeStreamingTurnUpsert(currentTurn, event.turn)),
-            project_path: event.project_path,
+            project_path: projectPath,
             title: event.title,
             updated_at: event.updated_at,
         }
     } else {
         mergedSnapshot = {
             ...existingSnapshot,
-            project_path: event.project_path,
+            project_path: projectPath,
             title: event.title,
             updated_at: event.updated_at,
         }

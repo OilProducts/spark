@@ -231,6 +231,53 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 ...state.projectRegistry[normalizedCurrentPath],
                 directoryPath: normalizedNextPath,
             }
+            const nextHomeProjectSessionsByPath = { ...state.homeProjectSessionsByPath }
+            if (nextHomeProjectSessionsByPath[normalizedCurrentPath]) {
+                nextHomeProjectSessionsByPath[normalizedNextPath] = nextHomeProjectSessionsByPath[normalizedCurrentPath]
+                delete nextHomeProjectSessionsByPath[normalizedCurrentPath]
+            }
+            const nextHomeThreadSummariesStatusByProjectPath = { ...state.homeThreadSummariesStatusByProjectPath }
+            if (normalizedCurrentPath in nextHomeThreadSummariesStatusByProjectPath) {
+                nextHomeThreadSummariesStatusByProjectPath[normalizedNextPath] =
+                    nextHomeThreadSummariesStatusByProjectPath[normalizedCurrentPath]
+                delete nextHomeThreadSummariesStatusByProjectPath[normalizedCurrentPath]
+            }
+            const nextHomeThreadSummariesErrorByProjectPath = { ...state.homeThreadSummariesErrorByProjectPath }
+            if (normalizedCurrentPath in nextHomeThreadSummariesErrorByProjectPath) {
+                nextHomeThreadSummariesErrorByProjectPath[normalizedNextPath] =
+                    nextHomeThreadSummariesErrorByProjectPath[normalizedCurrentPath]
+                delete nextHomeThreadSummariesErrorByProjectPath[normalizedCurrentPath]
+            }
+            const nextHomeProjectGitMetadataByPath = { ...state.homeProjectGitMetadataByPath }
+            if (normalizedCurrentPath in nextHomeProjectGitMetadataByPath) {
+                nextHomeProjectGitMetadataByPath[normalizedNextPath] =
+                    nextHomeProjectGitMetadataByPath[normalizedCurrentPath]
+                delete nextHomeProjectGitMetadataByPath[normalizedCurrentPath]
+            }
+            const nextHomeConversationCache = {
+                snapshotsByConversationId: Object.fromEntries(
+                    Object.entries(state.homeConversationCache.snapshotsByConversationId).map(([conversationId, snapshot]) => ([
+                        conversationId,
+                        snapshot.project_path === normalizedCurrentPath
+                            ? {
+                                ...snapshot,
+                                project_path: normalizedNextPath,
+                            }
+                            : snapshot,
+                    ])),
+                ),
+                summariesByProjectPath: {
+                    ...state.homeConversationCache.summariesByProjectPath,
+                },
+            }
+            if (normalizedCurrentPath in nextHomeConversationCache.summariesByProjectPath) {
+                nextHomeConversationCache.summariesByProjectPath[normalizedNextPath] =
+                    nextHomeConversationCache.summariesByProjectPath[normalizedCurrentPath].map((summary) => ({
+                        ...summary,
+                        project_path: normalizedNextPath,
+                    }))
+                delete nextHomeConversationCache.summariesByProjectPath[normalizedCurrentPath]
+            }
             const activeProjectWasUpdated = state.activeProjectPath === normalizedCurrentPath
             const nextActiveProjectPath = activeProjectWasUpdated ? normalizedNextPath : state.activeProjectPath
             const nextWorkingDir = activeProjectWasUpdated && state.workingDir === normalizedCurrentPath
@@ -254,6 +301,11 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 activeProjectPath: nextActiveProjectPath,
                 workingDir: nextWorkingDir,
                 recentProjectPaths: nextRecentProjectPaths,
+                homeConversationCache: nextHomeConversationCache,
+                homeThreadSummariesStatusByProjectPath: nextHomeThreadSummariesStatusByProjectPath,
+                homeThreadSummariesErrorByProjectPath: nextHomeThreadSummariesErrorByProjectPath,
+                homeProjectSessionsByPath: nextHomeProjectSessionsByPath,
+                homeProjectGitMetadataByPath: nextHomeProjectGitMetadataByPath,
                 projectRegistrationError: null,
             }
         })

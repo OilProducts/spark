@@ -1,4 +1,5 @@
 import App from '@/App'
+import { HomeSessionController, RunsSessionController } from '@/app/AppSessionControllers'
 import { ExecutionControls } from '@/features/execution/ExecutionControls'
 import { ExecutionWorkspace } from '@/features/execution/ExecutionWorkspace'
 import { Editor } from '@/features/editor/Editor'
@@ -96,6 +97,17 @@ const resetContractState = () => {
     selectedRunStatusError: null,
     selectedRunStatusFetchedAtMs: null,
     runRecordOverrides: {},
+    runsListSession: {
+      ...state.runsListSession,
+      scopeMode: 'active',
+      selectedRunIdByScopeKey: {},
+      status: 'idle',
+      error: null,
+      runs: [],
+      lastFetchedAtMs: null,
+      nowMs: Date.now(),
+    },
+    runDetailSessionsByRunId: {},
     workingDir: DEFAULT_WORKING_DIRECTORY,
     projectRegistry: {
       '/tmp/project-contract-behavior': {
@@ -122,6 +134,11 @@ const resetContractState = () => {
     nodeDiagnostics: {},
     edgeDiagnostics: {},
     hasValidationErrors: false,
+    editorGraphSettingsPanelOpenByFlow: {},
+    editorShowAdvancedGraphAttrsByFlow: {},
+    editorLaunchInputDraftsByFlow: {},
+    editorLaunchInputDraftErrorByFlow: {},
+    editorNodeInspectorSessionsByNodeId: {},
     saveState: 'idle',
     saveStateVersion: 0,
     saveErrorMessage: null,
@@ -135,6 +152,22 @@ const resetContractState = () => {
     },
   }))
 }
+
+const renderProjectsPanelWithController = () =>
+  render(
+    <>
+      <HomeSessionController />
+      <ProjectsPanel />
+    </>,
+  )
+
+const renderRunsPanelWithController = () =>
+  render(
+    <>
+      <RunsSessionController />
+      <RunsPanel />
+    </>,
+  )
 
 const renderWithFlowProvider = (node: ReactNode) => render(<ReactFlowProvider>{node}</ReactFlowProvider>)
 
@@ -1064,7 +1097,7 @@ describe('Frontend contract behavior', () => {
     })
 
     const user = userEvent.setup()
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-checkpoint-error')).toBeVisible()
@@ -1509,7 +1542,7 @@ describe('Frontend contract behavior', () => {
     })
 
     const user = userEvent.setup()
-    render(<ProjectsPanel />)
+    renderProjectsPanelWithController()
 
     await user.type(
       screen.getByTestId('project-ai-conversation-input'),
@@ -1725,7 +1758,7 @@ describe('Frontend contract behavior', () => {
     })
 
     const user = userEvent.setup()
-    render(<ProjectsPanel />)
+    renderProjectsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-plan-gate-surface')).toBeVisible()
@@ -1913,7 +1946,7 @@ describe('Frontend contract behavior', () => {
         viewMode: 'home',
       }))
     })
-    render(<ProjectsPanel />)
+    renderProjectsPanelWithController()
 
     expect(screen.getByTestId('project-thread-new-button').className).toContain('focus-visible')
 
@@ -2052,7 +2085,7 @@ describe('Frontend contract behavior', () => {
         useStore.getState().setViewMode('runs')
         useStore.getState().setSelectedRunId(runId)
       })
-      render(<RunsPanel />)
+      renderRunsPanelWithController()
 
       await waitFor(() => {
         expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
@@ -2076,7 +2109,7 @@ describe('Frontend contract behavior', () => {
           activeProjectPath: '/tmp/project-contract-behavior',
         }))
       })
-      render(<ProjectsPanel />)
+      renderProjectsPanelWithController()
 
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
       expect(screen.getByTestId('project-thread-list')).toBeVisible()
@@ -2142,7 +2175,7 @@ describe('Frontend contract behavior', () => {
           viewMode: 'projects',
         }))
       })
-      render(<ProjectsPanel />)
+      renderProjectsPanelWithController()
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')
       expect(screen.getByTestId('project-thread-list')).toBeVisible()
       expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
@@ -2169,7 +2202,7 @@ describe('Frontend contract behavior', () => {
           viewMode: 'projects',
         }))
       })
-      render(<ProjectsPanel />)
+      renderProjectsPanelWithController()
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
       expect(screen.getByTestId('project-thread-list')).toBeVisible()
       expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
@@ -2321,7 +2354,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
@@ -2493,7 +2526,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
@@ -3222,7 +3255,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
@@ -3368,7 +3401,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
@@ -3518,7 +3551,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
@@ -3653,7 +3686,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
@@ -3793,7 +3826,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
@@ -3979,7 +4012,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
@@ -4161,7 +4194,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getAllByTestId('run-pending-human-gate-group')).toHaveLength(2)
@@ -4304,7 +4337,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
@@ -4471,7 +4504,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getAllByTestId('run-pending-human-gate-group')).toHaveLength(2)
@@ -4639,7 +4672,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-event-timeline-list')).toBeVisible()
@@ -4784,7 +4817,7 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    render(<RunsPanel />)
+    renderRunsPanelWithController()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-event-timeline-list')).toBeVisible()

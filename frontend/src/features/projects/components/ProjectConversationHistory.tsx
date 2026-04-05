@@ -26,10 +26,11 @@ import {
     type ProjectGitMetadata,
     summarizeToolCallDetail,
 } from '../model/presentation'
-import { Button } from '@/ui'
+import { Button, InlineNotice } from '@/ui'
 
 interface ProjectConversationHistoryProps {
     activeConversationId: string | null
+    isConversationHistoryLoading: boolean
     hasRenderableConversationHistory: boolean
     activeConversationHistory: ConversationTimelineEntry[]
     activeSpecEditProposalsById: Map<string, ProjectSpecEditProposal>
@@ -66,6 +67,7 @@ interface ProjectConversationHistoryProps {
 
 export function ProjectConversationHistory({
     activeConversationId,
+    isConversationHistoryLoading,
     hasRenderableConversationHistory,
     activeConversationHistory,
     activeSpecEditProposalsById,
@@ -95,7 +97,11 @@ export function ProjectConversationHistory({
 }: ProjectConversationHistoryProps) {
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col">
-            {!hasRenderableConversationHistory ? (
+            {isConversationHistoryLoading && !hasRenderableConversationHistory ? (
+                <InlineNotice data-testid="project-conversation-history-loading" className="text-xs">
+                    Restoring thread history…
+                </InlineNotice>
+            ) : !hasRenderableConversationHistory ? (
                 <p className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
                     {activeConversationId
                         ? 'No conversation history for this thread yet.'

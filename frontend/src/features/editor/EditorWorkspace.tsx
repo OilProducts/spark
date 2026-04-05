@@ -179,7 +179,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                             </div>
                         ) : null}
                         <div data-testid="editor-panel" className="flex-1 min-w-0 w-full h-full bg-background/50">
-                            <Editor />
+                            <Editor isActive={isActive} />
                         </div>
                     </CanvasSessionModeProvider>
                 </ReactFlowProvider>

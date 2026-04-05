@@ -17,6 +17,7 @@ interface RunListProps {
     onRefresh: () => void
     scopeMode: 'active' | 'all'
     onScopeModeChange: (mode: 'active' | 'all') => void
+    status: 'idle' | 'loading' | 'ready' | 'error'
     now: number
     onSelectRun: (run: RunRecord) => void
     runs: RunRecord[]
@@ -32,6 +33,7 @@ export function RunList({
     onRefresh,
     scopeMode,
     onScopeModeChange,
+    status,
     now,
     onSelectRun,
     runs,
@@ -125,7 +127,13 @@ export function RunList({
                     </InlineNotice>
                 ) : null}
             </div>
-            {runs.length === 0 ? (
+            {status !== 'ready' && status !== 'error' ? (
+                <div className="px-4 pb-4">
+                    <InlineNotice data-testid="run-list-loading">
+                        Restoring run history…
+                    </InlineNotice>
+                </div>
+            ) : runs.length === 0 ? (
                 <div className="px-4 pb-4">
                     <EmptyState
                         className="text-xs"

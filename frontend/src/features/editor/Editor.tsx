@@ -53,7 +53,6 @@ const MEDIUM_GRAPH_NODE_THRESHOLD = 25;
 
 type PreviewResponse = EditorPreviewResponse
 
-type EditorMode = 'structured' | 'raw'
 type FlowGraphSnapshot = {
     nodes: Node[]
     edges: Edge[]
@@ -117,11 +116,17 @@ function mergeEdgeRoutingHints(currentEdges: Edge[], hintedEdges: Edge[]): Edge[
     return mutated ? nextEdges : currentEdges
 }
 
-export function Editor() {
+export function Editor({ isActive = true }: { isActive?: boolean }) {
     const selectedNodeId = useStore((state) => state.selectedNodeId);
     const selectedEdgeId = useStore((state) => state.selectedEdgeId);
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId);
     const setSelectedEdgeId = useStore((state) => state.setSelectedEdgeId);
+    const editorMode = useStore((state) => state.editorMode);
+    const setEditorMode = useStore((state) => state.setEditorMode);
+    const rawDotDraft = useStore((state) => state.rawDotDraft);
+    const setRawDotDraft = useStore((state) => state.setRawDotDraft);
+    const rawHandoffError = useStore((state) => state.rawHandoffError);
+    const setRawHandoffError = useStore((state) => state.setRawHandoffError);
     const activeFlow = useStore((state) => state.activeFlow);
     const graphAttrs = useStore((state) => state.graphAttrs);
     const uiDefaults = useStore((state) => state.uiDefaults);
@@ -140,15 +145,13 @@ export function Editor() {
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
     const hydratedRef = useRef(false);
+    const hydratedFlowNameRef = useRef<string | null>(null);
     const previewTimer = useRef<number | null>(null);
     const activeFlowLoadIdRef = useRef(0);
     const routingHintRefreshIdRef = useRef(0);
     const rawDotEntryDraftRef = useRef<string>('');
     const rawHandoffInFlightRef = useRef(false);
     const [isDragging, setIsDragging] = useState(false);
-    const [editorMode, setEditorMode] = useState<EditorMode>('structured');
-    const [rawDotDraft, setRawDotDraft] = useState('');
-    const [rawHandoffError, setRawHandoffError] = useState<string | null>(null);
     const [isRawHandoffInFlight, setIsRawHandoffInFlight] = useState(false);
     const [lastLayoutMs, setLastLayoutMs] = useState(0);
     const [lastPreviewMs, setLastPreviewMs] = useState(0);
@@ -231,7 +234,7 @@ export function Editor() {
                 source: debugContext?.source ?? 'flow-load-source-dot',
                 reason: 'preview graph missing',
             });
-            return false;
+            return null;
         }
         const hydratedGraph = buildHydratedFlowGraph(
             flowName ?? 'flow',
@@ -312,8 +315,11 @@ export function Editor() {
 
     // Auto-load and sync with Backend Preview
     useEffect(() => {
-        hydratedRef.current = false;
+        if (!isActive) {
+            return;
+        }
         if (!flowName) {
+            hydratedRef.current = false;
             activeFlowLoadIdRef.current += 1;
             routingHintRefreshIdRef.current += 1;
             recordFlowLoadDebug('flow-load:cleared', null, {
@@ -333,10 +339,16 @@ export function Editor() {
             setIsRawHandoffInFlight(false);
             setEditorMode('structured');
             rawDotEntryDraftRef.current = '';
+            hydratedFlowNameRef.current = null;
             setLastLayoutMs(0);
             setLastPreviewMs(0);
             return;
         }
+
+        if (hydratedRef.current && hydratedFlowNameRef.current === flowName) {
+            return;
+        }
+        hydratedRef.current = false;
 
         const loadId = activeFlowLoadIdRef.current + 1;
         activeFlowLoadIdRef.current = loadId;
@@ -430,6 +442,7 @@ export function Editor() {
                     generateDot(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.graphAttrs),
                 );
                 hydratedRef.current = true;
+                hydratedFlowNameRef.current = flowName;
                 recordFlowLoadDebug('hydrate:complete', flowName, {
                     loadId,
                     source: 'flow-load-source-dot',
@@ -452,6 +465,7 @@ export function Editor() {
             loadAbort.abort();
         };
     }, [
+        isActive,
         flowName,
         clearDiagnostics,
         hydrateFromPreview,

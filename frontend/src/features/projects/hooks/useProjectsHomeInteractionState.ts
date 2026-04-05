@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useMemo, type SetStateAction } from 'react'
+import { useStore } from '@/store'
 
 import type { OptimisticSendState } from '../model/conversationState'
 
@@ -8,64 +9,128 @@ type UseProjectsHomeInteractionStateArgs = {
     latestSpecEditProposalId: string | null
 }
 
+const EMPTY_PROJECT_SESSION = {
+    chatDraft: '',
+    panelError: null as string | null,
+    optimisticSend: null as OptimisticSendState | null,
+    pendingDeleteConversationId: null as string | null,
+    sidebarPrimaryHeight: 320,
+}
+
+const EMPTY_CONVERSATION_SESSION = {
+    expandedProposalChanges: {} as Record<string, boolean>,
+    expandedToolCalls: {} as Record<string, boolean>,
+    expandedThinkingEntries: {} as Record<string, boolean>,
+    isPinnedToBottom: true,
+    scrollTop: null as number | null,
+}
+
 export function useProjectsHomeInteractionState({
     activeConversationId,
     activeProjectPath,
-    latestSpecEditProposalId,
+    latestSpecEditProposalId: _latestSpecEditProposalId,
 }: UseProjectsHomeInteractionStateArgs) {
-    const [chatDraft, setChatDraft] = useState('')
-    const [panelError, setPanelError] = useState<string | null>(null)
-    const [optimisticSend, setOptimisticSend] = useState<OptimisticSendState | null>(null)
-    const [pendingDeleteConversationId, setPendingDeleteConversationId] = useState<string | null>(null)
-    const [expandedProposalChanges, setExpandedProposalChanges] = useState<Record<string, boolean>>({})
-    const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({})
-    const [expandedThinkingEntries, setExpandedThinkingEntries] = useState<Record<string, boolean>>({})
+    const homeProjectSessionsByPath = useStore((state) => state.homeProjectSessionsByPath)
+    const homeConversationSessionsById = useStore((state) => state.homeConversationSessionsById)
+    const updateHomeProjectSession = useStore((state) => state.updateHomeProjectSession)
+    const updateHomeConversationSession = useStore((state) => state.updateHomeConversationSession)
 
-    useEffect(() => {
-        setPanelError(null)
-    }, [activeProjectPath])
+    const projectSession = useMemo(() => {
+        if (!activeProjectPath) {
+            return EMPTY_PROJECT_SESSION
+        }
+        return {
+            ...EMPTY_PROJECT_SESSION,
+            ...(homeProjectSessionsByPath[activeProjectPath] ?? {}),
+        }
+    }, [activeProjectPath, homeProjectSessionsByPath])
 
-    useEffect(() => {
-        setExpandedProposalChanges({})
-    }, [activeProjectPath, latestSpecEditProposalId])
+    const conversationSession = useMemo(() => {
+        if (!activeConversationId) {
+            return EMPTY_CONVERSATION_SESSION
+        }
+        return {
+            ...EMPTY_CONVERSATION_SESSION,
+            ...(homeConversationSessionsById[activeConversationId] ?? {}),
+        }
+    }, [activeConversationId, homeConversationSessionsById])
 
-    useEffect(() => {
-        setExpandedToolCalls({})
-    }, [activeConversationId, activeProjectPath])
+    const setChatDraft = useCallback((value: SetStateAction<string>) => {
+        if (!activeProjectPath) {
+            return
+        }
+        updateHomeProjectSession(activeProjectPath, {
+            chatDraft: typeof value === 'function' ? value(projectSession.chatDraft) : value,
+        })
+    }, [activeProjectPath, projectSession.chatDraft, updateHomeProjectSession])
 
-    useEffect(() => {
-        setExpandedThinkingEntries({})
-    }, [activeConversationId, activeProjectPath])
+    const setOptimisticSend = useCallback((value: SetStateAction<OptimisticSendState | null>) => {
+        if (!activeProjectPath) {
+            return
+        }
+        updateHomeProjectSession(activeProjectPath, {
+            optimisticSend: typeof value === 'function' ? value(projectSession.optimisticSend) : value,
+        })
+    }, [activeProjectPath, projectSession.optimisticSend, updateHomeProjectSession])
+
+    const setPanelError = useCallback((value: string | null) => {
+        if (!activeProjectPath) {
+            return
+        }
+        updateHomeProjectSession(activeProjectPath, { panelError: value })
+    }, [activeProjectPath, updateHomeProjectSession])
+
+    const setPendingDeleteConversationId = useCallback((value: string | null) => {
+        if (!activeProjectPath) {
+            return
+        }
+        updateHomeProjectSession(activeProjectPath, { pendingDeleteConversationId: value })
+    }, [activeProjectPath, updateHomeProjectSession])
 
     const toggleProposalChangeExpanded = useCallback((changeKey: string) => {
-        setExpandedProposalChanges((current) => ({
-            ...current,
-            [changeKey]: !current[changeKey],
-        }))
-    }, [])
+        if (!activeConversationId) {
+            return
+        }
+        updateHomeConversationSession(activeConversationId, {
+            expandedProposalChanges: {
+                ...conversationSession.expandedProposalChanges,
+                [changeKey]: !conversationSession.expandedProposalChanges[changeKey],
+            },
+        })
+    }, [activeConversationId, conversationSession.expandedProposalChanges, updateHomeConversationSession])
 
     const toggleToolCallExpanded = useCallback((toolCallId: string) => {
-        setExpandedToolCalls((current) => ({
-            ...current,
-            [toolCallId]: !current[toolCallId],
-        }))
-    }, [])
+        if (!activeConversationId) {
+            return
+        }
+        updateHomeConversationSession(activeConversationId, {
+            expandedToolCalls: {
+                ...conversationSession.expandedToolCalls,
+                [toolCallId]: !conversationSession.expandedToolCalls[toolCallId],
+            },
+        })
+    }, [activeConversationId, conversationSession.expandedToolCalls, updateHomeConversationSession])
 
     const toggleThinkingEntryExpanded = useCallback((entryId: string) => {
-        setExpandedThinkingEntries((current) => ({
-            ...current,
-            [entryId]: !current[entryId],
-        }))
-    }, [])
+        if (!activeConversationId) {
+            return
+        }
+        updateHomeConversationSession(activeConversationId, {
+            expandedThinkingEntries: {
+                ...conversationSession.expandedThinkingEntries,
+                [entryId]: !conversationSession.expandedThinkingEntries[entryId],
+            },
+        })
+    }, [activeConversationId, conversationSession.expandedThinkingEntries, updateHomeConversationSession])
 
     return {
-        chatDraft,
-        expandedProposalChanges,
-        expandedThinkingEntries,
-        expandedToolCalls,
-        optimisticSend,
-        panelError,
-        pendingDeleteConversationId,
+        chatDraft: projectSession.chatDraft,
+        expandedProposalChanges: conversationSession.expandedProposalChanges,
+        expandedThinkingEntries: conversationSession.expandedThinkingEntries,
+        expandedToolCalls: conversationSession.expandedToolCalls,
+        optimisticSend: projectSession.optimisticSend,
+        panelError: projectSession.panelError,
+        pendingDeleteConversationId: projectSession.pendingDeleteConversationId,
         setChatDraft,
         setOptimisticSend,
         setPanelError,

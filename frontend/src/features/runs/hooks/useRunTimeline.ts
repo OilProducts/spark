@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, type SetStateAction } from 'react'
 import { ApiHttpError, fetchPipelineAnswerValidated } from '@/lib/attractorClient'
+import { useStore } from '@/store'
+import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import type {
     PendingInterviewGate,
     PendingQuestionSnapshot,
@@ -21,22 +23,33 @@ import { useRunTimelineStream } from './useRunTimelineStream'
 type UseRunTimelineArgs = {
     pendingQuestionSnapshots: PendingQuestionSnapshot[]
     selectedRunTimelineId: string | null
-    viewMode: string
+    manageSync?: boolean
+}
+
+const DEFAULT_TIMELINE_SESSION = {
+    timelineTypeFilter: 'all',
+    timelineNodeStageFilter: '',
+    timelineCategoryFilter: 'all' as const,
+    timelineSeverityFilter: 'all' as const,
+    pendingGateActionError: null as string | null,
+    submittingGateIds: {} as Record<string, boolean>,
+    answeredGateIds: {} as Record<string, boolean>,
+    freeformAnswersByGateId: {} as Record<string, string>,
 }
 
 export function useRunTimeline({
     pendingQuestionSnapshots,
     selectedRunTimelineId,
-    viewMode,
+    manageSync = true,
 }: UseRunTimelineArgs) {
-    const [timelineTypeFilter, setTimelineTypeFilter] = useState('all')
-    const [timelineNodeStageFilter, setTimelineNodeStageFilter] = useState('')
-    const [timelineCategoryFilter, setTimelineCategoryFilter] = useState<'all' | TimelineEventCategory>('all')
-    const [timelineSeverityFilter, setTimelineSeverityFilter] = useState<'all' | TimelineSeverity>('all')
-    const [pendingGateActionError, setPendingGateActionError] = useState<string | null>(null)
-    const [submittingGateIds, setSubmittingGateIds] = useState<Record<string, boolean>>({})
-    const [answeredGateIds, setAnsweredGateIds] = useState<Record<string, boolean>>({})
-    const [freeformAnswersByGateId, setFreeformAnswersByGateId] = useState<Record<string, string>>({})
+    const runDetailSessionsByRunId = useStore((state) => state.runDetailSessionsByRunId)
+    const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
+    const timelineSession = selectedRunTimelineId
+        ? {
+            ...DEFAULT_TIMELINE_SESSION,
+            ...(runDetailSessionsByRunId[selectedRunTimelineId] ?? {}),
+        }
+        : DEFAULT_TIMELINE_SESSION
     const {
         isTimelineLive,
         timelineDroppedCount,
@@ -44,29 +57,8 @@ export function useRunTimeline({
         timelineEvents,
     } = useRunTimelineStream({
         selectedRunTimelineId,
-        viewMode,
+        manageSync,
     })
-
-    useEffect(() => {
-        setPendingGateActionError(null)
-        setSubmittingGateIds({})
-        setAnsweredGateIds({})
-        setFreeformAnswersByGateId({})
-    }, [selectedRunTimelineId])
-
-    useEffect(() => {
-        if (viewMode !== 'runs' || !selectedRunTimelineId) {
-            setTimelineTypeFilter('all')
-            setTimelineNodeStageFilter('')
-            setTimelineCategoryFilter('all')
-            setTimelineSeverityFilter('all')
-            return
-        }
-        setTimelineTypeFilter('all')
-        setTimelineNodeStageFilter('')
-        setTimelineCategoryFilter('all')
-        setTimelineSeverityFilter('all')
-    }, [selectedRunTimelineId, viewMode])
 
     const timelineTypeOptions = useMemo(
         () => buildTimelineTypeOptions(timelineEvents),
@@ -74,12 +66,18 @@ export function useRunTimeline({
     )
     const filteredTimelineEvents = useMemo(() => {
         return filterTimelineEvents(timelineEvents, {
-            timelineTypeFilter,
-            timelineCategoryFilter,
-            timelineSeverityFilter,
-            timelineNodeStageFilter,
+            timelineTypeFilter: timelineSession.timelineTypeFilter,
+            timelineCategoryFilter: timelineSession.timelineCategoryFilter,
+            timelineSeverityFilter: timelineSession.timelineSeverityFilter,
+            timelineNodeStageFilter: timelineSession.timelineNodeStageFilter,
         })
-    }, [timelineCategoryFilter, timelineEvents, timelineNodeStageFilter, timelineSeverityFilter, timelineTypeFilter])
+    }, [
+        timelineEvents,
+        timelineSession.timelineCategoryFilter,
+        timelineSession.timelineNodeStageFilter,
+        timelineSession.timelineSeverityFilter,
+        timelineSession.timelineTypeFilter,
+    ])
     const retryCorrelationEntityKeys = useMemo(() => {
         return buildRetryCorrelationEntityKeys(timelineEvents)
     }, [timelineEvents])
@@ -91,71 +89,83 @@ export function useRunTimeline({
         return buildPendingInterviewGates(timelineEvents, pendingQuestionSnapshots)
     }, [pendingQuestionSnapshots, timelineEvents])
     const visiblePendingInterviewGates = useMemo(
-        () => filterAnsweredPendingInterviewGates(pendingInterviewGates, answeredGateIds),
-        [answeredGateIds, pendingInterviewGates],
+        () => filterAnsweredPendingInterviewGates(pendingInterviewGates, timelineSession.answeredGateIds),
+        [pendingInterviewGates, timelineSession.answeredGateIds],
     )
     const groupedPendingInterviewGates = useMemo(() => {
         return buildGroupedPendingInterviewGates(visiblePendingInterviewGates)
     }, [visiblePendingInterviewGates])
 
+    const patchTimelineSession = useCallback((patch: Partial<RunDetailSessionState>) => {
+        if (!selectedRunTimelineId) {
+            return
+        }
+        updateRunDetailSession(selectedRunTimelineId, patch)
+    }, [selectedRunTimelineId, updateRunDetailSession])
+
     const submitPendingGateAnswer = useCallback(async (gate: PendingInterviewGate, selectedValue: string) => {
         if (!selectedRunTimelineId || !gate.questionId || !selectedValue.trim()) {
             return
         }
-        setPendingGateActionError(null)
-        setSubmittingGateIds((previous) => ({
-            ...previous,
-            [gate.questionId!]: true,
-        }))
+        patchTimelineSession({
+            pendingGateActionError: null,
+            submittingGateIds: {
+                ...timelineSession.submittingGateIds,
+                [gate.questionId]: true,
+            },
+        })
         try {
             await fetchPipelineAnswerValidated(selectedRunTimelineId, gate.questionId, selectedValue)
-            setAnsweredGateIds((previous) => ({
-                ...previous,
-                [gate.questionId!]: true,
-            }))
-            setFreeformAnswersByGateId((previous) => {
-                const next = { ...previous }
-                delete next[gate.questionId!]
-                return next
+            const nextFreeformAnswers = { ...timelineSession.freeformAnswersByGateId }
+            delete nextFreeformAnswers[gate.questionId]
+            patchTimelineSession({
+                answeredGateIds: {
+                    ...timelineSession.answeredGateIds,
+                    [gate.questionId]: true,
+                },
+                freeformAnswersByGateId: nextFreeformAnswers,
             })
         } catch (err) {
             logUnexpectedRunError(err)
-            if (err instanceof ApiHttpError) {
-                const detailSuffix = err.detail ? `: ${err.detail}` : ''
-                setPendingGateActionError(`Unable to submit answer (HTTP ${err.status})${detailSuffix}.`)
-            } else {
-                setPendingGateActionError('Unable to submit answer. Check connection/backend and retry.')
-            }
+            patchTimelineSession({
+                pendingGateActionError: err instanceof ApiHttpError
+                    ? `Unable to submit answer (HTTP ${err.status})${err.detail ? `: ${err.detail}` : ''}.`
+                    : 'Unable to submit answer. Check connection/backend and retry.',
+            })
         } finally {
-            setSubmittingGateIds((previous) => {
-                const next = { ...previous }
-                delete next[gate.questionId!]
-                return next
+            const nextSubmittingGateIds = { ...timelineSession.submittingGateIds }
+            delete nextSubmittingGateIds[gate.questionId]
+            patchTimelineSession({
+                submittingGateIds: nextSubmittingGateIds,
             })
         }
-    }, [selectedRunTimelineId])
+    }, [patchTimelineSession, selectedRunTimelineId, timelineSession.answeredGateIds, timelineSession.freeformAnswersByGateId, timelineSession.submittingGateIds])
 
     return {
         filteredTimelineEvents,
-        freeformAnswersByGateId,
+        freeformAnswersByGateId: timelineSession.freeformAnswersByGateId,
         groupedPendingInterviewGates,
         groupedTimelineEntries,
         isTimelineLive,
-        pendingGateActionError,
-        setFreeformAnswersByGateId,
-        setTimelineCategoryFilter,
-        setTimelineNodeStageFilter,
-        setTimelineSeverityFilter,
-        setTimelineTypeFilter,
-        submittingGateIds,
+        pendingGateActionError: timelineSession.pendingGateActionError,
+        setFreeformAnswersByGateId: (next: SetStateAction<Record<string, string>>) => patchTimelineSession({
+            freeformAnswersByGateId: typeof next === 'function'
+                ? next(timelineSession.freeformAnswersByGateId)
+                : next,
+        }),
+        setTimelineCategoryFilter: (value: 'all' | TimelineEventCategory) => patchTimelineSession({ timelineCategoryFilter: value }),
+        setTimelineNodeStageFilter: (value: string) => patchTimelineSession({ timelineNodeStageFilter: value }),
+        setTimelineSeverityFilter: (value: 'all' | TimelineSeverity) => patchTimelineSession({ timelineSeverityFilter: value }),
+        setTimelineTypeFilter: (value: string) => patchTimelineSession({ timelineTypeFilter: value }),
+        submittingGateIds: timelineSession.submittingGateIds,
         submitPendingGateAnswer,
-        timelineCategoryFilter,
+        timelineCategoryFilter: timelineSession.timelineCategoryFilter,
         timelineDroppedCount,
         timelineError,
         timelineEvents,
-        timelineNodeStageFilter,
-        timelineSeverityFilter,
-        timelineTypeFilter,
+        timelineNodeStageFilter: timelineSession.timelineNodeStageFilter,
+        timelineSeverityFilter: timelineSession.timelineSeverityFilter,
+        timelineTypeFilter: timelineSession.timelineTypeFilter,
         timelineTypeOptions,
         visiblePendingInterviewGates,
     }

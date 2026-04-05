@@ -133,8 +133,17 @@ Execution is the direct-run launch surface. Runs is the canonical selected-run m
 Triggers are a first-class top-level workspace view because they are global automations rather than project settings; however, new and edited trigger execution targets should default to the active project when that default is meaningful.
 Settings remain global and should not imply project ownership.
 
-Editor and Execution are separate in-memory UI sessions.
-Switching between them must restore each mode exactly as the operator left it rather than deriving one mode's local state from the other.
+Stateful top-level surfaces use separate client-ephemeral view sessions.
+At minimum the frontend must model:
+- `homeSession`
+- `editorSession`
+- `executionSession`
+- `runsSession`
+- `triggersSession`
+
+Switching away from any stateful top-level surface must restore that surface exactly as the operator left it rather than deriving one surface's local state from another.
+Exact restoration includes drafts, selections, filters, expansion state, layout state, and scroll position for long-scroll operator surfaces.
+If a hidden surface has an active live transport, hiding it must not terminate that transport. Visibility is not session destruction.
 
 ## 8. Presentation Surfaces
 
@@ -227,6 +236,9 @@ Conversation UX commitments include:
 - a placeholder such as `Thinking...` may remain until the first assistant text arrives
 - final completion should finalize the active assistant row rather than append a duplicate
 - failure should convert the active assistant row into an explicit failure state or remove it cleanly
+- switching away from Home and back must preserve the selected thread, visible history, draft text, layout state, and expansion state
+- background assistant activity must continue to reconcile into the active thread session even while Home is hidden
+- returning to Home must not transiently drop the thread list or show a false `No threads` state while session-backed data is still restoring
 
 The UI must not reconstruct chat cards from raw protocol notifications.
 
@@ -361,6 +373,12 @@ When the user reaches run inspection from a workspace surface, the UI should pre
 
 Run-inspection state is run-local and may be shared across tabs, but it is distinct from the execution launch session.
 The currently selected execution flow, selected run, launch form draft, and runtime inspection context must not be inferred from the Editor session.
+Runs session restoration must preserve:
+- run-list scope mode
+- selected run
+- timeline filters
+- artifact and context inspection selection
+- pending freeform human-gate answers
 
 Runs is the canonical run-monitoring surface.
 Execution may show compact handoff notices for the currently selected run, such as a launch-success message or pending human-gate reminder, and may render a launch-planning graph card. It must not own the primary run activity, timeline, artifact, or question surfaces.
@@ -395,22 +413,24 @@ For run inspection specifically:
 The frontend may keep local ephemeral state for:
 - selected tab
 - expanded or collapsed cards
-- editor session state
-- execution session state
-- run inspection session state
-- draft message text
-- local filter or sort controls
-- trigger execution-target mode for the editor form
-- runs scope mode (`active project` vs `all projects`)
-
-At minimum, the frontend should model two independent mode-local sessions:
+- `homeSession`
 - `editorSession`
 - `executionSession`
+- `runsSession`
+- `triggersSession`
+- local filter or sort controls
+- draft message text
 
 Run inspection state should remain separate from `executionSession` even when both surfaces can reference the same selected run id.
+Trigger selection and unsaved create/edit drafts must remain in `triggersSession` rather than disappearing on top-level navigation.
+Home thread cache, draft state, and conversation UI affordances must remain in `homeSession` rather than on component mount lifetime.
 
 These sessions are client-ephemeral only.
 They are not backend-authoritative, and in v1 they do not need to survive a full reload or restart.
+
+Empty-state rendering must be status-aware.
+`[]` must never mean both `not yet loaded` and `loaded empty`.
+Collection or detail empty states may render only after the relevant resource reaches `ready` with zero items.
 
 ## 15. Error, Degraded, and Partial-Availability UX
 

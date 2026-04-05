@@ -1,18 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
     Background,
     Controls,
     MiniMap,
     ReactFlow,
     ReactFlowProvider,
-    applyEdgeChanges,
-    applyNodeChanges,
-    useEdgesState,
-    useNodesState,
     type Edge,
-    type EdgeChange,
     type Node,
-    type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
@@ -35,23 +29,21 @@ import { RunSectionToggleButton } from './RunSectionToggleButton'
 type RunGraphCanvasInnerProps = {
     run: RunRecord
     refreshToken: number
-    onLoadingChange: (loading: boolean) => void
-    onErrorChange: (error: string | null) => void
 }
 
 function RunGraphCanvasInner({
     run,
     refreshToken,
-    onLoadingChange,
-    onErrorChange,
 }: RunGraphCanvasInnerProps) {
     const replaceRunGraphAttrs = useStore((state) => state.replaceRunGraphAttrs)
     const setRunDiagnostics = useStore((state) => state.setRunDiagnostics)
     const clearRunDiagnostics = useStore((state) => state.clearRunDiagnostics)
-    const [nodes, setNodes] = useNodesState<Node>([])
-    const [edges, setEdges] = useEdgesState<Edge>([])
-    const [lastLayoutMs, setLastLayoutMs] = useState(0)
+    const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
+    const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const activeLoadRef = useRef(0)
+    const nodes = runDetailSession?.graphNodes ?? []
+    const edges = runDetailSession?.graphEdges ?? []
+    const lastLayoutMs = runDetailSession?.graphLastLayoutMs ?? 0
 
     useEffect(() => {
         const loadId = activeLoadRef.current + 1
@@ -62,11 +54,13 @@ function RunGraphCanvasInner({
 
         replaceRunGraphAttrs({})
         clearRunDiagnostics()
-        setNodes([])
-        setEdges([])
-        setLastLayoutMs(0)
-        onLoadingChange(true)
-        onErrorChange(null)
+        updateRunDetailSession(run.run_id, {
+            graphStatus: 'loading',
+            graphError: null,
+            graphNodes: [],
+            graphEdges: [],
+            graphLastLayoutMs: 0,
+        })
 
         const startLoad = async () => {
             try {
@@ -91,7 +85,10 @@ function RunGraphCanvasInner({
                     },
                 )
                 if (!hydratedGraph) {
-                    onErrorChange('Run graph preview did not include a renderable graph.')
+                    updateRunDetailSession(run.run_id, {
+                        graphStatus: 'error',
+                        graphError: 'Run graph preview did not include a renderable graph.',
+                    })
                     return
                 }
 
@@ -102,19 +99,28 @@ function RunGraphCanvasInner({
                 }
 
                 replaceRunGraphAttrs(hydratedGraph.graphAttrs)
-                setLastLayoutMs(Math.max(0, nowMs() - layoutStart))
-                setNodes(laidOutGraph.nodes)
-                setEdges(laidOutGraph.edges)
+                updateRunDetailSession(run.run_id, {
+                    graphStatus: 'ready',
+                    graphError: null,
+                    graphNodes: laidOutGraph.nodes,
+                    graphEdges: laidOutGraph.edges,
+                    graphLastLayoutMs: Math.max(0, nowMs() - layoutStart),
+                })
             } catch (error) {
                 if (controller.signal.aborted || isAbortError(error)) {
                     return
                 }
                 console.error(error)
-                onErrorChange(error instanceof Error ? error.message : 'Unable to load the run graph preview.')
-            } finally {
-                if (isCurrentLoad()) {
-                    onLoadingChange(false)
+                if (!isCurrentLoad()) {
+                    return
                 }
+                updateRunDetailSession(run.run_id, {
+                    graphStatus: 'error',
+                    graphError: error instanceof Error ? error.message : 'Unable to load the run graph preview.',
+                    graphNodes: [],
+                    graphEdges: [],
+                    graphLastLayoutMs: 0,
+                })
             }
         }
 
@@ -126,40 +132,19 @@ function RunGraphCanvasInner({
         }
     }, [
         clearRunDiagnostics,
-        onErrorChange,
-        onLoadingChange,
         refreshToken,
         replaceRunGraphAttrs,
         run.flow_name,
         run.run_id,
-        setEdges,
-        setNodes,
         setRunDiagnostics,
+        updateRunDetailSession,
     ])
-
-    const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
-        setNodes((currentNodes) => applyNodeChanges(changes, currentNodes))
-    }, [setNodes])
-
-    const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
-        setEdges((currentEdges) => applyEdgeChanges(changes, currentEdges))
-    }, [setEdges])
-
-    if (nodes.length === 0 && edges.length === 0) {
-        return (
-            <div className="flex h-[28rem] items-center justify-center rounded-md border border-dashed border-border bg-muted/20">
-                <EmptyState description="Run graph will appear once the preview loads." />
-            </div>
-        )
-    }
 
     return (
         <div data-testid="run-graph-canvas" className="h-[32rem] overflow-hidden rounded-md border border-border/80 bg-background">
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
                 fitView
                 nodesDraggable={false}
                 nodesConnectable={false}
@@ -184,13 +169,12 @@ function RunGraphCanvasInner({
 export function RunGraphCard({ run }: { run: RunRecord }) {
     const diagnostics = useStore((state) => state.runDiagnostics)
     const [refreshToken, setRefreshToken] = useState(0)
-    const [isLoading, setIsLoading] = useState(false)
-    const [loadError, setLoadError] = useState<string | null>(null)
-    const [collapsed, setCollapsed] = useState(true)
-
-    useEffect(() => {
-        setCollapsed(true)
-    }, [run.run_id])
+    const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
+    const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
+    const collapsed = runDetailSession?.isGraphCollapsed ?? true
+    const graphStatus = runDetailSession?.graphStatus ?? 'idle'
+    const graphError = runDetailSession?.graphError ?? null
+    const hasRenderableGraph = (runDetailSession?.graphNodes.length ?? 0) > 0 || (runDetailSession?.graphEdges.length ?? 0) > 0
 
     return (
         <Panel data-testid="run-graph-panel">
@@ -206,11 +190,11 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
                                 variant="outline"
                                 size="xs"
                             >
-                                {isLoading ? 'Refreshing…' : 'Refresh'}
+                                {graphStatus === 'loading' ? 'Refreshing…' : 'Refresh'}
                             </Button>
                             <RunSectionToggleButton
                                 collapsed={collapsed}
-                                onToggle={() => setCollapsed((current) => !current)}
+                                onToggle={() => updateRunDetailSession(run.run_id, { isGraphCollapsed: !collapsed })}
                                 testId="run-graph-toggle-button"
                             />
                         </div>
@@ -219,9 +203,14 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
             </PanelHeader>
             {!collapsed ? (
                 <PanelContent className="space-y-3">
-                {loadError ? (
+                {graphStatus !== 'ready' && !graphError ? (
+                    <InlineNotice data-testid="run-graph-loading">
+                        Restoring run graph…
+                    </InlineNotice>
+                ) : null}
+                {graphError ? (
                     <InlineNotice tone="error" data-testid="run-graph-error">
-                        {loadError}
+                        {graphError}
                     </InlineNotice>
                 ) : null}
                 {diagnostics.length > 0 ? (
@@ -243,16 +232,21 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
                         </ul>
                     </div>
                 ) : null}
-                <CanvasSessionModeProvider mode="runs">
-                    <ReactFlowProvider>
-                        <RunGraphCanvasInner
-                            run={run}
-                            refreshToken={refreshToken}
-                            onLoadingChange={setIsLoading}
-                            onErrorChange={setLoadError}
-                        />
-                    </ReactFlowProvider>
-                </CanvasSessionModeProvider>
+                {graphStatus === 'ready' && !hasRenderableGraph ? (
+                    <div className="flex h-[28rem] items-center justify-center rounded-md border border-dashed border-border bg-muted/20">
+                        <EmptyState description="No run graph preview is available for this run." />
+                    </div>
+                ) : null}
+                {!graphError && (graphStatus !== 'ready' || hasRenderableGraph) ? (
+                    <CanvasSessionModeProvider mode="runs">
+                        <ReactFlowProvider>
+                            <RunGraphCanvasInner
+                                run={run}
+                                refreshToken={refreshToken}
+                            />
+                        </ReactFlowProvider>
+                    </CanvasSessionModeProvider>
+                ) : null}
                 </PanelContent>
             ) : null}
         </Panel>

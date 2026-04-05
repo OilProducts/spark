@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 import { Button } from '@/ui'
 import type { RunRecord } from '../model/shared'
 import {
@@ -19,22 +17,25 @@ interface RunSummaryCardProps {
     run: RunRecord
     activeProjectPath: string | null
     now: number
+    collapsed: boolean
     onOpenRunArtifact: (run: RunRecord, artifactType: 'spec' | 'plan') => void
     onRequestCancel: (runId: string, currentStatus: string) => void
     onContinueFromRun: (run: RunRecord) => void
+    onCollapsedChange: (collapsed: boolean) => void
 }
 
 export function RunSummaryCard({
     run,
     activeProjectPath,
     now,
+    collapsed,
     onOpenRunArtifact,
     onRequestCancel,
     onContinueFromRun,
+    onCollapsedChange,
 }: RunSummaryCardProps) {
     const cancelAvailable = canCancelRun(run.status)
     const continueAvailable = canContinueRun(run.status)
-    const [collapsed, setCollapsed] = useState(false)
     return (
         <Panel data-testid="run-summary-panel">
             <PanelHeader>
@@ -46,7 +47,7 @@ export function RunSummaryCard({
                             <span className="text-xs text-muted-foreground">{run.run_id}</span>
                             <RunSectionToggleButton
                                 collapsed={collapsed}
-                                onToggle={() => setCollapsed((current) => !current)}
+                                onToggle={() => onCollapsedChange(!collapsed)}
                                 testId="run-summary-toggle-button"
                             />
                         </div>

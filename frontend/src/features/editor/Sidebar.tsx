@@ -27,6 +27,14 @@ import {
     serializeContextKeyList,
 } from '@/lib/flowContracts'
 
+const DEFAULT_NODE_INSPECTOR_SESSION = {
+    showAdvanced: false,
+    readsContextDraft: '',
+    readsContextError: null as string | null,
+    writesContextDraft: '',
+    writesContextError: null as string | null,
+}
+
 type InspectorScope = 'none' | 'graph' | 'node' | 'edge'
 const INSPECTOR_SAVE_DEBOUNCE_MS = 600
 type FlowGraphSnapshot = {
@@ -108,12 +116,9 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)
     const graphAttrs = useStore((state) => state.graphAttrs)
     const uiDefaults = useStore((state) => state.uiDefaults)
+    const editorNodeInspectorSessionsByNodeId = useStore((state) => state.editorNodeInspectorSessionsByNodeId)
+    const updateEditorNodeInspectorSession = useStore((state) => state.updateEditorNodeInspectorSession)
     const [flows, setFlows] = useState<string[]>([])
-    const [showAdvanced, setShowAdvanced] = useState(false)
-    const [readsContextDraft, setReadsContextDraft] = useState('')
-    const [writesContextDraft, setWritesContextDraft] = useState('')
-    const [readsContextError, setReadsContextError] = useState<string | null>(null)
-    const [writesContextError, setWritesContextError] = useState<string | null>(null)
     const { getNodes, setNodes, getEdges, setEdges } = useReactFlow()
     const nodes = useReactFlowStore((state) => state.nodes)
     const edges = useReactFlowStore((state) => state.edges)
@@ -282,6 +287,37 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const selectedNodeWritesContextRaw = typeof selectedNode?.data?.['spark.writes_context'] === 'string'
         ? selectedNode.data['spark.writes_context']
         : ''
+    const parsedSelectedNodeReadsContext = useMemo(
+        () => parseContextKeyList(selectedNodeReadsContextRaw),
+        [selectedNodeReadsContextRaw],
+    )
+    const parsedSelectedNodeWritesContext = useMemo(
+        () => parseContextKeyList(selectedNodeWritesContextRaw),
+        [selectedNodeWritesContextRaw],
+    )
+    const selectedNodeInspectorSession = selectedNodeId
+        ? (
+            editorNodeInspectorSessionsByNodeId[selectedNodeId]
+            ?? {
+                ...DEFAULT_NODE_INSPECTOR_SESSION,
+                readsContextDraft: parsedSelectedNodeReadsContext.keys.join('\n'),
+                readsContextError: parsedSelectedNodeReadsContext.error,
+                writesContextDraft: parsedSelectedNodeWritesContext.keys.join('\n'),
+                writesContextError: parsedSelectedNodeWritesContext.error,
+            }
+        )
+        : {
+            ...DEFAULT_NODE_INSPECTOR_SESSION,
+            readsContextDraft: parsedSelectedNodeReadsContext.keys.join('\n'),
+            readsContextError: parsedSelectedNodeReadsContext.error,
+            writesContextDraft: parsedSelectedNodeWritesContext.keys.join('\n'),
+            writesContextError: parsedSelectedNodeWritesContext.error,
+        }
+    const showAdvanced = selectedNodeInspectorSession.showAdvanced
+    const readsContextDraft = selectedNodeInspectorSession.readsContextDraft
+    const readsContextError = selectedNodeInspectorSession.readsContextError
+    const writesContextDraft = selectedNodeInspectorSession.writesContextDraft
+    const writesContextError = selectedNodeInspectorSession.writesContextError
     const visibility = getNodeFieldVisibility(handlerType)
     const selectedNodeToolHookPreWarning = getToolHookCommandWarning((selectedNode?.data?.["tool.hooks.pre"] as string) || "")
     const selectedNodeToolHookPostWarning = getToolHookCommandWarning((selectedNode?.data?.["tool.hooks.post"] as string) || "")
@@ -314,18 +350,6 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const flowBrowserClassName = showSecondaryInspector
         ? `${isNarrowViewport ? 'shrink-0 min-h-40 max-h-52' : 'shrink-0 min-h-44 max-h-[40%]'} border-b border-border/70`
         : 'flex-1 min-h-0'
-
-    useEffect(() => {
-        const parsedReads = parseContextKeyList(selectedNodeReadsContextRaw)
-        setReadsContextDraft(parsedReads.keys.join('\n'))
-        setReadsContextError(parsedReads.error)
-    }, [selectedNodeId, selectedNodeReadsContextRaw])
-
-    useEffect(() => {
-        const parsedWrites = parseContextKeyList(selectedNodeWritesContextRaw)
-        setWritesContextDraft(parsedWrites.keys.join('\n'))
-        setWritesContextError(parsedWrites.error)
-    }, [selectedNodeId, selectedNodeWritesContextRaw])
 
     const handleEdgePropertyChange = (key: string, value: string | boolean) => {
         if (!selectedEdgeId || !activeFlow) return;
@@ -377,9 +401,13 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     }
 
     const handleReadsContextChange = (value: string) => {
-        setReadsContextDraft(value)
         const parsed = parseContextKeyDraft(value)
-        setReadsContextError(parsed.error)
+        if (selectedNodeId) {
+            updateEditorNodeInspectorSession(selectedNodeId, {
+                readsContextDraft: value,
+                readsContextError: parsed.error,
+            })
+        }
         if (parsed.error) {
             return
         }
@@ -387,9 +415,13 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     }
 
     const handleWritesContextChange = (value: string) => {
-        setWritesContextDraft(value)
         const parsed = parseContextKeyDraft(value)
-        setWritesContextError(parsed.error)
+        if (selectedNodeId) {
+            updateEditorNodeInspectorSession(selectedNodeId, {
+                writesContextDraft: value,
+                writesContextError: parsed.error,
+            })
+        }
         if (parsed.error) {
             return
         }
@@ -537,7 +569,16 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         onOpenGraphChildSettings={openGraphChildSettings}
                         onReadsContextChange={handleReadsContextChange}
                         onWritesContextChange={handleWritesContextChange}
-                        onSetShowAdvanced={setShowAdvanced}
+                        onSetShowAdvanced={(value) => {
+                            if (!selectedNodeId) {
+                                return
+                            }
+                            updateEditorNodeInspectorSession(selectedNodeId, {
+                                showAdvanced: typeof value === 'function'
+                                    ? value(showAdvanced)
+                                    : value,
+                            })
+                        }}
                         onNodeExtensionValueChange={handleNodeExtensionValueChange}
                         onNodeExtensionRemove={handleNodeExtensionRemove}
                         onNodeExtensionAdd={handleNodeExtensionAdd}

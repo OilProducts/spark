@@ -1,4 +1,5 @@
-import { useMemo, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useStore } from '@/store'
 
 const DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT = 320
 const HOME_SIDEBAR_MIN_PRIMARY_HEIGHT = 208
@@ -17,28 +18,50 @@ function clampHomeSidebarPrimaryHeight(height: number, containerHeight: number) 
     return Math.min(Math.max(height, HOME_SIDEBAR_MIN_PRIMARY_HEIGHT), maxPrimaryHeight)
 }
 
-export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: string | null) {
-    const [homeSidebarPrimaryHeight, setHomeSidebarPrimaryHeight] = useState(DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT)
-    const [isHomeSidebarResizing, setIsHomeSidebarResizing] = useState(false)
-    const [conversationPinState, setConversationPinState] = useState<{
-        resetKey: string | null
-        pinned: boolean
-    }>({
-        resetKey: pinResetKey,
-        pinned: true,
-    })
+export function useHomeSidebarLayout(
+    isNarrowViewport: boolean,
+    activeProjectPath: string | null,
+    activeConversationId: string | null,
+) {
+    const homeProjectSessionsByPath = useStore((state) => state.homeProjectSessionsByPath)
+    const homeConversationSessionsById = useStore((state) => state.homeConversationSessionsById)
+    const updateHomeProjectSession = useStore((state) => state.updateHomeProjectSession)
+    const updateHomeConversationSession = useStore((state) => state.updateHomeConversationSession)
+
+    const homeSidebarPrimaryHeight = activeProjectPath
+        ? (homeProjectSessionsByPath[activeProjectPath]?.sidebarPrimaryHeight ?? DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT)
+        : DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT
+    const isConversationPinnedToBottom = activeConversationId
+        ? (homeConversationSessionsById[activeConversationId]?.isPinnedToBottom ?? true)
+        : true
+
     const homeSidebarRef = useRef<HTMLDivElement | null>(null)
     const homeSidebarResizeRef = useRef<{ startY: number; startHeight: number } | null>(null)
     const conversationBodyRef = useRef<HTMLDivElement | null>(null)
+    const [isHomeSidebarResizing, setIsHomeSidebarResizing] = useState(false)
+
     const effectiveIsHomeSidebarResizing = isHomeSidebarResizing && !isNarrowViewport
-    const isConversationPinnedToBottom = useMemo(
-        () => (
-            conversationPinState.resetKey === pinResetKey
-                ? conversationPinState.pinned
-                : true
-        ),
-        [conversationPinState, pinResetKey],
-    )
+
+    const setConversationLayoutState = (patch: {
+        isPinnedToBottom?: boolean
+        scrollTop?: number | null
+    }) => {
+        if (!activeConversationId) {
+            return
+        }
+        const currentConversationSession = homeConversationSessionsById[activeConversationId] ?? {
+            isPinnedToBottom: true,
+            scrollTop: null,
+        }
+        updateHomeConversationSession(activeConversationId, {
+            ...(Object.prototype.hasOwnProperty.call(patch, 'isPinnedToBottom')
+                ? { isPinnedToBottom: patch.isPinnedToBottom }
+                : { isPinnedToBottom: currentConversationSession.isPinnedToBottom }),
+            ...(Object.prototype.hasOwnProperty.call(patch, 'scrollTop')
+                ? { scrollTop: patch.scrollTop }
+                : { scrollTop: currentConversationSession.scrollTop }),
+        })
+    }
 
     const syncConversationPinnedState = () => {
         const node = conversationBodyRef.current
@@ -46,9 +69,9 @@ export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: str
             return
         }
         const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight
-        setConversationPinState({
-            resetKey: pinResetKey,
-            pinned: distanceFromBottom <= CONVERSATION_BOTTOM_THRESHOLD_PX,
+        setConversationLayoutState({
+            isPinnedToBottom: distanceFromBottom <= CONVERSATION_BOTTOM_THRESHOLD_PX,
+            scrollTop: node.scrollTop,
         })
     }
 
@@ -61,10 +84,17 @@ export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: str
             top: node.scrollHeight,
             behavior: 'smooth',
         })
-        setConversationPinState({
-            resetKey: pinResetKey,
-            pinned: true,
+        setConversationLayoutState({
+            isPinnedToBottom: true,
+            scrollTop: node.scrollHeight,
         })
+    }
+
+    const setSidebarPrimaryHeight = (nextHeight: number) => {
+        if (!activeProjectPath) {
+            return
+        }
+        updateHomeProjectSession(activeProjectPath, { sidebarPrimaryHeight: nextHeight })
     }
 
     const adjustHomeSidebarPrimaryHeight = (delta: number) => {
@@ -72,7 +102,7 @@ export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: str
         if (containerHeight <= 0) {
             return
         }
-        setHomeSidebarPrimaryHeight((current) => clampHomeSidebarPrimaryHeight(current + delta, containerHeight))
+        setSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(homeSidebarPrimaryHeight + delta, containerHeight))
     }
 
     const onHomeSidebarResizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -106,7 +136,7 @@ export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: str
             if (containerHeight <= 0) {
                 return
             }
-            setHomeSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(HOME_SIDEBAR_MIN_PRIMARY_HEIGHT, containerHeight))
+            setSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(HOME_SIDEBAR_MIN_PRIMARY_HEIGHT, containerHeight))
             return
         }
         if (event.key === 'End') {
@@ -115,13 +145,14 @@ export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: str
             if (containerHeight <= 0) {
                 return
             }
-            setHomeSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(containerHeight, containerHeight))
+            setSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(containerHeight, containerHeight))
         }
     }
 
     useEffect(() => {
         if (isNarrowViewport) {
             homeSidebarResizeRef.current = null
+            setIsHomeSidebarResizing(false)
             return
         }
 
@@ -130,7 +161,7 @@ export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: str
             if (containerHeight <= 0) {
                 return
             }
-            setHomeSidebarPrimaryHeight((current) => clampHomeSidebarPrimaryHeight(current, containerHeight))
+            setSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(homeSidebarPrimaryHeight, containerHeight))
         }
 
         syncSidebarHeight()
@@ -138,10 +169,10 @@ export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: str
         return () => {
             window.removeEventListener('resize', syncSidebarHeight)
         }
-    }, [isNarrowViewport])
+    }, [homeSidebarPrimaryHeight, isNarrowViewport, activeProjectPath])
 
     useEffect(() => {
-        if (!effectiveIsHomeSidebarResizing) {
+        if (isNarrowViewport || !isHomeSidebarResizing) {
             return
         }
 
@@ -159,7 +190,7 @@ export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: str
                 return
             }
             const nextHeight = resizeState.startHeight + (event.clientY - resizeState.startY)
-            setHomeSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(nextHeight, containerHeight))
+            setSidebarPrimaryHeight(clampHomeSidebarPrimaryHeight(nextHeight, containerHeight))
         }
 
         window.addEventListener('pointermove', handleHomeSidebarPointerMove)
@@ -172,7 +203,25 @@ export function useHomeSidebarLayout(isNarrowViewport: boolean, pinResetKey: str
             document.body.style.cursor = ''
             document.body.style.userSelect = ''
         }
-    }, [effectiveIsHomeSidebarResizing])
+    }, [isHomeSidebarResizing, isNarrowViewport, activeProjectPath])
+
+    useEffect(() => {
+        const node = conversationBodyRef.current
+        if (!node || !activeConversationId) {
+            return
+        }
+        const conversationSession = homeConversationSessionsById[activeConversationId]
+        if (!conversationSession) {
+            return
+        }
+        if (conversationSession.isPinnedToBottom) {
+            node.scrollTop = node.scrollHeight
+            return
+        }
+        if (typeof conversationSession.scrollTop === 'number') {
+            node.scrollTop = conversationSession.scrollTop
+        }
+    }, [activeConversationId, homeConversationSessionsById])
 
     return {
         conversationBodyRef,

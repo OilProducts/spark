@@ -1,10 +1,24 @@
 import { type StateCreator } from 'zustand'
+import { buildRunsScopeKey } from './runsSessionScope'
 import { buildDiagnosticMaps, normalizeGraphAttrs } from './store-helpers'
 import type { AppState, RunInspectorSlice } from './store-types'
 
 export const createRunInspectorSlice: StateCreator<AppState, [], [], RunInspectorSlice> = (set) => ({
     selectedRunId: null,
-    setSelectedRunId: (id) => set({ selectedRunId: id }),
+    setSelectedRunId: (id) =>
+        set((state) => {
+            const scopeKey = buildRunsScopeKey(state.runsListSession.scopeMode, state.activeProjectPath)
+            return {
+                selectedRunId: id,
+                runsListSession: {
+                    ...state.runsListSession,
+                    selectedRunIdByScopeKey: {
+                        ...state.runsListSession.selectedRunIdByScopeKey,
+                        [scopeKey]: id,
+                    },
+                },
+            }
+        }),
     selectedRunRecord: null,
     selectedRunCompletedNodes: [],
     selectedRunStatusSync: 'idle',

@@ -1,3 +1,4 @@
+import { HomeSessionController } from '@/app/AppSessionControllers'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { useStore } from '@/store'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -104,8 +105,27 @@ const resetProjectScopeState = () => {
     projectSessionsByPath: {},
     projectRegistrationError: null,
     recentProjectPaths: [],
+    homeConversationCache: {
+      snapshotsByConversationId: {},
+      summariesByProjectPath: {},
+    },
+    homeThreadSummariesStatusByProjectPath: {},
+    homeThreadSummariesErrorByProjectPath: {},
+    homeProjectSessionsByPath: {},
+    homeConversationSessionsById: {},
+    homeProjectGitMetadataByPath: {},
   }))
 }
+
+const renderProjectsPanel = () =>
+  render(
+    <>
+      <HomeSessionController />
+      <ProjectsPanel />
+    </>,
+  )
+
+const renderProjectsPanelWithoutHomeController = () => render(<ProjectsPanel />)
 
 describe('ProjectsPanel', () => {
   beforeEach(() => {
@@ -185,7 +205,7 @@ describe('ProjectsPanel', () => {
   })
 
   it('renders a threads-first sidebar and event log', async () => {
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     expect(screen.getByText('Threads')).toBeVisible()
     expect(screen.getByTestId('project-thread-list')).toBeVisible()
@@ -237,7 +257,7 @@ describe('ProjectsPanel', () => {
       }),
     )
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-panel-error')).toHaveTextContent('workspace registry unavailable')
@@ -246,11 +266,12 @@ describe('ProjectsPanel', () => {
   })
 
   it('lets the operator resize sidebar sections in desktop layout', async () => {
-    render(<ProjectsPanel />)
-
-    await waitFor(() => {
-      expect(useStore.getState().projectRegistry['/tmp/quick-switch-project']).toBeDefined()
+    act(() => {
+      useStore.getState().registerProject('/tmp/quick-switch-project')
+      useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
     })
+
+    renderProjectsPanelWithoutHomeController()
 
     const sidebarStack = screen.getByTestId('home-sidebar-stack')
     const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
@@ -278,7 +299,11 @@ describe('ProjectsPanel', () => {
   })
 
   it('points empty states at the navbar project switcher when no project is active', async () => {
-    render(<ProjectsPanel />)
+    renderProjectsPanelWithoutHomeController()
+
+    await waitFor(() => {
+      expect(useStore.getState().projectRegistry['/tmp/quick-switch-project']).toBeDefined()
+    })
 
     expect(
       within(screen.getByTestId('project-thread-list')).getByText(
@@ -303,11 +328,13 @@ describe('ProjectsPanel', () => {
       useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
     expect(screen.getByText('Threads for quick-switch-project.')).toBeVisible()
-    expect(screen.getByText('No threads for this project yet.')).toBeVisible()
+    await waitFor(() => {
+      expect(screen.getByText('No threads for this project yet.')).toBeVisible()
+    })
   })
 
   it('keeps the workflow event log project-scoped', async () => {
@@ -320,7 +347,7 @@ describe('ProjectsPanel', () => {
       })
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanelWithoutHomeController()
 
     expect(screen.getByTestId('project-event-log-list')).toHaveTextContent('Approved plan')
   })
@@ -365,7 +392,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Show this message immediately.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -517,7 +544,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/home/chris/tinker/spark')
     useStore.getState().setActiveProjectPath('/home/chris/tinker/spark')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Reply with a one-line acknowledgement only.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -635,7 +662,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Still working on it.')
@@ -791,7 +818,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
     useStore.getState().setConversationId('conversation-ordering-1')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     const text = history.textContent ?? ''
@@ -922,7 +949,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
     useStore.getState().setConversationId('conversation-tool-collapse-1')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('/bin/zsh -lc ls')
@@ -1028,7 +1055,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
     useStore.getState().setConversationId('conversation-thinking-collapse-1')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Considering proposal')
@@ -1096,7 +1123,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Stream this reply.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -1259,7 +1286,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Keep the streamed thinking visible.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -1543,7 +1570,7 @@ describe('ProjectsPanel', () => {
       conversationId: 'conversation-flow-run',
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-flow-run-request-approve-button')).toBeVisible()
@@ -1627,7 +1654,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Stream this reply.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -1863,7 +1890,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Draft a spec.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -2221,7 +2248,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Can you use the spec proposal too?')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -2470,7 +2497,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Can you use the spec proposal too?')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -2677,7 +2704,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Test interleaved streaming.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -2990,7 +3017,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
@@ -3143,7 +3170,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
@@ -3271,7 +3298,7 @@ describe('ProjectsPanel', () => {
       useStore.getState().setConversationId('conversation-segment-upsert')
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
@@ -3366,7 +3393,7 @@ describe('ProjectsPanel', () => {
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     const composer = screen.getByTestId('project-ai-conversation-input') as HTMLTextAreaElement
     await user.type(composer, 'This should not jump back into the composer.')
@@ -3466,7 +3493,7 @@ describe('ProjectsPanel', () => {
       })
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Second')
@@ -3680,7 +3707,7 @@ describe('ProjectsPanel', () => {
       useStore.getState().setConversationId('conversation-thread-a')
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-thread-list')).toHaveTextContent('Design thread')
@@ -3689,7 +3716,7 @@ describe('ProjectsPanel', () => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Discuss the design changes.')
     })
 
-    await user.click(screen.getByRole('button', { name: /Open thread Planning thread/i }))
+    await user.click(await screen.findByRole('button', { name: /Open thread Planning thread/i }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
@@ -3819,7 +3846,7 @@ describe('ProjectsPanel', () => {
       useStore.getState().setConversationId('conversation-thread-a')
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Discuss the design changes.')
@@ -3828,7 +3855,7 @@ describe('ProjectsPanel', () => {
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Follow up on thread A.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
-    await user.click(screen.getByRole('button', { name: /Open thread Planning thread/i }))
+    await user.click(await screen.findByRole('button', { name: /Open thread Planning thread/i }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
@@ -4022,7 +4049,7 @@ describe('ProjectsPanel', () => {
       useStore.getState().setConversationId('conversation-thread-a')
     })
 
-    render(<ProjectsPanel />)
+    renderProjectsPanel()
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Discuss the design changes.')

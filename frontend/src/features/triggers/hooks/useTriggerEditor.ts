@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import {
     createTriggerValidated,
     deleteTriggerValidated,
     updateTriggerValidated,
     type TriggerResponse,
 } from '@/lib/workspaceClient'
+import { useStore } from '@/store'
 import {
     buildTriggerActionPayload,
     buildTriggerSourcePayload,
@@ -19,19 +20,8 @@ type UseTriggerEditorArgs = {
     refreshTriggers: () => Promise<void>
     selectedTrigger: TriggerResponse | null
     setError: (value: string | null) => void
-    setRevealedWebhookSecrets: Dispatch<SetStateAction<Record<string, string>>>
+    revealWebhookSecret: (triggerId: string, secret: string) => void
     setSelectedTriggerId: (value: string | null) => void
-}
-
-type NewTriggerDraftState = {
-    form: TriggerFormState
-    targetBehavior: 'default' | 'active' | 'manual'
-}
-
-type EditTriggerDraftState = {
-    triggerId: string | null
-    form: TriggerFormState | null
-    targetBehavior: 'inferred' | 'active' | 'manual'
 }
 
 const resolveActiveTargetFields = (activeProjectPath: string | null) => ({
@@ -93,81 +83,60 @@ export function useTriggerEditor({
     refreshTriggers,
     selectedTrigger,
     setError,
-    setRevealedWebhookSecrets,
+    revealWebhookSecret,
     setSelectedTriggerId,
 }: UseTriggerEditorArgs) {
     const { confirm } = useDialogController()
     const activeProjectPathRef = useRef(activeProjectPath)
-    const [newTriggerDraft, setNewTriggerDraft] = useState<NewTriggerDraftState>(() => ({
-        form: createEmptyTriggerForm(activeProjectPath),
-        targetBehavior: 'default',
-    }))
-    const [editTriggerDraft, setEditTriggerDraft] = useState<EditTriggerDraftState>({
-        triggerId: null,
-        form: null,
-        targetBehavior: 'inferred',
-    })
+    const newTriggerDraft = useStore((state) => state.triggersSession.newTriggerDraft)
+    const editTriggerDraftsByTriggerId = useStore((state) => state.triggersSession.editTriggerDraftsByTriggerId)
+    const setTriggersSessionNewDraft = useStore((state) => state.setTriggersSessionNewDraft)
+    const setTriggersSessionEditDraft = useStore((state) => state.setTriggersSessionEditDraft)
+
     const selectedTriggerForm = useMemo(
         () => (selectedTrigger ? triggerToFormState(selectedTrigger, activeProjectPath) : null),
         [activeProjectPath, selectedTrigger],
     )
     const newTriggerForm = newTriggerDraft.form
-    const resolvedEditTriggerForm = editTriggerDraft.triggerId === selectedTrigger?.id
-        ? editTriggerDraft.form
-        : selectedTriggerForm
+    const currentEditDraft = selectedTrigger ? editTriggerDraftsByTriggerId[selectedTrigger.id] ?? null : null
+    const resolvedEditTriggerForm = currentEditDraft?.form ?? selectedTriggerForm
 
     useEffect(() => {
         activeProjectPathRef.current = activeProjectPath
     }, [activeProjectPath])
 
     useEffect(() => {
-        setNewTriggerDraft((current) => {
-            if (current.targetBehavior === 'manual') {
-                return current
-            }
-            const syncedForm = applyActiveTargetFields(current.form, activeProjectPath)
-            if (syncedForm === current.form) {
-                return current
-            }
-            return {
-                ...current,
-                form: syncedForm,
-            }
+        if (newTriggerDraft.targetBehavior === 'manual') {
+            return
+        }
+        const syncedForm = applyActiveTargetFields(newTriggerDraft.form, activeProjectPath)
+        if (syncedForm === newTriggerDraft.form) {
+            return
+        }
+        setTriggersSessionNewDraft({
+            ...newTriggerDraft,
+            form: syncedForm,
         })
-    }, [activeProjectPath])
+    }, [activeProjectPath, newTriggerDraft, setTriggersSessionNewDraft])
 
     useEffect(() => {
-        setEditTriggerDraft((current) => {
-            if (!selectedTrigger || current.triggerId !== selectedTrigger.id || !current.form) {
-                return current
-            }
-            if (current.targetBehavior === 'manual') {
-                return current
-            }
-            const syncedForm = current.targetBehavior === 'active'
-                ? applyActiveTargetFields(current.form, activeProjectPath)
-                : applyInferredTargetFields(current.form, selectedTrigger, activeProjectPath)
-            if (syncedForm === current.form) {
-                return current
-            }
-            return {
-                ...current,
-                form: syncedForm,
-            }
+        if (!selectedTrigger || !currentEditDraft?.form) {
+            return
+        }
+        if (currentEditDraft.targetBehavior === 'manual') {
+            return
+        }
+        const syncedForm = currentEditDraft.targetBehavior === 'active'
+            ? applyActiveTargetFields(currentEditDraft.form, activeProjectPath)
+            : applyInferredTargetFields(currentEditDraft.form, selectedTrigger, activeProjectPath)
+        if (syncedForm === currentEditDraft.form) {
+            return
+        }
+        setTriggersSessionEditDraft(selectedTrigger.id, {
+            ...currentEditDraft,
+            form: syncedForm,
         })
-    }, [activeProjectPath, selectedTrigger])
-
-    useEffect(() => {
-        setEditTriggerDraft((current) => (
-            current.triggerId === selectedTrigger?.id
-                ? current
-                : {
-                    triggerId: null,
-                    form: null,
-                    targetBehavior: 'inferred',
-                }
-        ))
-    }, [selectedTrigger?.id])
+    }, [activeProjectPath, currentEditDraft, selectedTrigger, setTriggersSessionEditDraft])
 
     const onCreateTrigger = async () => {
         try {
@@ -178,10 +147,10 @@ export function useTriggerEditor({
                 action: buildTriggerActionPayload(newTriggerForm),
                 source: buildTriggerSourcePayload(newTriggerForm),
             })
-            setRevealedWebhookSecrets((current) =>
-                created.webhook_secret ? { ...current, [created.id]: created.webhook_secret } : current,
-            )
-            setNewTriggerDraft({
+            if (created.webhook_secret) {
+                revealWebhookSecret(created.id, created.webhook_secret)
+            }
+            setTriggersSessionNewDraft({
                 form: createEmptyTriggerForm(activeProjectPathRef.current),
                 targetBehavior: 'default',
             })
@@ -193,7 +162,9 @@ export function useTriggerEditor({
     }
 
     const onSaveSelectedTrigger = async () => {
-        if (!selectedTrigger || !resolvedEditTriggerForm) return
+        if (!selectedTrigger || !resolvedEditTriggerForm) {
+            return
+        }
         try {
             const payload = selectedTrigger.protected
                 ? buildProtectedTriggerUpdatePayload(resolvedEditTriggerForm)
@@ -204,9 +175,9 @@ export function useTriggerEditor({
                     source: buildTriggerSourcePayload(resolvedEditTriggerForm),
                 }
             const updated = await updateTriggerValidated(selectedTrigger.id, payload)
-            setRevealedWebhookSecrets((current) =>
-                updated.webhook_secret ? { ...current, [updated.id]: updated.webhook_secret } : current,
-            )
+            if (updated.webhook_secret) {
+                revealWebhookSecret(updated.id, updated.webhook_secret)
+            }
             await refreshTriggers()
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to save trigger.')
@@ -214,7 +185,9 @@ export function useTriggerEditor({
     }
 
     const onDeleteSelectedTrigger = async () => {
-        if (!selectedTrigger || selectedTrigger.protected) return
+        if (!selectedTrigger || selectedTrigger.protected) {
+            return
+        }
         const confirmed = await confirm({
             title: 'Delete trigger?',
             description: `Delete trigger "${selectedTrigger.name}"?`,
@@ -222,9 +195,12 @@ export function useTriggerEditor({
             cancelLabel: 'Keep trigger',
             confirmVariant: 'destructive',
         })
-        if (!confirmed) return
+        if (!confirmed) {
+            return
+        }
         try {
             await deleteTriggerValidated(selectedTrigger.id)
+            setTriggersSessionEditDraft(selectedTrigger.id, null)
             setSelectedTriggerId(null)
             await refreshTriggers()
         } catch (nextError) {
@@ -239,29 +215,27 @@ export function useTriggerEditor({
         onDeleteSelectedTrigger,
         onSaveSelectedTrigger,
         setEditTriggerForm: (next: TriggerFormState | null) => {
-            setEditTriggerDraft((current) => {
-                const currentForm = current.triggerId === selectedTrigger?.id && current.form
-                    ? current.form
-                    : selectedTriggerForm ?? next
-                const targetBehavior = currentForm && next && didTriggerTargetChange(currentForm, next)
-                    ? (next.targetMode === 'active' ? 'active' : 'manual')
-                    : current.triggerId === selectedTrigger?.id
-                        ? current.targetBehavior
-                        : 'inferred'
-                return {
-                    triggerId: selectedTrigger?.id ?? null,
-                    form: next,
-                    targetBehavior,
-                }
+            if (!selectedTrigger) {
+                return
+            }
+            const currentDraft = currentEditDraft
+            const currentForm = currentDraft?.form ?? selectedTriggerForm ?? next
+            const targetBehavior = currentForm && next && didTriggerTargetChange(currentForm, next)
+                ? (next.targetMode === 'active' ? 'active' : 'manual')
+                : currentDraft?.targetBehavior ?? 'inferred'
+            setTriggersSessionEditDraft(selectedTrigger.id, {
+                triggerId: selectedTrigger.id,
+                form: next,
+                targetBehavior,
             })
         },
         setNewTriggerForm: (next: TriggerFormState) => {
-            setNewTriggerDraft((current) => ({
+            setTriggersSessionNewDraft({
                 form: next,
-                targetBehavior: didTriggerTargetChange(current.form, next)
+                targetBehavior: didTriggerTargetChange(newTriggerDraft.form, next)
                     ? (next.targetMode === 'active' ? 'active' : 'manual')
-                    : current.targetBehavior,
-            }))
+                    : newTriggerDraft.targetBehavior,
+            })
         },
     }
 }

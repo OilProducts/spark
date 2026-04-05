@@ -2,24 +2,21 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useHomeSidebarLayout } from './useHomeSidebarLayout'
-import { useConversationStream } from './useConversationStream'
 import { useConversationComposer } from './useConversationComposer'
 import { useConversationReviews } from './useConversationReviews'
 import { useProjectConversationCache } from './useProjectConversationCache'
-import { useProjectGitMetadata } from './useProjectGitMetadata'
 import { useProjectsHomeInteractionState } from './useProjectsHomeInteractionState'
 import { usePersistProjectState } from './usePersistProjectState'
 import { useProjectThreadActions } from './projectThreadActions'
 import { debugProjectChat } from '../model/projectChatDebug'
 import { buildProjectsHomeViewModel } from '../model/projectsHomeViewModel'
+import type { ProjectGitMetadata } from '../model/presentation'
 import type { ConversationTimelineEntry } from '../model/types'
 import {
-    buildOrderedProjects,
     buildProjectConversationId,
     extractApiErrorMessage,
     formatConversationAgeShort,
     formatConversationTimestamp,
-    removeProjectFromCache,
 } from '../model/projectsHomeState'
 
 function buildConversationHistoryRevisionKey(history: ConversationTimelineEntry[]) {
@@ -40,15 +37,16 @@ function buildConversationHistoryRevisionKey(history: ConversationTimelineEntry[
 }
 
 export function useProjectsHomeController() {
-    const projectRegistry = useStore((state) => state.projectRegistry)
     const upsertProjectRegistryEntry = useStore((state) => state.upsertProjectRegistryEntry)
-    const projects = Object.values(projectRegistry)
-    const recentProjectPaths = useStore((state) => state.recentProjectPaths)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const projectSessionsByPath = useStore((state) => state.projectSessionsByPath)
+    const homeThreadSummariesStatusByProjectPath = useStore((state) => state.homeThreadSummariesStatusByProjectPath)
+    const clearHomeConversationSession = useStore((state) => state.clearHomeConversationSession)
     const setConversationId = useStore((state) => state.setConversationId)
     const appendProjectEventEntry = useStore((state) => state.appendProjectEventEntry)
     const updateProjectSessionState = useStore((state) => state.updateProjectSessionState)
+    const projectGitMetadata = useStore((state) => state.homeProjectGitMetadataByPath)
+    const setHomeProjectGitMetadata = useStore((state) => state.setHomeProjectGitMetadata)
     const model = useStore((state) => state.model)
     const setExecutionFlow = useStore((state) => state.setExecutionFlow)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
@@ -58,19 +56,20 @@ export function useProjectsHomeController() {
     const persistProjectState = usePersistProjectState(upsertProjectRegistryEntry)
 
     const isNarrowViewport = useNarrowViewport()
-    const { projectGitMetadata, setProjectGitMetadata, ensureProjectGitRepository } = useProjectGitMetadata({
-        projectPaths: projects.map((project) => project.directoryPath),
-        setProjectRegistrationError: () => {},
-    })
     const activeProjectScope = activeProjectPath ? projectSessionsByPath[activeProjectPath] : null
     const activeConversationId = activeProjectScope?.conversationId ?? null
+    const setProjectGitMetadata = useCallback((next: Record<string, ProjectGitMetadata> | ((current: Record<string, ProjectGitMetadata>) => Record<string, ProjectGitMetadata>)) => {
+        const current = useStore.getState().homeProjectGitMetadataByPath
+        const resolved = typeof next === 'function' ? next(current) : next
+        Object.entries(resolved).forEach(([projectPath, metadata]) => {
+            setHomeProjectGitMetadata(projectPath, metadata)
+        })
+    }, [setHomeProjectGitMetadata])
     const {
         applyConversationSnapshot,
-        applyConversationStreamEvent,
         commitConversationCache,
         conversationCache,
         conversationCacheRef,
-        loadProjectConversationSummaries,
         setConversationSummaryList,
     } = useProjectConversationCache({
         persistProjectState,
@@ -81,6 +80,7 @@ export function useProjectsHomeController() {
     const activeConversationSnapshot = activeConversationId
         ? conversationCache.snapshotsByConversationId[activeConversationId] || null
         : null
+    const isConversationHistoryLoading = Boolean(activeConversationId) && activeConversationSnapshot === null
     const latestConversationSpecEditProposalId = activeConversationSnapshot?.spec_edit_proposals.at(-1)?.id || null
     const {
         chatDraft,
@@ -90,7 +90,6 @@ export function useProjectsHomeController() {
         optimisticSend,
         panelError,
         pendingDeleteConversationId,
-        pendingDeleteProjectPath,
         setChatDraft,
         setOptimisticSend,
         setPanelError,
@@ -113,13 +112,11 @@ export function useProjectsHomeController() {
         onHomeSidebarResizePointerDown,
         scrollConversationToBottom,
         syncConversationPinnedState,
-    } = useHomeSidebarLayout(isNarrowViewport, activeProjectPath)
+    } = useHomeSidebarLayout(isNarrowViewport, activeProjectPath, activeConversationId)
     const isConversationPinnedToBottomRef = useRef(isConversationPinnedToBottom)
-
-    const orderedProjects = useMemo(
-        () => buildOrderedProjects(projects, projectRegistry, recentProjectPaths),
-        [projectRegistry, projects, recentProjectPaths],
-    )
+    const activeProjectConversationSummariesStatus = activeProjectPath
+        ? (homeThreadSummariesStatusByProjectPath[activeProjectPath] ?? 'idle')
+        : 'idle'
     const {
         activeConversationHistory,
         activeExecutionCardsById,
@@ -158,28 +155,6 @@ export function useProjectsHomeController() {
         () => buildConversationHistoryRevisionKey(activeConversationHistory),
         [activeConversationHistory],
     )
-
-    useEffect(() => {
-        const registeredPaths = new Set(Object.keys(projectRegistry))
-        commitConversationCache((current) => {
-            const removableProjectPaths = Object.keys(current.summariesByProjectPath).filter(
-                (projectPath) => !registeredPaths.has(projectPath),
-            )
-            if (removableProjectPaths.length === 0) {
-                return current
-            }
-            return removableProjectPaths.reduce(
-                (next, projectPath) => removeProjectFromCache(next, projectPath),
-                current,
-            )
-        })
-        setProjectGitMetadata((current) => {
-            const next = Object.fromEntries(
-                Object.entries(current).filter(([projectPath]) => registeredPaths.has(projectPath)),
-            )
-            return Object.keys(next).length === Object.keys(current).length ? current : next
-        })
-    }, [commitConversationCache, projectRegistry, setProjectGitMetadata])
 
     const appendLocalProjectEvent = useCallback((message: string) => {
         appendProjectEventEntry({
@@ -222,42 +197,6 @@ export function useProjectsHomeController() {
         activateConversationThread(activeProjectPath, conversationId, 'ensure-conversation')
         return conversationId
     }, [activeConversationId, activeProjectPath, activateConversationThread])
-
-    useConversationStream({
-        activeConversationId,
-        activeProjectPath,
-        appendLocalProjectEvent,
-        applyConversationSnapshot,
-        applyConversationStreamEvent,
-        formatErrorMessage: extractApiErrorMessage,
-        setPanelError,
-    })
-
-    useEffect(() => {
-        if (!activeProjectPath) {
-            return
-        }
-
-        let isCancelled = false
-        const loadThreadSummaries = async () => {
-            const summaries = await loadProjectConversationSummaries(activeProjectPath)
-            if (isCancelled) {
-                return
-            }
-            if (activeConversationId) {
-                return
-            }
-            const latestConversation = summaries[0] || null
-            if (latestConversation) {
-                activateConversationThread(activeProjectPath, latestConversation.conversation_id, 'load-latest-thread')
-            }
-        }
-
-        void loadThreadSummaries()
-        return () => {
-            isCancelled = true
-        }
-    }, [activeConversationId, activeProjectPath, activateConversationThread, loadProjectConversationSummaries])
 
     useEffect(() => {
         resetComposerRef.current()
@@ -317,6 +256,7 @@ export function useProjectsHomeController() {
         resetComposer,
         setConversationId,
         updateProjectSessionState,
+        clearHomeConversationSession,
         setPanelError,
         setPendingDeleteConversationId,
         appendLocalProjectEvent,
@@ -355,6 +295,7 @@ export function useProjectsHomeController() {
         isNarrowViewport,
         historyProps: {
             activeConversationId,
+            isConversationHistoryLoading,
             hasRenderableConversationHistory,
             activeConversationHistory,
             activeSpecEditProposalsById,
@@ -390,6 +331,7 @@ export function useProjectsHomeController() {
             activeConversationId,
             activeProjectLabel,
             activeProjectConversationSummaries,
+            activeProjectConversationSummariesStatus,
             pendingDeleteConversationId,
             activeProjectEventLog,
             isHomeSidebarResizing,

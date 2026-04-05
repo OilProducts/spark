@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, type SetStateAction } from 'react'
 import { fetchRunsListValidated } from '@/lib/attractorClient'
 import {
     computeRunMetadataFreshness,
-    RUN_METADATA_STALE_AFTER_MS,
 } from '@/lib/runMetadataFreshness'
 import { useStore } from '@/store'
-import type { RunRecord } from '../model/shared'
 
 const logUnexpectedRunError = (error: unknown) => {
     if (error instanceof Error && error.name === 'ApiHttpError') {
@@ -18,112 +16,139 @@ export function useRunsList({
     activeProjectPath,
     scopeMode,
     selectedRunId,
-    viewMode,
+    manageSync = true,
 }: {
     activeProjectPath: string | null
     scopeMode: 'active' | 'all'
     selectedRunId: string | null
-    viewMode: string
+    manageSync?: boolean
 }) {
     const runRecordOverrides = useStore((state) => state.runRecordOverrides)
-    const [runs, setRuns] = useState<RunRecord[]>([])
-    const [isLoading, setIsLoading] = useState(false)
-    const [error, setError] = useState<string | null>(null)
-    const [now, setNow] = useState(() => Date.now())
-    const [lastFetchedAtMs, setLastFetchedAtMs] = useState<number | null>(null)
-    const [metadataStaleAfterMs] = useState(() => {
-        const override = (globalThis as typeof globalThis & { __RUNS_METADATA_STALE_AFTER_MS__?: unknown })
-            .__RUNS_METADATA_STALE_AFTER_MS__
-        return typeof override === 'number' && Number.isFinite(override) && override > 0
-            ? override
-            : RUN_METADATA_STALE_AFTER_MS
-    })
+    const viewMode = useStore((state) => state.viewMode)
+    const runsListSession = useStore((state) => state.runsListSession)
+    const updateRunsListSession = useStore((state) => state.updateRunsListSession)
     const isFetchingRef = useRef(false)
     const usesActiveProjectScope = scopeMode === 'active'
+    const hasRunsSession =
+        viewMode === 'runs'
+        || selectedRunId !== null
+        || runsListSession.status !== 'idle'
+        || runsListSession.runs.length > 0
+        || runsListSession.scopeMode !== 'active'
 
     const fetchRuns = useCallback(async () => {
-        if (usesActiveProjectScope && !activeProjectPath) {
-            setRuns([])
-            setError(null)
-            setIsLoading(false)
+        if (!hasRunsSession) {
             return
         }
-        if (isFetchingRef.current) return
+        if (usesActiveProjectScope && !activeProjectPath) {
+            updateRunsListSession({
+                runs: [],
+                error: null,
+                status: 'ready',
+            })
+            return
+        }
+        if (isFetchingRef.current) {
+            return
+        }
         isFetchingRef.current = true
-        setIsLoading(true)
-        setError(null)
+        updateRunsListSession({
+            status: 'loading',
+            error: null,
+        })
         try {
             const data = await fetchRunsListValidated(usesActiveProjectScope ? activeProjectPath : null)
-            setRuns(data.runs)
-            setLastFetchedAtMs(Date.now())
+            updateRunsListSession({
+                runs: data.runs,
+                lastFetchedAtMs: Date.now(),
+                status: 'ready',
+                error: null,
+            })
         } catch (err) {
             logUnexpectedRunError(err)
-            setError('Unable to load runs')
+            updateRunsListSession({
+                error: 'Unable to load runs',
+                status: 'error',
+            })
         } finally {
             isFetchingRef.current = false
-            setIsLoading(false)
         }
-    }, [activeProjectPath, usesActiveProjectScope])
+    }, [activeProjectPath, hasRunsSession, updateRunsListSession, usesActiveProjectScope])
 
     useEffect(() => {
-        if (viewMode !== 'runs') return
+        if (!manageSync || !hasRunsSession) {
+            return
+        }
         void fetchRuns()
-    }, [viewMode, fetchRuns])
+    }, [fetchRuns, hasRunsSession, manageSync])
 
     useEffect(() => {
-        if (viewMode !== 'runs') return
+        if (!manageSync || !hasRunsSession) {
+            return
+        }
         const refreshInterval = window.setInterval(() => {
             void fetchRuns()
         }, 15_000)
         return () => window.clearInterval(refreshInterval)
-    }, [viewMode, fetchRuns])
+    }, [fetchRuns, hasRunsSession, manageSync])
 
     useEffect(() => {
-        if (viewMode !== 'runs') return
-        const interval = window.setInterval(() => setNow(Date.now()), 1000)
+        if (!manageSync || !hasRunsSession) {
+            return
+        }
+        const interval = window.setInterval(() => {
+            updateRunsListSession({ nowMs: Date.now() })
+        }, 1000)
         return () => window.clearInterval(interval)
-    }, [viewMode])
+    }, [hasRunsSession, manageSync, updateRunsListSession])
 
     const scopedRuns = useMemo(() => {
         if (Object.keys(runRecordOverrides).length === 0) {
-            return runs
+            return runsListSession.runs
         }
-        return runs.map((run) => {
+        return runsListSession.runs.map((run) => {
             const override = runRecordOverrides[run.run_id]
             return override ? { ...run, ...override } : run
         })
-    }, [runRecordOverrides, runs])
+    }, [runRecordOverrides, runsListSession.runs])
 
     const summary = useMemo(() => {
         const total = scopedRuns.length
         const running = scopedRuns.filter(
-            (run) => run.status === 'running' || run.status === 'cancel_requested' || run.status === 'abort_requested'
+            (run) => run.status === 'running' || run.status === 'cancel_requested' || run.status === 'abort_requested',
         ).length
         return { total, running }
     }, [scopedRuns])
 
     const selectedRunSummary = useMemo(() => {
-        if (!selectedRunId) return null
+        if (!selectedRunId) {
+            return null
+        }
         return scopedRuns.find((run) => run.run_id === selectedRunId) || null
     }, [scopedRuns, selectedRunId])
 
     const metadataFreshness = computeRunMetadataFreshness({
-        isLoading,
-        lastFetchedAtMs,
-        nowMs: now,
-        staleAfterMs: metadataStaleAfterMs,
+        isLoading: runsListSession.status === 'loading',
+        lastFetchedAtMs: runsListSession.lastFetchedAtMs,
+        nowMs: runsListSession.nowMs,
+        staleAfterMs: runsListSession.metadataStaleAfterMs,
     })
 
     return {
-        error,
+        error: runsListSession.error,
         fetchRuns,
-        isLoading,
-        lastFetchedAtMs,
+        isLoading: runsListSession.status === 'loading',
+        lastFetchedAtMs: runsListSession.lastFetchedAtMs,
         metadataFreshness,
-        now,
+        now: runsListSession.nowMs,
         scopedRuns,
         selectedRunSummary,
-        setRuns,
+        setRuns: (next: SetStateAction<typeof runsListSession.runs>) => {
+            updateRunsListSession({
+                runs: typeof next === 'function' ? next(useStore.getState().runsListSession.runs) : next,
+            })
+        },
+        status: runsListSession.status,
         summary,
         usesActiveProjectScope,
     }

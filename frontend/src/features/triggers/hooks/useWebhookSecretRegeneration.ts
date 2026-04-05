@@ -1,18 +1,18 @@
-import { useState, type Dispatch, type SetStateAction } from 'react'
+import { useState } from 'react'
 import { updateTriggerValidated, type TriggerResponse } from '@/lib/workspaceClient'
 
 type UseWebhookSecretRegenerationArgs = {
     refreshTriggers: () => Promise<void>
     selectedTrigger: TriggerResponse | null
     setError: (value: string | null) => void
-    setRevealedWebhookSecrets: Dispatch<SetStateAction<Record<string, string>>>
+    revealWebhookSecret: (triggerId: string, secret: string) => void
 }
 
 export function useWebhookSecretRegeneration({
     refreshTriggers,
     selectedTrigger,
     setError,
-    setRevealedWebhookSecrets,
+    revealWebhookSecret,
 }: UseWebhookSecretRegenerationArgs) {
     const [isRegenerating, setIsRegenerating] = useState(false)
 
@@ -24,7 +24,7 @@ export function useWebhookSecretRegeneration({
                 regenerate_webhook_secret: true,
             })
             if (updated.webhook_secret) {
-                setRevealedWebhookSecrets((current) => ({ ...current, [selectedTrigger.id]: updated.webhook_secret! }))
+                revealWebhookSecret(selectedTrigger.id, updated.webhook_secret)
             }
             await refreshTriggers()
         } catch (nextError) {

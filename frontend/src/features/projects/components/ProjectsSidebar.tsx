@@ -3,7 +3,7 @@ import { FileText, Plus, Trash2 } from "lucide-react"
 
 import { HomeProjectSidebar } from "./HomeProjectSidebar"
 import type { ProjectConversationSummary } from "../model/types"
-import { Button, EmptyState, Panel, PanelContent, PanelHeader, SectionHeader } from "@/ui"
+import { Button, EmptyState, InlineNotice, Panel, PanelContent, PanelHeader, SectionHeader } from "@/ui"
 
 type ProjectEventLogEntry = {
     message: string
@@ -18,6 +18,7 @@ type ProjectsSidebarProps = {
     activeConversationId: string | null
     activeProjectLabel: string | null
     activeProjectConversationSummaries: ProjectConversationSummary[]
+    activeProjectConversationSummariesStatus: 'idle' | 'loading' | 'ready' | 'error'
     pendingDeleteConversationId: string | null
     activeProjectEventLog: ProjectEventLogEntry[]
     isHomeSidebarResizing: boolean
@@ -38,6 +39,7 @@ export function ProjectsSidebar({
     activeConversationId,
     activeProjectLabel,
     activeProjectConversationSummaries,
+    activeProjectConversationSummariesStatus,
     pendingDeleteConversationId,
     activeProjectEventLog,
     isHomeSidebarResizing,
@@ -88,6 +90,18 @@ export function ProjectsSidebar({
                                 {!activeProjectPath ? (
                                     <li>
                                         <EmptyState className="text-xs" description="Choose or add a project from the navbar to view threads." />
+                                    </li>
+                                ) : activeProjectConversationSummariesStatus === 'idle' || activeProjectConversationSummariesStatus === 'loading' ? (
+                                    <li>
+                                        <InlineNotice data-testid="project-thread-list-loading" className="text-xs">
+                                            Restoring thread list…
+                                        </InlineNotice>
+                                    </li>
+                                ) : activeProjectConversationSummariesStatus === 'error' && activeProjectConversationSummaries.length === 0 ? (
+                                    <li>
+                                        <InlineNotice tone="error" className="text-xs">
+                                            Unable to restore the thread list.
+                                        </InlineNotice>
                                     </li>
                                 ) : activeProjectConversationSummaries.length === 0 ? (
                                     <li>
