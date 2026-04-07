@@ -5,11 +5,12 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
 import httpx
 
+from attractor.validation_preview import preview_dot_source
 from workspace.project_chat_common import (
     normalize_flow_run_request_payload,
     normalize_spec_edit_proposal_payload,
@@ -39,7 +40,7 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     )
     spec_proposal.add_argument("--conversation", required=True, help="Conversation handle in adjective-noun form.")
     spec_proposal.add_argument("--json", dest="json_path", required=True, help="JSON payload file path, or '-' for stdin.")
-    spec_proposal.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    spec_proposal.add_argument("--base-url")
 
     run_request = convo_commands.add_parser(
         "run-request",
@@ -59,7 +60,7 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     launch_context_group.add_argument("--launch-context-json", dest="launch_context_json")
     launch_context_group.add_argument("--launch-context-file", dest="launch_context_file")
     run_request.add_argument("--model", help="Optional model override to request if approved.")
-    run_request.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    run_request.add_argument("--base-url")
 
     run = domains.add_parser("run", help="Direct execution commands")
     run_commands = run.add_subparsers(dest="command")
@@ -83,54 +84,56 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     launch_context_group.add_argument("--launch-context-json", dest="launch_context_json")
     launch_context_group.add_argument("--launch-context-file", dest="launch_context_file")
     launch.add_argument("--model", help="Optional model override.")
-    launch.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    launch.add_argument("--base-url")
 
     flow = domains.add_parser("flow", help="Flow discovery and validation")
     flow_commands = flow.add_subparsers(dest="command")
 
     flow_list = flow_commands.add_parser("list", help="List agent-requestable workspace flows")
     flow_list.add_argument("--text", action="store_true", help="Render human-readable text instead of JSON.")
-    flow_list.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    flow_list.add_argument("--base-url")
 
     flow_describe = flow_commands.add_parser("describe", help="Describe one agent-requestable flow")
     flow_describe.add_argument("--flow", required=True)
     flow_describe.add_argument("--text", action="store_true")
-    flow_describe.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    flow_describe.add_argument("--base-url")
 
     flow_get = flow_commands.add_parser("get", help="Fetch raw DOT for one agent-requestable flow")
     flow_get.add_argument("--flow", required=True)
     flow_get.add_argument("--text", action="store_true")
-    flow_get.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    flow_get.add_argument("--base-url")
 
     flow_validate = flow_commands.add_parser("validate", help="Validate a flow after direct DOT edits")
-    flow_validate.add_argument("--flow", required=True)
+    flow_validate_target = flow_validate.add_mutually_exclusive_group(required=True)
+    flow_validate_target.add_argument("--flow")
+    flow_validate_target.add_argument("--file")
     flow_validate.add_argument("--text", action="store_true")
-    flow_validate.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    flow_validate.add_argument("--base-url")
 
     trigger = domains.add_parser("trigger", help="Workspace trigger management")
     trigger_commands = trigger.add_subparsers(dest="command")
 
     trigger_list = trigger_commands.add_parser("list", help="List workspace triggers")
     trigger_list.add_argument("--text", action="store_true")
-    trigger_list.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    trigger_list.add_argument("--base-url")
 
     trigger_describe = trigger_commands.add_parser("describe", help="Describe one workspace trigger")
     trigger_describe.add_argument("--id", required=True, help="Trigger id.")
     trigger_describe.add_argument("--text", action="store_true")
-    trigger_describe.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    trigger_describe.add_argument("--base-url")
 
     trigger_create = trigger_commands.add_parser("create", help="Create a workspace trigger from JSON")
     trigger_create.add_argument("--json", dest="json_path", required=True, help="JSON payload file path, or '-' for stdin.")
-    trigger_create.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    trigger_create.add_argument("--base-url")
 
     trigger_update = trigger_commands.add_parser("update", help="Patch a workspace trigger from JSON")
     trigger_update.add_argument("--id", required=True, help="Trigger id.")
     trigger_update.add_argument("--json", dest="json_path", required=True, help="JSON payload file path, or '-' for stdin.")
-    trigger_update.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    trigger_update.add_argument("--base-url")
 
     trigger_delete = trigger_commands.add_parser("delete", help="Delete a workspace trigger")
     trigger_delete.add_argument("--id", required=True, help="Trigger id.")
-    trigger_delete.add_argument("--base-url", default=os.environ.get("SPARK_API_BASE_URL", DEFAULT_API_BASE_URL))
+    trigger_delete.add_argument("--base-url")
 
     return parser
 
@@ -177,6 +180,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_spec_proposal(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark convo spec-proposal")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
     try:
         payload = _read_required_json_object(str(args.json_path), "Proposal payload")
     except ValueError as exc:
@@ -201,7 +207,7 @@ def _run_spec_proposal(args: argparse.Namespace) -> int:
         return EXIT_GENERAL_FAILURE
 
     request_url = _workspace_url(
-        args.base_url,
+        base_url,
         f"/workspace/api/conversations/by-handle/{quote(str(args.conversation).strip(), safe='')}/spec-edit-proposals",
     )
     response_payload, exit_code = _request_json("POST", request_url, payload=normalized)
@@ -212,6 +218,9 @@ def _run_spec_proposal(args: argparse.Namespace) -> int:
 
 
 def _run_run_request(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark convo run-request")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
     normalized = _build_flow_payload(
         flow_name=args.flow,
         summary=args.summary,
@@ -227,7 +236,7 @@ def _run_run_request(args: argparse.Namespace) -> int:
         return normalized[1]
 
     request_url = _workspace_url(
-        args.base_url,
+        base_url,
         f"/workspace/api/conversations/by-handle/{quote(str(args.conversation).strip(), safe='')}/flow-run-requests",
     )
     response_payload, exit_code = _request_json("POST", request_url, payload=normalized)
@@ -238,6 +247,9 @@ def _run_run_request(args: argparse.Namespace) -> int:
 
 
 def _run_launch(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark run launch")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
     normalized = _build_flow_payload(
         flow_name=args.flow,
         summary=args.summary,
@@ -269,7 +281,7 @@ def _run_launch(args: argparse.Namespace) -> int:
     if project_path:
         payload["project_path"] = project_path
 
-    request_url = _workspace_url(args.base_url, "/workspace/api/runs/launch")
+    request_url = _workspace_url(base_url, "/workspace/api/runs/launch")
     response_payload, exit_code = _request_json("POST", request_url, payload=payload)
     if response_payload is None:
         return exit_code
@@ -278,7 +290,10 @@ def _run_launch(args: argparse.Namespace) -> int:
 
 
 def _run_list_flows(args: argparse.Namespace) -> int:
-    response_payload, exit_code = _request_json("GET", _workspace_url(args.base_url, "/workspace/api/flows?surface=agent"))
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark flow list")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
+    response_payload, exit_code = _request_json("GET", _workspace_url(base_url, "/workspace/api/flows?surface=agent"))
     if response_payload is None:
         return exit_code
     if args.text:
@@ -299,13 +314,16 @@ def _run_list_flows(args: argparse.Namespace) -> int:
 
 
 def _run_describe_flow(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark flow describe")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
     flow_name = str(args.flow or "").strip()
     if not flow_name:
         _print_error_payload({"ok": False, "error": "Missing required --flow name."})
         return EXIT_GENERAL_FAILURE
     response_payload, exit_code = _request_json(
         "GET",
-        _workspace_url(args.base_url, f"/workspace/api/flows/{quote(flow_name, safe='')}?surface=agent"),
+        _workspace_url(base_url, f"/workspace/api/flows/{quote(flow_name, safe='')}?surface=agent"),
     )
     if response_payload is None:
         return exit_code
@@ -317,13 +335,16 @@ def _run_describe_flow(args: argparse.Namespace) -> int:
 
 
 def _run_get_flow(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark flow get")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
     flow_name = str(args.flow or "").strip()
     if not flow_name:
         _print_error_payload({"ok": False, "error": "Missing required --flow name."})
         return EXIT_GENERAL_FAILURE
     response_text, exit_code = _request_text(
         "GET",
-        _workspace_url(args.base_url, f"/workspace/api/flows/{quote(flow_name, safe='')}/raw?surface=agent"),
+        _workspace_url(base_url, f"/workspace/api/flows/{quote(flow_name, safe='')}/raw?surface=agent"),
     )
     if response_text is None:
         return exit_code
@@ -335,16 +356,38 @@ def _run_get_flow(args: argparse.Namespace) -> int:
 
 
 def _run_validate_flow(args: argparse.Namespace) -> int:
-    flow_name = str(args.flow or "").strip()
-    if not flow_name:
-        _print_error_payload({"ok": False, "error": "Missing required --flow name."})
-        return EXIT_GENERAL_FAILURE
-    response_payload, exit_code = _request_json(
-        "GET",
-        _workspace_url(args.base_url, f"/workspace/api/flows/{quote(flow_name, safe='')}/validate"),
-    )
-    if response_payload is None:
-        return exit_code
+    flow_file = str(getattr(args, "file", "") or "").strip()
+    if flow_file:
+        try:
+            flow_path = Path(flow_file).expanduser()
+            raw_content = flow_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            _print_error_payload({"ok": False, "error": f"Flow file not found: {flow_file}"})
+            return EXIT_GENERAL_FAILURE
+        except OSError as exc:
+            _print_error_payload({"ok": False, "error": f"Unable to read flow file {flow_file}: {exc}"})
+            return EXIT_GENERAL_FAILURE
+
+        _graph, preview_payload = preview_dot_source(raw_content)
+        response_payload = {
+            "name": flow_path.name,
+            "path": str(flow_path.resolve(strict=False)),
+            **preview_payload,
+        }
+    else:
+        base_url = _resolve_base_url_or_print_error(args.base_url, command="spark flow validate")
+        if base_url is None:
+            return EXIT_GENERAL_FAILURE
+        flow_name = str(args.flow or "").strip()
+        if not flow_name:
+            _print_error_payload({"ok": False, "error": "Missing required --flow name."})
+            return EXIT_GENERAL_FAILURE
+        response_payload, exit_code = _request_json(
+            "GET",
+            _workspace_url(base_url, f"/workspace/api/flows/{quote(flow_name, safe='')}/validate"),
+        )
+        if response_payload is None:
+            return exit_code
     if args.text:
         _print_validate_flow_text(response_payload)
         return 0
@@ -353,7 +396,10 @@ def _run_validate_flow(args: argparse.Namespace) -> int:
 
 
 def _run_list_triggers(args: argparse.Namespace) -> int:
-    response_payload, exit_code = _request_json("GET", _workspace_url(args.base_url, "/workspace/api/triggers"))
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark trigger list")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
+    response_payload, exit_code = _request_json("GET", _workspace_url(base_url, "/workspace/api/triggers"))
     if response_payload is None:
         return exit_code
     if args.text:
@@ -375,13 +421,16 @@ def _run_list_triggers(args: argparse.Namespace) -> int:
 
 
 def _run_describe_trigger(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark trigger describe")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
     trigger_id = str(args.id or "").strip()
     if not trigger_id:
         _print_error_payload({"ok": False, "error": "Missing required --id."})
         return EXIT_GENERAL_FAILURE
     response_payload, exit_code = _request_json(
         "GET",
-        _workspace_url(args.base_url, f"/workspace/api/triggers/{quote(trigger_id, safe='')}"),
+        _workspace_url(base_url, f"/workspace/api/triggers/{quote(trigger_id, safe='')}"),
     )
     if response_payload is None:
         return exit_code
@@ -393,6 +442,9 @@ def _run_describe_trigger(args: argparse.Namespace) -> int:
 
 
 def _run_create_trigger(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark trigger create")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
     try:
         payload = _read_required_json_object(str(args.json_path), "Trigger payload")
     except ValueError as exc:
@@ -400,7 +452,7 @@ def _run_create_trigger(args: argparse.Namespace) -> int:
         return EXIT_GENERAL_FAILURE
     response_payload, exit_code = _request_json(
         "POST",
-        _workspace_url(args.base_url, "/workspace/api/triggers"),
+        _workspace_url(base_url, "/workspace/api/triggers"),
         payload=payload,
     )
     if response_payload is None:
@@ -410,6 +462,9 @@ def _run_create_trigger(args: argparse.Namespace) -> int:
 
 
 def _run_update_trigger(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark trigger update")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
     trigger_id = str(args.id or "").strip()
     if not trigger_id:
         _print_error_payload({"ok": False, "error": "Missing required --id."})
@@ -421,7 +476,7 @@ def _run_update_trigger(args: argparse.Namespace) -> int:
         return EXIT_GENERAL_FAILURE
     response_payload, exit_code = _request_json(
         "PATCH",
-        _workspace_url(args.base_url, f"/workspace/api/triggers/{quote(trigger_id, safe='')}"),
+        _workspace_url(base_url, f"/workspace/api/triggers/{quote(trigger_id, safe='')}"),
         payload=payload,
     )
     if response_payload is None:
@@ -431,13 +486,16 @@ def _run_update_trigger(args: argparse.Namespace) -> int:
 
 
 def _run_delete_trigger(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark trigger delete")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
     trigger_id = str(args.id or "").strip()
     if not trigger_id:
         _print_error_payload({"ok": False, "error": "Missing required --id."})
         return EXIT_GENERAL_FAILURE
     response_payload, exit_code = _request_json(
         "DELETE",
-        _workspace_url(args.base_url, f"/workspace/api/triggers/{quote(trigger_id, safe='')}"),
+        _workspace_url(base_url, f"/workspace/api/triggers/{quote(trigger_id, safe='')}"),
     )
     if response_payload is None:
         return exit_code
@@ -535,6 +593,54 @@ def _build_flow_payload(
 
 def _workspace_url(base_url: str, path: str) -> str:
     return f"{str(base_url).rstrip('/')}{path}"
+
+
+def _running_from_source_checkout(project_root: Path) -> bool:
+    return (
+        (project_root / ".git").exists()
+        or (
+            (project_root / "pyproject.toml").is_file()
+            and (project_root / "src" / "spark" / "starter_flows").is_dir()
+            and (project_root / "frontend").is_dir()
+        )
+    )
+
+
+def _require_explicit_agent_base_url(
+    *,
+    command: str,
+    base_url: str | None,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    env_map = env if env is not None else os.environ
+    project_root = Path(__file__).resolve().parents[2]
+    if not _running_from_source_checkout(project_root):
+        return
+    if str(base_url or "").strip() or str(env_map.get("SPARK_API_BASE_URL") or "").strip():
+        return
+    raise RuntimeError(
+        "\n".join(
+            [
+                f"Refusing to use default API target {DEFAULT_API_BASE_URL} from a source checkout at {project_root}.",
+                "",
+                "The default API target is reserved for the installed or stable Spark instance.",
+                f"Run the source checkout with an explicit dev server target before `{command}`, for example:",
+                "",
+                "  SPARK_API_BASE_URL=http://127.0.0.1:8010 uv run spark flow list",
+                "  SPARK_API_BASE_URL=http://127.0.0.1:8010 uv run spark flow describe --flow simple-linear",
+                "  uv run spark flow validate --file src/spark/starter_flows/simple-linear.dot --text",
+            ]
+        )
+    )
+
+
+def _resolve_base_url_or_print_error(base_url: str | None, *, command: str) -> str | None:
+    try:
+        _require_explicit_agent_base_url(command=command, base_url=base_url)
+    except RuntimeError as exc:
+        _print_error_payload({"ok": False, "error": str(exc)})
+        return None
+    return str(base_url or os.environ.get("SPARK_API_BASE_URL") or DEFAULT_API_BASE_URL).strip()
 
 
 def _request_json(method: str, url: str, *, payload: dict[str, object] | None = None) -> tuple[object | None, int]:

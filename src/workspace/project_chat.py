@@ -439,7 +439,7 @@ class ProjectChatService:
                 "dot_authoring_guide_path": str(self._authoring_guide_path),
                 "flow_extensions_spec_path": str(self._flow_extensions_spec_path),
                 "attractor_spec_path": str(self._attractor_spec_path),
-                "flow_validation_command": "spark flow validate --flow <name> --text",
+                "flow_validation_command": "spark flow validate --file <path> --text",
                 "recent_conversation": history_text,
                 "latest_user_message": message,
             },

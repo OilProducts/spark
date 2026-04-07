@@ -224,7 +224,7 @@ def test_project_chat_prompt_includes_flow_authoring_boundary(tmp_path: Path) ->
     assert f"`{dot_authoring_guide_path()}`" in prompt
     assert f"`{flow_extensions_spec_path()}`" in prompt
     assert f"`{attractor_spec_path()}`" in prompt
-    assert "spark flow validate --flow <name> --text" in prompt
+    assert "spark flow validate --file <path> --text" in prompt
 
 
 def test_project_chat_service_rejects_malformed_prompt_templates(tmp_path: Path) -> None:

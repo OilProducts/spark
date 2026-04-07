@@ -48,6 +48,7 @@ from attractor.api.codex_backends import (
     CodexAppServerBackend,
     build_codergen_backend as _build_codergen_backend_impl,
 )
+from attractor.validation_preview import diagnostic_payload as _diagnostic_payload_impl
 from attractor.api.flow_sources import (
     ensure_flows_dir as _ensure_flows_dir_impl,
     flow_name_from_path as _flow_name_from_path_impl,
@@ -861,20 +862,7 @@ def _graph_payload(graph) -> dict:
 
 
 def _diagnostic_payload(diagnostic: Diagnostic) -> dict:
-    payload = {
-        "rule": diagnostic.rule_id,
-        "rule_id": diagnostic.rule_id,
-        "severity": diagnostic.severity.value,
-        "message": diagnostic.message,
-        "line": diagnostic.line,
-        "node": diagnostic.node_id,
-        "node_id": diagnostic.node_id,
-    }
-    if diagnostic.edge is not None:
-        payload["edge"] = list(diagnostic.edge)
-    if diagnostic.fix is not None:
-        payload["fix"] = diagnostic.fix
-    return payload
+    return _diagnostic_payload_impl(diagnostic)
 
 
 def _build_transform_pipeline() -> object:
@@ -899,6 +887,7 @@ def _preview_payload_from_dot_source(dot_source: str) -> dict:
             "message": str(exc),
             "line": getattr(exc, "line", 0),
             "node": None,
+            "node_id": None,
         }
         return {
             "status": "parse_error",

@@ -32,7 +32,7 @@ For flow authoring, use this progression:
 - Product overview and authoring heuristics: this README
 - Full raw DOT reference: [src/spark/guides/dot-authoring.md](/Users/chris/projects/spark/src/spark/guides/dot-authoring.md)
 
-After direct flow edits, validate with `spark flow validate --flow <name> --text`.
+After direct flow edits, validate with `spark flow validate --file /path/to/flow.dot --text`.
 
 ## Flow Building Guide
 

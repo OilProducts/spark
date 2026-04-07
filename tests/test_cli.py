@@ -5,6 +5,8 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
 import spark.authoring_assets as authoring_assets
 import spark.cli as spark_cli
 import spark.starter_assets as starter_assets
@@ -13,6 +15,11 @@ import spark_server.cli as spark_server_cli
 
 
 TEST_AGENT_FLOW = "test-dispatch.dot"
+
+
+@pytest.fixture(autouse=True)
+def _disable_source_checkout_guard_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(spark_cli, "_running_from_source_checkout", lambda _project_root: False)
 
 
 def test_run_serve_uses_import_string_when_reload_enabled(monkeypatch, tmp_path: Path) -> None:
@@ -732,6 +739,86 @@ def test_agent_validate_flow_text_mode_formats_diagnostics(monkeypatch, capsys) 
     output = capsys.readouterr().out
     assert "Status: invalid" in output
     assert "- ERROR missing-edge line 7: Missing edge." in output
+
+
+def test_agent_validate_flow_file_text_mode_uses_local_preview(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    flow_path = tmp_path / "broken.dot"
+    flow_path.write_text("digraph broken { start -> }\n", encoding="utf-8")
+
+    class UnexpectedClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("local --file validation should not open an HTTP client")
+
+    monkeypatch.setattr(spark_cli.httpx, "Client", UnexpectedClient)
+
+    result = spark_cli.main(["flow", "validate", "--file", str(flow_path), "--text"])
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert f"Name: {flow_path.name}" in output
+    assert f"Path: {flow_path.resolve(strict=False)}" in output
+    assert "Status: parse_error" in output
+
+
+def test_agent_validate_flow_file_reports_missing_path(capsys) -> None:
+    result = spark_cli.main(["flow", "validate", "--file", "/tmp/does-not-exist.dot"])
+
+    assert result == spark_cli.EXIT_GENERAL_FAILURE
+    assert "Flow file not found: /tmp/does-not-exist.dot" in capsys.readouterr().err
+
+
+def test_agent_cli_requires_explicit_base_url_from_source_checkout(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(spark_cli, "_running_from_source_checkout", lambda _project_root: True)
+    monkeypatch.delenv("SPARK_API_BASE_URL", raising=False)
+
+    result = spark_cli.main(["flow", "list"])
+
+    assert result == spark_cli.EXIT_GENERAL_FAILURE
+    stderr = capsys.readouterr().err
+    assert "Refusing to use default API target http://127.0.0.1:8000 from a source checkout" in stderr
+    assert "SPARK_API_BASE_URL=http://127.0.0.1:8010 uv run spark flow list" in stderr
+
+
+def test_agent_cli_allows_explicit_base_url_env_from_source_checkout(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(spark_cli, "_running_from_source_checkout", lambda _project_root: True)
+    monkeypatch.setenv("SPARK_API_BASE_URL", "http://127.0.0.1:8010")
+
+    class FakeResponse:
+        status_code = 200
+        is_error = False
+
+        def json(self) -> object:
+            return []
+
+    class FakeClient:
+        def __init__(self, timeout: float) -> None:
+            assert timeout == 30.0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def request(self, method: str, url: str, json: dict[str, object] | None = None):
+            assert method == "GET"
+            assert json is None
+            assert url == "http://127.0.0.1:8010/workspace/api/flows?surface=agent"
+            return FakeResponse()
+
+    monkeypatch.setattr(spark_cli.httpx, "Client", FakeClient)
+
+    result = spark_cli.main(["flow", "list"])
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == []
 
 
 def test_agent_get_flow_defaults_to_json_wrapper(monkeypatch, capsys) -> None:
