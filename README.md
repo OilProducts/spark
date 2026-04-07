@@ -255,7 +255,7 @@ Useful `just` targets from [justfile](/Users/chris/projects/spark/justfile):
 - `just frontend-unit`: frontend unit tests
 - `just ui-smoke`: Playwright smoke checks
 - `just dot-lint`: DOT formatting lint regression
-- `just build`: frontend build, UI dist sync, and wheel build
+- `just build`: frontend build and wheel build
 
 ## Testing
 
@@ -289,9 +289,10 @@ Or run the steps manually:
 
 ```bash
 npm --prefix frontend run build
-./scripts/sync_ui_dist.sh
 uv build
 ```
+
+`uv build` stages the bundled UI into the package transiently from `frontend/dist` and cleans it afterward. The generated `src/spark_app/ui_dist` tree is not tracked in git.
 
 Install the resulting wheel:
 

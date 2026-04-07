@@ -1,6 +1,0 @@
-attractor
-spark
-spark_app
-spark_common
-spark_server
-workspace

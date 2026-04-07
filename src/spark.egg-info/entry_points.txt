@@ -1,3 +1,0 @@
-[console_scripts]
-spark = spark.cli:main
-spark-server = spark_server.cli:main

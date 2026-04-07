@@ -1,5 +1,0 @@
-fastapi<1.0,>=0.111
-httpx<1.0,>=0.27
-platformdirs>=4.0
-pydantic<3.0,>=2.7
-uvicorn[standard]<1.0,>=0.30

@@ -1,10 +1,11 @@
 agent-notes.md
 __pycache__/
 *.pyc
+*.egg-info/
 .spark/
 codex-app-server.schema/
 .DS_Store
 artifacts/
 frontend/.tmp-*/
-attractor/ui_dist/
+src/spark_app/ui_dist/
 .idea/

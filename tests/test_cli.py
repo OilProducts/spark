@@ -274,11 +274,14 @@ def test_packaged_starter_flows_are_loadable_without_repo_checkout(tmp_path: Pat
     assert payload["spec-implementation/implement-spec.dot"]
 
 
-def test_packaged_ui_dir_is_resolved_when_repo_frontend_dist_is_missing(tmp_path: Path) -> None:
+def test_resolve_default_ui_dir_prefers_repo_frontend_dist(tmp_path: Path) -> None:
+    source_dist = tmp_path / "frontend" / "dist"
+    source_dist.mkdir(parents=True, exist_ok=True)
+    (source_dist / "index.html").write_text("<html></html>", encoding="utf-8")
+
     ui_dir = resolve_default_ui_dir(tmp_path)
 
-    assert ui_dir is not None
-    assert (ui_dir / "index.html").is_file()
+    assert ui_dir == source_dist.resolve(strict=False)
 
 
 def test_agent_spec_proposal_posts_payload_and_prints_response(

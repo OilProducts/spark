@@ -42,16 +42,10 @@ From the repo root, `just run` is the normal full-stack workflow.
 ## Build Output
 
 Production assets are emitted to `frontend/dist/`.
-To bundle them into the Python package, sync them into [src/attractor/ui_dist/](/Users/chris/projects/spark/src/attractor/ui_dist) from the repo root:
+When building the Python package from the repo root, `uv build` or `just build` bundles `frontend/dist` into the wheel and sdist automatically:
 
 ```bash
-./scripts/sync_ui_dist.sh
-```
-
-Or use:
-
-```bash
-just sync-ui-dist
+just build
 ```
 
 ## Related Docs
