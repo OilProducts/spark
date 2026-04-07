@@ -146,6 +146,12 @@ Initialize the runtime tree and seed starter flows:
 uv run spark-server init
 ```
 
+Install a stable wheel into `~/.spark/venv` and initialize the stable runtime:
+
+```bash
+just install
+```
+
 Run the full stack locally:
 
 ```bash
@@ -154,10 +160,21 @@ just run
 
 This starts:
 
-- the backend on `127.0.0.1:8000`
+- the backend on `127.0.0.1:8010`
 - the Vite frontend on `127.0.0.1:5173`
 
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173) for live frontend development.
+
+The source-checkout dev wrapper intentionally uses a separate runtime home and port so it does not stomp on a stable installed Spark instance:
+
+- `SPARK_HOME` defaults to `~/.spark-dev`
+- backend port defaults to `8010`
+
+Initialize that dev runtime explicitly with:
+
+```bash
+just init-dev
+```
 
 For Docker-based development:
 

@@ -36,10 +36,6 @@ def resolve_settings(
     env_map = env if env is not None else os.environ
     project_root = _detect_project_root()
     default_data_dir = Path.home() / ".spark"
-    default_config_dir = default_data_dir / "config"
-    default_runtime_dir = default_data_dir / "runtime"
-    default_logs_dir = default_data_dir / "logs"
-    default_flows_dir = default_data_dir / "flows"
 
     resolved_data_dir = _coalesce_path(
         cli_value=data_dir,
@@ -60,7 +56,7 @@ def resolve_settings(
     resolved_flows_dir = _coalesce_path(
         cli_value=flows_dir,
         env_value=env_map.get(ENV_FLOWS_DIR),
-        default_value=default_flows_dir,
+        default_value=resolved_data_dir / "flows",
     )
     resolved_ui_dir = _coalesce_optional_path(
         cli_value=ui_dir,

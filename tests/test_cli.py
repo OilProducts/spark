@@ -8,6 +8,7 @@ from pathlib import Path
 import spark.authoring_assets as authoring_assets
 import spark.cli as spark_cli
 import spark.starter_assets as starter_assets
+from spark_app.ui import resolve_default_ui_dir
 import spark_server.cli as spark_server_cli
 
 
@@ -71,6 +72,21 @@ def test_run_serve_preserves_runtime_path_env_for_reload(monkeypatch, tmp_path: 
     assert spark_server_cli.os.environ["SPARK_HOME"] == str(data_dir.resolve(strict=False))
     assert spark_server_cli.os.environ["SPARK_FLOWS_DIR"] == str(flows_dir.resolve(strict=False))
     assert spark_server_cli.os.environ["SPARK_UI_DIR"] == str(ui_dir.resolve(strict=False))
+
+
+def test_run_serve_requires_explicit_dev_home_from_source_checkout(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(spark_server_cli, "_running_from_source_checkout", lambda _project_root: True)
+    monkeypatch.delenv("SPARK_HOME", raising=False)
+
+    result = spark_server_cli.main(["serve"])
+
+    assert result == 1
+    stderr = capsys.readouterr().err
+    assert "Refusing to use default runtime home ~/.spark from a source checkout" in stderr
+    assert "SPARK_HOME=~/.spark-dev uv run spark-server serve --reload --port 8010" in stderr
 
 
 def test_run_init_seeds_missing_starter_flows_without_overwriting_existing(
@@ -180,6 +196,46 @@ def test_run_init_creates_nested_starter_flow_directories(
     assert "created=2 updated=0 skipped=0" in output
 
 
+def test_run_init_requires_explicit_dev_home_from_source_checkout(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(spark_server_cli, "_running_from_source_checkout", lambda _project_root: True)
+    monkeypatch.delenv("SPARK_HOME", raising=False)
+
+    result = spark_server_cli.main(["init"])
+
+    assert result == 1
+    stderr = capsys.readouterr().err
+    assert "Refusing to use default runtime home ~/.spark from a source checkout" in stderr
+    assert "SPARK_HOME=~/.spark-dev uv run spark-server init" in stderr
+
+
+def test_run_init_allows_explicit_home_env_from_source_checkout(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    monkeypatch.setattr(spark_server_cli, "_running_from_source_checkout", lambda _project_root: True)
+    monkeypatch.delenv("SPARK_FLOWS_DIR", raising=False)
+    monkeypatch.delenv("SPARK_UI_DIR", raising=False)
+    monkeypatch.setenv("SPARK_HOME", str(tmp_path / "dev-home"))
+    monkeypatch.setattr(
+        starter_assets,
+        "load_starter_flow_assets",
+        lambda *, project_root=None: (
+            starter_assets.StarterFlowAsset("simple-linear.dot", "simple-linear\n"),
+        ),
+    )
+
+    result = spark_server_cli.main(["init"])
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert f"Initialized Spark at {(tmp_path / 'dev-home').resolve(strict=False)}" in output
+    assert f"Starter flows: {(tmp_path / 'dev-home' / 'flows').resolve(strict=False)}" in output
+
+
 def test_packaged_starter_flows_exist_in_single_source_tree() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     packaged_starter_dir = repo_root / "src" / "spark" / "starter_flows"
@@ -206,6 +262,23 @@ def test_packaged_authoring_references_match_repo_sources() -> None:
     assert packaged_flow_extensions_spec.read_text(encoding="utf-8") == (
         repo_root / "specs" / "spark-flow-extensions.md"
     ).read_text(encoding="utf-8")
+
+
+def test_packaged_starter_flows_are_loadable_without_repo_checkout(tmp_path: Path) -> None:
+    assets = starter_assets.load_starter_flow_assets(project_root=tmp_path)
+
+    payload = {asset.name: asset.content for asset in assets}
+
+    assert "simple-linear.dot" in payload
+    assert "spec-implementation/implement-spec.dot" in payload
+    assert payload["spec-implementation/implement-spec.dot"]
+
+
+def test_packaged_ui_dir_is_resolved_when_repo_frontend_dist_is_missing(tmp_path: Path) -> None:
+    ui_dir = resolve_default_ui_dir(tmp_path)
+
+    assert ui_dir is not None
+    assert (ui_dir / "index.html").is_file()
 
 
 def test_agent_spec_proposal_posts_payload_and_prints_response(

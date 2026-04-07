@@ -4,10 +4,48 @@ import argparse
 import os
 from pathlib import Path
 import sys
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import spark.starter_assets as starter_assets
 from spark_app.ui_release_gate import run_required_ui_feature_release_gate
+
+
+def _running_from_source_checkout(project_root: Path) -> bool:
+    return (
+        (project_root / ".git").exists()
+        or (
+            (project_root / "pyproject.toml").is_file()
+            and (project_root / "src" / "spark" / "starter_flows").is_dir()
+            and (project_root / "frontend").is_dir()
+        )
+    )
+
+
+def _require_explicit_dev_home(
+    *,
+    command: str,
+    data_dir: Path | None,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    env_map = env if env is not None else os.environ
+    project_root = Path(__file__).resolve().parents[2]
+    if not _running_from_source_checkout(project_root):
+        return
+    if data_dir is not None or env_map.get("SPARK_HOME"):
+        return
+    raise RuntimeError(
+        "\n".join(
+            [
+                f"Refusing to use default runtime home ~/.spark from a source checkout at {project_root}.",
+                "",
+                "The default home is reserved for the installed or stable Spark instance.",
+                f"Run the source checkout with an explicit dev home before `{command}`, for example:",
+                "",
+                "  SPARK_HOME=~/.spark-dev uv run spark-server init",
+                "  SPARK_HOME=~/.spark-dev uv run spark-server serve --reload --port 8010",
+            ]
+        )
+    )
 
 
 def _build_runtime_parser() -> argparse.ArgumentParser:
@@ -69,6 +107,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_serve(args: argparse.Namespace) -> int:
+    try:
+        _require_explicit_dev_home(command="spark-server serve", data_dir=args.data_dir)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     import uvicorn
 
     import attractor.api.server as server
@@ -102,6 +146,12 @@ def _run_serve(args: argparse.Namespace) -> int:
 
 def _run_init(args: argparse.Namespace) -> int:
     from spark_common.settings import resolve_settings, validate_settings
+
+    try:
+        _require_explicit_dev_home(command="spark-server init", data_dir=args.data_dir)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     settings = resolve_settings(
         data_dir=args.data_dir,
