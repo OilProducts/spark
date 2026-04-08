@@ -9,7 +9,7 @@ def test_resolve_settings_defaults_flows_dir_to_repo_flows_when_running_from_git
     settings = resolve_settings(env={})
 
     expected_project_root = Path(__file__).resolve().parents[1]
-    expected_data_dir = Path.home() / ".spark"
+    expected_data_dir = (Path.home() / ".spark").resolve(strict=False)
 
     assert settings.project_root == expected_project_root
     assert settings.flows_dir == expected_data_dir / "flows"
