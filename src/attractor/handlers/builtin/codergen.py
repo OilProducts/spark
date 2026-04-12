@@ -21,7 +21,6 @@ RUNTIME_CONTEXT_CARRYOVER_KEY = "_attractor.runtime.context_carryover"
 DECLARED_CONTEXT_MISSING_SENTINEL = "<missing>"
 STATUS_ENVELOPE_RESPONSE_CONTRACT = "status_envelope"
 DEFAULT_CONTRACT_REPAIR_ATTEMPTS = 1
-STATUS_ENVELOPE_PROMPT_APPENDIX = build_status_envelope_prompt_appendix(None)
 
 
 class CodergenHandler:
