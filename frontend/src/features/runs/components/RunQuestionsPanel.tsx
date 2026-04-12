@@ -1,7 +1,7 @@
 import type { PendingInterviewGate, PendingInterviewGateGroup } from '../model/shared'
 import { pendingGateSemanticHint, formatTimestamp } from '../model/shared'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { InlineNotice } from '@/components/app/inline-notice'
 import { Input } from '@/components/ui/input'
 interface RunQuestionsPanelProps {
     freeformAnswersByGateId: Record<string, string>
@@ -30,13 +30,14 @@ export function RunQuestionsPanel({
                 Pending Human Gates
             </div>
             {pendingGateActionError && (
-                <InlineNotice
+                <Alert
                     data-testid="run-pending-human-gate-answer-error"
-                    tone="error"
-                    className="mt-2 px-2 py-1 text-xs"
+                    className="mt-2 border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive"
                 >
-                    {pendingGateActionError}
-                </InlineNotice>
+                    <AlertDescription className="text-inherit">
+                        {pendingGateActionError}
+                    </AlertDescription>
+                </Alert>
             )}
             <div className="mt-2 space-y-2">
                 {groupedPendingInterviewGates.map((group) => (

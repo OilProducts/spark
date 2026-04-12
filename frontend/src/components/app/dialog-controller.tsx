@@ -8,6 +8,16 @@ import {
 } from 'react'
 
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -16,7 +26,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { FieldRow } from '@/components/app/field-row'
+import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -186,18 +196,59 @@ export function DialogProvider({ children }: PropsWithChildren) {
   return (
     <DialogControllerContext.Provider value={controller}>
       {children}
+      {currentDialog && currentDialog.kind !== 'prompt' ? (
+        <AlertDialog
+          open
+          onOpenChange={(isOpen) => {
+            if (!isOpen) {
+              closeDialog()
+            }
+          }}
+        >
+          <AlertDialogContent
+            data-testid="shared-dialog"
+            className="sm:max-w-md"
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle data-testid="shared-dialog-title">
+                {currentDialog.title}
+              </AlertDialogTitle>
+              {currentDialog.description ? (
+                <AlertDialogDescription data-testid="shared-dialog-description">
+                  {currentDialog.description}
+                </AlertDialogDescription>
+              ) : null}
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              {currentDialog.kind === 'confirm' ? (
+                <AlertDialogCancel data-testid="shared-dialog-cancel">
+                  {currentDialog.cancelLabel || 'Cancel'}
+                </AlertDialogCancel>
+              ) : null}
+              <AlertDialogAction
+                data-testid="shared-dialog-confirm"
+                onClick={confirmDialog}
+                asChild
+              >
+                <Button variant={currentDialog.confirmVariant}>
+                  {currentDialog.confirmLabel || 'OK'}
+                </Button>
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      ) : null}
       <Dialog
-        open={Boolean(currentDialog)}
+        open={currentDialog?.kind === 'prompt'}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             closeDialog()
           }
         }}
       >
-        {currentDialog ? (
+        {currentDialog?.kind === 'prompt' ? (
           <DialogContent
             data-testid="shared-dialog"
-            showCloseButton={currentDialog.kind !== 'alert'}
             className="sm:max-w-md"
           >
             <DialogHeader>
@@ -219,7 +270,8 @@ export function DialogProvider({ children }: PropsWithChildren) {
                   confirmDialog()
                 }}
               >
-                <FieldRow label={currentDialog.label} htmlFor="shared-dialog-input">
+                <Field>
+                  <FieldLabel htmlFor="shared-dialog-input">{currentDialog.label}</FieldLabel>
                   {currentDialog.multiline ? (
                     <Textarea
                       id="shared-dialog-input"
@@ -239,7 +291,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
                       autoFocus
                     />
                   )}
-                </FieldRow>
+                </Field>
                 <DialogFooter>
                   <Button
                     type="button"
@@ -259,28 +311,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
                   </Button>
                 </DialogFooter>
               </form>
-            ) : (
-              <DialogFooter>
-                {currentDialog.kind === 'confirm' ? (
-                  <Button
-                    type="button"
-                    data-testid="shared-dialog-cancel"
-                    variant="outline"
-                    onClick={closeDialog}
-                  >
-                    {currentDialog.cancelLabel || 'Cancel'}
-                  </Button>
-                ) : null}
-                <Button
-                  type="button"
-                  data-testid="shared-dialog-confirm"
-                  variant={currentDialog.confirmVariant}
-                  onClick={confirmDialog}
-                >
-                  {currentDialog.confirmLabel || 'OK'}
-                </Button>
-              </DialogFooter>
-            )}
+            ) : null}
           </DialogContent>
         ) : null}
       </Dialog>

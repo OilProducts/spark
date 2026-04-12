@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FlowTree } from '@/components/app/flow-tree'
 
 describe('FlowTree', () => {
-  it('renders nested directories and selects the requested flow', async () => {
+  it('renders directories open by default, collapses folders, and selects the requested flow', async () => {
     const user = userEvent.setup()
     const onSelectFlow = vi.fn()
 
@@ -25,6 +25,12 @@ describe('FlowTree', () => {
     expect(within(flowTree).getByText('team')).toBeVisible()
     expect(within(flowTree).getByText('review')).toBeVisible()
     expect(within(flowTree).getByTestId('flow-indicator')).toBeVisible()
+
+    await user.click(within(flowTree).getByRole('button', { name: 'team' }))
+    expect(within(flowTree).queryByRole('button', { name: 'team/review/nested.dot' })).not.toBeInTheDocument()
+
+    await user.click(within(flowTree).getByRole('button', { name: 'team' }))
+    expect(within(flowTree).getByText('review')).toBeVisible()
 
     await user.click(within(flowTree).getByRole('button', { name: 'team/review/nested.dot' }))
     expect(onSelectFlow).toHaveBeenCalledWith('team/review/nested.dot')

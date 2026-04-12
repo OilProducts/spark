@@ -1,11 +1,12 @@
 import type { LaunchInputDefinition, LaunchInputType } from '@/lib/flowContracts'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { FieldRow } from '@/components/app/field-row'
+import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
+
 const LAUNCH_INPUT_TYPE_OPTIONS: Array<{ value: LaunchInputType; label: string }> = [
     { value: 'string', label: 'String' },
     { value: 'string[]', label: 'String List' },
@@ -69,7 +70,8 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     className="space-y-3 rounded-md border border-border/80 bg-background px-3 py-3"
                 >
                     <div className="grid grid-cols-2 gap-3">
-                        <FieldRow label="Label">
+                        <Field>
+                            <FieldLabel>Label</FieldLabel>
                             <Input
                                 data-testid={`graph-launch-input-label-${index}`}
                                 value={entry.label}
@@ -77,8 +79,9 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                                 className="h-8 px-2 text-xs"
                                 placeholder="Request Summary"
                             />
-                        </FieldRow>
-                        <FieldRow label="Type">
+                        </Field>
+                        <Field>
+                            <FieldLabel>Type</FieldLabel>
                             <NativeSelect
                                 data-testid={`graph-launch-input-type-${index}`}
                                 value={entry.type}
@@ -91,9 +94,10 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                                     </option>
                                 ))}
                             </NativeSelect>
-                        </FieldRow>
+                        </Field>
                     </div>
-                    <FieldRow label="Context Key">
+                    <Field>
+                        <FieldLabel>Context Key</FieldLabel>
                         <Input
                             data-testid={`graph-launch-input-key-${index}`}
                             value={entry.key}
@@ -101,8 +105,9 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             className="h-8 px-2 font-mono text-xs"
                             placeholder="context.request.summary"
                         />
-                    </FieldRow>
-                    <FieldRow label="Description">
+                    </Field>
+                    <Field>
+                        <FieldLabel>Description</FieldLabel>
                         <Textarea
                             data-testid={`graph-launch-input-description-${index}`}
                             value={entry.description}
@@ -111,7 +116,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             className="min-h-16 px-2 py-1 text-xs"
                             placeholder="Short explanation shown in the launch form."
                         />
-                    </FieldRow>
+                    </Field>
                     <div className="flex items-center justify-between gap-3">
                         <Label className="inline-flex items-center gap-2 text-xs font-medium text-foreground">
                             <Checkbox

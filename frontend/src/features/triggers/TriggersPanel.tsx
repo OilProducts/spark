@@ -12,13 +12,16 @@ import { useTriggersList } from "./hooks/useTriggersList"
 import { useTriggerEditor } from "./hooks/useTriggerEditor"
 import { useWebhookSecretRegeneration } from "./hooks/useWebhookSecretRegeneration"
 import { useStore } from "@/store"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { EmptyState } from "@/components/app/empty-state"
-import { InlineNotice } from "@/components/app/inline-notice"
-import { Panel, PanelContent, PanelHeader, PanelTitle } from "@/components/app/panel"
-import { ProjectContextChip } from "@/components/app/project-context-chip"
-import { SectionHeader } from "@/components/app/section-header"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+} from "@/components/ui/empty"
+import { formatProjectPathLabel } from "@/lib/projectPaths"
 export function TriggersPanel() {
   const activeProjectPath = useStore((state) => state.activeProjectPath)
   const triggersSession = useStore((state) => state.triggersSession)
@@ -83,6 +86,9 @@ export function TriggersPanel() {
     () => new Set([...filteredSystemTriggers, ...filteredCustomTriggers].map((trigger) => trigger.id)),
     [filteredCustomTriggers, filteredSystemTriggers],
   )
+  const projectLabel = activeProjectPath
+    ? formatProjectPathLabel(activeProjectPath)
+    : 'No active project'
 
   useEffect(() => {
     if (scopeFilter === 'active' && !activeProjectPath) {
@@ -108,11 +114,22 @@ export function TriggersPanel() {
   return (
     <section data-testid="triggers-panel" className="flex-1 overflow-auto p-6">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-        <SectionHeader
-          title="Triggers"
-          description="Manage system routing, schedules, polling, flow-event automation, and shared webhook ingress."
-          action={<ProjectContextChip testId="triggers-project-context-chip" projectPath={activeProjectPath} />}
-        />
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <h2 className="text-sm font-semibold text-foreground">Triggers</h2>
+            <p className="text-xs leading-5 text-muted-foreground">
+              Manage system routing, schedules, polling, flow-event automation, and shared webhook ingress.
+            </p>
+          </div>
+          <Badge
+            data-testid="triggers-project-context-chip"
+            variant="outline"
+            title={activeProjectPath || 'No active project'}
+          >
+            <span className="text-muted-foreground">Project:</span>
+            <span className="max-w-40 truncate">{projectLabel}</span>
+          </Badge>
+        </div>
 
         {activeProjectPath ? (
           <div className="flex flex-wrap items-center gap-2">
@@ -138,17 +155,17 @@ export function TriggersPanel() {
         ) : null}
 
         {error ? (
-          <InlineNotice tone="error">
-            {error}
-          </InlineNotice>
+          <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
+            <AlertDescription className="text-inherit">{error}</AlertDescription>
+          </Alert>
         ) : null}
 
         <div className="grid gap-6 lg:grid-cols-[minmax(20rem,26rem)_minmax(0,1fr)]">
           <div className="space-y-4">
-            <Panel>
-              <PanelHeader className="flex flex-row items-center justify-between gap-2">
+            <Card className="gap-4 py-4">
+              <CardHeader className="flex flex-row items-center justify-between gap-2 px-4">
                 <div>
-                  <PanelTitle>System triggers</PanelTitle>
+                  <CardTitle className="text-sm">System triggers</CardTitle>
                   <div className="text-sm text-muted-foreground">Protected approval and review routing.</div>
                 </div>
                 <Button
@@ -159,12 +176,15 @@ export function TriggersPanel() {
                 >
                   {loading ? 'Refreshing…' : 'Refresh'}
                 </Button>
-              </PanelHeader>
-              <PanelContent className="space-y-2 pt-0">
+              </CardHeader>
+              <CardContent className="space-y-2 px-4 pt-0">
                 {status !== 'ready' && status !== 'error' ? (
-                  <InlineNotice data-testid="triggers-system-list-loading">
-                    Restoring triggers…
-                  </InlineNotice>
+                  <Alert
+                    data-testid="triggers-system-list-loading"
+                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                  >
+                    <AlertDescription className="text-inherit">Restoring triggers…</AlertDescription>
+                  </Alert>
                 ) : null}
                 {filteredSystemTriggers.map((trigger) => (
                   <Button
@@ -189,19 +209,28 @@ export function TriggersPanel() {
                     </div>
                   </Button>
                 ))}
-                {status === 'ready' && filteredSystemTriggers.length === 0 ? <EmptyState className="text-xs" description="No protected triggers in this scope." /> : null}
-              </PanelContent>
-            </Panel>
+                {status === 'ready' && filteredSystemTriggers.length === 0 ? (
+                  <Empty className="px-3 py-4 text-xs text-muted-foreground">
+                    <EmptyHeader>
+                      <EmptyDescription>No protected triggers in this scope.</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                ) : null}
+              </CardContent>
+            </Card>
 
-            <Panel>
-              <PanelHeader>
-                <PanelTitle>Custom triggers</PanelTitle>
-              </PanelHeader>
-              <PanelContent className="space-y-2 pt-0">
+            <Card className="gap-4 py-4">
+              <CardHeader className="gap-1 px-4">
+                <CardTitle className="text-sm">Custom triggers</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 px-4 pt-0">
                 {status !== 'ready' && status !== 'error' ? (
-                  <InlineNotice data-testid="triggers-custom-list-loading">
-                    Restoring triggers…
-                  </InlineNotice>
+                  <Alert
+                    data-testid="triggers-custom-list-loading"
+                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                  >
+                    <AlertDescription className="text-inherit">Restoring triggers…</AlertDescription>
+                  </Alert>
                 ) : null}
                 {filteredCustomTriggers.map((trigger) => (
                   <Button
@@ -225,17 +254,23 @@ export function TriggersPanel() {
                     </div>
                   </Button>
                 ))}
-                {status === 'ready' && filteredCustomTriggers.length === 0 ? <EmptyState className="text-xs" description="No custom triggers in this scope yet." /> : null}
-              </PanelContent>
-            </Panel>
+                {status === 'ready' && filteredCustomTriggers.length === 0 ? (
+                  <Empty className="px-3 py-4 text-xs text-muted-foreground">
+                    <EmptyHeader>
+                      <EmptyDescription>No custom triggers in this scope yet.</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                ) : null}
+              </CardContent>
+            </Card>
           </div>
 
           <div className="space-y-6">
-            <Panel>
-              <PanelHeader>
-                <PanelTitle>Create trigger</PanelTitle>
-              </PanelHeader>
-              <PanelContent className="pt-0">
+            <Card className="gap-4 py-4">
+              <CardHeader className="gap-1 px-4">
+                <CardTitle className="text-sm">Create trigger</CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 pt-0">
               <TriggerEditor
                 form={newTriggerForm}
                 onChange={setNewTriggerForm}
@@ -252,13 +287,13 @@ export function TriggersPanel() {
                   Create trigger
                 </Button>
               </div>
-              </PanelContent>
-            </Panel>
+              </CardContent>
+            </Card>
 
-            <Panel>
-              <PanelHeader className="flex flex-row items-center justify-between gap-2">
+            <Card className="gap-4 py-4">
+              <CardHeader className="flex flex-row items-center justify-between gap-2 px-4">
                 <div>
-                  <PanelTitle>Selected trigger</PanelTitle>
+                  <CardTitle className="text-sm">Selected trigger</CardTitle>
                   <div className="text-sm text-muted-foreground">
                     {selectedTrigger ? selectedTrigger.id : 'Select a trigger to inspect and edit it.'}
                   </div>
@@ -275,10 +310,10 @@ export function TriggersPanel() {
                     Delete
                   </Button>
                 ) : null}
-              </PanelHeader>
+              </CardHeader>
 
               {selectedTrigger && editTriggerForm ? (
-                <PanelContent className="pt-0">
+                <CardContent className="px-4 pt-0">
                   <TriggerEditor
                     form={editTriggerForm}
                     onChange={setEditTriggerForm}
@@ -346,9 +381,9 @@ export function TriggersPanel() {
                       Save trigger
                     </Button>
                   </div>
-                </PanelContent>
+                </CardContent>
               ) : null}
-            </Panel>
+            </Card>
           </div>
         </div>
       </div>

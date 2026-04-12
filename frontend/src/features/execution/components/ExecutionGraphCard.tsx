@@ -27,11 +27,14 @@ import {
     nowMs,
     type HydratedFlowGraph,
 } from '@/features/workflow-canvas'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import {
+    Empty,
+    EmptyDescription,
+    EmptyHeader,
+} from '@/components/ui/empty'
 import { useStore } from '@/store'
-import { EmptyState } from '@/components/app/empty-state'
-import { InlineNotice } from '@/components/app/inline-notice'
-import { Panel, PanelContent, PanelHeader } from '@/components/app/panel'
-import { SectionHeader } from '@/components/app/section-header'
 import { RunSectionToggleButton } from '@/features/runs/components/RunSectionToggleButton'
 
 type ExecutionGraphCanvasProps = {
@@ -107,7 +110,11 @@ function ExecutionGraphCanvas({
     if (nodes.length === 0 && edges.length === 0) {
         return (
             <div className="flex h-[28rem] items-center justify-center rounded-md border border-dashed border-border bg-muted/20">
-                <EmptyState description="Flow graph will appear once the preview loads." />
+                <Empty className="text-sm text-muted-foreground">
+                    <EmptyHeader>
+                        <EmptyDescription>Flow graph will appear once the preview loads.</EmptyDescription>
+                    </EmptyHeader>
+                </Empty>
             </div>
         )
     }
@@ -176,51 +183,65 @@ export function ExecutionGraphCard({
         : 'Read-only preview of the selected execution flow.'
 
     return (
-        <Panel data-testid="execution-graph-panel">
-            <PanelHeader>
-                <SectionHeader
-                    title="Flow Graph"
-                    description={description}
-                    action={(
-                        <div className="flex items-center gap-2">
-                            {isContinuationMode && selectedStartNodeId ? (
-                                <span
-                                    data-testid="execution-continuation-selected-node"
-                                    className="rounded-full border border-border/80 bg-muted/30 px-2 py-1 font-mono text-[11px] text-muted-foreground"
-                                >
-                                    Start: {selectedStartNodeId}
-                                </span>
-                            ) : null}
-                            <ChildFlowExpansionToggle
-                                expanded={expandChildFlows}
-                                onChange={(nextExpanded) => updateExecutionSession({ executionExpandChildFlows: nextExpanded })}
-                                testId="execution-child-flow-toggle"
-                            />
-                            <RunSectionToggleButton
-                                collapsed={collapsed}
-                                onToggle={() => updateExecutionSession({ executionGraphCollapsed: !collapsed })}
-                                testId="execution-graph-toggle-button"
-                            />
-                        </div>
-                    )}
-                />
-            </PanelHeader>
+        <Card data-testid="execution-graph-panel" className="gap-4 py-4">
+            <CardHeader className="gap-1 px-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">Flow Graph</h3>
+                        <p className="text-xs leading-5 text-muted-foreground">{description}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        {isContinuationMode && selectedStartNodeId ? (
+                            <span
+                                data-testid="execution-continuation-selected-node"
+                                className="rounded-full border border-border/80 bg-muted/30 px-2 py-1 font-mono text-[11px] text-muted-foreground"
+                            >
+                                Start: {selectedStartNodeId}
+                            </span>
+                        ) : null}
+                        <ChildFlowExpansionToggle
+                            expanded={expandChildFlows}
+                            onChange={(nextExpanded) => updateExecutionSession({ executionExpandChildFlows: nextExpanded })}
+                            testId="execution-child-flow-toggle"
+                        />
+                        <RunSectionToggleButton
+                            collapsed={collapsed}
+                            onToggle={() => updateExecutionSession({ executionGraphCollapsed: !collapsed })}
+                            testId="execution-graph-toggle-button"
+                        />
+                    </div>
+                </div>
+            </CardHeader>
             {!collapsed ? (
-                <PanelContent className="space-y-3">
+                <CardContent className="space-y-3 px-4">
                     {isLoading ? (
-                        <InlineNotice data-testid="execution-graph-loading">
-                            Loading graph preview…
-                        </InlineNotice>
+                        <Alert
+                            data-testid="execution-graph-loading"
+                            className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                        >
+                            <AlertDescription className="text-inherit">
+                                Loading graph preview…
+                            </AlertDescription>
+                        </Alert>
                     ) : null}
                     {loadError ? (
-                        <InlineNotice data-testid="execution-graph-error" tone="error">
-                            {loadError}
-                        </InlineNotice>
+                        <Alert
+                            data-testid="execution-graph-error"
+                            className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
+                        >
+                            <AlertDescription className="text-inherit">{loadError}</AlertDescription>
+                        </Alert>
                     ) : null}
                     {isContinuationMode ? (
-                        <InlineNotice data-testid="execution-continuation-warning" tone="warning">
-                            Some nodes depend on upstream state captured in the source run and may fail when restarted cold.
-                        </InlineNotice>
+                        <Alert
+                            data-testid="execution-continuation-warning"
+                            className="border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800"
+                        >
+                            <AlertDescription className="text-inherit">
+                                Some nodes depend on upstream state captured in the source run and may fail when
+                                restarted cold.
+                            </AlertDescription>
+                        </Alert>
                     ) : null}
                     {diagnostics.length > 0 ? (
                         <div data-testid="execution-graph-diagnostics" className="rounded-md border border-border/80 bg-muted/20 p-3">
@@ -254,8 +275,8 @@ export function ExecutionGraphCard({
                             />
                         </ReactFlowProvider>
                     </CanvasSessionModeProvider>
-                </PanelContent>
+                </CardContent>
             ) : null}
-        </Panel>
+        </Card>
     )
 }

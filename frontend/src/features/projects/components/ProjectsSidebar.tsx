@@ -3,11 +3,14 @@ import { FileText, Plus, Trash2 } from "lucide-react"
 
 import { HomeProjectSidebar } from "./HomeProjectSidebar"
 import type { ProjectConversationSummary } from "../model/types"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { EmptyState } from "@/components/app/empty-state"
-import { InlineNotice } from "@/components/app/inline-notice"
-import { Panel, PanelContent, PanelHeader } from "@/components/app/panel"
-import { SectionHeader } from "@/components/app/section-header"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import {
+    Empty,
+    EmptyDescription,
+    EmptyHeader,
+} from "@/components/ui/empty"
 type ProjectEventLogEntry = {
     message: string
     timestamp: string
@@ -66,14 +69,18 @@ export function ProjectsSidebar({
                     className={isNarrowViewport ? "" : "min-h-0 overflow-hidden"}
                     style={isNarrowViewport ? undefined : { height: `${homeSidebarPrimaryHeight}px` }}
                 >
-                    <Panel className="h-full rounded-md border border-border py-0 shadow-sm">
-                        <PanelHeader className="border-b border-border/60 py-4">
-                            <SectionHeader
-                                title="Threads"
-                                description={activeProjectPath
-                                    ? `Threads for ${activeProjectLabel || 'the active project'}.`
-                                    : 'Choose or add a project from the navbar to view threads.'}
-                                action={activeProjectPath ? (
+                    <Card className="h-full gap-4 rounded-md border border-border py-0">
+                        <CardHeader className="gap-1 border-b border-border/60 px-4 py-4">
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 space-y-1">
+                                    <h3 className="text-sm font-semibold text-foreground">Threads</h3>
+                                    <p className="text-xs leading-5 text-muted-foreground">
+                                        {activeProjectPath
+                                            ? `Threads for ${activeProjectLabel || 'the active project'}.`
+                                            : 'Choose or add a project from the navbar to view threads.'}
+                                    </p>
+                                </div>
+                                {activeProjectPath ? (
                                     <Button
                                         data-testid="project-thread-new-button"
                                         type="button"
@@ -85,30 +92,47 @@ export function ProjectsSidebar({
                                         New thread
                                     </Button>
                                 ) : null}
-                            />
-                        </PanelHeader>
-                    <PanelContent className={`pt-4 ${isNarrowViewport ? "" : "min-h-0 flex-1 overflow-y-auto pr-1"}`}>
+                            </div>
+                        </CardHeader>
+                    <CardContent className={`px-4 pt-4 ${isNarrowViewport ? "" : "min-h-0 flex-1 overflow-y-auto pr-1"}`}>
                         <div className={isNarrowViewport ? "" : "min-h-0 flex-1 overflow-y-auto pr-1"}>
                             <ul data-testid="project-thread-list" className="space-y-1.5">
                                 {!activeProjectPath ? (
                                     <li>
-                                        <EmptyState className="text-xs" description="Choose or add a project from the navbar to view threads." />
+                                        <Empty className="px-3 py-4 text-xs text-muted-foreground">
+                                            <EmptyHeader>
+                                                <EmptyDescription>
+                                                    Choose or add a project from the navbar to view threads.
+                                                </EmptyDescription>
+                                            </EmptyHeader>
+                                        </Empty>
                                     </li>
                                 ) : activeProjectConversationSummariesStatus === 'idle' || activeProjectConversationSummariesStatus === 'loading' ? (
                                     <li>
-                                        <InlineNotice data-testid="project-thread-list-loading" className="text-xs">
-                                            Restoring thread list…
-                                        </InlineNotice>
+                                        <Alert
+                                            data-testid="project-thread-list-loading"
+                                            className="border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+                                        >
+                                            <AlertDescription className="text-inherit">
+                                                Restoring thread list…
+                                            </AlertDescription>
+                                        </Alert>
                                     </li>
                                 ) : activeProjectConversationSummariesStatus === 'error' && activeProjectConversationSummaries.length === 0 ? (
                                     <li>
-                                        <InlineNotice tone="error" className="text-xs">
-                                            Unable to restore the thread list.
-                                        </InlineNotice>
+                                        <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                                            <AlertDescription className="text-inherit">
+                                                Unable to restore the thread list.
+                                            </AlertDescription>
+                                        </Alert>
                                     </li>
                                 ) : activeProjectConversationSummaries.length === 0 ? (
                                     <li>
-                                        <EmptyState className="text-xs" description="No threads for this project yet." />
+                                        <Empty className="px-3 py-4 text-xs text-muted-foreground">
+                                            <EmptyHeader>
+                                                <EmptyDescription>No threads for this project yet.</EmptyDescription>
+                                            </EmptyHeader>
+                                        </Empty>
                                     </li>
                                 ) : (
                                     activeProjectConversationSummaries.map((conversation) => {
@@ -166,8 +190,8 @@ export function ProjectsSidebar({
                                 )}
                             </ul>
                         </div>
-                    </PanelContent>
-                    </Panel>
+                    </CardContent>
+                    </Card>
                 </div>
                 {!isNarrowViewport ? (
                     <div

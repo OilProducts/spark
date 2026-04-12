@@ -1,7 +1,13 @@
-import { FileText, Folder, Trash2 } from 'lucide-react'
+import { ChevronRight, FileText, Folder, FolderOpen, Trash2 } from 'lucide-react'
 import type { MouseEvent, ReactNode } from 'react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 import { buildFlowTree, type FlowTreeNode } from '@/lib/flowPaths'
 
 interface FlowTreeProps {
@@ -61,42 +67,29 @@ function FlowTreeNodeRow({
 
     if (node.kind === 'directory') {
         return (
-            <div className="space-y-1">
-                <div
-                    className="flex items-center gap-2 px-3 py-1 text-[11px] font-semibold tracking-[0.08em] text-muted-foreground"
-                    style={{ paddingLeft: `${indent}px` }}
-                    title={node.path}
-                >
-                    <Folder className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate">{node.name}</span>
-                </div>
-                <div className="space-y-1">
-                    {node.children.map((child) => (
-                        <FlowTreeNodeRow
-                            key={child.path}
-                            node={child}
-                            depth={depth + 1}
-                            selectedFlow={selectedFlow}
-                            onSelectFlow={onSelectFlow}
-                            onDeleteFlow={onDeleteFlow}
-                            renderFlowIndicator={renderFlowIndicator}
-                        />
-                    ))}
-                </div>
-            </div>
+            <FlowTreeDirectoryRow
+                node={node}
+                depth={depth}
+                selectedFlow={selectedFlow}
+                onSelectFlow={onSelectFlow}
+                onDeleteFlow={onDeleteFlow}
+                renderFlowIndicator={renderFlowIndicator}
+            />
         )
     }
 
     return (
         <div className="group relative">
-            <button
+            <Button
+                type="button"
                 aria-label={node.path}
                 title={node.path}
                 onClick={() => onSelectFlow(node.path)}
-                className={`w-full rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
+                variant={selectedFlow === node.path ? 'secondary' : 'ghost'}
+                className={`h-9 w-full justify-start rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
                     selectedFlow === node.path
-                        ? 'bg-secondary font-medium text-secondary-foreground'
-                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                        ? 'font-medium text-secondary-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
                 }`}
                 style={{ paddingLeft: `${indent}px` }}
             >
@@ -105,17 +98,75 @@ function FlowTreeNodeRow({
                     {renderFlowIndicator?.(node.path)}
                     <span className="truncate">{node.name}</span>
                 </span>
-            </button>
+            </Button>
             {onDeleteFlow ? (
-                <button
+                <Button
+                    type="button"
                     aria-label="Delete flow"
-                    onClick={(event) => onDeleteFlow(event, node.path)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:text-destructive"
+                    onClick={(event) => {
+                        event.stopPropagation()
+                        onDeleteFlow(event, node.path)
+                    }}
+                    variant="ghost"
+                    size="icon-xs"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:text-destructive"
                     title={`Delete ${node.path}`}
                 >
                     <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                </Button>
             ) : null}
         </div>
+    )
+}
+
+function FlowTreeDirectoryRow({
+    node,
+    depth,
+    selectedFlow,
+    onSelectFlow,
+    onDeleteFlow,
+    renderFlowIndicator,
+}: FlowTreeNodeRowProps & { node: Extract<FlowTreeNode, { kind: 'directory' }> }) {
+    const [open, setOpen] = useState(true)
+    const indent = 12 + depth * 14
+
+    return (
+        <Collapsible open={open} onOpenChange={setOpen} className="space-y-1">
+            <CollapsibleTrigger asChild>
+                <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-full justify-start gap-2 px-3 text-[11px] font-semibold tracking-[0.08em] text-muted-foreground"
+                    style={{ paddingLeft: `${indent}px` }}
+                    title={node.path}
+                >
+                    <ChevronRight
+                        className={`h-3.5 w-3.5 shrink-0 transition-transform ${
+                            open ? 'rotate-90' : ''
+                        }`}
+                    />
+                    {open ? (
+                        <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                    ) : (
+                        <Folder className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    <span className="truncate">{node.name}</span>
+                </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-1">
+                {node.children.map((child) => (
+                    <FlowTreeNodeRow
+                        key={child.path}
+                        node={child}
+                        depth={depth + 1}
+                        selectedFlow={selectedFlow}
+                        onSelectFlow={onSelectFlow}
+                        onDeleteFlow={onDeleteFlow}
+                        renderFlowIndicator={renderFlowIndicator}
+                    />
+                ))}
+            </CollapsibleContent>
+        </Collapsible>
     )
 }

@@ -14,13 +14,12 @@ import { formatProjectListLabel } from '@/features/projects/model/projectsHomeSt
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useStore } from '@/store'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
-import { InlineNotice } from '@/components/app/inline-notice'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Panel, PanelContent, PanelHeader } from '@/components/app/panel'
-import { SectionHeader } from '@/components/app/section-header'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { ExecutionGraphCard } from './components/ExecutionGraphCard'
 import { ExecutionLaunchInputsSurface } from './components/ExecutionLaunchInputsSurface'
@@ -290,16 +289,22 @@ export function ExecutionControls() {
 
     return (
         <div data-testid="execution-launch-panel" className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
-            <Panel className="m-4 flex min-h-0 flex-1 flex-col overflow-hidden">
-                <PanelHeader>
-                    <SectionHeader
-                        title={isContinuationMode ? 'Continue Run' : 'Launch Flow'}
-                        description={isContinuationMode
-                            ? 'Configure a derived run and pick the restart node below.'
-                            : executionFlowName
-                                ? `Direct-run launch inputs for ${executionFlowName}.`
-                                : 'Select a flow to configure direct-run launch inputs.'}
-                        action={executionFlowName ? (
+            <Card className="m-4 flex min-h-0 flex-1 flex-col gap-4 overflow-hidden py-4">
+                <CardHeader className="gap-1 px-4">
+                    <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                            <h3 className="text-sm font-semibold text-foreground">
+                                {isContinuationMode ? 'Continue Run' : 'Launch Flow'}
+                            </h3>
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {isContinuationMode
+                                    ? 'Configure a derived run and pick the restart node below.'
+                                    : executionFlowName
+                                        ? `Direct-run launch inputs for ${executionFlowName}.`
+                                        : 'Select a flow to configure direct-run launch inputs.'}
+                            </p>
+                        </div>
+                        {executionFlowName ? (
                             <span
                                 data-testid="execution-launch-flow-name"
                                 className="max-w-[20rem] truncate font-mono text-xs text-muted-foreground"
@@ -307,33 +312,38 @@ export function ExecutionControls() {
                             >
                                 {executionFlowName}
                             </span>
-                        ) : undefined}
-                    />
-                </PanelHeader>
-                <PanelContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                        ) : null}
+                    </div>
+                </CardHeader>
+                <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden px-4">
                     {pendingHumanGatePrompt ? (
                         <div className="px-4 pb-1">
-                            <InlineNotice data-testid="execution-pending-human-gate-banner" tone="warning">
-                                <div className={`flex ${isNarrowViewport ? 'flex-col items-start gap-2' : 'items-center justify-between gap-3'}`}>
-                                    <div>
-                                        Pending human gate: <span className="font-medium">{pendingHumanGatePrompt}</span>
+                            <Alert
+                                data-testid="execution-pending-human-gate-banner"
+                                className="border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800"
+                            >
+                                <AlertDescription className="text-inherit">
+                                    <div className={`flex ${isNarrowViewport ? 'flex-col items-start gap-2' : 'items-center justify-between gap-3'}`}>
+                                        <div>
+                                            Pending human gate: <span className="font-medium">{pendingHumanGatePrompt}</span>
+                                        </div>
+                                        {selectedRunId ? (
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="xs"
+                                                data-testid="execution-pending-human-gate-view-run-button"
+                                                onClick={() => {
+                                                    setSelectedRunId(selectedRunId)
+                                                    setViewMode('runs')
+                                                }}
+                                            >
+                                                View run
+                                            </Button>
+                                        ) : null}
                                     </div>
-                                    {selectedRunId ? (
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="xs"
-                                            data-testid="execution-pending-human-gate-view-run-button"
-                                            onClick={() => {
-                                                setSelectedRunId(selectedRunId)
-                                                setViewMode('runs')
-                                            }}
-                                        >
-                                            View run
-                                        </Button>
-                                    ) : null}
-                                </div>
-                            </InlineNotice>
+                                </AlertDescription>
+                            </Alert>
                         </div>
                     ) : null}
                     {!executionFlowName && !isContinuationMode ? (
@@ -401,35 +411,48 @@ export function ExecutionControls() {
                             </div>
 
                             {isLoadingPreview ? (
-                                <InlineNotice data-testid="execution-launch-preview-loading">
-                                    {isContinuationMode ? 'Loading continuation graph preview…' : 'Loading flow preview and launch contract…'}
-                                </InlineNotice>
+                                <Alert
+                                    data-testid="execution-launch-preview-loading"
+                                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                                >
+                                    <AlertDescription className="text-inherit">
+                                        {isContinuationMode ? 'Loading continuation graph preview…' : 'Loading flow preview and launch contract…'}
+                                    </AlertDescription>
+                                </Alert>
                             ) : null}
                             {previewLoadError ? (
-                                <InlineNotice data-testid="execution-launch-preview-error" tone="error">
-                                    {previewLoadError}
-                                </InlineNotice>
+                                <Alert
+                                    data-testid="execution-launch-preview-error"
+                                    className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
+                                >
+                                    <AlertDescription className="text-inherit">{previewLoadError}</AlertDescription>
+                                </Alert>
                             ) : null}
                             {launchSuccessRunId && !openRunsAfterLaunch && !isContinuationMode ? (
-                                <InlineNotice data-testid="execution-launch-success-notice" tone="success">
-                                    <div className={`flex ${isNarrowViewport ? 'flex-col items-start gap-2' : 'items-center justify-between gap-3'}`}>
-                                        <div>
-                                            Run started: <span className="font-mono">{launchSuccessRunId}</span>
+                                <Alert
+                                    data-testid="execution-launch-success-notice"
+                                    className="border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-emerald-800"
+                                >
+                                    <AlertDescription className="text-inherit">
+                                        <div className={`flex ${isNarrowViewport ? 'flex-col items-start gap-2' : 'items-center justify-between gap-3'}`}>
+                                            <div>
+                                                Run started: <span className="font-mono">{launchSuccessRunId}</span>
+                                            </div>
+                                            <Button
+                                                type="button"
+                                                data-testid="execution-launch-success-view-run-button"
+                                                variant="outline"
+                                                size="xs"
+                                                onClick={() => {
+                                                    setSelectedRunId(launchSuccessRunId)
+                                                    setViewMode('runs')
+                                                }}
+                                            >
+                                                View run
+                                            </Button>
                                         </div>
-                                        <Button
-                                            type="button"
-                                            data-testid="execution-launch-success-view-run-button"
-                                            variant="outline"
-                                            size="xs"
-                                            onClick={() => {
-                                                setSelectedRunId(launchSuccessRunId)
-                                            setViewMode('runs')
-                                        }}
-                                    >
-                                            View run
-                                        </Button>
-                                    </div>
-                                </InlineNotice>
+                                    </AlertDescription>
+                                </Alert>
                             ) : null}
 
                             <ExecutionNoticeStack
@@ -592,8 +615,8 @@ export function ExecutionControls() {
                             ) : null}
                         </div>
                     )}
-                </PanelContent>
-            </Panel>
+                </CardContent>
+            </Card>
         </div>
     )
 }

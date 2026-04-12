@@ -1,8 +1,8 @@
 import { ChevronDown, ChevronUp } from 'lucide-react'
 
 import type { LaunchInputDefinition, LaunchInputFormValues, ParsedLaunchInputDefinitions } from '@/lib/flowContracts'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { InlineNotice } from '@/components/app/inline-notice'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
@@ -98,13 +98,14 @@ export function ExecutionLaunchInputsSurface({
                 ) : null}
             </div>
             {parsedLaunchInputs.error ? (
-                <InlineNotice
+                <Alert
                     data-testid="execution-launch-inputs-schema-error"
-                    tone="error"
-                    className="mb-3 text-[11px]"
+                    className="mb-3 border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive"
                 >
-                    {parsedLaunchInputs.error}
-                </InlineNotice>
+                    <AlertDescription className="text-inherit">
+                        {parsedLaunchInputs.error}
+                    </AlertDescription>
+                </Alert>
             ) : null}
             {!launchInputsCollapsed ? (
                 <div

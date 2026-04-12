@@ -1,9 +1,8 @@
 import type { ContextErrorState, RunContextRow } from '../model/shared'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { InlineNotice } from '@/components/app/inline-notice'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Panel, PanelContent, PanelHeader } from '@/components/app/panel'
-import { SectionHeader } from '@/components/app/section-header'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunContextCardProps {
@@ -66,44 +65,46 @@ export function RunContextCard({
     )
 
     return (
-        <Panel data-testid="run-context-panel">
-            <PanelHeader>
-                <SectionHeader
-                    title="Context"
-                    description="Search, copy, or export the structured runtime context."
-                    action={(
-                        <div className="flex items-center gap-2">
-                            <Button
-                                onClick={onRefresh}
-                                data-testid="run-context-refresh-button"
-                                variant="outline"
-                                size="xs"
-                                className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
-                            >
-                                {isLoading ? 'Refreshing…' : 'Refresh'}
-                            </Button>
-                            <Button
-                                type="button"
-                                onClick={onCopy}
-                                data-testid="run-context-copy-button"
-                                variant="outline"
-                                size="xs"
-                                className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
-                            >
-                                Copy JSON
-                            </Button>
-                            {exportButton}
-                            <RunSectionToggleButton
-                                collapsed={collapsed}
-                                onToggle={() => onCollapsedChange(!collapsed)}
-                                testId="run-context-toggle-button"
-                            />
-                        </div>
-                    )}
-                />
-            </PanelHeader>
+        <Card data-testid="run-context-panel" className="gap-4 py-4">
+            <CardHeader className="gap-1 px-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">Context</h3>
+                        <p className="text-xs leading-5 text-muted-foreground">
+                            Search, copy, or export the structured runtime context.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            onClick={onRefresh}
+                            data-testid="run-context-refresh-button"
+                            variant="outline"
+                            size="xs"
+                            className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                            {isLoading ? 'Refreshing…' : 'Refresh'}
+                        </Button>
+                        <Button
+                            type="button"
+                            onClick={onCopy}
+                            data-testid="run-context-copy-button"
+                            variant="outline"
+                            size="xs"
+                            className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                            Copy JSON
+                        </Button>
+                        {exportButton}
+                        <RunSectionToggleButton
+                            collapsed={collapsed}
+                            onToggle={() => onCollapsedChange(!collapsed)}
+                            testId="run-context-toggle-button"
+                        />
+                    </div>
+                </div>
+            </CardHeader>
             {!collapsed ? (
-                <PanelContent className="space-y-3">
+                <CardContent className="space-y-3 px-4">
             {contextCopyStatus && (
                 <div data-testid="run-context-copy-status" className="text-xs text-muted-foreground">
                     {contextCopyStatus}
@@ -119,17 +120,24 @@ export function RunContextCard({
                 />
             </div>
             {contextError && (
-                <InlineNotice tone="error" className="space-y-1">
-                    <div data-testid="run-context-error">{contextError.message}</div>
-                    <div data-testid="run-context-error-help" className="text-xs text-destructive/90">
-                        {contextError.help}
-                    </div>
-                </InlineNotice>
+                <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
+                    <AlertDescription className="space-y-1 text-inherit">
+                        <div data-testid="run-context-error">{contextError.message}</div>
+                        <div data-testid="run-context-error-help" className="text-xs text-destructive/90">
+                            {contextError.help}
+                        </div>
+                    </AlertDescription>
+                </Alert>
             )}
             {!contextError && status !== 'ready' ? (
-                <InlineNotice data-testid="run-context-loading">
-                    Restoring context…
-                </InlineNotice>
+                <Alert
+                    data-testid="run-context-loading"
+                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                >
+                    <AlertDescription className="text-inherit">
+                        Restoring context…
+                    </AlertDescription>
+                </Alert>
             ) : null}
             {!contextError && status === 'ready' && (
                 <div className="overflow-hidden rounded-md border border-border/80">
@@ -182,8 +190,8 @@ export function RunContextCard({
                     </table>
                 </div>
             )}
-                </PanelContent>
+                </CardContent>
             ) : null}
-        </Panel>
+        </Card>
     )
 }

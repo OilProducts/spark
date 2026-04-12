@@ -30,3 +30,13 @@ export const normalizeProjectPath = (path: string): string => {
 }
 
 export const isAbsoluteProjectPath = (path: string): boolean => path.startsWith("/") || /^[A-Za-z]:\//.test(path)
+
+export const formatProjectPathLabel = (projectPath: string | null): string => {
+  if (!projectPath) {
+    return "No active project"
+  }
+
+  const normalizedPath = normalizeProjectPath(projectPath)
+  const segments = normalizedPath.split("/").filter(Boolean)
+  return segments[segments.length - 1] || normalizedPath
+}

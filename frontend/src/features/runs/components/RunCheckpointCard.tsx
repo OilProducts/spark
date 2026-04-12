@@ -2,10 +2,9 @@ import type {
     CheckpointErrorState,
     CheckpointResponse,
 } from '../model/shared'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { InlineNotice } from '@/components/app/inline-notice'
-import { Panel, PanelContent, PanelHeader } from '@/components/app/panel'
-import { SectionHeader } from '@/components/app/section-header'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunCheckpointCardProps {
@@ -34,45 +33,54 @@ export function RunCheckpointCard({
     onCollapsedChange,
 }: RunCheckpointCardProps) {
     return (
-        <Panel data-testid="run-checkpoint-panel">
-            <PanelHeader>
-                <SectionHeader
-                    title="Checkpoint"
-                    description="Latest persisted runtime position and retry counters."
-                    action={(
-                        <div className="flex items-center gap-2">
-                            <Button
-                                onClick={onRefresh}
-                                data-testid="run-checkpoint-refresh-button"
-                                variant="outline"
-                                size="xs"
-                                className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
-                            >
-                                {isLoading ? 'Refreshing…' : 'Refresh'}
-                            </Button>
-                            <RunSectionToggleButton
-                                collapsed={collapsed}
-                                onToggle={() => onCollapsedChange(!collapsed)}
-                                testId="run-checkpoint-toggle-button"
-                            />
-                        </div>
-                    )}
-                />
-            </PanelHeader>
+        <Card data-testid="run-checkpoint-panel" className="gap-4 py-4">
+            <CardHeader className="gap-1 px-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">Checkpoint</h3>
+                        <p className="text-xs leading-5 text-muted-foreground">
+                            Latest persisted runtime position and retry counters.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            onClick={onRefresh}
+                            data-testid="run-checkpoint-refresh-button"
+                            variant="outline"
+                            size="xs"
+                            className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                            {isLoading ? 'Refreshing…' : 'Refresh'}
+                        </Button>
+                        <RunSectionToggleButton
+                            collapsed={collapsed}
+                            onToggle={() => onCollapsedChange(!collapsed)}
+                            testId="run-checkpoint-toggle-button"
+                        />
+                    </div>
+                </div>
+            </CardHeader>
             {!collapsed ? (
-                <PanelContent className="space-y-3">
+                <CardContent className="space-y-3 px-4">
             {!checkpointError && status !== 'ready' ? (
-                <InlineNotice data-testid="run-checkpoint-loading">
-                    Restoring checkpoint…
-                </InlineNotice>
+                <Alert
+                    data-testid="run-checkpoint-loading"
+                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                >
+                    <AlertDescription className="text-inherit">
+                        Restoring checkpoint…
+                    </AlertDescription>
+                </Alert>
             ) : null}
             {checkpointError && (
-                <InlineNotice tone="error" className="space-y-1">
-                    <div data-testid="run-checkpoint-error">{checkpointError.message}</div>
-                    <div data-testid="run-checkpoint-error-help" className="text-xs text-destructive/90">
-                        {checkpointError.help}
-                    </div>
-                </InlineNotice>
+                <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
+                    <AlertDescription className="space-y-1 text-inherit">
+                        <div data-testid="run-checkpoint-error">{checkpointError.message}</div>
+                        <div data-testid="run-checkpoint-error-help" className="text-xs text-destructive/90">
+                            {checkpointError.help}
+                        </div>
+                    </AlertDescription>
+                </Alert>
             )}
             {!checkpointError && checkpointData && (
                 <div className="space-y-3">
@@ -96,12 +104,17 @@ export function RunCheckpointCard({
                 </div>
             )}
             {!checkpointError && status === 'ready' && !checkpointData ? (
-                <InlineNotice data-testid="run-checkpoint-empty">
-                    No checkpoint data is available for this run yet.
-                </InlineNotice>
+                <Alert
+                    data-testid="run-checkpoint-empty"
+                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                >
+                    <AlertDescription className="text-inherit">
+                        No checkpoint data is available for this run yet.
+                    </AlertDescription>
+                </Alert>
             ) : null}
-                </PanelContent>
+                </CardContent>
             ) : null}
-        </Panel>
+        </Card>
     )
 }

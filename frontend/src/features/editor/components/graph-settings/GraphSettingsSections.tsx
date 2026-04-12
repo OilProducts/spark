@@ -6,13 +6,18 @@ import { GRAPH_FIDELITY_OPTIONS } from '@/lib/graphAttrValidation'
 import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
 import type { ModelStylesheetPreview, ModelValueSource } from '@/lib/modelStylesheetPreview'
 import type { DiagnosticEntry, GraphAttrErrors, GraphAttrs, UiDefaults } from '@/store'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { FieldRow } from '@/components/app/field-row'
-import { InlineNotice } from '@/components/app/inline-notice'
+import {
+    Field,
+    FieldDescription,
+    FieldError,
+    FieldLabel,
+} from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
-import { SectionHeader } from '@/components/app/section-header'
 import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
 import { AdvancedKeyValueEditor } from '../AdvancedKeyValueEditor'
 import { LaunchInputsEditor } from '../LaunchInputsEditor'
 import { StylesheetEditor } from '../StylesheetEditor'
@@ -68,6 +73,81 @@ export const FLOW_LAUNCH_POLICY_LABELS: Record<FlowLaunchPolicy, string> = {
     disabled: 'Disabled',
 }
 
+function GraphSettingsSectionIntro({
+    title,
+    description,
+    action,
+}: {
+    title: string
+    description?: string | null
+    action?: ReactNode
+}) {
+    return (
+        <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 space-y-1">
+                <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+                {description ? (
+                    <p className="text-xs leading-5 text-muted-foreground">{description}</p>
+                ) : null}
+            </div>
+            {action ? <div className="shrink-0">{action}</div> : null}
+        </div>
+    )
+}
+
+function GraphSettingsField({
+    label,
+    htmlFor,
+    helper,
+    error,
+    className,
+    children,
+}: {
+    label: string
+    htmlFor?: string
+    helper?: string | null
+    error?: string | null
+    className?: string
+    children: ReactNode
+}) {
+    return (
+        <Field className={className}>
+            <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>
+            {children}
+            {helper ? <FieldDescription className="text-[11px]">{helper}</FieldDescription> : null}
+            {error ? <FieldError className="text-[11px]">{error}</FieldError> : null}
+        </Field>
+    )
+}
+
+const GRAPH_SETTINGS_NOTICE_TONE_CLASS_NAME: Record<
+    'neutral' | 'warning' | 'error' | 'success',
+    string
+> = {
+    neutral: 'border-border/70 bg-muted/20 text-muted-foreground',
+    warning: 'border-amber-500/40 bg-amber-500/10 text-amber-800',
+    error: 'border-destructive/40 bg-destructive/10 text-destructive',
+    success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800',
+}
+
+function GraphSettingsNotice({
+    tone = 'neutral',
+    className,
+    children,
+    ...props
+}: React.ComponentProps<typeof Alert> & {
+    tone?: 'neutral' | 'warning' | 'error' | 'success'
+}) {
+    return (
+        <Alert
+            className={cn('px-3 py-2', GRAPH_SETTINGS_NOTICE_TONE_CLASS_NAME[tone], className)}
+            {...props}
+        >
+            <AlertDescription className="text-inherit">{children}</AlertDescription>
+        </Alert>
+    )
+}
+
 interface GraphRunConfigurationSectionProps {
     model: string
     workingDir: string
@@ -83,12 +163,12 @@ export function GraphRunConfigurationSection({
 }: GraphRunConfigurationSectionProps) {
     return (
         <section className="space-y-3">
-            <SectionHeader
+            <GraphSettingsSectionIntro
                 title="Run Configuration"
                 description="Editor-scoped runtime defaults used while authoring and previewing this flow."
             />
             <div className="space-y-3">
-                <FieldRow label="Model" htmlFor="graph-run-model">
+                <GraphSettingsField label="Model" htmlFor="graph-run-model">
                     <Input
                         id="graph-run-model"
                         value={model}
@@ -96,8 +176,8 @@ export function GraphRunConfigurationSection({
                         className="h-8 text-xs"
                         placeholder="codex default"
                     />
-                </FieldRow>
-                <FieldRow label="Working Directory" htmlFor="graph-run-working-directory">
+                </GraphSettingsField>
+                <GraphSettingsField label="Working Directory" htmlFor="graph-run-working-directory">
                     <Input
                         id="graph-run-working-directory"
                         value={workingDir}
@@ -105,7 +185,7 @@ export function GraphRunConfigurationSection({
                         className="h-8 font-mono text-xs"
                         placeholder="./test-app"
                     />
-                </FieldRow>
+                </GraphSettingsField>
             </div>
         </section>
     )
@@ -122,12 +202,12 @@ export function GraphMetadataSection({
 }: GraphMetadataSectionProps) {
     return (
         <section className="space-y-3">
-            <SectionHeader
+            <GraphSettingsSectionIntro
                 title="Graph Metadata"
                 description="Human-facing title and description stored in DOT metadata for the flow."
             />
             <div className="space-y-3">
-                <FieldRow
+                <GraphSettingsField
                     label="Title"
                     htmlFor="graph-attr-spark-title"
                     helper={GRAPH_ATTR_HELP['spark.title']}
@@ -139,8 +219,8 @@ export function GraphMetadataSection({
                         className="h-8 text-xs"
                         placeholder="Implement From Plan File"
                     />
-                </FieldRow>
-                <FieldRow
+                </GraphSettingsField>
+                <GraphSettingsField
                     label="Description"
                     htmlFor="graph-attr-spark-description"
                     helper={GRAPH_ATTR_HELP['spark.description']}
@@ -153,7 +233,7 @@ export function GraphMetadataSection({
                         className="min-h-20 px-2 py-1 text-xs"
                         placeholder="Snapshot a plan file, implement it, and iterate until complete."
                     />
-                </FieldRow>
+                </GraphSettingsField>
             </div>
         </section>
     )
@@ -172,7 +252,7 @@ export function GraphLaunchInputsSection({
 }: GraphLaunchInputsSectionProps) {
     return (
         <section className="space-y-3">
-            <SectionHeader
+            <GraphSettingsSectionIntro
                 title="Launch Inputs"
                 description="Define the structured fields Spark should collect before a run starts."
             />
@@ -200,20 +280,20 @@ export function GraphExecutionDefaultsSection({
 }: GraphExecutionDefaultsSectionProps) {
     return (
         <section className="space-y-3">
-            <SectionHeader
+            <GraphSettingsSectionIntro
                 title="Execution Defaults"
                 description="Graph-level defaults that shape retry behavior and baseline run context."
             />
-            <InlineNotice
+            <GraphSettingsNotice
                 data-testid="graph-attrs-help"
                 className="text-[11px]"
             >
                 <p>Graph attributes are baseline defaults. Explicit node and edge attrs win when both are set.</p>
                 <p>Leave blank to omit this attr from DOT output.</p>
-            </InlineNotice>
+            </GraphSettingsNotice>
             <div className="space-y-3">
                 <div className="space-y-1">
-                    <FieldRow
+                    <GraphSettingsField
                         label="Goal"
                         htmlFor="graph-attr-goal"
                         helper={GRAPH_ATTR_HELP.goal}
@@ -224,9 +304,9 @@ export function GraphExecutionDefaultsSection({
                             onChange={(event) => updateGraphAttr('goal', event.target.value)}
                             className="h-8 text-xs"
                         />
-                    </FieldRow>
+                    </GraphSettingsField>
                 </div>
-                <FieldRow
+                <GraphSettingsField
                     label="Label"
                     htmlFor="graph-attr-label"
                     helper={GRAPH_ATTR_HELP.label}
@@ -237,10 +317,10 @@ export function GraphExecutionDefaultsSection({
                         onChange={(event) => updateGraphAttr('label', event.target.value)}
                         className="h-8 text-xs"
                     />
-                </FieldRow>
+                </GraphSettingsField>
                 <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                        <FieldRow
+                        <GraphSettingsField
                             label="Default Max Retries"
                             htmlFor="graph-attr-default-max-retries"
                             helper={GRAPH_ATTR_HELP.default_max_retries}
@@ -256,11 +336,11 @@ export function GraphExecutionDefaultsSection({
                                 onChange={(event) => updateGraphAttr('default_max_retries', event.target.value)}
                                 className="h-8 text-xs"
                             />
-                        </FieldRow>
+                        </GraphSettingsField>
                         {renderFieldDiagnostics('default_max_retries', 'graph-field-diagnostics-default_max_retries')}
                     </div>
                     <div className="space-y-1">
-                        <FieldRow
+                        <GraphSettingsField
                             label="Default Fidelity"
                             htmlFor="graph-attr-default-fidelity"
                             helper={GRAPH_ATTR_HELP.default_fidelity}
@@ -279,7 +359,7 @@ export function GraphExecutionDefaultsSection({
                                     <option key={option} value={option} />
                                 ))}
                             </datalist>
-                        </FieldRow>
+                        </GraphSettingsField>
                         {renderFieldDiagnostics('default_fidelity', 'graph-field-diagnostics-default_fidelity')}
                     </div>
                 </div>
@@ -307,11 +387,11 @@ export function GraphLaunchPolicySection({
 }: GraphLaunchPolicySectionProps) {
     return (
         <section className="space-y-3">
-            <SectionHeader
+            <GraphSettingsSectionIntro
                 title="Launch Policy"
                 description="Workspace-level launch behavior for this flow catalog entry."
             />
-            <FieldRow label="Launch Policy" htmlFor="graph-launch-policy">
+            <GraphSettingsField label="Launch Policy" htmlFor="graph-launch-policy">
                 <NativeSelect
                     id="graph-launch-policy"
                     value={launchPolicy}
@@ -325,13 +405,13 @@ export function GraphLaunchPolicySection({
                         </option>
                     ))}
                 </NativeSelect>
-            </FieldRow>
-            <InlineNotice
+            </GraphSettingsField>
+            <GraphSettingsNotice
                 data-testid="graph-launch-policy-status"
                 className="text-[11px]"
             >
                 {launchPolicyStatusMessage}
-            </InlineNotice>
+            </GraphSettingsNotice>
         </section>
     )
 }
@@ -377,7 +457,7 @@ export function GraphAdvancedAttrsSection({
 
     return (
         <section className="space-y-3">
-            <SectionHeader
+            <GraphSettingsSectionIntro
                 title="Advanced Attrs"
                 description="Low-frequency graph attrs, stylesheet defaults, and extension metadata."
                 action={(
@@ -396,7 +476,7 @@ export function GraphAdvancedAttrsSection({
             {showAdvancedGraphAttrs ? (
                 <div className="space-y-3 rounded-md border border-border/80 bg-background/40 p-3">
                     <div className="space-y-1">
-                        <FieldRow
+                        <GraphSettingsField
                             label="Model Stylesheet"
                             htmlFor="graph-model-stylesheet"
                             helper={GRAPH_ATTR_HELP.model_stylesheet}
@@ -409,7 +489,7 @@ export function GraphAdvancedAttrsSection({
                                     ariaLabel="Model Stylesheet"
                                 />
                             </div>
-                        </FieldRow>
+                        </GraphSettingsField>
                         <p
                             data-testid="graph-model-stylesheet-selector-guidance"
                             className="text-[11px] text-muted-foreground"
@@ -417,7 +497,7 @@ export function GraphAdvancedAttrsSection({
                             Supported selectors: `*`, `shape`, `.class`, `#id`. End each declaration with `;`.
                         </p>
                         {showStylesheetFeedback ? (
-                            <InlineNotice
+                            <GraphSettingsNotice
                                 data-testid="graph-model-stylesheet-diagnostics"
                                 tone={stylesheetNoticeTone}
                                 className="text-[11px]"
@@ -434,7 +514,7 @@ export function GraphAdvancedAttrsSection({
                                 ) : (
                                     <p>Stylesheet parse and selector lint checks passed in preview.</p>
                                 )}
-                            </InlineNotice>
+                            </GraphSettingsNotice>
                         ) : null}
                         <div
                             data-testid="graph-model-stylesheet-selector-preview"
@@ -498,7 +578,7 @@ export function GraphAdvancedAttrsSection({
                         </div>
                     </div>
                     <div className="space-y-1">
-                        <FieldRow
+                        <GraphSettingsField
                             label="Retry Target"
                             htmlFor="graph-attr-retry-target"
                             helper={GRAPH_ATTR_HELP.retry_target}
@@ -509,11 +589,11 @@ export function GraphAdvancedAttrsSection({
                                 onChange={(event) => updateGraphAttr('retry_target', event.target.value)}
                                 className="h-8 text-xs"
                             />
-                        </FieldRow>
+                        </GraphSettingsField>
                         {renderFieldDiagnostics('retry_target', 'graph-field-diagnostics-retry_target')}
                     </div>
                     <div className="space-y-1">
-                        <FieldRow
+                        <GraphSettingsField
                             label="Fallback Retry Target"
                             htmlFor="graph-attr-fallback-retry-target"
                             helper={GRAPH_ATTR_HELP.fallback_retry_target}
@@ -524,10 +604,10 @@ export function GraphAdvancedAttrsSection({
                                 onChange={(event) => updateGraphAttr('fallback_retry_target', event.target.value)}
                                 className="h-8 text-xs"
                             />
-                        </FieldRow>
+                        </GraphSettingsField>
                         {renderFieldDiagnostics('fallback_retry_target', 'graph-field-diagnostics-fallback_retry_target')}
                     </div>
-                    <FieldRow
+                    <GraphSettingsField
                         label="Stack Child Dotfile"
                         htmlFor="graph-attr-stack-child-dotfile"
                         helper={GRAPH_ATTR_HELP['stack.child_dotfile']}
@@ -539,8 +619,8 @@ export function GraphAdvancedAttrsSection({
                             className="h-8 font-mono text-xs"
                             placeholder="child/flow.dot"
                         />
-                    </FieldRow>
-                    <FieldRow
+                    </GraphSettingsField>
+                    <GraphSettingsField
                         label="Stack Child Workdir"
                         htmlFor="graph-attr-stack-child-workdir"
                         helper={GRAPH_ATTR_HELP['stack.child_workdir']}
@@ -552,8 +632,8 @@ export function GraphAdvancedAttrsSection({
                             className="h-8 font-mono text-xs"
                             placeholder="/abs/path/to/child"
                         />
-                    </FieldRow>
-                    <FieldRow
+                    </GraphSettingsField>
+                    <GraphSettingsField
                         label="Tool Hooks Pre"
                         htmlFor="graph-attr-tool-hooks-pre"
                         helper={GRAPH_ATTR_HELP['tool.hooks.pre']}
@@ -565,13 +645,13 @@ export function GraphAdvancedAttrsSection({
                             onChange={(event) => updateGraphAttr('tool.hooks.pre', event.target.value)}
                             className="h-8 font-mono text-xs"
                         />
-                    </FieldRow>
+                    </GraphSettingsField>
                     {toolHookPreWarning ? (
                         <p data-testid="graph-attr-warning-tool.hooks.pre" className="text-[11px] text-amber-800">
                             {toolHookPreWarning}
                         </p>
                     ) : null}
-                    <FieldRow
+                    <GraphSettingsField
                         label="Tool Hooks Post"
                         htmlFor="graph-attr-tool-hooks-post"
                         helper={GRAPH_ATTR_HELP['tool.hooks.post']}
@@ -583,7 +663,7 @@ export function GraphAdvancedAttrsSection({
                             onChange={(event) => updateGraphAttr('tool.hooks.post', event.target.value)}
                             className="h-8 font-mono text-xs"
                         />
-                    </FieldRow>
+                    </GraphSettingsField>
                     {toolHookPostWarning ? (
                         <p data-testid="graph-attr-warning-tool.hooks.post" className="text-[11px] text-amber-800">
                             {toolHookPostWarning}
@@ -599,9 +679,9 @@ export function GraphAdvancedAttrsSection({
                     />
                 </div>
             ) : (
-                <InlineNotice className="text-[11px]">
+                <GraphSettingsNotice className="text-[11px]">
                     Advanced attrs stay available for stylesheet defaults, retry fallbacks, stack child linkage, and extension metadata.
-                </InlineNotice>
+                </GraphSettingsNotice>
             )}
         </section>
     )
@@ -626,12 +706,12 @@ export function GraphLlmDefaultsSection({
 }: GraphLlmDefaultsSectionProps) {
     return (
         <section className="space-y-3">
-            <SectionHeader
+            <GraphSettingsSectionIntro
                 title="Model Defaults"
                 description="Flow-local LLM defaults layered on top of the current global snapshot."
             />
             <div className="space-y-3">
-                <FieldRow label="Default LLM Provider" htmlFor="graph-default-llm-provider">
+                <GraphSettingsField label="Default LLM Provider" htmlFor="graph-default-llm-provider">
                     <Input
                         id="graph-default-llm-provider"
                         value={graphAttrs.ui_default_llm_provider || ''}
@@ -645,8 +725,8 @@ export function GraphLlmDefaultsSection({
                             <option key={provider} value={provider} />
                         ))}
                     </datalist>
-                </FieldRow>
-                <FieldRow label="Default LLM Model" htmlFor="graph-default-llm-model">
+                </GraphSettingsField>
+                <GraphSettingsField label="Default LLM Model" htmlFor="graph-default-llm-model">
                     <Input
                         id="graph-default-llm-model"
                         value={graphAttrs.ui_default_llm_model || ''}
@@ -660,8 +740,8 @@ export function GraphLlmDefaultsSection({
                             <option key={modelOption} value={modelOption} />
                         ))}
                     </datalist>
-                </FieldRow>
-                <FieldRow label="Default Reasoning Effort" htmlFor="graph-default-reasoning-effort">
+                </GraphSettingsField>
+                <GraphSettingsField label="Default Reasoning Effort" htmlFor="graph-default-reasoning-effort">
                     <NativeSelect
                         id="graph-default-reasoning-effort"
                         value={graphAttrs.ui_default_reasoning_effort || ''}
@@ -673,7 +753,7 @@ export function GraphLlmDefaultsSection({
                         <option value="medium">Medium</option>
                         <option value="high">High</option>
                     </NativeSelect>
-                </FieldRow>
+                </GraphSettingsField>
                 <div className="flex items-center justify-between gap-2">
                     <Button
                         type="button"

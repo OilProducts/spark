@@ -6,7 +6,7 @@ Historical evidence in tests and notes may reference superseded shared UI paths.
 
 - Keep implementation organized around feature modules with an explicit shared UI boundary.
 - Use `src/components/ui` for shadcn-managed primitives.
-- Use `src/components/app` for Spark-managed shared composites that are reused across features.
+- Limit `src/components/app` to Spark-owned shared dialog orchestration and the shared flow tree.
 - Keep workflow canvas rendering custom under `src/features/workflow-canvas`.
 - Treat this as an internal frontend architecture document. It does not change backend APIs, persisted contracts, or product behavior.
 
@@ -17,8 +17,9 @@ Historical evidence in tests and notes may reference superseded shared UI paths.
   - Safe to import from any non-canvas feature.
   - Import primitives directly from `@/components/ui/*`. Do not add or use a barrel.
 - `src/components/app`
-  - Spark-managed shared composites such as `Panel`, `FieldRow`, `InlineNotice`, `EmptyState`, `SectionHeader`, `ProjectContextChip`, `FlowTree`, and the dialog controller surface.
+  - Limited to `dialog-controller` and `flow-tree`.
   - Shared dialog flows should use `DialogProvider` and `useDialogController`, not browser `alert`, `confirm`, or `prompt`.
+  - `FlowTree` remains shared because editor and execution both depend on the same Spark-specific file-tree behavior.
   - Import composites directly from `@/components/app/*`. Do not add or use a barrel.
 - `src/features/projects`
 - `src/features/runs`
@@ -53,9 +54,10 @@ Historical evidence in tests and notes may reference superseded shared UI paths.
 
 - Non-canvas feature UI should compose primitives from `@/components/ui/*` instead of hand-rolled raw controls.
 - Shared primitives cover controls such as buttons, inputs, selects, tabs, badges, cards, scroll areas, textareas, labels, separators, dialogs, tooltips, switches, and checkboxes.
-- Shared Spark-specific composites belong in `src/components/app` when they are reused across features and remain Spark-owned rather than shadcn-owned.
+- Generic presentation patterns such as cards, field groupings, alerts, and empty states should be composed directly from `@/components/ui/*` or owned locally by the feature.
+- Shared Spark-specific composites belong in `src/components/app` only when they are Spark-specific and truly cross-feature.
 - Feature-specific presentation code stays in the owning feature instead of moving into shared folders just because it looks visually similar.
-- `FlowTree` remains shared because both editor and execution surfaces depend on the same reusable tree behavior.
+- `FlowTree` and dialog orchestration are the only remaining shared Spark-managed composites under `src/components/app`.
 - Canvas renderers are the exception. Inspector chrome, sidebars, forms, and other non-canvas surfaces are not exempt.
 
 ## Import Boundaries
@@ -65,6 +67,7 @@ Historical evidence in tests and notes may reference superseded shared UI paths.
 - Presentational components may read store selectors, but store mutation and cross-feature coordination should stay in hooks, services, or top-level composition files.
 - Import shadcn primitives directly from `@/components/ui/*`, not from a barrel.
 - Import Spark-managed shared composites directly from `@/components/app/*`, not from a retired mixed shared layer.
+- Runtime code must not import deleted shared wrapper modules such as panels, field rows, inline notices, empty states, section headers, or project chips from `src/components/app`.
 
 ## Shared State
 

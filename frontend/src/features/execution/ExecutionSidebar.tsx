@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 
 import { useStore } from '@/store'
+import { Badge } from '@/components/ui/badge'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { FlowTree } from '@/components/app/flow-tree'
+import { formatProjectPathLabel } from '@/lib/projectPaths'
 import { loadExecutionFlowCatalog } from './services/flowCatalog'
-import { ProjectContextChip } from '@/components/app/project-context-chip'
 export function ExecutionSidebar() {
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const executionFlow = useStore((state) => state.executionFlow)
@@ -15,6 +16,9 @@ export function ExecutionSidebar() {
     const humanGate = useStore((state) => state.humanGate)
     const isNarrowViewport = useNarrowViewport()
     const [flows, setFlows] = useState<string[]>([])
+    const projectLabel = activeProjectPath
+        ? formatProjectPathLabel(activeProjectPath)
+        : 'No active project'
 
     const handleSelectFlow = (flowName: string) => {
         if (!executionContinuation && flowName === executionFlow) {
@@ -59,11 +63,15 @@ export function ExecutionSidebar() {
                     <span>Execution</span>
                     <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
                 </div>
-                <ProjectContextChip
-                    testId="execution-project-context-chip"
-                    projectPath={activeProjectPath}
+                <Badge
+                    data-testid="execution-project-context-chip"
+                    variant="outline"
                     className="mt-3"
-                />
+                    title={activeProjectPath || 'No active project'}
+                >
+                    <span className="text-muted-foreground">Project:</span>
+                    <span className="max-w-40 truncate">{projectLabel}</span>
+                </Badge>
             </div>
             <div className="px-5 py-2">
                 <h2 className="font-semibold text-sm tracking-tight">Flow Library</h2>

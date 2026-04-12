@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef } from 'react'
 
 import { useStore } from '@/store'
 import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/app/empty-state'
-import { Panel, PanelContent, PanelHeader } from '@/components/app/panel'
-import { SectionHeader } from '@/components/app/section-header'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import {
+    Empty,
+    EmptyDescription,
+    EmptyHeader,
+} from '@/components/ui/empty'
 import type { GroupedTimelineEntry, RunRecord } from '../model/shared'
 import { formatTimestamp, STATUS_LABELS } from '../model/shared'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
@@ -239,30 +242,32 @@ export function RunActivityCard({
     ]
 
     return (
-        <Panel data-testid="run-activity-panel">
-            <PanelHeader>
-                <SectionHeader
-                    title="Run Activity"
-                    description="What the selected run is doing now, why, and the latest meaningful runtime evidence."
-                    action={(
-                        <div className="flex items-center gap-2">
-                            <span
-                                data-testid="run-activity-status"
-                                className="rounded border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground"
-                            >
-                                {statusLabel}
-                            </span>
-                            <RunSectionToggleButton
-                                collapsed={collapsed}
-                                onToggle={() => onCollapsedChange(!collapsed)}
-                                testId="run-activity-toggle-button"
-                            />
-                        </div>
-                    )}
-                />
-            </PanelHeader>
+        <Card data-testid="run-activity-panel" className="gap-4 py-4">
+            <CardHeader className="gap-1 px-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">Run Activity</h3>
+                        <p className="text-xs leading-5 text-muted-foreground">
+                            What the selected run is doing now, why, and the latest meaningful runtime evidence.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <span
+                            data-testid="run-activity-status"
+                            className="rounded border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground"
+                        >
+                            {statusLabel}
+                        </span>
+                        <RunSectionToggleButton
+                            collapsed={collapsed}
+                            onToggle={() => onCollapsedChange(!collapsed)}
+                            testId="run-activity-toggle-button"
+                        />
+                    </div>
+                </div>
+            </CardHeader>
             {!collapsed ? (
-                <PanelContent className="space-y-4">
+                <CardContent className="space-y-4 px-4">
                     <section
                         data-testid="run-activity-headline"
                         className="rounded-md border border-border/80 bg-muted/20 px-4 py-3"
@@ -304,7 +309,13 @@ export function RunActivityCard({
                         </div>
                         {recentActivity.length === 0 ? (
                             <div className="mt-3">
-                                <EmptyState description="No recent activity events have arrived for this run yet." />
+                                <Empty className="text-sm text-muted-foreground">
+                                    <EmptyHeader>
+                                        <EmptyDescription>
+                                            No recent activity events have arrived for this run yet.
+                                        </EmptyDescription>
+                                    </EmptyHeader>
+                                </Empty>
                             </div>
                         ) : (
                             <div className="mt-3 space-y-2">
@@ -381,7 +392,13 @@ export function RunActivityCard({
                                 className="max-h-96 overflow-y-auto p-4 font-mono text-sm"
                             >
                                 {logs.length === 0 ? (
-                                    <EmptyState description="No runtime logs have arrived for this run yet." />
+                                    <Empty className="text-sm text-muted-foreground">
+                                        <EmptyHeader>
+                                            <EmptyDescription>
+                                                No runtime logs have arrived for this run yet.
+                                            </EmptyDescription>
+                                        </EmptyHeader>
+                                    </Empty>
                                 ) : (
                                     <div className="space-y-1">
                                         {logs.map((log, index) => (
@@ -410,8 +427,8 @@ export function RunActivityCard({
                             </div>
                         ) : null}
                     </section>
-                </PanelContent>
+                </CardContent>
             ) : null}
-        </Panel>
+        </Card>
     )
 }

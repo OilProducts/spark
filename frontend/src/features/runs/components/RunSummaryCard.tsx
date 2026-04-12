@@ -10,8 +10,7 @@ import {
     formatOutcomeLabel,
     formatTimestamp,
 } from '../model/shared'
-import { Panel, PanelContent, PanelHeader } from '@/components/app/panel'
-import { SectionHeader } from '@/components/app/section-header'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 function formatTokenCount(value: number | null | undefined): string {
@@ -82,25 +81,27 @@ export function RunSummaryCard({
     const usageBreakdown = run.token_usage_breakdown
     const modelUsageEntries = Object.entries(usageBreakdown?.by_model ?? {})
     return (
-        <Panel data-testid="run-summary-panel">
-            <PanelHeader>
-                <SectionHeader
-                    title="Run Summary"
-                    description="Execution metadata, scope, and final outcome."
-                    action={(
-                        <div className="flex items-center gap-2">
-                            <span className="text-xs text-muted-foreground">{run.run_id}</span>
-                            <RunSectionToggleButton
-                                collapsed={collapsed}
-                                onToggle={() => onCollapsedChange(!collapsed)}
-                                testId="run-summary-toggle-button"
-                            />
-                        </div>
-                    )}
-                />
-            </PanelHeader>
+        <Card data-testid="run-summary-panel" className="gap-4 py-4">
+            <CardHeader className="gap-1 px-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">Run Summary</h3>
+                        <p className="text-xs leading-5 text-muted-foreground">
+                            Execution metadata, scope, and final outcome.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">{run.run_id}</span>
+                        <RunSectionToggleButton
+                            collapsed={collapsed}
+                            onToggle={() => onCollapsedChange(!collapsed)}
+                            testId="run-summary-toggle-button"
+                        />
+                    </div>
+                </div>
+            </CardHeader>
             {!collapsed ? (
-                <PanelContent className="space-y-4">
+                <CardContent className="space-y-4 px-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
                         {run.spec_id ? (
@@ -201,8 +202,8 @@ export function RunSummaryCard({
                         </div>
                     </div>
                 ) : null}
-                </PanelContent>
+                </CardContent>
             ) : null}
-        </Panel>
+        </Card>
     )
 }

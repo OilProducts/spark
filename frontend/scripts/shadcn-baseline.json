@@ -13,6 +13,16 @@
   },
   "components": [
     {
+      "name": "alert-dialog",
+      "path": "src/components/ui/alert-dialog.tsx",
+      "sha256": "8102fba5ffc2245ebc7dd4759cdedb7aa5f546ffb1b867b937b463e1b63e9efc"
+    },
+    {
+      "name": "alert",
+      "path": "src/components/ui/alert.tsx",
+      "sha256": "e791defc9ae33598313f2b572a56cd99fcf113c45a794b7f32083f0b92950fc9"
+    },
+    {
       "name": "badge",
       "path": "src/components/ui/badge.tsx",
       "sha256": "46a0de5224f6a5d5d63d45246534288518dce888f031064bff925bbc7fe6ad97"
@@ -33,9 +43,24 @@
       "sha256": "108fb09fa64bd5819f80240ddf410494e381aca25e5127315c6428e2d493e226"
     },
     {
+      "name": "collapsible",
+      "path": "src/components/ui/collapsible.tsx",
+      "sha256": "c511ebc696d24677cc5a88b8e03778ef9d4da166e3c9b8d1ac5d567743500ee1"
+    },
+    {
       "name": "dialog",
       "path": "src/components/ui/dialog.tsx",
       "sha256": "dce39c6adc47d997bd2567f8b7a72f466b0134715105cd42f9194007b8ecdb14"
+    },
+    {
+      "name": "empty",
+      "path": "src/components/ui/empty.tsx",
+      "sha256": "7ea2cc77c2ec6849552c3a6502b09c2734034ebc2ebce8b1561ce2143e33e851"
+    },
+    {
+      "name": "field",
+      "path": "src/components/ui/field.tsx",
+      "sha256": "1bbc71480ad43f455065206ac48326720d78739ec08d617f2ea004ca6bd016d3"
     },
     {
       "name": "input",

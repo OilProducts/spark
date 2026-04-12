@@ -1,9 +1,13 @@
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
 import { HomeWorkspace } from './HomeWorkspace'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/app/empty-state'
-import { InlineNotice } from '@/components/app/inline-notice'
-import { Panel, PanelContent, PanelHeader, PanelTitle } from '@/components/app/panel'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+    Empty,
+    EmptyDescription,
+    EmptyHeader,
+} from '@/components/ui/empty'
 import { Textarea } from '@/components/ui/textarea'
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
@@ -44,24 +48,32 @@ export function ProjectConversationSurface({
 }: ProjectConversationSurfaceProps) {
     return (
         <HomeWorkspace className={isNarrowViewport ? 'space-y-4' : 'h-full'}>
-            <Panel
+            <Card
                 data-testid="project-ai-conversation-surface"
-                className={`${isNarrowViewport ? '' : 'flex h-full min-h-0 flex-col'}`}
+                className={`gap-4 py-4 ${isNarrowViewport ? '' : 'flex h-full min-h-0 flex-col'}`}
             >
-                <PanelHeader>
-                    <PanelTitle>{activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}</PanelTitle>
-                </PanelHeader>
-                <PanelContent className={`space-y-3 ${isNarrowViewport ? '' : 'flex min-h-0 flex-1 flex-col'}`}>
+                <CardHeader className="gap-1 px-4">
+                    <CardTitle className="text-sm">
+                        {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}
+                    </CardTitle>
+                </CardHeader>
+                <CardContent className={`space-y-3 px-4 ${isNarrowViewport ? '' : 'flex min-h-0 flex-1 flex-col'}`}>
                 {panelError ? (
-                    <InlineNotice data-testid="project-panel-error" tone="error" className="text-xs">
-                        {panelError}
-                    </InlineNotice>
+                    <Alert
+                        data-testid="project-panel-error"
+                        className="border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                    >
+                        <AlertDescription className="text-inherit">{panelError}</AlertDescription>
+                    </Alert>
                 ) : null}
                 {!activeProjectPath ? (
-                    <EmptyState
-                        className={isNarrowViewport ? '' : 'flex flex-1 items-center'}
-                        description="Choose or add a project from the navbar to begin chatting."
-                    />
+                    <Empty className={`text-sm text-muted-foreground ${isNarrowViewport ? '' : 'flex flex-1 items-center'}`}>
+                        <EmptyHeader>
+                            <EmptyDescription>
+                                Choose or add a project from the navbar to begin chatting.
+                            </EmptyDescription>
+                        </EmptyHeader>
+                    </Empty>
                 ) : (
                     <div className="flex min-h-0 flex-1 flex-col gap-3">
                         <div
@@ -117,8 +129,8 @@ export function ProjectConversationSurface({
                         </form>
                     </div>
                 )}
-                </PanelContent>
-            </Panel>
+                </CardContent>
+            </Card>
         </HomeWorkspace>
     )
 }

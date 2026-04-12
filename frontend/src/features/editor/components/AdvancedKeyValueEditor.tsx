@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react'
 
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
 import { Button } from '@/components/ui/button'
-import { FieldRow } from '@/components/app/field-row'
+import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+
 interface AdvancedKeyValueEditorProps {
     testIdPrefix: string
     entries: ExtensionAttrEntry[]
@@ -68,11 +69,10 @@ export function AdvancedKeyValueEditor({
                 >
                     {entries.map((entry, index) => (
                         <div key={entry.key} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
-                            <FieldRow
-                                label="Key"
-                                htmlFor={`${testIdPrefix}-extension-attr-key-input-${index}`}
-                                className="space-y-1"
-                            >
+                            <Field className="gap-1">
+                                <FieldLabel htmlFor={`${testIdPrefix}-extension-attr-key-input-${index}`}>
+                                    Key
+                                </FieldLabel>
                                 <Input
                                     id={`${testIdPrefix}-extension-attr-key-input-${index}`}
                                     data-testid={`${testIdPrefix}-extension-attr-key-${index}`}
@@ -80,12 +80,11 @@ export function AdvancedKeyValueEditor({
                                     readOnly
                                     className="h-8 bg-muted/30 px-2 font-mono text-[11px]"
                                 />
-                            </FieldRow>
-                            <FieldRow
-                                label="Value"
-                                htmlFor={`${testIdPrefix}-extension-attr-value-input-${index}`}
-                                className="space-y-1"
-                            >
+                            </Field>
+                            <Field className="gap-1">
+                                <FieldLabel htmlFor={`${testIdPrefix}-extension-attr-value-input-${index}`}>
+                                    Value
+                                </FieldLabel>
                                 <Input
                                     id={`${testIdPrefix}-extension-attr-value-input-${index}`}
                                     data-testid={`${testIdPrefix}-extension-attr-value-${index}`}
@@ -93,7 +92,7 @@ export function AdvancedKeyValueEditor({
                                     onChange={(event) => onValueChange(entry.key, event.target.value)}
                                     className="h-8 px-2 font-mono text-[11px]"
                                 />
-                            </FieldRow>
+                            </Field>
                             <Button
                                 type="button"
                                 data-testid={`${testIdPrefix}-extension-attr-remove-${index}`}
@@ -110,11 +109,10 @@ export function AdvancedKeyValueEditor({
             )}
 
             <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
-                <FieldRow
-                    label="New Key"
-                    htmlFor={`${testIdPrefix}-extension-attr-new-key-input`}
-                    className="space-y-1"
-                >
+                <Field className="gap-1">
+                    <FieldLabel htmlFor={`${testIdPrefix}-extension-attr-new-key-input`}>
+                        New Key
+                    </FieldLabel>
                     <Input
                         id={`${testIdPrefix}-extension-attr-new-key-input`}
                         data-testid={`${testIdPrefix}-extension-attr-new-key`}
@@ -123,12 +121,11 @@ export function AdvancedKeyValueEditor({
                         className="h-8 px-2 font-mono text-[11px]"
                         placeholder="x_custom_attr"
                     />
-                </FieldRow>
-                <FieldRow
-                    label="New Value"
-                    htmlFor={`${testIdPrefix}-extension-attr-new-value-input`}
-                    className="space-y-1"
-                >
+                </Field>
+                <Field className="gap-1">
+                    <FieldLabel htmlFor={`${testIdPrefix}-extension-attr-new-value-input`}>
+                        New Value
+                    </FieldLabel>
                     <Input
                         id={`${testIdPrefix}-extension-attr-new-value-input`}
                         data-testid={`${testIdPrefix}-extension-attr-new-value`}
@@ -137,7 +134,7 @@ export function AdvancedKeyValueEditor({
                         className="h-8 px-2 font-mono text-[11px]"
                         placeholder="value"
                     />
-                </FieldRow>
+                </Field>
                 <Button
                     type="button"
                     onClick={handleAdd}

@@ -1,4 +1,4 @@
-import { FieldRow } from '@/components/app/field-row'
+import { Field, FieldLabel } from '@/components/ui/field'
 import { Textarea } from '@/components/ui/textarea'
 interface ContextKeyListEditorProps {
     title: string
@@ -23,7 +23,8 @@ export function ContextKeyListEditor({
                 <p className="text-sm font-medium text-foreground">{title}</p>
                 <p className="mt-1 text-[11px] text-muted-foreground">{description}</p>
             </div>
-            <FieldRow label="Context Keys" className="space-y-0">
+            <Field className="gap-1">
+                <FieldLabel>Context Keys</FieldLabel>
                 <Textarea
                     data-testid={`${testId}-textarea`}
                     value={value}
@@ -32,7 +33,7 @@ export function ContextKeyListEditor({
                     className="min-h-24 px-2 py-2 font-mono text-xs"
                     placeholder="One context.* key per line"
                 />
-            </FieldRow>
+            </Field>
             {error ? (
                 <p data-testid={`${testId}-error`} className="text-[11px] text-destructive">
                     {error}

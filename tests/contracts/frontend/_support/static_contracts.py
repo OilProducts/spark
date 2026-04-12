@@ -4,6 +4,10 @@ import re
 from pathlib import Path
 
 
+ALLOWED_COMPONENTS_APP_MODULES = {"dialog-controller", "flow-tree"}
+ALLOWED_COMPONENTS_APP_FILES = {f"{module}.tsx" for module in ALLOWED_COMPONENTS_APP_MODULES}
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
@@ -48,6 +52,35 @@ def legacy_ui_boundary_violations() -> list[str]:
             violations.append(f"{relative_path}: contains legacy @/ui reference")
         if "frontend/src/ui" in source:
             violations.append(f"{relative_path}: contains legacy frontend/src/ui reference")
+
+    return violations
+
+
+def shared_app_boundary_violations() -> list[str]:
+    repo_root = _repo_root()
+    violations: list[str] = []
+    components_app_directory = _frontend_src_root() / "components" / "app"
+
+    if components_app_directory.exists():
+        for path in sorted(components_app_directory.rglob("*.tsx")):
+            if "__tests__" in path.parts:
+                continue
+            relative_to_app = path.relative_to(components_app_directory).as_posix()
+            if relative_to_app not in ALLOWED_COMPONENTS_APP_FILES:
+                violations.append(
+                    f"{path.relative_to(repo_root)}: unexpected shared components/app module"
+                )
+
+    import_pattern = re.compile(r"@/components/app/([A-Za-z0-9_-]+)")
+    for path in iter_runtime_source_files():
+        source = path.read_text(encoding="utf-8")
+        relative_path = path.relative_to(repo_root)
+        for match in import_pattern.finditer(source):
+            module_name = match.group(1)
+            if module_name not in ALLOWED_COMPONENTS_APP_MODULES:
+                violations.append(
+                    f"{relative_path}: imports forbidden shared app module {module_name}"
+                )
 
     return violations
 

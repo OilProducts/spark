@@ -32,7 +32,8 @@ From the repo root, `just run` is the normal full-stack workflow.
 ## Shared UI Boundary
 
 - The shadcn CLI source of truth is `src/components/ui`.
-- Spark-managed shared wrappers such as dialog control, panels, notices, and shared flow browsing live in `src/components/app`.
+- `src/components/app` is limited to the shared dialog controller and `FlowTree`.
+- Generic presentation patterns such as cards, notices, field groupings, and empty states should come from `src/components/ui` or stay local to the owning feature.
 - Import shared UI by direct module path under `@/components/ui/*` or `@/components/app/*`, not through a mixed barrel.
 
 ## Scripts

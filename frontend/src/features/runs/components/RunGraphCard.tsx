@@ -20,11 +20,14 @@ import {
     nodeTypes,
     nowMs,
 } from '@/features/workflow-canvas'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/app/empty-state'
-import { InlineNotice } from '@/components/app/inline-notice'
-import { Panel, PanelContent, PanelHeader } from '@/components/app/panel'
-import { SectionHeader } from '@/components/app/section-header'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import {
+    Empty,
+    EmptyDescription,
+    EmptyHeader,
+} from '@/components/ui/empty'
 import type { RunRecord } from '../model/shared'
 import { loadRunGraphPreview } from '../services/runGraphTransport'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
@@ -193,46 +196,57 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
     const hasRenderableGraph = (runDetailSession?.graphNodes.length ?? 0) > 0 || (runDetailSession?.graphEdges.length ?? 0) > 0
 
     return (
-        <Panel data-testid="run-graph-panel">
-            <PanelHeader>
-                <SectionHeader
-                    title="Run Graph"
-                    description="Stored run snapshot reference for the selected workflow. This card is a structural reference, not the primary live-status surface."
-                    action={(
-                        <div className="flex items-center gap-2">
-                            <Button
-                                onClick={() => setRefreshToken((current) => current + 1)}
-                                data-testid="run-graph-refresh-button"
-                                variant="outline"
-                                size="xs"
-                            >
-                                {graphStatus === 'loading' ? 'Refreshing…' : 'Refresh'}
-                            </Button>
-                            <ChildFlowExpansionToggle
-                                expanded={expandChildFlows}
-                                onChange={(nextExpanded) => updateRunDetailSession(run.run_id, { expandChildFlows: nextExpanded })}
-                                testId="run-child-flow-toggle"
-                            />
-                            <RunSectionToggleButton
-                                collapsed={collapsed}
-                                onToggle={() => updateRunDetailSession(run.run_id, { isGraphCollapsed: !collapsed })}
-                                testId="run-graph-toggle-button"
-                            />
-                        </div>
-                    )}
-                />
-            </PanelHeader>
+        <Card data-testid="run-graph-panel" className="gap-4 py-4">
+            <CardHeader className="gap-1 px-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">Run Graph</h3>
+                        <p className="text-xs leading-5 text-muted-foreground">
+                            Stored run snapshot reference for the selected workflow. This card is a structural
+                            reference, not the primary live-status surface.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            onClick={() => setRefreshToken((current) => current + 1)}
+                            data-testid="run-graph-refresh-button"
+                            variant="outline"
+                            size="xs"
+                        >
+                            {graphStatus === 'loading' ? 'Refreshing…' : 'Refresh'}
+                        </Button>
+                        <ChildFlowExpansionToggle
+                            expanded={expandChildFlows}
+                            onChange={(nextExpanded) => updateRunDetailSession(run.run_id, { expandChildFlows: nextExpanded })}
+                            testId="run-child-flow-toggle"
+                        />
+                        <RunSectionToggleButton
+                            collapsed={collapsed}
+                            onToggle={() => updateRunDetailSession(run.run_id, { isGraphCollapsed: !collapsed })}
+                            testId="run-graph-toggle-button"
+                        />
+                    </div>
+                </div>
+            </CardHeader>
             {!collapsed ? (
-                <PanelContent className="space-y-3">
+                <CardContent className="space-y-3 px-4">
                 {graphStatus !== 'ready' && !graphError ? (
-                    <InlineNotice data-testid="run-graph-loading">
-                        Restoring run graph…
-                    </InlineNotice>
+                    <Alert
+                        data-testid="run-graph-loading"
+                        className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                    >
+                        <AlertDescription className="text-inherit">
+                            Restoring run graph…
+                        </AlertDescription>
+                    </Alert>
                 ) : null}
                 {graphError ? (
-                    <InlineNotice tone="error" data-testid="run-graph-error">
-                        {graphError}
-                    </InlineNotice>
+                    <Alert
+                        data-testid="run-graph-error"
+                        className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
+                    >
+                        <AlertDescription className="text-inherit">{graphError}</AlertDescription>
+                    </Alert>
                 ) : null}
                 {diagnostics.length > 0 ? (
                     <div data-testid="run-graph-diagnostics" className="rounded-md border border-border/80 bg-muted/20 p-3">
@@ -255,7 +269,13 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
                 ) : null}
                 {graphStatus === 'ready' && !hasRenderableGraph ? (
                     <div className="flex h-[28rem] items-center justify-center rounded-md border border-dashed border-border bg-muted/20">
-                        <EmptyState description="No run graph preview is available for this run." />
+                        <Empty className="text-sm text-muted-foreground">
+                            <EmptyHeader>
+                                <EmptyDescription>
+                                    No run graph preview is available for this run.
+                                </EmptyDescription>
+                            </EmptyHeader>
+                        </Empty>
                     </div>
                 ) : null}
                 {!graphError && (graphStatus !== 'ready' || hasRenderableGraph) ? (
@@ -268,8 +288,8 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
                         </ReactFlowProvider>
                     </CanvasSessionModeProvider>
                 ) : null}
-                </PanelContent>
+                </CardContent>
             ) : null}
-        </Panel>
+        </Card>
     )
 }

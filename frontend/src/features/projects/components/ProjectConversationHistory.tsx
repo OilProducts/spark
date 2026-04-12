@@ -16,8 +16,8 @@ import {
     parseThinkingSummaryContent,
     summarizeToolCallDetail,
 } from '../model/presentation'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { InlineNotice } from '@/components/app/inline-notice'
 interface ProjectConversationHistoryProps {
     activeConversationId: string | null
     isConversationHistoryLoading: boolean
@@ -61,9 +61,14 @@ export function ProjectConversationHistory({
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col">
             {isConversationHistoryLoading && !hasRenderableConversationHistory ? (
-                <InlineNotice data-testid="project-conversation-history-loading" className="text-xs">
-                    Restoring thread history…
-                </InlineNotice>
+                <Alert
+                    data-testid="project-conversation-history-loading"
+                    className="border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+                >
+                    <AlertDescription className="text-inherit">
+                        Restoring thread history…
+                    </AlertDescription>
+                </Alert>
             ) : !hasRenderableConversationHistory ? (
                 <p className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
                     {activeConversationId

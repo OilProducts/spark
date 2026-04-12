@@ -16,7 +16,7 @@ import { RunSummaryCard } from './components/RunSummaryCard'
 import type { RunRecord } from './model/shared'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
-import { InlineNotice } from '@/components/app/inline-notice'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
 
 const runRecordsMatch = (left: RunRecord | null, right: RunRecord | null) => {
@@ -325,20 +325,25 @@ export function RunsPanel() {
         >
             {showRunsTransportReconnectNotice ? (
                 <div className="mb-4">
-                    <InlineNotice data-testid="runs-transport-reconnect-banner" tone="warning">
-                        Live run transport degraded for {degradedTransportLabels.join(' and ')}.
-                        {runsTransportError ? ` ${runsTransportError}` : ''}
-                        <button
-                            type="button"
-                            data-testid="runs-transport-reconnect-button"
-                            onClick={() => {
-                                requestRunsTransportReconnect()
-                            }}
-                            className="ml-2 inline-flex text-xs font-semibold underline underline-offset-4"
-                        >
-                            Reconnect
-                        </button>
-                    </InlineNotice>
+                    <Alert
+                        data-testid="runs-transport-reconnect-banner"
+                        className="border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800"
+                    >
+                        <AlertDescription className="text-inherit">
+                            Live run transport degraded for {degradedTransportLabels.join(' and ')}.
+                            {runsTransportError ? ` ${runsTransportError}` : ''}
+                            <button
+                                type="button"
+                                data-testid="runs-transport-reconnect-button"
+                                onClick={() => {
+                                    requestRunsTransportReconnect()
+                                }}
+                                className="ml-2 inline-flex text-xs font-semibold underline underline-offset-4"
+                            >
+                                Reconnect
+                            </button>
+                        </AlertDescription>
+                    </Alert>
                 </div>
             ) : null}
             <div className={`w-full ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 overflow-hidden'}`}>
@@ -366,9 +371,14 @@ export function RunsPanel() {
                             </div>
                         )}
                         {showRunDetailsRestoringState && (
-                            <InlineNotice data-testid="run-selection-restoring-state">
-                                Restoring the selected run session…
-                            </InlineNotice>
+                            <Alert
+                                data-testid="run-selection-restoring-state"
+                                className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                            >
+                                <AlertDescription className="text-inherit">
+                                    Restoring the selected run session…
+                                </AlertDescription>
+                            </Alert>
                         )}
                         {selectedRun && (
                             <RunSummaryCard
@@ -397,9 +407,11 @@ export function RunsPanel() {
                             </div>
                         )}
                         {!selectedRun && scopeMode === 'all' && scopedRuns.length === 0 && (
-                            <InlineNotice>
-                                No runs have been recorded yet.
-                            </InlineNotice>
+                            <Alert className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground">
+                                <AlertDescription className="text-inherit">
+                                    No runs have been recorded yet.
+                                </AlertDescription>
+                            </Alert>
                         )}
                         {selectedRun && (
                             <RunActivityCard

@@ -1,9 +1,14 @@
 import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/app/empty-state'
-import { InlineNotice } from '@/components/app/inline-notice'
-import { ProjectContextChip } from '@/components/app/project-context-chip'
+import {
+    Empty,
+    EmptyDescription,
+    EmptyHeader,
+} from '@/components/ui/empty'
+import { formatProjectPathLabel } from '@/lib/projectPaths'
 import type { RunRecord } from '../model/shared'
 import {
     STATUS_LABELS,
@@ -40,12 +45,11 @@ export function RunList({
         : activeProjectPath
             ? 'Run history for the active project.'
             : 'Choose an active project or switch to all projects.'
+    const activeProjectLabel = activeProjectPath
+        ? formatProjectPathLabel(activeProjectPath)
+        : 'No active project'
     const compactProjectLabel = (projectPath?: string | null) => {
-        if (!projectPath) {
-            return null
-        }
-        const segments = projectPath.split('/').filter(Boolean)
-        return segments.at(-1) ?? projectPath
+        return projectPath ? formatProjectPathLabel(projectPath) : null
     }
 
     return (
@@ -61,12 +65,15 @@ export function RunList({
                     <span>Runs</span>
                     <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
                 </div>
-                <ProjectContextChip
-                    testId="runs-project-context-chip"
-                    projectPath={activeProjectPath}
+                <Badge
+                    data-testid="runs-project-context-chip"
+                    variant="outline"
                     className="mt-3"
-                    emptyLabel="No active project"
-                />
+                    title={activeProjectPath || 'No active project'}
+                >
+                    <span className="text-muted-foreground">Project:</span>
+                    <span className="max-w-40 truncate">{activeProjectLabel}</span>
+                </Badge>
             </div>
             <div className="space-y-3 px-4 pb-3">
                 <div className="space-y-1">
@@ -96,32 +103,42 @@ export function RunList({
                     </Button>
                 </div>
                 {error ? (
-                    <InlineNotice tone="error">
-                        {error}
-                    </InlineNotice>
+                    <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
+                        <AlertDescription className="text-inherit">{error}</AlertDescription>
+                    </Alert>
                 ) : null}
                 {scopeMode === 'active' && !activeProjectPath ? (
-                    <InlineNotice>
-                        Choose an active project or switch to all projects to view run history.
-                    </InlineNotice>
+                    <Alert className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground">
+                        <AlertDescription className="text-inherit">
+                            Choose an active project or switch to all projects to view run history.
+                        </AlertDescription>
+                    </Alert>
                 ) : null}
             </div>
             {status !== 'ready' && status !== 'error' && runs.length === 0 ? (
                 <div className="px-4 pb-4">
-                    <InlineNotice data-testid="run-list-loading">
-                        Restoring run history…
-                    </InlineNotice>
+                    <Alert
+                        data-testid="run-list-loading"
+                        className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                    >
+                        <AlertDescription className="text-inherit">
+                            Restoring run history…
+                        </AlertDescription>
+                    </Alert>
                 </div>
             ) : runs.length === 0 ? (
                 <div className="px-4 pb-4">
-                    <EmptyState
-                        className="text-xs"
-                        description={scopeMode === 'all'
-                            ? 'No runs yet.'
-                            : activeProjectPath
-                                ? 'No runs for the active project yet.'
-                                : 'Choose an active project or switch to all projects.'}
-                    />
+                    <Empty className="px-3 py-4 text-xs text-muted-foreground">
+                        <EmptyHeader>
+                            <EmptyDescription>
+                                {scopeMode === 'all'
+                                    ? 'No runs yet.'
+                                    : activeProjectPath
+                                        ? 'No runs for the active project yet.'
+                                        : 'Choose an active project or switch to all projects.'}
+                            </EmptyDescription>
+                        </EmptyHeader>
+                    </Empty>
                 </div>
             ) : (
                 <div

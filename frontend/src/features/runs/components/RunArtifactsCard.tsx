@@ -2,11 +2,14 @@ import type {
     ArtifactErrorState,
     ArtifactListEntry,
 } from '../model/shared'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/app/empty-state'
-import { InlineNotice } from '@/components/app/inline-notice'
-import { Panel, PanelContent, PanelHeader } from '@/components/app/panel'
-import { SectionHeader } from '@/components/app/section-header'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import {
+    Empty,
+    EmptyDescription,
+    EmptyHeader,
+} from '@/components/ui/empty'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunArtifactsCardProps {
@@ -45,45 +48,54 @@ export function RunArtifactsCard({
     onCollapsedChange,
 }: RunArtifactsCardProps) {
     return (
-        <Panel data-testid="run-artifact-panel">
-            <PanelHeader>
-                <SectionHeader
-                    title="Artifacts"
-                    description="Browse generated files, inspect previews, and download outputs."
-                    action={(
-                        <div className="flex items-center gap-2">
-                            <Button
-                                onClick={onRefresh}
-                                data-testid="run-artifact-refresh-button"
-                                variant="outline"
-                                size="xs"
-                                className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
-                            >
-                                {isLoading ? 'Refreshing…' : 'Refresh'}
-                            </Button>
-                            <RunSectionToggleButton
-                                collapsed={collapsed}
-                                onToggle={() => onCollapsedChange(!collapsed)}
-                                testId="run-artifact-toggle-button"
-                            />
-                        </div>
-                    )}
-                />
-            </PanelHeader>
-            {!collapsed ? (
-                <PanelContent className="space-y-3">
-            {artifactError && (
-                <InlineNotice tone="error" className="space-y-1">
-                    <div data-testid="run-artifact-error">{artifactError.message}</div>
-                    <div data-testid="run-artifact-error-help" className="text-xs text-destructive/90">
-                        {artifactError.help}
+        <Card data-testid="run-artifact-panel" className="gap-4 py-4">
+            <CardHeader className="gap-1 px-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">Artifacts</h3>
+                        <p className="text-xs leading-5 text-muted-foreground">
+                            Browse generated files, inspect previews, and download outputs.
+                        </p>
                     </div>
-                </InlineNotice>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            onClick={onRefresh}
+                            data-testid="run-artifact-refresh-button"
+                            variant="outline"
+                            size="xs"
+                            className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                            {isLoading ? 'Refreshing…' : 'Refresh'}
+                        </Button>
+                        <RunSectionToggleButton
+                            collapsed={collapsed}
+                            onToggle={() => onCollapsedChange(!collapsed)}
+                            testId="run-artifact-toggle-button"
+                        />
+                    </div>
+                </div>
+            </CardHeader>
+            {!collapsed ? (
+                <CardContent className="space-y-3 px-4">
+            {artifactError && (
+                <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
+                    <AlertDescription className="space-y-1 text-inherit">
+                        <div data-testid="run-artifact-error">{artifactError.message}</div>
+                        <div data-testid="run-artifact-error-help" className="text-xs text-destructive/90">
+                            {artifactError.help}
+                        </div>
+                    </AlertDescription>
+                </Alert>
             )}
             {!artifactError && status !== 'ready' ? (
-                <InlineNotice data-testid="run-artifact-loading">
-                    Restoring artifacts…
-                </InlineNotice>
+                <Alert
+                    data-testid="run-artifact-loading"
+                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                >
+                    <AlertDescription className="text-inherit">
+                        Restoring artifacts…
+                    </AlertDescription>
+                </Alert>
             ) : null}
             {!artifactError && status === 'ready' && (
                 <div className="space-y-3">
@@ -147,10 +159,13 @@ export function RunArtifactsCard({
                                 ) : (
                                     <tr>
                                         <td colSpan={4} className="px-3 py-4">
-                                            <EmptyState
-                                                data-testid="run-artifact-empty"
-                                                description="No run artifacts are available yet."
-                                            />
+                                            <Empty data-testid="run-artifact-empty" className="text-sm text-muted-foreground">
+                                                <EmptyHeader>
+                                                    <EmptyDescription>
+                                                        No run artifacts are available yet.
+                                                    </EmptyDescription>
+                                                </EmptyHeader>
+                                            </Empty>
                                         </td>
                                     </tr>
                                 )}
@@ -182,8 +197,8 @@ export function RunArtifactsCard({
                     </div>
                 </div>
             )}
-                </PanelContent>
+                </CardContent>
             ) : null}
-        </Panel>
+        </Card>
     )
 }

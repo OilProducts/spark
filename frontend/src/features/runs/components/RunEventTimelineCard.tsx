@@ -13,13 +13,17 @@ import {
     formatTimestamp,
 } from '../model/shared'
 import { TIMELINE_UPDATE_BUDGET_MS } from '@/lib/performanceBudgets'
-import { EmptyState } from '@/components/app/empty-state'
-import { FieldRow } from '@/components/app/field-row'
-import { InlineNotice } from '@/components/app/inline-notice'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import {
+    Empty,
+    EmptyDescription,
+    EmptyHeader,
+} from '@/components/ui/empty'
+import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
-import { Panel, PanelContent, PanelHeader } from '@/components/app/panel'
-import { SectionHeader } from '@/components/app/section-header'
+import { cn } from '@/lib/utils'
 import { RunQuestionsPanel } from './RunQuestionsPanel'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
 
@@ -87,37 +91,39 @@ export function RunEventTimelineCard({
     }
 
     return (
-        <Panel
+        <Card
             data-testid="run-event-timeline-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={isNarrowViewport ? 'p-3' : undefined}
+            className={cn('gap-4 py-4', isNarrowViewport ? 'p-3' : undefined)}
         >
-            <PanelHeader>
-                <SectionHeader
-                    title="Event Timeline"
-                    description="Live typed events, filter controls, and pending human gates."
-                    action={(
-                        <div className="flex items-center gap-2">
-                            <span
-                                className={`inline-flex rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                                    isTimelineLive
-                                        ? 'border-sky-500/40 bg-sky-500/10 text-sky-700'
-                                        : 'border-border bg-muted text-muted-foreground'
-                                }`}
-                            >
-                                {isTimelineLive ? 'Live' : 'Idle'}
-                            </span>
-                            <RunSectionToggleButton
-                                collapsed={collapsed}
-                                onToggle={() => onCollapsedChange(!collapsed)}
-                                testId="run-event-timeline-toggle-button"
-                            />
-                        </div>
-                    )}
-                />
-            </PanelHeader>
+            <CardHeader className="gap-1 px-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">Event Timeline</h3>
+                        <p className="text-xs leading-5 text-muted-foreground">
+                            Live typed events, filter controls, and pending human gates.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <span
+                            className={`inline-flex rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                                isTimelineLive
+                                    ? 'border-sky-500/40 bg-sky-500/10 text-sky-700'
+                                    : 'border-border bg-muted text-muted-foreground'
+                            }`}
+                        >
+                            {isTimelineLive ? 'Live' : 'Idle'}
+                        </span>
+                        <RunSectionToggleButton
+                            collapsed={collapsed}
+                            onToggle={() => onCollapsedChange(!collapsed)}
+                            testId="run-event-timeline-toggle-button"
+                        />
+                    </div>
+                </div>
+            </CardHeader>
             {!collapsed ? (
-                <PanelContent className="space-y-3">
+                <CardContent className="space-y-3 px-4">
                 <div
                     data-testid="timeline-update-performance-budget"
                     data-budget-ms={TIMELINE_UPDATE_BUDGET_MS}
@@ -139,9 +145,12 @@ export function RunEventTimelineCard({
                     </div>
                 )}
                 {timelineError && (
-                    <InlineNotice data-testid="run-event-timeline-error" tone="error">
-                        {timelineError}
-                    </InlineNotice>
+                    <Alert
+                        data-testid="run-event-timeline-error"
+                        className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
+                    >
+                        <AlertDescription className="text-inherit">{timelineError}</AlertDescription>
+                    </Alert>
                 )}
                 {!timelineError && visiblePendingInterviewGates.length > 0 && (
                     <RunQuestionsPanel
@@ -157,7 +166,8 @@ export function RunEventTimelineCard({
                 )}
                 {!timelineError && (
                     <div className={`grid gap-2 ${isNarrowViewport ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
-                        <FieldRow label="Event Type" className="space-y-1.5">
+                        <Field className="space-y-1.5">
+                            <FieldLabel>Event Type</FieldLabel>
                             <NativeSelect
                                 data-testid="run-event-timeline-filter-type"
                                 value={timelineTypeFilter}
@@ -169,8 +179,9 @@ export function RunEventTimelineCard({
                                     <option key={type} value={type}>{type}</option>
                                 ))}
                             </NativeSelect>
-                        </FieldRow>
-                        <FieldRow label="Node/Stage" className="space-y-1.5">
+                        </Field>
+                        <Field className="space-y-1.5">
+                            <FieldLabel>Node/Stage</FieldLabel>
                             <Input
                                 data-testid="run-event-timeline-filter-node-stage"
                                 value={timelineNodeStageFilter}
@@ -178,8 +189,9 @@ export function RunEventTimelineCard({
                                 placeholder="Node id or stage index..."
                                 className="h-8 text-xs"
                             />
-                        </FieldRow>
-                        <FieldRow label="Category" className="space-y-1.5">
+                        </Field>
+                        <Field className="space-y-1.5">
+                            <FieldLabel>Category</FieldLabel>
                             <NativeSelect
                                 data-testid="run-event-timeline-filter-category"
                                 value={timelineCategoryFilter}
@@ -191,8 +203,9 @@ export function RunEventTimelineCard({
                                     <option key={category} value={category}>{label}</option>
                                 ))}
                             </NativeSelect>
-                        </FieldRow>
-                        <FieldRow label="Severity" className="space-y-1.5">
+                        </Field>
+                        <Field className="space-y-1.5">
+                            <FieldLabel>Severity</FieldLabel>
                             <NativeSelect
                                 data-testid="run-event-timeline-filter-severity"
                                 value={timelineSeverityFilter}
@@ -204,17 +217,22 @@ export function RunEventTimelineCard({
                                 <option value="warning">Warning</option>
                                 <option value="error">Error</option>
                             </NativeSelect>
-                        </FieldRow>
+                        </Field>
                     </div>
                 )}
                 {!timelineError && timelineEvents.length === 0 && (
-                    <EmptyState data-testid="run-event-timeline-empty" description="No typed timeline events yet." />
+                    <Empty data-testid="run-event-timeline-empty" className="text-sm text-muted-foreground">
+                        <EmptyHeader>
+                            <EmptyDescription>No typed timeline events yet.</EmptyDescription>
+                        </EmptyHeader>
+                    </Empty>
                 )}
                 {!timelineError && timelineEvents.length > 0 && filteredTimelineEvents.length === 0 && (
-                    <EmptyState
-                        data-testid="run-event-timeline-empty"
-                        description="No timeline events match the current filters."
-                    />
+                    <Empty data-testid="run-event-timeline-empty" className="text-sm text-muted-foreground">
+                        <EmptyHeader>
+                            <EmptyDescription>No timeline events match the current filters.</EmptyDescription>
+                        </EmptyHeader>
+                    </Empty>
                 )}
                 {groupedTimelineEntries.length > 0 && (
                     <div data-testid="run-event-timeline-list" className="max-h-80 space-y-2 overflow-auto pr-1">
@@ -294,8 +312,8 @@ export function RunEventTimelineCard({
                         ))}
                     </div>
                 )}
-                </PanelContent>
+                </CardContent>
             ) : null}
-        </Panel>
+        </Card>
     )
 }
