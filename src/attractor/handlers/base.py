@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 
 from attractor.dsl.models import DotAttribute, DotEdge, DotGraph, DotNode
 from attractor.engine.context import Context
+from attractor.engine.context_contracts import ContextWriteContract
 from attractor.engine.outcome import Outcome
 from attractor.engine.artifacts import ArtifactStore
 
@@ -22,6 +23,7 @@ class CodergenBackend(Protocol):
         contract_repair_attempts: int = 0,
         timeout: Optional[float] = None,
         model: Optional[str] = None,
+        write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         ...
 

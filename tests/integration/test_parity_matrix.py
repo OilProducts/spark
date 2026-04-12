@@ -24,8 +24,9 @@ class _Backend:
         contract_repair_attempts=0,
         timeout=None,
         model=None,
+        write_contract=None,
     ):
-        del context, response_contract, contract_repair_attempts, timeout, model
+        del context, response_contract, contract_repair_attempts, timeout, model, write_contract
         self.calls.append((node_id, prompt))
         value = self.plan.get(node_id, True)
         if isinstance(value, list):
@@ -186,7 +187,7 @@ class TestParityMatrixSubset:
         dot = """
         digraph G {
             start [shape=Mdiamond]
-            writer [shape=box, type="ctx.write"]
+            writer [shape=box, type="ctx.write", spark.writes_context="[\\"artifact_path\\"]"]
             reader [shape=box, type="ctx.read"]
             done [shape=Msquare]
             start -> writer -> reader -> done

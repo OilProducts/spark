@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 import attractor.api.codex_backends as codex_backends_module
 import attractor.api.server as server
 from attractor.engine import Context, load_checkpoint
+from attractor.engine.context_contracts import ContextWriteContract
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from spark_common.runtime import (
     build_codex_runtime_environment,
@@ -95,8 +96,9 @@ def test_pipeline_start_uses_flow_ui_default_model_when_request_model_missing(
             contract_repair_attempts=0,
             timeout=None,
             model=None,
+            write_contract=None,
         ):
-            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model
+            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
             return ""
 
     def fake_build_backend(backend_name, working_dir, emit, *, model):  # type: ignore[no-untyped-def]
@@ -151,8 +153,9 @@ def test_pipeline_start_explicit_model_overrides_flow_ui_default_model(
             contract_repair_attempts=0,
             timeout=None,
             model=None,
+            write_contract=None,
         ):
-            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model
+            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
             return ""
 
     def fake_build_backend(backend_name, working_dir, emit, *, model):  # type: ignore[no-untyped-def]
@@ -252,8 +255,9 @@ def test_pipeline_execution_resolves_effective_model_per_node(
             contract_repair_attempts=0,
             timeout=None,
             model=None,
+            write_contract=None,
         ):
-            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout
+            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, write_contract
             run_models.append(model)
             return ""
 
@@ -1113,6 +1117,119 @@ def test_codex_app_server_backend_repairs_malformed_output_for_any_response_cont
     assert "violated the custom_contract response contract" in str(prompts[1]["prompt"])
 
 
+def test_codex_app_server_backend_repairs_undeclared_context_updates_on_same_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: List[dict] = []
+    backend = server.CodexAppServerBackend(str(tmp_path), events.append, model=None)
+    prompts: list[dict[str, object]] = []
+
+    class FakeResult:
+        def __init__(self, assistant_message: str) -> None:
+            self.assistant_message = assistant_message
+            self.command_text = ""
+            self.token_total = None
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def ensure_process(self, **kwargs) -> None:
+            return None
+
+        def start_thread(self, **kwargs) -> str:
+            return "thread-123"
+
+        def run_turn(self, **kwargs) -> FakeResult:
+            prompts.append(kwargs)
+            if len(prompts) == 1:
+                return FakeResult(
+                    '{"outcome":"success","context_updates":{"context.review.summary":"ready","context.review.extra":"nope"}}'
+                )
+            return FakeResult('{"outcome":"success","context_updates":{"context.review.summary":"ready"}}')
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(codex_backends_module, "CodexAppServerClient", FakeClient)
+
+    result = backend.run(
+        "review",
+        "hello",
+        Context(),
+        response_contract="status_envelope",
+        contract_repair_attempts=1,
+        write_contract=ContextWriteContract(allowed_keys=("context.review.summary",)),
+    )
+
+    assert isinstance(result, Outcome)
+    assert result.status == OutcomeStatus.SUCCESS
+    assert result.context_updates == {"context.review.summary": "ready"}
+    assert len(prompts) == 2
+    assert prompts[0]["thread_id"] == "thread-123"
+    assert prompts[1]["thread_id"] == "thread-123"
+    assert "undeclared context_updates keys" in str(prompts[1]["prompt"])
+    assert "context.review.extra" in str(prompts[1]["prompt"])
+    assert "context.review.summary" in str(prompts[1]["prompt"])
+
+
+def test_codex_app_server_backend_repairs_invalid_context_update_keys_on_same_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: List[dict] = []
+    backend = server.CodexAppServerBackend(str(tmp_path), events.append, model=None)
+    prompts: list[dict[str, object]] = []
+
+    class FakeResult:
+        def __init__(self, assistant_message: str) -> None:
+            self.assistant_message = assistant_message
+            self.command_text = ""
+            self.token_total = None
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def ensure_process(self, **kwargs) -> None:
+            return None
+
+        def start_thread(self, **kwargs) -> str:
+            return "thread-123"
+
+        def run_turn(self, **kwargs) -> FakeResult:
+            prompts.append(kwargs)
+            if len(prompts) == 1:
+                return FakeResult(
+                    '{"outcome":"success","context_updates":{".specflow/state.json":"nope"}}'
+                )
+            return FakeResult('{"outcome":"success","context_updates":{"context.review.summary":"ready"}}')
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(codex_backends_module, "CodexAppServerClient", FakeClient)
+
+    result = backend.run(
+        "review",
+        "hello",
+        Context(),
+        response_contract="status_envelope",
+        contract_repair_attempts=1,
+        write_contract=ContextWriteContract(allowed_keys=("context.review.summary",)),
+    )
+
+    assert isinstance(result, Outcome)
+    assert result.status == OutcomeStatus.SUCCESS
+    assert result.context_updates == {"context.review.summary": "ready"}
+    assert len(prompts) == 2
+    assert prompts[0]["thread_id"] == "thread-123"
+    assert prompts[1]["thread_id"] == "thread-123"
+    assert "invalid context_updates keys" in str(prompts[1]["prompt"])
+    assert ".specflow/state.json" in str(prompts[1]["prompt"])
+
+
 def test_codex_app_server_backend_returns_contract_failure_when_repair_exhausted(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1159,6 +1276,61 @@ def test_codex_app_server_backend_returns_contract_failure_when_repair_exhausted
     assert result.status == OutcomeStatus.FAIL
     assert result.failure_kind == FailureKind.CONTRACT
     assert result.failure_reason == "invalid structured status envelope: notes must be a string"
+    assert result.notes == invalid_payload
+    assert len(prompts) == 2
+
+
+def test_codex_app_server_backend_returns_contract_failure_when_write_contract_repair_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: List[dict] = []
+    backend = server.CodexAppServerBackend(str(tmp_path), events.append, model=None)
+    prompts: list[dict[str, object]] = []
+    invalid_payload = (
+        '{"outcome":"success","context_updates":{"context.review.summary":"ready","context.review.extra":"nope"}}'
+    )
+
+    class FakeResult:
+        def __init__(self, assistant_message: str) -> None:
+            self.assistant_message = assistant_message
+            self.command_text = ""
+            self.token_total = None
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def ensure_process(self, **kwargs) -> None:
+            return None
+
+        def start_thread(self, **kwargs) -> str:
+            return "thread-123"
+
+        def run_turn(self, **kwargs) -> FakeResult:
+            prompts.append(kwargs)
+            return FakeResult(invalid_payload)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(codex_backends_module, "CodexAppServerClient", FakeClient)
+
+    result = backend.run(
+        "review",
+        "hello",
+        Context(),
+        response_contract="status_envelope",
+        contract_repair_attempts=1,
+        write_contract=ContextWriteContract(allowed_keys=("context.review.summary",)),
+    )
+
+    assert isinstance(result, Outcome)
+    assert result.status == OutcomeStatus.FAIL
+    assert result.failure_kind == FailureKind.CONTRACT
+    assert "undeclared context_updates keys" in result.failure_reason
+    assert "context.review.extra" in result.failure_reason
+    assert "context.review.summary" in result.failure_reason
     assert result.notes == invalid_payload
     assert len(prompts) == 2
 

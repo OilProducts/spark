@@ -119,7 +119,7 @@ plan [
 ];
 ```
 
-That `spark.reads_context` metadata does not create behavior by itself. It documents the intended contract in the flow file and helps the editor surface it clearly.
+On Codergen nodes, `spark.reads_context` is the deterministic prompt-input contract: Spark projects the declared live context keys into a dedicated prompt section and renders absent keys as `<missing>`. It still does not restrict generic runtime reads for non-LLM handlers.
 
 ## Part 3: Add A Real Review Loop
 

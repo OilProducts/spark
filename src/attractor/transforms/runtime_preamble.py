@@ -21,6 +21,8 @@ class RuntimePreambleTransform:
         fidelity: str,
         context: Context,
         completed_nodes: List[str],
+        *,
+        include_context_items: bool = True,
     ) -> str:
         mode = fidelity.strip().lower()
         if mode == "full":
@@ -43,7 +45,7 @@ class RuntimePreambleTransform:
             lines.extend(retry_lines)
             return "\n".join(lines)
 
-        context_items = self._carryover_context_items(snapshot)
+        context_items = self._carryover_context_items(snapshot) if include_context_items else []
         if mode == "compact":
             lines = [
                 "carryover:compact",

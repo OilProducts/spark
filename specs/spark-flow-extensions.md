@@ -102,16 +102,18 @@ Spark may persist the following node attributes as authoring metadata:
 
 | Key | Type | Class | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `spark.reads_context` | JSON-encoded array string | `Persisted but non-semantic flow metadata` | `""` | Declares which `context.*` keys the node is expected to consume from launch state or earlier stages. |
-| `spark.writes_context` | JSON-encoded array string | `Persisted but non-semantic flow metadata` | `""` | Declares which `context.*` keys the node is expected to produce for later stages. |
+| `spark.reads_context` | JSON-encoded array string | `Persisted but non-semantic flow metadata` | `""` | Declares which live context keys the node is expected to consume from launch state or earlier stages. For Codergen nodes, this is also the deterministic prompt-projection contract for declared inputs. |
+| `spark.writes_context` | JSON-encoded array string | `Runtime-enforced authoring contract` | `""` | Declares which `context_updates` keys the node may emit. This is a runtime-enforced exact write allowlist after key normalization; a missing declaration means no node-authored writes are allowed. |
 
 These attributes live on individual DOT nodes.
 
 Rules:
 - each declaration encodes a JSON array of strings
-- each declared string must use the `context.*` namespace
-- they document and guide Spark authoring surfaces
-- they do not create runtime behavior automatically
+- each `spark.reads_context` declaration encodes exact live-context keys after runtime normalization; bare keys are allowed when intentionally declared
+- each declared `spark.writes_context` string names an exact `context_updates` key after runtime normalization; bare keys are allowed when intentionally emitted
+- `spark.reads_context` does not restrict generic runtime reads
+- `spark.writes_context` is a runtime-enforced exact write contract
+- a missing `spark.writes_context` declaration means the node may not emit node-authored `context_updates`
 
 Spark may use these declarations for:
 - node inspector affordances
@@ -119,7 +121,7 @@ Spark may use these declarations for:
 - launch and review UX
 - future validation of flow authoring contracts
 
-Attractor execution semantics do not change merely because these declarations are present.
+Attractor execution semantics change for both keys in different ways: the runtime enforces `spark.writes_context` as the node's exact normalized write allowlist, and Codergen uses `spark.reads_context` as the deterministic declared-input projection into the prompt. `spark.reads_context` still does not restrict generic runtime reads outside that Codergen prompt contract.
 
 ## 7. Authoring Behavior
 
@@ -152,7 +154,8 @@ This is the critical distinction:
 
 This section also applies to the new Spark authoring-contract keys:
 - `spark.launch_inputs` may cause Spark to construct Attractor `launch_context`, but it is not itself an Attractor runtime key
-- `spark.reads_context` and `spark.writes_context` document intended context contracts, but they do not inject or mutate context on their own
+- `spark.reads_context` remains non-restrictive for generic runtime reads, but Codergen uses it as the guaranteed declared-input prompt surface
+- `spark.writes_context` is a runtime-enforced exact allowlist for node-authored `context_updates`; codergen response-contract nodes use the same-thread repair loop when their emitted keys violate that contract
 
 ## 9. Workspace Launch Policy
 

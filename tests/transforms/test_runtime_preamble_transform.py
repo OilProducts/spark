@@ -51,3 +51,29 @@ class TestRuntimePreambleTransform:
         transform = RuntimePreambleTransform()
 
         assert transform.apply("full", context, ["start"]) == ""
+
+    def test_can_skip_sampled_context_items_for_declared_read_path(self):
+        context = Context(
+            values={
+                "graph.goal": "Ship docs",
+                "internal.run_id": "run-123",
+                "context.release": "v1",
+                "context.tests_passed": True,
+                "_attractor.node_outcomes": {"start": "success"},
+            }
+        )
+        transform = RuntimePreambleTransform()
+
+        preamble = transform.apply(
+            "summary:high",
+            context,
+            ["start"],
+            include_context_items=False,
+        )
+
+        assert "carryover:summary:high" in preamble
+        assert "goal=Ship docs" in preamble
+        assert "run_id=run-123" in preamble
+        assert "recent_stages=start:success" in preamble
+        assert "context.release=v1" not in preamble
+        assert "context.tests_passed=true" not in preamble

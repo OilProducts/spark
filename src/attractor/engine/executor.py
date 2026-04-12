@@ -32,6 +32,14 @@ from attractor.transforms.runtime_preamble import (
 
 from .checkpoint import Checkpoint, load_checkpoint, save_checkpoint
 from .context import Context
+from .context_contracts import (
+    ContextReadContract,
+    ContextWriteContract,
+    normalize_context_update_key,
+    resolve_context_read_contract,
+    resolve_context_write_contract,
+    validate_context_updates_against_contract,
+)
 from .outcome import FailureKind, Outcome, OutcomeStatus
 from .routing import select_next_edge
 
@@ -53,6 +61,17 @@ _NON_CODEGEN_SHAPES = {
     "tripleoctagon",
     "parallelogram",
     "house",
+}
+_SHAPE_TO_HANDLER_TYPE = {
+    "Mdiamond": "start",
+    "Msquare": "exit",
+    "box": "codergen",
+    "hexagon": "wait.human",
+    "diamond": "conditional",
+    "component": "parallel",
+    "tripleoctagon": "parallel.fan_in",
+    "parallelogram": "tool",
+    "house": "stack.manager_loop",
 }
 GOAL_GATE_NO_RETRY_TARGET_REASON = "Goal gate unsatisfied and no retry target"
 GOAL_GATE_UNSATISFIED_OUTCOME_CODE = "goal_gate_unsatisfied"
@@ -195,6 +214,8 @@ class PipelineExecutor:
         self._active_top_level_node: str | None = None
         self._active_top_level_node_lock = threading.Lock()
         self._stage_status_transitions: Dict[str, List[str]] = {}
+        self._node_write_contracts: Dict[str, ContextWriteContract] = {}
+        self._node_read_contracts: Dict[str, ContextReadContract] = {}
         self._runtime_preamble_transform = RuntimePreambleTransform(node_outcomes_key=NODE_OUTCOMES_KEY)
         self._run_started_at: str | None = None
         self._run_started_monotonic: float | None = None
@@ -418,7 +439,7 @@ class PipelineExecutor:
                 ctx.set(RUNTIME_THREAD_ID_KEY, self._resolve_runtime_thread_id(node.node_id, incoming_edge, fidelity))
                 ctx.set(
                     RUNTIME_CONTEXT_CARRYOVER_KEY,
-                    self._build_runtime_context_carryover(fidelity, ctx, completed),
+                    self._build_runtime_context_carryover(node.node_id, fidelity, ctx, completed),
                 )
                 prior_status = self._context_outcome_status(ctx)
                 prior_preferred_label = self._context_preferred_label(ctx)
@@ -881,7 +902,7 @@ class PipelineExecutor:
                 ctx.set(RUNTIME_THREAD_ID_KEY, self._resolve_runtime_thread_id(node.node_id, incoming_edge, fidelity))
                 ctx.set(
                     RUNTIME_CONTEXT_CARRYOVER_KEY,
-                    self._build_runtime_context_carryover(fidelity, ctx, completed),
+                    self._build_runtime_context_carryover(node.node_id, fidelity, ctx, completed),
                 )
                 prior_status = self._context_outcome_status(ctx)
                 prior_preferred_label = self._context_preferred_label(ctx)
@@ -1469,9 +1490,61 @@ class PipelineExecutor:
         if isinstance(context_updates, dict):
             normalized: Dict[str, object] = {}
             for raw_key, value in dict(context_updates).items():
-                normalized[_normalize_context_update_key(str(raw_key))] = value
+                normalized[normalize_context_update_key(str(raw_key))] = value
             return normalized
         return {}
+
+    def _validate_outcome_context_updates(self, node_id: str, outcome: Outcome) -> Outcome:
+        contract = self._node_write_contract(node_id)
+        exempt_keys, exempt_prefixes = self._context_update_contract_exemptions(node_id)
+        violation = validate_context_updates_against_contract(
+            outcome.context_updates,
+            contract,
+            exempt_keys=exempt_keys,
+            exempt_prefixes=exempt_prefixes,
+        )
+        if violation is None:
+            return outcome
+        return Outcome(
+            status=OutcomeStatus.FAIL,
+            failure_reason=violation.format_reason(node_id=node_id),
+            notes=outcome.notes,
+            retryable=False,
+            failure_kind=FailureKind.CONTRACT,
+            raw_response_text=outcome.raw_response_text,
+        )
+
+    def _node_write_contract(self, node_id: str) -> ContextWriteContract:
+        contract = self._node_write_contracts.get(node_id)
+        if contract is not None:
+            return contract
+        contract = resolve_context_write_contract(self.graph.nodes[node_id].attrs)
+        self._node_write_contracts[node_id] = contract
+        return contract
+
+    def _node_read_contract(self, node_id: str) -> ContextReadContract:
+        contract = self._node_read_contracts.get(node_id)
+        if contract is not None:
+            return contract
+        contract = resolve_context_read_contract(self.graph.nodes[node_id].attrs)
+        self._node_read_contracts[node_id] = contract
+        return contract
+
+    def _context_update_contract_exemptions(self, node_id: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        handler_type = self._resolved_handler_type(node_id)
+        exempt_keys: tuple[str, ...] = ()
+        exempt_prefixes: tuple[str, ...] = ()
+        if handler_type == "codergen":
+            exempt_keys = ("last_response", "last_stage")
+        elif handler_type == "parallel":
+            exempt_keys = ("parallel.results",)
+        elif handler_type == "parallel.fan_in":
+            exempt_prefixes = exempt_prefixes + ("parallel.fan_in.",)
+        elif handler_type == "tool":
+            exempt_prefixes = exempt_prefixes + ("context.tool.",)
+        elif handler_type == "wait.human":
+            exempt_prefixes = exempt_prefixes + ("human.gate.",)
+        return exempt_keys, exempt_prefixes
 
     def _normalize_failure_kind(self, failure_kind: object) -> FailureKind | None:
         if failure_kind is None:
@@ -1529,7 +1602,8 @@ class PipelineExecutor:
                 retryable=category == RuntimeErrorCategory.RETRYABLE,
                 failure_kind=FailureKind.RUNTIME,
             )
-        return self._normalize_outcome(node_id, raw_outcome)
+        normalized = self._normalize_outcome(node_id, raw_outcome)
+        return self._validate_outcome_context_updates(node_id, normalized)
 
     def _invoke_runner(self, node_id: str, prompt: str, context: Context) -> Outcome | None:
         runner_with_events = getattr(self.runner, "run_with_events", None)
@@ -1718,8 +1792,13 @@ class PipelineExecutor:
             return str(explicit.value).strip()
 
         shape = node.attrs.get("shape")
-        if shape and str(shape.value).strip() in _NON_CODEGEN_SHAPES:
-            return "non-codergen"
+        if shape:
+            shape_name = str(shape.value).strip()
+            mapped = _SHAPE_TO_HANDLER_TYPE.get(shape_name)
+            if mapped:
+                return mapped
+            if shape_name in _NON_CODEGEN_SHAPES:
+                return "non-codergen"
         return "codergen"
 
     def _stage_llm_event_payload(self, node_id: str, context: Context) -> Dict[str, object]:
@@ -1796,11 +1875,21 @@ class PipelineExecutor:
 
     def _build_runtime_context_carryover(
         self,
+        node_id: str,
         fidelity: str,
         context: Context,
         completed_nodes: List[str],
     ) -> str:
-        return self._runtime_preamble_transform.apply(fidelity, context, completed_nodes)
+        read_contract = self._node_read_contract(node_id)
+        include_context_items = not (
+            self._resolved_handler_type(node_id) == "codergen" and bool(read_contract.declared_keys)
+        )
+        return self._runtime_preamble_transform.apply(
+            fidelity,
+            context,
+            completed_nodes,
+            include_context_items=include_context_items,
+        )
 
     def _max_retries_for_node(self, node_id: str) -> int:
         node = self.graph.nodes[node_id]
@@ -2151,28 +2240,6 @@ def _edge_endpoint_text(edge: object | None, key: str) -> str:
     if value is None:
         return ""
     return str(value).strip()
-
-
-_ALLOWED_CONTEXT_UPDATE_PREFIXES: tuple[str, ...] = (
-    "context.",
-    "graph.",
-    "internal.",
-    "parallel.",
-    "stack.",
-    "human.gate.",
-    "work.",
-    "_attractor.",
-)
-
-
-def _normalize_context_update_key(key: str) -> str:
-    normalized = str(key).strip()
-    if not normalized or "." not in normalized:
-        return normalized
-    if any(normalized.startswith(prefix) for prefix in _ALLOWED_CONTEXT_UPDATE_PREFIXES):
-        return normalized
-    return f"context.{normalized}"
-
 
 def _is_outcome_fail_condition(condition: str) -> bool:
     return "".join(condition.split()).lower() == "outcome=fail"

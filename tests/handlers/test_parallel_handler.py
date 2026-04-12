@@ -24,8 +24,8 @@ class TestParallelHandler:
             """
             digraph G {
                 fan [shape=component]
-                a_seed [shape=box, type="custom.seed_a"]
-                b_seed [shape=box, type="custom.seed_b"]
+                a_seed [shape=box, type="custom.seed_a", spark.writes_context="[\\"shared_ref\\"]"]
+                b_seed [shape=box, type="custom.seed_b", spark.writes_context="[\\"shared_ref\\"]"]
                 a_check [shape=box, type="custom.check_a"]
                 b_check [shape=box, type="custom.check_b"]
                 a_stop [shape=tripleoctagon]

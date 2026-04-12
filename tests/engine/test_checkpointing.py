@@ -182,7 +182,7 @@ class TestCheckpointAndArtifacts:
             """
             digraph G {
                 start [shape=Mdiamond]
-                plan [shape=box]
+                plan [shape=box, spark.writes_context="[\\"context.visible\\",\\"_attractor.node_outcomes\\"]"]
                 done [shape=Msquare]
 
                 start -> plan
@@ -223,7 +223,7 @@ class TestCheckpointAndArtifacts:
             """
             digraph G {
                 start [shape=Mdiamond]
-                plan [shape=box]
+                plan [shape=box, spark.writes_context="[\\"context.visible\\",\\"_attractor.node_outcomes\\"]"]
                 done [shape=Msquare]
 
                 start -> plan
@@ -421,7 +421,7 @@ class TestCheckpointAndArtifacts:
             """
             digraph G {
                 start [shape=Mdiamond]
-                plan [shape=box]
+                plan [shape=box, spark.writes_context="[\\"context.visible\\",\\"_attractor.node_outcomes\\"]"]
                 done [shape=Msquare]
 
                 start -> plan
@@ -951,8 +951,8 @@ class TestCheckpointAndArtifacts:
         graph = parse_dot(
             """
             digraph G {
-                start [shape=Mdiamond]
-                work [shape=box, max_retries=1]
+                start [shape=Mdiamond, spark.writes_context="[\\"context.shared\\"]"]
+                work [shape=box, max_retries=1, spark.writes_context="[\\"context.retry.phase\\"]"]
                 done [shape=Msquare]
                 start -> work
                 work -> done

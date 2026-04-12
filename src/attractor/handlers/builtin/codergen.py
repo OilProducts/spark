@@ -6,12 +6,18 @@ from pathlib import Path
 from typing import Optional
 
 from attractor.dsl.models import Duration
-from attractor.engine.outcome import Outcome, OutcomeStatus
+from attractor.engine.context_contracts import (
+    ContextReadContract,
+    resolve_context_read_contract,
+    resolve_context_write_contract,
+)
+from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from attractor.llm_runtime import resolve_effective_llm_model
 
 from ..base import CodergenBackend, HandlerRuntime
 
 RUNTIME_CONTEXT_CARRYOVER_KEY = "_attractor.runtime.context_carryover"
+DECLARED_CONTEXT_MISSING_SENTINEL = "<missing>"
 STATUS_ENVELOPE_RESPONSE_CONTRACT = "status_envelope"
 DEFAULT_CONTRACT_REPAIR_ATTEMPTS = 1
 STATUS_ENVELOPE_PROMPT_APPENDIX = "\n".join(
@@ -35,6 +41,7 @@ class CodergenHandler:
         self.backend = backend
 
     def execute(self, runtime: HandlerRuntime) -> Outcome:
+        stage_dir = _ensure_stage_dir(runtime.logs_root, runtime.node_id)
         prompt = runtime.prompt.strip()
         if not prompt:
             label_attr = runtime.node_attrs.get("label")
@@ -42,10 +49,25 @@ class CodergenHandler:
                 prompt = str(label_attr.value).strip()
             if not prompt:
                 prompt = runtime.node_id
+        read_contract = resolve_context_read_contract(runtime.node_attrs)
+        if read_contract.parse_error:
+            failure_reason = f"spark.reads_context parse error: {read_contract.parse_error}"
+            outcome = _with_builtin_response_context(
+                Outcome(
+                    status=OutcomeStatus.FAIL,
+                    failure_reason=failure_reason,
+                    retryable=False,
+                    failure_kind=FailureKind.CONTRACT,
+                ),
+                node_id=runtime.node_id,
+                response_text=failure_reason,
+            )
+            _write_stage_file(stage_dir, "response.md", failure_reason)
+            _write_status_file(stage_dir, outcome)
+            return outcome
         prompt = _expand_goal(prompt, runtime.context, runtime.graph)
         prompt = _apply_response_contract(prompt, runtime.node_attrs)
-        prompt = _apply_runtime_carryover(prompt, runtime.context)
-        stage_dir = _ensure_stage_dir(runtime.logs_root, runtime.node_id)
+        prompt = _compose_prompt(prompt, runtime.context, read_contract)
         _write_stage_file(stage_dir, "prompt.md", prompt)
 
         if self.backend is None:
@@ -65,6 +87,7 @@ class CodergenHandler:
         timeout = _to_seconds(runtime.node_attrs.get("timeout"))
         response_contract = _normalized_response_contract_name(runtime.node_attrs)
         contract_repair_attempts = _contract_repair_attempts(runtime.node_attrs, response_contract)
+        write_contract = resolve_context_write_contract(runtime.node_attrs)
         effective_model = resolve_effective_llm_model(
             runtime.node_attrs,
             runtime.context,
@@ -74,6 +97,7 @@ class CodergenHandler:
             "response_contract": response_contract,
             "contract_repair_attempts": contract_repair_attempts,
             "timeout": timeout,
+            "write_contract": write_contract,
         }
         if effective_model is not None:
             backend_kwargs["model"] = effective_model
@@ -130,18 +154,31 @@ def _expand_goal(prompt: str, context, graph) -> str:
     return prompt.replace("$goal", str(goal))
 
 
-def _apply_runtime_carryover(prompt: str, context) -> str:
+def _compose_prompt(prompt: str, context, read_contract: ContextReadContract) -> str:
+    sections: list[str] = []
     carryover = str(context.get(RUNTIME_CONTEXT_CARRYOVER_KEY, "") or "").strip()
-    if not carryover:
+    if carryover:
+        sections.extend(["Context carryover:", carryover])
+    declared_context_reads = _render_declared_context_reads(read_contract, context)
+    if declared_context_reads:
+        sections.extend(["Declared context reads:", declared_context_reads])
+    if not sections:
         return prompt
-    return "\n\n".join(
-        [
-            "Context carryover:",
-            carryover,
-            "Current stage task:",
-            prompt,
-        ]
-    )
+    sections.extend(["Current stage task:", prompt])
+    return "\n\n".join(sections)
+
+
+def _render_declared_context_reads(read_contract: ContextReadContract, context) -> str:
+    if not read_contract.declared_keys:
+        return ""
+    snapshot = context.snapshot()
+    lines = []
+    for key in read_contract.declared_keys:
+        if key in snapshot:
+            lines.append(f"{key}={_to_context_text(snapshot[key])}")
+        else:
+            lines.append(f"{key}={DECLARED_CONTEXT_MISSING_SENTINEL}")
+    return "\n".join(lines)
 
 
 def _backend_stage_logging_context(backend: object, node_id: str, logs_root: Path | None):
@@ -196,6 +233,16 @@ def _response_text_for_outcome(outcome: Outcome) -> str:
     if outcome.failure_reason:
         return str(outcome.failure_reason)
     return ""
+
+
+def _to_context_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float, str)):
+        return str(value)
+    return json.dumps(value, sort_keys=True)
 
 
 def _to_seconds(attr) -> float | None:

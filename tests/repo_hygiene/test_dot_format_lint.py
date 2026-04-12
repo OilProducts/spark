@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import re
 
 from attractor.dsl import parse_dot
 from attractor.handlers.registry import SHAPE_TO_TYPE
@@ -119,6 +121,36 @@ def test_starter_json_status_envelope_prompts_opt_into_runtime_contract() -> Non
             )
 
 
+def test_starter_nodes_that_request_context_updates_declare_writes_contracts() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    starter_flows_dir = repo_root / "src" / "spark" / "starter_flows"
+
+    for dot_path in find_dot_paths(starter_flows_dir):
+        graph = parse_dot(dot_path.read_text(encoding="utf-8"))
+        for node in graph.nodes.values():
+            prompt_attr = node.attrs.get("prompt")
+            if prompt_attr is None:
+                continue
+            prompt = str(prompt_attr.value)
+            prompted_keys = _extract_prompted_write_keys(prompt)
+            writes_context = node.attrs.get("spark.writes_context")
+            declared_keys = set() if writes_context is None else _parse_string_array(str(writes_context.value))
+
+            if not prompted_keys and not declared_keys:
+                continue
+
+            assert writes_context is not None, (
+                f"starter node prompt requests declared writes but lacks spark.writes_context: {dot_path}:{node.node_id}"
+            )
+            assert str(writes_context.value).strip(), (
+                f"starter node prompt requests declared writes but spark.writes_context is empty: {dot_path}:{node.node_id}"
+            )
+            assert prompted_keys == declared_keys, (
+                f"starter node prompt write keys do not match spark.writes_context: {dot_path}:{node.node_id} "
+                f"(prompt={sorted(prompted_keys)}, declared={sorted(declared_keys)})"
+            )
+
+
 def test_justfile_exposes_dot_lint_recipe() -> None:
     justfile = Path(__file__).resolve().parents[2] / "justfile"
     content = justfile.read_text(encoding="utf-8")
@@ -177,3 +209,58 @@ def _resolved_handler_type(node) -> str:
         return SHAPE_TO_TYPE.get(str(shape.value).strip(), "codergen")
 
     return "codergen"
+
+
+_PROMPT_WRITE_ANCHORS = (
+    ("context_updates for ", len("context_updates for ")),
+    ("context_updates include ", len("context_updates include ")),
+    ("write context.", len("write ")),
+)
+_PROMPT_WRITE_STOP_MARKERS = (
+    ". If ",
+    ". Otherwise ",
+    ". Return ",
+    ". Respond ",
+    ". In ",
+    ". Use ",
+    ". Do not ",
+)
+_DOTTED_KEY_PATTERN = re.compile(
+    r"(?:context|graph|internal|parallel|stack|human\.gate|work|_attractor)\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*"
+)
+_BARE_KEY_PATTERN = re.compile(r"\b[a-z][a-z0-9_]*\b")
+
+
+def _parse_string_array(raw_value: str) -> set[str]:
+    parsed = json.loads(raw_value)
+    assert isinstance(parsed, list), f"expected JSON array, got {type(parsed).__name__}"
+    assert all(isinstance(item, str) for item in parsed), "expected JSON array of strings"
+    return {str(item).strip() for item in parsed if str(item).strip()}
+
+
+def _extract_prompted_write_keys(prompt: str) -> set[str]:
+    prompt_lower = prompt.lower()
+    extracted: set[str] = set()
+
+    for anchor, body_offset in _PROMPT_WRITE_ANCHORS:
+        search_start = 0
+        while True:
+            anchor_index = prompt_lower.find(anchor, search_start)
+            if anchor_index == -1:
+                break
+            body_start = anchor_index + body_offset
+            body_end = len(prompt)
+            for marker in _PROMPT_WRITE_STOP_MARKERS:
+                marker_index = prompt.find(marker, body_start)
+                if marker_index != -1:
+                    body_end = min(body_end, marker_index)
+            body = prompt[body_start:body_end]
+            dotted_keys = set(_DOTTED_KEY_PATTERN.findall(body))
+            extracted.update(dotted_keys)
+            body_without_dotted_keys = body
+            for dotted_key in dotted_keys:
+                body_without_dotted_keys = body_without_dotted_keys.replace(dotted_key, " ")
+            extracted.update(key for key in _BARE_KEY_PATTERN.findall(body_without_dotted_keys) if "_" in key)
+            search_start = body_start + 1
+
+    return extracted

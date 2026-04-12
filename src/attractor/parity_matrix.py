@@ -64,8 +64,9 @@ class _Backend:
         contract_repair_attempts=0,
         timeout=None,
         model=None,
+        write_contract=None,
     ):
-        del prompt, context, response_contract, contract_repair_attempts, timeout, model
+        del prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
         self.calls.append(node_id)
         return bool(self.plan.get(node_id, True))
 
@@ -449,7 +450,7 @@ def _check_context_updates_visible_to_next() -> bool:
         """
         digraph G {
             start [shape=Mdiamond]
-            writer [shape=box, type="ctx.write"]
+            writer [shape=box, type="ctx.write", spark.writes_context="[\\"artifact_path\\"]"]
             reader [shape=box, type="ctx.read"]
             done [shape=Msquare]
             start -> writer -> reader -> done
@@ -571,7 +572,7 @@ def _check_custom_handler_registration() -> bool:
         """
         digraph G {
             start [shape=Mdiamond]
-            custom [shape=box, type="custom.handler"]
+            custom [shape=box, type="custom.handler", spark.writes_context="[\\"context.custom.handler.ran\\"]"]
             done [shape=Msquare]
             start -> custom -> done
         }
@@ -581,7 +582,7 @@ def _check_custom_handler_registration() -> bool:
     registry.handlers = build_default_registry(codergen_backend=_Backend({})).handlers.copy()
     registry.register("custom.handler", _CustomHandler())
     result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
-    return result.status == "completed" and result.context.get("custom.handler.ran", "") == "true"
+    return result.status == "completed" and result.context.get("context.custom.handler.ran", "") == "true"
 
 
 def _check_pipeline_with_ten_nodes() -> bool:

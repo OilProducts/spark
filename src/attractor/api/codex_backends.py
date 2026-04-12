@@ -16,6 +16,10 @@ from attractor.api.token_usage import (
     compute_live_usage_delta,
 )
 from attractor.engine.context import Context
+from attractor.engine.context_contracts import (
+    ContextWriteContract,
+    validate_context_updates_against_contract,
+)
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from attractor.handlers.base import CodergenBackend
 from spark_common.codex_app_client import CodexAppServerClient
@@ -158,6 +162,7 @@ class CodexAppServerBackend(CodergenBackend):
         contract_repair_attempts: int = 0,
         timeout: Optional[float] = None,
         model: Optional[str] = None,
+        write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         def log_line(message: str) -> None:
             if message:
@@ -219,6 +224,7 @@ class CodexAppServerBackend(CodergenBackend):
                 timeout=timeout,
                 log_line=log_line,
                 model=effective_model,
+                write_contract=write_contract,
             )
         except RuntimeError as exc:
             return fail(str(exc))
@@ -285,12 +291,21 @@ class CodexAppServerBackend(CodergenBackend):
         timeout: Optional[float],
         log_line: Callable[[str], None],
         model: Optional[str],
+        write_contract: ContextWriteContract | None,
     ) -> str | Outcome:
         result = _coerce_structured_text_outcome(response_text, response_contract=response_contract)
         if isinstance(result, Outcome):
             return result
         if isinstance(result, _ModeledOutcomeParseResult):
-            return result.outcome
+            violation = _validate_write_contract_violation(
+                result.outcome,
+                write_contract=write_contract,
+                response_contract=response_contract,
+                raw_text=response_text,
+            )
+            if violation is None:
+                return result.outcome
+            result = violation
         if isinstance(result, _PlainTextParseResult):
             return result.raw_text
 
@@ -319,11 +334,39 @@ class CodexAppServerBackend(CodergenBackend):
                 response_contract=current_violation.response_contract,
             )
             if isinstance(repaired, _ModeledOutcomeParseResult):
-                return repaired.outcome
+                repaired_violation = _validate_write_contract_violation(
+                    repaired.outcome,
+                    write_contract=write_contract,
+                    response_contract=current_violation.response_contract,
+                    raw_text=repair_text,
+                )
+                if repaired_violation is None:
+                    return repaired.outcome
+                current_violation = repaired_violation
+                continue
             if isinstance(repaired, _PlainTextParseResult):
                 return repaired.raw_text
             current_violation = repaired
         return _contract_failure_outcome(current_violation)
+
+
+def _validate_write_contract_violation(
+    outcome: Outcome,
+    *,
+    write_contract: ContextWriteContract | None,
+    response_contract: str,
+    raw_text: str,
+) -> _StructuredContractViolation | None:
+    if not _has_response_contract(response_contract) or write_contract is None:
+        return None
+    violation = validate_context_updates_against_contract(outcome.context_updates, write_contract)
+    if violation is None:
+        return None
+    return _StructuredContractViolation(
+        response_contract=response_contract,
+        raw_text=raw_text.strip(),
+        reason=violation.format_reason(),
+    )
 
 
 def build_codergen_backend(

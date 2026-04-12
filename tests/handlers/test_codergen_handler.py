@@ -8,7 +8,7 @@ from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.handlers.builtin.codergen import STATUS_ENVELOPE_PROMPT_APPENDIX
 from attractor.llm_runtime import RUNTIME_LAUNCH_MODEL_KEY
-from attractor.transforms import ModelStylesheetTransform, TransformPipeline
+from attractor.transforms import ModelStylesheetTransform, RuntimePreambleTransform, TransformPipeline
 
 from tests.handlers._support.fakes import (
     _StubBackend,
@@ -73,6 +73,213 @@ class TestCodergenHandler:
             "Current stage task:\n\n"
             "Plan for ship"
         )
+
+    def test_codergen_handler_includes_declared_context_reads_in_prompt(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [
+                    shape=box,
+                    prompt="Plan for $goal",
+                    spark.reads_context="[\\"context.request.summary\\",\\"internal.run_id\\"]"
+                ]
+            }
+            """
+        )
+
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+        ctx = Context(
+            values={
+                "graph.goal": "ship",
+                "context.request.summary": "Ship docs safely",
+                "internal.run_id": "run-123",
+            }
+        )
+
+        outcome = runner("task", "Plan for $goal", ctx)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert backend.calls[0][1] == (
+            "Declared context reads:\n\n"
+            "context.request.summary=Ship docs safely\n"
+            "internal.run_id=run-123\n\n"
+            "Current stage task:\n\n"
+            "Plan for ship"
+        )
+
+    def test_codergen_handler_marks_missing_declared_context_reads(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [
+                    shape=box,
+                    prompt="Plan for $goal",
+                    spark.reads_context="[\\"context.request.summary\\",\\"context.review.required_changes\\"]"
+                ]
+            }
+            """
+        )
+
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+        ctx = Context(
+            values={
+                "graph.goal": "ship",
+                "context.request.summary": "Ship docs safely",
+            }
+        )
+
+        outcome = runner("task", "Plan for $goal", ctx)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert "context.request.summary=Ship docs safely" in backend.calls[0][1]
+        assert "context.review.required_changes=<missing>" in backend.calls[0][1]
+
+    def test_codergen_handler_preserves_explicit_dotted_non_context_reads_in_prompt(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [
+                    shape=box,
+                    prompt="Plan for $goal",
+                    spark.reads_context="[\\"custom.live.binding\\"]"
+                ]
+            }
+            """
+        )
+
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+        ctx = Context(
+            values={
+                "graph.goal": "ship",
+                "custom.live.binding": "exact-binding",
+                "context.custom.live.binding": "normalized-binding",
+            }
+        )
+
+        outcome = runner("task", "Plan for $goal", ctx)
+        prompt = backend.calls[0][1]
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert "Declared context reads:" in prompt
+        assert "custom.live.binding=exact-binding" in prompt
+        assert "normalized-binding" not in prompt
+
+    def test_codergen_handler_keeps_summary_carryover_but_not_sampled_context_when_declared_reads_exist(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [
+                    shape=box,
+                    prompt="Plan for $goal",
+                    spark.reads_context="[\\"context.request.bound_item\\"]"
+                ]
+            }
+            """
+        )
+
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+        source_context = Context(
+            values={
+                "graph.goal": "ship",
+                "internal.run_id": "run-123",
+                "context.request.bound_item": "ticket-42",
+                "context.sampled.alpha": "stale-alpha",
+                "context.sampled.beta": "stale-beta",
+                "_attractor.node_outcomes": {"review": "fail"},
+                "_attractor.runtime.retry.node_id": "task",
+                "_attractor.runtime.retry.attempt": 1,
+                "_attractor.runtime.retry.max_attempts": 2,
+            }
+        )
+        carryover = RuntimePreambleTransform().apply(
+            "summary:high",
+            source_context,
+            ["review"],
+            include_context_items=False,
+        )
+        ctx = Context(
+            values={
+                **source_context.snapshot(),
+                "_attractor.runtime.context_carryover": carryover,
+            }
+        )
+
+        outcome = runner("task", "Plan for $goal", ctx)
+        prompt = backend.calls[0][1]
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert "Context carryover:" in prompt
+        assert "recent_stages=review:fail" in prompt
+        assert "retry.node_id=task" in prompt
+        assert "retry.attempt=1" in prompt
+        assert "Declared context reads:" in prompt
+        assert "context.request.bound_item=ticket-42" in prompt
+        assert "context.sampled.alpha=stale-alpha" not in prompt
+        assert "context.sampled.beta=stale-beta" not in prompt
+
+    def test_codergen_handler_keeps_existing_fallback_carryover_without_declared_reads(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, prompt="Plan for $goal"]
+            }
+            """
+        )
+
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+        source_context = Context(
+            values={
+                "graph.goal": "ship",
+                "internal.run_id": "run-123",
+                "context.sampled.alpha": "stale-alpha",
+                "_attractor.node_outcomes": {"review": "fail"},
+            }
+        )
+        carryover = RuntimePreambleTransform().apply("summary:high", source_context, ["review"])
+        ctx = Context(
+            values={
+                **source_context.snapshot(),
+                "_attractor.runtime.context_carryover": carryover,
+            }
+        )
+
+        outcome = runner("task", "Plan for $goal", ctx)
+        prompt = backend.calls[0][1]
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert "Context carryover:" in prompt
+        assert "context.sampled.alpha=stale-alpha" in prompt
+        assert "Declared context reads:" not in prompt
+
+    def test_codergen_handler_fails_fast_on_malformed_reads_context_declaration(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, prompt="Plan for $goal", spark.reads_context="{\\"bad\\":true}"]
+            }
+            """
+        )
+
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "Plan for $goal", Context(values={"graph.goal": "ship"}))
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_kind == FailureKind.CONTRACT
+        assert outcome.failure_reason == "spark.reads_context parse error: expected a JSON array of strings"
+        assert backend.calls == []
 
     def test_codergen_handler_expands_goal_from_graph_attr_when_context_missing(self):
         graph = parse_dot(

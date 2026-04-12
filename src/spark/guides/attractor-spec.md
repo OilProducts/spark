@@ -161,7 +161,7 @@ Graph attributes are declared in a `graph [ ... ]` block or as top-level `key = 
 | `llm_provider`      | String   | unset           | LLM provider key. Declarative unless a backend explicitly supports provider-aware routing. |
 | `reasoning_effort`  | String   | `"high"`        | LLM reasoning effort: `low`, `medium`, `high`. |
 | `codergen.response_contract` | String | `""`     | Codergen-only shared response-format contract. `status_envelope` appends the canonical structured Outcome schema to the prompt. |
-| `codergen.contract_repair_attempts` | Integer | contract-dependent | Codergen-only bounded same-thread repair budget for malformed response-contract output. Defaults to `1` when `codergen.response_contract` is set, otherwise `0`. |
+| `codergen.contract_repair_attempts` | Integer | contract-dependent | Codergen-only bounded same-thread repair budget for malformed response-contract output and structured write-contract violations. Defaults to `1` when `codergen.response_contract` is set, otherwise `0`. |
 | `auto_status`       | Boolean  | `false`         | If `true` and the handler writes no status, the engine auto-generates a SUCCESS outcome. |
 | `allow_partial`     | Boolean  | `false`         | Accept PARTIAL_SUCCESS when retries are exhausted instead of failing. |
 
@@ -763,7 +763,7 @@ CodergenHandler:
 
 When `codergen.response_contract="status_envelope"`, the runtime appends a shared structured-output appendix to the prompt that enumerates the allowed top-level Outcome keys and forbids extra ones. Use this on codergen nodes that must return a structured status envelope; do not set it on non-codergen nodes.
 
-For response-contract codergen nodes, malformed contract output is not treated as a modeled business `fail`. The runtime performs up to `codergen.contract_repair_attempts` bounded same-thread repair turns, feeding the exact contract validation error back to the same agent thread and asking it to re-emit only corrected final output for the same decision. This repair budget is distinct from node `max_retries`, which still controls full node reruns for runtime failures.
+For response-contract codergen nodes, malformed contract output is not treated as a modeled business `fail`. The runtime performs up to `codergen.contract_repair_attempts` bounded same-thread repair turns, feeding the exact contract validation error back to the same agent thread and asking it to re-emit only corrected final output for the same decision. The same repair loop also applies when structured `context_updates` keys violate the node's declared `spark.writes_context` allowlist after runtime normalization. `spark.writes_context` is the exact runtime write allowlist for node-authored `context_updates`; if a node omits that declaration, node-authored writes are not allowed. The companion `spark.reads_context` metadata still does not restrict generic runtime reads, but Codergen now uses it as the deterministic prompt-projection contract for declared live-context inputs and renders absent declared keys as `<missing>`. This repair budget is distinct from node `max_retries`, which still controls full node reruns for runtime failures.
 
 **Status file:** The handler writes `status.json` in the stage directory with the Outcome fields serialized as JSON. This file serves as an audit trail and enables the status-file contract: external tools or agents can write `status.json` to communicate outcomes back to the engine.
 
@@ -1216,9 +1216,10 @@ Outcome:
     failure_reason     : String          -- reason for failure (when status is FAIL or RETRY)
 ```
 
-`context_updates` should use canonical namespaced keys such as `context.review.summary`.
+`context_updates` should use stable declared keys such as `context.review.summary`. Bare keys remain valid when a flow intentionally declares and emits them, for example `missing_prerequisites`.
 For AI-authored structured outcomes, implementations may normalize dotted semantic keys that do
 not start with a reserved namespace (for example `review.summary`) into `context.*` before merge.
+After that normalization step, `spark.writes_context` is enforced as the node's exact write allowlist for node-authored `context_updates`. A missing `spark.writes_context` declaration means the node may not emit node-authored writes. `spark.reads_context` still does not gate generic handler access to the live context, but for Codergen nodes it is the authoritative deterministic prompt-input contract for declared live-context keys. Execution-summary carryover is not the authoritative declared-input channel.
 
 **StageStatus values:**
 
@@ -2248,7 +2249,7 @@ ASSERT "review" IN checkpoint.completed_nodes
 | `llm_provider`          | String   | unset         | LLM provider override |
 | `reasoning_effort`      | String   | `"high"`      | Reasoning depth: low/medium/high |
 | `codergen.response_contract` | String | `""`       | Codergen-only shared response-format contract. `status_envelope` appends the canonical structured Outcome schema to the prompt. |
-| `codergen.contract_repair_attempts` | Integer | contract-dependent | Codergen-only bounded same-thread repair budget for malformed response-contract output. Defaults to `1` when `codergen.response_contract` is set, otherwise `0`. |
+| `codergen.contract_repair_attempts` | Integer | contract-dependent | Codergen-only bounded same-thread repair budget for malformed response-contract output and structured write-contract violations. Defaults to `1` when `codergen.response_contract` is set, otherwise `0`. |
 | `auto_status`           | Boolean  | `false`       | Auto-generate SUCCESS if no status written |
 | `allow_partial`         | Boolean  | `false`       | Accept PARTIAL_SUCCESS on retry exhaustion |
 | `tool.command`          | String   | `""`          | Shell command executed by tool nodes. Required when a node resolves to `tool`. |

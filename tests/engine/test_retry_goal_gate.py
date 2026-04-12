@@ -186,8 +186,8 @@ class TestRetryAndGoalGate:
             """
             digraph G {
                 start [shape=Mdiamond]
-                task [shape=box, max_retries=1]
-                requeue [shape=box]
+                task [shape=box, max_retries=1, spark.writes_context="[\\"second_pass\\"]"]
+                requeue [shape=box, spark.writes_context="[\\"second_pass\\"]"]
                 done [shape=Msquare]
 
                 start -> task
@@ -226,8 +226,8 @@ class TestRetryAndGoalGate:
             """
             digraph G {
                 start [shape=Mdiamond]
-                task [shape=box, max_retries=1, allow_partial=true]
-                requeue [shape=box]
+                task [shape=box, max_retries=1, allow_partial=true, spark.writes_context="[\\"second_pass\\"]"]
+                requeue [shape=box, spark.writes_context="[\\"second_pass\\"]"]
                 done [shape=Msquare]
 
                 start -> task
@@ -583,8 +583,8 @@ class TestRetryAndGoalGate:
             """
             digraph G {
                 start [shape=Mdiamond]
-                gate [shape=box, goal_gate=true, max_retries=0]
-                after [shape=box]
+                gate [shape=box, goal_gate=true, max_retries=0, spark.writes_context="[\\"_attractor.node_outcomes\\"]"]
+                after [shape=box, spark.writes_context="[\\"_attractor.node_outcomes\\"]"]
                 done [shape=Msquare]
 
                 start -> gate

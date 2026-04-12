@@ -24,6 +24,7 @@ class _StubBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        write_contract=None,
     ) -> bool:
         self.calls.append(
             (node_id, prompt, dict(context.values), response_contract, contract_repair_attempts, model)
@@ -47,8 +48,9 @@ class _ArtifactProbeBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        write_contract=None,
     ) -> bool:
-        del prompt, context, response_contract, contract_repair_attempts, timeout, model
+        del prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
         stage_dir = self.logs_root / node_id
         prompt_path = stage_dir / "prompt.md"
         response_path = stage_dir / "response.md"
@@ -72,8 +74,9 @@ class _TextBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        write_contract=None,
     ) -> str:
-        del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model
+        del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
         return self.text
 
 class _OutcomeBackend:
@@ -90,8 +93,9 @@ class _OutcomeBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        write_contract=None,
     ) -> Outcome:
-        del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model
+        del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
         return self.outcome
 
 class _FanInRankingBackend:
@@ -109,6 +113,7 @@ class _FanInRankingBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        write_contract=None,
     ) -> str:
         self.calls.append(
             {
@@ -119,6 +124,7 @@ class _FanInRankingBackend:
                 "contract_repair_attempts": contract_repair_attempts,
                 "timeout": timeout,
                 "model": model,
+                "write_contract": write_contract,
             }
         )
         return self.response
@@ -150,8 +156,9 @@ class _StageLoggingBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        write_contract=None,
     ) -> str:
-        del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model
+        del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
         self.run_bound = self._active_bindings > 0
         return self.response
 

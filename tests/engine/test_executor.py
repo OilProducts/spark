@@ -7,7 +7,7 @@ import time
 from attractor.dsl import parse_dot
 from attractor.engine.context import Context
 from attractor.engine.executor import PipelineExecutor
-from attractor.engine.outcome import Outcome, OutcomeStatus
+from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.interviewer import Answer, QueueInterviewer
 from attractor.llm_runtime import RUNTIME_LAUNCH_MODEL_KEY
@@ -41,8 +41,9 @@ class _WorkflowBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        write_contract=None,
     ) -> bool:
-        del prompt, context, response_contract, contract_repair_attempts, timeout, model
+        del prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
         return self._responses.get(node_id, True)
 
 
@@ -61,8 +62,9 @@ class _StructuredLoopBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        write_contract=None,
     ) -> str | Outcome:
-        del context, response_contract, contract_repair_attempts, timeout, model
+        del context, response_contract, contract_repair_attempts, timeout, model, write_contract
         self.prompts.setdefault(node_id, []).append(prompt)
         if node_id == "review":
             self.review_calls += 1
@@ -104,8 +106,9 @@ class _SpecImplementationLoopBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        write_contract=None,
     ) -> Outcome:
-        del prompt, response_contract, contract_repair_attempts, timeout, model
+        del prompt, response_contract, contract_repair_attempts, timeout, model, write_contract
         if node_id == "next_milestone":
             self.next_milestone_calls += 1
             if self.next_milestone_calls == 1:
@@ -509,7 +512,7 @@ class TestExecutor:
             f"""
             digraph G {{
                 graph [goal="Ship docs", default_fidelity="{mode}"]
-                start [shape=Mdiamond]
+                start [shape=Mdiamond, spark.writes_context="[\\"context.release\\",\\"context.tests_passed\\"]"]
                 work [shape=box]
                 done [shape=Msquare]
                 start -> work
@@ -577,7 +580,11 @@ class TestExecutor:
                 graph [goal="Ship docs", default_fidelity="summary:high"]
                 start [shape=Mdiamond]
                 implement [shape=box, prompt="Implement the requested change."]
-                review [shape=box, prompt="Review the implementation and respond with a status envelope."]
+                review [
+                    shape=box,
+                    prompt="Review the implementation and respond with a status envelope.",
+                    spark.writes_context="[\\"context.review.summary\\",\\"context.review.required_changes\\",\\"context.review.blockers\\"]"
+                ]
                 done [shape=Msquare]
                 start -> implement
                 implement -> review [condition="outcome=success"]
@@ -1135,7 +1142,10 @@ class TestExecutor:
             """
             digraph G {
                 start [shape=Mdiamond]
-                review [shape=box]
+                review [
+                    shape=box,
+                    spark.writes_context="[\\"context.review.summary\\",\\"context.review.required_changes\\",\\"context.review.blockers\\"]"
+                ]
                 implement [shape=box]
                 done [shape=Msquare]
 
@@ -1598,7 +1608,7 @@ class TestExecutor:
             """
             digraph G {
                 start [shape=Mdiamond]
-                plan [shape=box, prompt="plan"]
+                plan [shape=box, prompt="plan", spark.writes_context="[\\"needs_fix\\"]"]
                 fix [shape=box, prompt="fix"]
                 done [shape=Msquare]
 
@@ -1635,7 +1645,7 @@ class TestExecutor:
             """
             digraph G {
                 start [shape=Mdiamond]
-                plan [shape=box]
+                plan [shape=box, spark.writes_context="[\\"outcome\\",\\"preferred_label\\",\\"context.custom.flag\\"]"]
                 done [shape=Msquare]
 
                 start -> plan
@@ -1663,6 +1673,139 @@ class TestExecutor:
         assert result.context["context.custom.flag"] == "set"
         assert result.context["outcome"] == "success"
         assert result.context["preferred_label"] == "Approve"
+
+    def test_custom_handler_undeclared_writes_fail_as_contract_fault_without_merging(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                writer [shape=box, type="custom.writer"]
+                done [shape=Msquare]
+
+                start -> writer
+                writer -> done
+            }
+            """
+        )
+
+        class _Writer:
+            def execute(self, runtime):
+                del runtime
+                return Outcome(status=OutcomeStatus.SUCCESS, context_updates={"artifact_path": "/tmp/out"})
+
+        registry = build_default_registry(
+            codergen_backend=_WorkflowBackend({}),
+            extra_handlers={"custom.writer": _Writer()},
+        )
+
+        result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
+
+        assert result.status == "failed"
+        assert result.current_node == "writer"
+        assert result.context.get("artifact_path") is None
+        assert result.node_outcomes["writer"].failure_kind is FailureKind.CONTRACT
+        assert "artifact_path" in result.node_outcomes["writer"].failure_reason
+        assert "<none>" in result.node_outcomes["writer"].failure_reason
+
+    def test_custom_handler_declared_bare_writes_pass_contract_enforcement(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                writer [shape=box, type="custom.writer", spark.writes_context="[\\"artifact_path\\"]"]
+                done [shape=Msquare]
+
+                start -> writer
+                writer -> done
+            }
+            """
+        )
+
+        class _Writer:
+            def execute(self, runtime):
+                del runtime
+                return Outcome(status=OutcomeStatus.SUCCESS, context_updates={"artifact_path": "/tmp/out"})
+
+        registry = build_default_registry(
+            codergen_backend=_WorkflowBackend({}),
+            extra_handlers={"custom.writer": _Writer()},
+        )
+
+        result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
+
+        assert result.status == "completed"
+        assert result.context.get("artifact_path") == "/tmp/out"
+
+    def test_custom_handler_invalid_context_update_keys_fail_as_contract_fault_without_merging(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                writer [shape=box, type="custom.writer", spark.writes_context="[\\"context.review.summary\\"]"]
+                done [shape=Msquare]
+
+                start -> writer
+                writer -> done
+            }
+            """
+        )
+
+        class _Writer:
+            def execute(self, runtime):
+                del runtime
+                return Outcome(
+                    status=OutcomeStatus.SUCCESS,
+                    context_updates={".specflow/state.json": "/tmp/out"},
+                )
+
+        registry = build_default_registry(
+            codergen_backend=_WorkflowBackend({}),
+            extra_handlers={"custom.writer": _Writer()},
+        )
+
+        result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
+
+        assert result.status == "failed"
+        assert result.current_node == "writer"
+        assert result.context.get(".specflow/state.json") is None
+        assert result.node_outcomes["writer"].failure_kind is FailureKind.CONTRACT
+        assert "invalid context_updates keys" in result.node_outcomes["writer"].failure_reason
+        assert ".specflow/state.json" in result.node_outcomes["writer"].failure_reason
+
+    def test_custom_handler_cannot_write_context_stack_child_prefix_without_declaration(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                writer [shape=box, type="custom.writer"]
+                done [shape=Msquare]
+
+                start -> writer
+                writer -> done
+            }
+            """
+        )
+
+        class _Writer:
+            def execute(self, runtime):
+                del runtime
+                return Outcome(
+                    status=OutcomeStatus.SUCCESS,
+                    context_updates={"context.stack.child.poison": "x"},
+                )
+
+        registry = build_default_registry(
+            codergen_backend=_WorkflowBackend({}),
+            extra_handlers={"custom.writer": _Writer()},
+        )
+
+        result = PipelineExecutor(graph, HandlerRunner(graph, registry)).run(Context())
+
+        assert result.status == "failed"
+        assert result.current_node == "writer"
+        assert result.context.get("context.stack.child.poison") is None
+        assert result.node_outcomes["writer"].failure_kind is FailureKind.CONTRACT
+        assert "context.stack.child.poison" in result.node_outcomes["writer"].failure_reason
 
     def test_prompt_falls_back_to_label_for_llm_stage_only(self):
         graph = parse_dot(

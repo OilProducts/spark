@@ -457,8 +457,9 @@ def test_pipeline_persists_forwarded_child_stage_events_through_broadcasting_run
             contract_repair_attempts=0,
             timeout=None,
             model=None,
+            write_contract=None,
         ):
-            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model
+            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
             return "child ok"
 
     monkeypatch.setattr(

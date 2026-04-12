@@ -156,7 +156,7 @@ Documented Attractor node attributes:
 | `llm_provider` | string | Explicit provider override. |
 | `reasoning_effort` | string | `low`, `medium`, or `high`. |
 | `codergen.response_contract` | string | Codergen-only shared response-format contract. |
-| `codergen.contract_repair_attempts` | integer | Codergen-only bounded same-thread repair budget for malformed response-contract output. |
+| `codergen.contract_repair_attempts` | integer | Codergen-only bounded same-thread repair budget for malformed response-contract output and structured write-contract violations. |
 | `auto_status` | boolean | Auto-generate success when the handler writes no status. |
 | `allow_partial` | boolean | Accept `PARTIAL_SUCCESS` when retries exhaust. |
 
@@ -169,7 +169,7 @@ These attrs are only meaningful for specific node types:
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `codergen.response_contract` | string | Shared response-format appendix injected by the runtime. Use `status_envelope` when the node must return only Attractor's structured Outcome JSON. |
-| `codergen.contract_repair_attempts` | integer | Same-thread repair attempts for malformed response-contract output. Defaults to `1` when a response contract is set, otherwise `0`. This is not the same as node `max_retries`, which reruns the whole node. |
+| `codergen.contract_repair_attempts` | integer | Same-thread repair attempts for malformed response-contract output and structured write-contract violations. Defaults to `1` when a response contract is set, otherwise `0`. This is not the same as node `max_retries`, which reruns the whole node. |
 
 Authoring guidance:
 
@@ -410,10 +410,10 @@ Spark also stores node-level authoring metadata in DOT:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `spark.reads_context` | JSON-encoded array string | Declared `context.*` keys the node is expected to consume. |
-| `spark.writes_context` | JSON-encoded array string | Declared `context.*` keys the node is expected to produce. |
+| `spark.reads_context` | JSON-encoded array string | Declared live context keys the node is expected to consume from launch state or earlier stages. Codergen projects these declared keys into a deterministic prompt section; generic runtime reads remain unrestricted. |
+| `spark.writes_context` | JSON-encoded array string | Declared `context_updates` keys the node may emit. The runtime enforces this as the node's exact normalized write allowlist. |
 
-These keys document intent for authors and the editor. They do not automatically change runtime behavior.
+These keys document intent for authors and the editor. `spark.reads_context` now also defines the deterministic declared-input prompt surface for Codergen nodes: Spark projects the declared keys in sorted order and renders absent keys as `<missing>`. It still does not restrict generic runtime reads for non-LLM handlers. `spark.writes_context` is runtime-enforced: a missing declaration means the node may not emit node-authored `context_updates`, comparison happens after runtime key normalization, and codergen response-contract nodes use same-thread repair when emitted keys violate the declaration.
 
 ## Context Passing Pattern
 

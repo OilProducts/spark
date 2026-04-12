@@ -175,6 +175,19 @@ def test_spec_implementation_parent_flow_handles_partial_success_on_status_envel
     assert ("validate_milestone_plan", "plan_milestones", "Replan Partial") in edge_targets
 
 
+def test_spec_implementation_blocked_exit_declares_workflow_outcome_writes() -> None:
+    parent_graph = _load_graph("implement-spec.dot")
+    child_graph = _load_graph("implement-milestone.dot")
+
+    parent_writes = str(parent_graph.nodes["blocked_exit"].attrs["spark.writes_context"].value)
+    child_writes = str(child_graph.nodes["blocked_exit"].attrs["spark.writes_context"].value)
+
+    for writes_context in (parent_writes, child_writes):
+        assert "context.workflow_outcome" in writes_context
+        assert "context.workflow_outcome_reason_code" in writes_context
+        assert "context.workflow_outcome_reason_message" in writes_context
+
+
 def test_spec_implementation_parent_flow_automates_architecture_evaluation() -> None:
     graph = _load_graph("implement-spec.dot")
 
