@@ -11,3 +11,4 @@ frontend/.tmp-*/
 src/spark_app/ui_dist/
 .idea/
 .planflow/
+.codex
