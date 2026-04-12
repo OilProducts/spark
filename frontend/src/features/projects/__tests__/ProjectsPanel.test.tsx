@@ -220,6 +220,34 @@ describe('ProjectsPanel', () => {
     })
   })
 
+  it('uses a full-height split shell on wide viewports', () => {
+    useStore.setState((state) => ({
+      ...state,
+      projectRegistry: {
+        '/tmp/existing-project': {
+          project_id: 'existing-project',
+          project_path: '/tmp/existing-project',
+          display_name: 'existing-project',
+          created_at: new Date().toISOString(),
+          last_opened_at: new Date().toISOString(),
+          last_accessed_at: null,
+          is_favorite: false,
+          active_conversation_id: null,
+        },
+      },
+    }))
+
+    renderProjectsPanelWithoutHomeController()
+
+    const projectsPanel = screen.getByTestId('projects-panel')
+    const homeMainLayout = screen.getByTestId('home-main-layout')
+
+    expect(projectsPanel).toHaveAttribute('data-responsive-layout', 'split')
+    expect(projectsPanel).toHaveClass('h-full')
+    expect(homeMainLayout).toHaveClass('flex-1')
+    expect(homeMainLayout).toHaveClass('min-h-0')
+  })
+
   it('surfaces a project registry bootstrap error on refresh', async () => {
     vi.stubGlobal(
       'fetch',

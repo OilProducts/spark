@@ -265,6 +265,21 @@ describe('Execution controls behavior', () => {
     expect(screen.queryByTestId('run-graph-panel')).not.toBeInTheDocument()
   })
 
+  it('uses a full-height split shell on wide viewports', async () => {
+    installExecutionFetchMock()
+
+    renderExecutionWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('execution-flow-tree')).toBeVisible()
+    })
+
+    const executionWorkspace = screen.getByTestId('execution-workspace')
+    expect(executionWorkspace).toHaveAttribute('data-responsive-layout', 'split')
+    expect(executionWorkspace).toHaveClass('h-full')
+    expect(executionWorkspace).toHaveClass('min-h-0')
+  })
+
   it('renders the graph card as a read-only preview for direct launches', async () => {
     const fetchMock = installExecutionFetchMock({
       flowName: TEST_LINEAR_FLOW,

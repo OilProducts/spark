@@ -1,9 +1,25 @@
 set shell := ["bash", "-lc"]
 
+[private]
+frontend-deps:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -x frontend/node_modules/.bin/vitest || ! -x frontend/node_modules/.bin/playwright ]]; then
+    echo "Installing frontend dependencies with npm ci..." >&2
+    npm --prefix frontend ci
+  fi
+
+setup:
+  uv sync --dev
+  npm --prefix frontend ci
+
+clean:
+  rm -rf dist frontend/dist frontend/node_modules/.tmp
+
 dev:
   docker compose up --build
 
-run:
+run: frontend-deps
   #!/usr/bin/env bash
   set -euo pipefail
   trap 'kill "${backend_pid:-}" "${frontend_pid:-}" 2>/dev/null || true; wait || true' EXIT INT TERM
@@ -39,14 +55,14 @@ dot-lint:
 parser-unsupported-grammar:
   uv run pytest -q tests/dsl/test_parser.py -k unsupported_grammar_regression
 
-test:
+test: frontend-deps
   uv run pytest -q
   npm --prefix frontend run test:unit
 
-frontend-unit:
+frontend-unit: frontend-deps
   npm --prefix frontend run test:unit
 
-ui-smoke:
+ui-smoke: frontend-deps
   #!/usr/bin/env bash
   set -euo pipefail
   spark_home="${SPARK_HOME:-$HOME/.spark-dev}"
@@ -70,13 +86,13 @@ ui-smoke:
   curl -sf "http://127.0.0.1:${spark_port}/attractor/status" >/dev/null
   npm --prefix frontend run ui:smoke
 
-frontend-build:
+frontend-build: frontend-deps
   npm --prefix frontend run build
 
 wheel:
   uv build
 
-build:
+build: frontend-deps
   npm --prefix frontend run build
   uv build
 

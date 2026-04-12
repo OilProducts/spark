@@ -12,10 +12,11 @@ The UI is responsible for:
 
 ## Development
 
-Install frontend dependencies:
+From the repo root, `just setup` prepares the whole checkout.
+If you only need the frontend toolchain in this directory, install dependencies with:
 
 ```bash
-npm install
+npm ci
 ```
 
 Run the frontend in dev mode:

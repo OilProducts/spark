@@ -10,7 +10,7 @@ export function ExecutionWorkspace() {
         <section
             data-testid="execution-workspace"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className="flex flex-1 overflow-hidden"
+            className="flex h-full min-h-0 flex-1 overflow-hidden"
         >
             <div className={`flex h-full w-full overflow-hidden ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}>
                 <ExecutionSidebar />

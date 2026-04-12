@@ -24,7 +24,7 @@ export function ProjectsPanel() {
             data-testid="projects-panel"
             data-home-panel="true"
             data-responsive-layout={isNarrowViewport ? "stacked" : "split"}
-            className={`flex-1 ${isNarrowViewport ? "overflow-auto p-3" : "flex min-h-0 flex-col overflow-hidden p-6"}`}
+            className={`h-full flex-1 ${isNarrowViewport ? "overflow-auto p-3" : "flex min-h-0 flex-col overflow-hidden p-6"}`}
         >
             <div className={`w-full ${isNarrowViewport ? "space-y-6" : "flex min-h-0 flex-1 flex-col gap-6"}`}>
                 <div

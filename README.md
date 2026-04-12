@@ -131,11 +131,10 @@ Use hooks and model defaults deliberately:
 
 ## Local Development
 
-Install dependencies:
+Prepare a fresh checkout:
 
 ```bash
-uv sync --dev
-npm --prefix frontend install
+just setup
 ```
 
 Initialize the runtime tree and seed starter flows:
@@ -143,6 +142,8 @@ Initialize the runtime tree and seed starter flows:
 ```bash
 uv run spark-server init
 ```
+
+`just setup` installs the Python dev environment with `uv sync --dev` and the frontend toolchain with `npm --prefix frontend ci`.
 
 Install a stable wheel into `~/.spark/venv` and initialize the stable runtime:
 
@@ -247,6 +248,8 @@ Current API groups include:
 
 Useful `just` targets from [justfile](/Users/chris/projects/spark/justfile):
 
+- `just clean`: remove generated build artifacts without deleting installed dependencies or runtime state
+- `just setup`: install Python and frontend development dependencies for a fresh checkout
 - `just run`: backend + Vite frontend for local development
 - `just dev`: `docker compose up --build`
 - `just test`: full Python test suite
