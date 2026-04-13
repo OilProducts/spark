@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import attractor.api.server as server
-import spark_app.app as product_app
+import spark.app as product_app
 import workspace.storage as workspace_storage
 
 

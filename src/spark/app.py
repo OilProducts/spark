@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 
 import attractor.api.pipeline_runs as pipeline_runs
 import attractor.api.server as attractor_server
-from spark_app.ui import resolve_ui_asset_path, resolve_ui_index_path
+from spark.ui import resolve_ui_asset_path, resolve_ui_index_path
 from workspace.attractor_client import AttractorApiClient
 from workspace.api import WorkspaceApiDependencies, create_workspace_router
 from workspace.project_chat import ProjectChatService

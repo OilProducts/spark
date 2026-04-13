@@ -8,7 +8,7 @@ codex-app-server.schema/
 .DS_Store
 artifacts/
 frontend/.tmp-*/
-src/spark_app/ui_dist/
+src/spark/ui_dist/
 .idea/
 .planflow/
 .codex

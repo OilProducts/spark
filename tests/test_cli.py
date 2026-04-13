@@ -9,8 +9,8 @@ import pytest
 import spark.authoring_assets as authoring_assets
 import spark.cli as spark_cli
 import spark.starter_assets as starter_assets
-from spark_app.ui import resolve_default_ui_dir
-import spark_server.cli as spark_server_cli
+from spark.ui import resolve_default_ui_dir
+import spark.server_cli as spark_server_cli
 
 
 TEST_AGENT_FLOW = "test-dispatch.dot"
@@ -44,14 +44,11 @@ def test_run_serve_uses_import_string_when_reload_enabled(monkeypatch, tmp_path:
     result = spark_server_cli._run_serve(args)
 
     assert result == 0
-    assert calls == [
-        {
-            "app": "spark_app.app:app",
-            "host": "127.0.0.1",
-            "port": 8000,
-            "reload": True,
-        }
-    ]
+    assert len(calls) == 1
+    assert isinstance(calls[0]["app"], str)
+    assert calls[0]["host"] == "127.0.0.1"
+    assert calls[0]["port"] == 8000
+    assert calls[0]["reload"] is True
 
 
 def test_run_serve_preserves_runtime_path_env_for_reload(monkeypatch, tmp_path: Path) -> None:

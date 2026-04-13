@@ -49,7 +49,7 @@ From the repo root, `just run` is the normal full-stack workflow.
 - `npm run ui:smoke`: run Playwright smoke checks
 
 `npm run ui:smoke` expects the product backend to already be serving on `http://127.0.0.1:8000`.
-From the repo root, use `just ui-smoke` to launch [`app.py`](../src/spark_app/app.py) and wait for `/attractor/status` automatically before Playwright starts.
+From the repo root, use `just ui-smoke` to launch [`app.py`](../src/spark/app.py) and wait for `/attractor/status` automatically before Playwright starts.
 
 ## Build Output
 

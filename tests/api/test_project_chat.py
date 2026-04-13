@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional
 import pytest
 
 import attractor.api.server as server
-import spark_app.app as product_app
+import spark.app as product_app
 from spark_common.codex_app_client import CodexAppServerTurnResult
 import spark_common.codex_app_server as codex_app_server
 import spark_common.process_line_reader as process_line_reader

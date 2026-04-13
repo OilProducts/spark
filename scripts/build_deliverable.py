@@ -12,7 +12,7 @@ import zipfile
 
 FRONTEND_BINARIES = ("tsc", "vite")
 REQUIRED_WHEEL_ENTRIES = (
-    "spark_app/ui_dist/index.html",
+    "spark/ui_dist/index.html",
     "spark/guides/dot-authoring.md",
     "spark/guides/spark-operations.md",
     "spark/flows/examples/simple-linear.dot",
@@ -31,7 +31,7 @@ from spark.authoring_assets import (
     spark_operations_guide_path,
 )
 from spark.starter_assets import load_starter_flow_assets
-from spark_app.ui import resolve_default_ui_dir
+from spark.ui import resolve_default_ui_dir
 
 with TemporaryDirectory() as tmp:
     ui_dir = resolve_default_ui_dir(Path(tmp))
@@ -62,7 +62,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="spark-deliverable-stage-") as stage_str:
         stage_root = Path(stage_str)
         _copy_tracked_worktree(repo_root, stage_root)
-        _stage_packaged_ui(repo_root / "frontend" / "dist", stage_root / "src" / "spark_app" / "ui_dist")
+        _stage_packaged_ui(repo_root / "frontend" / "dist", stage_root / "src" / "spark" / "ui_dist")
         _run(["uv", "build"], cwd=stage_root)
         artifacts = _locate_artifacts(stage_root / "dist")
         _verify_wheel_contents(artifacts.wheel)

@@ -48,7 +48,7 @@ By default, Spark stores runtime data under `~/.spark` and serves the bundled UI
 The supported install artifacts are the wheel and sdist.
 Both include:
 
-- bundled UI assets under `spark_app/ui_dist`
+- bundled UI assets under `spark/ui_dist`
 - packaged flows under `spark/flows`, including examples under `spark/flows/examples`
 - packaged guidance docs under `spark/guides`, including `dot-authoring.md` and `spark-operations.md`
 

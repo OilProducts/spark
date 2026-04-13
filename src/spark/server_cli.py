@@ -103,7 +103,7 @@ def _run_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     import attractor.api.server as server
-    import spark_app.app as product_app
+    import spark.app as product_app
     from spark_common.settings import ENV_FLOWS_DIR, ENV_HOME_DIR, ENV_UI_DIR
 
     def _set_path_env(name: str, value: Path | None) -> None:
@@ -123,7 +123,7 @@ def _run_serve(args: argparse.Namespace) -> int:
     _set_path_env(ENV_UI_DIR, args.ui_dir)
 
     uvicorn.run(
-        "spark_app.app:app" if args.reload else product_app.app,
+        "spark.app:app" if args.reload else product_app.app,
         host=args.host,
         port=args.port,
         reload=args.reload,

@@ -29,7 +29,7 @@ dependencies = [
 
 [project.scripts]
 spark = "spark.cli:main"
-spark-server = "spark_server.cli:main"
+spark-server = "spark.server_cli:main"
 
 [tool.setuptools]
 include-package-data = true
@@ -37,11 +37,10 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["attractor*", "workspace*", "spark*", "spark_server*", "spark_app*", "spark_common*"]
+include = ["attractor*", "workspace*", "spark*", "spark_common*"]
 
 [tool.setuptools.package-data]
-spark = ["flows/*.dot", "flows/*/*.dot", "flows/*/*/*.dot", "guides/*.md"]
-spark_app = ["ui_dist/**"]
+spark = ["flows/*.dot", "flows/*/*.dot", "flows/*/*/*.dot", "guides/*.md", "ui_dist/**"]
 
 [dependency-groups]
 dev = [

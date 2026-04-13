@@ -246,7 +246,7 @@ Important path overrides:
 
 For a task-oriented packaged reference that pairs Spark CLI commands with the matching HTTP routes, use [src/spark/guides/spark-operations.md](src/spark/guides/spark-operations.md).
 
-The canonical route inventory lives in [app.py](src/spark_app/app.py), [server.py](src/attractor/api/server.py), and [api.py](src/workspace/api.py).
+The canonical route inventory lives in [app.py](src/spark/app.py), [server.py](src/attractor/api/server.py), and [api.py](src/workspace/api.py).
 
 The root app is a mount host only. Canonical public API surfaces are:
 - Attractor docs/OpenAPI under `/attractor/docs` and `/attractor/openapi.json`
@@ -300,7 +300,7 @@ Frontend smoke tests:
 just ui-smoke
 ```
 
-`just ui-smoke` launches the product ASGI app from [`app.py`](src/spark_app/app.py), waits for `GET /attractor/status`, and then runs `npm --prefix frontend run ui:smoke`.
+`just ui-smoke` launches the product ASGI app from [`app.py`](src/spark/app.py), waits for `GET /attractor/status`, and then runs `npm --prefix frontend run ui:smoke`.
 
 ## Packaging
 
