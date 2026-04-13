@@ -28,6 +28,7 @@ For flow authoring, use this progression:
 - Hands-on tutorial: [docs/first-flow-tutorial.md](docs/first-flow-tutorial.md)
 - Product overview and authoring heuristics: this README
 - Full raw DOT reference: [src/spark/guides/dot-authoring.md](src/spark/guides/dot-authoring.md)
+- Task-oriented CLI/API operations guide: [src/spark/guides/spark-operations.md](src/spark/guides/spark-operations.md)
 
 After direct flow edits, validate with `spark flow validate --file /path/to/flow.dot --text`.
 
@@ -237,6 +238,8 @@ Important path overrides:
 `~/.spark/config/prompts.toml` stores user-configurable prompt templates and is created on first startup.
 
 ## API Overview
+
+For a task-oriented packaged reference that pairs Spark CLI commands with the matching HTTP routes, use [src/spark/guides/spark-operations.md](src/spark/guides/spark-operations.md).
 
 The canonical route inventory lives in [app.py](src/spark_app/app.py), [server.py](src/attractor/api/server.py), and [api.py](src/workspace/api.py).
 

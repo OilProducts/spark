@@ -6,7 +6,7 @@ It packages:
 
 - a FastAPI backend for running Attractor workflows
 - a bundled web UI for flow authoring, execution, and run inspection
-- curated starter `.dot` flows and authoring guides
+- curated starter `.dot` flows and packaged authoring/operations guides
 - CLIs for launching the server and interacting with workspace conversations
 
 ## Install
@@ -50,7 +50,7 @@ Both include:
 
 - bundled UI assets under `spark_app/ui_dist`
 - starter flows under `spark/starter_flows`
-- packaged authoring guides under `spark/guides`
+- packaged guidance docs under `spark/guides`, including `dot-authoring.md` and `spark-operations.md`
 
 ## Development
 

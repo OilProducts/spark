@@ -5,8 +5,7 @@ from pathlib import Path
 
 GUIDES_DIR_NAME = "guides"
 DOT_AUTHORING_GUIDE_NAME = "dot-authoring.md"
-ATTRACTOR_SPEC_NAME = "attractor-spec.md"
-FLOW_EXTENSIONS_SPEC_NAME = "spark-flow-extensions.md"
+SPARK_OPERATIONS_GUIDE_NAME = "spark-operations.md"
 
 
 def dot_authoring_guide_path() -> Path:
@@ -16,15 +15,8 @@ def dot_authoring_guide_path() -> Path:
     return path
 
 
-def attractor_spec_path() -> Path:
-    path = Path(__file__).resolve().parent / GUIDES_DIR_NAME / ATTRACTOR_SPEC_NAME
+def spark_operations_guide_path() -> Path:
+    path = Path(__file__).resolve().parent / GUIDES_DIR_NAME / SPARK_OPERATIONS_GUIDE_NAME
     if not path.exists():
-        raise RuntimeError(f"Packaged Attractor spec is unavailable: {path}")
-    return path
-
-
-def flow_extensions_spec_path() -> Path:
-    path = Path(__file__).resolve().parent / GUIDES_DIR_NAME / FLOW_EXTENSIONS_SPEC_NAME
-    if not path.exists():
-        raise RuntimeError(f"Packaged Spark flow extensions spec is unavailable: {path}")
+        raise RuntimeError(f"Spark operations guide is unavailable: {path}")
     return path

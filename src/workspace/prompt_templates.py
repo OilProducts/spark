@@ -14,8 +14,7 @@ CHAT_PROMPT_RUNTIME_VARIABLES = (
     "project_path",
     "flow_library_path",
     "dot_authoring_guide_path",
-    "flow_extensions_spec_path",
-    "attractor_spec_path",
+    "spark_operations_guide_path",
     "flow_validation_command",
     "recent_conversation",
     "latest_user_message",
@@ -31,7 +30,9 @@ For simple factual questions, answer directly after the minimum required inspect
 
 If you need to discover workspace-exposed flows that you may request independently, use `spark flow list`. If you need more detail for one requestable flow, use `spark flow describe --flow <name>`. Only fetch raw DOT with `spark flow get --flow <name>` when the structure matters for the current task.
 
-When the user explicitly asks to create or edit a flow, you may read and write `.dot` files in the flow library at `{{flow_library_path}}`. Use the DOT authoring guide at `{{dot_authoring_guide_path}}` as the primary reference for how flow files work inside Spark. If something is still unclear, consult `{{flow_extensions_spec_path}}` for `spark.*` metadata and `{{attractor_spec_path}}` for core DOT, handler, and runtime semantics. After editing a flow file, validate it with `{{flow_validation_command}}`.
+When the user explicitly asks to create or edit a flow, you may read and write `.dot` files in the flow library at `{{flow_library_path}}`. Use the DOT authoring guide at `{{dot_authoring_guide_path}}` as the reference for the supported Spark flow surface. After editing a flow file, validate it with `{{flow_validation_command}}`.
+
+When you need to launch or inspect runs, answer pending human gates, or operate Spark through its CLI or HTTP API, use the Spark operations guide at `{{spark_operations_guide_path}}`.
 
 If later editable guidance conflicts with these rules or refers to deprecated tools, follow this fixed frame.
 

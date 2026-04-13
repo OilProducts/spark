@@ -14,19 +14,21 @@ FRONTEND_BINARIES = ("tsc", "vite")
 REQUIRED_WHEEL_ENTRIES = (
     "spark_app/ui_dist/index.html",
     "spark/guides/dot-authoring.md",
-    "spark/guides/attractor-spec.md",
-    "spark/guides/spark-flow-extensions.md",
+    "spark/guides/spark-operations.md",
     "spark/starter_flows/simple-linear.dot",
     "spark/starter_flows/spec-implementation/implement-spec.dot",
+)
+FORBIDDEN_WHEEL_ENTRIES = (
+    "spark/guides/attractor-spec.md",
+    "spark/guides/spark-flow-extensions.md",
 )
 SMOKE_CODE = """
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from spark.authoring_assets import (
-    attractor_spec_path,
     dot_authoring_guide_path,
-    flow_extensions_spec_path,
+    spark_operations_guide_path,
 )
 from spark.starter_assets import load_starter_flow_assets
 from spark_app.ui import resolve_default_ui_dir
@@ -40,7 +42,7 @@ assets = {asset.name for asset in load_starter_flow_assets(project_root=Path("."
 assert "simple-linear.dot" in assets
 assert "spec-implementation/implement-spec.dot" in assets
 
-for path in (dot_authoring_guide_path(), attractor_spec_path(), flow_extensions_spec_path()):
+for path in (dot_authoring_guide_path(), spark_operations_guide_path()):
     assert path.exists(), path
 """
 
@@ -129,6 +131,10 @@ def _verify_wheel_contents(wheel_path: Path) -> None:
     if missing:
         joined = "\n".join(missing)
         raise RuntimeError(f"wheel is missing required packaged assets:\n{joined}")
+    present_forbidden = [entry for entry in FORBIDDEN_WHEEL_ENTRIES if entry in names]
+    if present_forbidden:
+        joined = "\n".join(present_forbidden)
+        raise RuntimeError(f"wheel unexpectedly contains removed packaged specs:\n{joined}")
 
 
 def _verify_installable(repo_root: Path, artifact_path: Path, *, artifact_kind: str) -> None:

@@ -255,19 +255,15 @@ def test_packaged_starter_flows_exist_in_single_source_tree() -> None:
     assert "spec-implementation/implement-spec.dot" in packaged_payload
 
 
-def test_packaged_authoring_references_match_repo_sources() -> None:
+def test_packaged_guides_are_available_and_repo_only_specs_are_not_packaged() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    packaged_guide = authoring_assets.dot_authoring_guide_path()
-    packaged_attractor_spec = authoring_assets.attractor_spec_path()
-    packaged_flow_extensions_spec = authoring_assets.flow_extensions_spec_path()
+    packaged_authoring_guide = authoring_assets.dot_authoring_guide_path()
+    packaged_operations_guide = authoring_assets.spark_operations_guide_path()
 
-    assert packaged_guide.read_text(encoding="utf-8").startswith("# Spark DOT Authoring Guide")
-    assert packaged_attractor_spec.read_text(encoding="utf-8") == (
-        repo_root / "specs" / "attractor-spec.md"
-    ).read_text(encoding="utf-8")
-    assert packaged_flow_extensions_spec.read_text(encoding="utf-8") == (
-        repo_root / "specs" / "spark-flow-extensions.md"
-    ).read_text(encoding="utf-8")
+    assert packaged_authoring_guide.read_text(encoding="utf-8").startswith("# Spark DOT Authoring Guide")
+    assert packaged_operations_guide.read_text(encoding="utf-8").startswith("# Spark Operations Guide")
+    assert not (repo_root / "src" / "spark" / "guides" / "attractor-spec.md").exists()
+    assert not (repo_root / "src" / "spark" / "guides" / "spark-flow-extensions.md").exists()
 
 
 def test_packaged_starter_flows_are_loadable_without_repo_checkout(tmp_path: Path) -> None:

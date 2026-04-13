@@ -13,9 +13,8 @@ from spark_common.codex_app_client import CodexAppServerTurnResult
 import spark_common.codex_app_server as codex_app_server
 import spark_common.process_line_reader as process_line_reader
 from spark.authoring_assets import (
-    attractor_spec_path,
     dot_authoring_guide_path,
-    flow_extensions_spec_path,
+    spark_operations_guide_path,
 )
 import workspace.project_chat as project_chat
 import workspace.project_chat_session as project_chat_session
@@ -205,8 +204,7 @@ def test_project_chat_prompt_includes_flow_authoring_boundary(tmp_path: Path) ->
 
     assert f"flow library at `{(tmp_path / 'flows').resolve(strict=False)}`" in prompt
     assert f"`{dot_authoring_guide_path()}`" in prompt
-    assert f"`{flow_extensions_spec_path()}`" in prompt
-    assert f"`{attractor_spec_path()}`" in prompt
+    assert f"`{spark_operations_guide_path()}`" in prompt
     assert "spark flow validate --file <path> --text" in prompt
 
 

@@ -7,9 +7,8 @@ import uuid
 from typing import Any, Callable, Optional
 
 from spark.authoring_assets import (
-    attractor_spec_path,
     dot_authoring_guide_path,
-    flow_extensions_spec_path,
+    spark_operations_guide_path,
 )
 from workspace.project_chat_common import (
     as_non_empty_string as _as_non_empty_string,
@@ -77,8 +76,7 @@ class ProjectChatService:
         self._data_dir = data_dir
         self._flows_dir = (flows_dir or (data_dir / "flows")).expanduser().resolve(strict=False)
         self._authoring_guide_path = (authoring_guide_path or dot_authoring_guide_path()).expanduser().resolve(strict=False)
-        self._flow_extensions_spec_path = flow_extensions_spec_path().expanduser().resolve(strict=False)
-        self._attractor_spec_path = attractor_spec_path().expanduser().resolve(strict=False)
+        self._operations_guide_path = spark_operations_guide_path().expanduser().resolve(strict=False)
         self._prompt_templates = load_prompt_templates(data_dir / "config")
         self._lock = threading.Lock()
         self._repository = ProjectChatRepository(data_dir, self._lock)
@@ -407,8 +405,7 @@ class ProjectChatService:
                 "project_path": state.project_path,
                 "flow_library_path": str(self._flows_dir),
                 "dot_authoring_guide_path": str(self._authoring_guide_path),
-                "flow_extensions_spec_path": str(self._flow_extensions_spec_path),
-                "attractor_spec_path": str(self._attractor_spec_path),
+                "spark_operations_guide_path": str(self._operations_guide_path),
                 "flow_validation_command": "spark flow validate --file <path> --text",
                 "recent_conversation": history_text,
                 "latest_user_message": message,

@@ -1,8 +1,8 @@
 # Spark DOT Authoring Guide
 
-This guide is for agents editing `.dot` workflow files directly.
+This guide is the packaged authoring contract for agents editing `.dot` workflow files directly.
 
-It is intentionally more operational than the specs. For exact runtime semantics, Attractor remains authoritative. This guide summarizes the documented authoring surface that Spark expects and exposes.
+It consolidates the supported Spark flow surface in one place so authors do not need to split work between Attractor-core documents and Spark-extension documents while writing valid flows.
 
 ## Boundary
 
@@ -145,6 +145,7 @@ Documented Attractor node attributes:
 | `type` | string | Explicit handler type override. |
 | `prompt` | string | Primary task instruction. Supports `$goal`. |
 | `max_retries` | integer | Additional retries for the node. |
+| `retry_policy` | string | Optional named retry preset. Supported values: `none`, `standard`, `aggressive`, `linear`, `patient`. |
 | `goal_gate` | boolean | Node must reach `SUCCESS` or `PARTIAL_SUCCESS` before pipeline exit. |
 | `retry_target` | string | Node-level retry jump target. |
 | `fallback_retry_target` | string | Secondary node-level retry target. |
@@ -159,6 +160,27 @@ Documented Attractor node attributes:
 | `codergen.contract_repair_attempts` | integer | Codergen-only bounded same-thread repair budget for malformed response-contract output and structured write-contract violations. |
 | `auto_status` | boolean | Auto-generate success when the handler writes no status. |
 | `allow_partial` | boolean | Accept `PARTIAL_SUCCESS` when retries exhaust. |
+
+## Retry Authoring
+
+Retry behavior is authorable in two ways:
+
+- `max_retries` sets the number of additional attempts beyond the initial execution
+- `retry_policy` selects a named preset for attempts plus backoff behavior
+
+If `retry_policy` is set on a node, it overrides `max_retries` and graph `default_max_retries` for that node.
+
+Documented preset values:
+
+| Preset | Max Attempts | Initial Delay | Factor | Meaning |
+| --- | --- | --- | --- | --- |
+| `none` | `1` | `0ms` | `1.0` | No retries. |
+| `standard` | `5` | `200ms` | `2.0` | General-purpose exponential backoff. |
+| `aggressive` | `5` | `500ms` | `2.0` | More patient retry cadence for unreliable operations. |
+| `linear` | `3` | `500ms` | `1.0` | Fixed delay between attempts. |
+| `patient` | `3` | `2000ms` | `3.0` | Long-running operations with larger backoff. |
+
+Use `max_retries` when you only need a simple retry count. Use `retry_policy` when you want a stable named backoff profile.
 
 ## Handler-Specific Node Attributes
 
@@ -208,7 +230,7 @@ Artifact capture rules:
 | `join_policy` | string | Join rule for branch completion. Documented values: `wait_all`, `first_success`. |
 | `max_parallel` | integer | Max concurrent branches. |
 
-`error_policy` exists in the current implementation but is not documented in the spec, so do not rely on it in authored flows unless and until it is promoted into the spec.
+`error_policy` exists in the current implementation but is not part of the supported packaged authoring contract, so do not rely on it in authored flows unless it is added here later.
 
 ### `wait.human`
 
@@ -226,7 +248,7 @@ Artifact capture rules:
 | `manager.actions` | string | Comma-separated manager actions such as `observe,wait` or `observe,steer,wait`. |
 | `stack.child_autostart` | boolean | Whether the child pipeline should be started automatically. |
 
-`manager.steer_cooldown` exists in the runtime implementation but is not currently documented in the spec, so it is intentionally omitted from this guide.
+`manager.steer_cooldown` exists in the runtime implementation but is not part of the supported packaged authoring contract, so it is intentionally omitted from this guide.
 
 `context.stack.child.*` is runtime-owned manager-loop telemetry. Read it from authored flows if you need child status or outcome, but do not clear or set it from prompts or context updates as business logic.
 
@@ -469,7 +491,7 @@ The parser and editor may preserve unknown attributes, but this guide only lists
 Treat any extra attrs you encounter as one of:
 
 - Spark metadata explicitly documented elsewhere
-- implementation-specific runtime behavior not yet promoted into the spec
+- implementation-specific runtime behavior not yet promoted into this packaged authoring contract
 - project-specific extension attrs that are only meaningful to a custom host
 
 Do not assume an undocumented attribute is portable just because it round-trips.
