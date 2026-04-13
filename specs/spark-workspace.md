@@ -2,7 +2,7 @@
 
 This document is the canonical workspace-layer specification for Spark.
 
-It defines Spark-owned domain behavior above [attractor-spec.md](/Users/chris/projects/spark/specs/attractor-spec.md) and below the frontend client.
+It defines Spark-owned domain behavior above [attractor-spec.md](attractor-spec.md) and below the frontend client.
 
 It consolidates and supersedes the split workspace documents:
 - `conversation-paradigm.md`

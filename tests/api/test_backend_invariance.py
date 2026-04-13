@@ -532,11 +532,13 @@ def test_codex_app_server_backend_missing_binary_returns_fail_outcome_and_emits_
 
 def test_resolve_runtime_workspace_path_maps_host_repo_root_override_to_runtime_repo_root(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     runtime_repo_root = Path(server.__file__).resolve().parents[3]
-    monkeypatch.setenv("ATTRACTOR_HOST_REPO_ROOT", "/Users/chris/projects/spark")
+    host_repo_root = tmp_path / "host-repo-root"
+    monkeypatch.setenv("ATTRACTOR_HOST_REPO_ROOT", str(host_repo_root))
     monkeypatch.setenv("ATTRACTOR_RUNTIME_REPO_ROOT", str(runtime_repo_root))
-    translated = resolve_runtime_workspace_path("/home/chris/tinker/spark/frontend")
+    translated = resolve_runtime_workspace_path(str(host_repo_root / "frontend"))
 
     assert translated == str((runtime_repo_root / "frontend").resolve(strict=False))
 

@@ -15,7 +15,6 @@ services:
       - ATTRACTOR_RUNTIME_REPO_ROOT=/app
       - ATTRACTOR_HOST_REPO_ROOT=${PWD}
       - ATTRACTOR_CODEX_RUNTIME_ROOT=/codex-runtime
-      - ATTRACTOR_CODEX_SEED_DIR=/codex-seed
       - OPENAI_API_KEY
       - OPENAI_ORG
       - OPENAI_PROJECT
@@ -23,10 +22,6 @@ services:
     volumes:
       - .:/app
       - codex_runtime:/codex-runtime
-      - ${HOME}/.codex/auth.json:/codex-seed/auth.json:ro
-      - ${HOME}/.codex/config.toml:/codex-seed/config.toml:ro
-      - ${HOME}/.codex/skills:/codex-runtime/.codex/skills:ro
-      - ${HOME}/projects/agent-skills:/Users/chris/projects/agent-skills:ro
 
   frontend:
     build:

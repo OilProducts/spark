@@ -1,6 +1,6 @@
 # Spark Flow Extensions
 
-This document defines Spark-owned flow-surface extensions layered onto [attractor-spec.md](/Users/chris/projects/spark/specs/attractor-spec.md).
+This document defines Spark-owned flow-surface extensions layered onto [attractor-spec.md](attractor-spec.md).
 
 It consolidates and supersedes `spark-attractor-extensions.md` as the canonical contract for Spark-specific flow metadata and authoring extensions.
 

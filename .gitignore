@@ -12,3 +12,5 @@ src/spark_app/ui_dist/
 .idea/
 .planflow/
 .codex
+compose.override.yaml
+compose.override.yml

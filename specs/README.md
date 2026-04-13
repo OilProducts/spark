@@ -28,4 +28,4 @@ Execution artifacts stay outside this folder:
 ## Acceptance Workflow Assets
 
 High-level workflow verification assets live outside `specs/` under:
-- `/Users/chris/projects/spark/tests/acceptance/agent-workflows/`
+- `../tests/acceptance/agent-workflows/`

@@ -3,8 +3,8 @@
 This directory contains high-level product workflow tests for Spark.
 
 These files are not source-of-truth product specifications. They are acceptance assets derived from:
-- `/Users/chris/projects/spark/specs/spark-ui-ux.md`
-- `/Users/chris/projects/spark/specs/spark-workspace.md`
+- `../../../specs/spark-ui-ux.md`
+- `../../../specs/spark-workspace.md`
 
 ## Purpose
 
