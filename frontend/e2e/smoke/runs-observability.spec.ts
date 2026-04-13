@@ -41,6 +41,23 @@ type SmokeRunRecord = {
   current_node?: string | null
 }
 
+type SmokeJournalEntry = {
+  id: string
+  sequence: number
+  emitted_at: string
+  kind: string
+  raw_type: string
+  severity: 'info' | 'warning' | 'error'
+  summary: string
+  node_id?: string | null
+  stage_index?: number | null
+  source_scope?: 'root' | 'child' | null
+  source_parent_node_id?: string | null
+  source_flow_name?: string | null
+  question_id?: string | null
+  payload: Record<string, unknown>
+}
+
 test.beforeAll(() => {
   ensureScreenshotDir()
 })
@@ -95,6 +112,25 @@ function buildSmokeRun(projectPath: string, overrides: Partial<SmokeRunRecord> =
   }
 }
 
+function buildSmokeJournalEntry(sequence: number, overrides: Partial<SmokeJournalEntry>): SmokeJournalEntry {
+  return {
+    id: overrides.id ?? `journal-${sequence}`,
+    sequence,
+    emitted_at: overrides.emitted_at ?? `2026-03-03T12:00:${String(sequence).padStart(2, '0')}Z`,
+    kind: overrides.kind ?? 'log',
+    raw_type: overrides.raw_type ?? 'log',
+    severity: overrides.severity ?? 'info',
+    summary: overrides.summary ?? `Journal entry ${sequence}`,
+    node_id: overrides.node_id ?? null,
+    stage_index: overrides.stage_index ?? null,
+    source_scope: overrides.source_scope ?? 'root',
+    source_parent_node_id: overrides.source_parent_node_id ?? null,
+    source_flow_name: overrides.source_flow_name ?? null,
+    question_id: overrides.question_id ?? null,
+    payload: overrides.payload ?? {},
+  }
+}
+
 async function stubRunSummary(page: Page, run: SmokeRunRecord) {
   await page.route('**/attractor/runs**', async (route) => {
     await route.fulfill({
@@ -123,12 +159,86 @@ async function stubRunSummary(page: Page, run: SmokeRunRecord) {
   })
 }
 
+async function installMockEventSource(page: Page) {
+  await page.addInitScript(() => {
+    class MockEventSource {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSED = 2
+      static readonly instances: MockEventSource[] = []
+
+      readonly url: string
+      readyState = MockEventSource.CONNECTING
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      constructor(url: string | URL) {
+        this.url = String(url)
+        MockEventSource.instances.push(this)
+        window.setTimeout(() => {
+          if (this.readyState === MockEventSource.CLOSED) {
+            return
+          }
+          this.readyState = MockEventSource.OPEN
+          this.onopen?.(new Event('open'))
+        }, 0)
+      }
+
+      emit(payload: unknown) {
+        if (this.readyState === MockEventSource.CLOSED) {
+          return
+        }
+        this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(payload) }))
+      }
+
+      close() {
+        this.readyState = MockEventSource.CLOSED
+      }
+    }
+
+    ;(globalThis as typeof globalThis & {
+      __runEventSourceController?: {
+        latestUrl(pattern: string): string | null
+        emitLatest(pattern: string, payload: unknown): void
+      }
+    }).__runEventSourceController = {
+      latestUrl(pattern: string) {
+        const match = [...MockEventSource.instances]
+          .reverse()
+          .find((eventSource) => eventSource.url.includes(pattern))
+        return match?.url ?? null
+      },
+      emitLatest(pattern: string, payload: unknown) {
+        const match = [...MockEventSource.instances]
+          .reverse()
+          .find((eventSource) => eventSource.url.includes(pattern))
+        if (!match) {
+          throw new Error(`No mock EventSource found for pattern: ${pattern}`)
+        }
+        match.emit(payload)
+      },
+    }
+
+    Object.defineProperty(globalThis, 'EventSource', {
+      configurable: true,
+      writable: true,
+      value: MockEventSource,
+    })
+  })
+}
+
 async function openRunsForSmokeTest(page: Page, projectPath: string) {
   await gotoWithRegisteredProject(page, projectPath)
   await page.getByTestId('nav-mode-runs').click()
   await expect(page.getByTestId('run-history-row').first()).toBeVisible()
   await page.getByTestId('run-history-row').first().click()
   await expect(page.getByTestId('run-summary-panel')).toBeVisible()
+}
+
+async function openRunsAdvancedEvidence(page: Page) {
+  await expect(page.getByTestId('run-advanced-panel')).toBeVisible()
+  await page.getByTestId('run-advanced-toggle-button').click()
 }
 
 test('run summary panel renders populated metadata for items 9.1-01 and 9.6-02', async ({ page }) => {
@@ -156,6 +266,159 @@ test('run summary panel renders populated metadata for items 9.1-01 and 9.6-02',
   await expect(page.getByTestId('run-summary-token-usage')).toContainText('42')
   await expect(page.getByTestId('run-summary-model-breakdown')).toContainText('gpt-5.4')
   await page.screenshot({ path: screenshotPath('08b-runs-panel-populated-summary.png'), fullPage: true })
+})
+
+test('run journal inspector hydrates durable history, pages older entries, and applies live tail updates with pinned questions', async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-journal-${Date.now()}`
+  const run = buildSmokeRun(projectPath, {
+    run_id: `run-journal-${Date.now()}`,
+    flow_name: 'JournalFlow',
+    status: 'running',
+    outcome: null,
+    ended_at: null,
+    current_node: 'approve_release',
+  })
+  const journalRequestUrls: string[] = []
+  const latestEntries = [
+    buildSmokeJournalEntry(5, {
+      kind: 'interview',
+      raw_type: 'human_gate',
+      summary: 'Human gate pending: Approve production deploy?',
+      node_id: 'approve_release',
+      stage_index: 3,
+      question_id: 'gate-approve',
+      payload: {
+        node_id: 'approve_release',
+        prompt: 'Approve production deploy?',
+        question_id: 'gate-approve',
+        question_type: 'YES_NO',
+        options: [
+          {
+            label: 'Approve',
+            value: 'YES',
+            key: 'Y',
+            description: 'Ship the release',
+          },
+          {
+            label: 'Hold',
+            value: 'NO',
+            key: 'N',
+            description: 'Keep the gate closed',
+          },
+        ],
+      },
+    }),
+    buildSmokeJournalEntry(4, {
+      kind: 'log',
+      raw_type: 'log',
+      summary: 'Deploy package uploaded to staging.',
+      payload: {
+        msg: 'Deploy package uploaded to staging.',
+      },
+    }),
+  ]
+  const olderEntries = [
+    buildSmokeJournalEntry(3, {
+      kind: 'stage',
+      raw_type: 'StageCompleted',
+      summary: 'Stage build completed',
+      node_id: 'build',
+      stage_index: 2,
+      payload: {
+        node_id: 'build',
+        outcome: 'success',
+      },
+    }),
+    buildSmokeJournalEntry(2, {
+      kind: 'stage',
+      raw_type: 'StageStarted',
+      summary: 'Stage build started',
+      node_id: 'build',
+      stage_index: 2,
+      payload: {
+        node_id: 'build',
+      },
+    }),
+  ]
+
+  await installMockEventSource(page)
+  await stubRunSummary(page, run)
+  await page.route(`**/attractor/pipelines/${run.run_id}/journal**`, async (route) => {
+    const requestUrl = new URL(route.request().url())
+    journalRequestUrls.push(requestUrl.toString())
+    const beforeSequence = requestUrl.searchParams.get('before_sequence')
+    const isOlderPage = beforeSequence === '4'
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        pipeline_id: run.run_id,
+        entries: isOlderPage ? olderEntries : latestEntries,
+        oldest_sequence: isOlderPage ? 2 : 4,
+        newest_sequence: isOlderPage ? 3 : 5,
+        has_older: !isOlderPage,
+      }),
+    })
+  })
+
+  await openRunsForSmokeTest(page, projectPath)
+
+  const pendingQuestionsPanel = page.getByTestId('run-pending-human-gates-panel')
+  const journalPanel = page.getByTestId('run-event-timeline-panel')
+
+  await expect(pendingQuestionsPanel).toBeVisible()
+  await expect(pendingQuestionsPanel).toContainText('Approve production deploy?')
+  await expect(page.getByTestId('run-summary-now-pending-questions')).toContainText('1')
+  await expect(page.getByTestId('run-summary-now-latest-journal')).toContainText('Human gate pending: Approve production deploy?')
+  await expect(journalPanel).toBeVisible()
+  await expect(journalPanel).toContainText('Deploy package uploaded to staging.')
+
+  const [pendingQuestionsBox, journalBox] = await Promise.all([
+    pendingQuestionsPanel.boundingBox(),
+    journalPanel.boundingBox(),
+  ])
+  expect(pendingQuestionsBox?.y).not.toBeNull()
+  expect(journalBox?.y).not.toBeNull()
+  expect((pendingQuestionsBox?.y ?? Number.POSITIVE_INFINITY)).toBeLessThan(journalBox?.y ?? Number.NEGATIVE_INFINITY)
+
+  await expect
+    .poll(async () => {
+      return page.evaluate((runId) => {
+        return (globalThis as typeof globalThis & {
+          __runEventSourceController?: {
+            latestUrl(pattern: string): string | null
+          }
+        }).__runEventSourceController?.latestUrl(`/attractor/pipelines/${runId}/events`) ?? ''
+      }, run.run_id)
+    })
+    .toContain(`after_sequence=${latestEntries[0]!.sequence}`)
+
+  await expect(page.getByTestId('run-journal-load-older')).toBeVisible()
+  await page.getByTestId('run-journal-load-older').click()
+
+  await expect(page.getByTestId('run-event-timeline-list')).toContainText('Stage build completed')
+  await expect(page.getByTestId('run-event-timeline-list')).toContainText('Stage build started')
+  await expect(page.getByTestId('run-journal-load-older')).toHaveCount(0)
+  expect(journalRequestUrls.some((url) => url.includes('before_sequence=4'))).toBe(true)
+
+  await page.evaluate(({ runId }) => {
+    ;(globalThis as typeof globalThis & {
+      __runEventSourceController?: {
+        emitLatest(pattern: string, payload: unknown): void
+      }
+    }).__runEventSourceController?.emitLatest(`/attractor/pipelines/${runId}/events`, {
+      type: 'StageCompleted',
+      sequence: 6,
+      emitted_at: '2026-03-03T12:00:06Z',
+      node_id: 'deploy',
+      index: 4,
+      outcome: 'success',
+    })
+  }, { runId: run.run_id })
+
+  await expect(page.getByTestId('run-summary-now-latest-journal')).toContainText('Stage deploy completed (success)')
+  await expect(page.getByTestId('run-event-timeline-list')).toContainText('Stage deploy completed (success)')
+  await page.screenshot({ path: screenshotPath('08c-runs-panel-journal-live-tail.png'), fullPage: true })
 })
 
 test('run checkpoint viewer fetches checkpoint payload for item 9.2-01', async ({ page }) => {
@@ -186,6 +449,7 @@ test('run checkpoint viewer fetches checkpoint payload for item 9.2-01', async (
   })
 
   await openRunsForSmokeTest(page, projectPath)
+  await openRunsAdvancedEvidence(page)
 
   await expect(page.getByTestId('run-checkpoint-panel')).toBeVisible()
   await expect(page.getByTestId('run-checkpoint-payload')).toContainText('"current_node": "implement"')
@@ -221,6 +485,7 @@ test('run context viewer supports search, copy, and export actions for items 9.3
   })
 
   await openRunsForSmokeTest(page, projectPath)
+  await openRunsAdvancedEvidence(page)
   await page.evaluate(() => {
     Object.defineProperty(window.navigator, 'clipboard', {
       configurable: true,
@@ -282,6 +547,7 @@ test('run graph panel renders /pipelines/{id}/graph-preview output for item 9.5-
   })
 
   await openRunsForSmokeTest(page, projectPath)
+  await openRunsAdvancedEvidence(page)
 
   const graphPanel = page.getByTestId('run-graph-panel')
   await expect(graphPanel).toBeVisible()
@@ -336,6 +602,7 @@ test('run artifact browser handles missing files and partial run states for item
   })
 
   await openRunsForSmokeTest(page, projectPath)
+  await openRunsAdvancedEvidence(page)
 
   const artifactPanel = page.getByTestId('run-artifact-panel')
   await expect(artifactPanel).toBeVisible()

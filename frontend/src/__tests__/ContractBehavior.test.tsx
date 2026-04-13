@@ -8,6 +8,7 @@ import { Navbar } from '@/app/Navbar'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { RunStream } from '@/features/runs/RunStream'
 import { RunsPanel } from '@/features/runs/RunsPanel'
+import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import { Sidebar } from '@/features/editor/Sidebar'
 import { TaskNode } from '@/features/workflow-canvas/TaskNode'
@@ -137,6 +138,7 @@ const buildPipelineStatusPayload = (
 }
 
 const resetContractState = () => {
+  useRunJournalStore.setState({ byRunId: {} })
   useStore.setState((state) => ({
     ...state,
     viewMode: 'editor',
@@ -841,6 +843,13 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
+      expect(screen.getByTestId('run-advanced-panel')).toBeVisible()
+    })
+    expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('run-advanced-toggle-button'))
+
+    await waitFor(() => {
       expect(screen.getByTestId('run-checkpoint-error')).toBeVisible()
     })
 
@@ -850,9 +859,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByText('graph.goal')).toBeVisible()
     expect(screen.getByText('run.outcome')).toBeVisible()
     expect(screen.getByTestId('run-artifact-panel')).toBeVisible()
-    await waitFor(() => {
-      expect(screen.getByTestId('run-graph-panel')).toBeVisible()
-    })
+    expect(screen.getByTestId('run-graph-panel')).toBeVisible()
     expect(screen.queryByTestId('run-graph-canvas')).not.toBeInTheDocument()
 
     await user.click(screen.getByTestId('run-graph-toggle-button'))
@@ -1719,11 +1726,10 @@ describe('Frontend contract behavior', () => {
     expect(profile).toHaveTextContent('debounced-preview')
   })
 
-  it('[CID:13.3.03] caps timeline entries and surfaces trimming under sustained SSE throughput', async () => {
+  it('[CID:13.3.03] keeps journal rendering bounded under sustained SSE throughput', async () => {
     const runId = 'run-timeline-throughput-contract'
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
-    const maxItems = 200
-    const totalEvents = maxItems + 35
+    const totalEvents = 235
     const runRecord = {
       run_id: runId,
       flow_name: 'contract-behavior.dot',
@@ -1767,6 +1773,15 @@ describe('Frontend contract behavior', () => {
         }
         if (url.endsWith(`${runApiPath}/questions`)) {
           return jsonResponse({ pipeline_id: runId, questions: [] })
+        }
+        if (url.endsWith(`${runApiPath}/journal`)) {
+          return jsonResponse({
+            pipeline_id: runId,
+            entries: [],
+            oldest_sequence: null,
+            newest_sequence: null,
+            has_older: false,
+          })
         }
         return jsonResponse({}, { status: 404 })
       }),
@@ -1839,16 +1854,21 @@ describe('Frontend contract behavior', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(maxItems)
+      expect(screen.getByTestId('run-event-timeline-throughput')).toHaveAttribute('data-loaded-count', String(totalEvents))
     })
 
     const timelineRows = screen.getAllByTestId('run-event-timeline-row')
     expect(timelineRows[0]).toHaveTextContent(`stage_${totalEvents - 1}`)
+    expect(timelineRows.length).toBeGreaterThan(0)
+    expect(timelineRows.length).toBeLessThan(totalEvents)
 
     const throughputNotice = screen.getByTestId('run-event-timeline-throughput')
-    expect(throughputNotice).toHaveAttribute('data-max-items', String(maxItems))
-    expect(throughputNotice).toHaveAttribute('data-dropped-count', String(totalEvents - maxItems))
-    expect(throughputNotice).toHaveTextContent(`Showing latest ${maxItems} events`)
+    expect(throughputNotice).toHaveAttribute('data-loaded-count', String(totalEvents))
+    expect(Number(throughputNotice.getAttribute('data-rendered-count'))).toBe(timelineRows.length)
+    expect(Number(throughputNotice.getAttribute('data-window-size'))).toBeGreaterThan(0)
+    expect(throughputNotice).toHaveTextContent(`Loaded ${totalEvents} journal entries.`)
+    expect(throughputNotice).toHaveTextContent('Rendering')
+    expect(screen.getByTestId('run-event-timeline-list')).not.toHaveTextContent('stage_0')
   })
 
   it('[CID:14.0.01] propagates navbar project context through Home, Execution, Triggers, and Runs', async () => {

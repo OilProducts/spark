@@ -62,6 +62,13 @@ interface RunSummaryCardProps {
     activeProjectPath: string | null
     now: number
     collapsed: boolean
+    monitoringFacts: Array<{
+        id: string
+        label: string
+        value: string
+        testId: string
+    }>
+    monitoringHeadline: string
     onRequestCancel: (runId: string, currentStatus: string) => void
     onContinueFromRun: (run: RunRecord) => void
     onCollapsedChange: (collapsed: boolean) => void
@@ -72,6 +79,8 @@ export function RunSummaryCard({
     activeProjectPath,
     now,
     collapsed,
+    monitoringFacts,
+    monitoringHeadline,
     onRequestCancel,
     onContinueFromRun,
     onCollapsedChange,
@@ -149,6 +158,24 @@ export function RunSummaryCard({
                         </div>
                 </div>
                 <div className="grid gap-x-6 gap-y-2 text-sm md:grid-cols-2">
+                <div data-testid="run-activity-panel" className="md:col-span-2 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Now</div>
+                        <div data-testid="run-activity-status" className="text-xs text-muted-foreground">
+                            {STATUS_LABELS[run.status] || run.status}
+                        </div>
+                    </div>
+                    <div data-testid="run-activity-headline" className="mt-1 text-sm text-foreground">{monitoringHeadline}</div>
+                    {monitoringFacts.length > 0 ? (
+                        <div className="mt-2 grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
+                            {monitoringFacts.map((fact) => (
+                                <div key={fact.id} data-testid={fact.testId}>
+                                    <span className="font-medium text-foreground">{fact.label}:</span> {fact.value}
+                                </div>
+                            ))}
+                        </div>
+                    ) : null}
+                </div>
                 <div data-testid="run-summary-status"><span className="font-medium">Status:</span> {STATUS_LABELS[run.status] || run.status}</div>
                 <div data-testid="run-summary-outcome"><span className="font-medium">Outcome:</span> {formatOutcomeLabel(run.outcome)}</div>
                 <div data-testid="run-summary-flow-name"><span className="font-medium">Flow:</span> {run.flow_name || 'Untitled'}</div>

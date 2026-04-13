@@ -1,6 +1,10 @@
 import { RunsSessionController } from '@/app/AppSessionControllers'
 import { RunsPanel } from '@/features/runs/RunsPanel'
 import { RunStream } from '@/features/runs/RunStream'
+import {
+  flattenRunJournalSegments,
+  useRunJournalStore,
+} from '@/features/runs/state/runJournalStore'
 import { useStore } from '@/store'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { act, render, screen, waitFor } from '@testing-library/react'
@@ -20,6 +24,7 @@ const resolveRequestUrl = (input: RequestInfo | URL): string => {
 }
 
 const resetRunsState = () => {
+  useRunJournalStore.setState({ byRunId: {} })
   useStore.setState({
     viewMode: 'runs',
     activeProjectPath: null,
@@ -91,6 +96,64 @@ const makeRun = (overrides: Partial<Record<string, unknown>> = {}) => ({
   continued_from_node: (overrides.continued_from_node as string | null | undefined) ?? null,
   continued_from_flow_mode: (overrides.continued_from_flow_mode as string | null | undefined) ?? null,
   continued_from_flow_name: (overrides.continued_from_flow_name as string | null | undefined) ?? null,
+})
+
+const makeJournalEntry = (
+  sequence: number,
+  payload: Record<string, unknown> & { type: string },
+  overrides: Partial<Record<string, unknown>> = {},
+) => {
+  const rawType = String(payload.type)
+  const defaultKind = rawType === 'log'
+    ? 'log'
+    : rawType === 'runtime'
+      ? 'runtime'
+      : rawType.startsWith('Interview')
+        ? 'interview'
+        : rawType.startsWith('Stage')
+          ? 'stage'
+          : 'other'
+  return {
+    id: `journal-${sequence}`,
+    sequence,
+    emitted_at: String(overrides.emitted_at ?? payload.emitted_at ?? '2026-03-22T00:00:00Z'),
+    kind: String(overrides.kind ?? defaultKind),
+    raw_type: rawType,
+    severity: String(overrides.severity ?? 'info'),
+    summary: String(overrides.summary ?? rawType),
+    node_id: (overrides.node_id as string | null | undefined)
+      ?? (payload.node_id as string | null | undefined)
+      ?? (payload.stage as string | null | undefined)
+      ?? null,
+    stage_index: (overrides.stage_index as number | null | undefined)
+      ?? (payload.index as number | null | undefined)
+      ?? null,
+    source_scope: (overrides.source_scope as string | null | undefined)
+      ?? (payload.source_scope as string | null | undefined)
+      ?? null,
+    source_parent_node_id: (overrides.source_parent_node_id as string | null | undefined)
+      ?? (payload.source_parent_node_id as string | null | undefined)
+      ?? null,
+    source_flow_name: (overrides.source_flow_name as string | null | undefined)
+      ?? (payload.source_flow_name as string | null | undefined)
+      ?? null,
+    question_id: (overrides.question_id as string | null | undefined)
+      ?? (payload.question_id as string | null | undefined)
+      ?? null,
+    payload,
+  }
+}
+
+const makeJournalPage = (
+  pipelineId: string,
+  entries: ReturnType<typeof makeJournalEntry>[],
+  hasOlder = false,
+) => ({
+  pipeline_id: pipelineId,
+  entries,
+  oldest_sequence: entries.at(-1)?.sequence ?? null,
+  newest_sequence: entries[0]?.sequence ?? null,
+  has_older: hasOlder,
 })
 
 const installControllableEventSource = () => {
@@ -412,7 +475,7 @@ describe('RunsPanel', () => {
     expect(fetchMock).toHaveBeenCalled()
   })
 
-  it('keeps the run selector ahead of the detail stack, uses the new activity-first hierarchy, and collapses the graph by default', async () => {
+  it('keeps the run selector ahead of the detail stack, folds monitoring into the summary, and collapses advanced evidence by default', async () => {
     window.innerWidth = 1400
     window.dispatchEvent(new Event('resize'))
 
@@ -493,6 +556,9 @@ describe('RunsPanel', () => {
           questions: [],
         })
       }
+      if (url.includes('/attractor/pipelines/run-selected/journal')) {
+        return jsonResponse(makeJournalPage('run-selected', []))
+      }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
 
@@ -539,46 +605,43 @@ describe('RunsPanel', () => {
     const runSummaryPanel = screen.getByTestId('run-summary-panel')
     const runActivityPanel = screen.getByTestId('run-activity-panel')
     const runTimelinePanel = screen.getByTestId('run-event-timeline-panel')
-    const runCheckpointPanel = screen.getByTestId('run-checkpoint-panel')
-    const runGraphPanel = screen.getByTestId('run-graph-panel')
+    const runAdvancedPanel = screen.getByTestId('run-advanced-panel')
     expect(screen.getByTestId('run-summary-spec-artifact-link')).toBeVisible()
     expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
     expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
     expect(runActivityPanel).toBeVisible()
     expect(runTimelinePanel).toBeVisible()
-    expect(runCheckpointPanel).toBeVisible()
-    expect(runGraphPanel).toBeVisible()
+    expect(runAdvancedPanel).toBeVisible()
+    expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-graph-panel')).not.toBeInTheDocument()
     expect(screen.getByTestId('run-summary-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-activity-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-advanced-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-event-timeline-toggle-button')).toBeVisible()
+    expect(screen.queryByTestId('run-graph-canvas')).not.toBeInTheDocument()
+    expect(runSummaryPanel).toContainElement(runActivityPanel)
+    expect(
+      runSummaryPanel.compareDocumentPosition(runTimelinePanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      runTimelinePanel.compareDocumentPosition(runAdvancedPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+
+    await user.click(screen.getByTestId('run-advanced-toggle-button'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-checkpoint-panel')).toBeVisible()
+      expect(screen.getByTestId('run-graph-panel')).toBeVisible()
+    })
     expect(screen.getByTestId('run-graph-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-activity-logs-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-checkpoint-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-context-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-artifact-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-event-timeline-toggle-button')).toBeVisible()
     expect(screen.queryByTestId('run-graph-canvas')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-activity-logs-panel')).not.toBeInTheDocument()
-
-    expect(
-      runSummaryPanel.compareDocumentPosition(runActivityPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    expect(
-      runActivityPanel.compareDocumentPosition(runTimelinePanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    expect(
-      runTimelinePanel.compareDocumentPosition(runCheckpointPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    expect(
-      runCheckpointPanel.compareDocumentPosition(runGraphPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
 
     await user.click(screen.getByTestId('run-graph-toggle-button'))
     await waitFor(() => {
       expect(screen.getByTestId('run-graph-canvas')).toBeVisible()
     })
-
-    await user.click(screen.getByTestId('run-activity-logs-toggle-button'))
-    expect(screen.getByTestId('run-activity-logs-panel')).toBeVisible()
 
     expect(
       runListPanel.compareDocumentPosition(runSummaryPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -945,6 +1008,9 @@ describe('RunsPanel', () => {
           pipeline_id: 'run-stale-status',
           questions: [],
         })
+      }
+      if (url.includes('/attractor/pipelines/run-stale-status/journal')) {
+        return jsonResponse(makeJournalPage('run-stale-status', []))
       }
         if (url.endsWith('/attractor/pipelines/run-stale-status')) {
           return jsonResponse({
@@ -1730,7 +1796,7 @@ describe('RunsPanel', () => {
     })
   })
 
-  it('replays historical activity for selected completed runs, restores replayed sequence gaps, shows child events inline, and deduplicates reconnects and reselects', async () => {
+  it('hydrates durable journal history, shows child events inline, and deduplicates reconnects and reselects', async () => {
     const selectedRun = makeRun({
       run_id: 'run-history-replay',
       flow_name: 'selected.dot',
@@ -1751,6 +1817,57 @@ describe('RunsPanel', () => {
       [selectedRun.run_id]: selectedRun,
       [otherRun.run_id]: otherRun,
     }
+    const selectedRunJournalEntries = [
+      makeJournalEntry(
+        3,
+        {
+          type: 'StageCompleted',
+          sequence: 3,
+          emitted_at: '2026-03-22T00:04:00Z',
+          node_id: 'plan_current',
+          index: 2,
+          source_scope: 'child',
+          source_parent_node_id: 'run_milestone',
+          source_flow_name: 'implement-milestone.dot',
+        },
+        {
+          kind: 'stage',
+          summary: 'Child flow implement-milestone.dot via run_milestone: Stage plan_current completed',
+        },
+      ),
+      makeJournalEntry(
+        2,
+        {
+          type: 'StageStarted',
+          sequence: 2,
+          emitted_at: '2026-03-22T00:03:00Z',
+          node_id: 'plan_current',
+          index: 2,
+          source_scope: 'child',
+          source_parent_node_id: 'run_milestone',
+          source_flow_name: 'implement-milestone.dot',
+        },
+        {
+          kind: 'stage',
+          summary: 'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
+        },
+      ),
+      makeJournalEntry(
+        1,
+        {
+          type: 'StageCompleted',
+          sequence: 1,
+          emitted_at: '2026-03-22T00:02:00Z',
+          node_id: 'prepare',
+          index: 1,
+          source_scope: 'root',
+        },
+        {
+          kind: 'stage',
+          summary: 'Stage prepare completed',
+        },
+      ),
+    ]
 
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1845,6 +1962,12 @@ describe('RunsPanel', () => {
             questions: [],
           })
         }
+        if (resource === 'journal') {
+          return jsonResponse(makeJournalPage(
+            runId,
+            runId === selectedRun.run_id ? selectedRunJournalEntries : [],
+          ))
+        }
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -1904,56 +2027,20 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-panel')).toBeVisible()
+      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
       expect(runEventSources()).toHaveLength(1)
     })
 
     const initialReplaySource = latestEventSourceForRun(selectedRun.run_id)
     expect(initialReplaySource).toBeTruthy()
-
-    act(() => {
-      initialReplaySource!.open()
-      initialReplaySource!.emit({
-        type: 'StageCompleted',
-        sequence: 1,
-        emitted_at: '2026-03-22T00:02:00Z',
-        node_id: 'prepare',
-        index: 1,
-      })
-      initialReplaySource!.emit({
-        type: 'StageCompleted',
-        sequence: 3,
-        emitted_at: '2026-03-22T00:04:00Z',
-        node_id: 'plan_current',
-        index: 2,
-        source_scope: 'child',
-        source_parent_node_id: 'run_milestone',
-        source_flow_name: 'implement-milestone.dot',
-      })
-      initialReplaySource!.emit({
-        type: 'StageCompleted',
-        sequence: 3,
-        emitted_at: '2026-03-22T00:04:00Z',
-        node_id: 'plan_current',
-        index: 2,
-        source_scope: 'child',
-        source_parent_node_id: 'run_milestone',
-        source_flow_name: 'implement-milestone.dot',
-      })
-    })
+    expect(initialReplaySource?.url).toContain('after_sequence=3')
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('run-activity-entry')).toHaveLength(2)
+      expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(3)
     })
-
-    expect(screen.getAllByTestId('run-activity-entry-summary')[0]).toHaveTextContent(
-      'Child flow implement-milestone.dot via run_milestone: Stage plan_current completed',
-    )
-    expect(screen.getAllByTestId('run-activity-entry-label')[0]).toHaveTextContent(
-      'Child · implement-milestone.dot via run_milestone · plan_current · stage 2',
-    )
-    expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(2)
-    expect(screen.getByTestId('run-event-timeline-row-source')).toHaveTextContent(
+    expect(screen.getAllByTestId('run-event-timeline-row-summary')).toHaveLength(3)
+    expect(screen.getAllByTestId('run-event-timeline-row-source')).toHaveLength(2)
+    expect(screen.getAllByTestId('run-event-timeline-row-source')[0]).toHaveTextContent(
       'Source: Child flow implement-milestone.dot via run_milestone',
     )
 
@@ -1972,32 +2059,16 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(runEventSources()).toHaveLength(3)
-      expect(screen.getByTestId('run-activity-panel')).toBeVisible()
+      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
     })
 
     const replayAfterReselect = latestEventSourceForRun(selectedRun.run_id)
     expect(replayAfterReselect).toBeTruthy()
     expect(replayAfterReselect).not.toBe(initialReplaySource)
+    expect(replayAfterReselect?.url).toContain('after_sequence=3')
 
     act(() => {
       replayAfterReselect!.open()
-      replayAfterReselect!.emit({
-        type: 'StageCompleted',
-        sequence: 1,
-        emitted_at: '2026-03-22T00:02:00Z',
-        node_id: 'prepare',
-        index: 1,
-      })
-      replayAfterReselect!.emit({
-        type: 'StageStarted',
-        sequence: 2,
-        emitted_at: '2026-03-22T00:03:00Z',
-        node_id: 'plan_current',
-        index: 2,
-        source_scope: 'child',
-        source_parent_node_id: 'run_milestone',
-        source_flow_name: 'implement-milestone.dot',
-      })
       replayAfterReselect!.emit({
         type: 'StageCompleted',
         sequence: 3,
@@ -2018,18 +2089,13 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('run-activity-entry')).toHaveLength(4)
       expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(4)
     })
 
     expect(
-      useStore.getState().runDetailSessionsByRunId[selectedRun.run_id]?.timelineEvents.map(({ sequence }) => sequence),
+      flattenRunJournalSegments(useRunJournalStore.getState().byRunId[selectedRun.run_id]?.segments ?? [])
+        .map(({ sequence }) => sequence),
     ).toEqual([4, 3, 2, 1])
-
-    const activitySummaries = screen.getAllByTestId('run-activity-entry-summary').map((node) => node.textContent ?? '')
-    expect(activitySummaries[0]).toContain('Stage done completed')
-    expect(activitySummaries.filter((summary) => summary.includes('Stage plan_current started'))).toHaveLength(1)
-    expect(activitySummaries.filter((summary) => summary.includes('Stage plan_current completed'))).toHaveLength(1)
 
     const timelineSummaries = screen.getAllByTestId('run-event-timeline-row-summary').map((node) => node.textContent ?? '')
     expect(timelineSummaries.filter((summary) => summary.includes('Stage plan_current started'))).toHaveLength(1)
@@ -2040,5 +2106,662 @@ describe('RunsPanel', () => {
       'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
       'Stage prepare completed',
     ])
+  })
+
+  it('keeps Load older available when filters empty the loaded journal and reveals older matching history', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-history-filtered-empty',
+      flow_name: 'selected.dot',
+      status: 'completed',
+      outcome: 'success',
+      project_path: '/tmp/project-one',
+      ended_at: '2026-03-22T00:05:00Z',
+    })
+    const latestEntries = [
+      makeJournalEntry(
+        4,
+        {
+          type: 'StageCompleted',
+          sequence: 4,
+          emitted_at: '2026-03-22T00:05:00Z',
+          node_id: 'done',
+          index: 3,
+          source_scope: 'root',
+        },
+        {
+          kind: 'stage',
+          severity: 'info',
+          summary: 'Stage done completed',
+        },
+      ),
+      makeJournalEntry(
+        3,
+        {
+          type: 'StageCompleted',
+          sequence: 3,
+          emitted_at: '2026-03-22T00:04:00Z',
+          node_id: 'plan_current',
+          index: 2,
+          source_scope: 'root',
+        },
+        {
+          kind: 'stage',
+          severity: 'info',
+          summary: 'Stage plan_current completed',
+        },
+      ),
+    ]
+    const olderEntries = [
+      makeJournalEntry(
+        2,
+        {
+          type: 'StageFailed',
+          sequence: 2,
+          emitted_at: '2026-03-22T00:03:00Z',
+          node_id: 'legacy_validate',
+          index: 2,
+          source_scope: 'root',
+          error: 'validation gate rejected',
+        },
+        {
+          kind: 'stage',
+          severity: 'error',
+          summary: 'Stage legacy_validate failed: validation gate rejected',
+        },
+      ),
+      makeJournalEntry(
+        1,
+        {
+          type: 'StageStarted',
+          sequence: 1,
+          emitted_at: '2026-03-22T00:02:00Z',
+          node_id: 'prepare',
+          index: 1,
+          source_scope: 'root',
+        },
+        {
+          kind: 'stage',
+          severity: 'info',
+          summary: 'Stage prepare started',
+        },
+      ),
+    ]
+    const journalRequestUrls: string[] = []
+
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [selectedRun] })
+      }
+      if (url.endsWith(`/attractor/pipelines/${selectedRun.run_id}`)) {
+        return jsonResponse({
+          pipeline_id: selectedRun.run_id,
+          run_id: selectedRun.run_id,
+          flow_name: selectedRun.flow_name,
+          status: selectedRun.status,
+          outcome: selectedRun.outcome,
+          outcome_reason_code: null,
+          outcome_reason_message: null,
+          working_directory: selectedRun.working_directory,
+          project_path: selectedRun.project_path,
+          git_branch: selectedRun.git_branch,
+          git_commit: selectedRun.git_commit,
+          spec_id: null,
+          plan_id: null,
+          model: selectedRun.model,
+          started_at: selectedRun.started_at,
+          ended_at: selectedRun.ended_at,
+          last_error: selectedRun.last_error ?? '',
+          token_usage: selectedRun.token_usage,
+          current_node: 'done',
+          completed_nodes: ['prepare', 'done'],
+          progress: {
+            current_node: 'done',
+            completed_nodes: ['prepare', 'done'],
+          },
+          continued_from_run_id: null,
+          continued_from_node: null,
+          continued_from_flow_mode: null,
+          continued_from_flow_name: null,
+        })
+      }
+      const pipelineMatch = url.match(/\/attractor\/pipelines\/([^/]+)\/([^/?#]+)/)
+      const runId = pipelineMatch?.[1] ? decodeURIComponent(pipelineMatch[1]) : null
+      const resource = pipelineMatch?.[2] ?? null
+      if (runId === selectedRun.run_id) {
+        if (resource === 'checkpoint') {
+          return jsonResponse({
+            pipeline_id: runId,
+            checkpoint: {
+              completed_nodes: ['prepare'],
+              current_node: 'done',
+            },
+          })
+        }
+        if (resource === 'context') {
+          return jsonResponse({
+            pipeline_id: runId,
+            context: {},
+          })
+        }
+        if (resource === 'artifacts') {
+          return jsonResponse({
+            pipeline_id: runId,
+            artifacts: [],
+          })
+        }
+        if (resource === 'graph-preview') {
+          return jsonResponse({
+            status: 'ok',
+            graph: {
+              graph_attrs: {},
+              nodes: [
+                { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                { id: 'done', label: 'Done', shape: 'Msquare' },
+              ],
+              edges: [
+                { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              ],
+            },
+            diagnostics: [],
+            errors: [],
+          })
+        }
+        if (resource === 'questions') {
+          return jsonResponse({
+            pipeline_id: runId,
+            questions: [],
+          })
+        }
+        if (resource === 'journal') {
+          const requestUrl = new URL(url, 'http://localhost')
+          journalRequestUrls.push(requestUrl.toString())
+          if (requestUrl.searchParams.get('before_sequence') === '3') {
+            return jsonResponse(makeJournalPage(runId, olderEntries, false))
+          }
+          return jsonResponse(makeJournalPage(runId, latestEntries, true))
+        }
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+
+    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    expect(selectedRunCard).toBeTruthy()
+    await user.click(selectedRunCard!)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
+    })
+
+    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'error')
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-event-timeline-empty')).toHaveTextContent('No journal entries match the current filters.')
+      expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
+      expect(screen.queryByTestId('run-event-timeline-list')).not.toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId('run-journal-load-older'))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-event-timeline-empty')).not.toBeInTheDocument()
+      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('Stage legacy_validate failed: validation gate rejected')
+      expect(screen.getAllByTestId('run-event-timeline-row-summary')).toHaveLength(1)
+      expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
+    })
+
+    expect(
+      journalRequestUrls.filter((requestUrl) => requestUrl.includes(`/attractor/pipelines/${selectedRun.run_id}/journal?limit=100&before_sequence=3`)),
+    ).toHaveLength(1)
+    expect(
+      flattenRunJournalSegments(useRunJournalStore.getState().byRunId[selectedRun.run_id]?.segments ?? [])
+        .map(({ sequence }) => sequence),
+    ).toEqual([4, 3, 2, 1])
+  })
+
+  it('bounds rendered journal rows when a single retry correlation group contains long history', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-history-large-retry-group',
+      flow_name: 'selected.dot',
+      status: 'completed',
+      outcome: 'failure',
+      project_path: '/tmp/project-one',
+      ended_at: '2026-03-22T00:05:00Z',
+    })
+    const groupedHistory = Array.from({ length: 140 }, (_, index) => {
+      const sequence = 140 - index
+      return makeJournalEntry(
+        sequence,
+        {
+          type: 'StageRetrying',
+          sequence,
+          emitted_at: new Date(Date.UTC(2026, 2, 22, 0, 0, sequence)).toISOString(),
+          node_id: 'review_loop',
+          index: 2,
+          source_scope: 'root',
+          attempt: sequence,
+        },
+        {
+          kind: 'stage',
+          severity: sequence % 2 === 0 ? 'warning' : 'info',
+          summary: `Retry attempt ${sequence}`,
+        },
+      )
+    })
+
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [selectedRun] })
+      }
+      if (url.endsWith(`/attractor/pipelines/${selectedRun.run_id}`)) {
+        return jsonResponse({
+          pipeline_id: selectedRun.run_id,
+          run_id: selectedRun.run_id,
+          flow_name: selectedRun.flow_name,
+          status: selectedRun.status,
+          outcome: selectedRun.outcome,
+          outcome_reason_code: null,
+          outcome_reason_message: 'Retry budget exhausted',
+          working_directory: selectedRun.working_directory,
+          project_path: selectedRun.project_path,
+          git_branch: selectedRun.git_branch,
+          git_commit: selectedRun.git_commit,
+          spec_id: null,
+          plan_id: null,
+          model: selectedRun.model,
+          started_at: selectedRun.started_at,
+          ended_at: selectedRun.ended_at,
+          last_error: selectedRun.last_error ?? '',
+          token_usage: selectedRun.token_usage,
+          current_node: 'review_loop',
+          completed_nodes: ['prepare'],
+          progress: {
+            current_node: 'review_loop',
+            completed_nodes: ['prepare'],
+          },
+          continued_from_run_id: null,
+          continued_from_node: null,
+          continued_from_flow_mode: null,
+          continued_from_flow_name: null,
+        })
+      }
+      const pipelineMatch = url.match(/\/attractor\/pipelines\/([^/]+)\/([^/?#]+)/)
+      const runId = pipelineMatch?.[1] ? decodeURIComponent(pipelineMatch[1]) : null
+      const resource = pipelineMatch?.[2] ?? null
+      if (runId === selectedRun.run_id) {
+        if (resource === 'checkpoint') {
+          return jsonResponse({
+            pipeline_id: runId,
+            checkpoint: {
+              completed_nodes: ['prepare'],
+              current_node: 'review_loop',
+            },
+          })
+        }
+        if (resource === 'context') {
+          return jsonResponse({
+            pipeline_id: runId,
+            context: {},
+          })
+        }
+        if (resource === 'artifacts') {
+          return jsonResponse({
+            pipeline_id: runId,
+            artifacts: [],
+          })
+        }
+        if (resource === 'graph-preview') {
+          return jsonResponse({
+            status: 'ok',
+            graph: {
+              graph_attrs: {},
+              nodes: [
+                { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                { id: 'review_loop', label: 'Review Loop', shape: 'box' },
+                { id: 'done', label: 'Done', shape: 'Msquare' },
+              ],
+              edges: [
+                { from: 'start', to: 'review_loop', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+                { from: 'review_loop', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              ],
+            },
+            diagnostics: [],
+            errors: [],
+          })
+        }
+        if (resource === 'questions') {
+          return jsonResponse({
+            pipeline_id: runId,
+            questions: [],
+          })
+        }
+        if (resource === 'journal') {
+          return jsonResponse(makeJournalPage(runId, groupedHistory, false))
+        }
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+
+    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    expect(selectedRunCard).toBeTruthy()
+    await user.click(selectedRunCard!)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-event-timeline-throughput')).toHaveAttribute('data-loaded-count', '140')
+      expect(screen.getAllByTestId('run-event-timeline-group')).toHaveLength(1)
+    })
+
+    const throughput = screen.getByTestId('run-event-timeline-throughput')
+    const renderedCount = Number(throughput.getAttribute('data-rendered-count') ?? '0')
+
+    expect(renderedCount).toBeGreaterThan(0)
+    expect(renderedCount).toBeLessThan(groupedHistory.length)
+    expect(renderedCount).toBeLessThanOrEqual(80)
+    expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(renderedCount)
+    expect(screen.getByTestId('run-event-timeline-group-label')).toHaveTextContent('Retry sequence for review_loop')
+    expect(screen.getByText('140 entries')).toBeVisible()
+    expect(screen.getAllByTestId('run-event-timeline-row-summary')[0]).toHaveTextContent('Retry attempt 140')
+    expect(
+      screen.getAllByTestId('run-event-timeline-row-summary').some((node) => node.textContent === 'Retry attempt 1'),
+    ).toBe(false)
+  })
+
+  it('keeps exhausted journal history marked complete after reselect so Load older does not reappear', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-history-exhausted',
+      flow_name: 'selected.dot',
+      status: 'completed',
+      outcome: 'success',
+      project_path: '/tmp/project-one',
+      ended_at: '2026-03-22T00:05:00Z',
+    })
+    const otherRun = makeRun({
+      run_id: 'run-history-secondary',
+      flow_name: 'other.dot',
+      status: 'completed',
+      outcome: 'success',
+      project_path: '/tmp/project-one',
+      ended_at: '2026-03-22T00:06:00Z',
+    })
+    const runsById = {
+      [selectedRun.run_id]: selectedRun,
+      [otherRun.run_id]: otherRun,
+    }
+    const latestEntries = [
+      makeJournalEntry(
+        4,
+        {
+          type: 'StageCompleted',
+          sequence: 4,
+          emitted_at: '2026-03-22T00:05:00Z',
+          node_id: 'done',
+          index: 3,
+          source_scope: 'root',
+        },
+        {
+          kind: 'stage',
+          summary: 'Stage done completed',
+        },
+      ),
+      makeJournalEntry(
+        3,
+        {
+          type: 'StageCompleted',
+          sequence: 3,
+          emitted_at: '2026-03-22T00:04:00Z',
+          node_id: 'plan_current',
+          index: 2,
+          source_scope: 'root',
+        },
+        {
+          kind: 'stage',
+          summary: 'Stage plan_current completed',
+        },
+      ),
+    ]
+    const olderEntries = [
+      makeJournalEntry(
+        2,
+        {
+          type: 'StageStarted',
+          sequence: 2,
+          emitted_at: '2026-03-22T00:03:00Z',
+          node_id: 'plan_current',
+          index: 2,
+          source_scope: 'root',
+        },
+        {
+          kind: 'stage',
+          summary: 'Stage plan_current started',
+        },
+      ),
+      makeJournalEntry(
+        1,
+        {
+          type: 'StageCompleted',
+          sequence: 1,
+          emitted_at: '2026-03-22T00:02:00Z',
+          node_id: 'prepare',
+          index: 1,
+          source_scope: 'root',
+        },
+        {
+          kind: 'stage',
+          summary: 'Stage prepare completed',
+        },
+      ),
+    ]
+    const journalRequestUrls: string[] = []
+
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [selectedRun, otherRun] })
+      }
+      const pipelineStatusMatch = url.match(/\/attractor\/pipelines\/([^/?#]+)$/)
+      const pipelineStatusRunId = pipelineStatusMatch?.[1] ? decodeURIComponent(pipelineStatusMatch[1]) : null
+      if (pipelineStatusRunId && pipelineStatusRunId in runsById) {
+        const run = runsById[pipelineStatusRunId as keyof typeof runsById]
+        return jsonResponse({
+          pipeline_id: run.run_id,
+          run_id: run.run_id,
+          flow_name: run.flow_name,
+          status: run.status,
+          outcome: run.outcome,
+          outcome_reason_code: null,
+          outcome_reason_message: null,
+          working_directory: run.working_directory,
+          project_path: run.project_path,
+          git_branch: run.git_branch,
+          git_commit: run.git_commit,
+          spec_id: null,
+          plan_id: null,
+          model: run.model,
+          started_at: run.started_at,
+          ended_at: run.ended_at,
+          last_error: run.last_error ?? '',
+          token_usage: run.token_usage,
+          current_node: 'done',
+          completed_nodes: ['prepare', 'done'],
+          progress: {
+            current_node: 'done',
+            completed_nodes: ['prepare', 'done'],
+          },
+          continued_from_run_id: null,
+          continued_from_node: null,
+          continued_from_flow_mode: null,
+          continued_from_flow_name: null,
+        })
+      }
+      const pipelineMatch = url.match(/\/attractor\/pipelines\/([^/]+)\/([^/?#]+)/)
+      const runId = pipelineMatch?.[1] ? decodeURIComponent(pipelineMatch[1]) : null
+      const resource = pipelineMatch?.[2] ?? null
+      if (runId && runId in runsById) {
+        if (resource === 'checkpoint') {
+          return jsonResponse({
+            pipeline_id: runId,
+            checkpoint: {
+              completed_nodes: ['prepare'],
+              current_node: 'done',
+            },
+          })
+        }
+        if (resource === 'context') {
+          return jsonResponse({
+            pipeline_id: runId,
+            context: {},
+          })
+        }
+        if (resource === 'artifacts') {
+          return jsonResponse({
+            pipeline_id: runId,
+            artifacts: [],
+          })
+        }
+        if (resource === 'graph-preview') {
+          return jsonResponse({
+            status: 'ok',
+            graph: {
+              graph_attrs: {},
+              nodes: [
+                { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                { id: 'done', label: 'Done', shape: 'Msquare' },
+              ],
+              edges: [
+                { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              ],
+            },
+            diagnostics: [],
+            errors: [],
+          })
+        }
+        if (resource === 'questions') {
+          return jsonResponse({
+            pipeline_id: runId,
+            questions: [],
+          })
+        }
+        if (resource === 'journal') {
+          const requestUrl = new URL(url, 'http://localhost')
+          journalRequestUrls.push(requestUrl.toString())
+          if (runId === selectedRun.run_id && requestUrl.searchParams.get('before_sequence') === '3') {
+            return jsonResponse(makeJournalPage(runId, olderEntries, false))
+          }
+          return jsonResponse(makeJournalPage(
+            runId,
+            runId === selectedRun.run_id ? latestEntries : [],
+            runId === selectedRun.run_id,
+          ))
+        }
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+
+    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    expect(selectedRunCard).toBeTruthy()
+    await user.click(selectedRunCard!)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
+    })
+
+    await user.click(screen.getByTestId('run-journal-load-older'))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
+      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('Stage prepare completed')
+    })
+
+    expect(useRunJournalStore.getState().byRunId[selectedRun.run_id]).toMatchObject({
+      hasOlder: false,
+      oldestSequence: 1,
+      newestSequence: 4,
+    })
+
+    const otherRunCard = screen.getByText('other.dot').closest('[data-testid="run-history-row"]')
+    expect(otherRunCard).toBeTruthy()
+    await user.click(otherRunCard!)
+
+    const reselectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    expect(reselectedRunCard).toBeTruthy()
+    await user.click(reselectedRunCard!)
+
+    await waitFor(() => {
+      expect(
+        journalRequestUrls.filter((requestUrl) => requestUrl.includes(`/attractor/pipelines/${selectedRun.run_id}/journal?limit=100`)).length,
+      ).toBeGreaterThanOrEqual(2)
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
+    })
+
+    expect(
+      journalRequestUrls.filter((requestUrl) => requestUrl.includes(`/attractor/pipelines/${selectedRun.run_id}/journal?limit=100&before_sequence=3`)),
+    ).toHaveLength(1)
+    expect(
+      flattenRunJournalSegments(useRunJournalStore.getState().byRunId[selectedRun.run_id]?.segments ?? [])
+        .map(({ sequence }) => sequence),
+    ).toEqual([4, 3, 2, 1])
+    expect(useRunJournalStore.getState().byRunId[selectedRun.run_id]).toMatchObject({
+      hasOlder: false,
+      oldestSequence: 1,
+      newestSequence: 4,
+    })
   })
 })

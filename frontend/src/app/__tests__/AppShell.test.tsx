@@ -1,4 +1,5 @@
 import App from '@/App'
+import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useStore } from '@/store'
 import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -61,6 +62,7 @@ const setViewportWidth = (width: number) => {
 }
 
 const resetAppShellState = () => {
+  useRunJournalStore.setState({ byRunId: {} })
   useStore.setState((state) => ({
     ...state,
     viewMode: 'projects',
@@ -79,7 +81,6 @@ const resetAppShellState = () => {
     nodeDiagnostics: {},
     edgeDiagnostics: {},
     hasValidationErrors: false,
-    logs: [],
     humanGate: null,
     nodeStatuses: {},
     selectedNodeId: null,
@@ -1686,6 +1687,38 @@ describe('App shell behavior', () => {
             ],
           })
         }
+        if (url.endsWith('/attractor/pipelines/run-session')) {
+          return jsonResponse({
+            pipeline_id: 'run-session',
+            run_id: 'run-session',
+            status: 'completed',
+            outcome: 'success',
+            outcome_reason_code: null,
+            outcome_reason_message: null,
+            flow_name: 'review-session.dot',
+            working_directory: '/tmp/project-runs-session',
+            project_path: '/tmp/project-runs-session',
+            git_branch: 'main',
+            git_commit: 'abcdef0',
+            spec_id: null,
+            plan_id: null,
+            model: 'gpt-5.3-codex-spark',
+            started_at: '2026-03-25T12:00:00Z',
+            ended_at: '2026-03-25T12:05:00Z',
+            last_error: '',
+            token_usage: 1234,
+            current_node: 'review',
+            completed_nodes: ['prepare', 'review'],
+            progress: {
+              current_node: 'review',
+              completed_nodes: ['prepare', 'review'],
+            },
+            continued_from_run_id: null,
+            continued_from_node: null,
+            continued_from_flow_mode: null,
+            continued_from_flow_name: null,
+          })
+        }
         if (url.includes('/attractor/pipelines/run-session/checkpoint')) {
           return jsonResponse({
             pipeline_id: 'run-session',
@@ -1755,6 +1788,15 @@ describe('App shell behavior', () => {
             ],
           })
         }
+        if (url.includes('/attractor/pipelines/run-session/journal')) {
+          return jsonResponse({
+            pipeline_id: 'run-session',
+            entries: [],
+            oldest_sequence: null,
+            newest_sequence: null,
+            has_older: false,
+          })
+        }
         return jsonResponse({})
       }),
     )
@@ -1778,9 +1820,16 @@ describe('App shell behavior', () => {
     await user.click(runRow!)
 
     await waitFor(() => {
+      expect(screen.getByTestId('run-advanced-panel')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toBeVisible()
+    })
+    expect(screen.queryByTestId('run-context-search-input')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('run-advanced-toggle-button'))
+
+    await waitFor(() => {
       expect(screen.getByTestId('run-context-search-input')).toBeVisible()
       expect(screen.getByTestId('run-artifact-view-button')).toBeVisible()
-      expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toBeVisible()
     })
 
     await waitFor(() => {
@@ -1802,6 +1851,9 @@ describe('App shell behavior', () => {
       expect(
         within(screen.getByTestId('run-event-timeline-panel')).getByText('Stage review started'),
       ).toBeVisible()
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('run-event-timeline-filter-type')).toBeVisible()
     })
 
     await user.selectOptions(screen.getByTestId('run-event-timeline-filter-type'), 'StageStarted')

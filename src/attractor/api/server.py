@@ -161,6 +161,8 @@ ORPHANED_ACTIVE_STATUSES = {"running", "cancel_requested", "pause_requested"}
 
 RUN_HISTORY_LOCK = threading.Lock()
 PIPELINE_LIFECYCLE_PHASES = ("PARSE", "TRANSFORM", "VALIDATE", "INITIALIZE", "EXECUTE", "FINALIZE")
+DEFAULT_RUN_JOURNAL_PAGE_SIZE = 100
+MAX_RUN_JOURNAL_PAGE_SIZE = 250
 
 
 def _runs_root() -> Path:
@@ -366,6 +368,366 @@ def _next_run_event_sequence(run_id: str) -> int:
 def _has_persisted_run_events(run_id: str) -> bool:
     events_path = _run_events_path(run_id)
     return events_path.exists() and events_path.stat().st_size > 0
+
+
+def _normalize_run_journal_page_limit(limit: int | None) -> int:
+    if limit is None:
+        return DEFAULT_RUN_JOURNAL_PAGE_SIZE
+    if limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    return min(limit, MAX_RUN_JOURNAL_PAGE_SIZE)
+
+
+def _normalize_before_sequence(value: int | None) -> int | None:
+    if value is None:
+        return None
+    if value <= 0:
+        raise HTTPException(status_code=400, detail="before_sequence must be greater than zero")
+    return value
+
+
+def _normalize_after_sequence(value: int | None) -> int | None:
+    if value is None:
+        return None
+    if value < 0:
+        raise HTTPException(status_code=400, detail="after_sequence must be zero or greater")
+    return value
+
+
+def _as_trimmed_string(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def _journal_source_scope(payload: dict[str, Any]) -> str:
+    return "child" if payload.get("source_scope") == "child" else "root"
+
+
+def _journal_source_parent_node_id(payload: dict[str, Any]) -> Optional[str]:
+    return _as_trimmed_string(payload.get("source_parent_node_id"))
+
+
+def _journal_source_flow_name(payload: dict[str, Any]) -> Optional[str]:
+    return _as_trimmed_string(payload.get("source_flow_name"))
+
+
+def _journal_source_prefix(
+    *,
+    source_scope: str,
+    source_parent_node_id: Optional[str],
+    source_flow_name: Optional[str],
+) -> str:
+    if source_scope != "child":
+        return ""
+    parent_label = source_parent_node_id or "parent node"
+    if source_flow_name:
+        return f"Child flow {source_flow_name} via {parent_label}: "
+    return f"Child flow via {parent_label}: "
+
+
+def _journal_node_id(payload: dict[str, Any]) -> Optional[str]:
+    for candidate in (
+        payload.get("node_id"),
+        payload.get("node"),
+        payload.get("name"),
+        payload.get("stage"),
+        payload.get("current_node"),
+    ):
+        node_id = _as_trimmed_string(candidate)
+        if node_id:
+            return node_id
+    return None
+
+
+def _journal_stage_index(payload: dict[str, Any]) -> Optional[int]:
+    value = payload.get("index")
+    return value if isinstance(value, int) else None
+
+
+def _journal_question_id(payload: dict[str, Any]) -> Optional[str]:
+    return _as_trimmed_string(payload.get("question_id"))
+
+
+def _journal_kind(raw_type: str) -> str:
+    if raw_type == "log":
+        return "log"
+    if raw_type in {"runtime", "state"}:
+        return raw_type
+    if raw_type == "run_meta":
+        return "metadata"
+    if raw_type in {"PipelineStarted", "PipelineCompleted", "PipelineFailed", "lifecycle"}:
+        return "lifecycle"
+    if raw_type.startswith("Stage"):
+        return "stage"
+    if raw_type.startswith("Parallel"):
+        return "parallel"
+    if raw_type.startswith("Interview") or raw_type == "human_gate":
+        return "interview"
+    if raw_type == "CheckpointSaved":
+        return "checkpoint"
+    return "other"
+
+
+def _journal_severity(raw_type: str, payload: dict[str, Any]) -> str:
+    severity_value = payload.get("severity") if isinstance(payload.get("severity"), str) else payload.get("level")
+    severity = _as_trimmed_string(severity_value)
+    if severity:
+        normalized = severity.lower()
+        if normalized in {"info", "warning", "error"}:
+            return normalized
+    if raw_type == "log":
+        message = str(payload.get("msg", "")).lower()
+        if "error" in message or "fail" in message:
+            return "error"
+        if "warn" in message:
+            return "warning"
+        return "info"
+    if raw_type in {"PipelineFailed", "StageFailed"}:
+        return "error"
+    if raw_type in {"StageRetrying", "InterviewTimeout"}:
+        return "warning"
+    if raw_type == "PipelineCompleted" and payload.get("outcome") == "failure":
+        return "warning"
+    if raw_type == "runtime":
+        status = _as_trimmed_string(payload.get("status")) or ""
+        if status in {"failed", "validation_error"}:
+            return "error"
+        if status in {"cancel_requested", "abort_requested", "canceled", "aborted"}:
+            return "warning"
+    return "info"
+
+
+def _interview_outcome_provenance(raw_type: str, payload: dict[str, Any]) -> Optional[str]:
+    raw_provenance = _as_trimmed_string(payload.get("outcome_provenance")) or _as_trimmed_string(payload.get("provenance"))
+    if raw_provenance in {"accepted", "skipped", "timeout_default_applied", "timeout_no_default"}:
+        return raw_provenance
+    if raw_type == "InterviewCompleted":
+        answer = _as_trimmed_string(payload.get("answer"))
+        if not answer:
+            return None
+        return "skipped" if answer.lower() == "skipped" else "accepted"
+    if raw_type == "InterviewTimeout":
+        default_choice = (
+            _as_trimmed_string(payload.get("default_choice_label"))
+            or _as_trimmed_string(payload.get("default_choice_target"))
+        )
+        return "timeout_default_applied" if default_choice else "timeout_no_default"
+    return None
+
+
+def _interview_default_choice_label(payload: dict[str, Any]) -> Optional[str]:
+    return (
+        _as_trimmed_string(payload.get("default_choice_label"))
+        or _as_trimmed_string(payload.get("default_choice_target"))
+    )
+
+
+def _journal_summary(
+    *,
+    raw_type: str,
+    payload: dict[str, Any],
+    node_id: Optional[str],
+    source_scope: str,
+    source_parent_node_id: Optional[str],
+    source_flow_name: Optional[str],
+) -> str:
+    source_prefix = _journal_source_prefix(
+        source_scope=source_scope,
+        source_parent_node_id=source_parent_node_id,
+        source_flow_name=source_flow_name,
+    )
+    if raw_type == "log":
+        return str(payload.get("msg", "")).strip() or "Log entry"
+    if raw_type == "lifecycle":
+        phase = _as_trimmed_string(payload.get("phase"))
+        return f"{source_prefix}Lifecycle phase: {phase}" if phase else f"{source_prefix}Lifecycle event"
+    if raw_type == "runtime":
+        status = _as_trimmed_string(payload.get("status"))
+        outcome = _as_trimmed_string(payload.get("outcome"))
+        reason_message = _as_trimmed_string(payload.get("outcome_reason_message"))
+        reason_code = _as_trimmed_string(payload.get("outcome_reason_code"))
+        if status:
+            summary = f"{source_prefix}Run status: {status}"
+            if outcome:
+                summary = f"{summary} ({outcome})"
+            reason = reason_message or reason_code
+            return f"{summary}: {reason}" if reason else summary
+        return f"{source_prefix}Run status updated"
+    if raw_type == "state":
+        state_node = _as_trimmed_string(payload.get("node")) or node_id or "unknown"
+        state_status = _as_trimmed_string(payload.get("status"))
+        return f"{source_prefix}Node {state_node} status: {state_status or 'updated'}"
+    if raw_type == "run_meta":
+        flow_name = _as_trimmed_string(payload.get("flow_name"))
+        return f"{source_prefix}Run metadata captured for {flow_name}" if flow_name else f"{source_prefix}Run metadata captured"
+    if raw_type == "PipelineStarted":
+        return f"{source_prefix}Pipeline started at {node_id or 'start'}"
+    if raw_type == "PipelineCompleted":
+        outcome = _as_trimmed_string(payload.get("outcome"))
+        reason_code = _as_trimmed_string(payload.get("outcome_reason_code"))
+        reason_message = _as_trimmed_string(payload.get("outcome_reason_message"))
+        if outcome == "failure":
+            if reason_message:
+                return f"{source_prefix}Pipeline completed at {node_id or 'exit'} (failure: {reason_message})"
+            if reason_code:
+                return f"{source_prefix}Pipeline completed at {node_id or 'exit'} (failure: {reason_code})"
+            return f"{source_prefix}Pipeline completed at {node_id or 'exit'} (failure)"
+        return (
+            f"{source_prefix}Pipeline completed at {node_id or 'exit'} ({outcome})"
+            if outcome
+            else f"{source_prefix}Pipeline completed at {node_id or 'exit'}"
+        )
+    if raw_type == "PipelineFailed":
+        error = _as_trimmed_string(payload.get("error"))
+        return f"{source_prefix}Pipeline failed: {error}" if error else f"{source_prefix}Pipeline failed"
+    if raw_type == "StageStarted":
+        return f"{source_prefix}Stage {node_id or 'unknown'} started"
+    if raw_type == "StageCompleted":
+        outcome = _as_trimmed_string(payload.get("outcome"))
+        return (
+            f"{source_prefix}Stage {node_id or 'unknown'} completed ({outcome})"
+            if outcome
+            else f"{source_prefix}Stage {node_id or 'unknown'} completed"
+        )
+    if raw_type == "StageFailed":
+        error = _as_trimmed_string(payload.get("error"))
+        return (
+            f"{source_prefix}Stage {node_id or 'unknown'} failed: {error}"
+            if error
+            else f"{source_prefix}Stage {node_id or 'unknown'} failed"
+        )
+    if raw_type == "StageRetrying":
+        attempt = payload.get("attempt") if isinstance(payload.get("attempt"), int) else None
+        return (
+            f"{source_prefix}Stage {node_id or 'unknown'} retrying (attempt {attempt})"
+            if attempt is not None
+            else f"{source_prefix}Stage {node_id or 'unknown'} retrying"
+        )
+    if raw_type == "ParallelStarted":
+        branch_count = payload.get("branch_count") if isinstance(payload.get("branch_count"), int) else None
+        return (
+            f"{source_prefix}Parallel fan-out started ({branch_count} branches)"
+            if branch_count is not None
+            else f"{source_prefix}Parallel fan-out started"
+        )
+    if raw_type == "ParallelBranchStarted":
+        branch_name = _as_trimmed_string(payload.get("branch")) or node_id or "unknown"
+        return f"{source_prefix}Parallel branch {branch_name} started"
+    if raw_type == "ParallelBranchCompleted":
+        branch_name = _as_trimmed_string(payload.get("branch")) or node_id or "unknown"
+        success = "success" if payload.get("success") is True else "failed" if payload.get("success") is False else None
+        return (
+            f"{source_prefix}Parallel branch {branch_name} completed ({success})"
+            if success
+            else f"{source_prefix}Parallel branch {branch_name} completed"
+        )
+    if raw_type == "ParallelCompleted":
+        success_count = payload.get("success_count") if isinstance(payload.get("success_count"), int) else None
+        failure_count = payload.get("failure_count") if isinstance(payload.get("failure_count"), int) else None
+        if success_count is not None and failure_count is not None:
+            return f"{source_prefix}Parallel fan-out completed ({success_count} success, {failure_count} failed)"
+        return f"{source_prefix}Parallel fan-out completed"
+    if raw_type == "InterviewStarted":
+        return f"{source_prefix}Interview started for {node_id or 'human gate'}"
+    if raw_type == "InterviewInform":
+        message = (
+            _as_trimmed_string(payload.get("message"))
+            or _as_trimmed_string(payload.get("prompt"))
+            or _as_trimmed_string(payload.get("question"))
+        )
+        return (
+            f"{source_prefix}Interview info for {node_id or 'human gate'}: {message}"
+            if message
+            else f"{source_prefix}Interview info for {node_id or 'human gate'}"
+        )
+    if raw_type == "InterviewCompleted":
+        answer = _as_trimmed_string(payload.get("answer"))
+        provenance = _interview_outcome_provenance(raw_type, payload)
+        if provenance == "skipped":
+            return f"{source_prefix}Interview completed for {node_id or 'human gate'} (skipped)"
+        if provenance == "accepted":
+            return (
+                f"{source_prefix}Interview completed for {node_id or 'human gate'} (accepted answer: {answer})"
+                if answer
+                else f"{source_prefix}Interview completed for {node_id or 'human gate'} (accepted answer)"
+            )
+        return (
+            f"{source_prefix}Interview completed for {node_id or 'human gate'} ({answer})"
+            if answer
+            else f"{source_prefix}Interview completed for {node_id or 'human gate'}"
+        )
+    if raw_type == "InterviewTimeout":
+        provenance = _interview_outcome_provenance(raw_type, payload)
+        if provenance == "timeout_default_applied":
+            default_choice = _interview_default_choice_label(payload)
+            return (
+                f"{source_prefix}Interview timed out for {node_id or 'human gate'} (default applied: {default_choice})"
+                if default_choice
+                else f"{source_prefix}Interview timed out for {node_id or 'human gate'} (default applied)"
+            )
+        if provenance == "timeout_no_default":
+            return f"{source_prefix}Interview timed out for {node_id or 'human gate'} (no default applied)"
+        return f"{source_prefix}Interview timed out for {node_id or 'human gate'}"
+    if raw_type == "human_gate":
+        prompt = _as_trimmed_string(payload.get("prompt"))
+        return (
+            f"{source_prefix}Human gate pending: {prompt}"
+            if prompt
+            else f"{source_prefix}Human gate pending for {node_id or 'unknown'}"
+        )
+    if raw_type == "CheckpointSaved":
+        return f"{source_prefix}Checkpoint saved at {node_id or 'current node'}"
+    return f"{source_prefix}{raw_type or 'event'}"
+
+
+def _run_journal_entry_from_event(payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    sequence = payload.get("sequence")
+    emitted_at = payload.get("emitted_at")
+    raw_type = _as_trimmed_string(payload.get("type"))
+    if not isinstance(sequence, int) or not isinstance(emitted_at, str) or raw_type is None:
+        return None
+
+    node_id = _journal_node_id(payload)
+    stage_index = _journal_stage_index(payload)
+    source_scope = _journal_source_scope(payload)
+    source_parent_node_id = _journal_source_parent_node_id(payload)
+    source_flow_name = _journal_source_flow_name(payload)
+    question_id = _journal_question_id(payload)
+    return {
+        "id": f"journal-{sequence}",
+        "sequence": sequence,
+        "emitted_at": emitted_at,
+        "kind": _journal_kind(raw_type),
+        "raw_type": raw_type,
+        "severity": _journal_severity(raw_type, payload),
+        "summary": _journal_summary(
+            raw_type=raw_type,
+            payload=payload,
+            node_id=node_id,
+            source_scope=source_scope,
+            source_parent_node_id=source_parent_node_id,
+            source_flow_name=source_flow_name,
+        ),
+        "node_id": node_id,
+        "stage_index": stage_index,
+        "source_scope": source_scope,
+        "source_parent_node_id": source_parent_node_id,
+        "source_flow_name": source_flow_name,
+        "question_id": question_id,
+        "payload": dict(payload),
+    }
+
+
+def _run_journal_entries(run_id: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for event in _read_persisted_run_events(run_id):
+        entry = _run_journal_entry_from_event(event)
+        if entry is not None:
+            entries.append(entry)
+    entries.sort(key=lambda item: item["sequence"], reverse=True)
+    return entries
 
 
 def _write_run_meta(record: RunRecord) -> None:
@@ -1827,41 +2189,80 @@ async def get_pipeline_artifact_file(pipeline_id: str, artifact_path: str, downl
     return FileResponse(resolved_artifact_path, media_type=media_type)
 
 
+@attractor_router.get("/pipelines/{pipeline_id}/journal")
+async def pipeline_journal(
+    pipeline_id: str,
+    limit: int = DEFAULT_RUN_JOURNAL_PAGE_SIZE,
+    before_sequence: int | None = None,
+):
+    _ensure_known_pipeline(pipeline_id)
+    normalized_limit = _normalize_run_journal_page_limit(limit)
+    normalized_before_sequence = _normalize_before_sequence(before_sequence)
+    entries = _run_journal_entries(pipeline_id)
+    if normalized_before_sequence is not None:
+        entries = [entry for entry in entries if entry["sequence"] < normalized_before_sequence]
+    page = entries[:normalized_limit]
+    return {
+        "pipeline_id": pipeline_id,
+        "entries": page,
+        "oldest_sequence": page[-1]["sequence"] if page else None,
+        "newest_sequence": page[0]["sequence"] if page else None,
+        "has_older": len(entries) > len(page),
+    }
+
+
 @attractor_router.get("/pipelines/{pipeline_id}/events")
-async def pipeline_events(pipeline_id: str, request: Request):
+async def pipeline_events(
+    pipeline_id: str,
+    request: Request,
+    after_sequence: int | None = None,
+):
+    normalized_after_sequence = _normalize_after_sequence(after_sequence)
     active = _get_active_run(pipeline_id)
     existing = _read_run_meta(_run_meta_path(pipeline_id))
     queue = EVENT_HUB.subscribe(pipeline_id)
     try:
-        # Subscribe before reading persisted history so events published during
-        # the replay handoff are captured in the live queue instead of dropped.
         persisted_history = _read_persisted_run_events(pipeline_id)
-        if not active and not existing and not persisted_history and not EVENT_HUB.history(pipeline_id):
+        live_history = EVENT_HUB.history(pipeline_id)
+        if not active and not existing and not persisted_history and not live_history:
             raise HTTPException(status_code=404, detail="Unknown pipeline")
     except Exception:
         EVENT_HUB.unsubscribe(pipeline_id, queue)
         raise
 
     async def stream():
-        highest_sequence = 0
+        highest_sequence = normalized_after_sequence or 0
         try:
-            for event in persisted_history:
-                sequence = event.get("sequence")
-                if isinstance(sequence, int):
-                    highest_sequence = max(highest_sequence, sequence)
-                yield f"data: {json.dumps(event)}\n\n"
+            if normalized_after_sequence is not None:
+                gap_fill_entries: list[dict[str, Any]] = []
+                seen_sequences: set[int] = set()
+                for event in persisted_history + live_history:
+                    entry = _run_journal_entry_from_event(event)
+                    if entry is None:
+                        continue
+                    sequence = entry["sequence"]
+                    if sequence <= normalized_after_sequence or sequence in seen_sequences:
+                        continue
+                    seen_sequences.add(sequence)
+                    gap_fill_entries.append(entry)
+                gap_fill_entries.sort(key=lambda item: item["sequence"])
+                for entry in gap_fill_entries:
+                    highest_sequence = max(highest_sequence, entry["sequence"])
+                    yield f"data: {json.dumps(entry)}\n\n"
 
             while True:
                 if await request.is_disconnected():
                     break
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    sequence = event.get("sequence")
-                    if isinstance(sequence, int) and sequence <= highest_sequence:
+                    entry = _run_journal_entry_from_event(event)
+                    if entry is None:
                         continue
-                    if isinstance(sequence, int):
-                        highest_sequence = sequence
-                    yield f"data: {json.dumps(event)}\n\n"
+                    sequence = entry["sequence"]
+                    if sequence <= highest_sequence:
+                        continue
+                    highest_sequence = sequence
+                    yield f"data: {json.dumps(entry)}\n\n"
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
         finally:

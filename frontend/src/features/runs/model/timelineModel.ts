@@ -13,6 +13,7 @@ import type {
 } from './shared'
 
 const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
+    lifecycle: 'lifecycle',
     PipelineStarted: 'lifecycle',
     PipelineCompleted: 'lifecycle',
     PipelineFailed: 'lifecycle',
@@ -30,9 +31,12 @@ const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
     InterviewTimeout: 'interview',
     human_gate: 'interview',
     CheckpointSaved: 'checkpoint',
+    log: 'log',
+    runtime: 'runtime',
+    state: 'state',
+    run_meta: 'metadata',
 }
 
-const TIMELINE_MAX_ITEMS = 200
 const RETRY_CORRELATION_EVENT_TYPES = new Set(['StageStarted', 'StageFailed', 'StageRetrying', 'StageCompleted'])
 const PENDING_GATE_FALLBACK_RECEIVED_AT = '1970-01-01T00:00:00Z'
 
@@ -124,6 +128,13 @@ const timelineSeverityFromEvent = (type: string, payload: Record<string, unknown
     }
     if (type === 'StageRetrying' || type === 'InterviewTimeout') {
         return 'warning'
+    }
+    return 'info'
+}
+
+const timelineSeverityFromJournalEntry = (value: unknown): TimelineSeverity => {
+    if (value === 'warning' || value === 'error') {
+        return value
     }
     return 'info'
 }
@@ -322,6 +333,34 @@ const toTimelineEvent = (value: unknown): TimelineEventEntry | null => {
     if (!payload) {
         return null
     }
+    const journalRawType = asTrimmedString(payload.raw_type)
+    const journalKind = asTrimmedString(payload.kind)
+    if (journalRawType && journalKind) {
+        const sequence = asFiniteNumber(payload.sequence)
+        const emittedAt = asTrimmedString(payload.emitted_at)
+        const summary = asTrimmedString(payload.summary)
+        const journalPayload = asRecord(payload.payload)
+        if (sequence === null || emittedAt === null || summary === null || journalPayload === null) {
+            return null
+        }
+        const category = TIMELINE_EVENT_TYPES[journalKind] ?? TIMELINE_EVENT_TYPES[journalRawType] ?? 'other'
+        return {
+            id: typeof payload.id === 'string' ? payload.id : `event-${sequence}`,
+            sequence,
+            type: journalRawType,
+            category,
+            severity: timelineSeverityFromJournalEntry(payload.severity),
+            nodeId: asTrimmedString(payload.node_id),
+            stageIndex: asFiniteNumber(payload.stage_index),
+            summary,
+            receivedAt: emittedAt,
+            sourceScope: payload.source_scope === 'child' ? 'child' : 'root',
+            sourceParentNodeId: asTrimmedString(payload.source_parent_node_id),
+            sourceFlowName: asTrimmedString(payload.source_flow_name),
+            questionId: asTrimmedString(payload.question_id),
+            payload: journalPayload,
+        }
+    }
     const type = typeof payload.type === 'string' ? payload.type : ''
     const category = TIMELINE_EVENT_TYPES[type]
     if (!category) {
@@ -350,6 +389,7 @@ const toTimelineEvent = (value: unknown): TimelineEventEntry | null => {
         sourceScope,
         sourceParentNodeId,
         sourceFlowName,
+        questionId: asTrimmedString(payload.question_id),
         payload,
     }
 }
@@ -490,12 +530,16 @@ type TimelineFilters = {
     timelineNodeStageFilter: string
 }
 
-const buildTimelineTypeOptions = (timelineEvents: TimelineEventEntry[]) => (
-    Array.from(new Set(timelineEvents.map((event) => event.type))).sort((left, right) => left.localeCompare(right))
-)
+const buildTimelineTypeOptions = (timelineEvents: Iterable<TimelineEventEntry>) => {
+    const eventTypes = new Set<string>()
+    for (const event of timelineEvents) {
+        eventTypes.add(event.type)
+    }
+    return Array.from(eventTypes).sort((left, right) => left.localeCompare(right))
+}
 
-const filterTimelineEvents = (
-    timelineEvents: TimelineEventEntry[],
+const matchesTimelineFilters = (
+    event: TimelineEventEntry,
     {
         timelineTypeFilter,
         timelineCategoryFilter,
@@ -505,30 +549,41 @@ const filterTimelineEvents = (
 ) => {
     const normalizedNodeStageFilter = timelineNodeStageFilter.trim().toLowerCase()
 
-    return timelineEvents.filter((event) => {
-        if (timelineTypeFilter !== 'all' && event.type !== timelineTypeFilter) {
-            return false
-        }
-        if (timelineCategoryFilter !== 'all' && event.category !== timelineCategoryFilter) {
-            return false
-        }
-        if (timelineSeverityFilter !== 'all' && event.severity !== timelineSeverityFilter) {
-            return false
-        }
-        if (!normalizedNodeStageFilter) {
-            return true
-        }
+    if (timelineTypeFilter !== 'all' && event.type !== timelineTypeFilter) {
+        return false
+    }
+    if (timelineCategoryFilter !== 'all' && event.category !== timelineCategoryFilter) {
+        return false
+    }
+    if (timelineSeverityFilter !== 'all' && event.severity !== timelineSeverityFilter) {
+        return false
+    }
+    if (!normalizedNodeStageFilter) {
+        return true
+    }
 
-        const nodeIdMatch = (event.nodeId ?? '').toLowerCase().includes(normalizedNodeStageFilter)
-        const stageIndexMatch = event.stageIndex !== null && String(event.stageIndex).includes(normalizedNodeStageFilter)
-        const sourceParentNodeMatch = (event.sourceParentNodeId ?? '').toLowerCase().includes(normalizedNodeStageFilter)
-        const sourceFlowMatch = (event.sourceFlowName ?? '').toLowerCase().includes(normalizedNodeStageFilter)
-        const sourceScopeMatch = event.sourceScope.toLowerCase().includes(normalizedNodeStageFilter)
-        return nodeIdMatch || stageIndexMatch || sourceParentNodeMatch || sourceFlowMatch || sourceScopeMatch
-    })
+    const nodeIdMatch = (event.nodeId ?? '').toLowerCase().includes(normalizedNodeStageFilter)
+    const stageIndexMatch = event.stageIndex !== null && String(event.stageIndex).includes(normalizedNodeStageFilter)
+    const sourceParentNodeMatch = (event.sourceParentNodeId ?? '').toLowerCase().includes(normalizedNodeStageFilter)
+    const sourceFlowMatch = (event.sourceFlowName ?? '').toLowerCase().includes(normalizedNodeStageFilter)
+    const sourceScopeMatch = event.sourceScope.toLowerCase().includes(normalizedNodeStageFilter)
+    return nodeIdMatch || stageIndexMatch || sourceParentNodeMatch || sourceFlowMatch || sourceScopeMatch
 }
 
-const buildRetryCorrelationEntityKeys = (timelineEvents: TimelineEventEntry[]) => {
+const filterTimelineEvents = (
+    timelineEvents: Iterable<TimelineEventEntry>,
+    filters: TimelineFilters,
+) => {
+    const filteredEvents: TimelineEventEntry[] = []
+    for (const event of timelineEvents) {
+        if (matchesTimelineFilters(event, filters)) {
+            filteredEvents.push(event)
+        }
+    }
+    return filteredEvents
+}
+
+const buildRetryCorrelationEntityKeys = (timelineEvents: Iterable<TimelineEventEntry>) => {
     const keys = new Set<string>()
     for (const event of timelineEvents) {
         const entityKey = timelineEntityKey(event)
@@ -543,8 +598,8 @@ const buildRetryCorrelationEntityKeys = (timelineEvents: TimelineEventEntry[]) =
 }
 
 const buildGroupedTimelineEntries = (
-    filteredTimelineEvents: TimelineEventEntry[],
-    retryCorrelationEntityKeys: Set<string>,
+    filteredTimelineEvents: Iterable<TimelineEventEntry>,
+    retryCorrelationEntityKeys: ReadonlySet<string>,
 ): GroupedTimelineEntry[] => {
     const entries: GroupedTimelineEntry[] = []
     const groupedEntryIndex = new Map<string, number>()
@@ -577,9 +632,68 @@ const buildGroupedTimelineEntries = (
     return entries
 }
 
-const buildPendingInterviewGates = (
-    timelineEvents: TimelineEventEntry[],
-    pendingQuestionSnapshots: PendingQuestionSnapshot[],
+const pendingInterviewGateDedupeKey = (
+    sourceScope: TimelineSourceScope,
+    sourceParentNodeId: string | null,
+    sourceFlowName: string | null,
+    nodeId: string | null,
+    prompt: string,
+) => (
+    [
+        sourceScope,
+        sourceParentNodeId ?? '',
+        sourceFlowName ?? '',
+        nodeId ?? '',
+        prompt.toLowerCase(),
+    ].join('::')
+)
+
+const toPendingInterviewGateFromEvent = (event: TimelineEventEntry): PendingInterviewGate | null => {
+    if (event.category !== 'interview') {
+        return null
+    }
+    if (event.type !== 'InterviewStarted' && event.type !== 'human_gate' && event.type !== 'InterviewInform') {
+        return null
+    }
+
+    const questionIdValue = event.questionId ?? event.payload.question_id
+    const questionId = typeof questionIdValue === 'string' && questionIdValue.trim().length > 0
+        ? questionIdValue.trim()
+        : null
+    const questionType = pendingGateQuestionTypeFromPayload(event.payload)
+    const payloadOptions = pendingGateOptionsFromPayload(event.payload)
+    const options = payloadOptions.length > 0
+        ? payloadOptions
+        : pendingGateSemanticFallbackOptions(questionType)
+    const questionPrompt = event.payload.question
+    const gatePrompt = event.payload.prompt
+    const informMessage = event.payload.message
+    const prompt = typeof questionPrompt === 'string' && questionPrompt.trim().length > 0
+        ? questionPrompt.trim()
+        : typeof gatePrompt === 'string' && gatePrompt.trim().length > 0
+            ? gatePrompt.trim()
+            : typeof informMessage === 'string' && informMessage.trim().length > 0
+                ? informMessage.trim()
+                : event.summary
+
+    return {
+        eventId: event.id,
+        sequence: event.sequence,
+        receivedAt: event.receivedAt,
+        nodeId: event.nodeId,
+        stageIndex: event.stageIndex,
+        sourceScope: event.sourceScope,
+        sourceParentNodeId: event.sourceParentNodeId,
+        sourceFlowName: event.sourceFlowName,
+        prompt,
+        questionId,
+        questionType,
+        options,
+    }
+}
+
+const buildJournalPendingInterviewGates = (
+    timelineEvents: Iterable<TimelineEventEntry>,
 ) => {
     const closedEntityKeys = new Set<string>()
     const pendingGates: PendingInterviewGate[] = []
@@ -597,55 +711,46 @@ const buildPendingInterviewGates = (
             closedEntityKeys.add(entityKey)
             continue
         }
-        if (event.type !== 'InterviewStarted' && event.type !== 'human_gate' && event.type !== 'InterviewInform') {
+
+        const gate = toPendingInterviewGateFromEvent(event)
+        if (!gate) {
             continue
         }
-
-        const questionIdValue = event.payload.question_id
-        const questionId = typeof questionIdValue === 'string' && questionIdValue.trim().length > 0
-            ? questionIdValue.trim()
-            : null
-        const questionType = pendingGateQuestionTypeFromPayload(event.payload)
-        const payloadOptions = pendingGateOptionsFromPayload(event.payload)
-        const options = payloadOptions.length > 0
-            ? payloadOptions
-            : pendingGateSemanticFallbackOptions(questionType)
-        const questionPrompt = event.payload.question
-        const gatePrompt = event.payload.prompt
-        const informMessage = event.payload.message
-        const prompt = typeof questionPrompt === 'string' && questionPrompt.trim().length > 0
-            ? questionPrompt.trim()
-            : typeof gatePrompt === 'string' && gatePrompt.trim().length > 0
-                ? gatePrompt.trim()
-                : typeof informMessage === 'string' && informMessage.trim().length > 0
-                    ? informMessage.trim()
-                    : event.summary
-        const dedupeKey = [
-            event.sourceScope,
-            event.sourceParentNodeId ?? '',
-            event.sourceFlowName ?? '',
-            event.nodeId ?? '',
-            prompt.toLowerCase(),
-        ].join('::')
+        const dedupeKey = pendingInterviewGateDedupeKey(
+            gate.sourceScope,
+            gate.sourceParentNodeId,
+            gate.sourceFlowName,
+            gate.nodeId,
+            gate.prompt,
+        )
         if (pendingGateKeys.has(dedupeKey)) {
             continue
         }
         pendingGateKeys.add(dedupeKey)
-        pendingGates.push({
-            eventId: event.id,
-            sequence: event.sequence,
-            receivedAt: event.receivedAt,
-            nodeId: event.nodeId,
-            stageIndex: event.stageIndex,
-            sourceScope: event.sourceScope,
-            sourceParentNodeId: event.sourceParentNodeId,
-            sourceFlowName: event.sourceFlowName,
-            prompt,
-            questionId,
-            questionType,
-            options,
-        })
+        pendingGates.push(gate)
     }
+
+    return {
+        closedEntityKeys,
+        pendingGates,
+        pendingGateKeys,
+    }
+}
+
+const mergePendingInterviewGatesWithSnapshots = (
+    journalPendingGates: PendingInterviewGate[],
+    pendingQuestionSnapshots: PendingQuestionSnapshot[],
+) => {
+    const pendingGates = [...journalPendingGates]
+    const pendingGateKeys = new Set(
+        journalPendingGates.map((gate) => pendingInterviewGateDedupeKey(
+            gate.sourceScope,
+            gate.sourceParentNodeId,
+            gate.sourceFlowName,
+            gate.nodeId,
+            gate.prompt,
+        )),
+    )
 
     let nextSequence = pendingGates.reduce((maxSequence, gate) => Math.max(maxSequence, gate.sequence), 0) + 1
     for (const question of pendingQuestionSnapshots) {
@@ -653,7 +758,7 @@ const buildPendingInterviewGates = (
         if (questionIdMatch) {
             continue
         }
-        const dedupeKey = `${question.nodeId ?? ''}::${question.prompt.toLowerCase()}`
+        const dedupeKey = pendingInterviewGateDedupeKey('root', null, null, question.nodeId, question.prompt)
         if (pendingGateKeys.has(dedupeKey)) {
             continue
         }
@@ -677,6 +782,14 @@ const buildPendingInterviewGates = (
 
     return pendingGates
 }
+
+const buildPendingInterviewGates = (
+    timelineEvents: Iterable<TimelineEventEntry>,
+    pendingQuestionSnapshots: PendingQuestionSnapshot[],
+) => mergePendingInterviewGatesWithSnapshots(
+    buildJournalPendingInterviewGates(timelineEvents).pendingGates,
+    pendingQuestionSnapshots,
+)
 
 const filterAnsweredPendingInterviewGates = (
     pendingInterviewGates: PendingInterviewGate[],
@@ -727,19 +840,23 @@ const buildGroupedPendingInterviewGates = (
 export {
     buildGroupedPendingInterviewGates,
     buildGroupedTimelineEntries,
+    buildJournalPendingInterviewGates,
     buildPendingInterviewGates,
     buildRetryCorrelationEntityKeys,
     buildTimelineTypeOptions,
     filterAnsweredPendingInterviewGates,
     filterTimelineEvents,
-    TIMELINE_MAX_ITEMS,
+    matchesTimelineFilters,
+    mergePendingInterviewGatesWithSnapshots,
     PENDING_GATE_FALLBACK_RECEIVED_AT,
     asFiniteNumber,
     logUnexpectedRunError,
     pendingGateOptionsFromPayload,
+    pendingInterviewGateDedupeKey,
     pendingGateQuestionTypeFromPayload,
     pendingGateSemanticFallbackOptions,
     timelineCorrelationDescriptorFromEvent,
     timelineEntityKey,
+    toPendingInterviewGateFromEvent,
     toTimelineEvent,
 }

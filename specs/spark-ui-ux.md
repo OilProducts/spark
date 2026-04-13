@@ -162,7 +162,7 @@ Workspace-oriented surfaces include:
 Attractor-oriented surfaces include:
 - flow editing and validation
 - run history
-- run event timeline
+- run journal browser
 - checkpoint view
 - context view
 - run graph view
@@ -180,18 +180,21 @@ Execution owns:
 
 Runs owns:
 - selected run summary and actions
-- run activity
-- run event timeline
-- checkpoint, context, artifacts, and questions
+- pinned pending questions
+- run journal
+- an `Advanced` disclosure for graph, checkpoint, context, and artifacts
 
 For selected-run inspection, Runs treats backend run-detail state as authoritative.
 The selected run summary, lifecycle badge, and detail surfaces must reconcile against `GET /pipelines/{id}` rather than relying on the runs list row or event-stream-local status.
 The runs list hydrates from `GET /runs` and then updates from `GET /runs/events`; it remains an overview/navigation surface rather than a second authority for the selected run.
-Selected-run inspection hydrates from `GET /pipelines/{id}` and then updates from `GET /pipelines/{id}/events`.
-Run Activity and Event Timeline must use the selected run's durable event history, not only events observed while the tab was open.
+Selected-run inspection hydrates authoritative run detail from `GET /pipelines/{id}`, durable history from `GET /pipelines/{id}/journal`, and then live tail updates from `GET /pipelines/{id}/events`.
+The run summary should fold in current monitoring facts rather than relying on a separate `Run Activity` card.
+The `Advanced` disclosure must be collapsed by default.
+Run Journal must use durable selected-run history from the journal endpoint, not only events observed while the tab was open.
+`GET /pipelines/{id}/events` is a live-tail SSE channel with optional `after_sequence` gap-fill; it is not the primary full-history API.
 Steady-state polling is not part of the Runs contract.
 The runs list must not show polling-era stale-data warnings or background-refresh affordances.
-Runs must own exactly one per-run SSE transport for the selected run; activity, timeline, raw logs, node status, and pending human-gate state all share that transport.
+Runs must own exactly one per-run SSE transport for the selected run; summary monitoring facts, journal live tail, node status, and pending human-gate state all share that transport.
 
 ### 8.3 Bridge Surfaces
 
@@ -350,22 +353,20 @@ The run inspector is a frontend for Attractor runs, not for workspace artifacts.
 It should render:
 - run summary
 - run-level actions
-- run activity as the primary answer to `what is happening now?`
-- event timeline
-- checkpoint
-- run graph based on the stored run snapshot rather than the current named flow
-- context
-- artifacts
-- pending questions when present
+- pinned pending questions when present
+- Run Journal
+- an `Advanced` disclosure for checkpoint, run graph based on the stored run snapshot rather than the current named flow, context, and artifacts
 
 The primary monitoring hierarchy is:
 - summary
-- activity
-- timeline
-- checkpoint
+- pinned pending questions
+- Run Journal
+- `Advanced`
 
+The selected-run summary is the primary answer to `what is happening now?` and should reconcile against authoritative `GET /pipelines/{id}` detail state.
+Run Journal is the durable operational history browser. It should carry logs, child-flow activity, and question audit history inline rather than splitting those concerns into separate primary surfaces.
 When the graph lacks live state overlays, it is a secondary reference surface rather than a primary monitoring surface.
-Raw logs remain available within the activity surface, but they are subordinate evidence rather than the main operational summary.
+The `Advanced` disclosure remains collapsed by default.
 
 Run history and run inspection must render lifecycle status separately from workflow outcome.
 Examples:
@@ -380,24 +381,24 @@ The currently selected execution flow, selected run, launch form draft, and runt
 Runs session restoration must preserve:
 - run-list scope mode
 - selected run
-- timeline filters
+- journal filters
 - artifact and context inspection selection
 - pending freeform human-gate answers
 
 Runs is the canonical run-monitoring surface.
-Execution may show compact handoff notices for the currently selected run, such as a launch-success message or pending human-gate reminder, and may render a launch-planning graph card. It must not own the primary run activity, timeline, artifact, or question surfaces.
+Execution may show compact handoff notices for the currently selected run, such as a launch-success message or pending human-gate reminder, and may render a launch-planning graph card. It must not own the primary run journal, artifact, or question surfaces.
 
 `Completed + failure outcome` is not a runtime failure surface.
 It should be presented as a completed workflow that reached a negative business conclusion, optionally with a reason code or reason message supplied by Attractor.
 
-Timeline and lifecycle summaries for `PipelineCompleted` should include:
+Journal and lifecycle summaries for `PipelineCompleted` should include:
 - workflow outcome
 - optional outcome reason code
 - optional outcome reason message
 
-Run activity summaries should prefer a backend-provided failure reason over a generic lifecycle label when one is available.
-Run Activity is a compact excerpt of the same durable event history that powers Event Timeline.
-Nested child-flow activity should appear inline and clearly labeled in both Run Activity and Event Timeline when the parent run executed child flows through `stack.manager_loop`.
+Run summary monitoring facts and journal summaries should prefer a backend-provided failure reason over a generic lifecycle label when one is available.
+Run Journal is the durable selected-run history browser.
+Nested child-flow activity should appear inline and clearly labeled in the Run Journal when the parent run executed child flows through `stack.manager_loop`.
 
 ## 14. Frontend State Model
 
@@ -413,13 +414,13 @@ The frontend treats backend-provided state as authoritative for:
 For run inspection specifically:
 - the selected run detail surface is authoritative on backend run-detail state from `GET /pipelines/{id}`
 - the runs list is an overview cache and must not outrank selected-run detail state
-- event streams are additive live-update channels for logs, node status, human gates, and timeline enrichment
+- event streams are additive live-update channels for logs, node status, human gates, and journal live-tail enrichment
 - event streams must reconcile with authoritative per-run detail state so missed terminal events do not leave the UI stale
 - run-list live updates come from `/runs/events`, not from steady-state timer refreshes
 - selected-run live updates come from `/pipelines/{id}/events` after initial `GET /pipelines/{id}` hydration
 - the selected run may have only one live per-run stream subscription at a time
-- selected-run activity/timeline history must survive reselecting the run later; the UI must not depend on the run having been open live
-- selected-run activity/timeline history may include inline child-flow events when the backend marks them with child-source metadata
+- selected-run journal history must survive reselecting the run later; the UI must not depend on the run having been open live
+- selected-run journal history may include inline child-flow events when the backend marks them with child-source metadata
 
 The frontend may keep local ephemeral state for:
 - selected tab

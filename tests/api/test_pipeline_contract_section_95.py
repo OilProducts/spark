@@ -42,10 +42,25 @@ def _decode_event(chunk: str | bytes) -> dict:
     return json.loads(lines[0].removeprefix("data: "))
 
 
-async def _collect_stream_events(run_id: str, *, count: int) -> list[dict]:
+def _register_known_run(run_id: str, working_directory: Path) -> None:
+    server._record_run_start(
+        run_id,
+        flow_name="Flow",
+        working_directory=str(working_directory),
+        model="test-model",
+    )
+
+
+async def _collect_stream_events(
+    run_id: str,
+    *,
+    count: int,
+    after_sequence: int | None = None,
+) -> list[dict]:
     response = await server.pipeline_events(
         run_id,
         _DisconnectAfterEventChecksRequest(checks=count),
+        after_sequence=after_sequence,
     )
     iterator = response.body_iterator
     chunks: list[str | bytes] = []
@@ -61,6 +76,7 @@ def test_section_95_core_endpoints_are_registered() -> None:
     expected = {
         ("POST", "/pipelines"),
         ("GET", "/pipelines/{}"),
+        ("GET", "/pipelines/{}/journal"),
         ("GET", "/pipelines/{}/events"),
         ("POST", "/pipelines/{}/cancel"),
         ("GET", "/pipelines/{}/graph"),
@@ -99,11 +115,57 @@ def test_section_95_events_endpoint_uses_sse_headers(
     assert response.headers.get("connection") == "keep-alive"
 
 
-def test_section_95_events_endpoint_replays_history_backed_selected_run_events_with_stable_payload(
+def test_section_95_journal_endpoint_returns_newest_first_history_with_stable_payload(tmp_path: Path) -> None:
+    run_id = "run-section-95-history"
+    working_directory = tmp_path / "work"
+    working_directory.mkdir()
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    _register_known_run(run_id, working_directory)
+    _write_persisted_events(
+        run_id,
+        working_directory,
+        [
+            {
+                "type": "StageCompleted",
+                "run_id": run_id,
+                "sequence": 1,
+                "emitted_at": "2026-04-06T12:00:00Z",
+                "node_id": "prepare",
+                "index": 1,
+                "source_scope": "root",
+            },
+            {
+                "type": "StageStarted",
+                "run_id": run_id,
+                "sequence": 2,
+                "emitted_at": "2026-04-06T12:00:05Z",
+                "node_id": "plan_current",
+                "index": 2,
+                "source_scope": "child",
+                "source_parent_node_id": "run_milestone",
+                "source_flow_name": "implement-milestone.dot",
+            },
+        ],
+    )
+
+    page = asyncio.run(server.pipeline_journal(run_id))
+
+    assert [entry["sequence"] for entry in page["entries"]] == [2, 1]
+    assert [entry["emitted_at"] for entry in page["entries"]] == [
+        "2026-04-06T12:00:05Z",
+        "2026-04-06T12:00:00Z",
+    ]
+    assert page["entries"][0]["payload"]["run_id"] == run_id
+    assert page["entries"][0]["source_scope"] == "child"
+    assert page["entries"][0]["source_parent_node_id"] == "run_milestone"
+    assert page["entries"][0]["source_flow_name"] == "implement-milestone.dot"
+
+
+def test_section_95_events_endpoint_gap_fills_after_requested_sequence_with_stable_payload(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    run_id = "run-section-95-history"
+    run_id = "run-section-95-gap-fill"
     working_directory = tmp_path / "work"
     server.configure_runtime_paths(runs_dir=tmp_path / "runs")
     _write_persisted_events(
@@ -132,39 +194,10 @@ def test_section_95_events_endpoint_replays_history_backed_selected_run_events_w
             },
         ],
     )
-    monkeypatch.setattr(server, "EVENT_HUB", server.PipelineEventHub())
 
-    events = asyncio.run(_collect_stream_events(run_id, count=2))
-
-    assert [event["sequence"] for event in events] == [1, 2]
-    assert [event["emitted_at"] for event in events] == [
-        "2026-04-06T12:00:00Z",
-        "2026-04-06T12:00:05Z",
-    ]
-    assert events[0]["run_id"] == run_id
-    assert events[0]["source_scope"] == "root"
-    assert events[1]["source_scope"] == "child"
-    assert events[1]["source_parent_node_id"] == "run_milestone"
-    assert events[1]["source_flow_name"] == "implement-milestone.dot"
-
-
-def test_section_95_events_endpoint_preserves_stable_event_identity_across_replay_subscriptions(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    run_id = "run-section-95-replay"
-    working_directory = tmp_path / "work"
-    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
-    persisted_events = [
-        {
-            "type": "StageCompleted",
-            "run_id": run_id,
-            "sequence": 1,
-            "emitted_at": "2026-04-06T12:00:00Z",
-            "node_id": "prepare",
-            "index": 1,
-            "source_scope": "root",
-        },
+    hub = server.PipelineEventHub()
+    asyncio.run(hub.publish(
+        run_id,
         {
             "type": "StageStarted",
             "run_id": run_id,
@@ -176,11 +209,26 @@ def test_section_95_events_endpoint_preserves_stable_event_identity_across_repla
             "source_parent_node_id": "run_milestone",
             "source_flow_name": "implement-milestone.dot",
         },
-    ]
-    _write_persisted_events(run_id, working_directory, persisted_events)
-    monkeypatch.setattr(server, "EVENT_HUB", server.PipelineEventHub())
+    ))
+    asyncio.run(hub.publish(
+        run_id,
+        {
+            "type": "StageCompleted",
+            "run_id": run_id,
+            "sequence": 3,
+            "emitted_at": "2026-04-06T12:00:06Z",
+            "node_id": "done",
+            "index": 3,
+            "source_scope": "root",
+        },
+    ))
+    monkeypatch.setattr(server, "EVENT_HUB", hub)
 
-    first_replay = asyncio.run(_collect_stream_events(run_id, count=2))
-    second_replay = asyncio.run(_collect_stream_events(run_id, count=2))
+    events = asyncio.run(_collect_stream_events(run_id, count=2, after_sequence=1))
+    second_gap_fill = asyncio.run(_collect_stream_events(run_id, count=2, after_sequence=1))
 
-    assert first_replay == second_replay
+    assert [event["sequence"] for event in events] == [2, 3]
+    assert events[0]["source_scope"] == "child"
+    assert events[0]["source_parent_node_id"] == "run_milestone"
+    assert events[0]["source_flow_name"] == "implement-milestone.dot"
+    assert second_gap_fill == events

@@ -1,9 +1,14 @@
 import { RunStream } from '@/features/runs/RunStream'
+import {
+  flattenRunJournalSegments,
+  useRunJournalStore,
+} from '@/features/runs/state/runJournalStore'
 import { useStore } from '@/store'
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const resetRunStreamState = () => {
+  useRunJournalStore.setState({ byRunId: {} })
   useStore.setState((state) => ({
     ...state,
     selectedRunId: null,
@@ -16,7 +21,6 @@ const resetRunStreamState = () => {
     saveStateVersion: 0,
     saveErrorMessage: null,
     saveErrorKind: null,
-    logs: [],
     humanGate: null,
     nodeStatuses: {},
     runtimeStatus: 'idle',
@@ -267,6 +271,7 @@ describe('RunStream save indicator', () => {
 
     expect(eventSources).toHaveLength(1)
     expect(eventSources[0]?.url).toContain('/attractor/pipelines/run-cached-fallback/events')
+    expect(eventSources[0]?.url).not.toContain('after_sequence=0')
 
     await act(async () => {
       eventSources[0]?.emit({
@@ -281,6 +286,8 @@ describe('RunStream save indicator', () => {
     })
 
     expect(useStore.getState().selectedRunRecord?.current_node).toBe('review')
-    expect(useStore.getState().runDetailSessionsByRunId['run-cached-fallback']?.timelineEvents).toHaveLength(1)
+    expect(
+      flattenRunJournalSegments(useRunJournalStore.getState().byRunId['run-cached-fallback']?.segments ?? []),
+    ).toHaveLength(1)
   })
 })

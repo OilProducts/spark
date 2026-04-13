@@ -1747,7 +1747,8 @@ Implementations may expose the pipeline engine as an HTTP service for web-based 
 | `GET`  | `/runs`                                 | Authoritative snapshot run overview, optionally scoped by `project_path`. |
 | `GET`  | `/runs/events`                          | SSE stream of scoped run-overview updates: initial snapshot, then live run upserts. |
 | `GET`  | `/pipelines/{id}`                       | Get authoritative per-run lifecycle/detail state for inspection, including progress and persisted run metadata. |
-| `GET`  | `/pipelines/{id}/events`                | SSE stream of durable run events with history replay followed by live updates. |
+| `GET`  | `/pipelines/{id}/journal`               | Get durable run history as normalized journal entries, newest-first, with explicit paging via `limit` and `before_sequence`. |
+| `GET`  | `/pipelines/{id}/events`                | SSE live-tail stream for normalized run-journal entries, with optional `after_sequence` gap-fill. |
 | `POST` | `/pipelines/{id}/cancel`                | Cancel a running pipeline. |
 | `GET`  | `/pipelines/{id}/graph`                 | Get rendered graph visualization (SVG). |
 | `GET`  | `/pipelines/{id}/graph-preview`         | Get structured graph preview JSON from the stored run DOT snapshot. |
@@ -1791,14 +1792,23 @@ It must:
 - then emit `run_upsert` events with payload `{ "type": "run_upsert", "run": RunRecord }`
 - publish `run_upsert` whenever run-list truth changes because of run start, runtime status transition, metadata update, terminal completion, or orphaned-run reconciliation
 - keep no durable list-history contract beyond the initial current snapshot on connect
-`GET /pipelines/{id}/events` is a history-backed event channel for run inspection.
+`GET /pipelines/{id}/journal` is the primary durable history-read endpoint for selected-run inspection.
 It must:
-- replay durable per-run event history before yielding live updates
+- return normalized `RunJournalEntry` items, newest-first
+- support `limit`
+- support `before_sequence` for explicit older-page loading
+- preserve stable journal fields including `id`, `sequence`, `emitted_at`, `kind`, `raw_type`, `severity`, `summary`, `node_id`, `stage_index`, `source_scope`, `source_parent_node_id`, `source_flow_name`, `question_id`, and `payload`
+- include forwarded child-flow metadata on child entries
+
+`GET /pipelines/{id}/events` is the live-tail channel for run inspection.
+It must:
+- default to live updates only
+- optionally accept `after_sequence` and, when provided, gap-fill normalized entries with `sequence > after_sequence` before yielding live updates
 - use stable per-run event identity via monotonically increasing `sequence`
 - include a server-assigned `emitted_at` timestamp on every event
 - allow parent runs to include forwarded child-flow events, labeled with `source_scope="child"` plus `source_parent_node_id` and `source_flow_name`
 
-Clients should still reconcile the stream against `GET /pipelines/{id}` rather than treating the event stream as the sole source of terminal lifecycle truth.
+Clients should reconcile selected-run state against `GET /pipelines/{id}`, browse durable history through `GET /pipelines/{id}/journal`, and treat `GET /pipelines/{id}/events` as a live-tail bridge rather than the sole source of terminal lifecycle truth or full history.
 
 `POST /pipelines/{id}/continue` is a derived-continuation endpoint, not a same-run resume endpoint.
 It must:
@@ -1863,15 +1873,21 @@ Run-overview payloads exposed through `/runs/events` should include:
 - `snapshot` events with a `runs` array of full `RunRecord` payloads
 - `run_upsert` events with one full `RunRecord` in `run`
 `RunRecord` remains additive and should preserve the coarse `token_usage` total for compatibility while also exposing the richer structured usage and estimated-cost fields.
-Event payloads exposed through `/pipelines/{id}/events` should include:
-- `run_id`
+Normalized journal payloads exposed through `/pipelines/{id}/journal` and `/pipelines/{id}/events` should include:
+- `id`
 - `sequence`
 - `emitted_at`
-- optional `llm_model` on stage lifecycle events emitted by LLM-backed handlers
-- optional child-source metadata when forwarded from a child executor:
-  - `source_scope`
-  - `source_parent_node_id`
-  - `source_flow_name`
+- `kind`
+- `raw_type`
+- `severity`
+- `summary`
+- `node_id`
+- `stage_index`
+- `source_scope`
+- `source_parent_node_id`
+- `source_flow_name`
+- `question_id`
+- `payload`
 
 ### 9.7 Tool Call Hooks
 

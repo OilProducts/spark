@@ -7,7 +7,6 @@ import { useProjectGitMetadata } from '@/features/projects/hooks/useProjectGitMe
 import { extractApiErrorMessage } from '@/features/projects/model/projectsHomeState'
 import { useRunDetailResources } from '@/features/runs/hooks/useRunDetailResources'
 import { useRunsList } from '@/features/runs/hooks/useRunsList'
-import { useRunTimeline } from '@/features/runs/hooks/useRunTimeline'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
 import type {
@@ -461,16 +460,9 @@ export function RunsSessionController() {
                 )
         )
 
-    const {
-        pendingQuestionSnapshots,
-    } = useRunDetailResources({
+    useRunDetailResources({
         selectedRunId: selectedRun?.run_id ?? null,
         manageSync: true,
-    })
-
-    useRunTimeline({
-        pendingQuestionSnapshots,
-        selectedRunTimelineId: selectedRun?.run_id ?? null,
     })
 
     return null

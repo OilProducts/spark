@@ -103,8 +103,26 @@ def _write_persisted_events(run_id: str, working_directory: Path, events: list[d
             handle.write(json.dumps(event, sort_keys=True) + "\n")
 
 
-async def _collect_stream_events(run_id: str, *, count: int) -> list[dict]:
-    response = await server.pipeline_events(run_id, _RequestDisconnectAfterLoops(loops=count))
+def _register_known_run(run_id: str, working_directory: Path) -> None:
+    server._record_run_start(
+        run_id,
+        flow_name="Flow",
+        working_directory=str(working_directory),
+        model="test-model",
+    )
+
+
+async def _collect_stream_events(
+    run_id: str,
+    *,
+    count: int,
+    after_sequence: int | None = None,
+) -> list[dict]:
+    response = await server.pipeline_events(
+        run_id,
+        _RequestDisconnectAfterLoops(loops=count),
+        after_sequence=after_sequence,
+    )
     iterator = response.body_iterator
     chunks: list[str | bytes] = []
     try:
@@ -242,13 +260,12 @@ def test_validation_error_attempt_reserves_run_id(tmp_path: Path) -> None:
     assert [event["type"] for event in server._read_persisted_run_events(run_id)] == ["lifecycle", "log"]
 
 
-def test_pipeline_events_replays_persisted_history_for_completed_run_without_live_executor(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    run_id = "run-sse-history"
+def test_pipeline_journal_returns_newest_first_durable_history_for_completed_run(tmp_path: Path) -> None:
+    run_id = "run-journal-history"
     working_directory = tmp_path / "work"
+    working_directory.mkdir()
     server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    _register_known_run(run_id, working_directory)
     _write_persisted_events(
         run_id,
         working_directory,
@@ -277,21 +294,130 @@ def test_pipeline_events_replays_persisted_history_for_completed_run_without_liv
         ],
     )
 
-    hub = _QueueOnlyEventHub(run_id)
+    page = asyncio.run(server.pipeline_journal(run_id))
+
+    assert [entry["sequence"] for entry in page["entries"]] == [2, 1]
+    assert page["newest_sequence"] == 2
+    assert page["oldest_sequence"] == 1
+    assert page["has_older"] is False
+    assert page["entries"][0]["emitted_at"] == "2026-04-06T12:00:05Z"
+    assert page["entries"][0]["kind"] == "stage"
+    assert page["entries"][0]["payload"]["llm_model"] == "gpt-node-override"
+    assert page["entries"][0]["source_scope"] == "child"
+    assert page["entries"][0]["source_parent_node_id"] == "run_milestone"
+    assert page["entries"][0]["source_flow_name"] == "implement-milestone.dot"
+
+
+def test_pipeline_journal_paginates_older_entries_and_preserves_log_and_interview_provenance(
+    tmp_path: Path,
+) -> None:
+    run_id = "run-journal-pagination"
+    working_directory = tmp_path / "work"
+    working_directory.mkdir()
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    _register_known_run(run_id, working_directory)
+    _write_persisted_events(
+        run_id,
+        working_directory,
+        [
+            {
+                "type": "log",
+                "run_id": run_id,
+                "sequence": 1,
+                "emitted_at": "2026-04-06T12:00:00Z",
+                "msg": "warn: disk almost full",
+                "source_scope": "root",
+            },
+            {
+                "type": "InterviewTimeout",
+                "run_id": run_id,
+                "sequence": 2,
+                "emitted_at": "2026-04-06T12:00:01Z",
+                "stage": "review_gate",
+                "question_id": "question-1",
+                "default_choice_label": "Fix",
+                "source_scope": "root",
+            },
+            {
+                "type": "InterviewCompleted",
+                "run_id": run_id,
+                "sequence": 3,
+                "emitted_at": "2026-04-06T12:00:02Z",
+                "stage": "review_gate",
+                "question_id": "question-1",
+                "answer": "Approve",
+                "outcome_provenance": "accepted",
+                "source_scope": "root",
+            },
+            {
+                "type": "StageCompleted",
+                "run_id": run_id,
+                "sequence": 4,
+                "emitted_at": "2026-04-06T12:00:03Z",
+                "node_id": "done",
+                "index": 3,
+                "source_scope": "root",
+            },
+        ],
+    )
+
+    latest_page = asyncio.run(server.pipeline_journal(run_id, limit=2))
+    older_page = asyncio.run(server.pipeline_journal(run_id, limit=2, before_sequence=3))
+
+    assert [entry["sequence"] for entry in latest_page["entries"]] == [4, 3]
+    assert latest_page["has_older"] is True
+    assert [entry["sequence"] for entry in older_page["entries"]] == [2, 1]
+    assert older_page["has_older"] is False
+    assert older_page["entries"][0]["question_id"] == "question-1"
+    assert older_page["entries"][0]["summary"] == "Interview timed out for review_gate (default applied: Fix)"
+    assert older_page["entries"][1]["kind"] == "log"
+    assert older_page["entries"][1]["severity"] == "warning"
+    assert older_page["entries"][1]["summary"] == "warn: disk almost full"
+
+
+def test_pipeline_events_live_tail_without_after_sequence_does_not_replay_persisted_history(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_id = "run-sse-live-tail"
+    working_directory = tmp_path / "work"
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    _write_persisted_events(
+        run_id,
+        working_directory,
+        [
+            {
+                "type": "runtime",
+                "status": "running",
+                "run_id": run_id,
+                "sequence": 1,
+                "emitted_at": "2026-04-06T12:00:00Z",
+                "source_scope": "root",
+            },
+        ],
+    )
+
+    hub = _QueueOnlyEventHub(
+        run_id,
+        queued_events=[
+            {
+                "type": "runtime",
+                "status": "running",
+                "run_id": run_id,
+                "sequence": 2,
+                "emitted_at": "2026-04-06T12:00:01Z",
+                "source_scope": "root",
+            },
+        ],
+    )
     monkeypatch.setattr(server, "EVENT_HUB", hub)
 
-    events = asyncio.run(_collect_stream_events(run_id, count=2))
+    events = asyncio.run(_collect_stream_events(run_id, count=1))
 
-    assert [event["sequence"] for event in events] == [1, 2]
-    assert events[0]["emitted_at"] == "2026-04-06T12:00:00Z"
-    assert "llm_model" not in events[0]
-    assert events[1]["llm_model"] == "gpt-node-override"
-    assert events[1]["source_scope"] == "child"
-    assert events[1]["source_parent_node_id"] == "run_milestone"
-    assert events[1]["source_flow_name"] == "implement-milestone.dot"
+    assert [event["sequence"] for event in events] == [2]
 
 
-def test_pipeline_events_replays_persisted_history_without_replaying_duplicate_live_sequence(
+def test_pipeline_events_gap_fill_after_requested_sequence_without_replaying_duplicate_live_sequence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -344,9 +470,9 @@ def test_pipeline_events_replays_persisted_history_without_replaying_duplicate_l
     )
     monkeypatch.setattr(server, "EVENT_HUB", hub)
 
-    events = asyncio.run(_collect_stream_events(run_id, count=3))
+    events = asyncio.run(_collect_stream_events(run_id, count=2, after_sequence=1))
 
-    assert [event["sequence"] for event in events] == [1, 2, 3]
+    assert [event["sequence"] for event in events] == [2, 3]
 
 
 def test_pipeline_events_do_not_drop_live_events_published_during_history_handoff(
@@ -394,7 +520,7 @@ def test_pipeline_events_do_not_drop_live_events_published_during_history_handof
 
     try:
         async def _exercise_stream() -> list[dict]:
-            response = await server.pipeline_events(run_id, _RequestNeverDisconnect())
+            response = await server.pipeline_events(run_id, _RequestNeverDisconnect(), after_sequence=0)
             await hub.publish(run_id, follow_up_event)
             return await _collect_stream_events_until_timeout(
                 response,

@@ -215,9 +215,6 @@ export interface RunInspectorSlice {
     runNodeDiagnostics: Record<string, DiagnosticEntry[]>
     runEdgeDiagnostics: Record<string, DiagnosticEntry[]>
     runHasValidationErrors: boolean
-    logs: LogEntry[]
-    addLog: (entry: LogEntry) => void
-    clearLogs: () => void
     runtimeStatus: RuntimeStatus
     setRuntimeStatus: (status: RuntimeStatus) => void
     runtimeOutcome: RunOutcome | null

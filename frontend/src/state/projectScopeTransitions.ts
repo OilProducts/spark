@@ -38,7 +38,6 @@ type ProjectScopeTransitionState = Pick<
     | 'runtimeOutcomeReasonMessage'
     | 'nodeStatuses'
     | 'humanGate'
-    | 'logs'
     | 'selectedNodeId'
     | 'selectedEdgeId'
     | 'graphAttrs'
@@ -149,7 +148,6 @@ const preserveRunInspectionState = (state: AppState) => ({
     runtimeOutcomeReasonMessage: state.runtimeOutcomeReasonMessage,
     nodeStatuses: state.nodeStatuses,
     humanGate: state.humanGate,
-    logs: state.logs,
 })
 
 const resetRunInspectionState = (runtimeStatus: RuntimeStatus = 'idle') => ({
@@ -165,7 +163,6 @@ const resetRunInspectionState = (runtimeStatus: RuntimeStatus = 'idle') => ({
     runtimeOutcomeReasonMessage: null,
     nodeStatuses: {},
     humanGate: null,
-    logs: [],
 })
 
 const resolveForegroundRunInspectionState = (

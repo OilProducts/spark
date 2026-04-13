@@ -1,19 +1,20 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+
 import type {
     GroupedTimelineEntry,
-    PendingInterviewGate,
-    PendingInterviewGateGroup,
     TimelineEventCategory,
     TimelineSeverity,
 } from '../model/shared'
 import {
+    RUN_JOURNAL_WINDOW_SIZE,
     TIMELINE_CATEGORY_LABELS,
-    TIMELINE_MAX_ITEMS,
     TIMELINE_SEVERITY_LABELS,
     TIMELINE_SEVERITY_STYLES,
     formatTimestamp,
 } from '../model/shared'
 import { TIMELINE_UPDATE_BUDGET_MS } from '@/lib/performanceBudgets'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import {
     Empty,
@@ -24,64 +25,128 @@ import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
 import { cn } from '@/lib/utils'
-import { RunQuestionsPanel } from './RunQuestionsPanel'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunEventTimelineCardProps {
     collapsed: boolean
     isNarrowViewport: boolean
     isTimelineLive: boolean
-    timelineEvents: Array<{ id: string }>
-    timelineDroppedCount: number
+    timelineEventCount: number
     timelineError: string | null
-    visiblePendingInterviewGates: PendingInterviewGate[]
-    groupedPendingInterviewGates: PendingInterviewGateGroup[]
-    pendingGateActionError: string | null
-    submittingGateIds: Record<string, boolean>
-    freeformAnswersByGateId: Record<string, string>
     timelineTypeFilter: string
     timelineTypeOptions: string[]
     timelineNodeStageFilter: string
     timelineCategoryFilter: 'all' | TimelineEventCategory
     timelineSeverityFilter: 'all' | TimelineSeverity
-    filteredTimelineEvents: Array<{ id: string }>
+    filteredTimelineEventCount: number
     groupedTimelineEntries: GroupedTimelineEntry[]
+    hasOlderTimelineEvents: boolean
+    isTimelineLoadingOlder: boolean
+    onLoadOlderTimelineEvents: () => void | Promise<void>
     onTimelineTypeFilterChange: (value: string) => void
     onTimelineNodeStageFilterChange: (value: string) => void
     onTimelineCategoryFilterChange: (value: 'all' | TimelineEventCategory) => void
     onTimelineSeverityFilterChange: (value: 'all' | TimelineSeverity) => void
-    onFreeformAnswerChange: (questionId: string, value: string) => void
-    onSubmitPendingGateAnswer: (gate: PendingInterviewGate, answer: string) => void | Promise<void>
     onCollapsedChange: (collapsed: boolean) => void
+}
+
+const JOURNAL_ROW_ESTIMATE_PX = 132
+const JOURNAL_OVERSCAN_ROWS = 6
+
+type WindowedTimelineGroup = {
+    id: string
+    correlation: GroupedTimelineEntry['correlation']
+    totalEventCount: number
+    events: GroupedTimelineEntry['events']
 }
 
 export function RunEventTimelineCard({
     collapsed,
     isNarrowViewport,
     isTimelineLive,
-    timelineEvents,
-    timelineDroppedCount,
+    timelineEventCount,
     timelineError,
-    visiblePendingInterviewGates,
-    groupedPendingInterviewGates,
-    pendingGateActionError,
-    submittingGateIds,
-    freeformAnswersByGateId,
     timelineTypeFilter,
     timelineTypeOptions,
     timelineNodeStageFilter,
     timelineCategoryFilter,
     timelineSeverityFilter,
-    filteredTimelineEvents,
+    filteredTimelineEventCount,
     groupedTimelineEntries,
+    hasOlderTimelineEvents,
+    isTimelineLoadingOlder,
+    onLoadOlderTimelineEvents,
     onTimelineTypeFilterChange,
     onTimelineNodeStageFilterChange,
     onTimelineCategoryFilterChange,
     onTimelineSeverityFilterChange,
-    onFreeformAnswerChange,
-    onSubmitPendingGateAnswer,
     onCollapsedChange,
 }: RunEventTimelineCardProps) {
+    const listRef = useRef<HTMLDivElement | null>(null)
+    const [scrollTop, setScrollTop] = useState(0)
+    const [viewportHeight, setViewportHeight] = useState(448)
+
+    useEffect(() => {
+        if (!collapsed && listRef.current) {
+            setViewportHeight(listRef.current.clientHeight || 448)
+        }
+    }, [collapsed, groupedTimelineEntries.length])
+
+    const windowState = useMemo(() => {
+        const totalRows = groupedTimelineEntries.reduce(
+            (count, entry) => count + entry.events.length,
+            0,
+        )
+        const visibleRowCount = Math.min(
+            RUN_JOURNAL_WINDOW_SIZE,
+            Math.max(
+                JOURNAL_OVERSCAN_ROWS * 2,
+                Math.ceil(viewportHeight / JOURNAL_ROW_ESTIMATE_PX) + (JOURNAL_OVERSCAN_ROWS * 2),
+            ),
+        )
+        const unclampedStartRowIndex = Math.max(
+            0,
+            Math.floor(scrollTop / JOURNAL_ROW_ESTIMATE_PX) - JOURNAL_OVERSCAN_ROWS,
+        )
+        const startRowIndex = Math.min(
+            unclampedStartRowIndex,
+            Math.max(0, totalRows - visibleRowCount),
+        )
+        const endRowIndex = Math.min(totalRows, startRowIndex + visibleRowCount)
+        const renderedGroups: WindowedTimelineGroup[] = []
+        let rowCursor = 0
+
+        for (const entry of groupedTimelineEntries) {
+            const groupStartRowIndex = rowCursor
+            const groupEndRowIndex = groupStartRowIndex + entry.events.length
+            rowCursor = groupEndRowIndex
+
+            if (groupEndRowIndex <= startRowIndex) {
+                continue
+            }
+            if (groupStartRowIndex >= endRowIndex) {
+                break
+            }
+
+            const eventStartIndex = Math.max(0, startRowIndex - groupStartRowIndex)
+            const eventEndIndex = Math.min(entry.events.length, endRowIndex - groupStartRowIndex)
+            renderedGroups.push({
+                id: entry.id,
+                correlation: entry.correlation,
+                totalEventCount: entry.events.length,
+                events: entry.events.slice(eventStartIndex, eventEndIndex),
+            })
+        }
+
+        const renderedRowCount = renderedGroups.reduce((count, entry) => count + entry.events.length, 0)
+        return {
+            paddingTop: startRowIndex * JOURNAL_ROW_ESTIMATE_PX,
+            paddingBottom: Math.max(0, (totalRows - endRowIndex) * JOURNAL_ROW_ESTIMATE_PX),
+            renderedGroups,
+            renderedRowCount,
+        }
+    }, [groupedTimelineEntries, scrollTop, viewportHeight])
+
     const renderSourceLabel = (event: GroupedTimelineEntry['events'][number]) => {
         if (event.sourceScope !== 'child') {
             return null
@@ -99,9 +164,9 @@ export function RunEventTimelineCard({
             <CardHeader className="gap-1 px-4">
                 <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 space-y-1">
-                        <h3 className="text-sm font-semibold text-foreground">Event Timeline</h3>
+                        <h3 className="text-sm font-semibold text-foreground">Run Journal</h3>
                         <p className="text-xs leading-5 text-muted-foreground">
-                            Live typed events, filter controls, and pending human gates.
+                            Durable run history with live tail updates and explicit paging for older evidence.
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -124,194 +189,207 @@ export function RunEventTimelineCard({
             </CardHeader>
             {!collapsed ? (
                 <CardContent className="space-y-3 px-4">
-                <div
-                    data-testid="timeline-update-performance-budget"
-                    data-budget-ms={TIMELINE_UPDATE_BUDGET_MS}
-                    className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
-                >
-                    Timeline update budget: {TIMELINE_UPDATE_BUDGET_MS}ms max per stream update batch.
-                </div>
-                {(timelineEvents.length > 0 || timelineDroppedCount > 0) && (
                     <div
-                        data-testid="run-event-timeline-throughput"
-                        data-max-items={TIMELINE_MAX_ITEMS}
-                        data-dropped-count={timelineDroppedCount}
+                        data-testid="timeline-update-performance-budget"
+                        data-budget-ms={TIMELINE_UPDATE_BUDGET_MS}
                         className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
                     >
-                        Showing latest {Math.min(timelineEvents.length, TIMELINE_MAX_ITEMS)} events.
-                        {timelineDroppedCount > 0
-                            ? ` Dropped ${timelineDroppedCount} older events to stay responsive.`
-                            : ''}
+                        Journal update budget: {TIMELINE_UPDATE_BUDGET_MS}ms max per live update batch.
                     </div>
-                )}
-                {timelineError && (
-                    <Alert
-                        data-testid="run-event-timeline-error"
-                        className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
+                    <div
+                        data-testid="run-event-timeline-throughput"
+                        data-loaded-count={timelineEventCount}
+                        data-rendered-count={windowState.renderedRowCount}
+                        data-window-size={RUN_JOURNAL_WINDOW_SIZE}
+                        className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
                     >
-                        <AlertDescription className="text-inherit">{timelineError}</AlertDescription>
-                    </Alert>
-                )}
-                {!timelineError && visiblePendingInterviewGates.length > 0 && (
-                    <RunQuestionsPanel
-                        freeformAnswersByGateId={freeformAnswersByGateId}
-                        groupedPendingInterviewGates={groupedPendingInterviewGates}
-                        onFreeformAnswerChange={onFreeformAnswerChange}
-                        onSubmitPendingGateAnswer={(gate, answer) => {
-                            void onSubmitPendingGateAnswer(gate, answer)
-                        }}
-                        pendingGateActionError={pendingGateActionError}
-                        submittingGateIds={submittingGateIds}
-                    />
-                )}
-                {!timelineError && (
-                    <div className={`grid gap-2 ${isNarrowViewport ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
-                        <Field className="space-y-1.5">
-                            <FieldLabel>Event Type</FieldLabel>
-                            <NativeSelect
-                                data-testid="run-event-timeline-filter-type"
-                                value={timelineTypeFilter}
-                                onChange={(event) => onTimelineTypeFilterChange(event.target.value)}
-                                className="h-8 text-xs"
-                            >
-                                <option value="all">All event types</option>
-                                {timelineTypeOptions.map((type) => (
-                                    <option key={type} value={type}>{type}</option>
-                                ))}
-                            </NativeSelect>
-                        </Field>
-                        <Field className="space-y-1.5">
-                            <FieldLabel>Node/Stage</FieldLabel>
-                            <Input
-                                data-testid="run-event-timeline-filter-node-stage"
-                                value={timelineNodeStageFilter}
-                                onChange={(event) => onTimelineNodeStageFilterChange(event.target.value)}
-                                placeholder="Node id or stage index..."
-                                className="h-8 text-xs"
-                            />
-                        </Field>
-                        <Field className="space-y-1.5">
-                            <FieldLabel>Category</FieldLabel>
-                            <NativeSelect
-                                data-testid="run-event-timeline-filter-category"
-                                value={timelineCategoryFilter}
-                                onChange={(event) => onTimelineCategoryFilterChange(event.target.value as 'all' | TimelineEventCategory)}
-                                className="h-8 text-xs"
-                            >
-                                <option value="all">All categories</option>
-                                {Object.entries(TIMELINE_CATEGORY_LABELS).map(([category, label]) => (
-                                    <option key={category} value={category}>{label}</option>
-                                ))}
-                            </NativeSelect>
-                        </Field>
-                        <Field className="space-y-1.5">
-                            <FieldLabel>Severity</FieldLabel>
-                            <NativeSelect
-                                data-testid="run-event-timeline-filter-severity"
-                                value={timelineSeverityFilter}
-                                onChange={(event) => onTimelineSeverityFilterChange(event.target.value as 'all' | TimelineSeverity)}
-                                className="h-8 text-xs"
-                            >
-                                <option value="all">All severities</option>
-                                <option value="info">Info</option>
-                                <option value="warning">Warning</option>
-                                <option value="error">Error</option>
-                            </NativeSelect>
-                        </Field>
+                        Loaded {timelineEventCount} journal entries. Rendering {windowState.renderedRowCount} rows in a bounded window.
                     </div>
-                )}
-                {!timelineError && timelineEvents.length === 0 && (
-                    <Empty data-testid="run-event-timeline-empty" className="text-sm text-muted-foreground">
-                        <EmptyHeader>
-                            <EmptyDescription>No typed timeline events yet.</EmptyDescription>
-                        </EmptyHeader>
-                    </Empty>
-                )}
-                {!timelineError && timelineEvents.length > 0 && filteredTimelineEvents.length === 0 && (
-                    <Empty data-testid="run-event-timeline-empty" className="text-sm text-muted-foreground">
-                        <EmptyHeader>
-                            <EmptyDescription>No timeline events match the current filters.</EmptyDescription>
-                        </EmptyHeader>
-                    </Empty>
-                )}
-                {groupedTimelineEntries.length > 0 && (
-                    <div data-testid="run-event-timeline-list" className="max-h-80 space-y-2 overflow-auto pr-1">
-                        {groupedTimelineEntries.map((entry) => (
-                            <section
-                                key={entry.id}
-                                data-testid="run-event-timeline-group"
-                                className="space-y-2 rounded-md border border-border/60 bg-background/50 p-2"
-                            >
-                                {entry.correlation && (
-                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                        <span
-                                            data-testid="run-event-timeline-group-label"
-                                            className="inline-flex rounded border border-border/80 bg-background px-2 py-0.5 text-[11px] uppercase tracking-wide text-muted-foreground"
+                    {timelineError && (
+                        <Alert
+                            data-testid="run-event-timeline-error"
+                            className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
+                        >
+                            <AlertDescription className="text-inherit">{timelineError}</AlertDescription>
+                        </Alert>
+                    )}
+                    {!timelineError && (
+                        <div className={`grid gap-2 ${isNarrowViewport ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
+                            <Field className="space-y-1.5">
+                                <FieldLabel>Event Type</FieldLabel>
+                                <NativeSelect
+                                    data-testid="run-event-timeline-filter-type"
+                                    value={timelineTypeFilter}
+                                    onChange={(event) => onTimelineTypeFilterChange(event.target.value)}
+                                    className="h-8 text-xs"
+                                >
+                                    <option value="all">All event types</option>
+                                    {timelineTypeOptions.map((type) => (
+                                        <option key={type} value={type}>{type}</option>
+                                    ))}
+                                </NativeSelect>
+                            </Field>
+                            <Field className="space-y-1.5">
+                                <FieldLabel>Node/Stage</FieldLabel>
+                                <Input
+                                    data-testid="run-event-timeline-filter-node-stage"
+                                    value={timelineNodeStageFilter}
+                                    onChange={(event) => onTimelineNodeStageFilterChange(event.target.value)}
+                                    placeholder="Node id, stage index, or child flow..."
+                                    className="h-8 text-xs"
+                                />
+                            </Field>
+                            <Field className="space-y-1.5">
+                                <FieldLabel>Category</FieldLabel>
+                                <NativeSelect
+                                    data-testid="run-event-timeline-filter-category"
+                                    value={timelineCategoryFilter}
+                                    onChange={(event) => onTimelineCategoryFilterChange(event.target.value as 'all' | TimelineEventCategory)}
+                                    className="h-8 text-xs"
+                                >
+                                    <option value="all">All categories</option>
+                                    {Object.entries(TIMELINE_CATEGORY_LABELS).map(([category, label]) => (
+                                        <option key={category} value={category}>{label}</option>
+                                    ))}
+                                </NativeSelect>
+                            </Field>
+                            <Field className="space-y-1.5">
+                                <FieldLabel>Severity</FieldLabel>
+                                <NativeSelect
+                                    data-testid="run-event-timeline-filter-severity"
+                                    value={timelineSeverityFilter}
+                                    onChange={(event) => onTimelineSeverityFilterChange(event.target.value as 'all' | TimelineSeverity)}
+                                    className="h-8 text-xs"
+                                >
+                                    <option value="all">All severities</option>
+                                    <option value="info">Info</option>
+                                    <option value="warning">Warning</option>
+                                    <option value="error">Error</option>
+                                </NativeSelect>
+                            </Field>
+                        </div>
+                    )}
+                    {!timelineError && timelineEventCount === 0 && (
+                        <Empty data-testid="run-event-timeline-empty" className="text-sm text-muted-foreground">
+                            <EmptyHeader>
+                                <EmptyDescription>No journal history available for this run yet.</EmptyDescription>
+                            </EmptyHeader>
+                        </Empty>
+                    )}
+                    {!timelineError && timelineEventCount > 0 && filteredTimelineEventCount === 0 && (
+                        <Empty data-testid="run-event-timeline-empty" className="text-sm text-muted-foreground">
+                            <EmptyHeader>
+                                <EmptyDescription>No journal entries match the current filters.</EmptyDescription>
+                            </EmptyHeader>
+                        </Empty>
+                    )}
+                    {groupedTimelineEntries.length > 0 && (
+                        <div
+                            ref={listRef}
+                            data-testid="run-event-timeline-list"
+                            onScroll={(event) => {
+                                const target = event.currentTarget
+                                setScrollTop(target.scrollTop)
+                                setViewportHeight(target.clientHeight || 448)
+                            }}
+                            className="max-h-[28rem] overflow-auto pr-1"
+                        >
+                            <div style={{ paddingTop: `${windowState.paddingTop}px`, paddingBottom: `${windowState.paddingBottom}px` }}>
+                                <div className="space-y-2">
+                                    {windowState.renderedGroups.map((entry) => (
+                                        <section
+                                            key={entry.id}
+                                            data-testid="run-event-timeline-group"
+                                            className="space-y-2 rounded-md border border-border/60 bg-background/50 p-2"
                                         >
-                                            {entry.correlation.label}
-                                        </span>
-                                        <span className="text-[11px] text-muted-foreground">
-                                            {entry.events.length} event{entry.events.length === 1 ? '' : 's'}
-                                        </span>
-                                    </div>
-                                )}
-                                {entry.events.map((event) => {
-                                    const sourceLabel = renderSourceLabel(event)
-                                    return (
-                                        <article
-                                            key={event.id}
-                                            data-testid="run-event-timeline-row"
-                                            className="rounded-md border border-border/70 bg-muted/30 px-3 py-2"
-                                        >
-                                            <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                                                <span
-                                                    data-testid="run-event-timeline-row-type"
-                                                    className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 font-semibold uppercase tracking-wide text-foreground"
-                                                >
-                                                    {event.type}
-                                                </span>
-                                                <span
-                                                    data-testid="run-event-timeline-row-category"
-                                                    className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 uppercase tracking-wide text-muted-foreground"
-                                                >
-                                                    {TIMELINE_CATEGORY_LABELS[event.category]}
-                                                </span>
-                                                <span
-                                                    data-testid="run-event-timeline-row-severity"
-                                                    className={`inline-flex rounded border px-1.5 py-0.5 uppercase tracking-wide ${TIMELINE_SEVERITY_STYLES[event.severity]}`}
-                                                >
-                                                    {TIMELINE_SEVERITY_LABELS[event.severity]}
-                                                </span>
-                                                <span data-testid="run-event-timeline-row-time" className="text-muted-foreground">
-                                                    {formatTimestamp(event.receivedAt)}
-                                                </span>
-                                            </div>
                                             {entry.correlation && (
-                                                <p data-testid="run-event-timeline-row-correlation" className="mt-1 text-xs text-muted-foreground">
-                                                    {entry.correlation.kind === 'retry' ? 'Retry correlation' : 'Interview correlation'}: {entry.correlation.label}
-                                                </p>
+                                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                                    <span
+                                                        data-testid="run-event-timeline-group-label"
+                                                        className="inline-flex rounded border border-border/80 bg-background px-2 py-0.5 text-[11px] uppercase tracking-wide text-muted-foreground"
+                                                    >
+                                                        {entry.correlation.label}
+                                                    </span>
+                                                    <span className="text-[11px] text-muted-foreground">
+                                                        {entry.totalEventCount} {entry.totalEventCount === 1 ? 'entry' : 'entries'}
+                                                    </span>
+                                                </div>
                                             )}
-                                            <p data-testid="run-event-timeline-row-summary" className="mt-1 text-sm text-foreground">
-                                                {event.summary}
-                                            </p>
-                                            {event.nodeId && (
-                                                <p data-testid="run-event-timeline-row-node" className="text-xs text-muted-foreground">
-                                                    Node: {event.nodeId}
-                                                    {event.stageIndex !== null ? ` (index ${event.stageIndex})` : ''}
-                                                </p>
-                                            )}
-                                            {sourceLabel && (
-                                                <p data-testid="run-event-timeline-row-source" className="text-xs text-muted-foreground">
-                                                    Source: {sourceLabel}
-                                                </p>
-                                            )}
-                                        </article>
-                                    )
-                                })}
-                            </section>
-                        ))}
-                    </div>
-                )}
+                                            {entry.events.map((event) => {
+                                                const sourceLabel = renderSourceLabel(event)
+                                                return (
+                                                    <article
+                                                        key={event.id}
+                                                        data-testid="run-event-timeline-row"
+                                                        className="rounded-md border border-border/70 bg-muted/30 px-3 py-2"
+                                                    >
+                                                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                                            <span
+                                                                data-testid="run-event-timeline-row-type"
+                                                                className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 font-semibold uppercase tracking-wide text-foreground"
+                                                            >
+                                                                {event.type}
+                                                            </span>
+                                                            <span
+                                                                data-testid="run-event-timeline-row-category"
+                                                                className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 uppercase tracking-wide text-muted-foreground"
+                                                            >
+                                                                {TIMELINE_CATEGORY_LABELS[event.category]}
+                                                            </span>
+                                                            <span
+                                                                data-testid="run-event-timeline-row-severity"
+                                                                className={`inline-flex rounded border px-1.5 py-0.5 uppercase tracking-wide ${TIMELINE_SEVERITY_STYLES[event.severity]}`}
+                                                            >
+                                                                {TIMELINE_SEVERITY_LABELS[event.severity]}
+                                                            </span>
+                                                            <span data-testid="run-event-timeline-row-time" className="text-muted-foreground">
+                                                                {formatTimestamp(event.receivedAt)}
+                                                            </span>
+                                                        </div>
+                                                        {entry.correlation && (
+                                                            <p data-testid="run-event-timeline-row-correlation" className="mt-1 text-xs text-muted-foreground">
+                                                                {entry.correlation.kind === 'retry' ? 'Retry correlation' : 'Interview correlation'}: {entry.correlation.label}
+                                                            </p>
+                                                        )}
+                                                        <p data-testid="run-event-timeline-row-summary" className="mt-1 text-sm text-foreground">
+                                                            {event.summary}
+                                                        </p>
+                                                        {event.nodeId && (
+                                                            <p data-testid="run-event-timeline-row-node" className="text-xs text-muted-foreground">
+                                                                Node: {event.nodeId}
+                                                                {event.stageIndex !== null ? ` (index ${event.stageIndex})` : ''}
+                                                            </p>
+                                                        )}
+                                                        {sourceLabel && (
+                                                            <p data-testid="run-event-timeline-row-source" className="text-xs text-muted-foreground">
+                                                                Source: {sourceLabel}
+                                                            </p>
+                                                        )}
+                                                    </article>
+                                                )
+                                            })}
+                                        </section>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {hasOlderTimelineEvents && (
+                        <div className="flex justify-center">
+                            <Button
+                                type="button"
+                                data-testid="run-journal-load-older"
+                                variant="outline"
+                                size="sm"
+                                disabled={isTimelineLoadingOlder}
+                                onClick={() => {
+                                    void onLoadOlderTimelineEvents()
+                                }}
+                            >
+                                {isTimelineLoadingOlder ? 'Loading…' : 'Load older'}
+                            </Button>
+                        </div>
+                    )}
                 </CardContent>
             ) : null}
         </Card>

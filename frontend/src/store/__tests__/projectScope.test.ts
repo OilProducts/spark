@@ -105,7 +105,6 @@ describe('project scope store behavior', () => {
     store.setSelectedRunId('run-a')
     store.setActiveFlow('preferred.dot')
     store.setExecutionFlow('run-flow-a.dot')
-    store.addLog({ time: '12:00', msg: 'running', type: 'info' })
     store.setSelectedNodeId('node-a')
     store.setDiagnostics([
       {
@@ -123,7 +122,6 @@ describe('project scope store behavior', () => {
     expect(next.selectedRunId).toBeNull()
     expect(next.activeFlow).toBe('preferred.dot')
     expect(next.executionFlow).toBe('run-flow-a.dot')
-    expect(next.logs).toEqual([])
   })
 
   it('foregrounds the remembered project-scoped selected run when switching active projects', () => {

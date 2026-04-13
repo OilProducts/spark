@@ -5,7 +5,7 @@ import { useRunsList } from './hooks/useRunsList'
 import { useRunActions } from './hooks/useRunActions'
 import { useRunDetails } from './hooks/useRunDetails'
 import { useRunTimeline } from './hooks/useRunTimeline'
-import { RunActivityCard } from './components/RunActivityCard'
+import { RunAdvancedSection } from './components/RunAdvancedSection'
 import { RunArtifactsCard } from './components/RunArtifactsCard'
 import { RunCheckpointCard } from './components/RunCheckpointCard'
 import { RunContextCard } from './components/RunContextCard'
@@ -13,7 +13,8 @@ import { RunEventTimelineCard } from './components/RunEventTimelineCard'
 import { RunGraphCard } from './components/RunGraphCard'
 import { RunList } from './components/RunList'
 import { RunSummaryCard } from './components/RunSummaryCard'
-import type { RunRecord } from './model/shared'
+import { RunQuestionsPanel } from './components/RunQuestionsPanel'
+import { STATUS_LABELS, type RunRecord } from './model/shared'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -67,6 +68,8 @@ const mergeSelectedRunTelemetry = (currentRecord: RunRecord, summaryRecord: RunR
     token_usage_breakdown: summaryRecord.token_usage_breakdown ?? currentRecord.token_usage_breakdown,
     estimated_model_cost: summaryRecord.estimated_model_cost ?? currentRecord.estimated_model_cost,
 })
+
+const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
 export function RunsPanel() {
     const isNarrowViewport = useNarrowViewport()
@@ -175,11 +178,16 @@ export function RunsPanel() {
         manageSync: false,
     })
     const {
-        filteredTimelineEvents,
+        filteredTimelineEventCount,
         freeformAnswersByGateId,
         groupedPendingInterviewGates,
         groupedTimelineEntries,
+        hasOlderTimelineEvents,
         isTimelineLive,
+        isTimelineLoadingOlder,
+        latestRetryTimelineEvent,
+        latestTimelineEvent,
+        loadOlderTimelineEvents,
         pendingGateActionError,
         setFreeformAnswersByGateId,
         setTimelineCategoryFilter,
@@ -189,9 +197,8 @@ export function RunsPanel() {
         submittingGateIds,
         submitPendingGateAnswer,
         timelineCategoryFilter,
-        timelineDroppedCount,
         timelineError,
-        timelineEvents,
+        timelineEventCount,
         timelineNodeStageFilter,
         timelineSeverityFilter,
         timelineTypeFilter,
@@ -205,9 +212,8 @@ export function RunsPanel() {
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
     const isSummaryCollapsed = selectedRunSessionState?.isSummaryCollapsed ?? false
-    const isActivityCollapsed = selectedRunSessionState?.isActivityCollapsed ?? false
-    const isRawLogsCollapsed = selectedRunSessionState?.isRawLogsCollapsed ?? true
     const isTimelineCollapsed = selectedRunSessionState?.isTimelineCollapsed ?? false
+    const isAdvancedCollapsed = selectedRunSessionState?.isAdvancedCollapsed ?? true
     const isCheckpointCollapsed = selectedRunSessionState?.isCheckpointCollapsed ?? false
     const isContextCollapsed = selectedRunSessionState?.isContextCollapsed ?? false
     const isArtifactsCollapsed = selectedRunSessionState?.isArtifactsCollapsed ?? false
@@ -218,7 +224,7 @@ export function RunsPanel() {
         updateRunDetailSession(selectedRun.run_id, patch)
     }, [selectedRun?.run_id, updateRunDetailSession])
     const degradedRunPanels = timelineError
-        ? [...degradedDetailPanels, 'event timeline']
+        ? [...degradedDetailPanels, 'run journal']
         : degradedDetailPanels
     const showRunSelectionEmptyState =
         status === 'ready'
@@ -238,6 +244,60 @@ export function RunsPanel() {
     const showRunsTransportReconnectNotice = degradedTransportLabels.length > 0
     const runsTransportError = [streamError, selectedRunStatusError].filter(Boolean).join(' ')
     const now = Date.now()
+    const currentNodeForSummary = selectedRun?.current_node || (checkpointCurrentNode !== '—' ? checkpointCurrentNode : null)
+    const retryState = latestRetryTimelineEvent
+    const monitoringHeadline = selectedRun
+        ? (
+            visiblePendingInterviewGates.length > 0
+                ? `Waiting for operator input at ${currentNodeForSummary || 'current node'}`
+                : latestTimelineEvent?.summary
+                    || (
+                        ACTIVE_RUN_STATUSES.has(selectedRun.status)
+                            ? (currentNodeForSummary ? `Running ${currentNodeForSummary}` : `Run status: ${STATUS_LABELS[selectedRun.status] || selectedRun.status}`)
+                            : selectedRun.status === 'completed' && selectedRun.outcome === 'success'
+                                ? 'Completed successfully'
+                                : selectedRun.status === 'completed' && selectedRun.outcome === 'failure'
+                                    ? 'Completed with failure'
+                                    : `Run status: ${STATUS_LABELS[selectedRun.status] || selectedRun.status}`
+                    )
+        )
+        : ''
+    const monitoringFacts = selectedRun
+        ? [
+            {
+                id: 'current-node',
+                label: 'Current node',
+                value: currentNodeForSummary || '—',
+                testId: 'run-summary-now-current-node',
+            },
+            {
+                id: 'completed-nodes',
+                label: 'Completed nodes',
+                value: checkpointCompletedNodes === '—' ? '0' : checkpointCompletedNodes,
+                testId: 'run-summary-now-completed-nodes',
+            },
+            {
+                id: 'pending-questions',
+                label: 'Pending questions',
+                value: String(visiblePendingInterviewGates.length),
+                testId: 'run-summary-now-pending-questions',
+            },
+            {
+                id: 'latest-journal',
+                label: 'Latest journal entry',
+                value: latestTimelineEvent ? latestTimelineEvent.summary : '—',
+                testId: 'run-summary-now-latest-journal',
+            },
+            ...(retryState
+                ? [{
+                    id: 'retry-state',
+                    label: 'Retry state',
+                    value: retryState.summary,
+                    testId: 'run-summary-now-retry-state',
+                }]
+                : []),
+        ]
+        : []
 
     const selectRun = (run: RunRecord) => {
         setRunsSelectedRunIdForScope(
@@ -384,6 +444,8 @@ export function RunsPanel() {
                             <RunSummaryCard
                                 activeProjectPath={activeProjectPath}
                                 collapsed={isSummaryCollapsed}
+                                monitoringFacts={monitoringFacts}
+                                monitoringHeadline={monitoringHeadline}
                                 now={now}
                                 onCollapsedChange={(collapsed) => {
                                     patchSelectedRunSession({ isSummaryCollapsed: collapsed })
@@ -414,48 +476,9 @@ export function RunsPanel() {
                             </Alert>
                         )}
                         {selectedRun && (
-                            <RunActivityCard
-                                key={`activity-${selectedRun.run_id}`}
-                                checkpointCompletedNodes={checkpointCompletedNodes}
-                                checkpointCurrentNode={checkpointCurrentNode}
-                                checkpointRetryCounters={checkpointRetryCounters}
-                                collapsed={isActivityCollapsed}
-                                groupedTimelineEntries={groupedTimelineEntries}
-                                pendingGateCount={visiblePendingInterviewGates.length}
-                                rawLogsCollapsed={isRawLogsCollapsed}
-                                run={selectedRun}
-                                onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isActivityCollapsed: collapsed })
-                                }}
-                                onRawLogsCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isRawLogsCollapsed: collapsed })
-                                }}
-                            />
-                        )}
-                        {selectedRun && (
-                            <RunEventTimelineCard
-                                collapsed={isTimelineCollapsed}
-                                isNarrowViewport={isNarrowViewport}
-                                isTimelineLive={isTimelineLive}
-                                timelineDroppedCount={timelineDroppedCount}
-                                timelineError={timelineError}
-                                timelineEvents={timelineEvents}
-                                visiblePendingInterviewGates={visiblePendingInterviewGates}
-                                groupedPendingInterviewGates={groupedPendingInterviewGates}
-                                pendingGateActionError={pendingGateActionError}
-                                submittingGateIds={submittingGateIds}
+                            <RunQuestionsPanel
                                 freeformAnswersByGateId={freeformAnswersByGateId}
-                                timelineTypeFilter={timelineTypeFilter}
-                                timelineTypeOptions={timelineTypeOptions}
-                                timelineNodeStageFilter={timelineNodeStageFilter}
-                                timelineCategoryFilter={timelineCategoryFilter}
-                                timelineSeverityFilter={timelineSeverityFilter}
-                                filteredTimelineEvents={filteredTimelineEvents}
-                                groupedTimelineEntries={groupedTimelineEntries}
-                                onTimelineCategoryFilterChange={setTimelineCategoryFilter}
-                                onTimelineNodeStageFilterChange={setTimelineNodeStageFilter}
-                                onTimelineSeverityFilterChange={setTimelineSeverityFilter}
-                                onTimelineTypeFilterChange={setTimelineTypeFilter}
+                                groupedPendingInterviewGates={groupedPendingInterviewGates}
                                 onFreeformAnswerChange={(questionId, value) => {
                                     setFreeformAnswersByGateId((previous) => ({
                                         ...previous,
@@ -465,83 +488,111 @@ export function RunsPanel() {
                                 onSubmitPendingGateAnswer={(gate, selectedValue) => {
                                     void submitPendingGateAnswer(gate, selectedValue)
                                 }}
+                                pendingGateActionError={pendingGateActionError}
+                                submittingGateIds={submittingGateIds}
+                            />
+                        )}
+                        {selectedRun && (
+                            <RunEventTimelineCard
+                                collapsed={isTimelineCollapsed}
+                                isNarrowViewport={isNarrowViewport}
+                                isTimelineLive={isTimelineLive}
+                                timelineError={timelineError}
+                                timelineEventCount={timelineEventCount}
+                                timelineTypeFilter={timelineTypeFilter}
+                                timelineTypeOptions={timelineTypeOptions}
+                                timelineNodeStageFilter={timelineNodeStageFilter}
+                                timelineCategoryFilter={timelineCategoryFilter}
+                                timelineSeverityFilter={timelineSeverityFilter}
+                                filteredTimelineEventCount={filteredTimelineEventCount}
+                                groupedTimelineEntries={groupedTimelineEntries}
+                                hasOlderTimelineEvents={hasOlderTimelineEvents}
+                                isTimelineLoadingOlder={isTimelineLoadingOlder}
+                                onLoadOlderTimelineEvents={() => {
+                                    void loadOlderTimelineEvents()
+                                }}
+                                onTimelineCategoryFilterChange={setTimelineCategoryFilter}
+                                onTimelineNodeStageFilterChange={setTimelineNodeStageFilter}
+                                onTimelineSeverityFilterChange={setTimelineSeverityFilter}
+                                onTimelineTypeFilterChange={setTimelineTypeFilter}
                                 onCollapsedChange={(collapsed) => {
                                     patchSelectedRunSession({ isTimelineCollapsed: collapsed })
                                 }}
                             />
                         )}
                         {selectedRun && (
-                            <RunCheckpointCard
-                                collapsed={isCheckpointCollapsed}
-                                checkpointCompletedNodes={checkpointCompletedNodes}
-                                checkpointCurrentNode={checkpointCurrentNode}
-                                checkpointData={checkpointData?.checkpoint ?? null}
-                                checkpointError={checkpointError}
-                                checkpointRetryCounters={checkpointRetryCounters}
-                                isLoading={isCheckpointLoading}
+                            <RunAdvancedSection
+                                collapsed={isAdvancedCollapsed}
                                 onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isCheckpointCollapsed: collapsed })
+                                    patchSelectedRunSession({ isAdvancedCollapsed: collapsed })
                                 }}
-                                onRefresh={() => {
-                                    void fetchCheckpoint()
-                                }}
-                                status={checkpointStatus}
-                            />
-                        )}
-                        {selectedRun && (
-                            <RunGraphCard
-                                key={`graph-${selectedRun.run_id}`}
-                                run={selectedRun}
-                            />
-                        )}
-                        {selectedRun && (
-                            <RunContextCard
-                                collapsed={isContextCollapsed}
-                                contextCopyStatus={contextCopyStatus}
-                                contextError={contextError}
-                                contextExportHref={contextExportHref || null}
-                                filteredContextRows={filteredContextRows}
-                                isLoading={isContextLoading}
-                                onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isContextCollapsed: collapsed })
-                                }}
-                                onCopy={() => {
-                                    void copyContextToClipboard()
-                                }}
-                                onRefresh={() => {
-                                    setContextCopyStatus('')
-                                    void fetchContext()
-                                }}
-                                onSearchQueryChange={setContextSearchQuery}
-                                runId={selectedRun.run_id}
-                                searchQuery={contextSearchQuery}
-                                status={contextStatus}
-                            />
-                        )}
-                        {selectedRun && (
-                            <RunArtifactsCard
-                                artifactDownloadHref={(artifactPath) => artifactDownloadHref(artifactPath) || null}
-                                artifactEntries={artifactEntries}
-                                artifactError={artifactError}
-                                artifactViewerError={artifactViewerError}
-                                artifactViewerPayload={artifactViewerPayload || null}
-                                collapsed={isArtifactsCollapsed}
-                                isArtifactViewerLoading={isArtifactViewerLoading}
-                                isLoading={isArtifactLoading}
-                                missingCoreArtifacts={missingCoreArtifacts}
-                                onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isArtifactsCollapsed: collapsed })
-                                }}
-                                onRefresh={() => {
-                                    void fetchArtifacts()
-                                }}
-                                onViewArtifact={(artifact) => {
-                                    void viewArtifact(artifact)
-                                }}
-                                selectedArtifactEntry={selectedArtifactEntry}
-                                showPartialRunArtifactNote={showPartialRunArtifactNote}
-                                status={artifactStatus}
-                            />
+                            >
+                                <RunGraphCard
+                                    key={`graph-${selectedRun.run_id}`}
+                                    run={selectedRun}
+                                />
+                                <RunCheckpointCard
+                                    collapsed={isCheckpointCollapsed}
+                                    checkpointCompletedNodes={checkpointCompletedNodes}
+                                    checkpointCurrentNode={checkpointCurrentNode}
+                                    checkpointData={checkpointData?.checkpoint ?? null}
+                                    checkpointError={checkpointError}
+                                    checkpointRetryCounters={checkpointRetryCounters}
+                                    isLoading={isCheckpointLoading}
+                                    onCollapsedChange={(collapsed) => {
+                                        patchSelectedRunSession({ isCheckpointCollapsed: collapsed })
+                                    }}
+                                    onRefresh={() => {
+                                        void fetchCheckpoint()
+                                    }}
+                                    status={checkpointStatus}
+                                />
+                                <RunContextCard
+                                    collapsed={isContextCollapsed}
+                                    contextCopyStatus={contextCopyStatus}
+                                    contextError={contextError}
+                                    contextExportHref={contextExportHref || null}
+                                    filteredContextRows={filteredContextRows}
+                                    isLoading={isContextLoading}
+                                    onCollapsedChange={(collapsed) => {
+                                        patchSelectedRunSession({ isContextCollapsed: collapsed })
+                                    }}
+                                    onCopy={() => {
+                                        void copyContextToClipboard()
+                                    }}
+                                    onRefresh={() => {
+                                        setContextCopyStatus('')
+                                        void fetchContext()
+                                    }}
+                                    onSearchQueryChange={setContextSearchQuery}
+                                    runId={selectedRun.run_id}
+                                    searchQuery={contextSearchQuery}
+                                    status={contextStatus}
+                                />
+                                <RunArtifactsCard
+                                    artifactDownloadHref={(artifactPath) => artifactDownloadHref(artifactPath) || null}
+                                    artifactEntries={artifactEntries}
+                                    artifactError={artifactError}
+                                    artifactViewerError={artifactViewerError}
+                                    artifactViewerPayload={artifactViewerPayload || null}
+                                    collapsed={isArtifactsCollapsed}
+                                    isArtifactViewerLoading={isArtifactViewerLoading}
+                                    isLoading={isArtifactLoading}
+                                    missingCoreArtifacts={missingCoreArtifacts}
+                                    onCollapsedChange={(collapsed) => {
+                                        patchSelectedRunSession({ isArtifactsCollapsed: collapsed })
+                                    }}
+                                    onRefresh={() => {
+                                        void fetchArtifacts()
+                                    }}
+                                    onViewArtifact={(artifact) => {
+                                        void viewArtifact(artifact)
+                                    }}
+                                    selectedArtifactEntry={selectedArtifactEntry}
+                                    showPartialRunArtifactNote={showPartialRunArtifactNote}
+                                    status={artifactStatus}
+                                />
+                            </RunAdvancedSection>
                         )}
                     </div>
                 </div>

@@ -33,6 +33,7 @@ def test_list_pipeline_artifacts_returns_run_outputs_for_known_pipeline(
 
     (run_root / "manifest.json").write_text("{}", encoding="utf-8")
     (run_root / "checkpoint.json").write_text("{}", encoding="utf-8")
+    (run_root / "run.log").write_text("[2026-04-13 16:00:00 UTC] artifact-visible log\n", encoding="utf-8")
 
     stage_dir = run_root / "plan"
     stage_dir.mkdir(parents=True, exist_ok=True)
@@ -64,6 +65,7 @@ def test_list_pipeline_artifacts_returns_run_outputs_for_known_pipeline(
         "plan/prompt.md",
         "plan/response.md",
         "plan/status.json",
+        "run.log",
     ):
         assert expected in paths
     assert "state.json" not in paths

@@ -182,7 +182,6 @@ const resetExecutionState = () => {
     projectSessionsByPath: {},
     projectRegistrationError: null,
     recentProjectPaths: [],
-    logs: [],
     nodeStatuses: {},
     selectedNodeId: null,
     selectedEdgeId: null,

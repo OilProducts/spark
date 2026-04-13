@@ -27,7 +27,7 @@ export function RunQuestionsPanel({
     return (
         <div data-testid="run-pending-human-gates-panel" className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
             <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">
-                Pending Human Gates
+                Pending Questions
             </div>
             {pendingGateActionError && (
                 <Alert

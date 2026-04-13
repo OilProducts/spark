@@ -25,6 +25,36 @@ export function pipelineEventsUrl(pipelineId: string): string {
     return attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/events`)
 }
 
+export function pipelineJournalUrl(
+    pipelineId: string,
+    options?: {
+        limit?: number
+        beforeSequence?: number | null
+    },
+): string {
+    const params = new URLSearchParams()
+    if (typeof options?.limit === 'number' && Number.isFinite(options.limit)) {
+        params.set('limit', String(options.limit))
+    }
+    if (typeof options?.beforeSequence === 'number' && Number.isFinite(options.beforeSequence)) {
+        params.set('before_sequence', String(options.beforeSequence))
+    }
+    const query = params.toString()
+    return `${attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/journal`)}${query ? `?${query}` : ''}`
+}
+
+export function pipelineEventsUrlWithAfterSequence(
+    pipelineId: string,
+    afterSequence?: number | null,
+): string {
+    const baseUrl = pipelineEventsUrl(pipelineId)
+    if (typeof afterSequence !== 'number' || !Number.isFinite(afterSequence)) {
+        return baseUrl
+    }
+    const params = new URLSearchParams({ after_sequence: String(afterSequence) })
+    return `${baseUrl}?${params.toString()}`
+}
+
 export function runsEventsUrl(projectPath?: string | null): string {
     return projectPath
         ? `${attractorUrl('/runs/events')}?project_path=${encodeURIComponent(projectPath)}`
@@ -138,6 +168,31 @@ export interface PipelineQuestionsResponse {
     questions: Array<Record<string, unknown>>
 }
 
+export interface RunJournalEntryResponse {
+    id: string
+    sequence: number
+    emitted_at: string
+    kind: string
+    raw_type: string
+    severity: string
+    summary: string
+    node_id?: string | null
+    stage_index?: number | null
+    source_scope?: string | null
+    source_parent_node_id?: string | null
+    source_flow_name?: string | null
+    question_id?: string | null
+    payload: Record<string, unknown>
+}
+
+export interface RunJournalPageResponse {
+    pipeline_id: string
+    entries: RunJournalEntryResponse[]
+    oldest_sequence?: number | null
+    newest_sequence?: number | null
+    has_older: boolean
+}
+
 export interface PipelineAnswerResponse {
     status: string
     pipeline_id: string
@@ -193,6 +248,49 @@ export interface RuntimeStatusResponse {
     last_model?: string | null
     last_completed_nodes?: string[] | null
     last_flow_name?: string | null
+}
+
+function parseRunJournalEntryResponse(
+    payload: unknown,
+    endpoint = '/attractor/pipelines/{id}/journal',
+): RunJournalEntryResponse | null {
+    const record = asUnknownRecord(payload)
+    if (!record) {
+        return null
+    }
+    const sequence = record.sequence
+    if (
+        typeof record.id !== 'string'
+        || typeof sequence !== 'number'
+        || !Number.isFinite(sequence)
+        || typeof record.emitted_at !== 'string'
+        || typeof record.kind !== 'string'
+        || typeof record.raw_type !== 'string'
+        || typeof record.severity !== 'string'
+        || typeof record.summary !== 'string'
+    ) {
+        return null
+    }
+    return {
+        id: record.id,
+        sequence,
+        emitted_at: record.emitted_at,
+        kind: record.kind,
+        raw_type: record.raw_type,
+        severity: record.severity,
+        summary: record.summary,
+        node_id: asOptionalNullableString(record.node_id),
+        stage_index: typeof record.stage_index === 'number'
+            ? record.stage_index
+            : record.stage_index === null
+                ? null
+                : undefined,
+        source_scope: asOptionalNullableString(record.source_scope),
+        source_parent_node_id: asOptionalNullableString(record.source_parent_node_id),
+        source_flow_name: asOptionalNullableString(record.source_flow_name),
+        question_id: asOptionalNullableString(record.question_id),
+        payload: expectObjectRecord(record.payload, endpoint),
+    }
 }
 
 export function parseFlowListResponse(payload: unknown, endpoint = '/attractor/api/flows'): string[] {
@@ -335,6 +433,34 @@ export function parsePipelineQuestionsResponse(
         questions: rawQuestions
             .map((question) => asUnknownRecord(question))
             .filter((question): question is Record<string, unknown> => question !== null),
+    }
+}
+
+export function parseRunJournalPageResponse(
+    payload: unknown,
+    endpoint = '/attractor/pipelines/{id}/journal',
+): RunJournalPageResponse {
+    const record = expectObjectRecord(payload, endpoint)
+    const rawEntries = record.entries
+    if (!Array.isArray(rawEntries)) {
+        throw new ApiSchemaError(endpoint, 'Expected "entries" to be an array.')
+    }
+    return {
+        pipeline_id: expectString(record.pipeline_id, endpoint, 'pipeline_id'),
+        entries: rawEntries
+            .map((entry) => parseRunJournalEntryResponse(entry, endpoint))
+            .filter((entry): entry is RunJournalEntryResponse => entry !== null),
+        oldest_sequence: typeof record.oldest_sequence === 'number'
+            ? record.oldest_sequence
+            : record.oldest_sequence === null
+                ? null
+                : undefined,
+        newest_sequence: typeof record.newest_sequence === 'number'
+            ? record.newest_sequence
+            : record.newest_sequence === null
+                ? null
+                : undefined,
+        has_older: record.has_older === true,
     }
 }
 
@@ -665,6 +791,21 @@ export async function fetchPipelineContextValidated(pipelineId: string): Promise
 export async function fetchPipelineQuestionsValidated(pipelineId: string): Promise<PipelineQuestionsResponse> {
     const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/questions`)
     return fetchJsonWithValidation(url, undefined, '/attractor/pipelines/{id}/questions', parsePipelineQuestionsResponse)
+}
+
+export async function fetchPipelineJournalValidated(
+    pipelineId: string,
+    options?: {
+        limit?: number
+        beforeSequence?: number | null
+    },
+): Promise<RunJournalPageResponse> {
+    return fetchJsonWithValidation(
+        pipelineJournalUrl(pipelineId, options),
+        undefined,
+        '/attractor/pipelines/{id}/journal',
+        parseRunJournalPageResponse,
+    )
 }
 
 export async function fetchPipelineAnswerValidated(

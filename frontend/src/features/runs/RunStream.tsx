@@ -3,21 +3,16 @@ import { useEffect, useRef, useState } from 'react'
 import { retryLastSaveContent } from '@/lib/flowPersistence'
 import { type PipelineStatusResponse } from '@/lib/attractorClient'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
-import { useStore, type RuntimeStatus } from '@/store'
+import { useStore, type NodeStatus, type RuntimeStatus } from '@/store'
 import { Button } from '@/components/ui/button'
-import type { RunRecord, TimelineEventEntry } from './model/shared'
-import { TIMELINE_MAX_ITEMS, toTimelineEvent } from './model/timelineModel'
-import { ApiHttpError, buildRunEventsUrl, loadSelectedRunStatus } from './services/runStreamTransport'
+import type { RunRecord } from './model/shared'
+import { toTimelineEvent } from './model/timelineModel'
+import { ApiHttpError, buildRunEventsUrl, loadSelectedRunJournal, loadSelectedRunStatus } from './services/runStreamTransport'
 import { useRunsTransportReconnectSignal } from './services/runsTransportReconnect'
-
-function classifyLog(message: string): 'info' | 'success' | 'error' {
-    const lower = message.toLowerCase()
-    const isSuccess = lower.includes('success')
-    const isError = /fail|error|⚠️/i.test(message)
-    if (isSuccess) return 'success'
-    if (isError) return 'error'
-    return 'info'
-}
+import {
+    useRunJournalStore,
+    type RunJournalStateEntry,
+} from './state/runJournalStore'
 
 const RUNTIME_STAGE_STATUS_MAP: Record<string, 'running' | 'success' | 'failed'> = {
     StageStarted: 'running',
@@ -49,6 +44,18 @@ const RUNTIME_STATUS_SET = new Set<RuntimeStatus>([
 
 function isRuntimeStatus(value: string): value is RuntimeStatus {
     return RUNTIME_STATUS_SET.has(value as RuntimeStatus)
+}
+
+const NODE_STATUS_SET = new Set<NodeStatus>([
+    'idle',
+    'running',
+    'success',
+    'failed',
+    'waiting',
+])
+
+function isNodeStatus(value: string): value is NodeStatus {
+    return NODE_STATUS_SET.has(value as NodeStatus)
 }
 
 function toRunRecord(status: PipelineStatusResponse): RunRecord {
@@ -99,15 +106,11 @@ function patchRunRecordFromRuntime(record: RunRecord, runtime: {
     }
 }
 
-const mergeTimelineEvent = (currentEvents: TimelineEventEntry[], nextEvent: NonNullable<ReturnType<typeof toTimelineEvent>>) => {
-    return [...currentEvents, nextEvent]
-        .sort((left, right) => right.sequence - left.sequence)
-        .slice(0, TIMELINE_MAX_ITEMS)
-}
+const SELECTED_RUN_JOURNAL_DEGRADED_MESSAGE =
+    'Run journal history is unavailable. Reconnect to restore durable browsing for the selected run.'
+const RUN_JOURNAL_PAGE_SIZE = 100
 
 export function RunStream() {
-    const addLog = useStore((state) => state.addLog)
-    const clearLogs = useStore((state) => state.clearLogs)
     const setNodeStatus = useStore((state) => state.setNodeStatus)
     const setHumanGate = useStore((state) => state.setHumanGate)
     const clearHumanGate = useStore((state) => state.clearHumanGate)
@@ -118,7 +121,6 @@ export function RunStream() {
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const setSelectedRunSnapshot = useStore((state) => state.setSelectedRunSnapshot)
     const setSelectedRunStatusSync = useStore((state) => state.setSelectedRunStatusSync)
-    const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const saveState = useStore((state) => state.saveState)
     const saveStateVersion = useStore((state) => state.saveStateVersion)
     const saveErrorMessage = useStore((state) => state.saveErrorMessage)
@@ -149,7 +151,6 @@ export function RunStream() {
         stageCursorsRef.current = {}
         resetNodeStatuses()
         clearHumanGate()
-        clearLogs()
         if (!selectedRunId) {
             setSelectedRunSnapshot({ record: null, completedNodes: [], fetchedAtMs: null })
             setSelectedRunStatusSync('idle', null)
@@ -160,20 +161,18 @@ export function RunStream() {
         setSelectedRunStatusSync('loading', null)
         setRuntimeStatus('idle')
         setRuntimeOutcome(null)
-        updateRunDetailSession(selectedRunId, {
-            isTimelineLive: false,
-            timelineError: null,
+        useRunJournalStore.getState().patchRun(selectedRunId, {
+            liveStatus: 'idle',
+            liveError: null,
         })
     }, [
         clearHumanGate,
-        clearLogs,
         resetNodeStatuses,
         selectedRunId,
         setRuntimeOutcome,
         setRuntimeStatus,
         setSelectedRunSnapshot,
         setSelectedRunStatusSync,
-        updateRunDetailSession,
     ])
 
     useEffect(() => {
@@ -227,9 +226,8 @@ export function RunStream() {
             eventSource?.close()
             eventSource = null
         }
-
-        const patchTimelineSession = (patch: Parameters<typeof updateRunDetailSession>[1]) => {
-            updateRunDetailSession(selectedRunId, patch)
+        const patchRunJournal = (patch: Partial<RunJournalStateEntry>) => {
+            useRunJournalStore.getState().patchRun(selectedRunId, patch)
         }
 
         const hasCachedSelectedRunSnapshot = () => {
@@ -238,31 +236,6 @@ export function RunStream() {
                 return true
             }
             return state.runDetailSessionsByRunId[selectedRunId]?.summaryRecord?.run_id === selectedRunId
-        }
-
-        const appendTimelineEvent = (payload: unknown) => {
-            const timelineEvent = toTimelineEvent(payload)
-            if (!timelineEvent) {
-                return
-            }
-            const currentSession = useStore.getState().runDetailSessionsByRunId[selectedRunId]
-            const currentSequence = currentSession?.timelineSequence ?? 0
-            const currentSeenServerSequences = currentSession?.timelineSeenServerSequences ?? {}
-            const currentEvents = currentSession?.timelineEvents ?? []
-            const sequenceKey = String(timelineEvent.sequence)
-            if (currentSeenServerSequences[sequenceKey]) {
-                return
-            }
-            patchTimelineSession({
-                timelineError: null,
-                isTimelineLive: true,
-                timelineEvents: mergeTimelineEvent(currentEvents, timelineEvent),
-                timelineSequence: currentSequence + 1,
-                timelineSeenServerSequences: {
-                    ...currentSeenServerSequences,
-                    [sequenceKey]: true,
-                },
-            })
         }
 
         const applyStatusSnapshot = (statusPayload: PipelineStatusResponse) => {
@@ -301,6 +274,41 @@ export function RunStream() {
             })
         }
 
+        const refreshSelectedRunJournal = async (): Promise<number | null> => {
+            const currentJournalState = useRunJournalStore.getState().byRunId[selectedRunId]
+            const hasCachedJournalEntries = Boolean(currentJournalState && currentJournalState.loadedEntryCount > 0)
+            patchRunJournal({
+                status: hasCachedJournalEntries ? currentJournalState!.status : 'loading',
+                error: null,
+            })
+            try {
+                const page = await loadSelectedRunJournal(selectedRunId, { limit: RUN_JOURNAL_PAGE_SIZE })
+                if (closed) {
+                    return null
+                }
+                useRunJournalStore.getState().mergeLatestPage(selectedRunId, {
+                    entries: page.entries
+                        .map((entry) => toTimelineEvent(entry))
+                        .filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+                    oldestSequence: page.oldest_sequence ?? null,
+                    newestSequence: page.newest_sequence ?? null,
+                    hasOlder: page.has_older,
+                })
+                return page.newest_sequence ?? useRunJournalStore.getState().byRunId[selectedRunId]?.newestSequence ?? null
+            } catch (error) {
+                if (closed) {
+                    return null
+                }
+                patchRunJournal({
+                    status: hasCachedJournalEntries ? currentJournalState!.status : 'error',
+                    error: error instanceof ApiHttpError
+                        ? `Unable to load run journal (HTTP ${error.status})${error.detail ? `: ${error.detail}` : ''}.`
+                        : SELECTED_RUN_JOURNAL_DEGRADED_MESSAGE,
+                })
+                return currentJournalState?.newestSequence ?? null
+            }
+        }
+
         const refreshSelectedRunStatus = async (): Promise<{
             payload: PipelineStatusResponse | null
             shouldOpenStream: boolean
@@ -331,9 +339,9 @@ export function RunStream() {
                     setSelectedRunId(null)
                     setRuntimeStatus('idle')
                     setRuntimeOutcome(null)
-                    patchTimelineSession({
-                        isTimelineLive: false,
-                        timelineError: null,
+                    patchRunJournal({
+                        liveStatus: 'idle',
+                        liveError: null,
                     })
                     closeStream()
                     return {
@@ -345,9 +353,9 @@ export function RunStream() {
                 if (!shouldOpenStream) {
                     setSelectedRunStatusSync('degraded', SELECTED_RUN_STATUS_DEGRADED_MESSAGE)
                 }
-                patchTimelineSession({
-                    isTimelineLive: false,
-                    timelineError: null,
+                patchRunJournal({
+                    liveStatus: 'degraded',
+                    liveError: SELECTED_RUN_STATUS_DEGRADED_MESSAGE,
                 })
                 return {
                     payload: null,
@@ -384,11 +392,32 @@ export function RunStream() {
         const handleMessage = (event: MessageEvent) => {
             try {
                 const data = JSON.parse(event.data)
-                appendTimelineEvent(data)
+                const rawRecord = (
+                    data
+                    && typeof data === 'object'
+                    && !Array.isArray(data)
+                ) ? data as Record<string, unknown> : {}
+                const timelineEvent = toTimelineEvent(data)
+                if (timelineEvent) {
+                    useRunJournalStore.getState().appendLiveEntry(selectedRunId, timelineEvent)
+                }
+                const payload = (
+                    timelineEvent?.payload
+                    && typeof timelineEvent.payload === 'object'
+                    && !Array.isArray(timelineEvent.payload)
+                ) ? timelineEvent.payload : (
+                    rawRecord.payload
+                    && typeof rawRecord.payload === 'object'
+                    && !Array.isArray(rawRecord.payload)
+                ) ? rawRecord.payload as Record<string, unknown> : rawRecord
+                const rawType = timelineEvent?.type
+                    ?? (typeof rawRecord.raw_type === 'string' ? rawRecord.raw_type : typeof rawRecord.type === 'string' ? rawRecord.type : '')
 
-                const runtimeNodeId = typeof data.node_id === 'string' ? data.node_id : null
-                const runtimeNodeStatus = RUNTIME_STAGE_STATUS_MAP[data.type]
-                const runtimeStageIndex = typeof data.index === 'number' && Number.isFinite(data.index) ? data.index : null
+                const runtimeNodeId = timelineEvent?.nodeId ?? (typeof payload.node_id === 'string' ? payload.node_id : null)
+                const runtimeNodeStatus = RUNTIME_STAGE_STATUS_MAP[rawType]
+                const runtimeStageIndex = timelineEvent?.stageIndex ?? (
+                    typeof payload.index === 'number' && Number.isFinite(payload.index) ? payload.index : null
+                )
                 if (runtimeNodeId && runtimeNodeStatus) {
                     const previousCursor = stageCursorsRef.current[runtimeNodeId]
                     let shouldApplyStageStatus = true
@@ -398,8 +427,8 @@ export function RunStream() {
                         } else if (runtimeStageIndex === previousCursor.stageIndex) {
                             const previousIsTerminal = previousCursor.status === 'success' || previousCursor.status === 'failed'
                             if (runtimeNodeStatus === 'running' && previousCursor.status !== 'running') {
-                                const retryContinuation = data.type === 'StageRetrying'
-                                    || (data.type === 'StageStarted' && previousCursor.pendingRetry)
+                                const retryContinuation = rawType === 'StageRetrying'
+                                    || (rawType === 'StageStarted' && previousCursor.pendingRetry)
                                 if (!retryContinuation) {
                                     shouldApplyStageStatus = false
                                 }
@@ -418,11 +447,11 @@ export function RunStream() {
                         if (runtimeStageIndex !== null) {
                             const stageAdvanced = previousCursor ? runtimeStageIndex > previousCursor.stageIndex : true
                             let pendingRetry = stageAdvanced ? false : (previousCursor?.pendingRetry ?? false)
-                            if (data.type === 'StageFailed') {
-                                pendingRetry = data.will_retry === true
-                            } else if (data.type === 'StageRetrying') {
+                            if (rawType === 'StageFailed') {
+                                pendingRetry = payload.will_retry === true
+                            } else if (rawType === 'StageRetrying') {
                                 pendingRetry = true
-                            } else if (data.type === 'StageStarted' || data.type === 'StageCompleted') {
+                            } else if (rawType === 'StageStarted' || rawType === 'StageCompleted') {
                                 pendingRetry = false
                             }
                             stageCursorsRef.current[runtimeNodeId] = {
@@ -437,16 +466,12 @@ export function RunStream() {
                         }
                     }
                 }
-                if (data.type === 'log') {
-                    addLog({
-                        time: new Date().toLocaleTimeString('en-GB', { hour12: false }),
-                        msg: data.msg,
-                        type: classifyLog(data.msg),
-                    })
-                }
-                if (data.type === 'state' && data.node && data.status) {
-                    const stateNodeId = typeof data.node === 'string' ? data.node : null
-                    const stateNodeStatus = typeof data.status === 'string' ? data.status : null
+                if (rawType === 'state' && payload.node && payload.status) {
+                    const stateNodeId = typeof payload.node === 'string' ? payload.node : null
+                    const stateNodeStatus =
+                        typeof payload.status === 'string' && isNodeStatus(payload.status)
+                            ? payload.status
+                            : null
                     if (stateNodeId && stateNodeStatus) {
                         const previousCursor = stageCursorsRef.current[stateNodeId]
                         const stateRegression = stateNodeStatus === 'running'
@@ -477,34 +502,35 @@ export function RunStream() {
                         }
                     }
                 }
-                if (data.type === 'human_gate') {
-                    setNodeStatus(data.node_id, 'waiting')
-                    patchCurrentNode(typeof data.node_id === 'string' ? data.node_id : null)
+                if (rawType === 'human_gate') {
+                    const humanGateNodeId = typeof payload.node_id === 'string' ? payload.node_id : ''
+                    setNodeStatus(humanGateNodeId, 'waiting')
+                    patchCurrentNode(humanGateNodeId || null)
                     setHumanGate({
-                        id: data.question_id,
+                        id: timelineEvent?.questionId ?? (typeof payload.question_id === 'string' ? payload.question_id : ''),
                         runId: selectedRunId,
-                        nodeId: data.node_id,
-                        prompt: data.prompt,
-                        options: data.options || [],
-                        flowName: data.flow_name,
+                        nodeId: humanGateNodeId,
+                        prompt: typeof payload.prompt === 'string' ? payload.prompt : '',
+                        options: Array.isArray(payload.options) ? payload.options : [],
+                        flowName: typeof payload.flow_name === 'string' ? payload.flow_name : undefined,
                     })
                 }
-                if (data.type === 'run_meta') {
+                if (rawType === 'run_meta') {
                     resetNodeStatuses()
                     clearHumanGate()
-                    patchCurrentNode(typeof data.current_node === 'string' ? data.current_node : null)
+                    patchCurrentNode(typeof payload.current_node === 'string' ? payload.current_node : null)
                     applyRuntimePatch('running', {
                         outcome: null,
                         outcomeReasonCode: null,
                         outcomeReasonMessage: null,
                     })
                 }
-                if (data.type === 'runtime' && typeof data.status === 'string' && isRuntimeStatus(data.status)) {
-                    applyRuntimePatch(data.status, {
-                        outcome: data.outcome === 'success' || data.outcome === 'failure' ? data.outcome : null,
-                        outcomeReasonCode: typeof data.outcome_reason_code === 'string' ? data.outcome_reason_code : null,
-                        outcomeReasonMessage: typeof data.outcome_reason_message === 'string' ? data.outcome_reason_message : null,
-                        lastError: typeof data.last_error === 'string' ? data.last_error : null,
+                if (rawType === 'runtime' && typeof payload.status === 'string' && isRuntimeStatus(payload.status)) {
+                    applyRuntimePatch(payload.status, {
+                        outcome: payload.outcome === 'success' || payload.outcome === 'failure' ? payload.outcome : null,
+                        outcomeReasonCode: typeof payload.outcome_reason_code === 'string' ? payload.outcome_reason_code : null,
+                        outcomeReasonMessage: typeof payload.outcome_reason_message === 'string' ? payload.outcome_reason_message : null,
+                        lastError: typeof payload.last_error === 'string' ? payload.last_error : null,
                     })
                 }
             } catch {
@@ -514,21 +540,25 @@ export function RunStream() {
 
         const startScopedStream = async () => {
             setSelectedRunStatusSync('loading', null)
-            patchTimelineSession({
-                isTimelineLive: false,
-                timelineError: null,
+            patchRunJournal({
+                liveStatus: 'connecting',
+                liveError: null,
             })
             const { shouldOpenStream } = await refreshSelectedRunStatus()
             if (closed || !shouldOpenStream) {
                 return
             }
+            const newestSequence = await refreshSelectedRunJournal()
+            if (closed) {
+                return
+            }
 
-            const nextSource = new EventSource(buildRunEventsUrl(selectedRunId))
+            const nextSource = new EventSource(buildRunEventsUrl(selectedRunId, newestSequence))
             nextSource.onopen = () => {
                 setSelectedRunStatusSync('ready', null)
-                patchTimelineSession({
-                    isTimelineLive: true,
-                    timelineError: null,
+                patchRunJournal({
+                    liveStatus: 'live',
+                    liveError: null,
                 })
             }
             nextSource.onmessage = handleMessage
@@ -538,9 +568,9 @@ export function RunStream() {
                 }
                 closeStream()
                 setSelectedRunStatusSync('degraded', SELECTED_RUN_STATUS_DEGRADED_MESSAGE)
-                patchTimelineSession({
-                    isTimelineLive: false,
-                    timelineError: null,
+                patchRunJournal({
+                    liveStatus: 'degraded',
+                    liveError: SELECTED_RUN_STATUS_DEGRADED_MESSAGE,
                 })
             }
             eventSource = nextSource
@@ -551,12 +581,11 @@ export function RunStream() {
         return () => {
             closed = true
             closeStream()
-            patchTimelineSession({
-                isTimelineLive: false,
+            patchRunJournal({
+                liveStatus: 'idle',
             })
         }
     }, [
-        addLog,
         clearHumanGate,
         reconnectSignal,
         resetNodeStatuses,
@@ -568,7 +597,6 @@ export function RunStream() {
         setSelectedRunId,
         setSelectedRunSnapshot,
         setSelectedRunStatusSync,
-        updateRunDetailSession,
     ])
 
     const handleRetrySave = () => {

@@ -103,7 +103,17 @@ export interface RunContextRow extends FormattedContextValue {
     rawValue: unknown
 }
 
-export type TimelineEventCategory = 'lifecycle' | 'stage' | 'parallel' | 'interview' | 'checkpoint'
+export type TimelineEventCategory =
+    | 'lifecycle'
+    | 'stage'
+    | 'parallel'
+    | 'interview'
+    | 'checkpoint'
+    | 'log'
+    | 'runtime'
+    | 'state'
+    | 'metadata'
+    | 'other'
 export type TimelineSeverity = 'info' | 'warning' | 'error'
 export type TimelineCorrelationKind = 'retry' | 'interview'
 export type TimelineSourceScope = 'root' | 'child'
@@ -121,6 +131,7 @@ export interface TimelineEventEntry {
     sourceScope: TimelineSourceScope
     sourceParentNodeId: string | null
     sourceFlowName: string | null
+    questionId?: string | null
     payload: Record<string, unknown>
 }
 
@@ -178,6 +189,11 @@ export const TIMELINE_CATEGORY_LABELS: Record<TimelineEventCategory, string> = {
     parallel: 'Parallel',
     interview: 'Interview',
     checkpoint: 'Checkpoint',
+    log: 'Log',
+    runtime: 'Runtime',
+    state: 'State',
+    metadata: 'Metadata',
+    other: 'Other',
 }
 
 export const TIMELINE_SEVERITY_LABELS: Record<TimelineSeverity, string> = {
@@ -192,7 +208,7 @@ export const TIMELINE_SEVERITY_STYLES: Record<TimelineSeverity, string> = {
     error: 'border-destructive/40 bg-destructive/10 text-destructive',
 }
 
-export const TIMELINE_MAX_ITEMS = 200
+export const RUN_JOURNAL_WINDOW_SIZE = 80
 
 export const STATUS_STYLES: Record<string, string> = {
     running: 'bg-sky-500/15 text-sky-700',

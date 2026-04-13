@@ -17,7 +17,6 @@ import type {
     PendingQuestionSnapshot,
     RunRecord,
     TimelineEventCategory,
-    TimelineEventEntry,
     TimelineSeverity,
 } from '@/features/runs/model/shared'
 import type { TriggerFormState } from '@/features/triggers/model/triggerForm'
@@ -68,12 +67,11 @@ export interface RunDetailSessionState {
     checkpointStatus: ResourceStatus
     checkpointError: CheckpointErrorState | null
     isSummaryCollapsed: boolean
-    isActivityCollapsed: boolean
-    isRawLogsCollapsed: boolean
     isTimelineCollapsed: boolean
     isCheckpointCollapsed: boolean
     isContextCollapsed: boolean
     isArtifactsCollapsed: boolean
+    isAdvancedCollapsed: boolean
     isGraphCollapsed: boolean
     contextData: ContextResponse | null
     contextStatus: ResourceStatus
@@ -89,11 +87,6 @@ export interface RunDetailSessionState {
     artifactViewerError: string | null
     questionsStatus: ResourceStatus
     pendingQuestionSnapshots: PendingQuestionSnapshot[]
-    timelineEvents: TimelineEventEntry[]
-    timelineError: string | null
-    isTimelineLive: boolean
-    timelineSequence: number
-    timelineSeenServerSequences: Record<string, true>
     timelineTypeFilter: string
     timelineNodeStageFilter: string
     timelineCategoryFilter: 'all' | TimelineEventCategory

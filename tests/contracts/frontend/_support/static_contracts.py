@@ -124,7 +124,11 @@ REQUIRED_UI_ENDPOINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "/attractor/pipelines/{id}/events",
-        re.compile(r"pipelineEventsUrl\(|new EventSource\(\s*`/attractor/pipelines/\$\{encodeURIComponent\([^)]+\)\}/events`"),
+        re.compile(r"pipelineEventsUrl(?:WithAfterSequence)?\(|new EventSource\(\s*`/attractor/pipelines/\$\{encodeURIComponent\([^)]+\)\}/events`"),
+    ),
+    (
+        "/attractor/pipelines/{id}/journal",
+        re.compile(r"pipelineJournalUrl\(|fetchPipelineJournalValidated\("),
     ),
     (
         "/attractor/runs/events",
