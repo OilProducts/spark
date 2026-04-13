@@ -35,7 +35,6 @@ By default, Spark stores runtime data under `~/.spark` and serves the bundled UI
 
 - `spark-server serve`: start the Spark API server
 - `spark-server init`: initialize runtime directories and seed starter flows
-- `spark-server release-gate`: validate the required UI checklist
 - `spark`: workspace conversation, run-launch, flow, and trigger commands
 
 ## Requirements
@@ -46,7 +45,8 @@ By default, Spark stores runtime data under `~/.spark` and serves the bundled UI
 
 ## Package Contents
 
-The wheel includes:
+The supported install artifacts are the wheel and sdist.
+Both include:
 
 - bundled UI assets under `spark_app/ui_dist`
 - starter flows under `spark/starter_flows`

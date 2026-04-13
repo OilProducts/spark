@@ -49,18 +49,20 @@ From the repo root, `just run` is the normal full-stack workflow.
 - `npm run ui:smoke`: run Playwright smoke checks
 
 `npm run ui:smoke` expects the product backend to already be serving on `http://127.0.0.1:8000`.
-From the repo root, use `just ui-smoke` to launch [`app.py`](/Users/chris/projects/spark/src/spark_app/app.py) and wait for `/attractor/status` automatically before Playwright starts.
+From the repo root, use `just ui-smoke` to launch [`app.py`](../src/spark_app/app.py) and wait for `/attractor/status` automatically before Playwright starts.
 
 ## Build Output
 
 Production assets are emitted to `frontend/dist/`.
-When building the Python package from the repo root, `uv build` or `just build` bundles `frontend/dist` into the wheel and sdist automatically:
+From the repo root, use `just deliverable` to build the distributable wheel and sdist with the bundled UI:
 
 ```bash
-just build
+just deliverable
 ```
+
+`just build` remains available as a compatibility alias.
 
 ## Related Docs
 
-- Root project overview: [README.md](/Users/chris/projects/spark/README.md)
-- UI workflow acceptance assets: [tests/acceptance/agent-workflows/README.md](/Users/chris/projects/spark/tests/acceptance/agent-workflows/README.md)
+- Root project overview: [README.md](../README.md)
+- UI workflow acceptance assets: [tests/acceptance/agent-workflows/README.md](../tests/acceptance/agent-workflows/README.md)

@@ -19,6 +19,9 @@ clean:
 dev:
   docker compose up --build
 
+dev-docker:
+  just dev
+
 run: frontend-deps
   #!/usr/bin/env bash
   set -euo pipefail
@@ -33,11 +36,17 @@ run: frontend-deps
   while kill -0 "${backend_pid}" 2>/dev/null && kill -0 "${frontend_pid}" 2>/dev/null; do sleep 1; done
   if ! kill -0 "${backend_pid}" 2>/dev/null; then wait "${backend_pid}"; else wait "${frontend_pid}"; fi
 
+dev-run:
+  just run
+
 init-dev:
   #!/usr/bin/env bash
   set -euo pipefail
   spark_home="${SPARK_HOME:-$HOME/.spark-dev}"
   SPARK_HOME="${spark_home}" uv run spark-server init
+
+dev-init:
+  just init-dev
 
 stop:
   docker compose down
@@ -89,17 +98,16 @@ ui-smoke: frontend-deps
 frontend-build: frontend-deps
   npm --prefix frontend run build
 
-wheel:
-  uv build
+deliverable: frontend-deps
+  uv run python scripts/build_deliverable.py
 
-build: frontend-deps
-  npm --prefix frontend run build
-  uv build
+build:
+  just deliverable
 
 install:
   #!/usr/bin/env bash
   set -euo pipefail
-  just build
+  just deliverable
   spark_home="${SPARK_HOME:-$HOME/.spark}"
   venv_dir="${spark_home}/venv"
   mkdir -p "${spark_home}"

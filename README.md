@@ -25,9 +25,9 @@ Flow authoring is workspace-global rather than project-owned: you can open the E
 
 For flow authoring, use this progression:
 
-- Hands-on tutorial: [docs/first-flow-tutorial.md](/Users/chris/projects/spark/docs/first-flow-tutorial.md)
+- Hands-on tutorial: [docs/first-flow-tutorial.md](docs/first-flow-tutorial.md)
 - Product overview and authoring heuristics: this README
-- Full raw DOT reference: [src/spark/guides/dot-authoring.md](/Users/chris/projects/spark/src/spark/guides/dot-authoring.md)
+- Full raw DOT reference: [src/spark/guides/dot-authoring.md](src/spark/guides/dot-authoring.md)
 
 After direct flow edits, validate with `spark flow validate --file /path/to/flow.dot --text`.
 
@@ -35,13 +35,13 @@ After direct flow edits, validate with `spark flow validate --file /path/to/flow
 
 Start with the smallest flow that matches the job:
 
-- [src/spark/starter_flows/simple-linear.dot](/Users/chris/projects/spark/src/spark/starter_flows/simple-linear.dot): one pass through plan -> implement -> summarize
-- [src/spark/starter_flows/implement-review-loop.dot](/Users/chris/projects/spark/src/spark/starter_flows/implement-review-loop.dot): plan -> implement -> review with an actual retry loop
-- [src/spark/starter_flows/implement-from-plan.dot](/Users/chris/projects/spark/src/spark/starter_flows/implement-from-plan.dot): snapshot a plan file into `.spark/planflows/<run>/plan-source.md` plus `.spark/planflows/<run>/state.json`, expose that workspace via `context.planflow.*`, implement it, evaluate completion, and iterate
-- [src/spark/starter_flows/spec-implementation/implement-spec.dot](/Users/chris/projects/spark/src/spark/starter_flows/spec-implementation/implement-spec.dot): greenfield spec-implementation program flow that keeps repo-local state under `.specflow/` and dispatches milestone workers
-- [src/spark/starter_flows/human-review-loop.dot](/Users/chris/projects/spark/src/spark/starter_flows/human-review-loop.dot): explicit human approval or requested fixes
-- [src/spark/starter_flows/parallel-review.dot](/Users/chris/projects/spark/src/spark/starter_flows/parallel-review.dot): fan-out / fan-in structure
-- [src/spark/starter_flows/supervision/supervised-implementation.dot](/Users/chris/projects/spark/src/spark/starter_flows/supervision/supervised-implementation.dot): parent/child composition with `stack.manager_loop`
+- [src/spark/starter_flows/simple-linear.dot](src/spark/starter_flows/simple-linear.dot): one pass through plan -> implement -> summarize
+- [src/spark/starter_flows/implement-review-loop.dot](src/spark/starter_flows/implement-review-loop.dot): plan -> implement -> review with an actual retry loop
+- [src/spark/starter_flows/implement-from-plan.dot](src/spark/starter_flows/implement-from-plan.dot): snapshot a plan file into `.spark/planflows/<run>/plan-source.md` plus `.spark/planflows/<run>/state.json`, expose that workspace via `context.planflow.*`, implement it, evaluate completion, and iterate
+- [src/spark/starter_flows/spec-implementation/implement-spec.dot](src/spark/starter_flows/spec-implementation/implement-spec.dot): greenfield spec-implementation program flow that keeps repo-local state under `.specflow/` and dispatches milestone workers
+- [src/spark/starter_flows/human-review-loop.dot](src/spark/starter_flows/human-review-loop.dot): explicit human approval or requested fixes
+- [src/spark/starter_flows/parallel-review.dot](src/spark/starter_flows/parallel-review.dot): fan-out / fan-in structure
+- [src/spark/starter_flows/supervision/supervised-implementation.dot](src/spark/starter_flows/supervision/supervised-implementation.dot): parent/child composition with `stack.manager_loop`
 
 Use the flow `goal` as the user-facing stated goal for the run:
 
@@ -112,13 +112,13 @@ Use hooks and model defaults deliberately:
 
 ## Architecture
 
-- [src/attractor/](/Users/chris/projects/spark/src/attractor): Attractor runtime, pipeline engine, handlers, CLI, and mounted Attractor API
-- [src/workspace/](/Users/chris/projects/spark/src/workspace): Spark workspace service, conversations, review artifacts, trigger subsystem, and mounted Workspace API
-- [frontend/](/Users/chris/projects/spark/frontend): React 19 + Vite UI
-- [src/spark/starter_flows/](/Users/chris/projects/spark/src/spark/starter_flows): curated starter `.dot` flows intended for first-run seeding
-- [tests/fixtures/flows/](/Users/chris/projects/spark/tests/fixtures/flows): repo-only `.dot` fixtures used by tests and local development
-- [tests/](/Users/chris/projects/spark/tests): backend tests, UI contracts, and acceptance assets
-- [specs/](/Users/chris/projects/spark/specs): Attractor, workspace, frontend, and storage specifications
+- [src/attractor/](src/attractor): Attractor runtime, pipeline engine, handlers, CLI, and mounted Attractor API
+- [src/workspace/](src/workspace): Spark workspace service, conversations, review artifacts, trigger subsystem, and mounted Workspace API
+- [frontend/](frontend): React 19 + Vite UI
+- [src/spark/starter_flows/](src/spark/starter_flows): curated starter `.dot` flows intended for first-run seeding
+- [tests/fixtures/flows/](tests/fixtures/flows): repo-only `.dot` fixtures used by tests and local development
+- [tests/](tests): backend tests, UI contracts, and acceptance assets
+- [specs/](specs): Attractor, workspace, frontend, and storage specifications
 
 ## Requirements
 
@@ -183,6 +183,18 @@ just dev
 
 That starts the backend on port `8000` and the frontend on port `5173` via `docker compose`.
 
+The tracked `compose.yaml` is public-safe by default and does not mount personal Codex auth, config, or skills files from your machine.
+If you want containerized Codex auth or custom skills, add them in an untracked `compose.override.yaml`, for example:
+
+```yaml
+services:
+  backend:
+    volumes:
+      - /path/to/auth.json:/codex-seed/auth.json:ro
+      - /path/to/config.toml:/codex-seed/config.toml:ro
+      - /path/to/skills:/codex-runtime/.codex/skills:ro
+```
+
 ## Backend-Only Usage
 
 Start the server directly:
@@ -226,7 +238,7 @@ Important path overrides:
 
 ## API Overview
 
-The canonical route inventory lives in [app.py](/Users/chris/projects/spark/src/spark_app/app.py), [server.py](/Users/chris/projects/spark/src/attractor/api/server.py), and [api.py](/Users/chris/projects/spark/src/workspace/api.py).
+The canonical route inventory lives in [app.py](src/spark_app/app.py), [server.py](src/attractor/api/server.py), and [api.py](src/workspace/api.py).
 
 The root app is a mount host only. Canonical public API surfaces are:
 - Attractor docs/OpenAPI under `/attractor/docs` and `/attractor/openapi.json`
@@ -246,17 +258,19 @@ Current API groups include:
 
 ## Repository Commands
 
-Useful `just` targets from [justfile](/Users/chris/projects/spark/justfile):
+Useful `just` targets from [justfile](justfile):
 
 - `just clean`: remove generated build artifacts without deleting installed dependencies or runtime state
 - `just setup`: install Python and frontend development dependencies for a fresh checkout
 - `just run`: backend + Vite frontend for local development
+- `just init-dev`: initialize the source-checkout dev runtime under `~/.spark-dev`
 - `just dev`: `docker compose up --build`
 - `just test`: full Python test suite
 - `just frontend-unit`: frontend unit tests
 - `just ui-smoke`: Playwright smoke checks
 - `just dot-lint`: DOT formatting lint regression
-- `just build`: frontend build and wheel build
+- `just deliverable`: canonical wheel + sdist packaging workflow with bundled UI verification
+- `just build`: compatibility alias for `just deliverable`
 
 ## Testing
 
@@ -278,24 +292,20 @@ Frontend smoke tests:
 just ui-smoke
 ```
 
-`just ui-smoke` launches the product ASGI app from [`app.py`](/Users/chris/projects/spark/src/spark_app/app.py), waits for `GET /attractor/status`, and then runs `npm --prefix frontend run ui:smoke`.
+`just ui-smoke` launches the product ASGI app from [`app.py`](src/spark_app/app.py), waits for `GET /attractor/status`, and then runs `npm --prefix frontend run ui:smoke`.
 
 ## Packaging
 
-Build the packaged UI and wheel:
+From a source checkout, `just run` remains the canonical development path.
+For distributable artifacts, use the explicit deliverable workflow:
 
 ```bash
-just build
+just deliverable
 ```
 
-Or run the steps manually:
+`just deliverable` builds `frontend/dist`, stages the bundled UI into a temporary packaging tree, builds the wheel and sdist with standard setuptools, and verifies both install paths before copying the artifacts into `dist/`.
 
-```bash
-npm --prefix frontend run build
-uv build
-```
-
-`uv build` stages the bundled UI into the package transiently from `frontend/dist` and cleans it afterward. The generated `src/spark_app/ui_dist` tree is not tracked in git.
+`just build` remains available as a compatibility alias, but `just deliverable` is the supported packaging command.
 
 Install the resulting wheel:
 
@@ -310,8 +320,8 @@ pip install dist/*.whl
 - The agent-facing CLI exposes curated flow discovery commands with JSON default output: `spark flow list`, `spark flow describe --flow <name>`, and `spark flow get --flow <name>`.
 - The editor supports both structured editing and raw DOT editing, including semantic-equivalence safety checks during handoff.
 - The Runs view is intended for historical inspection, diagnostics, artifact browsing, and replaying execution context.
-- Starter flow templates live in [src/spark/starter_flows/parallel-review.dot](/Users/chris/projects/spark/src/spark/starter_flows/parallel-review.dot), [src/spark/starter_flows/simple-linear.dot](/Users/chris/projects/spark/src/spark/starter_flows/simple-linear.dot), [src/spark/starter_flows/human-review-loop.dot](/Users/chris/projects/spark/src/spark/starter_flows/human-review-loop.dot), [src/spark/starter_flows/implement-from-plan.dot](/Users/chris/projects/spark/src/spark/starter_flows/implement-from-plan.dot), [src/spark/starter_flows/implement-review-loop.dot](/Users/chris/projects/spark/src/spark/starter_flows/implement-review-loop.dot), [src/spark/starter_flows/spec-implementation/implement-spec.dot](/Users/chris/projects/spark/src/spark/starter_flows/spec-implementation/implement-spec.dot), [src/spark/starter_flows/spec-implementation/implement-milestone.dot](/Users/chris/projects/spark/src/spark/starter_flows/spec-implementation/implement-milestone.dot), [src/spark/starter_flows/supervision/implementation-worker.dot](/Users/chris/projects/spark/src/spark/starter_flows/supervision/implementation-worker.dot), and [src/spark/starter_flows/supervision/supervised-implementation.dot](/Users/chris/projects/spark/src/spark/starter_flows/supervision/supervised-implementation.dot).
-- Repo-only advanced/test fixtures live under [tests/fixtures/flows/](/Users/chris/projects/spark/tests/fixtures/flows).
+- Starter flow templates live in [src/spark/starter_flows/parallel-review.dot](src/spark/starter_flows/parallel-review.dot), [src/spark/starter_flows/simple-linear.dot](src/spark/starter_flows/simple-linear.dot), [src/spark/starter_flows/human-review-loop.dot](src/spark/starter_flows/human-review-loop.dot), [src/spark/starter_flows/implement-from-plan.dot](src/spark/starter_flows/implement-from-plan.dot), [src/spark/starter_flows/implement-review-loop.dot](src/spark/starter_flows/implement-review-loop.dot), [src/spark/starter_flows/spec-implementation/implement-spec.dot](src/spark/starter_flows/spec-implementation/implement-spec.dot), [src/spark/starter_flows/spec-implementation/implement-milestone.dot](src/spark/starter_flows/spec-implementation/implement-milestone.dot), [src/spark/starter_flows/supervision/implementation-worker.dot](src/spark/starter_flows/supervision/implementation-worker.dot), and [src/spark/starter_flows/supervision/supervised-implementation.dot](src/spark/starter_flows/supervision/supervised-implementation.dot).
+- Repo-only advanced/test fixtures live under [tests/fixtures/flows/](tests/fixtures/flows).
 
 ## Project Status
 
