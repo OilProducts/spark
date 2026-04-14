@@ -19,7 +19,6 @@ from attractor.api.token_usage import TokenUsageBreakdown, estimate_model_cost
 from attractor.engine import load_checkpoint
 from attractor.graph_prep import (
     DEFAULT_MAX_RETRIES_KEY,
-    normalize_graph_attr_aliases,
     resolve_default_max_retries_value,
 )
 from spark_common.runtime import build_project_id, normalize_project_path
@@ -96,7 +95,6 @@ def resolve_start_node_id(graph) -> str:
 
 
 def graph_attr_context_seed(graph) -> Dict[str, object]:
-    normalize_graph_attr_aliases(graph)
     seeded: Dict[str, object] = {}
     for key, attr in graph.graph_attrs.items():
         value = getattr(attr, "value", "")

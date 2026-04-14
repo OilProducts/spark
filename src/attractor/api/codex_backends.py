@@ -33,7 +33,6 @@ from spark_common.runtime import resolve_runtime_workspace_path
 _STRUCTURED_OUTCOME_KEYS = {
     "outcome",
     "preferred_label",
-    "preferred_next_label",
     "suggested_next_ids",
     "context_updates",
     "notes",
@@ -420,9 +419,7 @@ def _coerce_structured_text_outcome(
     if candidate is None:
         return _PlainTextParseResult(raw_text=raw_text)
 
-    preferred_label = candidate.get("preferred_label")
-    if preferred_label is None:
-        preferred_label = candidate.get("preferred_next_label", "")
+    preferred_label = candidate.get("preferred_label", "")
     suggested_next_ids = candidate.get("suggested_next_ids", [])
     context_updates = candidate.get("context_updates", {})
     notes = candidate.get("notes", "")

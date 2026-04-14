@@ -414,44 +414,6 @@ def _read_optional_bool(payload: dict[str, object], key: str, *, default: bool) 
     return default
 
 
-def read_legacy_project_flow_bindings(home_dir: Path, project_path: str) -> dict[str, str]:
-    project_paths = ensure_project_paths(home_dir, project_path)
-    return _read_flow_bindings(_read_project_record(project_paths.project_file))
-
-
-def clear_legacy_project_flow_bindings(home_dir: Path, project_path: str) -> ProjectRecord:
-    project_paths = ensure_project_paths(home_dir, project_path)
-    payload = _read_project_record(project_paths.project_file)
-    next_payload: dict[str, Any] = {
-        "project_id": project_paths.project_id,
-        "project_path": project_paths.project_path,
-        "display_name": str(payload.get("display_name", "") or project_paths.display_name),
-        "created_at": str(payload.get("created_at", "") or _iso_now()),
-        "last_opened_at": str(payload.get("last_opened_at", "") or _iso_now()),
-        "last_accessed_at": _read_optional_string(payload, "last_accessed_at"),
-        "is_favorite": _read_optional_bool(payload, "is_favorite", default=False),
-        "active_conversation_id": _read_optional_string(payload, "active_conversation_id"),
-    }
-    _write_project_record(project_paths.project_file, next_payload)
-    return _build_project_record(project_paths)
-
-
-def _read_flow_bindings(payload: dict[str, object]) -> dict[str, str]:
-    raw_bindings = payload.get("flow_bindings")
-    if not isinstance(raw_bindings, dict):
-        return {}
-    next_bindings: dict[str, str] = {}
-    for raw_trigger, raw_flow_name in raw_bindings.items():
-        if not isinstance(raw_trigger, str) or not isinstance(raw_flow_name, str):
-            continue
-        trigger = raw_trigger.strip()
-        flow_name = raw_flow_name.strip()
-        if not trigger or not flow_name:
-            continue
-        next_bindings[trigger] = flow_name
-    return next_bindings
-
-
 def _build_project_record(project_paths: ProjectPaths) -> ProjectRecord:
     payload = _read_project_record(project_paths.project_file)
     return ProjectRecord(

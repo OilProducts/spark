@@ -38,10 +38,8 @@ from attractor.engine import (
 from attractor.graphviz_export import export_graphviz_artifact
 from attractor.graph_prep import (
     DEFAULT_MAX_RETRIES_KEY,
-    LEGACY_DEFAULT_MAX_RETRY_KEY,
     build_transform_pipeline as _build_graph_transform_pipeline,
     canonicalize_graph_source as _canonicalize_graph_source,
-    normalize_graph_attr_aliases as _normalize_graph_attr_aliases,
     prepare_graph as _prepare_graph_impl,
     resolve_default_max_retries_value,
 )
@@ -1336,7 +1334,6 @@ def _build_child_preview_payload(
 
 def _graph_payload(graph, *, child_previews: dict[str, dict] | None = None) -> dict:
     canonical_graph = copy.deepcopy(graph)
-    _normalize_graph_attr_aliases(canonical_graph)
     canonical_graph_attrs = canonical_graph.graph_attrs
 
     def _all_attrs_payload(attrs: Dict[str, object]) -> Dict[str, object]:
@@ -1417,11 +1414,7 @@ def _graph_payload(graph, *, child_previews: dict[str, dict] | None = None) -> d
             "ui_default_llm_model": _dot_attr_value(canonical_graph_attrs, "ui_default_llm_model"),
             "ui_default_llm_provider": _dot_attr_value(canonical_graph_attrs, "ui_default_llm_provider"),
             "ui_default_reasoning_effort": _dot_attr_value(canonical_graph_attrs, "ui_default_reasoning_effort"),
-        }, {
-            key: value
-            for key, value in canonical_graph_attrs.items()
-            if key != LEGACY_DEFAULT_MAX_RETRY_KEY
-        }),
+        }, canonical_graph_attrs),
         "edges": [
             _merge_extension_attrs({
                 "from": e.source,

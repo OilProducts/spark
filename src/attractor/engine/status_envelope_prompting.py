@@ -10,7 +10,7 @@ _STATUS_ENVELOPE_SCHEMA_LINES: tuple[str, ...] = (
     '- Return ONLY a JSON object.',
     '- Required top-level key: "outcome" with one of "success", "fail", "partial_success", or "retry".',
     '- Optional top-level keys: "preferred_label", "suggested_next_ids", "context_updates", "notes", "failure_reason", and "retryable".',
-    '- Use "preferred_label" for routing; do not use legacy aliases.',
+    '- Use "preferred_label" for routing.',
     '- "suggested_next_ids" must be a list of strings.',
     '- "context_updates" must be a JSON object.',
     '- Do not emit any other top-level keys.',

@@ -175,23 +175,6 @@ class TestTransforms:
         assert edge.attrs["weight"].value == 7
         assert edge.attrs["loop_restart"].value is True
 
-    def test_attribute_defaults_transform_normalizes_legacy_default_max_retry_alias(self):
-        graph = parse_dot(
-            """
-            digraph G {
-                graph [default_max_retry=9]
-                start [shape=Mdiamond]
-                done [shape=Msquare]
-                start -> done
-            }
-            """
-        )
-
-        AttributeDefaultsTransform().apply(graph)
-
-        assert graph.graph_attrs["default_max_retries"].value == 9
-        assert "default_max_retry" not in graph.graph_attrs
-
     def test_goal_variable_transform(self):
         graph = parse_dot(
             """

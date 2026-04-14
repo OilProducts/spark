@@ -136,7 +136,7 @@ Graph attributes are declared in a `graph [ ... ]` block or as top-level `key = 
 | `goal`                    | String   | `""`      | Human-readable goal for the pipeline. Exposed as `$goal` in prompt templates and mirrored into the run context as `graph.goal`. |
 | `label`                   | String   | `""`      | Display name for the graph (used in visualization). |
 | `model_stylesheet`        | String   | `""`      | CSS-like stylesheet for per-node LLM model/provider defaults. See Section 8. |
-| `default_max_retries`     | Integer  | `0`       | Default additional retries for nodes that omit `max_retries`. Legacy alias: `default_max_retry`. |
+| `default_max_retries`     | Integer  | `0`       | Default additional retries for nodes that omit `max_retries`. |
 | `retry_target`            | String   | `""`      | Node ID to jump to if exit is reached with unsatisfied goal gates. |
 | `fallback_retry_target`   | String   | `""`      | Secondary jump target if `retry_target` is missing or invalid. |
 | `default_fidelity`        | String   | `""`      | Default context fidelity mode when explicitly set. Empty string means "unset"; the runtime fallback is `compact` (see Section 5.4). |
@@ -529,7 +529,7 @@ FUNCTION check_goal_gates(graph, node_outcomes):
 Each node has a retry policy determined by:
 
 1. Node attribute `max_retries` (if explicitly set) -- number of additional attempts beyond the initial execution
-2. Graph attribute `default_max_retries` (fallback; legacy alias `default_max_retry` is accepted)
+2. Graph attribute `default_max_retries`
 
 If neither is set, the built-in default is 0 (no retries).
 
@@ -2236,7 +2236,7 @@ ASSERT "review" IN checkpoint.completed_nodes
 | `goal`                  | String   | `""`    | Pipeline-level goal description |
 | `label`                 | String   | `""`    | Display name for the graph |
 | `model_stylesheet`      | String   | `""`    | CSS-like LLM model/provider stylesheet |
-| `default_max_retries`   | Integer  | `0`     | Default additional retries for nodes that omit `max_retries`. Legacy alias: `default_max_retry`. |
+| `default_max_retries`   | Integer  | `0`     | Default additional retries for nodes that omit `max_retries`. |
 | `default_fidelity`      | String   | `""`    | Default context fidelity mode when explicitly set. Empty string means unset; runtime fallback is `compact`. |
 | `retry_target`          | String   | `""`    | Node to jump to on unsatisfied exit |
 | `fallback_retry_target` | String   | `""`    | Secondary jump target |
@@ -2331,8 +2331,7 @@ Each non-terminal node writes a `status.json` file in its stage directory. This 
 | `notes`                | String          | No       | Human-readable log entries. |
 | `failure_kind`         | String (enum)   | No       | Runtime-owned failure classification. Present only for failed stages. Allowed values: `business`, `contract`, `runtime`. |
 
-`preferred_label` is the canonical status-file field name. `preferred_next_label` is a legacy
-implementation alias and is not part of the current contract.
+`preferred_label` is the status-file field name.
 
 When `auto_status=true` on a node and no `status.json` was written by the handler, the engine synthesizes: `{"outcome": "success", "notes": "auto-status: handler completed without writing status"}`.
 

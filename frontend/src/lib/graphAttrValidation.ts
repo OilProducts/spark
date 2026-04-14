@@ -32,7 +32,7 @@ export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): s
     if (key === 'model_stylesheet') {
         return value
     }
-    if (key === 'default_max_retries' || key === 'default_max_retry') {
+    if (key === 'default_max_retries') {
         const trimmed = value.trim()
         if (!trimmed) return ''
         if (!/^\d+$/.test(trimmed)) return trimmed
@@ -48,7 +48,7 @@ export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): s
 }
 
 export const validateGraphAttrValue = (key: keyof GraphAttrs, value: string): string | null => {
-    if (key === 'default_max_retries' || key === 'default_max_retry') {
+    if (key === 'default_max_retries') {
         if (!value) return null
         if (!/^\d+$/.test(value)) {
             return 'Default max retries must be a non-negative integer.'

@@ -166,7 +166,7 @@ line2"]
         dot = """
         // graph comment
         digraph Demo {
-            graph [goal="Ship", default_max_retry=5]
+            graph [goal="Ship", default_max_retries=5]
             node [shape=box, timeout=900s]
             edge [weight=2]
 
@@ -182,7 +182,7 @@ line2"]
         assert graph.graph_id == "Demo"
         assert "goal" in graph.graph_attrs
         assert graph.graph_attrs["goal"].value == "Ship"
-        assert graph.graph_attrs["default_max_retry"].value == 5
+        assert graph.graph_attrs["default_max_retries"].value == 5
 
         assert len(graph.edges) == 2
         assert graph.edges[0].source == "start"
@@ -491,7 +491,7 @@ line2"]
                 goal="Ship release",
                 label="Release Flow",
                 model_stylesheet="* { llm_model: gpt-5; }",
-                default_max_retry=7,
+                default_max_retries=7,
                 default_fidelity="summary:high",
                 retry_target="implement",
                 fallback_retry_target="plan",
@@ -511,7 +511,7 @@ line2"]
             "goal",
             "label",
             "model_stylesheet",
-            "default_max_retry",
+            "default_max_retries",
             "default_fidelity",
             "retry_target",
             "fallback_retry_target",
@@ -520,8 +520,8 @@ line2"]
             "tool.hooks.pre",
             "tool.hooks.post",
         }
-        assert graph.graph_attrs["default_max_retry"].value == 7
-        assert graph.graph_attrs["default_max_retry"].value_type == DotValueType.INTEGER
+        assert graph.graph_attrs["default_max_retries"].value == 7
+        assert graph.graph_attrs["default_max_retries"].value_type == DotValueType.INTEGER
         assert graph.graph_attrs["stack.child_dotfile"].value == "child.dot"
         assert graph.graph_attrs["tool.hooks.pre"].value == "echo pre"
         assert graph.graph_attrs["tool.hooks.post"].value == "echo post"

@@ -410,25 +410,25 @@ describe('flowCanvasShared', () => {
     it.each([
         {
             flowName: 'implement-spec.dot',
-            flowRelativePath: 'src/spark/starter_flows/spec-implementation/implement-spec.dot',
+            flowRelativePath: 'src/spark/flows/spec-implementation/implement-spec.dot',
             expandChildren: false,
             expectedDerivedNodeId: null,
         },
         {
             flowName: 'implement-spec.dot',
-            flowRelativePath: 'src/spark/starter_flows/spec-implementation/implement-spec.dot',
+            flowRelativePath: 'src/spark/flows/spec-implementation/implement-spec.dot',
             expandChildren: true,
             expectedDerivedNodeId: '__child_preview_cluster__run_milestone',
         },
         {
             flowName: 'implement-milestone.dot',
-            flowRelativePath: 'src/spark/starter_flows/spec-implementation/implement-milestone.dot',
+            flowRelativePath: 'src/spark/flows/spec-implementation/implement-milestone.dot',
             expandChildren: false,
             expectedDerivedNodeId: null,
         },
         {
             flowName: 'implement-milestone.dot',
-            flowRelativePath: 'src/spark/starter_flows/spec-implementation/implement-milestone.dot',
+            flowRelativePath: 'src/spark/flows/spec-implementation/implement-milestone.dot',
             expandChildren: true,
             expectedDerivedNodeId: null,
         },

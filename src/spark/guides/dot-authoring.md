@@ -130,7 +130,7 @@ Documented Attractor graph attributes:
 
 Notes:
 
-- `default_max_retries` is the canonical key. `default_max_retry` is legacy input only and should not be authored.
+- `default_max_retries` is the graph-level retry default key.
 - `stack.child_workdir` default `cwd` means the current pipeline run working directory.
 - Relative `stack.child_dotfile` resolves from the parent flow source directory when the parent flow path is known.
 

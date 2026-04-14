@@ -99,12 +99,7 @@ function cloneCanonicalAttrMap(
 }
 
 function canonicalizeGraphAttrs(attrs: CanonicalAttrMap): CanonicalAttrMap {
-    const canonical = { ...attrs }
-    if (canonical.default_max_retries === undefined && canonical.default_max_retry !== undefined) {
-        canonical.default_max_retries = canonical.default_max_retry
-    }
-    delete canonical.default_max_retry
-    return canonical
+    return { ...attrs }
 }
 
 function cloneDefaultsScope(defaults?: Partial<CanonicalDefaultsScope>): CanonicalDefaultsScope {

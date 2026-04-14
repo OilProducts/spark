@@ -55,7 +55,6 @@ const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
 ]
 
 const DEFAULT_MAX_RETRIES_KEY: keyof GraphAttrs = 'default_max_retries'
-const LEGACY_DEFAULT_MAX_RETRY_KEY: keyof GraphAttrs = 'default_max_retry'
 
 export const normalizeViewMode = (mode: ViewMode): ViewMode => (mode === 'projects' ? 'home' : mode)
 
@@ -94,24 +93,17 @@ export const buildDiagnosticMaps = (diagnostics: DiagnosticEntry[]) => {
 }
 
 const isKnownGraphAttrKey = (key: string): key is keyof GraphAttrs => {
-    if (key === 'model_stylesheet' || key === DEFAULT_MAX_RETRIES_KEY || key === LEGACY_DEFAULT_MAX_RETRY_KEY) {
+    if (key === 'model_stylesheet' || key === DEFAULT_MAX_RETRIES_KEY) {
         return true
     }
     return STRING_GRAPH_ATTR_KEYS.includes(key as keyof GraphAttrs)
-}
-
-const canonicalGraphAttrKey = (key: string): keyof GraphAttrs | string => {
-    if (key === LEGACY_DEFAULT_MAX_RETRY_KEY) {
-        return DEFAULT_MAX_RETRIES_KEY
-    }
-    return key
 }
 
 export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): string => {
     if (key === 'model_stylesheet') {
         return value
     }
-    if (key === DEFAULT_MAX_RETRIES_KEY || key === LEGACY_DEFAULT_MAX_RETRY_KEY) {
+    if (key === DEFAULT_MAX_RETRIES_KEY) {
         const trimmed = value.trim()
         if (!trimmed) return ''
         if (!/^\d+$/.test(trimmed)) return trimmed
@@ -127,7 +119,7 @@ export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): s
 }
 
 export const validateGraphAttrValue = (key: keyof GraphAttrs, value: string): string | null => {
-    if (key === DEFAULT_MAX_RETRIES_KEY || key === LEGACY_DEFAULT_MAX_RETRY_KEY) {
+    if (key === DEFAULT_MAX_RETRIES_KEY) {
         if (!value) return null
         if (!/^\d+$/.test(value)) {
             return 'Default max retries must be a non-negative integer.'
@@ -151,25 +143,16 @@ export const normalizeGraphAttrs = (attrs: GraphAttrs): GraphAttrs => {
         if (rawValue === undefined || rawValue === null) {
             return
         }
-        if (
-            key === LEGACY_DEFAULT_MAX_RETRY_KEY
-            && attrs[DEFAULT_MAX_RETRIES_KEY] !== undefined
-            && attrs[DEFAULT_MAX_RETRIES_KEY] !== null
-        ) {
-            return
-        }
-        const canonicalKey = canonicalGraphAttrKey(key)
         if (isKnownGraphAttrKey(key)) {
-            normalized[canonicalKey] = normalizeGraphAttrValue(canonicalKey as keyof GraphAttrs, String(rawValue))
+            normalized[key] = normalizeGraphAttrValue(key as keyof GraphAttrs, String(rawValue))
             return
         }
         if (typeof rawValue === 'string' || typeof rawValue === 'number' || typeof rawValue === 'boolean') {
-            normalized[canonicalKey] = rawValue
+            normalized[key] = rawValue
             return
         }
-        normalized[canonicalKey] = String(rawValue)
+        normalized[key] = String(rawValue)
     })
-    delete normalized[LEGACY_DEFAULT_MAX_RETRY_KEY]
     return normalized as GraphAttrs
 }
 

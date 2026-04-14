@@ -56,7 +56,6 @@ export interface GraphAttrs {
     label?: string
     model_stylesheet?: string
     default_max_retries?: number | string
-    default_max_retry?: number | string
     retry_target?: string
     fallback_retry_target?: string
     default_fidelity?: string
