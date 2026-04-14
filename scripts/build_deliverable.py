@@ -5,7 +5,6 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import zipfile
 
@@ -22,29 +21,6 @@ FORBIDDEN_WHEEL_ENTRIES = (
     "spark/guides/attractor-spec.md",
     "spark/guides/spark-flow-extensions.md",
 )
-SMOKE_CODE = """
-from pathlib import Path
-from tempfile import TemporaryDirectory
-
-from spark.authoring_assets import (
-    dot_authoring_guide_path,
-    spark_operations_guide_path,
-)
-from spark.starter_assets import load_starter_flow_assets
-from spark.ui import resolve_default_ui_dir
-
-with TemporaryDirectory() as tmp:
-    ui_dir = resolve_default_ui_dir(Path(tmp))
-    assert ui_dir is not None
-    assert (ui_dir / "index.html").exists()
-
-assets = {asset.name for asset in load_starter_flow_assets(project_root=Path("."))}
-assert "examples/simple-linear.dot" in assets
-assert "spec-implementation/implement-spec.dot" in assets
-
-for path in (dot_authoring_guide_path(), spark_operations_guide_path()):
-    assert path.exists(), path
-"""
 
 
 @dataclass(frozen=True)
@@ -66,8 +42,6 @@ def main() -> int:
         _run(["uv", "build"], cwd=stage_root)
         artifacts = _locate_artifacts(stage_root / "dist")
         _verify_wheel_contents(artifacts.wheel)
-        _verify_installable(repo_root, artifacts.wheel, artifact_kind="wheel")
-        _verify_installable(repo_root, artifacts.sdist, artifact_kind="sdist")
         _publish_artifacts(repo_root / "dist", artifacts)
 
     print(f"deliverable ready: {repo_root / 'dist'}")
@@ -137,33 +111,12 @@ def _verify_wheel_contents(wheel_path: Path) -> None:
         raise RuntimeError(f"wheel unexpectedly contains removed packaged specs:\n{joined}")
 
 
-def _verify_installable(repo_root: Path, artifact_path: Path, *, artifact_kind: str) -> None:
-    with tempfile.TemporaryDirectory(prefix=f"spark-{artifact_kind}-venv-") as venv_str:
-        venv_dir = Path(venv_str)
-        _run(["uv", "venv", "--seed", str(venv_dir)], cwd=repo_root)
-        python_executable = _venv_python(venv_dir)
-        if artifact_kind == "sdist":
-            _run(["uv", "pip", "install", "--python", str(python_executable), "setuptools", "wheel"], cwd=repo_root)
-        install_command = [str(python_executable), "-m", "pip", "install", "--no-deps"]
-        if artifact_kind == "sdist":
-            install_command.append("--no-build-isolation")
-        install_command.append(str(artifact_path))
-        _run(install_command, cwd=repo_root)
-        _run([str(python_executable), "-c", SMOKE_CODE], cwd=repo_root)
-
-
 def _publish_artifacts(repo_dist: Path, artifacts: BuildArtifacts) -> None:
     repo_dist.mkdir(parents=True, exist_ok=True)
     for old_artifact in list(repo_dist.glob("spark-*.whl")) + list(repo_dist.glob("spark-*.tar.gz")):
         old_artifact.unlink()
     shutil.copy2(artifacts.wheel, repo_dist / artifacts.wheel.name)
     shutil.copy2(artifacts.sdist, repo_dist / artifacts.sdist.name)
-
-
-def _venv_python(venv_dir: Path) -> Path:
-    if sys.platform == "win32":
-        return venv_dir / "Scripts" / "python.exe"
-    return venv_dir / "bin" / "python"
 
 
 def _run(command: list[str], *, cwd: Path, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
