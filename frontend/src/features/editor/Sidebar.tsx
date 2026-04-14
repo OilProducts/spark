@@ -1,5 +1,5 @@
 import { useStore, type DiagnosticEntry } from "@/store"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
 import { generateDot, sanitizeGraphId } from "@/lib/dotUtils"
 import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
@@ -120,10 +120,15 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const editorNodeInspectorSessionsByNodeId = useStore((state) => state.editorNodeInspectorSessionsByNodeId)
     const updateEditorNodeInspectorSession = useStore((state) => state.updateEditorNodeInspectorSession)
     const [flows, setFlows] = useState<string[]>([])
+    const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
     const editorGraphBridgeRef = useEditorGraphBridgeRef()
+    const activeFlowRef = useRef(activeFlow)
+    const isMountedRef = useRef(true)
+    const refreshRequestIdRef = useRef(0)
     const { getNodes, setNodes, getEdges, setEdges } = useReactFlow()
     const nodes = useReactFlowStore((state) => state.nodes)
     const edges = useReactFlowStore((state) => state.edges)
+    activeFlowRef.current = activeFlow
     const readNodes = () => editorGraphBridgeRef?.current?.getNodes() ?? getNodes()
     const readEdges = () => editorGraphBridgeRef?.current?.getEdges() ?? getEdges()
     const updateNodes = (updater: Parameters<typeof setNodes>[0]) =>
@@ -141,31 +146,39 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         ),
     })
 
-    const loadFlows = async () => {
+    const refreshFlows = async () => {
+        const requestId = refreshRequestIdRef.current + 1
+        refreshRequestIdRef.current = requestId
+        if (isMountedRef.current) {
+            setIsRefreshingFlows(true)
+        }
+
         try {
             const data = await loadFlowCatalog()
+            if (!isMountedRef.current || requestId !== refreshRequestIdRef.current) {
+                return
+            }
             setFlows(data)
+
+            const selectedFlow = activeFlowRef.current
+            if (selectedFlow && !data.includes(selectedFlow)) {
+                setActiveFlow(null)
+            }
         } catch (error) {
             console.error(error)
+        } finally {
+            if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
+                setIsRefreshingFlows(false)
+            }
         }
     }
 
     useEffect(() => {
-        let cancelled = false
-
-        void (async () => {
-            try {
-                const data = await loadFlowCatalog()
-                if (!cancelled) {
-                    setFlows(data)
-                }
-            } catch (error) {
-                console.error(error)
-            }
-        })()
+        isMountedRef.current = true
+        void refreshFlows()
 
         return () => {
-            cancelled = true
+            isMountedRef.current = false
         }
     }, [])
 
@@ -197,7 +210,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         const saved = await saveFlowContent(fileName, initialContent)
         if (!saved) return
 
-        await loadFlows();
+        await refreshFlows();
         setActiveFlow(fileName);
     }
 
@@ -220,7 +233,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         if (executionFlow === fileName) {
             setExecutionFlow(null)
         }
-        await loadFlows();
+        await refreshFlows();
     };
 
     const applyNodeVisualState = (node: Node, nextData: Record<string, unknown>) => {
@@ -551,6 +564,9 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                     onCreateFlow={createNewFlow}
                     onDeleteFlow={handleDeleteFlow}
                     onSelectFlow={setActiveFlow}
+                    onRefresh={refreshFlows}
+                    isRefreshing={isRefreshingFlows}
+                    refreshButtonTestId="editor-flow-refresh-button"
                 />
 
                 {showGraphInspector ? (

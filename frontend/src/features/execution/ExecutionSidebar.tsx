@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useStore } from '@/store'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { FlowTree } from '@/components/app/flow-tree'
 import { formatProjectPathLabel } from '@/lib/projectPaths'
@@ -16,9 +17,16 @@ export function ExecutionSidebar() {
     const humanGate = useStore((state) => state.humanGate)
     const isNarrowViewport = useNarrowViewport()
     const [flows, setFlows] = useState<string[]>([])
+    const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
+    const executionFlowRef = useRef(executionFlow)
+    const executionContinuationRef = useRef(executionContinuation)
+    const isMountedRef = useRef(true)
+    const refreshRequestIdRef = useRef(0)
     const projectLabel = activeProjectPath
         ? formatProjectPathLabel(activeProjectPath)
         : 'No active project'
+    executionFlowRef.current = executionFlow
+    executionContinuationRef.current = executionContinuation
 
     const handleSelectFlow = (flowName: string) => {
         if (!executionContinuation && flowName === executionFlow) {
@@ -31,23 +39,43 @@ export function ExecutionSidebar() {
         }
     }
 
-    useEffect(() => {
-        let cancelled = false
-
-        const loadFlows = async () => {
-            try {
-                const data = await loadExecutionFlowCatalog()
-                if (!cancelled) {
-                    setFlows(data)
-                }
-            } catch (error) {
-                console.error(error)
-            }
+    const refreshFlows = async () => {
+        const requestId = refreshRequestIdRef.current + 1
+        refreshRequestIdRef.current = requestId
+        if (isMountedRef.current) {
+            setIsRefreshingFlows(true)
         }
 
-        void loadFlows()
+        try {
+            const data = await loadExecutionFlowCatalog()
+            if (!isMountedRef.current || requestId !== refreshRequestIdRef.current) {
+                return
+            }
+
+            setFlows(data)
+
+            const selectedFlow = executionFlowRef.current
+            if (selectedFlow && !data.includes(selectedFlow)) {
+                setExecutionFlow(null)
+                if (executionContinuationRef.current?.flowSourceMode === 'flow_name') {
+                    setExecutionContinuationStartNode(null)
+                }
+            }
+        } catch (error) {
+            console.error(error)
+        } finally {
+            if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
+                setIsRefreshingFlows(false)
+            }
+        }
+    }
+
+    useEffect(() => {
+        isMountedRef.current = true
+
+        void refreshFlows()
         return () => {
-            cancelled = true
+            isMountedRef.current = false
         }
     }, [])
 
@@ -74,7 +102,21 @@ export function ExecutionSidebar() {
                 </Badge>
             </div>
             <div className="px-5 py-2">
-                <h2 className="font-semibold text-sm tracking-tight">Flow Library</h2>
+                <div className="flex items-center justify-between gap-3">
+                    <h2 className="font-semibold text-sm tracking-tight">Flow Library</h2>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        data-testid="execution-flow-refresh-button"
+                        onClick={() => {
+                            void refreshFlows()
+                        }}
+                        disabled={isRefreshingFlows}
+                    >
+                        {isRefreshingFlows ? 'Refreshing…' : 'Refresh'}
+                    </Button>
+                </div>
                 <p className="mt-1 text-xs text-muted-foreground">
                     {executionContinuation
                         ? 'Select an installed flow to override the source-run snapshot for continuation.'
