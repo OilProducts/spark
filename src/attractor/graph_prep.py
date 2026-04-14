@@ -17,7 +17,9 @@ def canonicalize_graph_source(source: str) -> str:
 
 def build_transform_pipeline(extra_transforms: Iterable[object] = ()) -> object:
     # Lazy import avoids transform package initialization during module import.
-    from attractor.transforms import GoalVariableTransform, ModelStylesheetTransform, TransformPipeline
+    from attractor.transforms.pipeline import TransformPipeline
+    from attractor.transforms.stylesheet import ModelStylesheetTransform
+    from attractor.transforms.variables import GoalVariableTransform
 
     pipeline = TransformPipeline()
     pipeline.register(GoalVariableTransform())

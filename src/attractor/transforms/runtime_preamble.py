@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
 
-from attractor.engine.context import Context
+if TYPE_CHECKING:
+    from attractor.engine.context import Context
 
 RUNTIME_RETRY_NODE_ID_KEY = "_attractor.runtime.retry.node_id"
 RUNTIME_RETRY_ATTEMPT_KEY = "_attractor.runtime.retry.attempt"

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -49,6 +51,13 @@ from spark.workspace.storage import ProjectPaths
 
 CHAT_RUNTIME_THREAD_KEY = "_attractor.runtime.thread_id"
 LOGGER = logging.getLogger(__name__)
+
+
+def _resolve_flow_validation_command() -> str:
+    spark_executable = Path(sys.executable).resolve(strict=False).with_name("spark")
+    if spark_executable.exists():
+        return f"{shlex.quote(str(spark_executable))} flow validate --file <path> --text"
+    return "spark flow validate --file <path> --text"
 
 
 class TurnInProgressError(RuntimeError):
@@ -402,7 +411,7 @@ class ProjectChatService:
                 "flow_library_path": str(self._flows_dir),
                 "dot_authoring_guide_path": str(self._authoring_guide_path),
                 "spark_operations_guide_path": str(self._operations_guide_path),
-                "flow_validation_command": "spark flow validate --file <path> --text",
+                "flow_validation_command": _resolve_flow_validation_command(),
                 "latest_user_message": message,
             },
         )

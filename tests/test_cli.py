@@ -3,6 +3,8 @@ from __future__ import annotations
 from argparse import Namespace
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -587,6 +589,43 @@ def test_agent_validate_flow_file_text_mode_uses_local_preview(
     assert f"Name: {flow_path.name}" in output
     assert f"Path: {flow_path.resolve(strict=False)}" in output
     assert "Status: parse_error" in output
+
+
+def test_agent_validate_flow_file_text_mode_succeeds_in_clean_subprocess(tmp_path: Path) -> None:
+    flow_path = tmp_path / "simple.dot"
+    flow_path.write_text(
+        "\n".join(
+            [
+                "digraph simple {",
+                '  start [shape=Mdiamond];',
+                '  done [shape=Msquare];',
+                "  start -> done;",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import spark.cli as c, sys; "
+                f"sys.exit(c.main(['flow', 'validate', '--file', r'{flow_path}', '--text']))"
+            ),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"Name: {flow_path.name}" in result.stdout
+    assert f"Path: {flow_path.resolve(strict=False)}" in result.stdout
+    assert "Status: ok" in result.stdout
 
 
 def test_agent_validate_flow_file_reports_missing_path(capsys) -> None:
