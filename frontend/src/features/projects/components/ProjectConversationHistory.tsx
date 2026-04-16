@@ -18,6 +18,7 @@ import {
 } from '../model/presentation'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { ProjectConversationMarkdown } from './ProjectConversationMarkdown'
 interface ProjectConversationHistoryProps {
     activeConversationId: string | null
     isConversationHistoryLoading: boolean
@@ -247,6 +248,18 @@ export function ProjectConversationHistory({
                             return null
                         }
 
+                        const shouldRenderAssistantMarkdown =
+                            entry.role === 'assistant' &&
+                            entry.presentation !== 'thinking' &&
+                            entry.status !== 'failed' &&
+                            (entry.status === 'complete' || entry.content.trim().length > 0)
+                        const literalContent =
+                            entry.role === 'assistant' && entry.status !== 'complete' && !entry.content.trim()
+                                ? entry.status === 'failed'
+                                    ? (entry.error || 'Response failed.')
+                                    : 'Thinking...'
+                                : entry.content
+
                         return (
                             <li
                                 key={key}
@@ -266,13 +279,17 @@ export function ProjectConversationHistory({
                                             ? (entry.presentation === 'thinking' ? 'Thinking' : 'Spark')
                                             : entry.role}
                                     </p>
-                                    <p className={`whitespace-pre-wrap text-xs leading-5 ${entry.presentation === 'thinking' ? 'italic' : ''}`}>
-                                        {entry.role === 'assistant' && entry.status !== 'complete' && !entry.content.trim()
-                                            ? entry.status === 'failed'
-                                                ? (entry.error || 'Response failed.')
-                                                : 'Thinking...'
-                                            : entry.content}
-                                    </p>
+                                    {shouldRenderAssistantMarkdown ? (
+                                        <ProjectConversationMarkdown content={entry.content} />
+                                    ) : (
+                                        <p
+                                            className={`whitespace-pre-wrap text-xs leading-5 ${
+                                                entry.presentation === 'thinking' ? 'italic' : ''
+                                            }`}
+                                        >
+                                            {literalContent}
+                                        </p>
+                                    )}
                                     <p className="mt-1 text-[10px] opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
                                 </div>
                             </li>

@@ -174,6 +174,7 @@ Segments are the primary render units. They exist so Spark can preserve:
 - restart-safe rendering
 
 Segment identity should preserve upstream item identity where available. Artifact cards are inline anchors linked to durable workspace records rather than inferred from presentation state.
+Conversation turns and segments continue to persist plain string content. Markdown interpretation, when used, is a frontend-only rendering rule applied to assistant message segments. That presentation boundary does not introduce a workspace HTTP, API, schema, or persisted-state change.
 
 ## 9. Conversation Event Normalization Contract
 

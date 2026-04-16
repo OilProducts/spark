@@ -246,6 +246,9 @@ Conversation UX commitments include:
 - switching away from Home and back must preserve the selected thread, visible history, draft text, layout state, and expansion state
 - background assistant activity must continue to reconcile into the active thread session even while Home is hidden
 - returning to Home must not transiently drop the thread list or show a false `No threads` state while session-backed data is still restoring
+- normal assistant text rows in Home chat render markdown as a frontend presentation rule over existing string content
+- user text, thinking summaries, tool rows, and inline flow artifact rows keep their literal or custom rendering paths
+- markdown links render as non-interactive label text until dedicated link handling exists
 
 The UI must not reconstruct chat cards from raw protocol notifications.
 
