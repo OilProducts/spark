@@ -118,6 +118,16 @@ def _request_user_input_record_from_payload(payload: dict[str, Any]) -> Optional
     )
 
 
+def _request_user_input_response_payload(answers: dict[str, str]) -> dict[str, Any]:
+    return {
+        "answers": {
+            str(question_id): {"answers": [str(answer)]}
+            for question_id, answer in answers.items()
+            if str(answer).strip()
+        }
+    }
+
+
 @dataclass
 class _PendingUserInputRequest:
     request_id: str
@@ -346,7 +356,7 @@ class CodexAppServerChatSession:
             answers = pending_request.wait_for_answers()
         finally:
             self._clear_pending_user_input(request.request_id)
-        self._client.send_response(request_id, {"answers": answers})
+        self._client.send_response(request_id, _request_user_input_response_payload(answers))
         return {
             "jsonrpc": message.get("jsonrpc", "2.0"),
             "method": "item/tool/requestUserInput/handled",

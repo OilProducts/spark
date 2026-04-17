@@ -284,6 +284,19 @@ def test_codex_app_server_chat_session_resumes_request_user_input_after_answer_s
     assert request_events[0].request_user_input is not None
     assert request_events[0].request_user_input.request_id == "request-1"
     assert [question.id for question in request_events[0].request_user_input.questions] == ["path_choice"]
+    assert stub_client.sent_responses == [
+        {
+            "request_id": 7,
+            "result": {
+                "answers": {
+                    "path_choice": {
+                        "answers": ["Inline card"],
+                    }
+                }
+            },
+            "error": None,
+        }
+    ]
 
 
 def test_project_chat_service_creates_default_prompt_templates_file(tmp_path: Path) -> None:
