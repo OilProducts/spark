@@ -101,7 +101,10 @@ def test_spec_implementation_parent_flow_commits_after_milestone_acceptance() ->
 
     commit_node = graph.nodes["commit_milestone"]
     assert str(commit_node.attrs["shape"].value) == "parallelogram"
-    assert "git commit -m" in str(commit_node.attrs["tool.command"].value)
+    commit_command = str(commit_node.attrs["tool.command"].value)
+    assert "git commit -m" in commit_command
+    assert "Accepted milestone" in commit_command
+    assert ".specflow/current-milestone.json" not in commit_command
 
     edge_targets = _edge_targets(graph)
     assert ("audit_milestone", "commit_milestone", "Commit") in edge_targets
@@ -266,11 +269,17 @@ def test_spec_implementation_child_flow_binds_items_to_contract_decisions() -> N
     prepare_state_reads = str(graph.nodes["prepare_milestone_state"].attrs["spark.reads_context"].value)
     assert "context.milestone.decision_ids" in prepare_state_reads
 
+    prepare_state_prompt = str(graph.nodes["prepare_milestone_state"].attrs["prompt"].value)
+    assert "bound context.milestone.* snapshot as authoritative" in prepare_state_prompt
+    assert "repo-root .specflow/current-milestone.json later changes" in prepare_state_prompt
+
     extract_prompt = str(graph.nodes["extract_items"].attrs["prompt"].value)
     assert ".specflow/architecture.md" in extract_prompt
     assert ".specflow/contract-decisions.json" in extract_prompt
+    assert "context.milestone.* plus milestone_dir/state.json as the authoritative child-worker milestone binding" in extract_prompt
     assert "decision_ids" in extract_prompt
     assert "rather than buried only in notes" in extract_prompt
+    assert ".specflow/current-milestone.json" in extract_prompt
 
     next_prompt = str(graph.nodes["next_item"].attrs["prompt"].value)
     assert "context.item.decision_ids" in next_prompt
@@ -297,6 +306,35 @@ def test_spec_implementation_child_flow_binds_items_to_contract_decisions() -> N
     assert ".specflow/contract-decisions.json" in validate_prompt
     assert "every decision bound to the current milestone appears in at least one item's decision_ids" in validate_prompt
     assert "survives only in notes" in validate_prompt
+    assert "do not use repo-root .specflow/current-milestone.json" in validate_prompt
+
+
+def test_spec_implementation_flow_uses_bound_context_for_live_milestone_identity() -> None:
+    parent_graph = _load_graph("implement-spec.dot")
+    child_graph = _load_graph("implement-milestone.dot")
+
+    child_description = str(child_graph.graph_attrs["spark.description"].value)
+    assert "authoritative child queue state" in child_description
+    assert "deliverable repository surfaces" in child_description
+
+    blocked_prompt = str(child_graph.nodes["blocked_exit"].attrs["prompt"].value)
+    assert "Treat context.milestone.id plus the milestone-local state as the authoritative identity" in blocked_prompt
+
+    prepare_validation_prompt = str(child_graph.nodes["prepare_validation"].attrs["prompt"].value)
+    assert "Do not use repo-root .specflow/current-milestone.json or .specflow/state.json.current_milestone_id as the active milestone binding" in prepare_validation_prompt
+
+    record_success_prompt = str(child_graph.nodes["record_milestone_success"].attrs["prompt"].value)
+    assert "context.milestone.id plus milestone-local state as authoritative" in record_success_prompt
+
+    final_audit_prompt = str(child_graph.nodes["final_milestone_audit"].attrs["prompt"].value)
+    assert "deliverable repository surfaces" in final_audit_prompt
+
+    audit_prompt = str(parent_graph.nodes["audit_milestone"].attrs["prompt"].value)
+    assert "context.milestone.* plus milestone-local child artifacts as the authoritative identity" in audit_prompt
+    assert "judge those files as repository deliverables" in audit_prompt
+
+    rewrite_prompt = str(parent_graph.nodes["rewrite_milestones"].attrs["prompt"].value)
+    assert "Treat context.milestone.id as the authoritative milestone to replace" in rewrite_prompt
 
 
 def test_spec_implementation_flow_prompts_encode_repository_integrity_rubric() -> None:
@@ -331,6 +369,7 @@ def test_spec_implementation_flow_prompts_encode_repository_integrity_rubric() -
     assert "committed manifests" in prepare_validation_prompt
     assert "Do not edit milestone_dir/state.json or milestone_dir/current-item.json" in prepare_validation_prompt
     assert "Do not write .specflow/validation-result.json" in prepare_validation_prompt
+    assert "ordinary repo-local files rather than symlinks or indirections outside the repository root" in prepare_validation_prompt
 
     assess_validation_prompt = str(child_graph.nodes["assess_validation"].attrs["prompt"].value)
     assert "fields item_id, item_title, status" in assess_validation_prompt
