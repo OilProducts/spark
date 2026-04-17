@@ -47,7 +47,7 @@ export interface ConversationSegmentResponse {
     } | null
     request_user_input?: {
         request_id: string
-        status: 'pending' | 'answered'
+        status: 'pending' | 'answered' | 'expired'
         questions: Array<{
             id: string
             header: string
@@ -297,7 +297,11 @@ function parseConversationSegmentResponse(value: unknown): ConversationSegmentRe
         request_user_input: requestUserInput && typeof requestUserInput.request_id === 'string'
             ? {
                 request_id: requestUserInput.request_id,
-                status: requestUserInput.status === 'answered' ? 'answered' : 'pending',
+                status: requestUserInput.status === 'answered'
+                    ? 'answered'
+                    : requestUserInput.status === 'expired'
+                        ? 'expired'
+                        : 'pending',
                 questions: Array.isArray(requestUserInput.questions)
                     ? requestUserInput.questions
                         .map((entry) => asUnknownRecord(entry))

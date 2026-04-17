@@ -39,7 +39,7 @@ export interface ConversationTimelineRequestUserInputQuestion {
 
 export interface ConversationTimelineRequestUserInput {
     requestId: string
-    status: 'pending' | 'answered'
+    status: 'pending' | 'answered' | 'expired'
     questions: ConversationTimelineRequestUserInputQuestion[]
     answers: Record<string, string>
     submittedAt?: string | null

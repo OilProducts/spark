@@ -15,6 +15,7 @@ CHAT_MODE_PLAN = "plan"
 CHAT_MODES = frozenset({CHAT_MODE_CHAT, CHAT_MODE_PLAN})
 TURN_KIND_MESSAGE = "message"
 TURN_KIND_MODE_CHANGE = "mode_change"
+REQUEST_USER_INPUT_EXPIRED_ERROR = "The requested input expired before the answer could be used."
 
 
 def _iso_now() -> str:
@@ -42,17 +43,17 @@ def _truncate_text(value: str, limit: int) -> str:
     return collapsed[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _normalize_request_user_input_delivery_status(
+def _normalize_request_user_input_status(
     value: Any,
     *,
-    status: str,
-) -> Optional[str]:
-    if status != "answered":
-        return None
+    legacy_delivery_status: Any = None,
+) -> str:
     normalized = _as_non_empty_string(value)
-    if normalized == "pending_delivery":
-        return "pending_delivery"
-    return "delivered"
+    if normalized == "answered" and _as_non_empty_string(legacy_delivery_status) == "pending_delivery":
+        return "expired"
+    if normalized in {"answered", "expired"}:
+        return normalized
+    return "pending"
 
 
 def normalize_chat_mode(value: Any) -> str:
@@ -242,9 +243,7 @@ class RequestUserInputRecord:
     status: str
     questions: list[RequestUserInputQuestion] = field(default_factory=list)
     answers: dict[str, str] = field(default_factory=dict)
-    delivery_status: Optional[str] = None
     submitted_at: Optional[str] = None
-    delivered_at: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -253,12 +252,8 @@ class RequestUserInputRecord:
             "questions": [question.to_dict() for question in self.questions],
             "answers": dict(self.answers),
         }
-        if self.delivery_status is not None:
-            payload["delivery_status"] = self.delivery_status
         if self.submitted_at is not None:
             payload["submitted_at"] = self.submitted_at
-        if self.delivered_at is not None:
-            payload["delivered_at"] = self.delivered_at
         return payload
 
     @classmethod
@@ -268,7 +263,10 @@ class RequestUserInputRecord:
         status = str(payload.get("status", "pending") or "pending")
         return cls(
             request_id=str(payload.get("request_id", "")),
-            status=status,
+            status=_normalize_request_user_input_status(
+                status,
+                legacy_delivery_status=payload.get("delivery_status"),
+            ),
             questions=[
                 RequestUserInputQuestion.from_dict(question)
                 for question in raw_questions
@@ -279,12 +277,7 @@ class RequestUserInputRecord:
                 for key, value in raw_answers.items()
                 if value is not None
             } if isinstance(raw_answers, dict) else {},
-            delivery_status=_normalize_request_user_input_delivery_status(
-                payload.get("delivery_status"),
-                status=status,
-            ),
             submitted_at=str(payload.get("submitted_at")) if payload.get("submitted_at") is not None else None,
-            delivered_at=str(payload.get("delivered_at")) if payload.get("delivered_at") is not None else None,
         )
 
 
@@ -657,6 +650,37 @@ class ConversationState:
     flow_run_requests: list[FlowRunRequest] = field(default_factory=list)
     flow_launches: list[FlowLaunch] = field(default_factory=list)
     proposed_plans: list[ProposedPlanArtifact] = field(default_factory=list)
+
+    def normalize_request_user_input_state(self) -> bool:
+        changed = False
+        turns_by_id = {turn.id: turn for turn in self.turns}
+        for segment in self.segments:
+            if segment.kind != "request_user_input" or segment.request_user_input is None:
+                continue
+            request = segment.request_user_input
+            if request.status != "expired":
+                continue
+            if segment.status != "failed":
+                segment.status = "failed"
+                changed = True
+            if segment.error != REQUEST_USER_INPUT_EXPIRED_ERROR:
+                segment.error = REQUEST_USER_INPUT_EXPIRED_ERROR
+                changed = True
+            if segment.completed_at is None:
+                segment.completed_at = request.submitted_at or segment.updated_at or segment.timestamp
+                changed = True
+            target_turn = turns_by_id.get(segment.turn_id)
+            if target_turn is None or target_turn.role != "assistant":
+                continue
+            if target_turn.status not in {"pending", "streaming", "failed"}:
+                continue
+            if target_turn.status != "failed":
+                target_turn.status = "failed"
+                changed = True
+            if target_turn.error != REQUEST_USER_INPUT_EXPIRED_ERROR:
+                target_turn.error = REQUEST_USER_INPUT_EXPIRED_ERROR
+                changed = True
+        return changed
 
     def to_dict(self) -> dict[str, Any]:
         return {

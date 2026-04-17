@@ -34,6 +34,7 @@ from spark.workspace.conversations.models import (
     ConversationSegmentSource,
     ConversationEventHub,
     RequestUserInputRecord,
+    REQUEST_USER_INPUT_EXPIRED_ERROR,
     ConversationSessionState,
     ConversationState,
     ConversationTurn,
@@ -59,8 +60,6 @@ CHAT_RUNTIME_THREAD_KEY = "_attractor.runtime.thread_id"
 LOGGER = logging.getLogger(__name__)
 PROPOSED_PLAN_BLOCK_PATTERN = re.compile(r"(?is)<proposed_plan>\s*(.*?)\s*</proposed_plan>")
 EXCESS_BLANK_LINES_PATTERN = re.compile(r"\n{3,}")
-REQUEST_USER_INPUT_DELIVERY_PENDING = "pending_delivery"
-REQUEST_USER_INPUT_DELIVERY_DELIVERED = "delivered"
 
 
 def _resolve_flow_validation_command() -> str:
@@ -150,7 +149,7 @@ def _request_user_input_answer_summary(request: RequestUserInputRecord) -> str:
 
 
 def _request_user_input_segment_content(request: RequestUserInputRecord) -> str:
-    if request.status == "answered":
+    if request.status in {"answered", "expired"}:
         return _request_user_input_answer_summary(request)
     return _request_user_input_prompt_summary(request)
 
@@ -424,88 +423,53 @@ class ProjectChatService:
                 return segment
         return None
 
-    def _mark_request_user_input_delivered(
+    def _waiting_request_user_input_session(
         self,
         conversation_id: str,
-        project_path: str,
-        request_id: str,
-    ) -> Optional[dict[str, Any]]:
-        with self._lock:
-            state = self._read_state(conversation_id, project_path)
-            if state is None:
-                return None
-            segment = self._request_user_input_segment_by_request_id(state, request_id)
-            if segment is None or segment.request_user_input is None:
-                return None
-            request = RequestUserInputRecord.from_dict(segment.request_user_input.to_dict())
-            if request.status != "answered":
-                return state.to_dict()
-            if request.delivery_status == REQUEST_USER_INPUT_DELIVERY_DELIVERED:
-                return state.to_dict()
-            delivered_at = _iso_now()
-            request.delivery_status = REQUEST_USER_INPUT_DELIVERY_DELIVERED
-            request.delivered_at = delivered_at
-            segment.updated_at = delivered_at
-            segment.content = _request_user_input_segment_content(request)
-            segment.request_user_input = request
-            self._upsert_segment(state, segment)
-            self._touch_conversation_state(state)
-            self._write_state(state)
-            return state.to_dict()
-
-    def _deliver_queued_request_user_input_answers(
-        self,
-        conversation_id: str,
-        project_path: str,
-        *,
-        session: Optional[Any] = None,
-        request_or_question_id: Optional[str] = None,
-    ) -> Optional[dict[str, Any]]:
-        target_session = session
-        if target_session is None:
-            with self._sessions_lock:
-                target_session = self._sessions.get(conversation_id)
-        if target_session is None:
+        request_or_question_id: str,
+    ) -> Optional[Any]:
+        with self._sessions_lock:
+            session = self._sessions.get(conversation_id)
+        if session is None or not hasattr(session, "has_pending_request_user_input"):
             return None
-
-        normalized_lookup_id = _as_non_empty_string(request_or_question_id) if request_or_question_id is not None else None
-        pending_answers: list[tuple[str, dict[str, str]]] = []
-        with self._lock:
-            state = self._read_state(conversation_id, project_path)
-            if state is None:
-                return None
-            for segment in state.segments:
-                if segment.kind != "request_user_input" or segment.request_user_input is None:
-                    continue
-                request = RequestUserInputRecord.from_dict(segment.request_user_input.to_dict())
-                if request.status != "answered" or request.delivery_status != REQUEST_USER_INPUT_DELIVERY_PENDING:
-                    continue
-                if normalized_lookup_id is not None:
-                    question_ids = {question.id for question in request.questions}
-                    if request.request_id != normalized_lookup_id and normalized_lookup_id not in question_ids:
-                        continue
-                pending_answers.append((request.request_id, dict(request.answers)))
-
-        latest_snapshot: Optional[dict[str, Any]] = None
-        for request_id, answers in pending_answers:
-            try:
-                accepted = bool(target_session.submit_request_user_input_answers(request_id, answers))
-            except Exception:
-                LOGGER.warning(
-                    "project chat could not replay queued request_user_input answers for conversation %s request %s",
-                    conversation_id,
-                    request_id,
-                    exc_info=True,
-                )
-                continue
-            if not accepted:
-                continue
-            latest_snapshot = self._mark_request_user_input_delivered(
+        try:
+            if session.has_pending_request_user_input(request_or_question_id):
+                return session
+        except Exception:
+            LOGGER.warning(
+                "project chat could not inspect live request_user_input state for conversation %s",
                 conversation_id,
-                project_path,
-                request_id,
+                exc_info=True,
             )
-        return latest_snapshot
+        return None
+
+    def _expire_request_user_input_in_state(
+        self,
+        state: ConversationState,
+        segment: ConversationSegment,
+        request: RequestUserInputRecord,
+        *,
+        submitted_at: str,
+    ) -> tuple[ConversationSegment, Optional[ConversationTurn]]:
+        request.status = "expired"
+        request.submitted_at = submitted_at
+        segment.status = "failed"
+        segment.updated_at = submitted_at
+        segment.completed_at = submitted_at
+        segment.error = REQUEST_USER_INPUT_EXPIRED_ERROR
+        segment.content = _request_user_input_answer_summary(request)
+        segment.request_user_input = request
+        self._upsert_segment(state, segment)
+
+        assistant_turn = self._get_turn(state, segment.turn_id)
+        if assistant_turn is None or assistant_turn.role != "assistant":
+            return segment, None
+        if assistant_turn.status not in {"pending", "streaming", "failed"}:
+            return segment, None
+        assistant_turn.status = "failed"
+        assistant_turn.error = REQUEST_USER_INPUT_EXPIRED_ERROR
+        self._upsert_turn(state, assistant_turn)
+        return segment, assistant_turn
 
     def _materialize_segment_for_live_event(
         self,
@@ -904,26 +868,21 @@ class ProjectChatService:
             snapshot,
         )
 
-    def _persist_assistant_turn_failure(
+    def _persist_assistant_turn_failure_for_turn(
         self,
-        prepared: PreparedChatTurn,
+        conversation_id: str,
+        project_path: str,
+        assistant_turn: ConversationTurn,
         error_message: str,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> None:
         with self._lock:
-            current_state = self._read_state(prepared.conversation_id, prepared.project_path)
+            current_state = self._read_state(conversation_id, project_path)
             if current_state is None:
                 return
-            current_assistant_turn = self._get_turn(current_state, prepared.assistant_turn.id)
+            current_assistant_turn = self._get_turn(current_state, assistant_turn.id)
             if current_assistant_turn is None:
-                current_assistant_turn = ConversationTurn(
-                    id=prepared.assistant_turn.id,
-                    role="assistant",
-                    content="",
-                    timestamp=prepared.assistant_turn.timestamp,
-                    status="pending",
-                    parent_turn_id=prepared.user_turn.id,
-                )
+                current_assistant_turn = ConversationTurn.from_dict(assistant_turn.to_dict())
             current_assistant_turn.status = "failed"
             current_assistant_turn.error = error_message
             self._upsert_turn(current_state, current_assistant_turn)
@@ -943,6 +902,20 @@ class ProjectChatService:
         for payload in emitted_payloads:
             self._publish_progress_payload(progress_callback, payload)
         self._publish_progress_payload(progress_callback, assistant_upsert_payload)
+
+    def _persist_assistant_turn_failure(
+        self,
+        prepared: PreparedChatTurn,
+        error_message: str,
+        progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> None:
+        self._persist_assistant_turn_failure_for_turn(
+            prepared.conversation_id,
+            prepared.project_path,
+            prepared.assistant_turn,
+            error_message,
+            progress_callback,
+        )
 
     def _execute_turn(
         self,
@@ -985,8 +958,36 @@ class ProjectChatService:
         prepared: PreparedChatTurn,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> dict[str, Any]:
+        return self._run_assistant_turn_from_session(
+            conversation_id=prepared.conversation_id,
+            project_path=prepared.project_path,
+            chat_mode=prepared.chat_mode,
+            assistant_turn=prepared.assistant_turn,
+            progress_callback=progress_callback,
+            session_runner=lambda persist_live_event, _progress_callback: self._execute_turn(
+                prepared,
+                persist_live_event,
+                _progress_callback,
+            ),
+            persist_failure=True,
+        )
+
+    def _run_assistant_turn_from_session(
+        self,
+        *,
+        conversation_id: str,
+        project_path: str,
+        chat_mode: str,
+        assistant_turn: ConversationTurn,
+        session_runner: Callable[
+            [Callable[[ChatTurnLiveEvent], None], Optional[Callable[[dict[str, Any]], None]]],
+            ChatTurnResult,
+        ],
+        progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        persist_failure: bool,
+    ) -> dict[str, Any]:
         with self._lock:
-            state = self._read_state(prepared.conversation_id, prepared.project_path)
+            state = self._read_state(conversation_id, project_path)
             if state is None:
                 raise RuntimeError("Conversation state disappeared before the turn started.")
 
@@ -995,17 +996,10 @@ class ProjectChatService:
         def persist_live_event(event: ChatTurnLiveEvent) -> None:
             nonlocal buffered_plan_assistant_event
             with self._lock:
-                current_state = self._read_state(prepared.conversation_id, prepared.project_path) or state
-                current_assistant_turn = self._get_turn(current_state, prepared.assistant_turn.id)
+                current_state = self._read_state(conversation_id, project_path) or state
+                current_assistant_turn = self._get_turn(current_state, assistant_turn.id)
                 if current_assistant_turn is None:
-                    current_assistant_turn = ConversationTurn(
-                        id=prepared.assistant_turn.id,
-                        role="assistant",
-                        content="",
-                        timestamp=prepared.assistant_turn.timestamp,
-                        status="pending",
-                        parent_turn_id=prepared.user_turn.id,
-                    )
+                    current_assistant_turn = ConversationTurn.from_dict(assistant_turn.to_dict())
                     self._upsert_turn(current_state, current_assistant_turn)
 
                 emitted_payloads: list[dict[str, Any]] = []
@@ -1015,7 +1009,7 @@ class ProjectChatService:
                     emitted_payloads.append(self._build_turn_upsert_payload(current_state, current_assistant_turn))
 
                 if event.kind == "assistant_delta":
-                    if event.content_delta and prepared.chat_mode != "plan":
+                    if event.content_delta and chat_mode != "plan":
                         segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
                         if segment is not None:
                             emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
@@ -1047,7 +1041,7 @@ class ProjectChatService:
                     current_assistant_turn.status = "streaming"
                     current_assistant_turn.error = None
                     self._upsert_turn(current_state, current_assistant_turn)
-                    if prepared.chat_mode == "plan":
+                    if chat_mode == "plan":
                         if assistant_message and self._is_final_answer_phase(event.phase):
                             buffered_plan_assistant_event = ChatTurnLiveEvent(
                                 kind=event.kind,
@@ -1076,45 +1070,39 @@ class ProjectChatService:
                 self._write_state(current_state)
                 _log_project_chat_debug(
                     "persisted progress events",
-                    conversation_id=prepared.conversation_id,
+                    conversation_id=conversation_id,
                     event_kind=event.kind,
                     turns=_summarize_turns_for_debug(current_state.turns),
                 )
             for payload in emitted_payloads:
                 self._publish_progress_payload(progress_callback, payload)
-            if event.kind == "request_user_input_requested" and event.request_user_input is not None:
-                self._deliver_queued_request_user_input_answers(
-                    prepared.conversation_id,
-                    prepared.project_path,
-                    request_or_question_id=event.request_user_input.request_id,
-                )
 
         try:
-            turn_result = self._execute_turn(prepared, persist_live_event, progress_callback)
+            turn_result = session_runner(persist_live_event, progress_callback)
         except RuntimeError as exc:
-            self._persist_assistant_turn_failure(prepared, str(exc), progress_callback)
+            if persist_failure:
+                self._persist_assistant_turn_failure_for_turn(
+                    conversation_id,
+                    project_path,
+                    assistant_turn,
+                    str(exc),
+                    progress_callback,
+                )
             raise
 
         assistant_message, _ = _parse_chat_response_payload(turn_result.assistant_message)
         with self._lock:
-            state = self._read_state(prepared.conversation_id, prepared.project_path) or state
-            current_assistant_turn = self._get_turn(state, prepared.assistant_turn.id)
+            state = self._read_state(conversation_id, project_path) or state
+            current_assistant_turn = self._get_turn(state, assistant_turn.id)
             if current_assistant_turn is None:
-                current_assistant_turn = ConversationTurn(
-                    id=prepared.assistant_turn.id,
-                    role="assistant",
-                    content="",
-                    timestamp=prepared.assistant_turn.timestamp,
-                    status="pending",
-                    parent_turn_id=prepared.user_turn.id,
-                )
+                current_assistant_turn = ConversationTurn.from_dict(assistant_turn.to_dict())
             plan_segment = self._completed_plan_segment(state, current_assistant_turn.id)
-            emitted_payloads = []
+            emitted_payloads: list[dict[str, Any]] = []
             if plan_segment is not None and not plan_segment.artifact_id:
                 self._persist_proposed_plan_segment_artifact(state, current_assistant_turn, plan_segment)
                 emitted_payloads.append(self._build_segment_upsert_payload(state, plan_segment))
             assistant_display_text = assistant_message
-            if prepared.chat_mode == "plan":
+            if chat_mode == "plan":
                 assistant_display_text = _extract_plan_mode_assistant_remainder(
                     assistant_message,
                     plan_segment.content if plan_segment is not None else None,
@@ -1144,8 +1132,7 @@ class ProjectChatService:
             if not _as_non_empty_string(preview_fallback):
                 preview_fallback = "I reviewed that request."
             if final_answer_segment is None and plan_segment is None:
-                error_message = "codex app-server completed the turn without a final answer item."
-                failure = RuntimeError(error_message)
+                failure = RuntimeError("codex app-server completed the turn without a final answer item.")
             else:
                 failure = None
                 resolved_content = (
@@ -1169,12 +1156,19 @@ class ProjectChatService:
                 snapshot = state.to_dict()
             _log_project_chat_debug(
                 "persisted final assistant turn",
-                conversation_id=prepared.conversation_id,
+                conversation_id=conversation_id,
                 assistant_message=current_assistant_turn.content,
                 turns=_summarize_turns_for_debug(state.turns),
             )
         if failure is not None:
-            self._persist_assistant_turn_failure(prepared, str(failure), progress_callback)
+            if persist_failure:
+                self._persist_assistant_turn_failure_for_turn(
+                    conversation_id,
+                    project_path,
+                    assistant_turn,
+                    str(failure),
+                    progress_callback,
+                )
             raise failure
         for payload in emitted_payloads:
             self._publish_progress_payload(progress_callback, payload)
@@ -1224,11 +1218,6 @@ class ProjectChatService:
                     ),
                 )
                 self._sessions[conversation_id] = target_session
-        self._deliver_queued_request_user_input_answers(
-            conversation_id,
-            project_path,
-            session=target_session,
-        )
         return target_session
 
     def start_turn(
@@ -1293,7 +1282,7 @@ class ProjectChatService:
         if not isinstance(answers, dict):
             raise ValueError("Answers are required.")
 
-        emitted_payload: Optional[dict[str, Any]] = None
+        emitted_payloads: list[dict[str, Any]] = []
         with self._lock:
             state = self._read_state(conversation_id, normalized_project_path)
             if state is None:
@@ -1305,40 +1294,61 @@ class ProjectChatService:
                 raise FileNotFoundError(normalized_lookup_id)
             request = RequestUserInputRecord.from_dict(segment.request_user_input.to_dict())
             normalized_answers = _normalize_request_user_input_answers(request, answers)
-            request_id = request.request_id
-            if segment.status == "complete" or request.status == "answered":
+            if request.status == "answered":
                 if request.answers == normalized_answers:
                     snapshot = state.to_dict()
                 else:
                     raise ValueError("That conversation request is already answered.")
+            elif request.status == "expired":
+                if request.answers == normalized_answers:
+                    snapshot = state.to_dict()
+                else:
+                    raise ValueError(REQUEST_USER_INPUT_EXPIRED_ERROR)
             else:
                 submitted_at = _iso_now()
-                request.status = "answered"
                 request.answers = normalized_answers
-                request.delivery_status = REQUEST_USER_INPUT_DELIVERY_PENDING
                 request.submitted_at = submitted_at
-                request.delivered_at = None
-                segment.status = "complete"
-                segment.updated_at = submitted_at
-                segment.completed_at = submitted_at
-                segment.error = None
-                segment.content = _request_user_input_segment_content(request)
-                segment.request_user_input = request
-                self._upsert_segment(state, segment)
+                waiting_session = self._waiting_request_user_input_session(conversation_id, normalized_lookup_id)
+                if waiting_session is None and request.request_id != normalized_lookup_id:
+                    waiting_session = self._waiting_request_user_input_session(conversation_id, request.request_id)
+                accepted = False
+                if waiting_session is not None:
+                    try:
+                        accepted = bool(waiting_session.submit_request_user_input_answers(request.request_id, normalized_answers))
+                    except Exception:
+                        LOGGER.warning(
+                            "project chat could not submit live request_user_input answers for conversation %s request %s",
+                            conversation_id,
+                            request.request_id,
+                            exc_info=True,
+                        )
+                if accepted:
+                    request.status = "answered"
+                    segment.status = "complete"
+                    segment.updated_at = submitted_at
+                    segment.completed_at = submitted_at
+                    segment.error = None
+                    segment.content = _request_user_input_segment_content(request)
+                    segment.request_user_input = request
+                    self._upsert_segment(state, segment)
+                else:
+                    expired_segment, expired_turn = self._expire_request_user_input_in_state(
+                        state,
+                        segment,
+                        request,
+                        submitted_at=submitted_at,
+                    )
+                    if expired_turn is not None:
+                        emitted_payloads.append(self._build_turn_upsert_payload(state, expired_turn))
+                    segment = expired_segment
                 self._touch_conversation_state(state)
-                emitted_payload = self._build_segment_upsert_payload(state, segment)
+                emitted_payloads.append(self._build_segment_upsert_payload(state, segment))
                 self._write_state(state)
                 snapshot = state.to_dict()
 
-        if emitted_payload is not None:
-            self._publish_progress_payload(progress_callback, emitted_payload)
-
-        delivered_snapshot = self._deliver_queued_request_user_input_answers(
-            conversation_id,
-            normalized_project_path,
-            request_or_question_id=request_id,
-        )
-        return delivered_snapshot or snapshot
+        for payload in emitted_payloads:
+            self._publish_progress_payload(progress_callback, payload)
+        return snapshot
 
     def resolve_conversation_handle(self, conversation_handle: str) -> tuple[str, str]:
         return self._repository.resolve_conversation_handle(conversation_handle)

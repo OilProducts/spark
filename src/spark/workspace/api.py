@@ -703,7 +703,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Unknown conversation input request: {request_id}") from exc
         except ValueError as exc:
             detail = str(exc)
-            status_code = 409 if "already answered" in detail else 400
+            status_code = 409 if ("already answered" in detail or "expired" in detail) else 400
             raise HTTPException(status_code=status_code, detail=detail) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

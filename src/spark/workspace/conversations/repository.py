@@ -163,10 +163,13 @@ class ProjectChatRepository:
         if proposed_plans_payload:
             payload["proposed_plans"] = proposed_plans_payload.get("proposed_plans", [])
         state = ConversationState.from_dict(payload)
+        should_write_state = state.normalize_request_user_input_state()
         if not state.conversation_id:
             state.conversation_id = conversation_id
         self.ensure_state_handle(state)
         if payload.get("conversation_handle") != state.conversation_handle:
+            should_write_state = True
+        if should_write_state:
             self.write_state(state)
         return state
 

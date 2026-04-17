@@ -39,7 +39,7 @@ export function ProjectConversationRequestUserInputCard({
         setDraftAnswers(entry.requestUserInput.answers)
     }, [entry.id, entry.requestUserInput.answers])
 
-    if (entry.requestUserInput.status === 'answered' || entry.status === 'complete') {
+    if (entry.requestUserInput.status === 'answered') {
         return (
             <div
                 data-testid={`project-request-user-input-summary-${entry.id}`}
@@ -62,6 +62,38 @@ export function ProjectConversationRequestUserInputCard({
                     })}
                 </div>
                 <p className="mt-2 text-[10px] text-amber-900/70">
+                    {formatConversationTimestamp(entry.requestUserInput.submittedAt ?? entry.timestamp)}
+                </p>
+            </div>
+        )
+    }
+
+    if (entry.requestUserInput.status === 'expired') {
+        return (
+            <div
+                data-testid={`project-request-user-input-expired-${entry.id}`}
+                className="max-w-[85%] rounded-md border border-rose-500/40 bg-rose-50/70 px-3 py-2 text-foreground"
+            >
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-900/80">
+                    Expired Request
+                </p>
+                <p className="mt-2 text-xs text-rose-950/85">
+                    The request expired before this answer could be used. Send a new message to continue.
+                </p>
+                <div className="mt-2 space-y-2">
+                    {entry.requestUserInput.questions.map((question) => {
+                        const answer = entry.requestUserInput.answers[question.id] ?? ''
+                        return (
+                            <div key={question.id} className="space-y-0.5">
+                                <p className="text-xs font-medium text-foreground">{question.question}</p>
+                                <p className="text-xs text-muted-foreground">
+                                    {answer ? answeredSummaryValue(question, answer) : 'No answer submitted'}
+                                </p>
+                            </div>
+                        )
+                    })}
+                </div>
+                <p className="mt-2 text-[10px] text-rose-900/70">
                     {formatConversationTimestamp(entry.requestUserInput.submittedAt ?? entry.timestamp)}
                 </p>
             </div>

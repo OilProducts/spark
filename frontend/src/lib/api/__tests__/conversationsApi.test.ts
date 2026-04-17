@@ -217,12 +217,67 @@ describe('conversationsApi parsing', () => {
             role: 'system',
             request_user_input: {
                 request_id: 'request-1',
+                status: 'pending',
                 questions: [
                     {
                         id: 'path_choice',
                         question: 'Which path should I take?',
                     },
                 ],
+            },
+        })
+    })
+
+    it('parses expired request_user_input status from snapshots', () => {
+        const snapshot = parseConversationSnapshotResponse({
+            schema_version: 4,
+            conversation_id: 'conversation-plan',
+            conversation_handle: 'steady-harbor',
+            project_path: '/tmp/project-plan',
+            chat_mode: 'plan',
+            title: 'Planning thread',
+            created_at: '2026-04-16T18:00:00Z',
+            updated_at: '2026-04-16T18:00:10Z',
+            turns: [],
+            segments: [
+                {
+                    id: 'segment-request-user-input-1',
+                    turn_id: 'turn-assistant-1',
+                    order: 1,
+                    kind: 'request_user_input',
+                    role: 'system',
+                    status: 'failed',
+                    timestamp: '2026-04-16T18:00:08Z',
+                    updated_at: '2026-04-16T18:00:08Z',
+                    content: 'Which path should I take?\nAnswer: Inline card',
+                    request_user_input: {
+                        request_id: 'request-1',
+                        status: 'expired',
+                        questions: [],
+                        answers: {
+                            path_choice: 'Inline card',
+                        },
+                        submitted_at: '2026-04-16T18:00:09Z',
+                    },
+                    source: {
+                        app_turn_id: 'app-turn-1',
+                        item_id: 'request-1',
+                    },
+                },
+            ],
+            event_log: [],
+            flow_run_requests: [],
+            flow_launches: [],
+        })
+
+        expect(snapshot.segments[0]).toMatchObject({
+            kind: 'request_user_input',
+            request_user_input: {
+                request_id: 'request-1',
+                status: 'expired',
+                answers: {
+                    path_choice: 'Inline card',
+                },
             },
         })
     })

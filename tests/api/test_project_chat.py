@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import gc
 import json
-import logging
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import pytest
-from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 import spark.app as product_app
@@ -1822,12 +1819,12 @@ def test_request_user_input_segments_persist_and_answer_in_place(
     assert len(answered_request_segments) == 1
     assert answered_request_segments[0]["status"] == "complete"
     assert answered_request_segments[0]["request_user_input"]["status"] == "answered"
-    assert answered_request_segments[0]["request_user_input"]["delivery_status"] == "delivered"
-    assert answered_request_segments[0]["request_user_input"]["delivered_at"] is not None
     assert answered_request_segments[0]["request_user_input"]["answers"] == {
         "path_choice": "Inline card",
         "constraints": "Preserve the inline timeline.",
     }
+    assert "delivery_status" not in answered_request_segments[0]["request_user_input"]
+    assert "delivered_at" not in answered_request_segments[0]["request_user_input"]
 
     deadline = time.time() + 2.0
     final_snapshot: dict[str, Any] | None = None
@@ -1852,7 +1849,7 @@ def test_request_user_input_segments_persist_and_answer_in_place(
     assert [payload["status"] for payload in request_payloads] == ["pending", "complete"]
 
 
-def test_request_user_input_answers_queue_without_live_session(tmp_path: Path) -> None:
+def test_request_user_input_answers_expire_without_live_session(tmp_path: Path) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     project_path = str(tmp_path)
     conversation_id = "conversation-request-queued"
@@ -1906,23 +1903,27 @@ def test_request_user_input_answers_queue_without_live_session(tmp_path: Path) -
     request_segment = next(segment for segment in snapshot["segments"] if segment["kind"] == "request_user_input")
     request_payload = request_segment["request_user_input"]
 
-    assert request_segment["status"] == "complete"
+    assert request_segment["status"] == "failed"
     assert request_segment["content"] == (
         "Which path should I take?\n"
         "Answer: Inline card\n\n"
         "What constraints matter?\n"
         "Answer: Preserve the inline timeline."
     )
-    assert request_payload["status"] == "answered"
-    assert request_payload["delivery_status"] == "pending_delivery"
+    assert request_segment["error"] == "The requested input expired before the answer could be used."
+    assert request_payload["status"] == "expired"
     assert request_payload["submitted_at"] is not None
-    assert request_payload.get("delivered_at") is None
+    assert request_payload["answers"] == {
+        "path_choice": "Inline card",
+        "constraints": "Preserve the inline timeline.",
+    }
+    assert snapshot["turns"][-1]["status"] == "failed"
+    assert snapshot["turns"][-1]["error"] == "The requested input expired before the answer could be used."
 
-
-def test_queued_request_user_input_answers_replay_when_session_reattaches(tmp_path: Path) -> None:
+def test_request_user_input_legacy_pending_delivery_state_normalizes_to_expired(tmp_path: Path) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     project_path = str(tmp_path)
-    conversation_id = "conversation-request-replay"
+    conversation_id = "conversation-request-legacy"
     service._write_state(
         project_chat.ConversationState(
             conversation_id=conversation_id,
@@ -1960,6 +1961,10 @@ def test_queued_request_user_input_answers_replay_when_session_reattaches(tmp_pa
                         "What constraints matter?\n"
                         "Answer: Preserve the inline timeline."
                     ),
+                    source=project_chat.ConversationSegmentSource(
+                        app_turn_id="app-turn-1",
+                        item_id="request-1",
+                    ),
                     request_user_input=RequestUserInputRecord(
                         request_id="request-1",
                         status="answered",
@@ -1968,46 +1973,83 @@ def test_queued_request_user_input_answers_replay_when_session_reattaches(tmp_pa
                             "path_choice": "Inline card",
                             "constraints": "Preserve the inline timeline.",
                         },
-                        delivery_status="pending_delivery",
                         submitted_at="2026-04-17T12:00:03Z",
                     ),
                 ),
             ],
         )
     )
+    raw_state_path = service._conversation_state_path(conversation_id, project_path)
+    payload = json.loads(raw_state_path.read_text(encoding="utf-8"))
+    payload["segments"][0]["request_user_input"]["delivery_status"] = "pending_delivery"
+    raw_state_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
-    class ReattachedWaitingSession:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, dict[str, str]]] = []
-
-        def submit_request_user_input_answers(self, request_id: str, answers: dict[str, str]) -> bool:
-            self.calls.append((request_id, dict(answers)))
-            return request_id == "request-1"
-
-    waiting_session = ReattachedWaitingSession()
-    with service._sessions_lock:
-        service._sessions[conversation_id] = waiting_session
-
-    service._build_session(conversation_id, project_path)
-    replayed_snapshot = service.get_snapshot(conversation_id, project_path)
-    replayed_request = next(
+    normalized_snapshot = service.get_snapshot(conversation_id, project_path)
+    normalized_request = next(
         segment["request_user_input"]
-        for segment in replayed_snapshot["segments"]
+        for segment in normalized_snapshot["segments"]
         if segment["kind"] == "request_user_input"
     )
 
-    assert waiting_session.calls == [
-        (
-            "request-1",
-            {
-                "path_choice": "Inline card",
-                "constraints": "Preserve the inline timeline.",
-            },
+    assert normalized_request["status"] == "expired"
+    assert normalized_request["submitted_at"] == "2026-04-17T12:00:03Z"
+    assert "delivery_status" not in normalized_request
+    assert normalized_snapshot["turns"][-1]["status"] == "failed"
+    assert normalized_snapshot["turns"][-1]["error"] == "The requested input expired before the answer could be used."
+
+
+def test_get_snapshot_does_not_build_or_resume_request_user_input_delivery(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    project_path = str(tmp_path)
+    conversation_id = "conversation-request-pure-read"
+    service._write_state(
+        project_chat.ConversationState(
+            conversation_id=conversation_id,
+            project_path=project_path,
+            turns=[
+                project_chat.ConversationTurn(
+                    id="turn-user-1",
+                    role="user",
+                    content="Ask me the missing question.",
+                    timestamp="2026-04-17T12:00:00Z",
+                ),
+                project_chat.ConversationTurn(
+                    id="turn-assistant-1",
+                    role="assistant",
+                    content="",
+                    timestamp="2026-04-17T12:00:01Z",
+                    status="streaming",
+                    parent_turn_id="turn-user-1",
+                ),
+            ],
+            segments=[
+                project_chat.ConversationSegment(
+                    id="segment-request-user-input-app-turn-1-request-1",
+                    turn_id="turn-assistant-1",
+                    order=1,
+                    kind="request_user_input",
+                    role="system",
+                    status="pending",
+                    timestamp="2026-04-17T12:00:02Z",
+                    updated_at="2026-04-17T12:00:02Z",
+                    content="Which path should I take?",
+                    request_user_input=_request_user_input_record(),
+                ),
+            ],
         )
-    ]
-    assert replayed_request["delivery_status"] == "delivered"
-    assert replayed_request["submitted_at"] == "2026-04-17T12:00:03Z"
-    assert replayed_request["delivered_at"] is not None
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_build_session",
+        lambda conversation_id, project_path: pytest.fail("get_snapshot should not build chat sessions"),
+    )
+
+    snapshot = service.get_snapshot(conversation_id, project_path)
+
+    assert snapshot["turns"][-1]["status"] == "streaming"
+    request_segment = next(segment for segment in snapshot["segments"] if segment["kind"] == "request_user_input")
+    assert request_segment["request_user_input"]["status"] == "pending"
 
 
 def test_request_user_input_answer_submissions_are_idempotent_for_matching_duplicates(tmp_path: Path) -> None:
@@ -2083,9 +2125,9 @@ def test_request_user_input_answer_submissions_are_idempotent_for_matching_dupli
 
     assert second_request["answers"] == first_request["answers"]
     assert second_request["submitted_at"] == first_request["submitted_at"]
-    assert second_request["delivery_status"] == "pending_delivery"
+    assert "delivery_status" not in second_request
 
-    with pytest.raises(ValueError, match="already answered"):
+    with pytest.raises(ValueError, match="expired before the answer could be used"):
         service.submit_request_user_input_answer(
             conversation_id,
             project_path,
@@ -3708,11 +3750,11 @@ def test_submit_project_conversation_request_user_input_endpoint_updates_existin
     request_segments = [segment for segment in payload["segments"] if segment["kind"] == "request_user_input"]
     assert len(request_segments) == 1
     assert request_segments[0]["request_user_input"]["status"] == "answered"
-    assert request_segments[0]["request_user_input"]["delivery_status"] == "delivered"
     assert request_segments[0]["request_user_input"]["answers"]["path_choice"] == "Inline card"
+    assert "delivery_status" not in request_segments[0]["request_user_input"]
 
 
-def test_submit_project_conversation_request_user_input_endpoint_queues_delivery_without_live_session(
+def test_submit_project_conversation_request_user_input_endpoint_expires_without_live_session(
     product_api_client,
     tmp_path: Path,
 ) -> None:
@@ -3770,139 +3812,12 @@ def test_submit_project_conversation_request_user_input_endpoint_queues_delivery
     assert response.status_code == 200
     payload = response.json()
     request_segment = next(segment for segment in payload["segments"] if segment["kind"] == "request_user_input")
-    assert request_segment["request_user_input"]["status"] == "answered"
-    assert request_segment["request_user_input"]["delivery_status"] == "pending_delivery"
-    assert request_segment["request_user_input"].get("delivered_at") is None
-
-
-def test_request_user_input_background_completion_stays_safe_after_api_client_closes(
-    monkeypatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    recwarn: pytest.WarningsRecorder,
-) -> None:
-    service = _project_chat_service()
-    conversation_id = "conversation-request-lifecycle"
-
-    class DeferredCompletionSession:
-        def __init__(self) -> None:
-            self._answer_event = threading.Event()
-            self._allow_completion_event = threading.Event()
-            self.completed = threading.Event()
-            self._answers: dict[str, str] = {}
-
-        def has_pending_request_user_input(self, request_id: str) -> bool:
-            return request_id == "request-1" and not self._answer_event.is_set()
-
-        def submit_request_user_input_answers(self, request_id: str, answers: dict[str, str]) -> bool:
-            if request_id != "request-1":
-                return False
-            self._answers = dict(answers)
-            self._answer_event.set()
-            return True
-
-        def turn(
-            self,
-            prompt: str,
-            model: str | None,
-            *,
-            chat_mode: str = "chat",
-            on_event=None,
-            on_dynamic_tool_call=None,
-        ) -> project_chat.ChatTurnResult:
-            if on_event is not None:
-                on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="request_user_input_requested",
-                        app_turn_id="app-turn-1",
-                        item_id="request-1",
-                        request_user_input=_request_user_input_record(),
-                    )
-                )
-            assert self._answer_event.wait(timeout=2)
-            assert self._allow_completion_event.wait(timeout=2)
-            assistant_message = (
-                f"ANSWER={self._answers['path_choice']} / {self._answers['constraints']}"
-            )
-            if on_event is not None:
-                on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
-                        content_delta=assistant_message,
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
-                        phase="final_answer",
-                    )
-                )
-            self.completed.set()
-            return project_chat.ChatTurnResult(assistant_message=assistant_message)
-
-    waiting_session = DeferredCompletionSession()
-    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: waiting_session)
-    with service._sessions_lock:
-        service._sessions[conversation_id] = waiting_session
-
-    with caplog.at_level(logging.WARNING, logger=project_chat.__name__):
-        with TestClient(product_app.app) as client:
-            start_response = client.post(
-                f"/workspace/api/conversations/{conversation_id}/turns",
-                json={
-                    "project_path": str(tmp_path),
-                    "message": "Ask for a decision.",
-                    "chat_mode": "plan",
-                },
-            )
-
-            assert start_response.status_code == 200
-
-            deadline = time.time() + 2.0
-            while time.time() < deadline:
-                candidate = service.get_snapshot(conversation_id, str(tmp_path))
-                if any(segment["kind"] == "request_user_input" for segment in candidate["segments"]):
-                    break
-                time.sleep(0.02)
-
-            response = client.post(
-                f"/workspace/api/conversations/{conversation_id}/request-user-input/request-1/answer",
-                json={
-                    "project_path": str(tmp_path),
-                    "answers": {
-                        "path_choice": "Inline card",
-                        "constraints": "Keep the request inline.",
-                    },
-                },
-            )
-
-            assert response.status_code == 200
-            assert waiting_session._answer_event.wait(timeout=1)
-
-        waiting_session._allow_completion_event.set()
-
-        deadline = time.time() + 2.0
-        final_snapshot: dict[str, Any] | None = None
-        while time.time() < deadline:
-            candidate = service.get_snapshot(conversation_id, str(tmp_path))
-            if candidate["turns"][-1]["status"] == "complete":
-                final_snapshot = candidate
-                break
-            time.sleep(0.02)
-
-        assert final_snapshot is not None
-        assert waiting_session.completed.wait(timeout=1)
-
-    gc.collect()
-
-    assert final_snapshot["turns"][-1]["content"] == "ANSWER=Inline card / Keep the request inline."
-    assert not [
-        record
-        for record in caplog.records
-        if "project chat background turn ended with runtime error" in record.getMessage()
-    ]
-    assert not [
-        warning
-        for warning in recwarn
-        if "ConversationEventHub.publish" in str(warning.message) and "never awaited" in str(warning.message)
-    ]
+    assert request_segment["status"] == "failed"
+    assert request_segment["request_user_input"]["status"] == "expired"
+    assert request_segment["request_user_input"]["answers"]["path_choice"] == "Inline card"
+    assert request_segment["error"] == "The requested input expired before the answer could be used."
+    assert payload["turns"][-1]["status"] == "failed"
+    assert payload["turns"][-1]["error"] == "The requested input expired before the answer could be used."
 
 
 def test_snapshot_rejects_unsupported_turn_event_only_payload(tmp_path: Path) -> None:

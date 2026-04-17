@@ -453,6 +453,39 @@ describe('ProjectConversationHistory', () => {
         expect(within(summary).getByText('Inline card')).toBeVisible()
     })
 
+    it('renders expired request_user_input segments as non-interactive expired cards', () => {
+        renderHistory([
+            makeRequestUserInputEntry({
+                status: 'failed',
+                requestUserInput: {
+                    requestId: 'request-1',
+                    status: 'expired',
+                    questions: [
+                        {
+                            id: 'path_choice',
+                            header: 'Path',
+                            question: 'Which path should I take?',
+                            questionType: 'MULTIPLE_CHOICE',
+                            options: [],
+                            allowOther: false,
+                            isSecret: false,
+                        },
+                    ],
+                    answers: {
+                        path_choice: 'Inline card',
+                    },
+                    submittedAt: '2026-04-17T12:01:00Z',
+                },
+            }),
+        ])
+
+        const expiredCard = screen.getByTestId('project-request-user-input-expired-request-user-input-1')
+        expect(within(expiredCard).getByText('Expired Request')).toBeVisible()
+        expect(within(expiredCard).getByText('The request expired before this answer could be used. Send a new message to continue.')).toBeVisible()
+        expect(within(expiredCard).getByText('Inline card')).toBeVisible()
+        expect(within(expiredCard).queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
+    })
+
     it('renders assistant markdown links as plain labels without anchors', () => {
         renderHistory([
             makeMessageEntry({

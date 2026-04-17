@@ -259,4 +259,50 @@ describe('buildConversationTimelineEntries', () => {
     }))
   })
 
+  it('preserves expired request_user_input status in timeline entries', () => {
+    const timeline = buildConversationTimelineEntries({
+      ...snapshot,
+      segments: [
+        {
+          id: 'request-user-input-expired',
+          turn_id: 'turn-assistant',
+          order: 1,
+          kind: 'request_user_input',
+          role: 'system',
+          status: 'failed',
+          timestamp: '2026-03-10T10:00:11Z',
+          updated_at: '2026-03-10T10:00:11Z',
+          completed_at: '2026-03-10T10:00:12Z',
+          content: 'Which path should I take?\nAnswer: Inline card',
+          artifact_id: null,
+          error: 'The requested input expired before the answer could be used.',
+          source: {
+            app_turn_id: 'app-turn-1',
+            item_id: 'request-1',
+          },
+          tool_call: null,
+          request_user_input: {
+            request_id: 'request-1',
+            status: 'expired',
+            questions: [],
+            answers: {
+              path_choice: 'Inline card',
+            },
+            submitted_at: '2026-03-10T10:00:12Z',
+          },
+        },
+        ...snapshot.segments,
+      ],
+    }, null)
+
+    expect(timeline).toContainEqual(expect.objectContaining({
+      kind: 'request_user_input',
+      status: 'failed',
+      requestUserInput: expect.objectContaining({
+        requestId: 'request-1',
+        status: 'expired',
+      }),
+    }))
+  })
+
 })

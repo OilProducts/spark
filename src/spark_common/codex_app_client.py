@@ -380,24 +380,6 @@ class CodexAppServerClient:
         server_request_handler: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
     ) -> CodexAppServerTurnResult:
         request = send_request or self.send_request
-        stream_state = codex_app_server.CodexAppServerTurnState()
-        started_at = now()
-        last_activity_at = started_at
-
-        def mark_activity() -> None:
-            nonlocal last_activity_at
-            last_activity_at = now()
-
-        if next_message is None:
-            def read_message(wait: float) -> Optional[dict[str, Any]]:
-                return self.next_message(
-                    wait,
-                    now=now,
-                    on_activity=mark_activity,
-                    server_request_handler=server_request_handler,
-                )
-        else:
-            read_message = next_message
         params: dict[str, Any] = {
             "threadId": thread_id,
             "input": [{"type": "text", "text": prompt}],
@@ -424,7 +406,50 @@ class CodexAppServerClient:
         expected_turn_id = codex_app_server.as_non_empty_string(turn.get("id"))
         if not expected_turn_id:
             raise RuntimeError("codex app-server did not return a turn id")
-        if on_turn_started is not None:
+        return self._consume_turn_stream(
+            thread_id=thread_id,
+            expected_turn_id=expected_turn_id,
+            on_event=on_event,
+            on_turn_started=on_turn_started,
+            idle_timeout_seconds=idle_timeout_seconds,
+            overall_timeout_seconds=overall_timeout_seconds,
+            next_message=next_message,
+            now=now,
+            server_request_handler=server_request_handler,
+        )
+
+    def _consume_turn_stream(
+        self,
+        *,
+        thread_id: str,
+        expected_turn_id: Optional[str],
+        on_event: Optional[Callable[[codex_app_server.CodexAppServerTurnEvent], None]] = None,
+        on_turn_started: Optional[Callable[[str], None]] = None,
+        idle_timeout_seconds: float = codex_app_server.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS,
+        overall_timeout_seconds: Optional[float] = None,
+        next_message: Optional[Callable[[float], Optional[dict[str, Any]]]] = None,
+        now: Callable[[], float] = time.monotonic,
+        server_request_handler: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
+    ) -> CodexAppServerTurnResult:
+        stream_state = codex_app_server.CodexAppServerTurnState()
+        started_at = now()
+        last_activity_at = started_at
+
+        def mark_activity() -> None:
+            nonlocal last_activity_at
+            last_activity_at = now()
+
+        if next_message is None:
+            def read_message(wait: float) -> Optional[dict[str, Any]]:
+                return self.next_message(
+                    wait,
+                    now=now,
+                    on_activity=mark_activity,
+                    server_request_handler=server_request_handler,
+                )
+        else:
+            read_message = next_message
+        if expected_turn_id and on_turn_started is not None:
             on_turn_started(expected_turn_id)
         while True:
             if overall_timeout_seconds is not None and now() - started_at > overall_timeout_seconds:
@@ -439,6 +464,10 @@ class CodexAppServerClient:
                 continue
             mark_activity()
             extracted_turn_id = codex_app_server.extract_turn_id(message)
+            if expected_turn_id is None and extracted_turn_id:
+                expected_turn_id = extracted_turn_id
+                if on_turn_started is not None:
+                    on_turn_started(expected_turn_id)
             if extracted_turn_id and extracted_turn_id != expected_turn_id:
                 continue
             normalized_events = codex_app_server.process_turn_message(message, stream_state)
@@ -447,6 +476,8 @@ class CodexAppServerClient:
                     on_event(event)
             if any(event.kind == "turn_completed" for event in normalized_events) and extracted_turn_id == expected_turn_id:
                 break
+        if not expected_turn_id:
+            raise RuntimeError("codex app-server did not expose a resumable turn id")
         if stream_state.turn_status and stream_state.turn_status != "completed":
             raise RuntimeError(
                 stream_state.turn_error or f"codex app-server turn ended with status '{stream_state.turn_status}'"
