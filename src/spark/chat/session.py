@@ -299,6 +299,26 @@ class CodexAppServerChatSession:
                         ),
                     )
                     return
+                if normalized_event.kind == "context_compaction_started":
+                    self._emit_live_event(
+                        on_event,
+                        ChatTurnLiveEvent(
+                            kind="context_compaction_started",
+                            app_turn_id=current_app_turn_id,
+                            item_id=normalized_event.item_id,
+                        ),
+                    )
+                    return
+                if normalized_event.kind == "context_compaction_completed":
+                    self._emit_live_event(
+                        on_event,
+                        ChatTurnLiveEvent(
+                            kind="context_compaction_completed",
+                            app_turn_id=current_app_turn_id,
+                            item_id=normalized_event.item_id,
+                        ),
+                    )
+                    return
                 if normalized_event.kind == "assistant_message_completed" and normalized_event.text:
                     self._emit_live_event(
                         on_event,

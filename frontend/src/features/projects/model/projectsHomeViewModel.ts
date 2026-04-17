@@ -71,6 +71,7 @@ export function buildProjectsHomeViewModel({
     const activeFlowLaunches = activeConversationSnapshot?.flow_launches || []
     const hasRenderableConversationHistory = activeConversationHistory.some((entry) => (
         entry.kind === 'mode_change'
+        || entry.kind === 'context_compaction'
         || entry.kind === 'flow_run_request'
         || entry.kind === 'flow_launch'
         || entry.kind === 'tool_call'

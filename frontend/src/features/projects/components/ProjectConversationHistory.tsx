@@ -202,6 +202,23 @@ export function ProjectConversationHistory({
                             )
                         }
 
+                        if (entry.kind === 'context_compaction') {
+                            return (
+                                <li key={key} className="flex justify-center">
+                                    <div
+                                        data-testid={`project-context-compaction-row-${entry.id}`}
+                                        className="flex w-full max-w-[85%] items-center gap-3 py-1 text-[11px] text-muted-foreground"
+                                    >
+                                        <span className="h-px flex-1 bg-border" />
+                                        <span className="shrink-0 whitespace-nowrap">
+                                            {entry.content}
+                                        </span>
+                                        <span className="h-px flex-1 bg-border" />
+                                    </div>
+                                </li>
+                            )
+                        }
+
                         if (entry.kind === 'message' && entry.role === 'assistant' && entry.presentation === 'thinking') {
                             const parsedThinking = parseThinkingSummaryContent(entry.content)
                             const heading = parsedThinking.heading || 'Thinking...'

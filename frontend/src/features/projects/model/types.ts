@@ -1,4 +1,5 @@
 import type {
+    ConversationSegmentResponse,
     ConversationSummaryResponse,
     ConversationTurnResponse,
     FlowLaunchResponse,
@@ -9,6 +10,7 @@ export type ProjectConversationSummary = ConversationSummaryResponse
 export type ProjectFlowLaunch = FlowLaunchResponse
 export type ProjectFlowRunRequest = FlowRunRequestResponse
 export type ConversationTurnStatus = ConversationTurnResponse['status']
+export type ConversationSegmentStatus = ConversationSegmentResponse['status']
 
 export interface ConversationTimelineToolCall {
     id: string
@@ -46,6 +48,14 @@ export type ConversationTimelineEntry =
         role: 'system'
         timestamp: string
         mode: 'chat' | 'plan'
+    }
+    | {
+        id: string
+        kind: 'context_compaction'
+        role: 'system'
+        timestamp: string
+        content: string
+        status: ConversationSegmentStatus
     }
     | {
         id: string

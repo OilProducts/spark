@@ -158,6 +158,11 @@ def is_tool_item(item: dict[str, Any]) -> bool:
     return item_type in {"commandExecution", "fileChange"}
 
 
+def is_context_compaction_item(item: dict[str, Any]) -> bool:
+    item_type = str(item.get("type") or "").strip().lower().replace("_", "")
+    return item_type == "contextcompaction"
+
+
 @dataclass
 class CodexAppServerTurnEvent:
     kind: str
@@ -242,6 +247,15 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
         item = params.get("item")
         if isinstance(item, dict):
             remember_agent_message_phase(item)
+            if is_context_compaction_item(item):
+                events.append(
+                    CodexAppServerTurnEvent(
+                        kind="context_compaction_started",
+                        item=item,
+                        item_id=as_non_empty_string(item.get("id")),
+                    )
+                )
+                return events
             if is_tool_item(item):
                 events.append(
                     CodexAppServerTurnEvent(
@@ -277,6 +291,15 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
                     CodexAppServerTurnEvent(
                         kind="plan_completed",
                         text=plan_text,
+                        item=item,
+                        item_id=item_id,
+                    )
+                )
+                return events
+            if is_context_compaction_item(item):
+                events.append(
+                    CodexAppServerTurnEvent(
+                        kind="context_compaction_completed",
                         item=item,
                         item_id=item_id,
                     )
@@ -398,7 +421,11 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
                     kind="token_usage_updated",
                     token_usage=copy.deepcopy(token_usage),
                 )
-            )
+        )
+        return events
+
+    if method == "thread/compacted":
+        events.append(CodexAppServerTurnEvent(kind="context_compaction_completed"))
         return events
 
     if method == "error":

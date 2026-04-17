@@ -167,4 +167,36 @@ describe('buildConversationTimelineEntries', () => {
     }))
   })
 
+  it('renders context_compaction segments as inline system timeline entries', () => {
+    const timeline = buildConversationTimelineEntries({
+      ...snapshot,
+      segments: [
+        {
+          id: 'context-compaction-segment',
+          turn_id: 'turn-assistant',
+          order: 1,
+          kind: 'context_compaction',
+          role: 'system',
+          status: 'complete',
+          timestamp: '2026-03-10T10:00:11Z',
+          updated_at: '2026-03-10T10:00:11Z',
+          completed_at: '2026-03-10T10:00:11Z',
+          content: 'Context compacted to continue the turn.',
+          artifact_id: null,
+          error: null,
+          source: {
+            app_turn_id: 'app-turn-1',
+          },
+          tool_call: null,
+        },
+        ...snapshot.segments,
+      ],
+    }, null)
+
+    expect(timeline).toContainEqual(expect.objectContaining({
+      kind: 'context_compaction',
+      content: 'Context compacted to continue the turn.',
+    }))
+  })
+
 })

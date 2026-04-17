@@ -101,6 +101,17 @@ function buildAssistantTimelineEntries(
             })
             return
         }
+        if (segment.kind === 'context_compaction') {
+            entries.push({
+                id: segment.id,
+                kind: 'context_compaction',
+                role: 'system',
+                content: segment.content,
+                timestamp: segment.timestamp,
+                status: segment.status,
+            })
+            return
+        }
         if (segment.kind === 'tool_call' && segment.tool_call) {
             entries.push({
                 id: segment.id,

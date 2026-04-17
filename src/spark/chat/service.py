@@ -300,6 +300,10 @@ class ProjectChatService:
         call_id = event.tool_call_id or event.item_id or "tool"
         return f"segment-tool-{app_turn_id}-{call_id}"
 
+    def _build_context_compaction_segment_id(self, turn_id: str, event: ChatTurnLiveEvent) -> str:
+        app_turn_id = event.app_turn_id or turn_id
+        return f"segment-context-compaction-{app_turn_id}"
+
     def _assistant_segment_phase(self, event: ChatTurnLiveEvent, segment: Optional[ConversationSegment] = None) -> Optional[str]:
         if event.phase is not None:
             return _normalize_assistant_phase(event.phase)
@@ -392,6 +396,47 @@ class ProjectChatService:
             segment.status = "streaming"
             segment.updated_at = timestamp
             segment.error = None
+            self._upsert_segment(state, segment)
+            return segment
+        if event.kind in {"context_compaction_started", "context_compaction_completed"}:
+            segment_id = self._build_context_compaction_segment_id(turn.id, event)
+            complete = event.kind == "context_compaction_completed"
+            target_status = "complete" if complete else "running"
+            target_content = (
+                "Context compacted to continue the turn."
+                if complete
+                else "Compacting conversation context…"
+            )
+            segment = self._get_segment(state, segment_id)
+            if segment is None:
+                segment = ConversationSegment(
+                    id=segment_id,
+                    turn_id=turn.id,
+                    order=self._next_turn_segment_order(state, turn.id),
+                    kind="context_compaction",
+                    role="system",
+                    status=target_status,
+                    timestamp=timestamp,
+                    updated_at=timestamp,
+                    content=target_content,
+                    completed_at=timestamp if complete else None,
+                    source=self._build_segment_source(event),
+                )
+                self._upsert_segment(state, segment)
+                return segment
+            if segment.source.app_turn_id is None and event.app_turn_id is not None:
+                segment.source.app_turn_id = event.app_turn_id
+            if event.item_id is not None:
+                segment.source.item_id = event.item_id
+            if segment.status == target_status and segment.content == target_content:
+                return None
+            if segment.status == "complete" and not complete:
+                return None
+            segment.status = target_status
+            segment.content = target_content
+            segment.updated_at = timestamp
+            segment.error = None
+            segment.completed_at = timestamp if complete else None
             self._upsert_segment(state, segment)
             return segment
         if event.kind in {"tool_call_started", "tool_call_updated", "tool_call_completed", "tool_call_failed"} and event.tool_call is not None:
@@ -781,6 +826,10 @@ class ProjectChatService:
                         if segment is not None:
                             emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
                 elif event.kind == "plan_completed":
+                    segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
+                    if segment is not None:
+                        emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
+                elif event.kind in {"context_compaction_started", "context_compaction_completed"}:
                     segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
                     if segment is not None:
                         emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))

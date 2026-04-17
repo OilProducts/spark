@@ -163,6 +163,17 @@ const makeModeChangeEntry = (
     mode: overrides.mode ?? 'plan',
 })
 
+const makeContextCompactionEntry = (
+    overrides: Partial<Extract<ConversationTimelineEntry, { kind: 'context_compaction' }>> = {},
+): Extract<ConversationTimelineEntry, { kind: 'context_compaction' }> => ({
+    id: overrides.id ?? 'context-compaction-1',
+    kind: 'context_compaction',
+    role: 'system',
+    timestamp: overrides.timestamp ?? '2026-04-16T15:27:47Z',
+    content: overrides.content ?? 'Context compacted to continue the turn.',
+    status: overrides.status ?? 'complete',
+})
+
 const makePlanEntry = (
     overrides: Partial<Extract<ConversationTimelineEntry, { kind: 'plan' }>> = {},
 ): Extract<ConversationTimelineEntry, { kind: 'plan' }> => ({
@@ -210,6 +221,15 @@ describe('ProjectConversationHistory', () => {
 
         const row = screen.getByTestId('project-mode-change-row-mode-change-1')
         expect(within(row).getByText('Switched to Plan mode')).toBeVisible()
+    })
+
+    it('renders context compaction rows as centered inline system markers', () => {
+        renderHistory([
+            makeContextCompactionEntry(),
+        ])
+
+        const row = screen.getByTestId('project-context-compaction-row-context-compaction-1')
+        expect(within(row).getByText('Context compacted to continue the turn.')).toBeVisible()
     })
 
     it('renders plan entries as dedicated markdown cards', () => {

@@ -76,4 +76,44 @@ describe('conversationsApi parsing', () => {
             content: '1. Add a regression test.',
         })
     })
+
+    it('parses context_compaction segments from snapshots', () => {
+        const snapshot = parseConversationSnapshotResponse({
+            schema_version: 4,
+            conversation_id: 'conversation-plan',
+            conversation_handle: 'steady-harbor',
+            project_path: '/tmp/project-plan',
+            chat_mode: 'chat',
+            title: 'Planning thread',
+            created_at: '2026-04-16T18:00:00Z',
+            updated_at: '2026-04-16T18:00:10Z',
+            turns: [],
+            segments: [
+                {
+                    id: 'segment-context-compaction-app-turn-1',
+                    turn_id: 'turn-assistant-1',
+                    order: 1,
+                    kind: 'context_compaction',
+                    role: 'system',
+                    status: 'complete',
+                    timestamp: '2026-04-16T18:00:08Z',
+                    updated_at: '2026-04-16T18:00:08Z',
+                    completed_at: '2026-04-16T18:00:08Z',
+                    content: 'Context compacted to continue the turn.',
+                    source: {
+                        app_turn_id: 'app-turn-1',
+                    },
+                },
+            ],
+            event_log: [],
+            flow_run_requests: [],
+            flow_launches: [],
+        })
+
+        expect(snapshot.segments[0]).toMatchObject({
+            kind: 'context_compaction',
+            role: 'system',
+            content: 'Context compacted to continue the turn.',
+        })
+    })
 })

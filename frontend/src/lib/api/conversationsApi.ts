@@ -26,7 +26,7 @@ export interface ConversationSegmentResponse {
     id: string
     turn_id: string
     order: number
-    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'flow_run_request' | 'flow_launch'
+    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'context_compaction' | 'flow_run_request' | 'flow_launch'
     role: 'assistant' | 'system'
     status: 'pending' | 'streaming' | 'complete' | 'failed' | 'running'
     timestamp: string
@@ -208,6 +208,7 @@ function parseConversationSegmentResponse(value: unknown): ConversationSegmentRe
         || record.kind === 'plan'
         || record.kind === 'reasoning'
         || record.kind === 'tool_call'
+        || record.kind === 'context_compaction'
         || record.kind === 'flow_run_request'
         || record.kind === 'flow_launch'
         ? record.kind

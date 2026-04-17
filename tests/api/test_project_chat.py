@@ -358,6 +358,49 @@ def test_process_turn_message_normalizes_item_reasoning_delta_by_item_and_summar
     assert events[0].summary_index == 0
 
 
+def test_process_turn_message_normalizes_context_compaction_events() -> None:
+    state = codex_app_server.CodexAppServerTurnState()
+
+    started = codex_app_server.process_turn_message(
+        {
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "contextCompaction",
+                    "id": "compact-1",
+                },
+            },
+        },
+        state,
+    )
+    completed = codex_app_server.process_turn_message(
+        {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "contextCompaction",
+                    "id": "compact-1",
+                },
+            },
+        },
+        state,
+    )
+    fallback = codex_app_server.process_turn_message(
+        {
+            "method": "thread/compacted",
+            "params": {},
+        },
+        state,
+    )
+
+    assert [event.kind for event in started] == ["context_compaction_started"]
+    assert started[0].item_id == "compact-1"
+    assert [event.kind for event in completed] == ["context_compaction_completed"]
+    assert completed[0].item_id == "compact-1"
+    assert [event.kind for event in fallback] == ["context_compaction_completed"]
+    assert fallback[0].item_id is None
+
+
 def test_process_turn_message_retains_full_token_usage_payload() -> None:
     state = codex_app_server.CodexAppServerTurnState()
     payload = {
@@ -856,6 +899,54 @@ def test_chat_session_surfaces_reasoning_summary_text_deltas(monkeypatch) -> Non
     )
 
 
+def test_chat_session_surfaces_context_compaction_progress(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    progress_updates: list[project_chat.ChatTurnLiveEvent] = []
+    client = StubChatClient()
+    session._client = client
+
+    def run_turn(**kwargs) -> CodexAppServerTurnResult:
+        on_turn_started = kwargs["on_turn_started"]
+        on_turn_started("turn-123")
+        on_event = kwargs["on_event"]
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="context_compaction_started",
+                item_id="compact-1",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="context_compaction_completed",
+                item_id="compact-1",
+            )
+        )
+        on_event(
+            codex_app_server.CodexAppServerTurnEvent(
+                kind="assistant_message_completed",
+                text="Ack",
+                item_id="msg-1",
+                phase="final_answer",
+            )
+        )
+        return _completed_turn_result(thread_id=kwargs["thread_id"], assistant_message="Ack")
+
+    client.run_turn_handler = run_turn
+
+    result = session.turn("hello", None, on_event=progress_updates.append)
+
+    assert result.assistant_message == "Ack"
+    assert [event.kind for event in progress_updates] == [
+        "context_compaction_started",
+        "context_compaction_completed",
+        "assistant_completed",
+    ]
+    assert progress_updates[0].app_turn_id == "turn-123"
+    assert progress_updates[0].item_id == "compact-1"
+    assert progress_updates[1].app_turn_id == "turn-123"
+    assert progress_updates[1].item_id == "compact-1"
+
+
 def test_process_line_reader_drains_buffered_lines_in_order() -> None:
     class FakeStdout:
         def __init__(self, lines: list[str]) -> None:
@@ -1288,6 +1379,206 @@ def test_send_turn_buffers_plan_mode_assistant_completion_without_leaking_markup
     assert snapshot["turns"][-1]["content"] == "1. Patch the real session path.\n2. Add the regression coverage."
     assert [segment["kind"] for segment in snapshot["segments"]] == ["reasoning", "plan"]
     assert all("<proposed_plan>" not in segment["content"] for segment in snapshot["segments"])
+
+
+def test_send_turn_persists_context_compaction_segment_transition(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    progress_updates: list[dict[str, Any]] = []
+
+    class CompactionSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            if on_event is not None:
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="context_compaction_started",
+                        app_turn_id="app-turn-1",
+                        item_id="compact-1",
+                    )
+                )
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="context_compaction_completed",
+                        app_turn_id="app-turn-1",
+                        item_id="compact-1",
+                    )
+                )
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="assistant_completed",
+                        content_delta="Ack",
+                        app_turn_id="app-turn-1",
+                        item_id="msg-1",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Ack")
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: CompactionSession())
+
+    snapshot = service.send_turn(
+        "conversation-context-compaction",
+        str(tmp_path),
+        "Continue the turn.",
+        None,
+        progress_callback=progress_updates.append,
+    )
+
+    compaction_segments = [segment for segment in snapshot["segments"] if segment["kind"] == "context_compaction"]
+    compaction_payloads = [
+        payload["segment"]
+        for payload in progress_updates
+        if payload.get("type") == "segment_upsert" and payload["segment"]["kind"] == "context_compaction"
+    ]
+
+    assert len(compaction_segments) == 1
+    assert compaction_segments[0]["status"] == "complete"
+    assert compaction_segments[0]["content"] == "Context compacted to continue the turn."
+    assert compaction_segments[0]["source"] == {
+        "app_turn_id": "app-turn-1",
+        "item_id": "compact-1",
+    }
+    assert [payload["status"] for payload in compaction_payloads] == ["running", "complete"]
+    assert [payload["content"] for payload in compaction_payloads] == [
+        "Compacting conversation context…",
+        "Context compacted to continue the turn.",
+    ]
+
+
+def test_send_turn_persists_context_compaction_from_thread_compacted_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+
+    class CompactionFallbackSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            if on_event is not None:
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="context_compaction_completed",
+                        app_turn_id="app-turn-1",
+                    )
+                )
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="assistant_completed",
+                        content_delta="Ack",
+                        app_turn_id="app-turn-1",
+                        item_id="msg-1",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Ack")
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: CompactionFallbackSession())
+
+    snapshot = service.send_turn(
+        "conversation-context-compaction-fallback",
+        str(tmp_path),
+        "Continue the turn.",
+        None,
+    )
+
+    compaction_segments = [segment for segment in snapshot["segments"] if segment["kind"] == "context_compaction"]
+
+    assert len(compaction_segments) == 1
+    assert compaction_segments[0]["status"] == "complete"
+    assert compaction_segments[0]["content"] == "Context compacted to continue the turn."
+    assert compaction_segments[0]["source"] == {
+        "app_turn_id": "app-turn-1",
+    }
+
+
+def test_send_turn_deduplicates_context_compaction_duplicate_completion_signals(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    progress_updates: list[dict[str, Any]] = []
+
+    class DuplicateCompactionSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            if on_event is not None:
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="context_compaction_started",
+                        app_turn_id="app-turn-1",
+                        item_id="compact-1",
+                    )
+                )
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="context_compaction_completed",
+                        app_turn_id="app-turn-1",
+                        item_id="compact-1",
+                    )
+                )
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="context_compaction_completed",
+                        app_turn_id="app-turn-1",
+                    )
+                )
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="assistant_completed",
+                        content_delta="Ack",
+                        app_turn_id="app-turn-1",
+                        item_id="msg-1",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Ack")
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: DuplicateCompactionSession())
+
+    snapshot = service.send_turn(
+        "conversation-context-compaction-deduped",
+        str(tmp_path),
+        "Continue the turn.",
+        None,
+        progress_callback=progress_updates.append,
+    )
+
+    compaction_segments = [segment for segment in snapshot["segments"] if segment["kind"] == "context_compaction"]
+    compaction_payloads = [
+        payload["segment"]
+        for payload in progress_updates
+        if payload.get("type") == "segment_upsert" and payload["segment"]["kind"] == "context_compaction"
+    ]
+
+    assert len(compaction_segments) == 1
+    assert compaction_segments[0]["status"] == "complete"
+    assert compaction_segments[0]["content"] == "Context compacted to continue the turn."
+    assert len(compaction_payloads) == 2
+    assert [payload["status"] for payload in compaction_payloads] == ["running", "complete"]
 
 
 def test_send_turn_persists_plan_mode_assistant_remainder_after_completion(
