@@ -87,7 +87,31 @@ curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear.dot/valida
 
 ## Launch Runs And Create Run Requests
 
-Launch a flow immediately against an explicit project:
+Assistant-runtime default:
+
+- Include `--conversation <handle>` for launches and run requests so the resulting artifact appears inline in the active chat.
+- Use `--project` without `--conversation` only for intentionally detached, project-scoped launches with no inline chat artifact.
+
+Launch a flow immediately inside the active conversation:
+
+```bash
+spark run launch \
+  --conversation amber-otter \
+  --flow examples/simple-linear.dot \
+  --summary "Inspect the repo and summarize next steps."
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/workspace/api/runs/launch \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "conversation_handle": "amber-otter",
+    "flow_name": "examples/simple-linear.dot",
+    "summary": "Inspect the repo and summarize next steps."
+  }'
+```
+
+Launch a detached flow immediately against an explicit project:
 
 ```bash
 spark run launch \
@@ -141,6 +165,7 @@ Notes:
 - `spark run launch` requires either `--conversation` or `--project`.
 - `--goal-file` and `--launch-context-file` are available when inline text is inconvenient.
 - Use `model` only when you need a launch-time override; otherwise let the flow defaults apply.
+- A launch created without `--conversation` is project-scoped only, so no flow-launch card appears in chat.
 
 ## Inspect Runs
 

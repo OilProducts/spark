@@ -258,6 +258,9 @@ export function applyConversationStreamEventToCache(
         const currentTurn = existingSnapshot.turns.find((turn) => turn.id === event.turn.id) || null
         mergedSnapshot = {
             ...upsertConversationTurn(existingSnapshot, sanitizeStreamingTurnUpsert(currentTurn, event.turn)),
+            chat_mode: event.turn.kind === 'mode_change'
+                ? (event.turn.content === 'plan' ? 'plan' : 'chat')
+                : existingSnapshot.chat_mode,
             project_path: projectPath,
             title: event.title,
             updated_at: event.updated_at,

@@ -1,5 +1,9 @@
 import type { ProjectSessionState } from '@/store'
-import type { ConversationSnapshotResponse, ConversationSummaryResponse } from '@/lib/workspaceClient'
+import type {
+    ConversationChatMode,
+    ConversationSnapshotResponse,
+    ConversationSummaryResponse,
+} from '@/lib/workspaceClient'
 
 import type { OptimisticSendState } from './conversationState'
 import { buildConversationTimelineEntries } from './conversationTimeline'
@@ -26,6 +30,7 @@ type BuildProjectsHomeViewModelArgs = {
 }
 
 export type ProjectsHomeViewModel = {
+    activeChatMode: ConversationChatMode | null
     activeConversationHistory: ConversationTimelineEntry[]
     activeFlowLaunchesById: Map<string, ProjectFlowLaunch>
     activeFlowRunRequestsById: Map<string, ProjectFlowRunRequest>
@@ -65,7 +70,8 @@ export function buildProjectsHomeViewModel({
     const activeFlowRunRequests = activeConversationSnapshot?.flow_run_requests || []
     const activeFlowLaunches = activeConversationSnapshot?.flow_launches || []
     const hasRenderableConversationHistory = activeConversationHistory.some((entry) => (
-        entry.kind === 'flow_run_request'
+        entry.kind === 'mode_change'
+        || entry.kind === 'flow_run_request'
         || entry.kind === 'flow_launch'
         || entry.kind === 'tool_call'
         || entry.role === 'user'
@@ -76,6 +82,9 @@ export function buildProjectsHomeViewModel({
     ))
 
     return {
+        activeChatMode: activeConversationId
+            ? (activeConversationSnapshot?.chat_mode ?? 'chat')
+            : null,
         activeConversationHistory,
         activeFlowLaunchesById: buildIdMap(activeFlowLaunches),
         activeFlowRunRequestsById: buildIdMap(activeFlowRunRequests),

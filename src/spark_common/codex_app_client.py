@@ -14,6 +14,19 @@ from spark_common.process_line_reader import ProcessLineReader
 
 
 APP_SERVER_REQUEST_TIMEOUT_SECONDS = 15.0
+COLLABORATION_MODE_DEFAULT = "default"
+COLLABORATION_MODE_PLAN = "plan"
+
+
+def _collaboration_mode_for_chat_mode(chat_mode: Optional[str], model: str) -> dict[str, Any]:
+    normalized = str(chat_mode or "").strip().lower()
+    collaboration_mode = COLLABORATION_MODE_PLAN if normalized == "plan" else COLLABORATION_MODE_DEFAULT
+    return {
+        "mode": collaboration_mode,
+        "settings": {
+            "model": model,
+        },
+    }
 
 
 @dataclass
@@ -322,12 +335,31 @@ class CodexAppServerClient:
         thread = (response.get("result") or {}).get("thread") or {}
         return codex_app_server.as_non_empty_string(thread.get("id"))
 
+    def default_model(self) -> Optional[str]:
+        response = self.send_request("model/list", {"limit": 100})
+        if response.get("error"):
+            return None
+        payload = response.get("result") or {}
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return None
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            if not entry.get("isDefault"):
+                continue
+            model = codex_app_server.as_non_empty_string(entry.get("model"))
+            if model:
+                return model
+        return None
+
     def run_turn(
         self,
         *,
         thread_id: str,
         prompt: str,
         model: Optional[str],
+        chat_mode: Optional[str] = None,
         cwd: Optional[str] = None,
         on_event: Optional[Callable[[codex_app_server.CodexAppServerTurnEvent], None]] = None,
         on_turn_started: Optional[Callable[[str], None]] = None,
@@ -358,8 +390,15 @@ class CodexAppServerClient:
             "sandboxPolicy": {"type": "dangerFullAccess"},
             "cwd": cwd or self.working_dir,
         }
-        if model:
-            params["model"] = model
+        effective_model = codex_app_server.as_non_empty_string(model)
+        if chat_mode is not None:
+            effective_model = effective_model or self.default_model()
+            if not effective_model:
+                raise RuntimeError("codex app-server turn/start requires a resolved model")
+            params["collaborationMode"] = _collaboration_mode_for_chat_mode(chat_mode, effective_model)
+            params["model"] = effective_model
+        elif effective_model:
+            params["model"] = effective_model
         response = request("turn/start", params)
         if response.get("error"):
             raise RuntimeError("codex app-server turn/start failed")

@@ -1,4 +1,8 @@
-import { applyConversationSnapshotToCache, EMPTY_PROJECT_CONVERSATION_CACHE_STATE } from '@/features/projects/model/projectsHomeState'
+import {
+  applyConversationSnapshotToCache,
+  applyConversationStreamEventToCache,
+  EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+} from '@/features/projects/model/projectsHomeState'
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
 
 const buildSnapshot = (
@@ -8,6 +12,7 @@ const buildSnapshot = (
   conversation_id: 'conversation-1',
   conversation_handle: '',
   project_path: '/tmp/project-contract-behavior',
+  chat_mode: 'chat',
   title: 'Contract behavior',
   created_at: '2026-03-06T15:00:00Z',
   updated_at: '2026-03-06T15:01:00Z',
@@ -87,5 +92,38 @@ describe('applyConversationSnapshotToCache', () => {
 
     expect(result.applied).toBe(true)
     expect(result.cache.snapshotsByConversationId[updatedSnapshot.conversation_id]?.event_log).toHaveLength(2)
+  })
+
+  it('updates cached chat_mode when a mode_change turn-upsert arrives', () => {
+    const initialSnapshot = buildSnapshot()
+    const cacheWithInitialSnapshot = applyConversationSnapshotToCache(
+      EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      initialSnapshot.project_path,
+      initialSnapshot,
+    ).cache
+
+    const result = applyConversationStreamEventToCache(
+      cacheWithInitialSnapshot,
+      initialSnapshot.project_path,
+      {
+        type: 'turn_upsert',
+        conversation_id: initialSnapshot.conversation_id,
+        project_path: initialSnapshot.project_path,
+        title: initialSnapshot.title,
+        updated_at: '2026-03-06T15:01:30Z',
+        turn: {
+          id: 'turn-mode-1',
+          role: 'system',
+          kind: 'mode_change',
+          status: 'complete',
+          content: 'plan',
+          timestamp: '2026-03-06T15:01:30Z',
+          artifact_id: null,
+        },
+      },
+    )
+
+    expect(result.snapshot?.chat_mode).toBe('plan')
+    expect(result.cache.snapshotsByConversationId[initialSnapshot.conversation_id]?.chat_mode).toBe('plan')
   })
 })

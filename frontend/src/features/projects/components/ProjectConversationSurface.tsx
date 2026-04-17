@@ -9,9 +9,11 @@ import {
     EmptyHeader,
 } from '@/components/ui/empty'
 import { Textarea } from '@/components/ui/textarea'
+import type { ConversationChatMode } from '@/lib/workspaceClient'
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
     activeProjectPath: string | null
+    activeChatMode: ConversationChatMode | null
     hasRenderableConversationHistory: boolean
     isConversationPinnedToBottom: boolean
     isNarrowViewport: boolean
@@ -31,6 +33,7 @@ interface ProjectConversationSurfaceProps {
 export function ProjectConversationSurface({
     activeProjectLabel,
     activeProjectPath,
+    activeChatMode,
     hasRenderableConversationHistory,
     isConversationPinnedToBottom,
     isNarrowViewport,
@@ -53,9 +56,19 @@ export function ProjectConversationSurface({
                 className={`gap-4 py-4 ${isNarrowViewport ? '' : 'flex h-full min-h-0 flex-col'}`}
             >
                 <CardHeader className="gap-1 px-4">
-                    <CardTitle className="text-sm">
-                        {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}
-                    </CardTitle>
+                    <div className="flex items-center justify-between gap-3">
+                        <CardTitle className="text-sm">
+                            {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}
+                        </CardTitle>
+                        {activeProjectPath && activeChatMode ? (
+                            <span
+                                data-testid="project-active-chat-mode-badge"
+                                className="inline-flex items-center rounded-full border border-border/70 bg-muted/40 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                            >
+                                {activeChatMode === 'plan' ? 'Plan mode' : 'Chat mode'}
+                            </span>
+                        ) : null}
+                    </div>
                 </CardHeader>
                 <CardContent className={`space-y-3 px-4 ${isNarrowViewport ? '' : 'flex min-h-0 flex-1 flex-col'}`}>
                 {panelError ? (

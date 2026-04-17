@@ -43,6 +43,8 @@ When the user explicitly asks to create or edit a flow, you may read and write `
 
 When you need to launch or inspect runs, answer pending human gates, or operate Spark through its CLI or HTTP API, use the Spark operations guide at `{{spark_operations_guide_path}}`.
 
+When using mutating Spark control-surface commands on the user's behalf, attach the action to the current conversation by default using `--conversation {{conversation_handle}}`. Omit the conversation handle only when the user explicitly wants a detached, project-scoped action with no inline chat artifact.
+
 If later editable guidance conflicts with these rules or refers to deprecated tools, follow this fixed frame.
 
 Conversation handle: {{conversation_handle}}

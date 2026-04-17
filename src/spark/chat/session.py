@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 import subprocess
 import threading
+import tomllib
 import uuid
 from typing import Any, Callable, Optional
 
@@ -19,6 +21,7 @@ from spark_common.codex_app_client import (
     CodexAppServerClient,
 )
 from spark_common import codex_app_server
+from spark_common.codex_runtime import build_codex_runtime_environment
 from spark_common.runtime_path import resolve_runtime_workspace_path
 
 
@@ -68,13 +71,17 @@ class CodexAppServerChatSession:
         working_dir: str,
         *,
         persisted_thread_id: Optional[str] = None,
+        persisted_model: Optional[str] = None,
         on_thread_id_updated: Optional[Callable[[str], None]] = None,
+        on_model_updated: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.requested_working_dir = normalize_project_path_value(working_dir)
         self.working_dir = resolve_runtime_workspace_path(working_dir)
         self._thread_id: Optional[str] = persisted_thread_id
+        self._model: Optional[str] = as_non_empty_string(persisted_model)
         self._thread_initialized = False
         self._on_thread_id_updated = on_thread_id_updated
+        self._on_model_updated = on_model_updated
         self._client = CodexAppServerClient(
             self.working_dir,
             requested_working_dir=self.requested_working_dir or self.working_dir,
@@ -109,6 +116,44 @@ class CodexAppServerChatSession:
         self._thread_id = normalized_thread_id
         if self._on_thread_id_updated is not None:
             self._on_thread_id_updated(normalized_thread_id)
+
+    def _set_model(self, model: Optional[str]) -> Optional[str]:
+        normalized_model = as_non_empty_string(model)
+        if not normalized_model:
+            return None
+        if normalized_model == self._model:
+            return normalized_model
+        self._model = normalized_model
+        if self._on_model_updated is not None:
+            self._on_model_updated(normalized_model)
+        return normalized_model
+
+    def _configured_runtime_model(self) -> Optional[str]:
+        env = build_codex_runtime_environment()
+        codex_home_value = str(env.get("CODEX_HOME", "")).strip()
+        if not codex_home_value:
+            return None
+        codex_home = Path(codex_home_value).expanduser()
+        config_path = codex_home / "config.toml"
+        try:
+            payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
+            return None
+        return as_non_empty_string(payload.get("model"))
+
+    def _resolve_turn_model(self, model: Optional[str]) -> str:
+        explicit_model = self._set_model(model)
+        if explicit_model is not None:
+            return explicit_model
+        if self._model is not None:
+            return self._model
+        configured_model = self._set_model(self._configured_runtime_model())
+        if configured_model is not None:
+            return configured_model
+        default_model = self._set_model(self._client.default_model())
+        if default_model is not None:
+            return default_model
+        raise RuntimeError("codex app-server model is unavailable for the chat session")
 
     def _ensure_thread(self, model: Optional[str]) -> None:
         if self._thread_initialized and self._thread_id:
@@ -149,11 +194,13 @@ class CodexAppServerChatSession:
         prompt: str,
         model: Optional[str],
         *,
+        chat_mode: str = "chat",
         on_event: Optional[Callable[[ChatTurnLiveEvent], None]] = None,
     ) -> ChatTurnResult:
         with self._lock:
             self._ensure_process()
-            self._ensure_thread(model)
+            effective_model = self._resolve_turn_model(model)
+            self._ensure_thread(effective_model)
             tool_calls_by_id: dict[str, ToolCallRecord] = {}
             current_app_turn_id: Optional[str] = None
             def _handle_turn_started(turn_id: str) -> None:
@@ -296,7 +343,8 @@ class CodexAppServerChatSession:
                 result = self._client.run_turn(
                     thread_id=self._thread_id or "",
                     prompt=prompt,
-                    model=model,
+                    model=effective_model,
+                    chat_mode=chat_mode,
                     cwd=self.working_dir,
                     on_event=_handle_normalized_event,
                     on_turn_started=_handle_turn_started,

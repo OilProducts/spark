@@ -37,6 +37,9 @@ from spark.workspace.conversations.models import (
     FlowRunRequest,
     PreparedChatTurn,
     ToolCallRecord,
+    normalize_chat_mode,
+    TURN_KIND_MODE_CHANGE,
+    validate_chat_mode,
 )
 from spark.workspace.conversations.repository import ProjectChatRepository
 from spark.workspace.conversations.utils import (
@@ -70,6 +73,17 @@ def _normalize_assistant_phase(value: Any) -> Optional[str]:
     if normalized == "commentary":
         return "commentary"
     return normalized
+
+
+def _build_mode_change_turn(chat_mode: str) -> ConversationTurn:
+    return ConversationTurn(
+        id=f"turn-{uuid.uuid4().hex}",
+        role="system",
+        content=chat_mode,
+        timestamp=_iso_now(),
+        status="complete",
+        kind=TURN_KIND_MODE_CHANGE,
+    )
 
 
 class ProjectChatService:
@@ -166,6 +180,14 @@ class ProjectChatService:
         thread_id: str,
     ) -> None:
         self._repository.persist_session_thread(conversation_id, project_path, thread_id)
+
+    def _persist_session_model(
+        self,
+        conversation_id: str,
+        project_path: str,
+        model: str,
+    ) -> None:
+        self._repository.persist_session_model(conversation_id, project_path, model)
 
     async def publish_snapshot(self, conversation_id: str) -> None:
         snapshot = self.get_snapshot(conversation_id)
@@ -411,12 +433,40 @@ class ProjectChatService:
             },
         )
 
+    def update_conversation_settings(
+        self,
+        conversation_id: str,
+        project_path: str,
+        chat_mode: str,
+    ) -> dict[str, Any]:
+        normalized_project_path = _normalize_project_path(project_path)
+        if not normalized_project_path:
+            raise ValueError("Project path is required.")
+        normalized_chat_mode = validate_chat_mode(chat_mode)
+        with self._lock:
+            state = self._read_state(conversation_id)
+            if state is None:
+                state = ConversationState(
+                    conversation_id=conversation_id,
+                    project_path=normalized_project_path,
+                )
+            elif state.project_path != normalized_project_path:
+                raise ValueError("Conversation is already bound to a different project path.")
+            current_chat_mode = normalize_chat_mode(state.chat_mode)
+            if normalized_chat_mode != current_chat_mode:
+                state.turns.append(_build_mode_change_turn(normalized_chat_mode))
+            state.chat_mode = normalized_chat_mode
+            self._touch_conversation_state(state)
+            self._write_state(state)
+            return state.to_dict()
+
     def _prepare_turn(
         self,
         conversation_id: str,
         project_path: str,
         message: str,
         model: Optional[str],
+        chat_mode: Optional[str] = None,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> tuple[PreparedChatTurn, dict[str, Any]]:
         normalized_project_path = _normalize_project_path(project_path)
@@ -426,11 +476,18 @@ class ProjectChatService:
         if not trimmed_message:
             raise ValueError("Message is required.")
         with self._lock:
-            state = self._read_state(conversation_id, normalized_project_path)
+            state = self._read_state(conversation_id)
             if state is None:
                 state = ConversationState(conversation_id=conversation_id, project_path=normalized_project_path)
             elif state.project_path != normalized_project_path:
                 raise ValueError("Conversation is already bound to a different project path.")
+            current_chat_mode = normalize_chat_mode(state.chat_mode)
+            effective_chat_mode = validate_chat_mode(chat_mode) if chat_mode is not None else current_chat_mode
+            mode_change_turn: ConversationTurn | None = None
+            if effective_chat_mode != current_chat_mode:
+                mode_change_turn = _build_mode_change_turn(effective_chat_mode)
+                state.turns.append(mode_change_turn)
+            state.chat_mode = effective_chat_mode
             active_assistant_turn = next(
                 (
                     turn
@@ -470,6 +527,8 @@ class ProjectChatService:
                 project_path=normalized_project_path,
                 turns=_summarize_turns_for_debug(state.turns),
             )
+            if mode_change_turn is not None:
+                self._publish_progress_payload(progress_callback, self._build_turn_upsert_payload(state, mode_change_turn))
             self._publish_progress_payload(progress_callback, self._build_turn_upsert_payload(state, user_turn))
             self._publish_progress_payload(progress_callback, self._build_turn_upsert_payload(state, assistant_turn))
         normalized_model = model.strip() if model else None
@@ -477,6 +536,7 @@ class ProjectChatService:
             PreparedChatTurn(
                 conversation_id=conversation_id,
                 project_path=normalized_project_path,
+                chat_mode=effective_chat_mode,
                 prompt=prompt,
                 model=normalized_model,
                 user_turn=user_turn,
@@ -552,6 +612,7 @@ class ProjectChatService:
                 return target_session.turn(
                     prepared.prompt,
                     prepared.model,
+                    chat_mode=prepared.chat_mode,
                     on_event=persist_live_event,
                 )
             finally:
@@ -657,7 +718,7 @@ class ProjectChatService:
                 failure = RuntimeError(error_message)
             else:
                 failure = None
-                emitted_payloads: list[dict[str, Any]] = []
+                emitted_payloads = []
                 turn_changed = (
                     current_assistant_turn.content != final_answer_segment.content
                     or current_assistant_turn.status != "complete"
@@ -671,13 +732,13 @@ class ProjectChatService:
                     emitted_payloads.append(self._build_turn_upsert_payload(state, current_assistant_turn))
                 self._touch_conversation_state(state)
                 self._write_state(state)
-                _log_project_chat_debug(
-                    "persisted final assistant turn",
-                    conversation_id=prepared.conversation_id,
-                    assistant_message=current_assistant_turn.content,
-                    turns=_summarize_turns_for_debug(state.turns),
-                )
                 snapshot = state.to_dict()
+            _log_project_chat_debug(
+                "persisted final assistant turn",
+                conversation_id=prepared.conversation_id,
+                assistant_message=current_assistant_turn.content,
+                turns=_summarize_turns_for_debug(state.turns),
+            )
         if failure is not None:
             self._persist_assistant_turn_failure(prepared, str(failure), progress_callback)
             raise failure
@@ -711,13 +772,20 @@ class ProjectChatService:
                 return session
             persisted_session = self._read_session_state(conversation_id, project_path)
             persisted_thread_id = persisted_session.thread_id if persisted_session is not None else None
+            persisted_model = persisted_session.model if persisted_session is not None else None
             session = CodexAppServerChatSession(
                 project_path,
                 persisted_thread_id=persisted_thread_id,
+                persisted_model=persisted_model,
                 on_thread_id_updated=lambda thread_id: self._persist_session_thread(
                     conversation_id,
                     project_path,
                     thread_id,
+                ),
+                on_model_updated=lambda model: self._persist_session_model(
+                    conversation_id,
+                    project_path,
+                    model,
                 ),
             )
             self._sessions[conversation_id] = session
@@ -729,6 +797,7 @@ class ProjectChatService:
         project_path: str,
         message: str,
         model: Optional[str],
+        chat_mode: Optional[str] = None,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> dict[str, Any]:
         prepared, snapshot = self._prepare_turn(
@@ -736,6 +805,7 @@ class ProjectChatService:
             project_path,
             message,
             model,
+            chat_mode,
             progress_callback,
         )
         worker = threading.Thread(
@@ -753,6 +823,7 @@ class ProjectChatService:
         project_path: str,
         message: str,
         model: Optional[str],
+        chat_mode: Optional[str] = None,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> dict[str, Any]:
         prepared, _ = self._prepare_turn(
@@ -760,6 +831,7 @@ class ProjectChatService:
             project_path,
             message,
             model,
+            chat_mode,
             progress_callback,
         )
         return self._run_prepared_turn(prepared, progress_callback)

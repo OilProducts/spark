@@ -4,6 +4,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 interface RunQuestionsPanelProps {
+    className?: string
     freeformAnswersByGateId: Record<string, string>
     groupedPendingInterviewGates: PendingInterviewGateGroup[]
     onFreeformAnswerChange: (questionId: string, value: string) => void
@@ -13,6 +14,7 @@ interface RunQuestionsPanelProps {
 }
 
 export function RunQuestionsPanel({
+    className,
     freeformAnswersByGateId,
     groupedPendingInterviewGates,
     onFreeformAnswerChange,
@@ -25,7 +27,10 @@ export function RunQuestionsPanel({
     }
 
     return (
-        <div data-testid="run-pending-human-gates-panel" className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+        <div
+            data-testid="run-pending-human-gates-panel"
+            className={`mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 ${className ?? ''}`.trim()}
+        >
             <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">
                 Pending Questions
             </div>

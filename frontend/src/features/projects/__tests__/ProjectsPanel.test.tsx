@@ -3820,4 +3820,375 @@ describe('ProjectsPanel', () => {
     })
   })
 
+  it('switches the active thread into plan mode without creating an optimistic user row', async () => {
+    const user = userEvent.setup()
+    const conversationSnapshots: Record<string, Record<string, unknown>> = {}
+    const settingsRequests: Array<{ conversationId: string; body: Record<string, unknown> }> = []
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        const conversationIdMatch = url.match(/\/api\/conversations\/([^/?]+)/)
+        const conversationId = conversationIdMatch ? decodeURIComponent(conversationIdMatch[1]!) : null
+        if (conversationId && init?.method === 'PUT' && url.includes('/settings')) {
+          const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>
+          settingsRequests.push({ conversationId, body })
+          const snapshot = withSnapshotSchema({
+            conversation_id: conversationId,
+            conversation_handle: '',
+            project_path: '/tmp/mode-project',
+            chat_mode: body.chat_mode === 'plan' ? 'plan' : 'chat',
+            title: 'New thread',
+            created_at: '2026-04-16T18:00:00Z',
+            updated_at: '2026-04-16T18:00:01Z',
+            turns: [
+              {
+                id: 'turn-mode-1',
+                role: 'system',
+                content: body.chat_mode === 'plan' ? 'plan' : 'chat',
+                timestamp: '2026-04-16T18:00:01Z',
+                status: 'complete',
+                kind: 'mode_change',
+                artifact_id: null,
+              },
+            ],
+            segments: [],
+            event_log: [],
+            flow_run_requests: [],
+            flow_launches: [],
+          })
+          conversationSnapshots[conversationId] = snapshot
+          return new Response(JSON.stringify(snapshot), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (conversationId && !url.includes('/turns')) {
+          const snapshot = conversationSnapshots[conversationId]
+          if (!snapshot) {
+            return new Response(JSON.stringify({ detail: 'Unknown conversation' }), { status: 404 })
+          }
+          return new Response(JSON.stringify(snapshot), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/mode-project')
+      useStore.getState().setActiveProjectPath('/tmp/mode-project')
+    })
+
+    renderProjectsPanel()
+
+    await user.type(screen.getByTestId('project-ai-conversation-input'), '/plan')
+    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+    })
+    expect(settingsRequests).toHaveLength(1)
+    expect(settingsRequests[0]?.body).toMatchObject({
+      project_path: '/tmp/mode-project',
+      chat_mode: 'plan',
+    })
+    const history = screen.getByTestId('project-ai-conversation-history-list')
+    expect(history).toHaveTextContent('Switched to Plan mode')
+    expect(history).not.toHaveTextContent('/plan')
+    expect(screen.getByTestId('run-pending-human-gates-panel')).toHaveTextContent('Pending Questions')
+    expect(screen.getByTestId('run-pending-human-gates-panel')).toHaveTextContent('Which planning path should I take for this change?')
+    expect(screen.getByTestId('run-pending-human-gates-panel')).toHaveTextContent('What context or constraints should the final plan preserve?')
+  })
+
+  it('restores the active-thread mode badge when switching back to a cached plan thread', async () => {
+    const user = userEvent.setup()
+    let threadAFetchCount = 0
+    let resolveThreadARestore: ((response: Response) => void) | null = null
+    const conversationSummaries = [
+      {
+        conversation_id: 'conversation-thread-a',
+        project_path: '/tmp/mode-project',
+        title: 'Planning thread',
+        created_at: '2026-04-16T18:00:00Z',
+        updated_at: '2026-04-16T18:10:00Z',
+        last_message_preview: 'Draft the implementation plan.',
+      },
+      {
+        conversation_id: 'conversation-thread-b',
+        project_path: '/tmp/mode-project',
+        title: 'Chat thread',
+        created_at: '2026-04-16T18:11:00Z',
+        updated_at: '2026-04-16T18:20:00Z',
+        last_message_preview: 'Answer directly.',
+      },
+    ]
+    const conversationSnapshots = {
+      'conversation-thread-a': withSnapshotSchema({
+        conversation_id: 'conversation-thread-a',
+        project_path: '/tmp/mode-project',
+        chat_mode: 'plan',
+        title: 'Planning thread',
+        created_at: '2026-04-16T18:00:00Z',
+        updated_at: '2026-04-16T18:10:00Z',
+        turns: [
+          {
+            id: 'turn-a-mode',
+            role: 'system',
+            kind: 'mode_change',
+            status: 'complete',
+            content: 'plan',
+            timestamp: '2026-04-16T18:00:01Z',
+          },
+          {
+            id: 'turn-a-1',
+            role: 'assistant',
+            kind: 'message',
+            status: 'complete',
+            content: 'Draft the implementation plan.',
+            timestamp: '2026-04-16T18:10:00Z',
+          },
+        ],
+        event_log: [],
+      }),
+      'conversation-thread-b': withSnapshotSchema({
+        conversation_id: 'conversation-thread-b',
+        project_path: '/tmp/mode-project',
+        chat_mode: 'chat',
+        title: 'Chat thread',
+        created_at: '2026-04-16T18:11:00Z',
+        updated_at: '2026-04-16T18:20:00Z',
+        turns: [
+          {
+            id: 'turn-b-1',
+            role: 'assistant',
+            kind: 'message',
+            status: 'complete',
+            content: 'Answer directly.',
+            timestamp: '2026-04-16T18:20:00Z',
+          },
+        ],
+        event_log: [],
+      }),
+    }
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return new Response(JSON.stringify(conversationSummaries), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        const conversationIdMatch = url.match(/\/api\/conversations\/([^/?]+)/)
+        const conversationId = conversationIdMatch ? decodeURIComponent(conversationIdMatch[1]!) : null
+        if (conversationId && !url.includes('/turns')) {
+          if (conversationId === 'conversation-thread-a') {
+            threadAFetchCount += 1
+            if (threadAFetchCount === 2) {
+              return new Promise<Response>((resolve) => {
+                resolveThreadARestore = resolve
+              })
+            }
+          }
+          return new Response(JSON.stringify(conversationSnapshots[conversationId as keyof typeof conversationSnapshots]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/mode-project')
+      useStore.getState().setActiveProjectPath('/tmp/mode-project')
+      useStore.getState().setConversationId('conversation-thread-a')
+    })
+
+    renderProjectsPanel()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Switched to Plan mode')
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Draft the implementation plan.')
+    })
+
+    await user.click(await screen.findByRole('button', { name: /Open thread Chat thread/i }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Chat mode')
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Answer directly.')
+    })
+
+    await user.click(screen.getByRole('button', { name: /Open thread Planning thread/i }))
+
+    await waitFor(() => {
+      expect(threadAFetchCount).toBe(2)
+      expect(resolveThreadARestore).not.toBeNull()
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Switched to Plan mode')
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Draft the implementation plan.')
+    })
+
+    resolveThreadARestore?.(
+      new Response(JSON.stringify(conversationSnapshots['conversation-thread-a']), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+    })
+  })
+
+  it('sends stripped plan-mode composer commands in a single turn request', async () => {
+    const user = userEvent.setup()
+    const turnRequests: Array<{ conversationId: string; body: Record<string, unknown> }> = []
+    const settingsRequests: Array<Record<string, unknown>> = []
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        const conversationIdMatch = url.match(/\/api\/conversations\/([^/?]+)/)
+        const conversationId = conversationIdMatch ? decodeURIComponent(conversationIdMatch[1]!) : null
+        if (conversationId && init?.method === 'PUT' && url.includes('/settings')) {
+          settingsRequests.push(JSON.parse(String(init.body || '{}')) as Record<string, unknown>)
+          return new Response(JSON.stringify({ detail: 'unexpected settings request' }), { status: 500 })
+        }
+        if (conversationId && init?.method === 'POST' && url.includes('/turns')) {
+          const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>
+          turnRequests.push({ conversationId, body })
+          return new Response(JSON.stringify(withSnapshotSchema({
+            conversation_id: conversationId,
+            conversation_handle: '',
+            project_path: '/tmp/mode-project',
+            chat_mode: 'plan',
+            title: 'New thread',
+            created_at: '2026-04-16T18:10:00Z',
+            updated_at: '2026-04-16T18:10:01Z',
+            turns: [
+              {
+                id: 'turn-mode-1',
+                role: 'system',
+                content: 'plan',
+                timestamp: '2026-04-16T18:09:59Z',
+                status: 'complete',
+                kind: 'mode_change',
+                artifact_id: null,
+              },
+              {
+                id: 'turn-user-1',
+                role: 'user',
+                content: 'Draft the settings endpoint.',
+                timestamp: '2026-04-16T18:10:00Z',
+                status: 'complete',
+                kind: 'message',
+                artifact_id: null,
+              },
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                content: '',
+                timestamp: '2026-04-16T18:10:01Z',
+                status: 'pending',
+                kind: 'message',
+                artifact_id: null,
+              },
+            ],
+            segments: [],
+            event_log: [],
+            flow_run_requests: [],
+            flow_launches: [],
+          })), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (conversationId && !url.includes('/turns')) {
+          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), { status: 404 })
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/mode-project')
+      useStore.getState().setActiveProjectPath('/tmp/mode-project')
+    })
+
+    renderProjectsPanel()
+
+    await user.type(screen.getByTestId('project-ai-conversation-input'), '/plan Draft the settings endpoint.')
+    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+    })
+    expect(settingsRequests).toEqual([])
+    expect(turnRequests).toHaveLength(1)
+    expect(turnRequests[0]?.body).toMatchObject({
+      project_path: '/tmp/mode-project',
+      message: 'Draft the settings endpoint.',
+      chat_mode: 'plan',
+    })
+    const history = screen.getByTestId('project-ai-conversation-history-list')
+    expect(history).toHaveTextContent('Switched to Plan mode')
+    expect(history).toHaveTextContent('Draft the settings endpoint.')
+    expect(history).not.toHaveTextContent('/plan Draft the settings endpoint.')
+    expect((history.textContent || '').indexOf('Switched to Plan mode')).toBeLessThan(
+      (history.textContent || '').indexOf('Draft the settings endpoint.'),
+    )
+  })
+
 })

@@ -10,6 +10,11 @@ from typing import Any, Optional
 
 CHAT_SESSION_VERSION = 2
 CONVERSATION_STATE_SCHEMA_VERSION = 4
+CHAT_MODE_CHAT = "chat"
+CHAT_MODE_PLAN = "plan"
+CHAT_MODES = frozenset({CHAT_MODE_CHAT, CHAT_MODE_PLAN})
+TURN_KIND_MESSAGE = "message"
+TURN_KIND_MODE_CHANGE = "mode_change"
 
 
 def _iso_now() -> str:
@@ -37,9 +42,27 @@ def _truncate_text(value: str, limit: int) -> str:
     return collapsed[: max(0, limit - 1)].rstrip() + "…"
 
 
+def normalize_chat_mode(value: Any) -> str:
+    if not isinstance(value, str):
+        return CHAT_MODE_CHAT
+    normalized = value.strip().lower()
+    if normalized in CHAT_MODES:
+        return normalized
+    return CHAT_MODE_CHAT
+
+
+def validate_chat_mode(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Chat mode must be 'chat' or 'plan'.")
+    normalized = value.strip().lower()
+    if normalized not in CHAT_MODES:
+        raise ValueError("Chat mode must be 'chat' or 'plan'.")
+    return normalized
+
+
 def _derive_conversation_title(turns: list["ConversationTurn"]) -> str:
     for turn in turns:
-        if turn.role != "user":
+        if turn.kind != TURN_KIND_MESSAGE or turn.role != "user":
             continue
         title = _truncate_text(turn.content, 64)
         if title:
@@ -49,6 +72,8 @@ def _derive_conversation_title(turns: list["ConversationTurn"]) -> str:
 
 def _build_conversation_preview(turns: list["ConversationTurn"]) -> Optional[str]:
     for turn in reversed(turns):
+        if turn.kind != TURN_KIND_MESSAGE:
+            continue
         preview = _truncate_text(turn.content, 120)
         if preview:
             return preview
@@ -62,7 +87,7 @@ class ConversationTurn:
     content: str
     timestamp: str
     status: str = "complete"
-    kind: str = "message"
+    kind: str = TURN_KIND_MESSAGE
     artifact_id: Optional[str] = None
     parent_turn_id: Optional[str] = None
     error: Optional[str] = None
@@ -92,7 +117,7 @@ class ConversationTurn:
             content=str(payload.get("content", "")),
             timestamp=str(payload.get("timestamp", "")),
             status=str(payload.get("status", "complete") or "complete"),
-            kind=str(payload.get("kind", "message") or "message"),
+            kind=str(payload.get("kind", TURN_KIND_MESSAGE) or TURN_KIND_MESSAGE),
             artifact_id=str(payload.get("artifact_id")) if payload.get("artifact_id") is not None else None,
             parent_turn_id=str(payload.get("parent_turn_id")) if payload.get("parent_turn_id") is not None else None,
             error=str(payload.get("error")) if payload.get("error") is not None else None,
@@ -160,6 +185,7 @@ class ChatTurnResult:
 class PreparedChatTurn:
     conversation_id: str
     project_path: str
+    chat_mode: str
     prompt: str
     model: Optional[str]
     user_turn: "ConversationTurn"
@@ -422,6 +448,7 @@ class FlowLaunch:
 class ConversationState:
     conversation_id: str
     project_path: str
+    chat_mode: str = CHAT_MODE_CHAT
     conversation_handle: str = ""
     title: str = "New thread"
     created_at: str = ""
@@ -439,6 +466,7 @@ class ConversationState:
             "conversation_id": self.conversation_id,
             "conversation_handle": self.conversation_handle,
             "project_path": self.project_path,
+            "chat_mode": self.chat_mode,
             "title": self.title,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -480,6 +508,7 @@ class ConversationState:
             conversation_id=str(payload.get("conversation_id", "")),
             conversation_handle=str(payload.get("conversation_handle", "") or ""),
             project_path=_normalize_project_path(str(payload.get("project_path", ""))),
+            chat_mode=normalize_chat_mode(payload.get("chat_mode")),
             title=_as_non_empty_string(payload.get("title")) or _derive_conversation_title(turns),
             created_at=created_at or _iso_now(),
             updated_at=updated_at or created_at or _iso_now(),
@@ -540,6 +569,7 @@ class ConversationSessionState:
     runtime_project_path: str
     session_version: int = CHAT_SESSION_VERSION
     thread_id: Optional[str] = None
+    model: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -551,6 +581,8 @@ class ConversationSessionState:
         }
         if self.thread_id:
             payload["thread_id"] = self.thread_id
+        if self.model:
+            payload["model"] = self.model
         return payload
 
     @classmethod
@@ -567,6 +599,7 @@ class ConversationSessionState:
             runtime_project_path=_normalize_project_path(str(payload.get("runtime_project_path", ""))),
             session_version=session_version,
             thread_id=str(payload.get("thread_id")) if payload.get("thread_id") is not None else None,
+            model=_as_non_empty_string(payload.get("model")),
         )
 
 

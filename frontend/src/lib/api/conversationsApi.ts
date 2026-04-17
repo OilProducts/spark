@@ -14,11 +14,13 @@ export interface ConversationTurnResponse {
     content: string
     timestamp: string
     status: 'pending' | 'streaming' | 'complete' | 'failed'
-    kind: 'message' | 'flow_run_request' | 'flow_launch'
+    kind: 'message' | 'mode_change' | 'flow_run_request' | 'flow_launch'
     artifact_id?: string | null
     parent_turn_id?: string | null
     error?: string | null
 }
+
+export type ConversationChatMode = 'chat' | 'plan'
 
 export interface ConversationSegmentResponse {
     id: string
@@ -98,6 +100,7 @@ export interface ConversationSnapshotResponse {
     conversation_id: string
     conversation_handle?: string | null
     project_path: string
+    chat_mode: ConversationChatMode
     title: string
     created_at: string
     updated_at: string
@@ -158,7 +161,10 @@ function parseConversationTurnResponse(value: unknown): ConversationTurnResponse
     if (role !== 'user' && role !== 'assistant' && role !== 'system') {
         return null
     }
-    const kind = record.kind === 'flow_run_request' || record.kind === 'flow_launch' || record.kind === 'message'
+    const kind = record.kind === 'flow_run_request'
+        || record.kind === 'flow_launch'
+        || record.kind === 'mode_change'
+        || record.kind === 'message'
         ? record.kind
         : 'message'
     if (typeof record.id !== 'string' || typeof record.content !== 'string' || typeof record.timestamp !== 'string') {
@@ -434,6 +440,7 @@ export function parseConversationSnapshotResponse(
         conversation_id: expectString(record.conversation_id, endpoint, 'conversation_id'),
         conversation_handle: asOptionalNullableString(record.conversation_handle),
         project_path: expectString(record.project_path, endpoint, 'project_path'),
+        chat_mode: record.chat_mode === 'plan' ? 'plan' : 'chat',
         title: asOptionalString(record.title) || 'New thread',
         created_at: asOptionalString(record.created_at) || '',
         updated_at: asOptionalString(record.updated_at) || asOptionalString(record.created_at) || '',
@@ -533,7 +540,7 @@ export async function deleteConversationValidated(
 
 export async function sendConversationTurnValidated(
     conversationId: string,
-    payload: { project_path: string; message: string; model?: string | null },
+    payload: { project_path: string; message: string; model?: string | null; chat_mode?: ConversationChatMode | null },
 ): Promise<ConversationSnapshotResponse> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/turns`,
@@ -543,6 +550,22 @@ export async function sendConversationTurnValidated(
             body: JSON.stringify(payload),
         },
         '/workspace/api/conversations/{id}/turns',
+        parseConversationSnapshotResponse,
+    )
+}
+
+export async function updateConversationSettingsValidated(
+    conversationId: string,
+    payload: { project_path: string; chat_mode: ConversationChatMode },
+): Promise<ConversationSnapshotResponse> {
+    return fetchWorkspaceJsonValidated(
+        `/conversations/${encodeURIComponent(conversationId)}/settings`,
+        {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        },
+        '/workspace/api/conversations/{id}/settings',
         parseConversationSnapshotResponse,
     )
 }

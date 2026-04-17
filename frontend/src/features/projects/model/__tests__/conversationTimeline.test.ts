@@ -6,6 +6,7 @@ const snapshot: ConversationSnapshotResponse = {
   conversation_id: 'conversation-1',
   conversation_handle: 'thread-1',
   project_path: '/tmp/project-a',
+  chat_mode: 'chat',
   title: 'Test conversation',
   created_at: '2026-03-10T10:00:00Z',
   updated_at: '2026-03-10T10:01:00Z',
@@ -46,7 +47,7 @@ const snapshot: ConversationSnapshotResponse = {
       source: null,
       tool_call: {
         id: 'tool-1',
-        kind: 'command',
+        kind: 'command_execution',
         status: 'completed',
         title: 'Run tests',
         command: 'pytest -q',
@@ -104,4 +105,36 @@ describe('buildConversationTimelineEntries', () => {
       }),
     ])
   })
+
+  it('includes mode_change entries in chronological order', () => {
+    const timeline = buildConversationTimelineEntries({
+      ...snapshot,
+      chat_mode: 'plan',
+      turns: [
+        {
+          id: 'turn-mode',
+          role: 'system',
+          content: 'plan',
+          timestamp: '2026-03-10T09:59:59Z',
+          kind: 'mode_change',
+          status: 'complete',
+          artifact_id: null,
+        },
+        ...snapshot.turns,
+      ],
+    }, null)
+
+    expect(timeline.slice(0, 2)).toEqual([
+      expect.objectContaining({
+        kind: 'mode_change',
+        mode: 'plan',
+      }),
+      expect.objectContaining({
+        kind: 'message',
+        role: 'user',
+        content: 'Do the thing.',
+      }),
+    ])
+  })
+
 })

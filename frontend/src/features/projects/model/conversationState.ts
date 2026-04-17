@@ -25,6 +25,7 @@ export function ensureConversationSnapshotShell(
         conversation_id: conversationId,
         conversation_handle: '',
         project_path: projectPath,
+        chat_mode: 'chat',
         title,
         created_at: '',
         updated_at: '',

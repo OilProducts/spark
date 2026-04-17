@@ -43,7 +43,7 @@ def as_non_empty_string(value: Any) -> Optional[str]:
 
 def derive_conversation_title(turns: list["ConversationTurn"]) -> str:
     for turn in turns:
-        if turn.role != "user":
+        if turn.kind != "message" or turn.role != "user":
             continue
         title = as_non_empty_string(turn.content)
         if title:

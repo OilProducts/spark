@@ -5,16 +5,67 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { ProjectConversationHistory } from '@/features/projects/components/ProjectConversationHistory'
 import type { ConversationTimelineEntry } from '@/features/projects/model/types'
+import type { PendingInterviewGateGroup } from '@/features/runs/model/shared'
 
 const formatConversationTimestamp = (value: string) => `formatted:${value}`
 
-const renderHistory = (activeConversationHistory: ConversationTimelineEntry[]) =>
+const pendingQuestionPreviewGroups: PendingInterviewGateGroup[] = [
+    {
+        key: 'preview-group',
+        heading: 'Preview request_user_input',
+        gates: [
+            {
+                eventId: 'gate-multiple-choice',
+                sequence: 1,
+                receivedAt: '2026-04-17T12:00:00Z',
+                nodeId: null,
+                stageIndex: null,
+                sourceScope: 'root',
+                sourceParentNodeId: null,
+                sourceFlowName: null,
+                prompt: 'Which path should I take?',
+                questionId: 'gate-multiple-choice',
+                questionType: 'MULTIPLE_CHOICE',
+                options: [
+                    {
+                        label: 'Inline card only',
+                        value: 'inline-card',
+                        key: 'A',
+                        description: 'Keep the request inside the timeline.',
+                    },
+                ],
+            },
+            {
+                eventId: 'gate-freeform',
+                sequence: 2,
+                receivedAt: '2026-04-17T12:00:10Z',
+                nodeId: null,
+                stageIndex: null,
+                sourceScope: 'root',
+                sourceParentNodeId: null,
+                sourceFlowName: null,
+                prompt: 'What constraints matter?',
+                questionId: 'gate-freeform',
+                questionType: 'FREEFORM',
+                options: [],
+            },
+        ],
+    },
+]
+
+const renderHistory = (
+    activeConversationHistory: ConversationTimelineEntry[],
+    overrides: {
+        pendingQuestionPreviewGroups?: PendingInterviewGateGroup[]
+    } = {},
+) =>
     render(
         <ProjectConversationHistory
             activeConversationId="conversation-1"
             isConversationHistoryLoading={false}
             hasRenderableConversationHistory={activeConversationHistory.length > 0}
             activeConversationHistory={activeConversationHistory}
+            pendingQuestionPreviewGroups={overrides.pendingQuestionPreviewGroups ?? []}
             activeFlowRunRequestsById={new Map()}
             activeFlowLaunchesById={new Map()}
             latestFlowRunRequestId={null}
@@ -44,6 +95,7 @@ const InteractiveHistory = ({
             isConversationHistoryLoading={false}
             hasRenderableConversationHistory
             activeConversationHistory={activeConversationHistory}
+            pendingQuestionPreviewGroups={[]}
             activeFlowRunRequestsById={new Map()}
             activeFlowLaunchesById={new Map()}
             latestFlowRunRequestId={null}
@@ -101,6 +153,16 @@ const makeToolCallEntry = (
     },
 })
 
+const makeModeChangeEntry = (
+    overrides: Partial<Extract<ConversationTimelineEntry, { kind: 'mode_change' }>> = {},
+): Extract<ConversationTimelineEntry, { kind: 'mode_change' }> => ({
+    id: overrides.id ?? 'mode-change-1',
+    kind: 'mode_change',
+    role: 'system',
+    timestamp: overrides.timestamp ?? '2026-04-16T15:27:47Z',
+    mode: overrides.mode ?? 'plan',
+})
+
 describe('ProjectConversationHistory', () => {
     it('renders markdown semantics for normal assistant messages', () => {
         renderHistory([
@@ -127,6 +189,39 @@ describe('ProjectConversationHistory', () => {
         const codeBlock = history.querySelector('pre > code')
         expect(codeBlock).not.toBeNull()
         expect(codeBlock).toHaveTextContent('npm test')
+    })
+
+    it('renders mode-change rows as centered inline system markers', () => {
+        renderHistory([
+            makeModeChangeEntry(),
+        ])
+
+        const row = screen.getByTestId('project-mode-change-row-mode-change-1')
+        expect(within(row).getByText('Switched to Plan mode')).toBeVisible()
+    })
+
+    it('renders the pending-questions preview inline and keeps answers local', async () => {
+        const user = userEvent.setup()
+
+        renderHistory([
+            makeModeChangeEntry(),
+        ], {
+            pendingQuestionPreviewGroups,
+        })
+
+        const previewPanel = screen.getByTestId('run-pending-human-gates-panel')
+        expect(within(previewPanel).getByText('Pending Questions')).toBeVisible()
+        expect(within(previewPanel).getByText('Which path should I take?')).toBeVisible()
+        expect(within(previewPanel).getByText('What constraints matter?')).toBeVisible()
+        expect(screen.getByTestId('project-pending-questions-preview-note')).toHaveTextContent(
+            'Preview only. Answers stay local to this browser session and are not sent.',
+        )
+
+        await user.click(screen.getByTestId('run-pending-human-gate-answer-inline-card'))
+
+        expect(screen.getByTestId('project-pending-questions-preview-answer')).toHaveTextContent(
+            'Preview captured for gate-multiple-choice: inline-card',
+        )
     })
 
     it('renders assistant markdown links as plain labels without anchors', () => {

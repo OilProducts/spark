@@ -53,6 +53,12 @@ class ConversationTurnRequest(BaseModel):
     project_path: str
     message: str
     model: Optional[str] = None
+    chat_mode: Optional[str] = None
+
+
+class ConversationSettingsRequest(BaseModel):
+    project_path: str
+    chat_mode: str
 
 
 class ProjectRegistrationRequest(BaseModel):
@@ -340,6 +346,18 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             return await asyncio.to_thread(deps.get_project_chat().get_snapshot, conversation_id, project_path)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown conversation: {conversation_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.put("/api/conversations/{conversation_id}/settings")
+    async def update_project_conversation_settings(conversation_id: str, req: ConversationSettingsRequest):
+        try:
+            return await asyncio.to_thread(
+                deps.get_project_chat().update_conversation_settings,
+                conversation_id,
+                req.project_path,
+                req.chat_mode,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -644,6 +662,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
                 req.project_path,
                 req.message,
                 req.model,
+                req.chat_mode,
                 publish_progress_event,
             )
         except ValueError as exc:

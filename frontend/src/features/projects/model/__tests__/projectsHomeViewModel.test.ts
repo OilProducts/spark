@@ -8,6 +8,7 @@ const snapshot: ConversationSnapshotResponse = {
   conversation_id: 'conversation-1',
   conversation_handle: 'thread-1',
   project_path: '/tmp/project-alpha',
+  chat_mode: 'chat',
   title: 'Conversation',
   created_at: '2026-03-24T18:00:00Z',
   updated_at: '2026-03-24T18:01:00Z',
@@ -124,6 +125,7 @@ describe('buildProjectsHomeViewModel', () => {
     })
 
     expect(viewModel.activeProjectLabel).toBe('project-alpha')
+    expect(viewModel.activeChatMode).toBe('chat')
     expect(viewModel.activeProjectGitMetadata).toEqual({
       branch: 'main',
       commit: 'abc123',

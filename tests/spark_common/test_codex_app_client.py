@@ -131,7 +131,7 @@ def test_shared_client_run_turn_drains_notifications_queued_during_turn_start_re
     result = client.run_turn(
         thread_id="thread-123",
         prompt="hello",
-        model=None,
+        model="gpt-test",
         on_event=emitted_events.append,
     )
 
@@ -176,10 +176,110 @@ def test_shared_client_run_turn_requires_turn_completed_after_final_answer() -> 
         client.run_turn(
             thread_id="thread-123",
             prompt="hello",
-            model=None,
+            model="gpt-test",
             idle_timeout_seconds=1.0,
             now=lambda: next(monotonic_values),
         )
+
+
+@pytest.mark.parametrize(
+    ("chat_mode", "expected_collaboration_mode"),
+    [
+        (
+            "chat",
+            {
+                "mode": "default",
+                "settings": {
+                    "model": "gpt-test",
+                },
+            },
+        ),
+        (
+            "plan",
+            {
+                "mode": "plan",
+                "settings": {
+                    "model": "gpt-test",
+                },
+            },
+        ),
+    ],
+)
+def test_shared_client_run_turn_includes_collaboration_mode(
+    chat_mode: str,
+    expected_collaboration_mode: dict[str, object],
+) -> None:
+    client = CodexAppServerClient("/tmp/project")
+    sent_requests: list[tuple[str, dict[str, object] | None]] = []
+    messages = iter(
+        [
+            {
+                "jsonrpc": "2.0",
+                "method": "item/completed",
+                "params": {
+                    "turnId": "turn-123",
+                    "item": {
+                        "type": "AgentMessage",
+                        "id": "msg-1",
+                        "content": [{"type": "Text", "text": "Ack"}],
+                        "phase": "final_answer",
+                    },
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-123", "status": "completed"}},
+            },
+        ]
+    )
+
+    result = client.run_turn(
+        thread_id="thread-123",
+        prompt="hello",
+        model="gpt-test",
+        chat_mode=chat_mode,
+        send_request=lambda method, params: sent_requests.append((method, params))
+        or {"result": {"turn": {"id": "turn-123", "status": "inProgress"}}},
+        next_message=lambda wait: next(messages, None),
+    )
+
+    assert result.assistant_message == "Ack"
+    assert sent_requests == [
+        (
+            "turn/start",
+            {
+                "threadId": "thread-123",
+                "input": [{"type": "text", "text": "hello"}],
+                "collaborationMode": expected_collaboration_mode,
+                "approvalPolicy": "never",
+                "sandboxPolicy": {"type": "dangerFullAccess"},
+                "cwd": "/tmp/project",
+                "model": "gpt-test",
+            },
+        )
+    ]
+
+
+def test_shared_client_default_model_reads_default_entry_from_model_list() -> None:
+    client = CodexAppServerClient("/tmp/project")
+
+    client.send_request = lambda method, params, **kwargs: {  # type: ignore[method-assign]
+        "result": {
+            "data": [
+                {
+                    "model": "gpt-alt",
+                    "isDefault": False,
+                },
+                {
+                    "model": "gpt-default",
+                    "isDefault": True,
+                },
+            ]
+        }
+    }
+
+    assert client.default_model() == "gpt-default"
 
 
 def test_shared_client_run_turn_exposes_structured_token_usage_payload() -> None:
@@ -211,7 +311,7 @@ def test_shared_client_run_turn_exposes_structured_token_usage_payload() -> None
     result = client.run_turn(
         thread_id="thread-123",
         prompt="hello",
-        model=None,
+        model="gpt-test",
     )
 
     assert result.token_total == 16
@@ -266,7 +366,7 @@ def test_shared_client_run_turn_counts_unparsed_lines_as_activity() -> None:
     result = client.run_turn(
         thread_id="thread-123",
         prompt="hello",
-        model=None,
+        model="gpt-test",
         idle_timeout_seconds=0.08,
         send_request=lambda method, params: {"result": {"turn": {"id": "turn-123", "status": "inProgress"}}},
         now=lambda: next(monotonic_values),
@@ -307,7 +407,7 @@ def test_shared_client_run_turn_ignores_non_matching_turn_completed() -> None:
     result = client.run_turn(
         thread_id="thread-123",
         prompt="hello",
-        model=None,
+        model="gpt-test",
         on_event=emitted_events.append,
     )
 
@@ -354,5 +454,5 @@ def test_shared_client_run_turn_raises_when_process_exits_before_completion() ->
         client.run_turn(
             thread_id="thread-123",
             prompt="hello",
-            model=None,
+            model="gpt-test",
         )

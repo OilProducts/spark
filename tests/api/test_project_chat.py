@@ -64,6 +64,7 @@ class StubChatClient:
         self.run_turn_calls: list[dict[str, Any]] = []
         self.resume_result: Optional[str] = None
         self.start_result: str = "thread-123"
+        self.default_model_result: Optional[str] = "gpt-test"
         self.run_turn_handler: Optional[Callable[..., CodexAppServerTurnResult]] = None
         self.raw_logger = None
         self.closed = False
@@ -103,6 +104,9 @@ class StubChatClient:
         if self.run_turn_handler is not None:
             return self.run_turn_handler(**kwargs)
         return _completed_turn_result(thread_id=kwargs["thread_id"])
+
+    def default_model(self) -> Optional[str]:
+        return self.default_model_result
 
     def set_raw_rpc_logger(self, callback) -> None:
         self.raw_logger = callback
@@ -222,6 +226,8 @@ def test_project_chat_prompt_includes_flow_authoring_boundary(tmp_path: Path) ->
     assert f"flow library at `{(tmp_path / 'flows').resolve(strict=False)}`" in prompt
     assert f"`{dot_authoring_guide_path()}`" in prompt
     assert f"`{spark_operations_guide_path()}`" in prompt
+    assert "`--conversation amber-otter`" in prompt
+    assert "detached, project-scoped action with no inline chat artifact" in prompt
     assert "spark flow validate --file <path> --text" in prompt
 
 
@@ -580,6 +586,7 @@ def test_conversation_session_state_round_trips(tmp_path: Path) -> None:
         project_path="/tmp/project",
         runtime_project_path="/runtime/project",
         thread_id="thread-123",
+        model="gpt-5.4",
     )
 
     service._write_session_state(session_state)
@@ -588,6 +595,7 @@ def test_conversation_session_state_round_trips(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.conversation_id == "conversation-test"
     assert loaded.thread_id == "thread-123"
+    assert loaded.model == "gpt-5.4"
     assert loaded.project_path == project_chat._normalize_project_path("/tmp/project")
     assert loaded.runtime_project_path == project_chat._normalize_project_path("/runtime/project")
     assert project_paths.project_file.exists()
@@ -602,12 +610,14 @@ def test_build_session_restores_persisted_thread_id(tmp_path: Path) -> None:
             project_path="/tmp/project",
             runtime_project_path="/runtime/project",
             thread_id="thread-restored",
+            model="gpt-5.4",
         )
     )
 
     session = service._build_session("conversation-test", "/tmp/project")
 
     assert session._thread_id == "thread-restored"
+    assert session._model == "gpt-5.4"
 
 
 def test_chat_session_resumes_persisted_thread_before_starting(monkeypatch) -> None:
@@ -668,6 +678,20 @@ def test_chat_session_reuses_initialized_thread_across_turns(monkeypatch) -> Non
     assert len(client.resume_calls) == 1
     assert client.start_calls == []
     assert [call["thread_id"] for call in client.run_turn_calls] == ["thread-existing", "thread-existing"]
+
+
+def test_chat_session_turn_forwards_chat_mode_to_run_turn(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    client = StubChatClient()
+    client.resume_result = "thread-existing"
+    client.run_turn_handler = lambda **kwargs: _completed_turn_result(thread_id=kwargs["thread_id"])
+    session._client = client
+    session._thread_id = "thread-existing"
+
+    result = session.turn("hello", None, chat_mode="plan")
+
+    assert result.assistant_message == "Ack"
+    assert client.run_turn_calls[0]["chat_mode"] == "plan"
 
 
 def test_chat_session_surfaces_reasoning_summary_progress(monkeypatch) -> None:
@@ -786,6 +810,7 @@ def test_send_turn_marks_assistant_failed_after_timeout_without_retry(tmp_path: 
             prompt: str,
             model: str | None,
             *,
+            chat_mode: str = "chat",
             on_event=None,
             on_dynamic_tool_call=None,
         ) -> project_chat.ChatTurnResult:
@@ -906,6 +931,7 @@ def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch
             prompt: str,
             model: str | None,
             *,
+            chat_mode: str = "chat",
             on_event=None,
             on_dynamic_tool_call=None,
         ) -> project_chat.ChatTurnResult:
@@ -933,6 +959,173 @@ def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch
     assert snapshot["turns"][-1]["role"] == "assistant"
     assert snapshot["turns"][-1]["status"] == "complete"
     assert snapshot["turns"][-1]["content"] == "This looks like a Collatz implementation project."
+
+
+def test_update_conversation_settings_upserts_shell_and_persists_chat_mode(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+
+    snapshot = service.update_conversation_settings("conversation-settings", str(tmp_path), "plan")
+
+    assert snapshot["conversation_id"] == "conversation-settings"
+    assert snapshot["chat_mode"] == "plan"
+    assert snapshot["turns"] == [
+        {
+            "id": snapshot["turns"][0]["id"],
+            "role": "system",
+            "content": "plan",
+            "timestamp": snapshot["turns"][0]["timestamp"],
+            "status": "complete",
+            "kind": "mode_change",
+        }
+    ]
+    reloaded = service.get_snapshot("conversation-settings", str(tmp_path))
+    assert reloaded["chat_mode"] == "plan"
+    assert [turn["kind"] for turn in reloaded["turns"]] == ["mode_change"]
+
+
+def test_update_conversation_settings_does_not_duplicate_mode_change_when_mode_matches(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+
+    first = service.update_conversation_settings("conversation-settings", str(tmp_path), "plan")
+    second = service.update_conversation_settings("conversation-settings", str(tmp_path), "plan")
+
+    assert first["chat_mode"] == "plan"
+    assert second["chat_mode"] == "plan"
+    assert [turn["kind"] for turn in second["turns"]] == ["mode_change"]
+    assert second["turns"][0]["content"] == "plan"
+
+
+def test_send_turn_persists_mode_change_turn_before_user_turn_when_chat_mode_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    captured_chat_modes: list[str] = []
+
+    class PlainTextSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            captured_chat_modes.append(chat_mode)
+            if on_event is not None:
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="assistant_completed",
+                        content_delta="Plan mode acknowledged.",
+                        app_turn_id="app-turn-1",
+                        item_id="msg-1",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Plan mode acknowledged.")
+
+        def _close(self) -> None:
+            return None
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: PlainTextSession())
+
+    snapshot = service.send_turn(
+        "conversation-mode-switch",
+        str(tmp_path),
+        "Acknowledge the plan mode switch.",
+        None,
+        "plan",
+    )
+
+    assert snapshot["chat_mode"] == "plan"
+    assert [turn["kind"] for turn in snapshot["turns"]] == ["mode_change", "message", "message"]
+    assert [turn["role"] for turn in snapshot["turns"]] == ["system", "user", "assistant"]
+    assert snapshot["turns"][0]["content"] == "plan"
+    assert snapshot["turns"][1]["content"] == "Acknowledge the plan mode switch."
+    assert snapshot["turns"][2]["content"] == "Plan mode acknowledged."
+    assert captured_chat_modes == ["plan"]
+
+
+def test_send_turn_uses_persisted_plan_chat_mode_for_execution(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    captured_chat_modes: list[str] = []
+
+    class PlainTextSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            captured_chat_modes.append(chat_mode)
+            if on_event is not None:
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="assistant_completed",
+                        content_delta="Still in plan mode.",
+                        app_turn_id="app-turn-1",
+                        item_id="msg-1",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Still in plan mode.")
+
+    service.update_conversation_settings("conversation-persisted-plan", str(tmp_path), "plan")
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: PlainTextSession())
+
+    snapshot = service.send_turn(
+        "conversation-persisted-plan",
+        str(tmp_path),
+        "Continue the plan.",
+        None,
+    )
+
+    assert snapshot["chat_mode"] == "plan"
+    assert captured_chat_modes == ["plan"]
+
+
+def test_send_turn_passes_default_chat_mode_for_execution(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    captured_chat_modes: list[str] = []
+
+    class PlainTextSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            captured_chat_modes.append(chat_mode)
+            if on_event is not None:
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="assistant_completed",
+                        content_delta="Default chat mode.",
+                        app_turn_id="app-turn-1",
+                        item_id="msg-1",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Default chat mode.")
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: PlainTextSession())
+
+    snapshot = service.send_turn(
+        "conversation-default-chat",
+        str(tmp_path),
+        "Say hello.",
+        None,
+    )
+
+    assert snapshot["chat_mode"] == "chat"
+    assert captured_chat_modes == ["chat"]
 
 
 def test_create_flow_run_request_places_artifact_on_latest_assistant_turn(tmp_path: Path) -> None:
@@ -1461,10 +1654,20 @@ def test_build_session_ignores_unsupported_persisted_thread_state(tmp_path: Path
 
     captured: dict[str, object] = {}
 
-    def fake_init(self, working_dir: str, *, persisted_thread_id=None, on_thread_id_updated=None):
+    def fake_init(
+        self,
+        working_dir: str,
+        *,
+        persisted_thread_id=None,
+        persisted_model=None,
+        on_thread_id_updated=None,
+        on_model_updated=None,
+    ):
         captured["working_dir"] = working_dir
         captured["persisted_thread_id"] = persisted_thread_id
+        captured["persisted_model"] = persisted_model
         captured["on_thread_id_updated"] = on_thread_id_updated
+        captured["on_model_updated"] = on_model_updated
 
     monkeypatch.setattr(project_chat.CodexAppServerChatSession, "__init__", fake_init)
 
@@ -1472,6 +1675,7 @@ def test_build_session_ignores_unsupported_persisted_thread_state(tmp_path: Path
 
     assert captured["working_dir"] == project_path
     assert captured["persisted_thread_id"] is None
+    assert captured["persisted_model"] is None
 
 
 def test_send_turn_writes_raw_jsonrpc_log(tmp_path: Path, monkeypatch) -> None:
@@ -1492,6 +1696,7 @@ def test_send_turn_writes_raw_jsonrpc_log(tmp_path: Path, monkeypatch) -> None:
             prompt: str,
             model: str | None,
             *,
+            chat_mode: str = "chat",
             on_event=None,
             on_dynamic_tool_call=None,
         ) -> project_chat.ChatTurnResult:
@@ -1536,6 +1741,7 @@ def test_start_turn_returns_initial_snapshot_before_background_completion(tmp_pa
             prompt: str,
             model: str | None,
             *,
+            chat_mode: str = "chat",
             on_event=None,
             on_dynamic_tool_call=None,
         ) -> project_chat.ChatTurnResult:
@@ -1678,6 +1884,54 @@ def test_list_conversations_filters_by_project_and_sorts_latest_first(tmp_path: 
     assert all(summary["project_path"] == shared_project for summary in summaries)
 
 
+def test_conversation_titles_and_previews_ignore_mode_change_turns(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    project_path = str(tmp_path / "project-a")
+
+    service._write_state(
+        project_chat.ConversationState(
+            conversation_id="conversation-mode-summary",
+            project_path=project_path,
+            title="",
+            created_at="2026-03-07T13:00:00Z",
+            updated_at="2026-03-07T13:05:00Z",
+            turns=[
+                project_chat.ConversationTurn(
+                    id="turn-mode-1",
+                    role="system",
+                    content="plan",
+                    timestamp="2026-03-07T13:00:00Z",
+                    kind="mode_change",
+                ),
+                project_chat.ConversationTurn(
+                    id="turn-user-1",
+                    role="user",
+                    content="Design thread title",
+                    timestamp="2026-03-07T13:01:00Z",
+                ),
+                project_chat.ConversationTurn(
+                    id="turn-assistant-1",
+                    role="assistant",
+                    content="Design thread preview",
+                    timestamp="2026-03-07T13:02:00Z",
+                ),
+                project_chat.ConversationTurn(
+                    id="turn-mode-2",
+                    role="system",
+                    content="chat",
+                    timestamp="2026-03-07T13:03:00Z",
+                    kind="mode_change",
+                ),
+            ],
+        )
+    )
+
+    summary = service.list_conversations(project_path)[0]
+
+    assert summary["title"] == "Design thread title"
+    assert summary["last_message_preview"] == "Design thread preview"
+
+
 def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
     product_api_client,
     monkeypatch,
@@ -1693,6 +1947,7 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
             prompt: str,
             model: str | None,
             *,
+            chat_mode: str = "chat",
             on_event=None,
             on_dynamic_tool_call=None,
         ) -> project_chat.ChatTurnResult:
@@ -1779,6 +2034,102 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
         "assistant_message",
         "tool_call",
     ]
+
+
+def test_update_project_conversation_settings_endpoint_upserts_shell_and_rejects_project_mismatch(
+    product_api_client,
+    tmp_path: Path,
+) -> None:
+    project_path = str(tmp_path.resolve())
+    response = product_api_client.put(
+        "/workspace/api/conversations/conversation-settings/settings",
+        json={
+            "project_path": project_path,
+            "chat_mode": "plan",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["conversation_id"] == "conversation-settings"
+    assert payload["chat_mode"] == "plan"
+    assert [turn["kind"] for turn in payload["turns"]] == ["mode_change"]
+    assert payload["turns"][0]["role"] == "system"
+    assert payload["turns"][0]["content"] == "plan"
+
+    service = _project_chat_service()
+    mismatch_response = product_api_client.put(
+        "/workspace/api/conversations/conversation-settings/settings",
+        json={
+            "project_path": str((tmp_path / "other-project").resolve()),
+            "chat_mode": "chat",
+        },
+    )
+
+    assert mismatch_response.status_code == 400
+    assert "different project path" in mismatch_response.json()["detail"]
+    assert service.get_snapshot("conversation-settings", project_path)["chat_mode"] == "plan"
+
+
+def test_send_project_conversation_turn_endpoint_switches_chat_mode_atomically(
+    product_api_client,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    service = _project_chat_service()
+
+    class PlainTextSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            if on_event is not None:
+                on_event(
+                    project_chat.ChatTurnLiveEvent(
+                        kind="assistant_completed",
+                        content_delta="Mode switch acknowledged.",
+                        app_turn_id="app-turn-1",
+                        item_id="msg-1",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Mode switch acknowledged.")
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: PlainTextSession())
+
+    response = product_api_client.post(
+        "/workspace/api/conversations/conversation-atomic/turns",
+        json={
+            "project_path": str(tmp_path),
+            "message": "Plan the mode switch.",
+            "chat_mode": "plan",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["chat_mode"] == "plan"
+
+    deadline = time.time() + 2.0
+    final_snapshot: dict[str, object] | None = None
+    while time.time() < deadline:
+        candidate = service.get_snapshot("conversation-atomic", str(tmp_path))
+        if candidate["turns"][-1]["status"] == "complete":
+            final_snapshot = candidate
+            break
+        time.sleep(0.02)
+
+    assert final_snapshot is not None
+    assert final_snapshot["chat_mode"] == "plan"
+    assert [turn["kind"] for turn in final_snapshot["turns"]] == ["mode_change", "message", "message"]
+    assert final_snapshot["turns"][0]["content"] == "plan"
+    assert final_snapshot["turns"][1]["content"] == "Plan the mode switch."
+    assert final_snapshot["turns"][-1]["content"] == "Mode switch acknowledged."
 
 
 def test_snapshot_rejects_unsupported_turn_event_only_payload(tmp_path: Path) -> None:

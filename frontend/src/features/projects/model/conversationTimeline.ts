@@ -1,4 +1,5 @@
 import type {
+    ConversationChatMode,
     ConversationSegmentResponse,
     ConversationSnapshotResponse,
     ConversationTurnResponse,
@@ -146,6 +147,17 @@ function buildAssistantTimelineEntries(
     return entries
 }
 
+function buildModeChangeTimelineEntry(turn: ConversationTurnResponse): ConversationTimelineEntry {
+    const mode: ConversationChatMode = turn.content === 'plan' ? 'plan' : 'chat'
+    return {
+        id: turn.id,
+        kind: 'mode_change',
+        role: 'system',
+        timestamp: turn.timestamp,
+        mode,
+    }
+}
+
 export function buildConversationTimelineEntries(
     snapshot: ConversationSnapshotResponse | null,
     optimisticSend: OptimisticSendState | null,
@@ -174,6 +186,10 @@ export function buildConversationTimelineEntries(
         segmentsByTurn.set(segment.turn_id, entries)
     })
     snapshot.turns.forEach((turn) => {
+        if (turn.kind === 'mode_change') {
+            timeline.push(buildModeChangeTimelineEntry(turn))
+            return
+        }
         if (turn.role === 'user' || turn.role === 'assistant') {
             if (turn.role === 'assistant') {
                 timeline.push(...buildAssistantTimelineEntries(turn, segmentsByTurn.get(turn.id) || []))

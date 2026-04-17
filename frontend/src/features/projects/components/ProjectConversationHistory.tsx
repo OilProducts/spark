@@ -1,9 +1,12 @@
+import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import type {
     ConversationTimelineEntry,
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
 } from '../model/types'
+import type { PendingInterviewGate, PendingInterviewGateGroup } from '@/features/runs/model/shared'
+import { RunQuestionsPanel } from '@/features/runs/components/RunQuestionsPanel'
 import {
     ProjectFlowLaunchEntry,
     ProjectFlowRunRequestEntry,
@@ -24,6 +27,7 @@ interface ProjectConversationHistoryProps {
     isConversationHistoryLoading: boolean
     hasRenderableConversationHistory: boolean
     activeConversationHistory: ConversationTimelineEntry[]
+    pendingQuestionPreviewGroups: PendingInterviewGateGroup[]
     activeFlowRunRequestsById: Map<string, ProjectFlowRunRequest>
     activeFlowLaunchesById: Map<string, ProjectFlowLaunch>
     latestFlowRunRequestId: string | null
@@ -46,6 +50,7 @@ export function ProjectConversationHistory({
     isConversationHistoryLoading,
     hasRenderableConversationHistory,
     activeConversationHistory,
+    pendingQuestionPreviewGroups,
     activeFlowRunRequestsById,
     activeFlowLaunchesById,
     latestFlowRunRequestId,
@@ -59,6 +64,28 @@ export function ProjectConversationHistory({
     onReviewFlowRunRequest,
     onOpenFlowRun,
 }: ProjectConversationHistoryProps) {
+    const [previewActionError, setPreviewActionError] = useState<string | null>(null)
+    const [previewAnswerMessage, setPreviewAnswerMessage] = useState<string | null>(null)
+    const [previewFreeformAnswersByGateId, setPreviewFreeformAnswersByGateId] = useState<Record<string, string>>({})
+
+    useEffect(() => {
+        setPreviewActionError(null)
+        setPreviewAnswerMessage(null)
+        setPreviewFreeformAnswersByGateId({})
+    }, [activeConversationId])
+
+    const handlePreviewAnswerSubmit = (gate: PendingInterviewGate, selectedValue: string) => {
+        const trimmedValue = selectedValue.trim()
+        if (!trimmedValue) {
+            setPreviewActionError('Enter a preview answer before submitting.')
+            return
+        }
+        setPreviewActionError(null)
+        setPreviewAnswerMessage(
+            `Preview captured for ${gate.questionId ?? gate.eventId}: ${trimmedValue}`,
+        )
+    }
+
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col">
             {isConversationHistoryLoading && !hasRenderableConversationHistory ? (
@@ -152,6 +179,23 @@ export function ProjectConversationHistory({
                                     <div className="flex w-full max-w-[85%] items-center gap-3 py-1 text-[11px] text-muted-foreground">
                                         <span className="h-px flex-1 bg-border" />
                                         <span className="shrink-0 whitespace-nowrap">{entry.label}</span>
+                                        <span className="h-px flex-1 bg-border" />
+                                    </div>
+                                </li>
+                            )
+                        }
+
+                        if (entry.kind === 'mode_change') {
+                            return (
+                                <li key={key} className="flex justify-center">
+                                    <div
+                                        data-testid={`project-mode-change-row-${entry.id}`}
+                                        className="flex w-full max-w-[85%] items-center gap-3 py-1 text-[11px] text-muted-foreground"
+                                    >
+                                        <span className="h-px flex-1 bg-border" />
+                                        <span className="shrink-0 whitespace-nowrap">
+                                            {entry.mode === 'plan' ? 'Switched to Plan mode' : 'Switched to Chat mode'}
+                                        </span>
                                         <span className="h-px flex-1 bg-border" />
                                     </div>
                                 </li>
@@ -295,6 +339,40 @@ export function ProjectConversationHistory({
                             </li>
                         )
                     })}
+                    {pendingQuestionPreviewGroups.length > 0 ? (
+                        <li className="flex justify-start">
+                            <div className="w-full max-w-[85%]">
+                                <RunQuestionsPanel
+                                    className="mb-0"
+                                    freeformAnswersByGateId={previewFreeformAnswersByGateId}
+                                    groupedPendingInterviewGates={pendingQuestionPreviewGroups}
+                                    onFreeformAnswerChange={(questionId, value) => {
+                                        setPreviewFreeformAnswersByGateId((current) => ({
+                                            ...current,
+                                            [questionId]: value,
+                                        }))
+                                    }}
+                                    onSubmitPendingGateAnswer={handlePreviewAnswerSubmit}
+                                    pendingGateActionError={previewActionError}
+                                    submittingGateIds={{}}
+                                />
+                                <p
+                                    data-testid="project-pending-questions-preview-note"
+                                    className="mt-2 text-[10px] text-muted-foreground"
+                                >
+                                    Preview only. Answers stay local to this browser session and are not sent.
+                                </p>
+                                {previewAnswerMessage ? (
+                                    <p
+                                        data-testid="project-pending-questions-preview-answer"
+                                        className="mt-1 text-[10px] text-muted-foreground"
+                                    >
+                                        {previewAnswerMessage}
+                                    </p>
+                                ) : null}
+                            </div>
+                        </li>
+                    ) : null}
                 </ol>
             )}
         </div>

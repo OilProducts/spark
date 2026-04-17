@@ -14,6 +14,7 @@ from spark.workspace.conversations.models import (
     ConversationSummary,
     ConversationTurn,
     WorkflowEvent,
+    normalize_chat_mode,
 )
 from spark.workspace.conversations.utils import (
     as_non_empty_string,
@@ -108,6 +109,7 @@ class ProjectChatRepository:
 
     def touch_conversation_state(self, state: ConversationState, *, title_hint: Optional[str] = None) -> None:
         self.ensure_state_handle(state)
+        state.chat_mode = normalize_chat_mode(state.chat_mode)
         if not state.created_at:
             state.created_at = iso_now()
         if title_hint:
@@ -171,6 +173,7 @@ class ProjectChatRepository:
             "conversation_id": state.conversation_id,
             "conversation_handle": state.conversation_handle,
             "project_path": state.project_path,
+            "chat_mode": state.chat_mode,
             "title": state.title,
             "created_at": state.created_at,
             "updated_at": state.updated_at,
@@ -269,6 +272,32 @@ class ProjectChatRepository:
                     runtime_project_path=runtime_project_path,
                 )
             session_state.thread_id = thread_id
+            session_state.project_path = normalized_project_path
+            session_state.runtime_project_path = runtime_project_path
+            session_state.updated_at = iso_now()
+            self.write_session_state(session_state)
+
+    def persist_session_model(
+        self,
+        conversation_id: str,
+        project_path: str,
+        model: str,
+    ) -> None:
+        normalized_project_path = normalize_project_path_value(project_path)
+        runtime_project_path = resolve_runtime_workspace_path(normalized_project_path)
+        normalized_model = as_non_empty_string(model)
+        if not normalized_model:
+            return
+        with self._lock:
+            session_state = self.read_session_state(conversation_id, normalized_project_path)
+            if session_state is None:
+                session_state = ConversationSessionState(
+                    conversation_id=conversation_id,
+                    updated_at=iso_now(),
+                    project_path=normalized_project_path,
+                    runtime_project_path=runtime_project_path,
+                )
+            session_state.model = normalized_model
             session_state.project_path = normalized_project_path
             session_state.runtime_project_path = runtime_project_path
             session_state.updated_at = iso_now()

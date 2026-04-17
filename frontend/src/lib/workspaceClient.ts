@@ -1,4 +1,5 @@
 export {
+    type ConversationChatMode,
     type ConversationDeleteResponse,
     type ConversationSnapshotResponse,
     type ConversationSegmentResponse,
@@ -36,6 +37,7 @@ export {
     registerProjectValidated,
     reviewFlowRunRequestValidated,
     sendConversationTurnValidated,
+    updateConversationSettingsValidated,
     updateWorkspaceFlowLaunchPolicyValidated,
     updateTriggerValidated,
     updateProjectStateValidated,

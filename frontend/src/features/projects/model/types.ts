@@ -33,6 +33,13 @@ export type ConversationTimelineEntry =
     }
     | {
         id: string
+        kind: 'mode_change'
+        role: 'system'
+        timestamp: string
+        mode: 'chat' | 'plan'
+    }
+    | {
+        id: string
         kind: 'tool_call'
         role: 'system'
         timestamp: string
