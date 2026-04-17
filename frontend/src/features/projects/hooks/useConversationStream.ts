@@ -31,6 +31,23 @@ export function useConversationStream({
     formatErrorMessage,
     setPanelError,
 }: UseConversationStreamArgs) {
+    const maybeRefreshSnapshotForArtifactSegment = (
+        event: ConversationStreamEvent,
+        refreshSnapshot: () => Promise<void>,
+    ) => {
+        if (event.type !== 'segment_upsert') {
+            return
+        }
+        const segmentKind = event.segment.kind
+        if (!event.segment.artifact_id) {
+            return
+        }
+        if (segmentKind !== 'plan' && segmentKind !== 'flow_run_request' && segmentKind !== 'flow_launch') {
+            return
+        }
+        void refreshSnapshot()
+    }
+
     const snapshotHandlerRef = useRef(applyConversationSnapshot)
     const eventHandlerRef = useRef(applyConversationStreamEvent)
     const errorFormatterRef = useRef(formatErrorMessage)
@@ -106,6 +123,7 @@ export function useConversationStream({
                         return
                     }
                     eventHandlerRef.current(activeProjectPath, parsedEvent, 'event-stream')
+                    maybeRefreshSnapshotForArtifactSegment(parsedEvent, loadSnapshot)
                 } catch {
                     // Ignore malformed stream events.
                 }

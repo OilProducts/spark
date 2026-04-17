@@ -1889,6 +1889,200 @@ describe('ProjectsPanel', () => {
     })
   })
 
+  it('refreshes the conversation snapshot when a streamed plan segment creates a proposed-plan artifact', async () => {
+    class MockEventSource {
+      static instances: MockEventSource[] = []
+
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+
+      constructor(_url: string) {
+        MockEventSource.instances.push(this)
+      }
+
+      close() {}
+    }
+
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+
+    const snapshotWithoutArtifact = withSnapshotSchema({
+      conversation_id: 'conversation-streamed-plan',
+      conversation_handle: 'amber-otter',
+      project_path: '/tmp/chat-project',
+      chat_mode: 'plan',
+      title: 'Plan review',
+      created_at: '2026-03-09T21:00:00Z',
+      updated_at: '2026-03-09T21:00:01Z',
+      turns: [
+        {
+          id: 'turn-user-plan',
+          role: 'user',
+          content: 'Draft the implementation plan.',
+          timestamp: '2026-03-09T21:00:00Z',
+          status: 'complete',
+          kind: 'message',
+          artifact_id: null,
+        },
+        {
+          id: 'turn-assistant-plan',
+          role: 'assistant',
+          content: '## Proposed steps',
+          timestamp: '2026-03-09T21:00:01Z',
+          status: 'streaming',
+          kind: 'message',
+          artifact_id: null,
+        },
+      ],
+      segments: [],
+      event_log: [],
+      flow_run_requests: [],
+      flow_launches: [],
+      proposed_plans: [],
+    })
+
+    const snapshotWithArtifact = withSnapshotSchema({
+      ...snapshotWithoutArtifact,
+      updated_at: '2026-03-09T21:00:03Z',
+      turns: [
+        {
+          ...snapshotWithoutArtifact.turns[0],
+        },
+        {
+          ...snapshotWithoutArtifact.turns[1],
+          status: 'complete',
+          content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
+        },
+      ],
+      segments: [
+        {
+          id: 'segment-plan-inline',
+          turn_id: 'turn-assistant-plan',
+          order: 1,
+          kind: 'plan',
+          role: 'assistant',
+          status: 'complete',
+          timestamp: '2026-03-09T21:00:02Z',
+          updated_at: '2026-03-09T21:00:02Z',
+          completed_at: '2026-03-09T21:00:02Z',
+          content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
+          artifact_id: 'proposed-plan-inline',
+          error: null,
+          tool_call: null,
+          source: null,
+        },
+      ],
+      proposed_plans: [
+        {
+          id: 'proposed-plan-inline',
+          created_at: '2026-03-09T21:00:02Z',
+          updated_at: '2026-03-09T21:00:02Z',
+          title: 'Proposed steps',
+          content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
+          project_path: '/tmp/chat-project',
+          conversation_id: 'conversation-streamed-plan',
+          source_turn_id: 'turn-assistant-plan',
+          source_segment_id: 'segment-plan-inline',
+          status: 'pending_review',
+          review_note: null,
+          written_plan_path: null,
+          flow_launch_id: null,
+          run_id: null,
+          launch_error: null,
+        },
+      ],
+    })
+
+    let snapshotFetchCount = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return new Response(JSON.stringify([
+            {
+              conversation_id: 'conversation-streamed-plan',
+              conversation_handle: 'amber-otter',
+              project_path: '/tmp/chat-project',
+              title: 'Plan review',
+              created_at: '2026-03-09T21:00:00Z',
+              updated_at: '2026-03-09T21:00:03Z',
+              last_message_preview: 'Draft the implementation plan.',
+            },
+          ]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/conversations/conversation-streamed-plan') && !url.includes('/events')) {
+          snapshotFetchCount += 1
+          const payload = snapshotFetchCount === 1 ? snapshotWithoutArtifact : snapshotWithArtifact
+          return new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response('Not found', { status: 404 })
+      }),
+    )
+
+    useStore.getState().registerProject('/tmp/chat-project')
+    useStore.getState().setActiveProjectPath('/tmp/chat-project')
+    useStore.getState().updateProjectSessionState('/tmp/chat-project', {
+      conversationId: 'conversation-streamed-plan',
+    })
+
+    renderProjectsPanel()
+
+    await waitFor(() => {
+      expect(MockEventSource.instances.length).toBeGreaterThan(0)
+    })
+
+    expect(screen.queryByTestId('project-proposed-plan-approve-button-proposed-plan-inline')).not.toBeInTheDocument()
+
+    act(() => {
+      MockEventSource.instances[0]?.onmessage?.({
+        data: JSON.stringify(asSegmentUpsertEvent({
+          conversation_id: 'conversation-streamed-plan',
+          project_path: '/tmp/chat-project',
+          title: 'Plan review',
+          updated_at: '2026-03-09T21:00:02Z',
+          event: {
+            turn_id: 'turn-assistant-plan',
+            sequence: 1,
+            timestamp: '2026-03-09T21:00:02Z',
+            kind: 'assistant_completed',
+            segment: {
+              id: 'segment-plan-inline',
+              turn_id: 'turn-assistant-plan',
+              order: 1,
+              kind: 'plan',
+              role: 'assistant',
+              status: 'complete',
+              timestamp: '2026-03-09T21:00:02Z',
+              updated_at: '2026-03-09T21:00:02Z',
+              completed_at: '2026-03-09T21:00:02Z',
+              content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
+              artifact_id: 'proposed-plan-inline',
+              error: null,
+              tool_call: null,
+              source: null,
+            },
+          },
+        })),
+      } as MessageEvent<string>)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-proposed-plan-approve-button-proposed-plan-inline')).toBeVisible()
+    })
+    expect(snapshotFetchCount).toBeGreaterThanOrEqual(2)
+  })
+
   it('returns the send button to Send once the assistant turn completes even if the original POST is still pending', async () => {
     class MockEventSource {
       static instances: MockEventSource[] = []
