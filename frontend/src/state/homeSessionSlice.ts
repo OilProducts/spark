@@ -8,14 +8,12 @@ import type {
     HomeSessionSlice,
 } from './viewSessionTypes'
 
-const DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT = 320
-
 const DEFAULT_HOME_PROJECT_SESSION_STATE: HomeProjectSessionState = {
     chatDraft: '',
     panelError: null,
     optimisticSend: null,
     pendingDeleteConversationId: null,
-    sidebarPrimaryHeight: DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT,
+    sidebarPrimarySplitRatio: null,
 }
 
 const DEFAULT_HOME_CONVERSATION_SESSION_STATE: HomeConversationSessionState = {

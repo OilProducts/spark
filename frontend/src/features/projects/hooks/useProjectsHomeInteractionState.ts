@@ -13,7 +13,7 @@ const EMPTY_PROJECT_SESSION = {
     panelError: null as string | null,
     optimisticSend: null as OptimisticSendState | null,
     pendingDeleteConversationId: null as string | null,
-    sidebarPrimaryHeight: 320,
+    sidebarPrimarySplitRatio: null as number | null,
 }
 
 const EMPTY_CONVERSATION_SESSION = {

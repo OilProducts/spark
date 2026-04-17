@@ -17,6 +17,31 @@ const setViewportWidth = (width: number) => {
   window.dispatchEvent(new Event('resize'))
 }
 
+const notifyResizeObserver = (target: Element) => {
+  ;(globalThis.ResizeObserver as unknown as { notify: (target: Element) => void }).notify(target)
+}
+
+const mockSidebarStackRect = (node: HTMLDivElement, initialHeight: number) => {
+  let height = initialHeight
+  vi.spyOn(node, 'getBoundingClientRect').mockImplementation(() => ({
+    x: 0,
+    y: 0,
+    top: 0,
+    right: 320,
+    bottom: height,
+    left: 0,
+    width: 320,
+    height,
+    toJSON: () => ({}),
+  } as DOMRect))
+
+  return {
+    setHeight(nextHeight: number) {
+      height = nextHeight
+    },
+  }
+}
+
 const resolveRequestUrl = (input: RequestInfo | URL): string => {
   if (typeof input === 'string') return input
   if (input instanceof URL) return input.toString()
@@ -303,18 +328,7 @@ describe('ProjectsPanel', () => {
     const sidebarStack = screen.getByTestId('home-sidebar-stack')
     const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
     const resizeHandle = screen.getByTestId('home-sidebar-resize-handle')
-
-    vi.spyOn(sidebarStack, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 320,
-      bottom: 720,
-      left: 0,
-      width: 320,
-      height: 720,
-      toJSON: () => ({}),
-    } as DOMRect)
+    mockSidebarStackRect(sidebarStack as HTMLDivElement, 720)
 
     expect(sidebarPrimarySurface.style.height).toBe('320px')
 
@@ -322,7 +336,89 @@ describe('ProjectsPanel', () => {
     fireEvent.pointerMove(window, { clientY: 300 })
     fireEvent.pointerUp(window)
 
-    expect(sidebarPrimarySurface.style.height).toBe('380px')
+    await waitFor(() => {
+      expect(sidebarPrimarySurface.style.height).toBe('380px')
+    })
+    expect(
+      useStore.getState().homeProjectSessionsByPath['/tmp/quick-switch-project']?.sidebarPrimarySplitRatio,
+    ).toBeCloseTo(380 / (720 - 12), 5)
+  })
+
+  it('grows the thread pane proportionally when the observed sidebar container grows', async () => {
+    act(() => {
+      useStore.getState().registerProject('/tmp/quick-switch-project')
+      useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
+    })
+
+    renderProjectsPanelWithoutHomeController()
+
+    const sidebarStack = screen.getByTestId('home-sidebar-stack') as HTMLDivElement
+    const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
+    const resizeHandle = screen.getByTestId('home-sidebar-resize-handle')
+    const sidebarRect = mockSidebarStackRect(sidebarStack, 720)
+
+    fireEvent.pointerDown(resizeHandle, { clientY: 240 })
+    fireEvent.pointerMove(window, { clientY: 300 })
+    fireEvent.pointerUp(window)
+
+    await waitFor(() => {
+      expect(sidebarPrimarySurface.style.height).toBe('380px')
+    })
+
+    const persistedRatio = useStore.getState().homeProjectSessionsByPath['/tmp/quick-switch-project']?.sidebarPrimarySplitRatio
+    expect(persistedRatio).not.toBeNull()
+
+    sidebarRect.setHeight(900)
+    act(() => {
+      notifyResizeObserver(sidebarStack)
+    })
+
+    await waitFor(() => {
+      expect(parseFloat(sidebarPrimarySurface.style.height)).toBe(Math.round((persistedRatio ?? 0) * (900 - 12)))
+    })
+  })
+
+  it('keeps the split proportional on container shrink while respecting pane minimums', async () => {
+    act(() => {
+      useStore.getState().registerProject('/tmp/quick-switch-project')
+      useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
+    })
+
+    renderProjectsPanelWithoutHomeController()
+
+    const sidebarStack = screen.getByTestId('home-sidebar-stack') as HTMLDivElement
+    const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
+    const resizeHandle = screen.getByTestId('home-sidebar-resize-handle')
+    const sidebarRect = mockSidebarStackRect(sidebarStack, 720)
+
+    fireEvent.pointerDown(resizeHandle, { clientY: 240 })
+    fireEvent.pointerMove(window, { clientY: 300 })
+    fireEvent.pointerUp(window)
+
+    await waitFor(() => {
+      expect(sidebarPrimarySurface.style.height).toBe('380px')
+    })
+
+    const persistedRatio = useStore.getState().homeProjectSessionsByPath['/tmp/quick-switch-project']?.sidebarPrimarySplitRatio
+    expect(persistedRatio).not.toBeNull()
+
+    sidebarRect.setHeight(520)
+    act(() => {
+      notifyResizeObserver(sidebarStack)
+    })
+
+    await waitFor(() => {
+      expect(parseFloat(sidebarPrimarySurface.style.height)).toBe(Math.round((persistedRatio ?? 0) * (520 - 12)))
+    })
+
+    sidebarRect.setHeight(430)
+    act(() => {
+      notifyResizeObserver(sidebarStack)
+    })
+
+    await waitFor(() => {
+      expect(sidebarPrimarySurface.style.height).toBe('210px')
+    })
   })
 
   it('points empty states at the navbar project switcher when no project is active', async () => {

@@ -33,7 +33,7 @@ export interface HomeProjectSessionState {
     panelError: string | null
     optimisticSend: OptimisticSendState | null
     pendingDeleteConversationId: string | null
-    sidebarPrimaryHeight: number
+    sidebarPrimarySplitRatio: number | null
 }
 
 export interface HomeConversationSessionState {

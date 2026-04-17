@@ -2,10 +2,48 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, vi } from 'vitest'
 
+type ResizeObserverCallback = ConstructorParameters<typeof ResizeObserver>[0]
+
 class ResizeObserverMock {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  static readonly instances = new Set<ResizeObserverMock>()
+  private readonly callback: ResizeObserverCallback
+  private readonly observedElements = new Set<Element>()
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback
+    ResizeObserverMock.instances.add(this)
+  }
+
+  observe(target: Element) {
+    this.observedElements.add(target)
+  }
+
+  unobserve(target: Element) {
+    this.observedElements.delete(target)
+  }
+
+  disconnect() {
+    this.observedElements.clear()
+    ResizeObserverMock.instances.delete(this)
+  }
+
+  static notify(target: Element) {
+    const entry = {
+      target,
+      contentRect: target.getBoundingClientRect(),
+    } as ResizeObserverEntry
+
+    ResizeObserverMock.instances.forEach((observer) => {
+      if (!observer.observedElements.has(target)) {
+        return
+      }
+      observer.callback([entry], observer as unknown as ResizeObserver)
+    })
+  }
+
+  static reset() {
+    ResizeObserverMock.instances.clear()
+  }
 }
 
 const createStorageMock = () => {
@@ -35,9 +73,7 @@ const createStorageMock = () => {
 const localStorageMock = createStorageMock()
 const sessionStorageMock = createStorageMock()
 
-if (typeof globalThis.ResizeObserver === 'undefined') {
-  globalThis.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver
-}
+globalThis.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver
 
 Object.defineProperty(globalThis, 'localStorage', {
   configurable: true,
@@ -94,6 +130,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  ResizeObserverMock.reset()
   if (typeof localStorage?.clear === 'function') {
     localStorage.clear()
   }

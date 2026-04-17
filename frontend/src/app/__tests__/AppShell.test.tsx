@@ -61,6 +61,21 @@ const setViewportWidth = (width: number) => {
   window.dispatchEvent(new Event('resize'))
 }
 
+const mockSidebarStackRect = (node: HTMLDivElement, initialHeight: number) => {
+  let height = initialHeight
+  vi.spyOn(node, 'getBoundingClientRect').mockImplementation(() => ({
+    x: 0,
+    y: 0,
+    top: 0,
+    right: 320,
+    bottom: height,
+    left: 0,
+    width: 320,
+    height,
+    toJSON: () => ({}),
+  } as DOMRect))
+}
+
 const resetAppShellState = () => {
   useRunJournalStore.setState({ byRunId: {} })
   useStore.setState((state) => ({
@@ -1034,17 +1049,7 @@ describe('App shell behavior', () => {
     const sidebarStack = screen.getByTestId('home-sidebar-stack')
     const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
     const resizeHandle = screen.getByTestId('home-sidebar-resize-handle')
-    vi.spyOn(sidebarStack, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 320,
-      bottom: 720,
-      left: 0,
-      width: 320,
-      height: 720,
-      toJSON: () => ({}),
-    } as DOMRect)
+    mockSidebarStackRect(sidebarStack as HTMLDivElement, 720)
 
     fireEvent.pointerDown(resizeHandle, { clientY: 240 })
     fireEvent.pointerMove(window, { clientY: 300 })
@@ -1080,7 +1085,9 @@ describe('App shell behavior', () => {
       expect(screen.getByTestId('project-ai-conversation-jump-to-bottom')).toBeVisible()
     })
 
-    expect(useStore.getState().homeProjectSessionsByPath['/tmp/project-home-restore']?.sidebarPrimaryHeight).toBe(380)
+    expect(
+      useStore.getState().homeProjectSessionsByPath['/tmp/project-home-restore']?.sidebarPrimarySplitRatio,
+    ).toBeCloseTo(380 / (720 - 12), 5)
     expect(useStore.getState().homeConversationSessionsById['conversation-home-restore']?.expandedToolCalls).toMatchObject({
       'tool-ls': true,
     })
