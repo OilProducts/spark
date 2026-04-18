@@ -228,6 +228,8 @@ services:
       - /path/to/skills:/codex-runtime/.codex/skills:ro
 ```
 
+That container path matches the tracked `compose.yaml`, which explicitly sets `ATTRACTOR_CODEX_RUNTIME_ROOT=/codex-runtime` for Docker development.
+
 ## Backend-Only Usage
 
 Start the server directly:
@@ -266,6 +268,8 @@ Important path overrides:
 - `SPARK_HOME`
 - `SPARK_FLOWS_DIR`
 - `SPARK_UI_DIR`
+
+Spark-managed Codex runtime state defaults to `~/.spark/runtime/codex`, or `<SPARK_HOME>/runtime/codex` when `SPARK_HOME` is set. Set `ATTRACTOR_CODEX_RUNTIME_ROOT` only when you need to force a different runtime root.
 
 `~/.spark/config/prompts.toml` stores user-configurable prompt templates and is created on first startup.
 

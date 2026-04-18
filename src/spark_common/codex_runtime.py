@@ -33,21 +33,39 @@ def _first_party_tool_bin_dirs() -> list[Path]:
     return tool_bin_dirs
 
 
+def _ensure_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _default_spark_home(env: dict[str, str]) -> Path:
+    configured_spark_home = str(env.get("SPARK_HOME", "")).strip()
+    if configured_spark_home:
+        return Path(configured_spark_home).expanduser()
+    return Path(env.get("HOME", str(Path.home()))).expanduser() / ".spark"
+
+
+def _resolve_runtime_root(env: dict[str, str]) -> Path:
+    configured_runtime_root = str(env.get("ATTRACTOR_CODEX_RUNTIME_ROOT", "")).strip()
+    if configured_runtime_root:
+        return Path(configured_runtime_root).expanduser()
+    return _default_spark_home(env) / "runtime" / "codex"
+
+
 def build_codex_runtime_environment() -> dict[str, str]:
     env = os.environ.copy()
     original_home = Path(env.get("HOME", str(Path.home()))).expanduser()
     original_codex_home = Path(env.get("CODEX_HOME", str(original_home / ".codex"))).expanduser()
-    configured_runtime_root = Path(env.get("ATTRACTOR_CODEX_RUNTIME_ROOT", "/codex-runtime")).expanduser()
-    runtime_root = configured_runtime_root
+    runtime_root = _resolve_runtime_root(env)
     try:
-        runtime_root.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(runtime_root)
     except OSError:
         runtime_root = Path(tempfile.gettempdir()) / "spark-codex-runtime"
+        _ensure_directory(runtime_root)
     codex_home = Path(env.get("CODEX_HOME", str(runtime_root / ".codex"))).expanduser()
     xdg_config_home = Path(env.get("XDG_CONFIG_HOME", str(runtime_root / ".config"))).expanduser()
     xdg_data_home = Path(env.get("XDG_DATA_HOME", str(runtime_root / ".local/share"))).expanduser()
     for directory in (runtime_root, codex_home, xdg_config_home, xdg_data_home):
-        directory.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(directory)
 
     explicit_seed_dir = Path(env.get("ATTRACTOR_CODEX_SEED_DIR", "/codex-seed")).expanduser()
     seed_candidates: list[Path] = []

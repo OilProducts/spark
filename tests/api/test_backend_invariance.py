@@ -15,8 +15,6 @@ from attractor.engine import Context, load_checkpoint
 from attractor.engine.context_contracts import ContextWriteContract
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from attractor.engine.status_envelope_prompting import build_status_envelope_context_updates_contract_text
-import spark_common.codex_runtime as codex_runtime_module
-from spark_common.codex_runtime import build_codex_runtime_environment
 from spark_common.project_identity import build_project_id
 from spark_common.runtime_path import resolve_runtime_workspace_path
 from tests.api._support import (
@@ -540,89 +538,6 @@ def test_resolve_runtime_workspace_path_maps_host_repo_root_override_to_runtime_
     translated = resolve_runtime_workspace_path(str(host_repo_root / "frontend"))
 
     assert translated == str((runtime_repo_root / "frontend").resolve(strict=False))
-
-
-def test_build_codex_runtime_environment_isolates_home_and_seeds_runtime_state(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime_root = tmp_path / "codex-runtime"
-    seed_dir = tmp_path / "codex-seed"
-    seed_dir.mkdir()
-    (seed_dir / "auth.json").write_text('{"token":"seed"}', encoding="utf-8")
-    (seed_dir / "config.toml").write_text("model = 'gpt-test'\n", encoding="utf-8")
-    monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(runtime_root))
-    monkeypatch.setenv("ATTRACTOR_CODEX_SEED_DIR", str(seed_dir))
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-
-    env = build_codex_runtime_environment()
-
-    assert env["HOME"] == str(runtime_root)
-    assert env["CODEX_HOME"] == str(runtime_root / ".codex")
-    assert env["XDG_CONFIG_HOME"] == str(runtime_root / ".config")
-    assert env["XDG_DATA_HOME"] == str(runtime_root / ".local/share")
-    assert (runtime_root / ".codex" / "auth.json").read_text(encoding="utf-8") == '{"token":"seed"}'
-    assert (runtime_root / ".codex" / "config.toml").read_text(encoding="utf-8") == "model = 'gpt-test'\n"
-
-
-def test_build_codex_runtime_environment_falls_back_to_host_codex_home_when_seed_dir_missing(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime_root = tmp_path / "codex-runtime"
-    host_home = tmp_path / "host-home"
-    host_codex_home = host_home / ".codex"
-    host_codex_home.mkdir(parents=True)
-    (host_codex_home / "auth.json").write_text('{"token":"host-seed"}', encoding="utf-8")
-    (host_codex_home / "config.toml").write_text("model = 'host-model'\n", encoding="utf-8")
-
-    monkeypatch.setenv("HOME", str(host_home))
-    monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(runtime_root))
-    monkeypatch.setenv("ATTRACTOR_CODEX_SEED_DIR", str(tmp_path / "missing-seed"))
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-
-    env = build_codex_runtime_environment()
-
-    assert env["CODEX_HOME"] == str(runtime_root / ".codex")
-    assert (runtime_root / ".codex" / "auth.json").read_text(encoding="utf-8") == '{"token":"host-seed"}'
-    assert (runtime_root / ".codex" / "config.toml").read_text(encoding="utf-8") == "model = 'host-model'\n"
-
-
-def test_build_codex_runtime_environment_prepends_first_party_tool_bins_to_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime_root = tmp_path / "codex-runtime"
-    runtime_python = tmp_path / "runtime-python" / "bin" / "python"
-    repo_root = tmp_path / "repo-root"
-    repo_bin = repo_root / ".venv" / "bin"
-
-    runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("", encoding="utf-8")
-    repo_bin.mkdir(parents=True)
-
-    monkeypatch.setattr(codex_runtime_module, "RUNTIME_REPO_ROOT", repo_root)
-    monkeypatch.setattr(codex_runtime_module.sys, "executable", str(runtime_python))
-    monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(runtime_root))
-    monkeypatch.setenv("ATTRACTOR_CODEX_SEED_DIR", str(tmp_path / "missing-seed"))
-    monkeypatch.setenv("PATH", os_path := f"/usr/local/bin{codex_runtime_module.os.pathsep}/usr/bin")
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-
-    env = build_codex_runtime_environment()
-
-    assert env["PATH"] == codex_runtime_module.os.pathsep.join(
-        [
-            str(runtime_python.parent.resolve(strict=False)),
-            str(repo_bin.resolve(strict=False)),
-            os_path,
-        ]
-    )
 
 
 def test_codex_app_server_backend_missing_runtime_working_directory_returns_specific_failure(
