@@ -65,8 +65,10 @@ class TestContextHelpers:
         assert context.get("missing", "fallback") == "fallback"
         assert context.get_string("name") == "spark"
         assert context.get_string("attempts") == "3"
+        assert context.get("empty") is None
         assert context.get_string("empty", "none") == "none"
         assert context.get_string("missing", "fallback") == "fallback"
+        assert "empty" not in context.snapshot()
 
     def test_append_log_and_clone_isolation(self):
         context = Context(values={"status": "ready"})
@@ -97,6 +99,16 @@ class TestContextHelpers:
 
         assert context.get("a") == 2
         assert context.get("b") == "three"
+
+    def test_apply_updates_none_removes_existing_keys(self):
+        context = Context(values={"context.item.id": "ITEM-1", "context.item.title": "Ship it"})
+
+        context.apply_updates({"context.item.id": None, "context.item.title": "Retitled", "context.item.summary": None})
+
+        assert context.get("context.item.id") is None
+        assert context.get("context.item.title") == "Retitled"
+        assert context.get("context.item.summary") is None
+        assert "context.item.id" not in context.snapshot()
 
 
 class TestContextNamespaces:

@@ -142,6 +142,30 @@ class TestCodergenHandler:
         assert "context.request.summary=Ship docs safely" in backend.calls[0][1]
         assert "context.review.required_changes=<missing>" in backend.calls[0][1]
 
+    def test_codergen_handler_marks_cleared_declared_context_reads_as_missing(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [
+                    shape=box,
+                    prompt="Plan for $goal",
+                    spark.reads_context="[\\"context.review.required_changes\\"]"
+                ]
+            }
+            """
+        )
+
+        backend = _StubBackend(ok=True)
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+        ctx = Context(values={"graph.goal": "ship", "context.review.required_changes": "clear me"})
+        ctx.set("context.review.required_changes", None)
+
+        outcome = runner("task", "Plan for $goal", ctx)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert "context.review.required_changes=<missing>" in backend.calls[0][1]
+
     def test_codergen_handler_preserves_explicit_dotted_non_context_reads_in_prompt(self):
         graph = parse_dot(
             """

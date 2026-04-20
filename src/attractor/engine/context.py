@@ -53,7 +53,10 @@ class Context:
     def set(self, key: str, value: Any) -> None:
         _validate_context_key(key)
         with self.lock.write_lock():
-            self.values[key] = value
+            if value is None:
+                self.values.pop(key, None)
+            else:
+                self.values[key] = value
 
     def get(self, key: str, default: Any = None) -> Any:
         with self.lock.read_lock():
@@ -78,7 +81,10 @@ class Context:
             _validate_context_key(key)
         with self.lock.write_lock():
             for key, value in updates.items():
-                self.values[key] = copy.deepcopy(value)
+                if value is None:
+                    self.values.pop(key, None)
+                else:
+                    self.values[key] = copy.deepcopy(value)
 
     def merge_updates(self, updates: Dict[str, Any]) -> None:
         self.apply_updates(updates)

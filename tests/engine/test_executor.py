@@ -1674,6 +1674,31 @@ class TestExecutor:
         assert result.context["outcome"] == "success"
         assert result.context["preferred_label"] == "Approve"
 
+    def test_executor_removes_context_keys_when_context_updates_use_null(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box, spark.writes_context="[\\"context.custom.flag\\"]"]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            del prompt, context
+            if node_id == "plan":
+                return Outcome(status=OutcomeStatus.SUCCESS, context_updates={"context.custom.flag": None})
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context(values={"context.custom.flag": "set"}))
+
+        assert result.status == "completed"
+        assert result.context.get("context.custom.flag") is None
+
     def test_custom_handler_undeclared_writes_fail_as_contract_fault_without_merging(self):
         graph = parse_dot(
             """

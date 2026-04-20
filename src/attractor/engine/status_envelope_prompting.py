@@ -44,6 +44,7 @@ def build_status_envelope_context_updates_contract_text(
                 f"{_format_allowed_keys(allowed_keys)}."
             ),
             '- Inside "context_updates", emit a flat key/value map using the literal keys above.',
+            '- Use JSON null to clear a previously set context key when this node needs to end or reset live state.',
         ]
     )
 
