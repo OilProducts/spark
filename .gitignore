@@ -7,6 +7,7 @@ __pycache__/
 codex-app-server.schema/
 .DS_Store
 artifacts/
+build/
 frontend/.tmp-*/
 src/spark/ui_dist/
 .idea/
