@@ -51,7 +51,9 @@ def test_spec_implementation_milestone_worker_uses_validation_as_a_real_gate() -
     assert ("gate_item_completion", "blocked_exit", "Blocked State") in edge_targets
     assert ("gate_item_completion", "mark_current_done", "Validated") in edge_targets
     assert ("gate_item_completion", "prepare_validation", "Revalidate") in edge_targets
+    assert ("mark_current_blocked", "blocked_exit", "Blocked State") in edge_targets
     assert ("mark_current_done", "blocked_exit", "Blocked State") in edge_targets
+    assert ("rewrite_current", "blocked_exit", "Blocked Rewrite") in edge_targets
     assert ("review_current", "mark_current_done", "Done") not in edge_targets
     assert ("implement_current", "prepare_validation", "Validate") not in edge_targets
 
@@ -66,6 +68,7 @@ def test_spec_implementation_milestone_worker_validates_item_queue_before_next_i
     assert ("rewrite_current", "validate_item_plan", "") in edge_targets
     assert ("final_milestone_audit", "validate_item_plan", "Extend") in edge_targets
     assert ("validate_item_plan", "next_item", "Validated") in edge_targets
+    assert ("validate_item_plan", "blocked_exit", "Blocked") in edge_targets
     assert ("validate_item_plan", "extract_items", "Reextract") in edge_targets
     assert ("extract_items", "next_item", "") not in edge_targets
     assert ("rewrite_current", "next_item", "") not in edge_targets
@@ -91,6 +94,9 @@ def test_spec_implementation_milestone_worker_handles_partial_success_on_status_
     assert ("review_current", "mark_current_blocked", "Block Partial") in edge_targets
     assert ("review_current", "rewrite_current", "Rewrite Partial") in edge_targets
     assert ("validate_active_item_state", "blocked_exit", "Blocked State Partial") in edge_targets
+    assert ("mark_current_blocked", "blocked_exit", "Blocked State Partial") in edge_targets
+    assert ("rewrite_current", "blocked_exit", "Blocked Rewrite Partial") in edge_targets
+    assert ("validate_item_plan", "blocked_exit", "Blocked Partial") in edge_targets
     assert ("validate_item_plan", "extract_items", "Reextract Partial") in edge_targets
 
 
@@ -285,6 +291,19 @@ def test_spec_implementation_child_flow_binds_items_to_contract_decisions() -> N
     assert "context.item.decision_ids" in next_prompt
     next_writes = str(graph.nodes["next_item"].attrs["spark.writes_context"].value)
     assert "context.item.decision_ids" in next_writes
+    assert "On the Audit path" in next_prompt
+
+    mark_done_writes = str(graph.nodes["mark_current_done"].attrs["spark.writes_context"].value)
+    assert "context.item.id" in mark_done_writes
+    assert "context.validation.item_id" in mark_done_writes
+
+    mark_blocked_writes = str(graph.nodes["mark_current_blocked"].attrs["spark.writes_context"].value)
+    assert "context.item.id" in mark_blocked_writes
+    assert "context.review.summary" in mark_blocked_writes
+
+    rewrite_writes = str(graph.nodes["rewrite_current"].attrs["spark.writes_context"].value)
+    assert "context.item.id" in rewrite_writes
+    assert "context.validation.status" in rewrite_writes
 
     plan_prompt = str(graph.nodes["plan_current"].attrs["prompt"].value)
     assert ".specflow/contract-decisions.json" in plan_prompt
@@ -307,6 +326,13 @@ def test_spec_implementation_child_flow_binds_items_to_contract_decisions() -> N
     assert "every decision bound to the current milestone appears in at least one item's decision_ids" in validate_prompt
     assert "survives only in notes" in validate_prompt
     assert "do not use repo-root .specflow/current-milestone.json" in validate_prompt
+    assert "treat success as a pre-dispatch queue state for next_item" in validate_prompt
+    assert "next_item is solely responsible for dispatching work" in validate_prompt
+    assert "stale context.item.*" in validate_prompt
+
+    validate_writes = str(graph.nodes["validate_item_plan"].attrs["spark.writes_context"].value)
+    assert "context.item.id" in validate_writes
+    assert "context.review.summary" in validate_writes
 
 
 def test_spec_implementation_flow_uses_bound_context_for_live_milestone_identity() -> None:
@@ -314,13 +340,16 @@ def test_spec_implementation_flow_uses_bound_context_for_live_milestone_identity
     child_graph = _load_graph("implement-milestone.dot")
 
     child_description = str(child_graph.graph_attrs["spark.description"].value)
-    assert "authoritative child queue state" in child_description
+    assert "authoritative live active-item binding in protected context.item.* keys" in child_description
+    assert "durable child queue ledger" in child_description
     assert "deliverable repository surfaces" in child_description
 
     blocked_prompt = str(child_graph.nodes["blocked_exit"].attrs["prompt"].value)
     assert "Treat context.milestone.id plus the milestone-local state as the authoritative identity" in blocked_prompt
 
     prepare_validation_prompt = str(child_graph.nodes["prepare_validation"].attrs["prompt"].value)
+    assert "authoritative live binding for the running worker" in prepare_validation_prompt
+    assert "durable ledger that must agree with them" in prepare_validation_prompt
     assert "Do not use repo-root .specflow/current-milestone.json or .specflow/state.json.current_milestone_id as the active milestone binding" in prepare_validation_prompt
 
     record_success_prompt = str(child_graph.nodes["record_milestone_success"].attrs["prompt"].value)
@@ -367,7 +396,7 @@ def test_spec_implementation_flow_prompts_encode_repository_integrity_rubric() -
     assert "ambient tooling" in prepare_validation_prompt
     assert "test-only path hacks" in prepare_validation_prompt
     assert "committed manifests" in prepare_validation_prompt
-    assert "Do not edit milestone_dir/state.json or milestone_dir/current-item.json" in prepare_validation_prompt
+    assert "Do not edit milestone_dir/state.json in this node" in prepare_validation_prompt
     assert "Do not write .specflow/validation-result.json" in prepare_validation_prompt
     assert "ordinary repo-local files rather than symlinks or indirections outside the repository root" in prepare_validation_prompt
 
@@ -384,12 +413,17 @@ def test_spec_implementation_flow_prompts_encode_repository_integrity_rubric() -
     assert "mixed-responsibility growth" in review_prompt
 
     active_item_prompt = str(child_graph.nodes["validate_active_item_state"].attrs["prompt"].value)
+    assert "authoritative live binding for the active item" in active_item_prompt
     assert "state.json.current_item_id equals context.item.id" in active_item_prompt
     assert "preferred_label Blocked" in active_item_prompt
 
     validate_item_plan_prompt = str(child_graph.nodes["validate_item_plan"].attrs["prompt"].value)
     assert "at most one item is status=in_progress" in validate_item_plan_prompt
     assert "items with attempts=0 that are already in_progress or completed" in validate_item_plan_prompt
+    assert "require current_item_id to be null" in validate_item_plan_prompt
+    assert "do not promote any pending item to in_progress" in validate_item_plan_prompt
+    assert "do not increment attempts" in validate_item_plan_prompt
+    assert "active-item control-plane corruption" in validate_item_plan_prompt
 
     gate_prompt = str(child_graph.nodes["gate_item_completion"].attrs["prompt"].value)
     assert "state.json.current_item_id" in gate_prompt
@@ -399,6 +433,7 @@ def test_spec_implementation_flow_prompts_encode_repository_integrity_rubric() -
     mark_done_prompt = str(child_graph.nodes["mark_current_done"].attrs["prompt"].value)
     assert "Treat context.item.id as the only item" in mark_done_prompt
     assert "Do not modify any other item status" in mark_done_prompt
+    assert "JSON null" in mark_done_prompt
     assert "preferred_label Blocked" in mark_done_prompt
 
     final_audit_prompt = str(child_graph.nodes["final_milestone_audit"].attrs["prompt"].value)
