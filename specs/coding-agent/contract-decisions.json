@@ -1,0 +1,317 @@
+{
+  "decisions": [
+    {
+      "id": "CD-001",
+      "title": "Agent subpackage inside unified_llm",
+      "summary": "Implement the coding agent as an importable Python library under src/unified_llm/agent, layered on the existing Unified LLM SDK rather than as a separate package, CLI, or wrapper-only layer.",
+      "requirement_ids": ["REQ-001", "REQ-004"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:35",
+        ".spark/spec-implementation/current/spec/source.md:97",
+        ".spark/spec-implementation/current/spec/source.md:111",
+        ".spark/spec-implementation/current/spec/source.md:242"
+      ],
+      "architecture_refs": [
+        "architecture.md#source-of-truth",
+        "architecture.md#canonical-repository-topology",
+        "architecture.md#documented-public-interface"
+      ],
+      "behavioral_contract": "Host applications import and control the agent through unified_llm.agent. The agent exposes programmable sessions, events, profiles, tools, and environments without requiring a CLI entrypoint.",
+      "implementation_contract": "Create src/unified_llm/agent and tests/agent. Build SDK Request objects and call Client.complete or Client.stream directly. Do not call the SDK high-level generate tool loop from the agent loop.",
+      "validation_expectations": "Import tests verify unified_llm.agent exports the stable public API. Fake-client tests prove Session uses low-level complete/stream calls and never depends on a required CLI or high-level generate loop."
+    },
+    {
+      "id": "CD-002",
+      "title": "Async session entrypoint and awaiting-input lifecycle",
+      "summary": "Use async Session.process_input as the canonical Python entrypoint from IDLE and AWAITING_INPUT, with submit allowed only as a same-path convenience for the spec's host terminology.",
+      "requirement_ids": ["REQ-002", "REQ-004", "REQ-014"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:145",
+        ".spark/spec-implementation/current/spec/source.md:167",
+        ".spark/spec-implementation/current/spec/source.md:176",
+        ".spark/spec-implementation/current/spec/source.md:181",
+        ".spark/spec-implementation/current/spec/source.md:184",
+        ".spark/spec-implementation/current/spec/source.md:214",
+        ".spark/spec-implementation/current/spec/source.md:274",
+        ".spark/spec-implementation/current/spec/source.md:366"
+      ],
+      "architecture_refs": [
+        "architecture.md#documented-public-interface",
+        "architecture.md#agent-loop-semantics"
+      ],
+      "behavioral_contract": "A caller can process multiple sequential user inputs on one Session, observe lifecycle transitions, and queue steering or follow-up messages between model/tool rounds. If a text-only assistant response is classified as an open-ended user question, the session transitions to AWAITING_INPUT; the next process_input call records the user's answer and resumes processing on the same history. Queued follow-ups do not run while the session is awaiting an answer.",
+      "implementation_contract": "Implement process_input as the real loop in session.py and allow it from IDLE or AWAITING_INPUT. Text-only responses with no tool calls are classified before completion; the default classifier treats a stripped response ending in '?' as AWAITING_INPUT while allowing provider profiles to supply stricter classification. AWAITING_INPUT stores the pending assistant question, does not emit PROCESSING_END, and does not drain follow-ups until a user answer resumes the loop. If submit is exposed, it must delegate to the same implementation without a separate orchestration layer or divergent behavior.",
+      "validation_expectations": "Session tests exercise process_input and any submit alias through public APIs, verifying history preservation, state transitions, steering injection, follow-up processing, repeated inputs, PROCESSING-to-AWAITING_INPUT on a fake question response, AWAITING_INPUT-to-PROCESSING when an answer is submitted, absence of PROCESSING_END before the answer, and delayed follow-up processing while awaiting input."
+    },
+    {
+      "id": "CD-003",
+      "title": "Agent events are distinct from SDK stream events",
+      "summary": "Represent host-visible agent lifecycle events with EventKind and SessionEvent while consuming SDK StreamEvent values internally for streaming model responses.",
+      "requirement_ids": ["REQ-003", "REQ-004"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:407",
+        ".spark/spec-implementation/current/spec/source.md:412",
+        ".spark/spec-implementation/current/spec/source.md:418",
+        ".spark/spec-implementation/current/spec/source.md:436"
+      ],
+      "architecture_refs": [
+        "architecture.md#implementation-boundaries",
+        "architecture.md#agent-loop-semantics",
+        "architecture.md#documented-public-interface",
+        "architecture.md#validation-strategy"
+      ],
+      "event_kinds": ["SESSION_START", "SESSION_END", "USER_INPUT", "PROCESSING_END", "ASSISTANT_TEXT_START", "ASSISTANT_TEXT_DELTA", "ASSISTANT_TEXT_END", "TOOL_CALL_START", "TOOL_CALL_OUTPUT_DELTA", "TOOL_CALL_END", "STEERING_INJECTED", "TURN_LIMIT", "LOOP_DETECTION", "WARNING", "ERROR"],
+      "behavioral_contract": "Host applications consume an async stream of SessionEvent objects with kind, timestamp, session_id, and data. The public EventKind surface includes every REQ-003 kind: SESSION_START, SESSION_END, USER_INPUT, PROCESSING_END, ASSISTANT_TEXT_START, ASSISTANT_TEXT_DELTA, ASSISTANT_TEXT_END, TOOL_CALL_START, TOOL_CALL_OUTPUT_DELTA, TOOL_CALL_END, STEERING_INJECTED, TURN_LIMIT, LOOP_DETECTION, WARNING, and ERROR. Streaming LLM token deltas are re-emitted as agent assistant text events.",
+      "implementation_contract": "Define agent/events.py separately from unified_llm.types.StreamEvent. Session.stream consumption translates SDK stream lifecycle into ASSISTANT_TEXT_START, ASSISTANT_TEXT_DELTA, ASSISTANT_TEXT_END, tool call, warning, and error events. Tool execution emits TOOL_CALL_START, optional TOOL_CALL_OUTPUT_DELTA when incremental output is available, and exactly one TOOL_CALL_END with full output or full error details for each call.",
+      "validation_expectations": "Event tests assert ordering and payloads through the public event iterator for both non-streaming fake responses and streaming fake SDK events. The event suite must exercise every EventKind, including SESSION_START, SESSION_END, PROCESSING_END, TOOL_CALL_OUTPUT_DELTA, WARNING, and ERROR."
+    },
+    {
+      "id": "CD-004",
+      "title": "Reuse SDK types at the boundary",
+      "summary": "Agent internals may define agent-specific records, but model communication and tool continuation use the existing SDK Client, Request, Response, Message, Tool, ToolCall, ToolResult, StreamEvent, Usage, and FinishReason types.",
+      "requirement_ids": ["REQ-001", "REQ-002", "REQ-004", "REQ-005"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:111",
+        ".spark/spec-implementation/current/spec/source.md:126",
+        ".spark/spec-implementation/current/spec/source.md:242",
+        ".spark/spec-implementation/current/spec/source.md:338"
+      ],
+      "architecture_refs": [
+        "architecture.md#implementation-boundaries",
+        "architecture.md#documented-public-interface",
+        "architecture.md#agent-loop-semantics"
+      ],
+      "behavioral_contract": "Agent sessions preserve their own typed history while every LLM request, response, tool call, tool result, usage value, and streaming event crossing the SDK boundary uses the unified SDK data model.",
+      "implementation_contract": "history.py converts UserTurn, AssistantTurn, ToolResultsTurn, SystemTurn, and SteeringTurn to SDK Message values. tool_execution.py returns SDK ToolResult-compatible values, and profiles expose SDK Tool-compatible definitions.",
+      "validation_expectations": "Fake-client tests inspect captured Request objects and ToolResult continuations. History conversion tests verify roles, tool call/result content, reasoning, usage, and steering-as-user semantics."
+    },
+    {
+      "id": "CD-005",
+      "title": "Execution environment owns side effects",
+      "summary": "All file, command, search, glob, lifecycle, and metadata operations pass through ExecutionEnvironment, with LocalExecutionEnvironment as the required concrete implementation.",
+      "requirement_ids": ["REQ-006", "REQ-007", "REQ-017"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:52",
+        ".spark/spec-implementation/current/spec/source.md:724",
+        ".spark/spec-implementation/current/spec/source.md:729",
+        ".spark/spec-implementation/current/spec/source.md:757"
+      ],
+      "architecture_refs": [
+        "architecture.md#implementation-boundaries",
+        "architecture.md#tool-execution-and-output-contract"
+      ],
+      "behavioral_contract": "Changing where tools run does not require changing tool logic. Local execution resolves paths relative to working_directory, captures command output, enforces timeouts, filters environment variables, and exposes grep/glob behavior.",
+      "implementation_contract": "Define environment.py protocols and local_environment.py implementation. Built-in tools call the environment protocol only. Alternative environments remain extension points and are not primary shims for local behavior.",
+      "validation_expectations": "Environment tests use temporary directories and real public methods to verify filesystem effects, command stdout/stderr/exit/duration, timeout termination, env filtering, grep fallback, ripgrep use where available, and mtime-sorted glob results."
+    },
+    {
+      "id": "CD-006",
+      "title": "Provider profiles own model-facing tool surfaces",
+      "summary": "Shared tool behavior is reused internally, but OpenAI, Anthropic, and Gemini profiles expose provider-native tool names, schemas, edit mechanisms, timeout defaults, grep modes, multimodal read capabilities, prompts, and provider options.",
+      "requirement_ids": ["REQ-006", "REQ-009", "REQ-010", "REQ-011", "REQ-012", "REQ-014", "REQ-016"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:465",
+        ".spark/spec-implementation/current/spec/source.md:471",
+        ".spark/spec-implementation/current/spec/source.md:509",
+        ".spark/spec-implementation/current/spec/source.md:591",
+        ".spark/spec-implementation/current/spec/source.md:624",
+        ".spark/spec-implementation/current/spec/source.md:626",
+        ".spark/spec-implementation/current/spec/source.md:637",
+        ".spark/spec-implementation/current/spec/source.md:645",
+        ".spark/spec-implementation/current/spec/source.md:647",
+        ".spark/spec-implementation/current/spec/source.md:665",
+        ".spark/spec-implementation/current/spec/source.md:1060"
+      ],
+      "architecture_refs": [
+        "architecture.md#provider-profile-contracts",
+        "architecture.md#tool-execution-and-output-contract",
+        "architecture.md#repository-hygiene-expectations",
+        "architecture.md#requirement-dependencies-and-milestone-flow"
+      ],
+      "behavioral_contract": "OpenAI models receive apply_patch-oriented codex-style tools, Anthropic models receive old_string/new_string edit_file tools plus grep output modes content/files_with_matches/count, and Gemini models receive gemini-cli-style tools. Completed profiles expose working subagent tools backed by the shared REQ-016 runtime rather than schema-only placeholders. Multimodal read_file image output is available only for profiles that advertise that capability; other profiles return recoverable binary-file errors. Custom registrations override previous tools by name.",
+      "implementation_contract": "Build profile modules for openai, anthropic, and gemini. Keep provider-specific schemas, timeout defaults, grep modes, image-read capability flags, and provider-option mapping in those modules while delegating common filesystem/search/command work to builtin_tools.py. Session requests always include the SDK reasoning_effort field when configured; profiles add provider-native reasoning or thinking options only when explicitly supported or configured, with OpenAI mapping to reasoning.effort.",
+      "validation_expectations": "Profile tests assert exposed tool names, schema roots, custom override behavior, provider-specific default shell timeouts, Anthropic grep output modes, multimodal image read capability gating, provider options including reasoning-effort mapping where applicable, and edit-format differences without requiring live model calls. Provider profile completion also requires subagent tool execution through the shared runtime after REQ-016 is implemented."
+    },
+    {
+      "id": "CD-007",
+      "title": "Provider alignment is behavioral, not brittle prompt text",
+      "summary": "The architecture preserves the provider-native affordances required by the spec without making tests depend on byte-for-byte external CLI prompt text or vendored reference-agent files.",
+      "requirement_ids": ["REQ-009", "REQ-010", "REQ-011", "REQ-012", "REQ-013"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:471",
+        ".spark/spec-implementation/current/spec/source.md:622",
+        ".spark/spec-implementation/current/spec/source.md:643",
+        ".spark/spec-implementation/current/spec/source.md:663",
+        ".spark/spec-implementation/current/spec/source.md:987"
+      ],
+      "architecture_refs": [
+        "architecture.md#provider-profile-contracts",
+        "architecture.md#system-prompt-and-project-context",
+        "architecture.md#validation-strategy"
+      ],
+      "behavioral_contract": "Prompts cover provider-specific identity, tool usage, edit guidance, project instruction conventions, and coding guidance. Model-facing tool affordances remain provider-specific even if prompt prose changes.",
+      "implementation_contract": "Assemble prompts from structured layers and profile-specific base instructions. Do not vendor changing upstream CLI prompts as a hidden runtime dependency. Avoid universal prompt tests.",
+      "validation_expectations": "Prompt tests verify required layers, ordering, environment data, tool descriptions, provider-specific document filtering, and required guidance topics rather than complete prompt strings."
+    },
+    {
+      "id": "CD-008",
+      "title": "Tool errors are recoverable model feedback",
+      "summary": "Unknown tools, validation failures, filesystem errors, shell failures, timeouts, edit conflicts, and executor exceptions become is_error ToolResult values instead of uncaught loop failures.",
+      "requirement_ids": ["REQ-005", "REQ-006", "REQ-017"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:338",
+        ".spark/spec-implementation/current/spec/source.md:397",
+        ".spark/spec-implementation/current/spec/source.md:1407"
+      ],
+      "architecture_refs": [
+        "architecture.md#tool-execution-and-output-contract",
+        "architecture.md#error-handling-and-shutdown"
+      ],
+      "behavioral_contract": "The model receives actionable error results and can recover in a later turn. Host applications still receive complete tool-end event data and useful logs for diagnostics.",
+      "implementation_contract": "tool_execution.py catches tool-level failures, logs unexpected executor exceptions, emits TOOL_CALL_END with full error data, and returns SDK ToolResult-compatible values with is_error=True.",
+      "validation_expectations": "Tool execution tests cover unknown names, invalid JSON/schema arguments, file-not-found, permission-like failures, edit conflicts, nonzero shell exits, timeouts, and executor exceptions through public results and events."
+    },
+    {
+      "id": "CD-009",
+      "title": "Truncation is only model-facing",
+      "summary": "The LLM receives deterministically truncated tool output, while TOOL_CALL_END events always carry the full untruncated output or full error information.",
+      "requirement_ids": ["REQ-003", "REQ-005", "REQ-008"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:436",
+        ".spark/spec-implementation/current/spec/source.md:852",
+        ".spark/spec-implementation/current/spec/source.md:883",
+        ".spark/spec-implementation/current/spec/source.md:898"
+      ],
+      "architecture_refs": [
+        "architecture.md#tool-execution-and-output-contract",
+        "architecture.md#validation-strategy"
+      ],
+      "behavioral_contract": "Hosts can inspect complete tool output even when the model context receives an abbreviated result with an explicit truncation marker.",
+      "implementation_contract": "truncation.py applies character limits before line limits using the configured per-tool defaults and overrides. tool_execution.py emits full raw output before returning truncated ToolResult content.",
+      "validation_expectations": "Truncation tests include long single-line outputs, head_tail and tail modes, default per-tool character and line limits, config overrides, and event payloads proving full output remains available."
+    },
+    {
+      "id": "CD-010",
+      "title": "Project instructions are profile-filtered",
+      "summary": "Project document discovery always includes AGENTS.md and includes provider-specific instruction files only for the active provider profile.",
+      "requirement_ids": ["REQ-013"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:987",
+        ".spark/spec-implementation/current/spec/source.md:1031",
+        ".spark/spec-implementation/current/spec/source.md:1040"
+      ],
+      "architecture_refs": [
+        "architecture.md#system-prompt-and-project-context"
+      ],
+      "behavioral_contract": "The model receives relevant project instructions in deterministic precedence order without leaking conventions intended for a different provider profile.",
+      "implementation_contract": "project_docs.py walks from git root or working directory to the active working directory, loads root files before deeper files, applies the 32KB budget, and appends the specified truncation marker on overflow.",
+      "validation_expectations": "Project document tests create nested temporary repositories and assert AGENTS.md inclusion, provider-specific file filtering, ordering, truncation marker behavior, and budget enforcement."
+    },
+    {
+      "id": "CD-011",
+      "title": "Loop controls preserve history",
+      "summary": "Round limits, turn limits, context warnings, loop detection, steering, and follow-ups are session orchestration behavior rather than provider-profile behavior.",
+      "requirement_ids": ["REQ-004", "REQ-008", "REQ-014", "REQ-015"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:214",
+        ".spark/spec-implementation/current/spec/source.md:224",
+        ".spark/spec-implementation/current/spec/source.md:274",
+        ".spark/spec-implementation/current/spec/source.md:286",
+        ".spark/spec-implementation/current/spec/source.md:969"
+      ],
+      "architecture_refs": [
+        "architecture.md#agent-loop-semantics",
+        "architecture.md#requirement-dependencies-and-milestone-flow"
+      ],
+      "behavioral_contract": "Limits and warnings are observable through events and history. They stop or steer processing without erasing prior turns, unless shutdown closes the session.",
+      "implementation_contract": "session.py owns limit checks, steering queues, follow-up queues, reasoning_effort pass-through, context warning checks, and integration with loop_detection.py after tool rounds.",
+      "validation_expectations": "Loop tests verify max tool rounds, max turns, repeated pattern detection for pattern lengths 1-3, disabled detection, context warning threshold, steering FIFO order, follow-up sequencing, and reasoning changes on the next request."
+    },
+    {
+      "id": "CD-012",
+      "title": "Subagents are child sessions sharing execution environment",
+      "summary": "Subagent tools create independent child Session objects that share the parent's ExecutionEnvironment and are limited by max_subagent_depth.",
+      "requirement_ids": ["REQ-004", "REQ-005", "REQ-007", "REQ-016", "REQ-017"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:1060",
+        ".spark/spec-implementation/current/spec/source.md:1069",
+        ".spark/spec-implementation/current/spec/source.md:1085",
+        ".spark/spec-implementation/current/spec/source.md:1098"
+      ],
+      "architecture_refs": [
+        "architecture.md#implementation-boundaries",
+        "architecture.md#requirement-dependencies-and-milestone-flow"
+      ],
+      "behavioral_contract": "A parent session can spawn a child for scoped work, send input, wait for a result, and close it. Child history is independent, filesystem effects are shared through the environment, and recursive spawning is blocked by depth limits.",
+      "implementation_contract": "subagents.py owns handles, statuses, result records, asyncio task scheduling, depth enforcement, child config derivation, model override handling, and shutdown cleanup. Tool schemas remain provider-profile registrations.",
+      "validation_expectations": "Subagent tests verify spawn_agent, send_input, wait, close_agent, independent history, shared filesystem effects, scoped working_dir behavior, max_turns override, depth blocking, failed child handling, and cleanup during shutdown."
+    },
+    {
+      "id": "CD-013",
+      "title": "SDK owns provider retry policy",
+      "summary": "The agent loop delegates transient provider retry behavior to the Unified LLM SDK layer and handles only agent-level recovery, warnings, terminal errors, and cleanup.",
+      "requirement_ids": ["REQ-004", "REQ-017"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:397",
+        ".spark/spec-implementation/current/spec/source.md:1407",
+        ".spark/spec-implementation/current/spec/source.md:1423",
+        ".spark/spec-implementation/current/spec/source.md:1436"
+      ],
+      "architecture_refs": [
+        "architecture.md#error-handling-and-shutdown"
+      ],
+      "behavioral_contract": "Tool errors remain recoverable within the agent loop. Authentication errors close the session. Context-length errors emit warnings. Transient provider retries are not duplicated in the agent.",
+      "implementation_contract": "session.py catches SDK AuthenticationError and ContextLengthError for specified session behavior, lets SDK retryable provider behavior remain below Client.complete/stream, and logs unexpected terminal failures before shutdown.",
+      "validation_expectations": "Error handling tests use fake clients raising SDK errors to verify ERROR events, WARNING events, CLOSED transitions, preserved exceptions, no duplicate retry loop, and graceful shutdown side effects."
+    },
+    {
+      "id": "CD-014",
+      "title": "Deterministic validation by default",
+      "summary": "The default validation gate uses uv, pytest, and ruff without live API keys or network access; live smoke tests are explicitly gated.",
+      "requirement_ids": ["REQ-001", "REQ-018"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:1151",
+        ".spark/spec-implementation/current/spec/source.md:1247",
+        ".spark/spec-implementation/current/spec/source.md:1269"
+      ],
+      "architecture_refs": [
+        "architecture.md#validation-strategy",
+        "architecture.md#repository-hygiene-expectations"
+      ],
+      "behavioral_contract": "uv run pytest -q is the required deterministic completion gate. uv run ruff check . is the lint gate. Live provider smoke tests run only when explicitly selected and credentials are present.",
+      "implementation_contract": "Place deterministic tests under tests/agent and mark or skip live smoke tests by default. Use fake clients, fake streams, temporary filesystems, and public API assertions.",
+      "validation_expectations": "The default suite passes without provider credentials. Cross-provider parity tests assert observable filesystem effects, events, ToolResults, and session states rather than prompt text or source strings."
+    },
+    {
+      "id": "CD-015",
+      "title": "Subagent runtime precedes provider profile completion",
+      "summary": "Complete the shared subagent runtime before marking OpenAI, Anthropic, or Gemini profile requirements complete, so profile subagent tools are working behavior rather than schema-only affordances.",
+      "requirement_ids": ["REQ-010", "REQ-011", "REQ-012", "REQ-016"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:591",
+        ".spark/spec-implementation/current/spec/source.md:624",
+        ".spark/spec-implementation/current/spec/source.md:626",
+        ".spark/spec-implementation/current/spec/source.md:647",
+        ".spark/spec-implementation/current/spec/source.md:1060",
+        ".spark/spec-implementation/current/spec/source.md:1069",
+        ".spark/spec-implementation/current/spec/source.md:1098",
+        ".spark/spec-implementation/current/spec/source.md:1223"
+      ],
+      "architecture_refs": [
+        "architecture.md#provider-profile-contracts",
+        "architecture.md#requirement-dependencies-and-milestone-flow",
+        "architecture.md#validation-strategy"
+      ],
+      "milestone_resolution": {
+        "strategy": "move_subagent_runtime_before_provider_profile_completion",
+        "subagent_runtime_gate": "M4",
+        "provider_profile_completion_gate": "M5",
+        "schema_only_profile_checks_allowed_before_runtime": false,
+        "requirements_completed_after_req_016": ["REQ-010", "REQ-011", "REQ-012"]
+      },
+      "behavioral_contract": "Each completed provider profile exposes spawn_agent, send_input, wait, and close_agent, or the profile-native equivalent subagent surface, as working tools backed by child Session objects. Hosts can invoke those tools through the same ToolRegistry execution path as other tools.",
+      "implementation_contract": "Implement subagents.py and common subagent tool executors after the core loop and before final profile completion. Provider profile modules may share registration helpers, but no profile requirement is complete with schema-only or not-implemented subagent tools.",
+      "validation_expectations": "Subagent tests must pass before provider profile requirements are closed. Profile tests validate subagent tool names and schemas for each provider, and end-to-end tests invoke spawn, send_input when applicable, wait, and close through the profile-exposed tools using fake child sessions or deterministic fake clients."
+    }
+  ]
+}

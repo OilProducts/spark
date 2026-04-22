@@ -1,0 +1,675 @@
+{
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:3",
+        ".spark/spec-implementation/current/spec/source.md:5",
+        ".spark/spec-implementation/current/spec/source.md:35",
+        ".spark/spec-implementation/current/spec/source.md:97",
+        ".spark/spec-implementation/current/spec/source.md:111"
+      ],
+      "title": "Agent library package and SDK integration",
+      "summary": "Implement the coding agent as a Python library layered on the existing Unified LLM SDK, using low-level Client.complete and Client.stream rather than the SDK high-level generate loop.",
+      "acceptance_criteria": [
+        "A Python package module for the agent loop is importable from the existing src layout without adding a required CLI entrypoint.",
+        "The public agent API exposes sessions, configuration, provider profiles, execution environments, events, and built-in tool registration points.",
+        "The implementation imports and uses Unified LLM SDK Client, Request, Response, Message, ContentPart, Role, Tool, ToolCall, ToolResult, StreamEvent, Usage, and FinishReason types where applicable.",
+        "Agent model turns are executed through low-level Client.complete and Client.stream calls and do not call the SDK high-level generate tool loop.",
+        "Validation remains uv-compatible with pytest and ruff, and library diagnostics use standard library logging instead of direct printing."
+      ],
+      "dependencies": [],
+      "target_paths": [
+        "pyproject.toml",
+        "src/unified_llm/agent/__init__.py",
+        "src/unified_llm/agent/",
+        "tests/agent/"
+      ],
+      "status": "completed",
+      "milestone_id": "M1",
+      "notes": "Applies state constraints: Python implementation, Python package layout with pyproject.toml, uv/pytest validation, ruff linting, logging, and handled or appropriately logged exceptions."
+    },
+    {
+      "id": "REQ-002",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:126",
+        ".spark/spec-implementation/current/spec/source.md:131",
+        ".spark/spec-implementation/current/spec/source.md:145",
+        ".spark/spec-implementation/current/spec/source.md:161",
+        ".spark/spec-implementation/current/spec/source.md:184"
+      ],
+      "title": "Session, configuration, lifecycle, and turn records",
+      "summary": "Define the core session state model, configurable limits/defaults, lifecycle states, and typed conversation turn records used by the agent loop.",
+      "acceptance_criteria": [
+        "Session instances carry a UUID, ProviderProfile, ExecutionEnvironment, ordered history, event emitter, SessionConfig, SessionState, Unified LLM Client, steering queue, follow-up queue, and active subagent map.",
+        "SessionConfig implements defaults for unlimited max_turns and max_tool_rounds_per_input, 10000 ms default command timeout, 600000 ms max command timeout, nullable reasoning_effort, tool output and line limits, loop detection enabled, loop detection window 10, and max_subagent_depth 1.",
+        "SessionState represents IDLE, PROCESSING, AWAITING_INPUT, and CLOSED with transitions matching submit, natural completion, turn limit, unrecoverable error, explicit close, abort, and user answer flows.",
+        "UserTurn, AssistantTurn, ToolResultsTurn, SystemTurn, and SteeringTurn preserve the required content, tool calls, reasoning, usage, response ID, result list, and timestamp fields.",
+        "Session construction, lifecycle updates, and turn appends are observable through public APIs and tests without requiring live provider calls."
+      ],
+      "dependencies": [
+        "REQ-001"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/session.py",
+        "src/unified_llm/agent/types.py",
+        "tests/agent/test_session.py"
+      ],
+      "status": "completed",
+      "milestone_id": "M1",
+      "notes": "Use Python dataclasses, enums, or protocols consistent with the existing SDK style."
+    },
+    {
+      "id": "REQ-003",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:37",
+        ".spark/spec-implementation/current/spec/source.md:54",
+        ".spark/spec-implementation/current/spec/source.md:407",
+        ".spark/spec-implementation/current/spec/source.md:412",
+        ".spark/spec-implementation/current/spec/source.md:418",
+        ".spark/spec-implementation/current/spec/source.md:436",
+        ".spark/spec-implementation/current/spec/source.md:1232"
+      ],
+      "title": "Typed session event stream",
+      "summary": "Emit every agent action through a typed async event stream suitable for host applications, UIs, logs, and tests.",
+      "acceptance_criteria": [
+        "SessionEvent includes kind, timestamp, session_id, and a data mapping.",
+        "EventKind includes SESSION_START, SESSION_END, USER_INPUT, PROCESSING_END, ASSISTANT_TEXT_START, ASSISTANT_TEXT_DELTA, ASSISTANT_TEXT_END, TOOL_CALL_START, TOOL_CALL_OUTPUT_DELTA, TOOL_CALL_END, STEERING_INJECTED, TURN_LIMIT, LOOP_DETECTION, WARNING, and ERROR.",
+        "Events are delivered through an async iterator or equivalent Python async interface without requiring polling private state.",
+        "SESSION_START and SESSION_END bracket a session lifecycle, and PROCESSING_END is emitted when a processing cycle returns to IDLE.",
+        "TOOL_CALL_END carries the full untruncated tool output or full error information even when the ToolResult sent back to the model is truncated.",
+        "Tests assert event ordering and payload content through public event consumption APIs."
+      ],
+      "dependencies": [
+        "REQ-002"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/events.py",
+        "src/unified_llm/agent/session.py",
+        "tests/agent/test_events.py"
+      ],
+      "status": "completed",
+      "milestone_id": "M1",
+      "notes": "Streaming token deltas are part of the event contract even when a specific test uses a non-streaming fake client."
+    },
+    {
+      "id": "REQ-004",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:214",
+        ".spark/spec-implementation/current/spec/source.md:219",
+        ".spark/spec-implementation/current/spec/source.md:242",
+        ".spark/spec-implementation/current/spec/source.md:260",
+        ".spark/spec-implementation/current/spec/source.md:263",
+        ".spark/spec-implementation/current/spec/source.md:274",
+        ".spark/spec-implementation/current/spec/source.md:296",
+        ".spark/spec-implementation/current/spec/source.md:397",
+        ".spark/spec-implementation/current/spec/source.md:1155",
+        ".spark/spec-implementation/current/spec/source.md:1463"
+      ],
+      "title": "Core agentic processing loop",
+      "summary": "Implement process_input as the autonomous turn loop that builds provider-profile requests, calls the low-level LLM client, records assistant turns, executes tool rounds, handles limits, and returns to idle on completion.",
+      "acceptance_criteria": [
+        "process_input appends a UserTurn, emits USER_INPUT, drains pending steering, and enters PROCESSING.",
+        "Each model step builds a Request with provider-profile system prompt, converted session history, profile tool definitions, auto tool choice, current reasoning_effort, provider ID, and profile provider_options.",
+        "The loop calls Client.complete for non-streaming operation and supports Client.stream for streaming operation while preserving the same tool-round semantics.",
+        "Assistant responses append AssistantTurn records containing text, tool calls, reasoning, usage, response ID, and timestamp, then emit assistant text events.",
+        "A response with no tool calls is natural completion and exits the loop.",
+        "max_tool_rounds_per_input and max_turns stop processing by emitting TURN_LIMIT and leaving the session in IDLE with accumulated history preserved.",
+        "Abort signals stop processing, close/cancel active LLM streams and tool processes through the shutdown path, and transition the session to CLOSED.",
+        "Queued follow-up messages are processed as a new input after the current input naturally completes.",
+        "Multiple sequential submit/process cycles work on one session without losing prior history."
+      ],
+      "dependencies": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-005",
+        "REQ-009",
+        "REQ-013",
+        "REQ-014"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/session.py",
+        "src/unified_llm/agent/history.py",
+        "tests/agent/test_agent_loop.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M3",
+      "notes": "Use fake LLM clients in deterministic tests; live provider behavior belongs to the smoke-test requirement."
+    },
+    {
+      "id": "REQ-005",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:328",
+        ".spark/spec-implementation/current/spec/source.md:338",
+        ".spark/spec-implementation/current/spec/source.md:344",
+        ".spark/spec-implementation/current/spec/source.md:360",
+        ".spark/spec-implementation/current/spec/source.md:667",
+        ".spark/spec-implementation/current/spec/source.md:687",
+        ".spark/spec-implementation/current/spec/source.md:709",
+        ".spark/spec-implementation/current/spec/source.md:1175",
+        ".spark/spec-implementation/current/spec/source.md:1409"
+      ],
+      "title": "Tool registry and execution pipeline",
+      "summary": "Implement provider-profile tool registration, lookup, schema validation, execution, truncation, event emission, and error-result conversion.",
+      "acceptance_criteria": [
+        "ToolDefinition includes a unique name, LLM-facing description, and a JSON Schema parameters object whose root type is object.",
+        "RegisteredTool couples a ToolDefinition with an executor callable that receives parsed arguments and an ExecutionEnvironment.",
+        "ToolRegistry supports register, unregister, get, definitions, and names, with later registrations replacing earlier tools of the same name.",
+        "Tool execution looks up tools by name, validates arguments against the registered schema, executes with the active execution environment, truncates model-facing output, emits TOOL_CALL_START and TOOL_CALL_END, and returns ToolResult values.",
+        "Unknown tools, invalid arguments, and executor exceptions are caught and returned to the LLM as is_error=true ToolResult values rather than uncaught exceptions.",
+        "Profiles that support parallel tool calls execute multiple calls concurrently, wait for all results, and preserve the original tool-call result order.",
+        "Tool execution failures are logged at an appropriate level when diagnostics are useful while preserving recoverable error results for the model."
+      ],
+      "dependencies": [
+        "REQ-003",
+        "REQ-007",
+        "REQ-008"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/tools.py",
+        "src/unified_llm/agent/tool_execution.py",
+        "tests/agent/test_tool_registry.py",
+        "tests/agent/test_tool_execution.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M2",
+      "notes": "Use jsonschema already present in the project for deterministic argument validation where practical."
+    },
+    {
+      "id": "REQ-006",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:490",
+        ".spark/spec-implementation/current/spec/source.md:494",
+        ".spark/spec-implementation/current/spec/source.md:511",
+        ".spark/spec-implementation/current/spec/source.md:525",
+        ".spark/spec-implementation/current/spec/source.md:543",
+        ".spark/spec-implementation/current/spec/source.md:560",
+        ".spark/spec-implementation/current/spec/source.md:577",
+        ".spark/spec-implementation/current/spec/source.md:1175"
+      ],
+      "title": "Shared core tool behavior",
+      "summary": "Provide the file, command, search, and glob tool functionality shared by provider profiles, while allowing provider-specific schemas and output conventions.",
+      "acceptance_criteria": [
+        "read_file reads text files through the execution environment, returns line-numbered content in NNN | content format, supports 1-based offset and limit with default limit 2000, reports file-not-found, permission, and binary-file errors as tool errors, and returns image data for multimodal-capable profiles where supported.",
+        "write_file writes full file content through the execution environment, creates parent directories when needed, and returns a confirmation including bytes written.",
+        "edit_file performs exact old_string/new_string replacement with replace_all defaulting false, reports not found, not unique, file-not-found, and permission outcomes, and may surface fuzzy match information without silently applying ambiguous edits.",
+        "shell executes commands through the execution environment, accepts command, timeout_ms, and description arguments, and returns stdout, stderr, exit code, timeout state, and duration in the profile's expected format.",
+        "grep searches with regex pattern, optional path, glob_filter, case_insensitive, and max_results default 100, returning file paths and line numbers while reporting invalid regex or missing path as tool errors.",
+        "glob returns matching paths under an optional base path sorted by newest modification time first and reports invalid pattern or missing path as tool errors.",
+        "Shared tool tests exercise observable filesystem effects and command/search outputs rather than implementation text."
+      ],
+      "dependencies": [
+        "REQ-005",
+        "REQ-007"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/builtin_tools.py",
+        "src/unified_llm/agent/tools.py",
+        "tests/agent/test_builtin_tools.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M4",
+      "notes": "Provider profiles may expose different schemas while delegating to these shared capabilities."
+    },
+    {
+      "id": "REQ-007",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:52",
+        ".spark/spec-implementation/current/spec/source.md:724",
+        ".spark/spec-implementation/current/spec/source.md:729",
+        ".spark/spec-implementation/current/spec/source.md:757",
+        ".spark/spec-implementation/current/spec/source.md:770",
+        ".spark/spec-implementation/current/spec/source.md:776",
+        ".spark/spec-implementation/current/spec/source.md:783",
+        ".spark/spec-implementation/current/spec/source.md:788",
+        ".spark/spec-implementation/current/spec/source.md:826",
+        ".spark/spec-implementation/current/spec/source.md:1183",
+        ".spark/spec-implementation/current/spec/source.md:1457",
+        ".spark/spec-implementation/current/spec/source.md:1465",
+        ".spark/spec-implementation/current/spec/source.md:1467"
+      ],
+      "title": "Execution environment abstraction and local environment",
+      "summary": "Implement the ExecutionEnvironment interface and required LocalExecutionEnvironment for filesystem, command, search, lifecycle, and metadata operations.",
+      "acceptance_criteria": [
+        "ExecutionEnvironment exposes read_file, write_file, file_exists, list_directory, exec_command, grep, glob, initialize, cleanup, working_directory, platform, and os_version methods.",
+        "ExecResult preserves stdout, stderr, exit_code, timed_out, and duration_ms; DirEntry preserves name, is_dir, and optional size.",
+        "LocalExecutionEnvironment resolves file paths relative to its working directory and performs direct filesystem reads, writes, existence checks, and directory listings.",
+        "Local command execution uses the platform default shell, starts a new process group where supported, captures stdout and stderr separately, records wall-clock duration, and combines output for tool consumption.",
+        "Command timeout defaults to 10000 ms, is bounded by max_command_timeout_ms 600000, and on timeout sends SIGTERM, waits 2 seconds, sends SIGKILL if needed, and returns partial output with the specified timeout message.",
+        "Default environment variable filtering excludes case-insensitive *_API_KEY, *_SECRET, *_TOKEN, *_PASSWORD, and *_CREDENTIAL while retaining core variables such as PATH, HOME, USER, SHELL, LANG, TERM, TMPDIR, and language-specific path variables.",
+        "Environment inheritance policy supports inherit all, inherit none, and inherit core only behavior.",
+        "grep uses ripgrep when available and falls back to a Python regex implementation; glob uses filesystem globbing.",
+        "Execution environments can be wrapped for logging or read-only behavior without changing tool implementations."
+      ],
+      "dependencies": [
+        "REQ-002"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/environment.py",
+        "src/unified_llm/agent/local_environment.py",
+        "tests/agent/test_environment.py",
+        "tests/agent/test_local_environment.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M2",
+      "notes": "Docker, Kubernetes, WASM, and SSH environments are extension examples, not required concrete implementations for this run."
+    },
+    {
+      "id": "REQ-008",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:348",
+        ".spark/spec-implementation/current/spec/source.md:436",
+        ".spark/spec-implementation/current/spec/source.md:852",
+        ".spark/spec-implementation/current/spec/source.md:859",
+        ".spark/spec-implementation/current/spec/source.md:883",
+        ".spark/spec-implementation/current/spec/source.md:898",
+        ".spark/spec-implementation/current/spec/source.md:919",
+        ".spark/spec-implementation/current/spec/source.md:969",
+        ".spark/spec-implementation/current/spec/source.md:1192",
+        ".spark/spec-implementation/current/spec/source.md:1432",
+        ".spark/spec-implementation/current/spec/source.md:1459",
+        ".spark/spec-implementation/current/spec/source.md:1461"
+      ],
+      "title": "Tool output truncation and context usage warnings",
+      "summary": "Apply deterministic model-facing tool output truncation while keeping full output available to hosts, and emit context-window warning events without automatic compaction.",
+      "acceptance_criteria": [
+        "Tool output truncation runs before ToolResult content is sent back to the LLM and never truncates TOOL_CALL_END event output.",
+        "Character-based truncation always runs before line-based truncation and handles large single-line outputs.",
+        "head_tail truncation keeps the beginning and end of output and inserts a warning that says how many characters were removed from the middle and that full output is available in the event stream.",
+        "tail truncation keeps the final max_chars characters and inserts a warning that says how many leading characters were removed and that full output is available in the event stream.",
+        "Default character limits are read_file 50000 head_tail, shell 30000 head_tail, grep 20000 tail, glob 20000 tail, edit_file 10000 tail, apply_patch 10000 tail, write_file 1000 tail, and spawn_agent 20000 head_tail.",
+        "Default line limits are shell 256, grep 200, glob 500, read_file None, and edit_file None, applied after character truncation using a head/tail omitted-lines marker.",
+        "SessionConfig tool_output_limits and tool_line_limits override defaults per tool.",
+        "Approximate context usage uses the 1 token per 4 characters heuristic and emits WARNING when history exceeds 80 percent of provider_profile.context_window_size.",
+        "Context warning behavior does not automatically compact or summarize conversation history."
+      ],
+      "dependencies": [
+        "REQ-002",
+        "REQ-003"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/truncation.py",
+        "src/unified_llm/agent/context.py",
+        "tests/agent/test_truncation.py",
+        "tests/agent/test_context_usage.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M2",
+      "notes": "Tests should include pathological long-line output and verify the event stream remains untruncated."
+    },
+    {
+      "id": "REQ-009",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:29",
+        ".spark/spec-implementation/current/spec/source.md:50",
+        ".spark/spec-implementation/current/spec/source.md:465",
+        ".spark/spec-implementation/current/spec/source.md:471",
+        ".spark/spec-implementation/current/spec/source.md:667",
+        ".spark/spec-implementation/current/spec/source.md:1166",
+        ".spark/spec-implementation/current/spec/source.md:1455"
+      ],
+      "title": "ProviderProfile abstraction and extensibility",
+      "summary": "Represent provider-aligned model families with profile objects that supply native tool definitions, prompts, provider options, and capability flags while supporting custom tool overrides.",
+      "acceptance_criteria": [
+        "ProviderProfile exposes id, model, tool_registry, build_system_prompt(environment, project_docs), tools(), provider_options(), supports_reasoning, supports_streaming, supports_parallel_tool_calls, and context_window_size.",
+        "OpenAI, Anthropic, and Gemini profile factories can be created with model identifiers and return profiles with provider-specific tool registries.",
+        "Provider profile tools produce ToolDefinition objects suitable for the Unified LLM SDK Request tools field.",
+        "Custom tools can be registered on top of a profile after creation.",
+        "When a custom tool name collides with a built-in profile tool, the latest registration overrides the previous tool.",
+        "Provider profiles preserve provider-native model-facing affordances rather than forcing a single universal edit or shell schema."
+      ],
+      "dependencies": [
+        "REQ-005"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/profiles/base.py",
+        "src/unified_llm/agent/profiles/__init__.py",
+        "tests/agent/test_provider_profiles.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M2",
+      "notes": "Exact native prompt/tool byte-for-byte fidelity may depend on externally maintained reference agents; tests should verify required observable profile behavior and included tool names."
+    },
+    {
+      "id": "REQ-010",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:591",
+        ".spark/spec-implementation/current/spec/source.md:595",
+        ".spark/spec-implementation/current/spec/source.md:599",
+        ".spark/spec-implementation/current/spec/source.md:613",
+        ".spark/spec-implementation/current/spec/source.md:622",
+        ".spark/spec-implementation/current/spec/source.md:624",
+        ".spark/spec-implementation/current/spec/source.md:1168",
+        ".spark/spec-implementation/current/spec/source.md:1315",
+        ".spark/spec-implementation/current/spec/source.md:1319",
+        ".spark/spec-implementation/current/spec/source.md:1340",
+        ".spark/spec-implementation/current/spec/source.md:1382",
+        ".spark/spec-implementation/current/spec/source.md:1388"
+      ],
+      "title": "OpenAI codex-rs-aligned profile and apply_patch",
+      "summary": "Implement the OpenAI provider profile with codex-rs-aligned tools and a v4a apply_patch implementation for model-preferred code edits.",
+      "acceptance_criteria": [
+        "The OpenAI profile targets GPT-5+ and codex-family models and exposes read_file, apply_patch, write_file, shell, grep, glob, spawn_agent, send_input, wait, and close_agent tools.",
+        "OpenAI file modifications prefer apply_patch; edit_file is not exposed as the primary edit mechanism for this profile.",
+        "The OpenAI shell tool uses a 10000 ms default timeout unless explicitly overridden and respects max_command_timeout_ms.",
+        "The OpenAI system prompt includes identity, tool usage guidelines, apply_patch format expectations, and coding best practices.",
+        "When SessionConfig.reasoning_effort is configured, OpenAI provider options include reasoning.effort in the request path used by the profile.",
+        "apply_patch parses patches with Begin Patch and End Patch markers and supports add file, delete file, update file, update plus rename, and multiple hunks in one update block.",
+        "apply_patch hunk matching uses context hints plus context lines and reports parse, missing file, and verification errors as tool errors.",
+        "When exact hunk matching fails, apply_patch attempts whitespace or Unicode punctuation fuzzy matching before reporting an error.",
+        "apply_patch returns affected file paths and operations performed, and tests validate filesystem effects through the public tool interface."
+      ],
+      "dependencies": [
+        "REQ-006",
+        "REQ-009",
+        "REQ-016"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/profiles/openai.py",
+        "src/unified_llm/agent/apply_patch.py",
+        "tests/agent/test_openai_profile.py",
+        "tests/agent/test_apply_patch.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M5",
+      "notes": "Implement enough v4a semantics to satisfy observable add/delete/update/rename and hunk matching behavior."
+    },
+    {
+      "id": "REQ-011",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:626",
+        ".spark/spec-implementation/current/spec/source.md:630",
+        ".spark/spec-implementation/current/spec/source.md:632",
+        ".spark/spec-implementation/current/spec/source.md:641",
+        ".spark/spec-implementation/current/spec/source.md:643",
+        ".spark/spec-implementation/current/spec/source.md:645",
+        ".spark/spec-implementation/current/spec/source.md:1169",
+        ".spark/spec-implementation/current/spec/source.md:1455"
+      ],
+      "title": "Anthropic Claude Code-aligned profile",
+      "summary": "Implement the Anthropic provider profile with Claude Code-aligned tools, old_string/new_string editing, profile-specific shell timeout, prompt guidance, and beta header options.",
+      "acceptance_criteria": [
+        "The Anthropic profile exposes read_file, write_file, edit_file, shell, grep, glob, and subagent tools.",
+        "edit_file old_string/new_string is the native editing tool for Anthropic and apply_patch is not exposed for Anthropic models.",
+        "The Anthropic read_file tool supports line-numbered output with offset and limit.",
+        "The Anthropic shell tool defaults to 120000 ms while still enforcing max_command_timeout_ms and allowing per-call timeout_ms overrides.",
+        "The Anthropic grep tool supports ripgrep-backed output modes for content, files_with_matches, and count.",
+        "The Anthropic system prompt includes identity, tool selection guidance, read-before-edit guidance, edit_file uniqueness requirements, file operation preferences, and coding best practices.",
+        "Anthropic provider options can pass beta headers through provider_options.anthropic.beta_headers."
+      ],
+      "dependencies": [
+        "REQ-006",
+        "REQ-009",
+        "REQ-016"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/profiles/anthropic.py",
+        "tests/agent/test_anthropic_profile.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M5",
+      "notes": "Profile behavior must preserve the model-facing old_string/new_string affordance even if shared implementation helpers are reused internally."
+    },
+    {
+      "id": "REQ-012",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:647",
+        ".spark/spec-implementation/current/spec/source.md:651",
+        ".spark/spec-implementation/current/spec/source.md:663",
+        ".spark/spec-implementation/current/spec/source.md:665",
+        ".spark/spec-implementation/current/spec/source.md:1047",
+        ".spark/spec-implementation/current/spec/source.md:1170"
+      ],
+      "title": "Gemini gemini-cli-aligned profile",
+      "summary": "Implement the Gemini provider profile with gemini-cli-aligned tools, GEMINI.md project instruction conventions, and Gemini provider options.",
+      "acceptance_criteria": [
+        "The Gemini profile exposes read_file, read_many_files, write_file, edit_file, shell, grep, glob, list_dir, and subagent tools.",
+        "web_search and web_fetch are supported as optional Gemini tools when enabled by profile configuration.",
+        "Gemini edit_file uses search-and-replace semantics matching gemini-cli conventions while allowing a schema distinct from Anthropic's schema.",
+        "The Gemini shell tool defaults to 10000 ms and respects per-call timeout_ms and max_command_timeout_ms.",
+        "The Gemini list_dir tool supports directory listing with depth options.",
+        "The Gemini system prompt includes identity, tool usage, GEMINI.md conventions, and coding best practices.",
+        "Gemini provider options can pass safety settings, grounding configuration, and other Gemini request options through provider_options.gemini."
+      ],
+      "dependencies": [
+        "REQ-006",
+        "REQ-009",
+        "REQ-016"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/profiles/gemini.py",
+        "tests/agent/test_gemini_profile.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M5",
+      "notes": "web_search and web_fetch are optional profile capabilities; absence must be explicit and testable."
+    },
+    {
+      "id": "REQ-013",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:242",
+        ".spark/spec-implementation/current/spec/source.md:987",
+        ".spark/spec-implementation/current/spec/source.md:991",
+        ".spark/spec-implementation/current/spec/source.md:1002",
+        ".spark/spec-implementation/current/spec/source.md:1012",
+        ".spark/spec-implementation/current/spec/source.md:1031",
+        ".spark/spec-implementation/current/spec/source.md:1040",
+        ".spark/spec-implementation/current/spec/source.md:1214"
+      ],
+      "title": "Layered system prompt and project context",
+      "summary": "Build provider-specific system prompts from ordered layers of base instructions, environment context, tool descriptions, project documents, and user overrides.",
+      "acceptance_criteria": [
+        "System prompt assembly order is provider-specific base instructions, environment context, tool descriptions, project-specific instructions, and user instruction overrides appended last.",
+        "OpenAI, Anthropic, and Gemini base prompts cover the required provider-specific topics from the spec without relying on a universal prompt.",
+        "The environment context block includes working directory, git repository boolean, current git branch, platform, OS version, today's date, model display name, and knowledge cutoff.",
+        "Environment context is generated at session start and included in every system prompt built for that session.",
+        "Git context captures current branch, short modified/untracked status counts, and the last 5 to 10 commit messages without embedding full diffs.",
+        "Project document discovery walks from git root or working directory to the active working directory, loading root-level instruction files first and deeper files later.",
+        "AGENTS.md is always loaded; CLAUDE.md is loaded only for Anthropic, GEMINI.md only for Gemini, and .codex/instructions.md only for OpenAI.",
+        "Project instruction loading enforces a 32KB total byte budget and appends the specified truncation marker when exceeded.",
+        "Tool descriptions in the system prompt reflect the active provider profile's tool definitions."
+      ],
+      "dependencies": [
+        "REQ-007",
+        "REQ-009"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/prompts.py",
+        "src/unified_llm/agent/project_docs.py",
+        "tests/agent/test_prompts.py",
+        "tests/agent/test_project_docs.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M3",
+      "notes": "Prompt tests should assert required structural behavior and included data, not brittle full prompt text."
+    },
+    {
+      "id": "REQ-014",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:224",
+        ".spark/spec-implementation/current/spec/source.md:283",
+        ".spark/spec-implementation/current/spec/source.md:306",
+        ".spark/spec-implementation/current/spec/source.md:366",
+        ".spark/spec-implementation/current/spec/source.md:371",
+        ".spark/spec-implementation/current/spec/source.md:377",
+        ".spark/spec-implementation/current/spec/source.md:382",
+        ".spark/spec-implementation/current/spec/source.md:384",
+        ".spark/spec-implementation/current/spec/source.md:1201",
+        ".spark/spec-implementation/current/spec/source.md:1208"
+      ],
+      "title": "Steering, follow-ups, and reasoning effort",
+      "summary": "Allow host applications to steer an active or idle session between tool rounds, queue follow-up work, and change reasoning effort for subsequent model calls.",
+      "acceptance_criteria": [
+        "steer(message) queues a message to be injected after the current tool round, or before the next LLM call when the session is idle and later submitted.",
+        "drain_steering appends queued steering as SteeringTurn records and emits STEERING_INJECTED events in FIFO order.",
+        "SteeringTurn records are converted to user-role messages when building the next LLM request.",
+        "follow_up(message) queues a message to be processed as a new input after the current input has reached a text-only model completion.",
+        "reasoning_effort accepts low, medium, high, and None, and is passed through to the Unified LLM SDK Request on each model call.",
+        "Changing session.config.reasoning_effort during a session affects the next LLM call without mutating prior history.",
+        "Provider profiles map reasoning effort into provider options where the profile requires additional provider-native configuration."
+      ],
+      "dependencies": [
+        "REQ-002",
+        "REQ-003"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/session.py",
+        "src/unified_llm/agent/history.py",
+        "tests/agent/test_steering.py",
+        "tests/agent/test_reasoning_effort.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M3",
+      "notes": "Provider-specific values beyond the core set, such as xhigh, may be accepted only when represented as an explicit extension."
+    },
+    {
+      "id": "REQ-015",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:286",
+        ".spark/spec-implementation/current/spec/source.md:438",
+        ".spark/spec-implementation/current/spec/source.md:443",
+        ".spark/spec-implementation/current/spec/source.md:1155",
+        ".spark/spec-implementation/current/spec/source.md:1265"
+      ],
+      "title": "Tool-call loop detection",
+      "summary": "Detect repeated tool-call patterns and inject a steering warning so the model can break out of unproductive loops.",
+      "acceptance_criteria": [
+        "Tool-call signatures are derived from tool name plus a stable hash of normalized arguments.",
+        "When enable_loop_detection is true, the session checks the last loop_detection_window tool calls after each tool round.",
+        "The default window is 10 consecutive tool calls.",
+        "detect_loop returns true only when the full window repeats a pattern of length 1, 2, or 3.",
+        "On detection, the session appends a SteeringTurn warning instructing the model to try a different approach.",
+        "On detection, the session emits LOOP_DETECTION with the warning message.",
+        "Loop detection is disabled entirely when enable_loop_detection is false."
+      ],
+      "dependencies": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-005"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/loop_detection.py",
+        "src/unified_llm/agent/session.py",
+        "tests/agent/test_loop_detection.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M3",
+      "notes": "Tests should cover pattern lengths 1, 2, and 3 plus non-repeating near misses."
+    },
+    {
+      "id": "REQ-016",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:41",
+        ".spark/spec-implementation/current/spec/source.md:1060",
+        ".spark/spec-implementation/current/spec/source.md:1069",
+        ".spark/spec-implementation/current/spec/source.md:1078",
+        ".spark/spec-implementation/current/spec/source.md:1085",
+        ".spark/spec-implementation/current/spec/source.md:1091",
+        ".spark/spec-implementation/current/spec/source.md:1098",
+        ".spark/spec-implementation/current/spec/source.md:1117",
+        ".spark/spec-implementation/current/spec/source.md:1124",
+        ".spark/spec-implementation/current/spec/source.md:1223"
+      ],
+      "title": "Subagent sessions and tools",
+      "summary": "Implement subagent spawning and coordination tools that run child sessions with independent history on the parent's execution environment.",
+      "acceptance_criteria": [
+        "spawn_agent accepts task, optional working_dir, optional model override, and optional max_turns, and returns an agent ID plus initial status.",
+        "send_input accepts agent_id and message and delivers the message to a running subagent.",
+        "wait accepts agent_id and returns a SubAgentResult with output text, success boolean, and turns_used.",
+        "close_agent accepts agent_id, terminates the child session, and returns final status.",
+        "SubAgentStatus represents RUNNING, COMPLETED, and FAILED.",
+        "Each subagent owns an independent Session and conversation history.",
+        "Subagents share the parent's ExecutionEnvironment and filesystem, optionally scoped to a subdirectory.",
+        "Subagents use the parent's ProviderProfile unless a model override is supplied.",
+        "Subagent turn limits are independently configurable and default to unlimited.",
+        "max_subagent_depth defaults to 1 and prevents recursive sub-subagent spawning.",
+        "Subagent results are returned to the parent as tool results, and active subagents are cleaned up during graceful shutdown."
+      ],
+      "dependencies": [
+        "REQ-004",
+        "REQ-005",
+        "REQ-007"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/subagents.py",
+        "src/unified_llm/agent/builtin_tools.py",
+        "tests/agent/test_subagents.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M4",
+      "notes": "Implementation may run child sessions as asyncio tasks as long as public semantics and cleanup behavior are deterministic."
+    },
+    {
+      "id": "REQ-017",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:397",
+        ".spark/spec-implementation/current/spec/source.md:405",
+        ".spark/spec-implementation/current/spec/source.md:1239",
+        ".spark/spec-implementation/current/spec/source.md:1407",
+        ".spark/spec-implementation/current/spec/source.md:1423",
+        ".spark/spec-implementation/current/spec/source.md:1436"
+      ],
+      "title": "Session error handling and graceful shutdown",
+      "summary": "Handle tool-level and session-level failures according to the spec, preserving model recoverability for tool errors and deterministic cleanup for aborts or unrecoverable errors.",
+      "acceptance_criteria": [
+        "Tool-level errors including file-not-found, edit conflict, nonzero shell exit, shell timeout, permission denied, validation error, and unknown tool are converted to is_error=true ToolResult values.",
+        "LLM transient ProviderError 429, ProviderError 500-503, and NetworkError behavior is delegated to the Unified LLM SDK layer rather than reimplemented in the agent loop.",
+        "AuthenticationError surfaces immediately without retry, emits an ERROR event, and transitions the session to CLOSED.",
+        "ContextLengthError emits a WARNING event and does not trigger automatic compaction.",
+        "TurnLimitExceeded behavior emits TURN_LIMIT and returns the session to IDLE.",
+        "Abort or unrecoverable error cleanup cancels any in-flight LLM stream, terminates running command process groups, waits 2 seconds, sends SIGKILL where needed, flushes pending events, closes active subagents, emits SESSION_END with final state, and transitions to CLOSED.",
+        "Unexpected exceptions are logged at an appropriate level before being converted to session errors or re-raised according to the public API contract."
+      ],
+      "dependencies": [
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-007",
+        "REQ-016"
+      ],
+      "target_paths": [
+        "src/unified_llm/agent/errors.py",
+        "src/unified_llm/agent/session.py",
+        "src/unified_llm/agent/tool_execution.py",
+        "tests/agent/test_error_handling.py",
+        "tests/agent/test_shutdown.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M5",
+      "notes": "This requirement directly supports the request constraint that exceptions should all be handled or logged at the appropriate level."
+    },
+    {
+      "id": "REQ-018",
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:1151",
+        ".spark/spec-implementation/current/spec/source.md:1247",
+        ".spark/spec-implementation/current/spec/source.md:1251",
+        ".spark/spec-implementation/current/spec/source.md:1269"
+      ],
+      "title": "Cross-provider parity and smoke validation",
+      "summary": "Validate the completed agent against the spec's parity matrix with deterministic tests and optional live smoke tests for each provider profile.",
+      "acceptance_criteria": [
+        "Deterministic tests cover simple file creation, read-then-edit, multi-file edit, shell execution, shell timeout handling, grep plus glob, multi-step read-analyze-edit tasks, large-output truncation, supported parallel tool calls, steering mid-task, reasoning effort changes, subagent spawn and wait, loop detection, tool error recovery, and provider-specific editing format behavior for OpenAI, Anthropic, and Gemini profiles.",
+        "Optional live smoke tests are marked or skipped unless required real API keys are present.",
+        "Live smoke tests create hello.py, edit it to add a Goodbye print, execute it through the shell tool, verify truncation against a 100000-character file, verify steering changes task scope, verify subagent tool calls appear in events, and verify default timeout handling with sleep 30.",
+        "Cross-provider validation asserts observable filesystem effects, events, ToolResults, and session states rather than prompt text or source-code strings.",
+        "The deterministic validation gate passes with uv run pytest -q.",
+        "The lint gate passes with uv run ruff check ."
+      ],
+      "dependencies": [
+        "REQ-010",
+        "REQ-011",
+        "REQ-012",
+        "REQ-017"
+      ],
+      "target_paths": [
+        "tests/agent/test_cross_provider_parity.py",
+        "tests/agent/test_live_smoke.py",
+        "tests/agent/"
+      ],
+      "status": "pending",
+      "milestone_id": "M6",
+      "notes": "Live tests should be opt-in and must not make the default uv run pytest -q depend on network access or API keys."
+    }
+  ]
+}
