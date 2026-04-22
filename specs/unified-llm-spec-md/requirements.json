@@ -611,7 +611,7 @@
         "src/unified_llm/adapters/openai.py",
         "tests/adapters/test_openai_adapter.py"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M4",
       "notes": "Unit tests should mock HTTP and validate provider payloads and normalized responses without live API keys."
     },
@@ -640,7 +640,7 @@
         "src/unified_llm/adapters/openai_compatible.py",
         "tests/adapters/test_openai_compatible_adapter.py"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M4",
       "notes": "This requirement exists because compatibility endpoints are explicitly separate from the native OpenAI adapter."
     },

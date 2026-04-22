@@ -43,20 +43,28 @@ class _AdapterPlaceholder:
         return False
 
 
-class OpenAIAdapter(_AdapterPlaceholder):
-    name = "openai"
-
-
-class OpenAICompatibleAdapter(_AdapterPlaceholder):
-    name = "openai_compatible"
-
-
 class AnthropicAdapter(_AdapterPlaceholder):
     name = "anthropic"
 
 
 class GeminiAdapter(_AdapterPlaceholder):
     name = "gemini"
+
+
+def __getattr__(name: str) -> Any:
+    if name == "OpenAIAdapter":
+        from .openai import OpenAIAdapter as _OpenAIAdapter
+
+        globals()["OpenAIAdapter"] = _OpenAIAdapter
+        return _OpenAIAdapter
+
+    if name == "OpenAICompatibleAdapter":
+        from .openai_compatible import OpenAICompatibleAdapter as _OpenAICompatibleAdapter
+
+        globals()["OpenAICompatibleAdapter"] = _OpenAICompatibleAdapter
+        return _OpenAICompatibleAdapter
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

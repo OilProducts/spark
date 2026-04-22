@@ -38,7 +38,12 @@ from .normalization import (
     normalize_warning_payload,
     normalize_warnings,
 )
-from .sse import SSEEvent, iter_sse_events, parse_sse, parse_sse_events
+from .openai_compatible import (
+    build_openai_compatible_chat_completions_url,
+    normalize_openai_compatible_base_url,
+    normalize_openai_compatible_response,
+)
+from .sse import SSEEvent, aiter_sse_events, iter_sse_events, parse_sse, parse_sse_events
 
 __all__ = [
     "classify_provider_error_message",
@@ -56,6 +61,9 @@ __all__ = [
     "normalize_usage",
     "normalize_warning_payload",
     "normalize_warnings",
+    "build_openai_compatible_chat_completions_url",
+    "normalize_openai_compatible_base_url",
+    "normalize_openai_compatible_response",
     "parse_retry_after",
     "prepare_anthropic_image_block",
     "prepare_anthropic_image_input",
@@ -68,6 +76,7 @@ __all__ = [
     "prepare_openai_image_block",
     "prepare_openai_image_input",
     "SSEEvent",
+    "aiter_sse_events",
     "iter_sse_events",
     "parse_sse",
     "parse_sse_events",

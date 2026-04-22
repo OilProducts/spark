@@ -160,10 +160,14 @@ def prepare_openai_image_block(
     *,
     media_type: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    image = normalize_image_input(value, media_type=media_type)
+    block = {
         "type": "input_image",
-        "image_url": prepare_openai_image_input(value, media_type=media_type),
+        "image_url": _image_source_data_uri(image),
     }
+    if image.detail is not None:
+        block["detail"] = image.detail
+    return block
 
 
 def prepare_anthropic_image_block(
