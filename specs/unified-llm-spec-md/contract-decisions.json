@@ -1,0 +1,318 @@
+{
+  "decisions": [
+    {
+      "id": "CD-001",
+      "title": "Async-first Python package layout",
+      "summary": "Implement the SDK as a src-layout Python package named unified_llm with async-first public operations and no required synchronous duplicate layer.",
+      "requirement_ids": ["REQ-001", "REQ-005", "REQ-006", "REQ-011", "REQ-012", "REQ-013"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:52",
+        ".spark/spec-implementation/current/spec/source.md:159",
+        ".spark/spec-implementation/current/spec/source.md:798",
+        ".spark/spec-implementation/current/spec/source.md:846",
+        ".spark/spec-implementation/current/spec/source.md:911",
+        ".spark/spec-implementation/current/spec/source.md:1986"
+      ],
+      "architecture_refs": [
+        "architecture.md#canonical-repository-topology",
+        "architecture.md#documented-public-interface"
+      ],
+      "behavioral_contract": "Application code imports unified types, Client, high-level functions, adapters, catalog helpers, tools, and errors from unified_llm. Canonical Python calls await complete/generate/generate_object and consume stream results as async iterables.",
+      "implementation_contract": "Create pyproject.toml, src/unified_llm, and tests. Client.complete and high-level generation are async. Client.stream and high-level stream return async iterables. Do not build sync wrappers as the primary implementation path.",
+      "validation_expectations": "Import tests verify the package root exports the stable API. Async pytest tests exercise complete, stream, generate, and generate_object through fake adapters. uv run pytest -q and uv run ruff check . must pass."
+    },
+    {
+      "id": "CD-002",
+      "title": "Four-layer module ownership",
+      "summary": "Map the spec's four-layer architecture to concrete Python modules with provider-native adapters at the integration boundary.",
+      "requirement_ids": ["REQ-001", "REQ-005", "REQ-009", "REQ-011", "REQ-012", "REQ-018", "REQ-020", "REQ-021"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:54",
+        ".spark/spec-implementation/current/spec/source.md:1479",
+        ".spark/spec-implementation/current/spec/source.md:1608",
+        ".spark/spec-implementation/current/spec/source.md:1986",
+        ".spark/spec-implementation/current/spec/source.md:1997"
+      ],
+      "architecture_refs": [
+        "architecture.md#implementation-boundaries",
+        "architecture.md#provider-adapter-contracts"
+      ],
+      "behavioral_contract": "Core application APIs remain provider-agnostic. Adding or changing a provider adapter must not require changes to the shared provider adapter protocol.",
+      "implementation_contract": "Keep shared types and adapter protocol in Layer 1 modules, reusable HTTP/media/error/SSE helpers in Layer 2, routing and middleware in Layer 3, and generation/tools/structured output in Layer 4. Core client code must not construct provider-native payloads.",
+      "validation_expectations": "Tests use fake adapters to prove Client routing without provider HTTP logic and mocked provider transports to prove adapters own native payload construction."
+    },
+    {
+      "id": "CD-003",
+      "title": "Dataclass and string-enum data model",
+      "summary": "Represent the unified data model with dataclasses and str enums while allowing provider-specific content and event type strings.",
+      "requirement_ids": ["REQ-002", "REQ-003", "REQ-015"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:346",
+        ".spark/spec-implementation/current/spec/source.md:416",
+        ".spark/spec-implementation/current/spec/source.md:547",
+        ".spark/spec-implementation/current/spec/source.md:707",
+        ".spark/spec-implementation/current/spec/source.md:1052"
+      ],
+      "architecture_refs": [
+        "architecture.md#data-model-and-validation-rules",
+        "architecture.md#documented-public-interface"
+      ],
+      "behavioral_contract": "Messages, content parts, responses, usage, stream events, tools, and tool choices expose stable fields and derived accessors. Provider-specific string kinds are accepted without requiring enum changes.",
+      "implementation_contract": "Use dataclasses for records and str Enum classes for standard roles, content kinds, finish/event types, and related discriminators. Validate deterministic invariants in constructors or post-init hooks.",
+      "validation_expectations": "Unit tests cover construction, invalid media combinations, message/response accessors, usage addition, tool validation, and custom provider string kinds through public APIs."
+    },
+    {
+      "id": "CD-004",
+      "title": "Explicit provider routing and advisory catalog",
+      "summary": "Provider resolution is explicit/default-provider based only; the model catalog is advisory and never restricts native model strings.",
+      "requirement_ids": ["REQ-006", "REQ-008"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:96",
+        ".spark/spec-implementation/current/spec/source.md:114",
+        ".spark/spec-implementation/current/spec/source.md:254",
+        ".spark/spec-implementation/current/spec/source.md:330"
+      ],
+      "architecture_refs": [
+        "architecture.md#documented-public-interface",
+        "architecture.md#requirement-dependencies-and-milestone-flow"
+      ],
+      "behavioral_contract": "Requests route to request.provider when set, otherwise to default_provider. The client never infers providers from model names or rewrites model strings. Unknown catalog models remain valid request model strings.",
+      "implementation_contract": "Client stores providers in insertion order. Client.from_env registers available providers in deterministic order openai, anthropic, gemini. models.py loads data/models.json for lookup helpers and latest-model selection.",
+      "validation_expectations": "Tests cover explicit provider routing, default provider selection, ConfigurationError when unresolved, model string pass-through, catalog lookup/list/latest behavior, and unknown-model pass-through."
+    },
+    {
+      "id": "CD-005",
+      "title": "Middleware applies equally to complete and stream",
+      "summary": "Middleware uses onion-style execution for both non-streaming responses and streaming event iterators.",
+      "requirement_ids": ["REQ-007", "REQ-011"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:122",
+        ".spark/spec-implementation/current/spec/source.md:1933",
+        ".spark/spec-implementation/current/spec/source.md:2022"
+      ],
+      "architecture_refs": [
+        "architecture.md#implementation-boundaries",
+        "architecture.md#generation-streaming-tools-and-structured-output"
+      ],
+      "behavioral_contract": "Middleware runs in registration order before provider calls and reverse order after responses. Streaming middleware can observe or transform each StreamEvent.",
+      "implementation_contract": "Define typed middleware call signatures in middleware.py. Client builds separate complete and stream middleware chains around adapter calls while preserving exception propagation and logging expectations.",
+      "validation_expectations": "Tests assert order of request/response execution, response replacement, stream event transformation, and exception propagation for both Client.complete and Client.stream."
+    },
+    {
+      "id": "CD-006",
+      "title": "Provider options are isolated by provider key",
+      "summary": "The provider_options escape hatch passes only the selected provider's options into that provider adapter.",
+      "requirement_ids": ["REQ-006", "REQ-009", "REQ-018", "REQ-020", "REQ-021", "REQ-022"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:210",
+        ".spark/spec-implementation/current/spec/source.md:222",
+        ".spark/spec-implementation/current/spec/source.md:589",
+        ".spark/spec-implementation/current/spec/source.md:1608",
+        ".spark/spec-implementation/current/spec/source.md:2083"
+      ],
+      "architecture_refs": [
+        "architecture.md#provider-adapter-contracts",
+        "architecture.md#repository-hygiene-expectations"
+      ],
+      "behavioral_contract": "Provider-specific options are intentionally non-portable. Options for one provider do not affect requests sent to another provider.",
+      "implementation_contract": "Provider utilities expose helpers to extract request.provider_options[provider_name] with safe defaults. Adapters ignore other provider keys and merge only supported options into native headers or request bodies.",
+      "validation_expectations": "Adapter payload tests include mixed provider_options dictionaries and assert only the selected provider's options appear in outbound native headers or bodies."
+    },
+    {
+      "id": "CD-007",
+      "title": "Native APIs and compatibility adapter separation",
+      "summary": "Primary provider adapters use native APIs; Chat Completions compatibility is confined to a separate OpenAICompatibleAdapter.",
+      "requirement_ids": ["REQ-018", "REQ-019", "REQ-020", "REQ-021", "REQ-022"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:222",
+        ".spark/spec-implementation/current/spec/source.md:1523",
+        ".spark/spec-implementation/current/spec/source.md:1549",
+        ".spark/spec-implementation/current/spec/source.md:1575",
+        ".spark/spec-implementation/current/spec/source.md:1741",
+        ".spark/spec-implementation/current/spec/source.md:1997"
+      ],
+      "architecture_refs": [
+        "architecture.md#provider-adapter-contracts",
+        "architecture.md#repository-hygiene-expectations"
+      ],
+      "behavioral_contract": "OpenAI uses Responses, Anthropic uses Messages, and Gemini uses native generateContent. OpenAI-compatible endpoints are supported separately and must surface unsupported Responses-only capabilities.",
+      "implementation_contract": "Implement openai.py, anthropic.py, and gemini.py against native endpoints. Implement openai_compatible.py against /v1/chat/completions with capability warnings or UnsupportedToolChoiceError for unsupported features.",
+      "validation_expectations": "Mocked HTTP tests assert endpoint paths, headers, payload shapes, streaming protocols, usage fields, and unsupported-feature observability for each adapter."
+    },
+    {
+      "id": "CD-008",
+      "title": "Small explicit runtime dependencies",
+      "summary": "Use httpx for async HTTP and jsonschema for complete JSON Schema validation rather than custom protocol or schema implementations.",
+      "requirement_ids": ["REQ-001", "REQ-009", "REQ-014", "REQ-018", "REQ-020", "REQ-021", "REQ-023"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:685",
+        ".spark/spec-implementation/current/spec/source.md:961",
+        ".spark/spec-implementation/current/spec/source.md:1905",
+        ".spark/spec-implementation/current/spec/source.md:1986",
+        ".spark/spec-implementation/current/spec/source.md:2022"
+      ],
+      "architecture_refs": [
+        "architecture.md#canonical-repository-topology",
+        "architecture.md#validation-strategy"
+      ],
+      "behavioral_contract": "Provider calls are async and testable without live network access. Structured output validation follows JSON Schema semantics instead of an undocumented subset.",
+      "implementation_contract": "Declare httpx and jsonschema as runtime dependencies. Expose injectable HTTP client or transport boundaries for adapters. Declare pytest, pytest-asyncio, and ruff in development dependency configuration.",
+      "validation_expectations": "Tests use mocked httpx transports and schema validation fixtures. The full deterministic suite runs through uv run pytest -q without provider credentials."
+    },
+    {
+      "id": "CD-009",
+      "title": "Unified streaming lifecycle and step_finish extension",
+      "summary": "All provider streams normalize to start/delta/end StreamEvent lifecycles, with high-level tool streaming using the extension type string step_finish.",
+      "requirement_ids": ["REQ-003", "REQ-010", "REQ-013", "REQ-016"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:707",
+        ".spark/spec-implementation/current/spec/source.md:767",
+        ".spark/spec-implementation/current/spec/source.md:936",
+        ".spark/spec-implementation/current/spec/source.md:993",
+        ".spark/spec-implementation/current/spec/source.md:1664"
+      ],
+      "architecture_refs": [
+        "architecture.md#generation-streaming-tools-and-structured-output",
+        "architecture.md#implementation-boundaries"
+      ],
+      "behavioral_contract": "Consumers can reconstruct text from TEXT_DELTA events, reconstruct full responses with StreamAccumulator, and observe a step_finish event between high-level tool-loop model calls.",
+      "implementation_contract": "StreamEventType contains the spec enum values; step_finish is emitted as an allowed string extension. provider_utils.sse parses SSE boundaries and streaming.py accumulates text, reasoning, tool calls, finish metadata, and final Response values.",
+      "validation_expectations": "SSE tests cover multi-line data and comments. Stream tests cover lifecycle ordering, response accumulation, text_stream filtering, stream_object partials, and step_finish emission."
+    },
+    {
+      "id": "CD-010",
+      "title": "Tool loop concurrency and error results",
+      "summary": "Active tools execute concurrently and tool execution failures are returned to the model as error ToolResult values.",
+      "requirement_ids": ["REQ-012", "REQ-015", "REQ-016"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:1052",
+        ".spark/spec-implementation/current/spec/source.md:1182",
+        ".spark/spec-implementation/current/spec/source.md:1229",
+        ".spark/spec-implementation/current/spec/source.md:1258",
+        ".spark/spec-implementation/current/spec/source.md:2057"
+      ],
+      "architecture_refs": [
+        "architecture.md#generation-streaming-tools-and-structured-output",
+        "architecture.md#data-model-and-validation-rules"
+      ],
+      "behavioral_contract": "When a model returns multiple tool calls, all are executed before one continuation request is made. Result order matches tool call order. Unknown tools, validation failures, and handler exceptions become is_error=true results.",
+      "implementation_contract": "tools.py uses asyncio tasks for concurrent handler execution, inspect.signature for context injection, JSON parsing for raw arguments, optional repair hooks for invalid arguments, and Message.tool_result for continuation history.",
+      "validation_expectations": "Tool loop tests use deterministic async tools to prove concurrency, ordering, unknown-tool handling, exception conversion, max_tool_rounds semantics, and conversation extension behavior."
+    },
+    {
+      "id": "CD-011",
+      "title": "Retry boundaries are high-level only",
+      "summary": "Low-level client calls never retry automatically; high-level generation retries individual LLM calls according to RetryPolicy.",
+      "requirement_ids": ["REQ-011", "REQ-012", "REQ-013", "REQ-017"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:822",
+        ".spark/spec-implementation/current/spec/source.md:897",
+        ".spark/spec-implementation/current/spec/source.md:1403",
+        ".spark/spec-implementation/current/spec/source.md:1435",
+        ".spark/spec-implementation/current/spec/source.md:2022"
+      ],
+      "architecture_refs": [
+        "architecture.md#generation-streaming-tools-and-structured-output",
+        "architecture.md#implementation-boundaries"
+      ],
+      "behavioral_contract": "Client.complete and Client.stream surface provider errors directly. generate and initial stream connection attempts retry transient failures within budget. Streaming does not retry after partial data has been delivered.",
+      "implementation_contract": "retry.py provides RetryPolicy, delay calculation, Retry-After handling, and injectable sleeper/randomness for tests. generation.py applies retry per model call, not across an entire multi-step operation.",
+      "validation_expectations": "Retry tests cover backoff, jitter, Retry-After, max_retries=0, non-retryable errors, per-step retry behavior, low-level no-retry behavior, and streaming partial-data error behavior."
+    },
+    {
+      "id": "CD-012",
+      "title": "Structured output validation uses provider-native strategy first",
+      "summary": "Structured output requests use native provider mechanisms where available and raise NoObjectGeneratedError for parse or validation failures.",
+      "requirement_ids": ["REQ-013", "REQ-014"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:961",
+        ".spark/spec-implementation/current/spec/source.md:993",
+        ".spark/spec-implementation/current/spec/source.md:1905",
+        ".spark/spec-implementation/current/spec/source.md:2022"
+      ],
+      "architecture_refs": [
+        "architecture.md#generation-streaming-tools-and-structured-output",
+        "architecture.md#validation-strategy"
+      ],
+      "behavioral_contract": "generate_object returns parsed output plus raw text on success. stream_object yields partial JSON objects and validates the final object. Invalid JSON or schema mismatch is not retried as a transient provider failure.",
+      "implementation_contract": "structured.py maps ResponseFormat to OpenAI json_schema, Gemini responseSchema, and Anthropic schema instructions or forced tool extraction. jsonschema validates final objects.",
+      "validation_expectations": "Structured tests cover successful parsing, validation failure, parse failure, stream partials, provider strategy construction, and non-retry behavior for NoObjectGeneratedError."
+    },
+    {
+      "id": "CD-013",
+      "title": "Anthropic prompt caching is supported by default with opt-out",
+      "summary": "Anthropic cache_control support is mandatory, automatic breakpoint injection is enabled by default, and callers can disable it through provider_options.",
+      "requirement_ids": ["REQ-020", "REQ-022"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:330",
+        ".spark/spec-implementation/current/spec/source.md:1599",
+        ".spark/spec-implementation/current/spec/source.md:2035",
+        ".spark/spec-implementation/current/spec/source.md:2044"
+      ],
+      "architecture_refs": [
+        "architecture.md#provider-adapter-contracts",
+        "architecture.md#validation-strategy"
+      ],
+      "behavioral_contract": "Anthropic requests can include cache_control blocks, automatically add the prompt-caching beta header when needed, map cache read/write usage, and preserve thinking or redacted thinking blocks for round-tripping.",
+      "implementation_contract": "anthropic.py documents and implements a stable-prefix cache heuristic for system content, tool definitions, and conversation prefix content. provider_options['anthropic']['auto_cache'] = False disables automatic injection without disabling explicit cache_control data.",
+      "validation_expectations": "Anthropic adapter tests cover cache_control injection, beta header inclusion, opt-out, explicit cache_control preservation, cache usage mapping, thinking signature preservation, and redacted thinking pass-through."
+    },
+    {
+      "id": "CD-014",
+      "title": "Gemini synthetic tool IDs are concurrency-safe",
+      "summary": "Gemini function calls without provider IDs receive synthetic IDs that can be mapped back to function names for continuation requests.",
+      "requirement_ids": ["REQ-021", "REQ-022"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:685",
+        ".spark/spec-implementation/current/spec/source.md:1575",
+        ".spark/spec-implementation/current/spec/source.md:1723",
+        ".spark/spec-implementation/current/spec/source.md:2035"
+      ],
+      "architecture_refs": [
+        "architecture.md#provider-adapter-contracts",
+        "architecture.md#repository-hygiene-expectations"
+      ],
+      "behavioral_contract": "Gemini tool calls expose stable unified tool_call_id values to callers, and corresponding tool result messages can be translated back to Gemini functionResponse parts with the original function name.",
+      "implementation_contract": "GeminiAdapter generates IDs with encoded function-name fallback and records a concurrency-safe ID-to-name mapping scoped to adapter lifetime for continuation translation.",
+      "validation_expectations": "Gemini tests cover synthetic ID generation, mapping lookup during tool result translation, concurrent request safety with distinct IDs, string result wrapping, and missing mapping error behavior."
+    },
+    {
+      "id": "CD-015",
+      "title": "Logging and exception handling are observable but quiet by default",
+      "summary": "The SDK uses standard library logging for diagnostics, avoids direct prints, and preserves actionable exceptions or converts them only where the spec requires.",
+      "requirement_ids": ["REQ-001", "REQ-004", "REQ-006", "REQ-007", "REQ-009", "REQ-015", "REQ-023"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:1283",
+        ".spark/spec-implementation/current/spec/source.md:1364",
+        ".spark/spec-implementation/current/spec/source.md:1394",
+        ".spark/spec-implementation/current/spec/source.md:1986",
+        ".spark/spec-implementation/current/spec/source.md:2071"
+      ],
+      "architecture_refs": [
+        "architecture.md#repository-hygiene-expectations",
+        "architecture.md#validation-strategy"
+      ],
+      "behavioral_contract": "Expected SDK errors are raised or converted according to the public contract. Tool handler failures become tool error results. Unexpected provider parsing, middleware, close, or classification failures are logged at appropriate levels before re-raise or preservation.",
+      "implementation_contract": "Every module uses logging.getLogger(__name__). Library code does not print. Error translation preserves raw bodies, retry metadata, causes, and provider data.",
+      "validation_expectations": "Tests use caplog and fake failures to verify no direct stdout output, close failure logging, provider parse/classification logging, tool exception conversion, and raw error preservation."
+    },
+    {
+      "id": "CD-016",
+      "title": "Deterministic tests by default, live smoke tests gated",
+      "summary": "The required validation suite never depends on provider credentials or live network access; live coverage is optional and explicitly marked.",
+      "requirement_ids": ["REQ-022", "REQ-023"],
+      "spec_refs": [
+        ".spark/spec-implementation/current/spec/source.md:1982",
+        ".spark/spec-implementation/current/spec/source.md:2083",
+        ".spark/spec-implementation/current/spec/source.md:2105"
+      ],
+      "architecture_refs": [
+        "architecture.md#validation-strategy",
+        "architecture.md#repository-hygiene-expectations"
+      ],
+      "behavioral_contract": "uv run pytest -q runs deterministic tests only. Live provider smoke tests run only when explicitly selected and the required provider API keys are present.",
+      "implementation_contract": "Use pytest markers for live tests and skip them by default. Mock HTTP for adapter tests, use fake adapters for core/high-level behavior, and test media filesystem behavior with temporary files.",
+      "validation_expectations": "The default suite passes without API keys. Optional live tests document required env vars and cover the Definition of Done scenarios when selected."
+    }
+  ]
+}
