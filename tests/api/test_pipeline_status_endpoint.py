@@ -266,7 +266,7 @@ def test_get_pipeline_returns_structured_usage_and_estimated_cost(
         run_id=run_id,
         flow_name="detail.dot",
         working_directory=str(workdir),
-        model="gpt-5.4",
+        model="gpt-5.5",
     )
     server._record_run_usage(
         run_id,
@@ -276,7 +276,7 @@ def test_get_pipeline_returns_structured_usage_and_estimated_cost(
             output_tokens=13,
             total_tokens=36,
             by_model={
-                "gpt-5.4": TokenUsageBucket(
+                "gpt-5.5": TokenUsageBucket(
                     input_tokens=15,
                     cached_input_tokens=3,
                     output_tokens=9,
@@ -295,7 +295,7 @@ def test_get_pipeline_returns_structured_usage_and_estimated_cost(
         run_id=run_id,
         flow_name="detail.dot",
         working_directory=str(workdir),
-        model="gpt-5.4",
+        model="gpt-5.5",
         status="running",
     )
     server._set_active_run_usage(
@@ -306,7 +306,7 @@ def test_get_pipeline_returns_structured_usage_and_estimated_cost(
             output_tokens=13,
             total_tokens=36,
             by_model={
-                "gpt-5.4": TokenUsageBucket(
+                "gpt-5.5": TokenUsageBucket(
                     input_tokens=15,
                     cached_input_tokens=3,
                     output_tokens=9,
@@ -339,7 +339,7 @@ def test_get_pipeline_returns_structured_usage_and_estimated_cost(
                 "output_tokens": 4,
                 "total_tokens": 12,
             },
-            "gpt-5.4": {
+            "gpt-5.5": {
                 "input_tokens": 15,
                 "cached_input_tokens": 3,
                 "output_tokens": 9,
@@ -349,17 +349,17 @@ def test_get_pipeline_returns_structured_usage_and_estimated_cost(
     }
     assert payload["estimated_model_cost"]["currency"] == "USD"
     assert payload["estimated_model_cost"]["status"] == "partial_unpriced"
-    assert payload["estimated_model_cost"]["amount"] == pytest.approx(0.000166, rel=0, abs=1e-9)
+    assert payload["estimated_model_cost"]["amount"] == pytest.approx(0.000332, rel=0, abs=1e-9)
     assert payload["estimated_model_cost"]["unpriced_models"] == ["gpt-5.3-codex-spark"]
     assert payload["estimated_model_cost"]["by_model"]["gpt-5.3-codex-spark"] == {
         "currency": "USD",
         "amount": None,
         "status": "unpriced",
     }
-    assert payload["estimated_model_cost"]["by_model"]["gpt-5.4"]["currency"] == "USD"
-    assert payload["estimated_model_cost"]["by_model"]["gpt-5.4"]["status"] == "estimated"
-    assert payload["estimated_model_cost"]["by_model"]["gpt-5.4"]["amount"] == pytest.approx(
-        0.000166,
+    assert payload["estimated_model_cost"]["by_model"]["gpt-5.5"]["currency"] == "USD"
+    assert payload["estimated_model_cost"]["by_model"]["gpt-5.5"]["status"] == "estimated"
+    assert payload["estimated_model_cost"]["by_model"]["gpt-5.5"]["amount"] == pytest.approx(
+        0.000332,
         rel=0,
         abs=1e-9,
     )

@@ -265,7 +265,7 @@ def test_spec_implementation_flow_uses_expected_models_for_judgment_nodes() -> N
         "plan_cleanup_milestone",
     }
     for node_id in parent_gpt_54_nodes:
-        assert parent_graph.nodes[node_id].attrs["llm_model"].value == "gpt-5.4"
+        assert parent_graph.nodes[node_id].attrs["llm_model"].value == "gpt-5.5"
 
     child_gpt_54_nodes = {
         "extract_items",
@@ -279,7 +279,7 @@ def test_spec_implementation_flow_uses_expected_models_for_judgment_nodes() -> N
         "validate_item_plan",
     }
     for node_id in child_gpt_54_nodes:
-        assert child_graph.nodes[node_id].attrs["llm_model"].value == "gpt-5.4"
+        assert child_graph.nodes[node_id].attrs["llm_model"].value == "gpt-5.5"
 
     assert "llm_model" not in parent_graph.nodes["next_milestone"].attrs
     assert "llm_model" not in child_graph.nodes["implement_current"].attrs

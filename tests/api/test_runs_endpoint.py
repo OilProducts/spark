@@ -148,7 +148,7 @@ def test_list_runs_includes_structured_usage_and_estimated_cost(
         output_tokens=13,
         total_tokens=36,
         by_model={
-            "gpt-5.4": TokenUsageBucket(
+            "gpt-5.5": TokenUsageBucket(
                 input_tokens=15,
                 cached_input_tokens=3,
                 output_tokens=9,
@@ -172,7 +172,7 @@ def test_list_runs_includes_structured_usage_and_estimated_cost(
             outcome_reason_code=None,
             outcome_reason_message=None,
             working_directory=str(tmp_path / "work"),
-            model="gpt-5.4",
+            model="gpt-5.5",
             started_at="2026-01-01T00:00:00Z",
             ended_at="2026-01-01T00:01:00Z",
             project_path=str(tmp_path / "project"),
@@ -199,7 +199,7 @@ def test_list_runs_includes_structured_usage_and_estimated_cost(
                 "output_tokens": 4,
                 "total_tokens": 12,
             },
-            "gpt-5.4": {
+            "gpt-5.5": {
                 "input_tokens": 15,
                 "cached_input_tokens": 3,
                 "output_tokens": 9,
@@ -209,7 +209,7 @@ def test_list_runs_includes_structured_usage_and_estimated_cost(
     }
     assert payload["estimated_model_cost"]["status"] == "partial_unpriced"
     assert payload["estimated_model_cost"]["unpriced_models"] == ["gpt-5.3-codex-spark"]
-    assert payload["estimated_model_cost"]["amount"] == pytest.approx(0.000166, rel=0, abs=1e-9)
+    assert payload["estimated_model_cost"]["amount"] == pytest.approx(0.000332, rel=0, abs=1e-9)
 
 
 def test_list_runs_includes_spec_and_plan_artifact_links_when_available_item_9_6_03(
@@ -682,7 +682,7 @@ def test_run_list_upsert_includes_structured_usage_fields(
         output_tokens=13,
         total_tokens=36,
         by_model={
-            "gpt-5.4": TokenUsageBucket(
+            "gpt-5.5": TokenUsageBucket(
                 input_tokens=15,
                 cached_input_tokens=3,
                 output_tokens=9,
@@ -706,7 +706,7 @@ def test_run_list_upsert_includes_structured_usage_fields(
             outcome_reason_code=None,
             outcome_reason_message=None,
             working_directory=str(tmp_path / "work"),
-            model="gpt-5.4",
+            model="gpt-5.5",
             started_at="2026-01-01T00:00:00Z",
             project_path=str(tmp_path / "project"),
             token_usage=36,
@@ -723,7 +723,7 @@ def test_run_list_upsert_includes_structured_usage_fields(
     event = asyncio.run(_next_run_list_event(queue))
     assert event["type"] == "run_upsert"
     assert event["run"]["token_usage"] == 36
-    assert event["run"]["token_usage_breakdown"]["by_model"]["gpt-5.4"]["total_tokens"] == 24
+    assert event["run"]["token_usage_breakdown"]["by_model"]["gpt-5.5"]["total_tokens"] == 24
     assert event["run"]["estimated_model_cost"]["status"] == "partial_unpriced"
     assert event["run"]["estimated_model_cost"]["unpriced_models"] == ["gpt-5.3-codex-spark"]
 
