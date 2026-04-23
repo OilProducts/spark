@@ -28,6 +28,7 @@ from .events import EventKind, SessionEvent
 from .history import history_to_messages, turn_to_messages
 from .local_environment import LocalExecutionEnvironment
 from .loop_detection import LOOP_DETECTION_WARNING, ToolCallSignature, detect_loop
+from .profiles import create_anthropic_profile, create_gemini_profile, create_openai_profile
 from .session import Session
 from .tool_execution import execute_tool_call, execute_tool_calls
 from .truncation import (
@@ -92,6 +93,9 @@ __all__ = [
     "history_to_messages",
     "LocalExecutionEnvironment",
     "ProviderProfile",
+    "create_anthropic_profile",
+    "create_gemini_profile",
+    "create_openai_profile",
     "RegisteredTool",
     "Session",
     "SessionAbortedError",

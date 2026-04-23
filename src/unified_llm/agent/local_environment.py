@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -132,12 +133,30 @@ class LocalExecutionEnvironment:
         self._default_command_timeout_ms = default_command_timeout_ms
         self._max_command_timeout_ms = max_command_timeout_ms
         self._environment_inheritance_policy = _coerce_policy(environment_inheritance_policy)
+        self._active_processes: set[subprocess.Popen[str]] = set()
+        self._process_lock = threading.Lock()
+        self._cleanup_started = False
 
     def initialize(self) -> None:
         self._resolved_working_directory.mkdir(parents=True, exist_ok=True)
 
     def cleanup(self) -> None:
         logger.debug("cleanup called for local execution environment")
+        with self._process_lock:
+            self._cleanup_started = True
+            active_processes = [
+                proc for proc in self._active_processes if proc.poll() is None
+            ]
+
+        if not active_processes:
+            return
+
+        logger.debug(
+            "terminating %d active process group(s) during cleanup",
+            len(active_processes),
+        )
+        for proc in active_processes:
+            self._terminate_process(proc)
 
     def working_directory(self) -> str:
         return str(self._configured_working_directory)
@@ -230,6 +249,47 @@ class LocalExecutionEnvironment:
     def file_exists(self, path: str | Path) -> bool:
         return self._resolve_path(path).exists()
 
+    def is_directory(self, path: str | Path) -> bool:
+        return self._resolve_path(path).is_dir()
+
+    def delete_file(self, path: str | Path) -> None:
+        target = self._resolve_path(path)
+        if not target.exists():
+            raise FileNotFoundError(target)
+        if target.is_dir():
+            raise IsADirectoryError(target)
+
+        try:
+            target.unlink()
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(target) from exc
+        except IsADirectoryError as exc:
+            raise IsADirectoryError(target) from exc
+        except PermissionError as exc:
+            raise PermissionError(target) from exc
+
+    def rename_file(self, source_path: str | Path, destination_path: str | Path) -> None:
+        source = self._resolve_path(source_path)
+        destination = self._resolve_path(destination_path)
+        if not source.exists():
+            raise FileNotFoundError(source)
+        if source.is_dir():
+            raise IsADirectoryError(source)
+        if destination.exists():
+            raise FileExistsError(destination)
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            source.replace(destination)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(source) from exc
+        except IsADirectoryError as exc:
+            raise IsADirectoryError(source) from exc
+        except FileExistsError as exc:
+            raise FileExistsError(destination) from exc
+        except PermissionError as exc:
+            raise PermissionError(source) from exc
+
     def list_directory(self, path: str | Path, depth: int) -> list[DirEntry]:
         if depth < 0:
             raise ValueError("depth must be non-negative")
@@ -287,6 +347,7 @@ class LocalExecutionEnvironment:
             creationflags=creationflags,
             start_new_session=start_new_session,
         )
+        self._register_process(proc)
         try:
             stdout, stderr = proc.communicate(timeout=effective_timeout_ms / 1000)
             timed_out = False
@@ -297,6 +358,11 @@ class LocalExecutionEnvironment:
             self._terminate_process(proc)
             timeout_message = f"Command timed out after {effective_timeout_ms} ms"
             stderr = self._append_timeout_message(stderr, timeout_message)
+        except BaseException:
+            self._terminate_process(proc)
+            raise
+        finally:
+            self._unregister_process(proc)
         duration_ms = int(round((time.monotonic() - start) * 1000))
         exit_code = proc.returncode if proc.returncode is not None else 0
         if timed_out and exit_code == 0:
@@ -308,6 +374,18 @@ class LocalExecutionEnvironment:
             timed_out=timed_out,
             duration_ms=duration_ms,
         )
+
+    def _register_process(self, proc: subprocess.Popen[str]) -> None:
+        should_terminate = False
+        with self._process_lock:
+            self._active_processes.add(proc)
+            should_terminate = self._cleanup_started
+        if should_terminate:
+            self._terminate_process(proc)
+
+    def _unregister_process(self, proc: subprocess.Popen[str]) -> None:
+        with self._process_lock:
+            self._active_processes.discard(proc)
 
     def _build_environment(self, env_vars: Mapping[str, str] | None) -> dict[str, str]:
         if self._environment_inheritance_policy == EnvironmentInheritancePolicy.INHERIT_ALL:

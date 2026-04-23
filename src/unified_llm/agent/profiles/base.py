@@ -73,7 +73,7 @@ class ProviderProfile:
     def tools(self) -> list[ToolDefinition]:
         return self.tool_registry.definitions()
 
-    def provider_options(self) -> dict[str, Any]:
+    def provider_options(self, session_config: Any | None = None) -> dict[str, Any]:
         return dict(self.provider_options_map)
 
     def supports(self, capability: str) -> bool:

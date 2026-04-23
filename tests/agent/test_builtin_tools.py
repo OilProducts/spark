@@ -80,6 +80,15 @@ class _RecordingToolEnvironment:
     def file_exists(self, path: str | Path) -> bool:
         return False
 
+    def is_directory(self, path: str | Path) -> bool:
+        return False
+
+    def delete_file(self, path: str | Path) -> None:
+        return None
+
+    def rename_file(self, source_path: str | Path, destination_path: str | Path) -> None:
+        return None
+
     def list_directory(self, path: str | Path, depth: int) -> list[agent.DirEntry]:
         return []
 

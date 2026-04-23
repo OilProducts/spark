@@ -243,8 +243,9 @@ def _provider_tool_usage_line(provider_family: str | None) -> str:
         )
     if provider_family == "anthropic":
         return (
-            "Tool usage: read before edit, edit over write, and prefer the smallest "
-            "tool action that solves the task."
+            "Tool usage: read before edit, use read_file to inspect existing files, "
+            "prefer edit_file for targeted replacements, use write_file for new files "
+            "or full rewrites, and keep the smallest tool action that solves the task."
         )
     if provider_family == "gemini":
         return (
@@ -260,13 +261,16 @@ def _provider_tool_usage_line(provider_family: str | None) -> str:
 def _provider_edit_guidance_line(provider_family: str | None) -> str:
     if provider_family == "openai":
         return (
-            "Edit guidance: prefer apply_patch for targeted edits, avoid rewriting "
-            "entire files when a smaller patch is enough, and keep diffs minimal."
+            "Edit guidance: prefer apply_patch for targeted edits, use the "
+            "*** Begin Patch / *** End Patch format for patch-based edits, avoid "
+            "rewriting entire files when a smaller patch is enough, and keep diffs "
+            "minimal."
         )
     if provider_family == "anthropic":
         return (
-            "Edit guidance: prefer patch-style edits, use edit_file when appropriate, "
-            "and ensure the old_string is unique when replacing file content."
+            "Edit guidance: prefer edit_file for targeted replacements, use "
+            "write_file for new files or complete rewrites, and ensure the old_string "
+            "is unique when replacing file content."
         )
     if provider_family == "gemini":
         return (

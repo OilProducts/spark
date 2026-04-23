@@ -40,8 +40,15 @@ def test_local_environment_resolves_paths_and_handles_lifecycle(tmp_path: Path) 
 
     environment.write_file("nested/example.txt", "first line\nsecond line\n")
     assert environment.file_exists("nested/example.txt") is True
+    assert environment.is_directory("nested") is True
     assert environment.read_file("nested/example.txt") == "first line\nsecond line\n"
     assert environment.read_file("nested/example.txt", offset=2, limit=1) == "second line\n"
+    environment.write_file("nested/rename_me.txt", "rename me\n")
+    environment.rename_file("nested/rename_me.txt", "nested/renamed.txt")
+    assert environment.file_exists("nested/rename_me.txt") is False
+    assert environment.read_file("nested/renamed.txt") == "rename me\n"
+    environment.delete_file("nested/renamed.txt")
+    assert environment.file_exists("nested/renamed.txt") is False
 
     entries = environment.list_directory(".", depth=1)
     assert entries == [

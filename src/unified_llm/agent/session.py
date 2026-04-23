@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
 
 from ..client import Client
+from ..errors import SDKError
 from ..streaming import StreamAccumulator
 from ..tools import Tool as SDKTool
 from ..tools import ToolChoice as SDKToolChoice
 from ..types import Message, Request, Response, StreamEventType
 from .context import check_context_usage
 from .environment import ExecutionEnvironment
+from .errors import (
+    is_authentication_error,
+    is_context_length_error,
+    is_transient_sdk_error,
+)
 from .events import EventKind, SessionEvent, _SessionEventStream
 from .history import history_to_messages
 from .local_environment import LocalExecutionEnvironment
@@ -34,6 +41,8 @@ from .types import (
     ToolResultsTurn,
     UserTurn,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_uuid(value: UUID | str) -> UUID:
@@ -128,6 +137,7 @@ class Session:
     abort_signaled: bool = field(default=False, init=False, repr=False)
     _processing_task: asyncio.Task[Any] | None = field(default=None, init=False, repr=False)
     _context_warning_emitted: bool = field(default=False, init=False, repr=False)
+    _closing: bool = field(default=False, init=False, repr=False)
     _closed_event_emitted: bool = field(default=False, init=False, repr=False)
 
     def __init__(
@@ -178,6 +188,7 @@ class Session:
         self.abort_signaled = False
         self._processing_task = None
         self._context_warning_emitted = False
+        self._closing = False
         self._closed_event_emitted = False
         self._system_prompt = _build_session_system_prompt(
             self.provider_profile,
@@ -260,7 +271,42 @@ class Session:
         provider = self.provider_profile.id or None
         if provider is None:
             return None
-        return {provider: self.provider_profile.provider_options()}
+
+        provider_options_method = getattr(self.provider_profile, "provider_options", None)
+        if not callable(provider_options_method):
+            return None
+
+        try:
+            signature = inspect.signature(provider_options_method)
+        except (TypeError, ValueError):
+            signature = None
+
+        accepts_session_config = False
+        if signature is not None:
+            parameters = list(signature.parameters.values())
+            accepts_session_config = any(
+                parameter.kind == inspect.Parameter.VAR_POSITIONAL
+                for parameter in parameters
+            ) or sum(
+                parameter.kind
+                in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+                for parameter in parameters
+            ) >= 1
+
+        if accepts_session_config:
+            try:
+                options = provider_options_method(self.config)
+            except TypeError:
+                options = provider_options_method()
+        else:
+            options = provider_options_method()
+
+        if not isinstance(options, Mapping):
+            return None
+        return {provider: dict(options)}
 
     def _drain_steering_queue(self) -> list[SteeringTurn]:
         drained: list[SteeringTurn] = []
@@ -291,6 +337,72 @@ class Session:
             {"message": LOOP_DETECTION_WARNING},
         )
         return True
+
+    def _emit_session_warning(self, message: str) -> None:
+        if self.state == SessionState.CLOSED:
+            return
+        self._emit_event(EventKind.WARNING, {"message": message})
+
+    async def _cancel_processing_task(self) -> None:
+        processing_task = self._processing_task
+        current_task = asyncio.current_task()
+        if (
+            processing_task is None
+            or processing_task is current_task
+            or processing_task.done()
+        ):
+            return
+
+        processing_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(processing_task), timeout=2)
+        except TimeoutError:
+            logger.warning("Timed out waiting for session processing task to stop")
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Unexpected error while waiting for session shutdown")
+
+    async def _cleanup_execution_environment(self) -> None:
+        cleanup = getattr(self.execution_environment, "cleanup", None)
+        if not callable(cleanup):
+            return
+
+        try:
+            result = cleanup()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.exception("Unexpected error while cleaning up the execution environment")
+
+    async def _handle_model_error(self, error: BaseException) -> None:
+        if self.state == SessionState.CLOSED:
+            return
+
+        if is_authentication_error(error):
+            logger.error("Authentication error while processing session input: %s", error)
+            self._emit_event(EventKind.ERROR, {"error": str(error)})
+            await self.close()
+            return
+
+        if is_context_length_error(error):
+            logger.warning("Context length error while processing session input: %s", error)
+            self._emit_session_warning(str(error))
+            self.mark_natural_completion()
+            return
+
+        if isinstance(error, SDKError):
+            if is_transient_sdk_error(error):
+                logger.warning("Transient SDK error while processing session input: %s", error)
+                self.mark_natural_completion()
+                return
+
+            logger.error("SDK error while processing session input: %s", error)
+            await self.mark_unrecoverable_error(error)
+            return
+
+        logger.exception("Unexpected error while processing session input")
+        await self.mark_unrecoverable_error(error)
 
     def _emit_assistant_text_events(
         self,
@@ -628,7 +740,7 @@ class Session:
                     try:
                         response, stream_error = await self._model_response(request)
                     except Exception as exc:
-                        await self.mark_unrecoverable_error(exc)
+                        await self._handle_model_error(exc)
                         raise
 
                     assistant_turn = self._assistant_turn_from_response(
@@ -638,7 +750,7 @@ class Session:
                     self.history.append(assistant_turn)
 
                     if stream_error is not None:
-                        await self.mark_unrecoverable_error(stream_error)
+                        await self._handle_model_error(stream_error)
                         raise stream_error
 
                     if not assistant_turn.tool_calls:
@@ -652,6 +764,7 @@ class Session:
                     try:
                         tool_results = await execute_tool_calls(self, assistant_turn.tool_calls)
                     except Exception as exc:
+                        logger.exception("Unexpected error executing tool calls")
                         await self.mark_unrecoverable_error(exc)
                         raise
 
@@ -695,12 +808,23 @@ class Session:
         )
 
     async def close(self) -> SessionState:
-        self.state = SessionState.CLOSED
-        await close_active_subagents(self)
         if self._closed_event_emitted:
+            self.state = SessionState.CLOSED
             return self.state
-        self._emit_session_end()
-        self._closed_event_emitted = True
+        if self._closing:
+            return self.state
+
+        self._closing = True
+        self.state = SessionState.CLOSED
+        try:
+            await self._cancel_processing_task()
+            await close_active_subagents(self)
+            await self._cleanup_execution_environment()
+            if not self._closed_event_emitted:
+                self._emit_session_end()
+                self._closed_event_emitted = True
+        finally:
+            self._closing = False
         return self.state
 
     async def abort(self) -> SessionState:

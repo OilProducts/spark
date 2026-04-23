@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import re
 from collections.abc import Mapping, Sequence
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..tools import ToolResult
+from .apply_patch import apply_patch, apply_patch_tool_definition
 from .environment import DirEntry, ExecutionEnvironment, GrepOptions
 from .subagents import (
     build_subagent_tool_registry,
@@ -125,6 +127,35 @@ def _supports_multimodal(provider_profile: Any | None) -> bool:
                 if bool(capabilities.get(key)):
                     return True
     return False
+
+
+def _provider_family(provider_profile: Any | None) -> str | None:
+    if provider_profile is None:
+        return None
+
+    model = getattr(provider_profile, "model", None)
+    if isinstance(model, str) and model:
+        model_text = model.casefold()
+        if model_text.startswith(("gpt-", "o1", "o3")):
+            return "openai"
+
+    probe_values = [
+        getattr(provider_profile, "id", None),
+        getattr(provider_profile, "model", None),
+        getattr(provider_profile, "display_name", None),
+    ]
+    haystack = " ".join(value for value in probe_values if isinstance(value, str)).casefold()
+    if "openai" in haystack or haystack.startswith(("gpt-", "o1", "o3")):
+        return "openai"
+    if "anthropic" in haystack or "claude" in haystack:
+        return "anthropic"
+    if "gemini" in haystack:
+        return "gemini"
+    return None
+
+
+def _is_openai_provider(provider_profile: Any | None) -> bool:
+    return _provider_family(provider_profile) == "openai"
 
 
 def _format_numbered_text(text: str, *, starting_line: int = 1) -> str:
@@ -450,7 +481,7 @@ def _parse_grep_matches(output: str) -> list[dict[str, Any]]:
     return matches
 
 
-def shell(
+async def shell(
     arguments: Mapping[str, Any],
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
@@ -472,7 +503,11 @@ def shell(
         return timeout_ms
 
     try:
-        result = execution_environment.exec_command(command, timeout_ms=timeout_ms)
+        result = await asyncio.to_thread(
+            execution_environment.exec_command,
+            command,
+            timeout_ms=timeout_ms,
+        )
     except ValueError as exc:
         return _error(str(exc))
     except FileNotFoundError:
@@ -918,8 +953,8 @@ def list_dir(
     )
 
 
-def builtin_tool_definitions() -> list[ToolDefinition]:
-    return [
+def builtin_tool_definitions(provider_profile: Any | None = None) -> list[ToolDefinition]:
+    definitions = [
         ToolDefinition(
             name="read_file",
             description="Read a file and return numbered text lines or image data.",
@@ -1035,6 +1070,9 @@ def builtin_tool_definitions() -> list[ToolDefinition]:
             },
         ),
     ]
+    if _is_openai_provider(provider_profile):
+        definitions.append(apply_patch_tool_definition())
+    return definitions
 
 
 _FILE_TOOL_NAMES: tuple[str, ...] = (
@@ -1052,6 +1090,92 @@ def builtin_file_tool_definitions() -> list[ToolDefinition]:
     return [builtin_definition_map[name] for name in _FILE_TOOL_NAMES]
 
 
+_OPENAI_SHELL_DEFAULT_TIMEOUT_MS = 10_000
+
+
+def _openai_shell(
+    arguments: Mapping[str, Any],
+    execution_environment: ExecutionEnvironment,
+    *,
+    provider_profile: Any | None = None,
+    session_config: SessionConfig | None = None,
+) -> ToolResult:
+    if not isinstance(arguments, Mapping):
+        return _error("arguments must be a mapping")
+
+    normalized_arguments = dict(arguments)
+    normalized_arguments.setdefault("timeout_ms", _OPENAI_SHELL_DEFAULT_TIMEOUT_MS)
+    return shell(
+        normalized_arguments,
+        execution_environment,
+        provider_profile=provider_profile,
+        session_config=session_config,
+    )
+
+
+def _openai_shell_tool_definition(definition: ToolDefinition) -> ToolDefinition:
+    parameters = dict(definition.parameters)
+    properties = dict(parameters.get("properties", {}))
+    timeout_schema = dict(properties.get("timeout_ms", {}))
+    timeout_schema["default"] = _OPENAI_SHELL_DEFAULT_TIMEOUT_MS
+    properties["timeout_ms"] = timeout_schema
+    parameters["properties"] = properties
+    return ToolDefinition(
+        name=definition.name,
+        description=definition.description,
+        parameters=parameters,
+        metadata=dict(definition.metadata),
+    )
+
+
+def openai_builtin_tool_definitions() -> list[ToolDefinition]:
+    builtin_definitions = builtin_tool_definitions()
+    builtin_definition_map = {definition.name: definition for definition in builtin_definitions}
+    return [
+        builtin_definition_map["read_file"],
+        apply_patch_tool_definition(),
+        builtin_definition_map["write_file"],
+        _openai_shell_tool_definition(builtin_definition_map["shell"]),
+        builtin_definition_map["grep"],
+        builtin_definition_map["glob"],
+    ]
+
+
+def register_openai_builtin_tools(
+    registry: ToolRegistry | None = None,
+    *,
+    provider_profile: Any | None = None,
+) -> ToolRegistry:
+    target_registry = registry if registry is not None else ToolRegistry()
+    executor_map = {
+        "read_file": read_file,
+        "apply_patch": apply_patch,
+        "write_file": write_file,
+        "shell": _openai_shell,
+        "grep": grep,
+        "glob": glob,
+    }
+    for definition in openai_builtin_tool_definitions():
+        target_registry.register(
+            RegisteredTool(
+                definition=definition,
+                executor=partial(
+                    executor_map[definition.name],
+                    provider_profile=provider_profile,
+                ),
+                metadata={"kind": "builtin"},
+            )
+        )
+    return target_registry
+
+
+def build_openai_builtin_tool_registry(
+    *,
+    provider_profile: Any | None = None,
+) -> ToolRegistry:
+    return register_openai_builtin_tools(provider_profile=provider_profile)
+
+
 def _builtin_executor_for_definition(
     definition_name: str,
     *,
@@ -1066,6 +1190,7 @@ def _builtin_executor_for_definition(
         "glob": glob,
         "read_many_files": read_many_files,
         "list_dir": list_dir,
+        "apply_patch": apply_patch,
     }
     executor = executor_map.get(definition_name)
     if executor is None:
@@ -1101,7 +1226,7 @@ def register_builtin_tools(
 ) -> ToolRegistry:
     return _register_tool_definitions(
         registry,
-        builtin_tool_definitions(),
+        builtin_tool_definitions(provider_profile=provider_profile),
         provider_profile=provider_profile,
     )
 
@@ -1153,8 +1278,10 @@ def file_tool_definitions() -> list[ToolDefinition]:
 
 __all__ = [
     "DEFAULT_READ_FILE_LIMIT",
+    "apply_patch",
     "build_builtin_file_tool_registry",
     "build_builtin_tool_registry",
+    "build_openai_builtin_tool_registry",
     "build_subagent_tool_registry",
     "build_file_tool_registry",
     "builtin_file_tool_definitions",
@@ -1164,8 +1291,10 @@ __all__ = [
     "grep",
     "file_tool_definitions",
     "list_dir",
+    "openai_builtin_tool_definitions",
     "read_file",
     "read_many_files",
+    "register_openai_builtin_tools",
     "shell",
     "register_file_tools",
     "register_builtin_file_tools",

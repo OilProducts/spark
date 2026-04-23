@@ -31,6 +31,24 @@ class _MemoryEnvironment:
     def file_exists(self, path: str | Path) -> bool:
         return str(path) in self.files
 
+    def is_directory(self, path: str | Path) -> bool:
+        return False
+
+    def delete_file(self, path: str | Path) -> None:
+        key = str(path)
+        if key not in self.files:
+            raise FileNotFoundError(key)
+        del self.files[key]
+
+    def rename_file(self, source_path: str | Path, destination_path: str | Path) -> None:
+        source_key = str(source_path)
+        destination_key = str(destination_path)
+        if source_key not in self.files:
+            raise FileNotFoundError(source_key)
+        if destination_key in self.files:
+            raise FileExistsError(destination_key)
+        self.files[destination_key] = self.files.pop(source_key)
+
     def list_directory(self, path: str | Path, depth: int) -> list[agent.DirEntry]:
         return [agent.DirEntry(name=str(path), is_dir=False, size=len(self.files[str(path)]))]
 
@@ -79,7 +97,14 @@ def test_execution_environment_protocol_accepts_structural_implementations() -> 
     environment.write_file("notes.txt", "alpha\nbeta\n")
 
     assert environment.file_exists("notes.txt") is True
+    assert environment.is_directory("notes.txt") is False
     assert environment.read_file("notes.txt", offset=2, limit=1) == "beta\n"
+    environment.write_file("notes-2.txt", "gamma\n")
+    environment.rename_file("notes-2.txt", "renamed.txt")
+    assert environment.file_exists("notes-2.txt") is False
+    assert environment.file_exists("renamed.txt") is True
+    environment.delete_file("renamed.txt")
+    assert environment.file_exists("renamed.txt") is False
     assert environment.list_directory("notes.txt", depth=0) == [
         agent.DirEntry(name="notes.txt", is_dir=False, size=11)
     ]

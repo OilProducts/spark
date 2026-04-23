@@ -40,6 +40,15 @@ class _MutableEnvironment:
     def file_exists(self, path: str | object) -> bool:
         return False
 
+    def is_directory(self, path: str | object) -> bool:
+        return False
+
+    def delete_file(self, path: str | object) -> None:
+        return None
+
+    def rename_file(self, source_path: str | object, destination_path: str | object) -> None:
+        return None
+
     def list_directory(self, path: str | object, depth: int) -> list[agent.DirEntry]:
         return []
 
@@ -164,6 +173,7 @@ def test_build_system_prompt_assembles_layers_and_snapshots_environment_at_sessi
     assert "Provider identity:" in prompt
     assert "Tool usage:" in prompt
     assert "Edit guidance:" in prompt
+    assert "*** Begin Patch / *** End Patch format" in prompt
     assert "Project instruction conventions:" in prompt
     assert "Coding guidance:" in prompt
     assert "apply_patch" in prompt

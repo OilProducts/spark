@@ -370,7 +370,7 @@
         "tests/agent/test_openai_profile.py",
         "tests/agent/test_apply_patch.py"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M5",
       "notes": "Implement enough v4a semantics to satisfy observable add/delete/update/rename and hunk matching behavior."
     },
@@ -406,7 +406,7 @@
         "src/unified_llm/agent/profiles/anthropic.py",
         "tests/agent/test_anthropic_profile.py"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M5",
       "notes": "Profile behavior must preserve the model-facing old_string/new_string affordance even if shared implementation helpers are reused internally."
     },
@@ -440,7 +440,7 @@
         "src/unified_llm/agent/profiles/gemini.py",
         "tests/agent/test_gemini_profile.py"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M5",
       "notes": "web_search and web_fetch are optional profile capabilities; absence must be explicit and testable."
     },
@@ -634,7 +634,7 @@
         "tests/agent/test_error_handling.py",
         "tests/agent/test_shutdown.py"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M5",
       "notes": "This requirement directly supports the request constraint that exceptions should all be handled or logged at the appropriate level."
     },

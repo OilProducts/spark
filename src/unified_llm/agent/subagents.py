@@ -240,6 +240,18 @@ class ScopedExecutionEnvironment:
     def file_exists(self, path: str | Path) -> bool:
         return self.base_environment.file_exists(self._scope_value(path))
 
+    def is_directory(self, path: str | Path) -> bool:
+        return self.base_environment.is_directory(self._scope_value(path))
+
+    def delete_file(self, path: str | Path) -> None:
+        self.base_environment.delete_file(self._scope_value(path))
+
+    def rename_file(self, source_path: str | Path, destination_path: str | Path) -> None:
+        self.base_environment.rename_file(
+            self._scope_value(source_path),
+            self._scope_value(destination_path),
+        )
+
     def list_directory(self, path: str | Path, depth: int) -> list[Any]:
         return self.base_environment.list_directory(self._scope_value(path), depth)
 
@@ -269,8 +281,8 @@ class ScopedExecutionEnvironment:
     def initialize(self) -> None:
         self.base_environment.initialize()
 
-    def cleanup(self) -> None:
-        logger.debug("cleanup called for scoped execution environment")
+    def cleanup(self) -> Any:
+        return self.base_environment.cleanup()
 
     def working_directory(self) -> str:
         return str(self.scope_display)

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import unified_llm.agent as agent
 import unified_llm.agent.profiles as profiles
+import unified_llm.agent.profiles.anthropic as anthropic_profile_module
+import unified_llm.agent.profiles.gemini as gemini_profile_module
+import unified_llm.agent.profiles.openai as openai_profile_module
 
 
 def _noop_executor(arguments: dict[str, object], execution_environment: object) -> str:
@@ -10,6 +13,23 @@ def _noop_executor(arguments: dict[str, object], execution_environment: object) 
 
 def test_provider_profile_export_is_shared_between_agent_modules() -> None:
     assert agent.ProviderProfile is profiles.ProviderProfile
+
+
+def test_provider_profile_package_exports_provider_factories_and_registry_builders() -> None:
+    assert profiles.create_openai_profile is openai_profile_module.create_openai_profile
+    assert profiles.build_openai_tool_registry is openai_profile_module.build_openai_tool_registry
+    assert profiles.register_openai_tools is openai_profile_module.register_openai_tools
+
+    assert profiles.create_anthropic_profile is anthropic_profile_module.create_anthropic_profile
+    assert (
+        profiles.build_anthropic_tool_registry
+        is anthropic_profile_module.build_anthropic_tool_registry
+    )
+    assert profiles.register_anthropic_tools is anthropic_profile_module.register_anthropic_tools
+
+    assert profiles.create_gemini_profile is gemini_profile_module.create_gemini_profile
+    assert profiles.build_gemini_tool_registry is gemini_profile_module.build_gemini_tool_registry
+    assert profiles.register_gemini_tools is gemini_profile_module.register_gemini_tools
 
 
 def test_provider_profile_exposes_fields_capabilities_and_copying_behavior(
