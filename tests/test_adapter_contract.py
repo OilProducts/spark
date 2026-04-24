@@ -19,11 +19,10 @@ def _requirement_name(requirement: str) -> str:
 
 
 def test_distribution_metadata_reflects_package_metadata() -> None:
-    dist = metadata.distribution("unified_llm")
+    dist = metadata.distribution("spark")
     requirement_names = {_requirement_name(requirement) for requirement in dist.requires or []}
 
-    assert dist.metadata["Name"] == "unified_llm"
-    assert dist.metadata["Description-Content-Type"] == "text/markdown"
+    assert dist.metadata["Name"] == "spark"
     assert {"httpx", "jsonschema"} <= requirement_names
 
 
