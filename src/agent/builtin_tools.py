@@ -8,8 +8,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from unified_llm.tools import ToolResult
-
 from .apply_patch import apply_patch, apply_patch_tool_definition
 from .environment import DirEntry, ExecutionEnvironment, GrepOptions
 from .subagents import (
@@ -17,7 +15,7 @@ from .subagents import (
     register_subagent_tools,
     subagent_tool_definitions,
 )
-from .tools import RegisteredTool, ToolDefinition, ToolRegistry
+from .tools import RegisteredTool, ToolDefinition, ToolOutput, ToolRegistry
 from .types import SessionConfig
 
 DEFAULT_READ_FILE_LIMIT = 2000
@@ -29,8 +27,8 @@ def _tool_result(
     is_error: bool,
     image_data: bytes | None = None,
     image_media_type: str | None = None,
-) -> ToolResult:
-    return ToolResult(
+) -> ToolOutput:
+    return ToolOutput(
         content=content,
         is_error=is_error,
         image_data=image_data,
@@ -38,7 +36,7 @@ def _tool_result(
     )
 
 
-def _error(message: str) -> ToolResult:
+def _error(message: str) -> ToolOutput:
     return _tool_result(message, is_error=True)
 
 
@@ -224,7 +222,7 @@ def _read_text_file_content(
     *,
     offset: int = 1,
     limit: int = DEFAULT_READ_FILE_LIMIT,
-) -> str | ToolResult:
+) -> str | ToolOutput:
     try:
         value = _read_environment_file(
             execution_environment,
@@ -442,7 +440,7 @@ def _resolve_shell_timeout_ms(
     *,
     provider_profile: Any | None,
     session_config: SessionConfig | None,
-) -> int | None | ToolResult:
+) -> int | None | ToolOutput:
     explicit_timeout_ms = _parse_optional_int_argument(arguments, "timeout_ms", minimum=1)
     if "timeout_ms" in arguments and explicit_timeout_ms is None:
         return _error("timeout_ms must be at least 1")
@@ -487,7 +485,7 @@ async def shell(
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
     session_config: SessionConfig | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -500,7 +498,7 @@ async def shell(
         provider_profile=provider_profile,
         session_config=session_config,
     )
-    if isinstance(timeout_ms, ToolResult):
+    if isinstance(timeout_ms, ToolOutput):
         return timeout_ms
 
     try:
@@ -543,7 +541,7 @@ def grep(
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
     session_config: SessionConfig | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -605,7 +603,7 @@ def glob(
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
     session_config: SessionConfig | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -647,7 +645,7 @@ def read_file(
     arguments: Mapping[str, Any],
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -730,7 +728,7 @@ def write_file(
     arguments: Mapping[str, Any],
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -766,7 +764,7 @@ def edit_file(
     arguments: Mapping[str, Any],
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -850,7 +848,7 @@ def read_many_files(
     arguments: Mapping[str, Any],
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -882,7 +880,7 @@ def read_many_files(
             offset=1,
             limit=DEFAULT_READ_FILE_LIMIT,
         )
-        if isinstance(content, ToolResult):
+        if isinstance(content, ToolOutput):
             return content
         file_records.append(
             {
@@ -901,7 +899,7 @@ def list_dir(
     arguments: Mapping[str, Any],
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -1100,7 +1098,7 @@ def _openai_shell(
     *,
     provider_profile: Any | None = None,
     session_config: SessionConfig | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 

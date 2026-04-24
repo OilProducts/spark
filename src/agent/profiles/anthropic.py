@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from unified_llm.models import get_model_info
-from unified_llm.tools import ToolResult
 
 from ..builtin_tools import edit_file as builtin_edit_file
 from ..builtin_tools import glob as builtin_glob
@@ -15,7 +14,7 @@ from ..builtin_tools import read_file as builtin_read_file
 from ..builtin_tools import shell as builtin_shell
 from ..builtin_tools import write_file as builtin_write_file
 from ..subagents import register_subagent_tools
-from ..tools import RegisteredTool, ToolDefinition, ToolRegistry
+from ..tools import RegisteredTool, ToolDefinition, ToolOutput, ToolRegistry
 from .base import ProviderProfile
 
 DEFAULT_ANTHROPIC_GREP_HEAD_LIMIT = 250
@@ -31,11 +30,11 @@ def _tool_result(
     content: str | dict[str, Any] | list[Any],
     *,
     is_error: bool,
-) -> ToolResult:
-    return ToolResult(content=content, is_error=is_error)
+) -> ToolOutput:
+    return ToolOutput(content=content, is_error=is_error)
 
 
-def _error(message: str) -> ToolResult:
+def _error(message: str) -> ToolOutput:
     return _tool_result(message, is_error=True)
 
 
@@ -183,7 +182,7 @@ def _normalize_path_value(value: Any | None) -> str | None:
     return None
 
 
-def _normalize_boolean(value: Any, *, default: bool) -> bool | ToolResult:
+def _normalize_boolean(value: Any, *, default: bool) -> bool | ToolOutput:
     if value is None:
         return default
     if not isinstance(value, bool):
@@ -191,7 +190,7 @@ def _normalize_boolean(value: Any, *, default: bool) -> bool | ToolResult:
     return value
 
 
-def _normalize_non_negative_int(value: Any, *, default: int) -> int | ToolResult:
+def _normalize_non_negative_int(value: Any, *, default: int) -> int | ToolOutput:
     if value is None:
         return default
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -257,7 +256,7 @@ def grep(
     execution_environment: Any,
     provider_profile: Any | None = None,
     session_config: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -282,15 +281,15 @@ def grep(
         return _error("output_mode must be one of: content, files_with_matches, count")
 
     case_insensitive = _normalize_boolean(arguments.get("-i"), default=False)
-    if isinstance(case_insensitive, ToolResult):
+    if isinstance(case_insensitive, ToolOutput):
         return case_insensitive
 
     show_line_numbers = _normalize_boolean(arguments.get("-n"), default=True)
-    if isinstance(show_line_numbers, ToolResult):
+    if isinstance(show_line_numbers, ToolOutput):
         return show_line_numbers
 
     multiline = _normalize_boolean(arguments.get("multiline"), default=False)
-    if isinstance(multiline, ToolResult):
+    if isinstance(multiline, ToolOutput):
         return multiline
     _ = multiline
 
@@ -298,11 +297,11 @@ def grep(
         arguments.get("head_limit"),
         default=DEFAULT_ANTHROPIC_GREP_HEAD_LIMIT,
     )
-    if isinstance(head_limit, ToolResult):
+    if isinstance(head_limit, ToolOutput):
         return head_limit
 
     offset = _normalize_non_negative_int(arguments.get("offset"), default=0)
-    if isinstance(offset, ToolResult):
+    if isinstance(offset, ToolOutput):
         return offset
 
     search_arguments: dict[str, Any] = {

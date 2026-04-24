@@ -78,7 +78,6 @@ def _sdk_tool_from_definition(tool_definition: ToolDefinition) -> SDKTool:
         name=tool_definition.name,
         description=tool_definition.description,
         parameters=dict(tool_definition.parameters),
-        metadata=dict(tool_definition.metadata),
     )
 
 

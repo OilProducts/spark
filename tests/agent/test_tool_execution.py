@@ -223,7 +223,7 @@ async def test_execute_tool_call_routes_registered_builtin_tools_through_the_pip
     assert tool_end_event.data["tool_call_id"] == "call-read"
     assert tool_end_event.data["tool_name"] == "read_file"
     error = tool_end_event.data["error"]
-    assert isinstance(error, unified_llm.ToolResult)
+    assert isinstance(error, agent.ToolOutput)
     assert error.content == "File not found: missing.txt"
     assert error.is_error is True
 
@@ -742,7 +742,7 @@ async def test_execute_tool_call_returns_recoverable_error_for_subagent_startup_
     assert tool_end_event.data["tool_call_id"] == "spawn-failure"
     assert tool_end_event.data["tool_name"] == "spawn_agent"
     error = tool_end_event.data["error"]
-    assert isinstance(error, unified_llm.ToolResult)
+    assert isinstance(error, agent.ToolOutput)
     assert "max_subagent_depth" in error.content
 
     await session.close()

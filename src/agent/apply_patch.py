@@ -6,10 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from unified_llm.tools import ToolResult
-
 from .environment import ExecutionEnvironment
-from .tools import ToolDefinition
+from .tools import ToolDefinition, ToolOutput
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +75,11 @@ def _tool_result(
     content: str | dict[str, Any] | list[Any],
     *,
     is_error: bool,
-) -> ToolResult:
-    return ToolResult(content=content, is_error=is_error)
+) -> ToolOutput:
+    return ToolOutput(content=content, is_error=is_error)
 
 
-def _error(message: str) -> ToolResult:
+def _error(message: str) -> ToolOutput:
     return _tool_result(message, is_error=True)
 
 
@@ -581,7 +579,7 @@ def apply_patch(
     arguments: Mapping[str, Any],
     execution_environment: ExecutionEnvironment,
     provider_profile: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     del provider_profile
 
     if not isinstance(arguments, Mapping):

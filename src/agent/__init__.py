@@ -31,6 +31,7 @@ from .loop_detection import LOOP_DETECTION_WARNING, ToolCallSignature, detect_lo
 from .profiles import create_anthropic_profile, create_gemini_profile, create_openai_profile
 from .session import Session
 from .tool_execution import execute_tool_call, execute_tool_calls
+from .tools import ToolOutput
 from .truncation import (
     DEFAULT_LINE_LIMITS,
     DEFAULT_TOOL_LIMITS,
@@ -112,6 +113,7 @@ __all__ = [
     "SubAgentStatus",
     "SystemTurn",
     "ToolDefinition",
+    "ToolOutput",
     "ToolRegistry",
     "ToolResultsTurn",
     "ToolCallSignature",

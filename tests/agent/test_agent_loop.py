@@ -179,7 +179,6 @@ def test_session_build_request_prepends_system_prompt_and_preserves_sdk_history(
     assert request.tools[0].name == "lookup"
     assert request.tools[0].description == "Lookup values"
     assert request.tools[0].parameters == {"type": "object"}
-    assert request.tools[0].metadata == {}
     assert request.tool_choice is not None
     assert request.tool_choice.mode == "auto"
     assert request.tool_choice.tool_name is None

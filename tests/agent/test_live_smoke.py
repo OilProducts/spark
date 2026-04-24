@@ -838,7 +838,7 @@ async def test_live_smoke_provider_shell_truncation_and_timeout(
     ]
     read_end_event = read_events[1]
     raw_read_output = read_end_event.data["output"]
-    assert isinstance(raw_read_output, unified_llm.ToolResult)
+    assert isinstance(raw_read_output, agent.ToolOutput)
     assert read_result.is_error is False
     assert read_result.content == agent.truncate_tool_output(
         raw_read_output.content,

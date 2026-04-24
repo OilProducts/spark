@@ -12,7 +12,6 @@ from urllib.request import Request as URLRequest
 from urllib.request import urlopen
 
 from unified_llm.models import get_model_info
-from unified_llm.tools import ToolResult
 
 from ..builtin_tools import DEFAULT_READ_FILE_LIMIT, builtin_tool_definitions
 from ..builtin_tools import edit_file as builtin_edit_file
@@ -24,7 +23,7 @@ from ..builtin_tools import read_many_files as builtin_read_many_files
 from ..builtin_tools import shell as builtin_shell
 from ..builtin_tools import write_file as builtin_write_file
 from ..subagents import register_subagent_tools
-from ..tools import RegisteredTool, ToolDefinition, ToolRegistry
+from ..tools import RegisteredTool, ToolDefinition, ToolOutput, ToolRegistry
 from .base import ProviderProfile
 
 DEFAULT_GEMINI_SHELL_TIMEOUT_MS = 10_000
@@ -43,8 +42,8 @@ def _tool_result(
     is_error: bool,
     image_data: bytes | None = None,
     image_media_type: str | None = None,
-) -> ToolResult:
-    return ToolResult(
+) -> ToolOutput:
+    return ToolOutput(
         content=content,
         is_error=is_error,
         image_data=image_data,
@@ -52,7 +51,7 @@ def _tool_result(
     )
 
 
-def _error(message: str) -> ToolResult:
+def _error(message: str) -> ToolOutput:
     return _tool_result(message, is_error=True)
 
 
@@ -242,7 +241,7 @@ def _web_search(
     execution_environment: Any,
     provider_profile: Any | None = None,
     session_config: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -301,7 +300,7 @@ def _web_fetch(
     execution_environment: Any,
     provider_profile: Any | None = None,
     session_config: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 
@@ -347,7 +346,7 @@ def edit_file(
     arguments: Mapping[str, Any],
     execution_environment: Any,
     provider_profile: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if not isinstance(arguments, Mapping):
         return _error("arguments must be a mapping")
 

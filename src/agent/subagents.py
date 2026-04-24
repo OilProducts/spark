@@ -11,11 +11,9 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from unified_llm.tools import ToolResult
-
 from .environment import ExecutionEnvironment
 from .profiles.base import ProviderProfile
-from .tools import RegisteredTool, ToolDefinition, ToolRegistry
+from .tools import RegisteredTool, ToolDefinition, ToolOutput, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -526,11 +524,11 @@ def _tool_result(
     content: str | dict[str, Any] | list[Any],
     *,
     is_error: bool,
-) -> ToolResult:
-    return ToolResult(content=content, is_error=is_error)
+) -> ToolOutput:
+    return ToolOutput(content=content, is_error=is_error)
 
 
-def _error(message: str) -> ToolResult:
+def _error(message: str) -> ToolOutput:
     return _tool_result(message, is_error=True)
 
 
@@ -741,7 +739,7 @@ def spawn_agent(
     execution_environment: ExecutionEnvironment,
     *,
     session: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if session is None:
         return _error("session is required")
     if not isinstance(arguments, Mapping):
@@ -791,7 +789,7 @@ def send_input(
     execution_environment: ExecutionEnvironment,
     *,
     session: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if session is None:
         return _error("session is required")
     if not isinstance(arguments, Mapping):
@@ -850,7 +848,7 @@ async def wait(
     execution_environment: ExecutionEnvironment,
     *,
     session: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if session is None:
         return _error("session is required")
     if not isinstance(arguments, Mapping):
@@ -879,7 +877,7 @@ async def close_agent(
     execution_environment: ExecutionEnvironment,
     *,
     session: Any | None = None,
-) -> ToolResult:
+) -> ToolOutput:
     if session is None:
         return _error("session is required")
     if not isinstance(arguments, Mapping):

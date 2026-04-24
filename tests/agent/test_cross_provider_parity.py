@@ -829,7 +829,7 @@ def _assert_event_tool_result(
     tool_result: Any,
     spec: ToolCallSpec,
 ) -> None:
-    assert isinstance(tool_result, unified_llm.ToolResult)
+    assert isinstance(tool_result, agent.ToolOutput)
     assert tool_result.content == spec.event_result_content
     assert tool_result.is_error == spec.is_error
 

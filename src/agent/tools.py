@@ -53,6 +53,24 @@ class ToolDefinition:
         self.metadata = _copy_mapping(self.metadata)
 
 
+@dataclass(slots=True)
+class ToolOutput:
+    content: str | dict[str, Any] | list[Any]
+    is_error: bool = False
+    image_data: bytes | None = None
+    image_media_type: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.content, (str, dict, list)):
+            raise TypeError("content must be a string, dict, or list")
+        if not isinstance(self.is_error, bool):
+            raise TypeError("is_error must be a boolean")
+        if self.image_data is not None and not isinstance(self.image_data, bytes):
+            raise TypeError("image_data must be bytes or None")
+        if self.image_media_type is not None and not isinstance(self.image_media_type, str):
+            raise TypeError("image_media_type must be a string or None")
+
+
 ToolExecutor = Callable[[dict[str, Any], ExecutionEnvironment], Any]
 
 
@@ -150,4 +168,4 @@ class ToolRegistry:
         return len(self._tools)
 
 
-__all__ = ["RegisteredTool", "ToolDefinition", "ToolRegistry"]
+__all__ = ["RegisteredTool", "ToolDefinition", "ToolOutput", "ToolRegistry"]
