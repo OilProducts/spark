@@ -10,9 +10,9 @@ from typing import Any
 
 import pytest
 
+import agent
 import unified_llm
-import unified_llm.agent as agent
-from unified_llm.agent.history import history_to_messages
+from agent.history import history_to_messages
 
 
 async def _next_event(stream) -> agent.SessionEvent:

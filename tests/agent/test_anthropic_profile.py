@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
+import agent
+import agent.profiles as profiles
+import agent.profiles.anthropic as anthropic_profile_module
 import unified_llm
-import unified_llm.agent as agent
-import unified_llm.agent.profiles as profiles
-import unified_llm.agent.profiles.anthropic as anthropic_profile_module
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n"
@@ -180,7 +180,7 @@ async def _execute_tool(
 
 
 def test_anthropic_profile_factory_is_exported_from_unified_llm_agent() -> None:
-    from unified_llm.agent import create_anthropic_profile as imported_create_anthropic_profile
+    from agent import create_anthropic_profile as imported_create_anthropic_profile
 
     assert imported_create_anthropic_profile is agent.create_anthropic_profile
     assert imported_create_anthropic_profile is profiles.create_anthropic_profile

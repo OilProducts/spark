@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-import unified_llm.agent as agent
+import agent
 
 
 def _noop_executor(

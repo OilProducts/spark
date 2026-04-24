@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ...models import get_model_info
+from unified_llm.models import get_model_info
+
 from ..builtin_tools import build_openai_builtin_tool_registry, register_openai_builtin_tools
 from ..subagents import register_subagent_tools
 from ..tools import ToolRegistry

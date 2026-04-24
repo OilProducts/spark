@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-import unified_llm.agent as agent
+import agent
 
 
 def test_agent_event_exports_are_available_and_distinct_from_sdk_stream_events() -> None:

@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
+import agent
+import agent.subagents as subagents
 import unified_llm
-import unified_llm.agent as agent
-import unified_llm.agent.subagents as subagents
 
 
 def _shell_command(*args: str) -> str:

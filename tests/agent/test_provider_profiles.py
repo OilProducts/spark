@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-import unified_llm.agent as agent
-import unified_llm.agent.profiles as profiles
-import unified_llm.agent.profiles.anthropic as anthropic_profile_module
-import unified_llm.agent.profiles.gemini as gemini_profile_module
-import unified_llm.agent.profiles.openai as openai_profile_module
+import agent
+import agent.profiles as profiles
+import agent.profiles.anthropic as anthropic_profile_module
+import agent.profiles.gemini as gemini_profile_module
+import agent.profiles.openai as openai_profile_module
 
 
 def _noop_executor(arguments: dict[str, object], execution_environment: object) -> str:

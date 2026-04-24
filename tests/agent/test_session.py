@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 from collections.abc import AsyncIterable
 from pathlib import Path
 from uuid import UUID
 
 import pytest
 
+import agent
 import unified_llm
-import unified_llm.agent as agent
 from unified_llm import (
     Client,
     ContentKind,
@@ -54,6 +55,11 @@ def test_agent_package_re_exports_the_public_foundation_types() -> None:
     assert expected_names <= set(agent.__all__)
     for name in expected_names:
         assert hasattr(agent, name)
+
+
+def test_legacy_unified_llm_agent_namespace_is_not_supported() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("unified_llm.agent")
 
 
 def test_session_construction_exposes_public_state_and_queues() -> None:

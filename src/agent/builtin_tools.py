@@ -8,7 +8,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from ..tools import ToolResult
+from unified_llm.tools import ToolResult
+
 from .apply_patch import apply_patch, apply_patch_tool_definition
 from .environment import DirEntry, ExecutionEnvironment, GrepOptions
 from .subagents import (

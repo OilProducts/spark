@@ -5,9 +5,9 @@ import logging
 
 import pytest
 
+import agent
+import agent.builtin_tools as builtin_tools
 import unified_llm
-import unified_llm.agent as agent
-import unified_llm.agent.builtin_tools as builtin_tools
 
 
 async def _next_event(stream) -> agent.SessionEvent:

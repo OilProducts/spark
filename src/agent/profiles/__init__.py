@@ -1,4 +1,4 @@
-"""Public provider profile extensibility surface for unified_llm.agent."""
+"""Public provider profile extensibility surface for agent."""
 
 from __future__ import annotations
 

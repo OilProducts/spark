@@ -2,8 +2,8 @@
   "decisions": [
     {
       "id": "CD-001",
-      "title": "Agent subpackage inside unified_llm",
-      "summary": "Implement the coding agent as an importable Python library under src/unified_llm/agent, layered on the existing Unified LLM SDK rather than as a separate package, CLI, or wrapper-only layer.",
+      "title": "Top-level agent package layered on unified_llm",
+      "summary": "Implement the coding agent as an importable top-level Python package under src/agent, layered on the existing Unified LLM SDK rather than as a separate distribution, CLI, or wrapper-only layer.",
       "requirement_ids": ["REQ-001", "REQ-004"],
       "spec_refs": [
         ".spark/spec-implementation/current/spec/source.md:35",
@@ -16,9 +16,9 @@
         "architecture.md#canonical-repository-topology",
         "architecture.md#documented-public-interface"
       ],
-      "behavioral_contract": "Host applications import and control the agent through unified_llm.agent. The agent exposes programmable sessions, events, profiles, tools, and environments without requiring a CLI entrypoint.",
-      "implementation_contract": "Create src/unified_llm/agent and tests/agent. Build SDK Request objects and call Client.complete or Client.stream directly. Do not call the SDK high-level generate tool loop from the agent loop.",
-      "validation_expectations": "Import tests verify unified_llm.agent exports the stable public API. Fake-client tests prove Session uses low-level complete/stream calls and never depends on a required CLI or high-level generate loop."
+      "behavioral_contract": "Host applications import and control the agent through agent. The agent exposes programmable sessions, events, profiles, tools, and environments without requiring a CLI entrypoint.",
+      "implementation_contract": "Create src/agent and tests/agent. Build SDK Request objects and call Client.complete or Client.stream directly. Do not call the SDK high-level generate tool loop from the agent loop.",
+      "validation_expectations": "Import tests verify agent exports the stable public API. Fake-client tests prove Session uses low-level complete/stream calls and never depends on a required CLI or high-level generate loop."
     },
     {
       "id": "CD-002",

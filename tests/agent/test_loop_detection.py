@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
+import agent
 import unified_llm
-import unified_llm.agent as agent
-from unified_llm.agent.loop_detection import (
+from agent.loop_detection import (
     LOOP_DETECTION_WARNING,
     ToolCallSignature,
     detect_loop,

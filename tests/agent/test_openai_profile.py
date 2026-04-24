@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
+import agent
+import agent.profiles as profiles
+import agent.profiles.openai as openai_profile_module
 import unified_llm
-import unified_llm.agent as agent
-import unified_llm.agent.profiles as profiles
-import unified_llm.agent.profiles.openai as openai_profile_module
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n"
@@ -161,7 +161,7 @@ async def _execute_tool(
 
 
 def test_openai_profile_factory_is_exported_from_unified_llm_agent() -> None:
-    from unified_llm.agent import create_openai_profile as imported_create_openai_profile
+    from agent import create_openai_profile as imported_create_openai_profile
 
     assert imported_create_openai_profile is agent.create_openai_profile
     assert imported_create_openai_profile is profiles.create_openai_profile

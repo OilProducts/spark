@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from ..tools import ToolResult
+from unified_llm.tools import ToolResult
+
 from .environment import ExecutionEnvironment
 from .profiles.base import ProviderProfile
 from .tools import RegisteredTool, ToolDefinition, ToolRegistry

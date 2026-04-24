@@ -11,8 +11,9 @@ from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from urllib.request import Request as URLRequest
 from urllib.request import urlopen
 
-from ...models import get_model_info
-from ...tools import ToolResult
+from unified_llm.models import get_model_info
+from unified_llm.tools import ToolResult
+
 from ..builtin_tools import DEFAULT_READ_FILE_LIMIT, builtin_tool_definitions
 from ..builtin_tools import edit_file as builtin_edit_file
 from ..builtin_tools import glob as builtin_glob

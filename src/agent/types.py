@@ -6,7 +6,15 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from ..types import ContentKind, ContentPart, FinishReason, ToolCallData, ToolResultData, Usage
+from unified_llm.types import (
+    ContentKind,
+    ContentPart,
+    FinishReason,
+    ToolCallData,
+    ToolResultData,
+    Usage,
+)
+
 from .environment import ExecutionEnvironment
 from .profiles.base import ProviderProfile
 from .subagents import (

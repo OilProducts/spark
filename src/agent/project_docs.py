@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..models import get_model_info
+from unified_llm.models import get_model_info
+
 from .environment import ExecutionEnvironment
 
 PROJECT_INSTRUCTION_BYTE_BUDGET = 32 * 1024

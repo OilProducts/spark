@@ -5,8 +5,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from ...models import get_model_info
-from ...tools import ToolResult
+from unified_llm.models import get_model_info
+from unified_llm.tools import ToolResult
+
 from ..builtin_tools import edit_file as builtin_edit_file
 from ..builtin_tools import glob as builtin_glob
 from ..builtin_tools import grep as shared_grep

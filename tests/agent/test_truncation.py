@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import unified_llm.agent as agent
+import agent
 
 
 def test_default_truncation_tables_cover_the_required_limits_and_modes() -> None:

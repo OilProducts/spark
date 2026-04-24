@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from ..tools import ToolCall
-from ..types import (
+from unified_llm.tools import ToolCall
+from unified_llm.types import (
     ContentKind,
     ContentPart,
     Message,
@@ -12,6 +12,7 @@ from ..types import (
     ToolCallData,
     ToolResultData,
 )
+
 from .types import AssistantTurn, SteeringTurn, SystemTurn, ToolResultsTurn, UserTurn
 
 

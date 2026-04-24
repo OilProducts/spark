@@ -5,8 +5,8 @@ import logging
 
 import pytest
 
+import agent
 import unified_llm
-import unified_llm.agent as agent
 
 
 async def _next_event(stream) -> agent.SessionEvent:
@@ -71,7 +71,7 @@ async def test_session_process_input_authentication_error_emits_error_and_closes
     start_event = await _next_event(stream)
     assert start_event.kind == agent.EventKind.SESSION_START
 
-    with caplog.at_level(logging.ERROR, logger="unified_llm.agent.session"):
+    with caplog.at_level(logging.ERROR, logger="agent.session"):
         with pytest.raises(unified_llm.AuthenticationError, match="invalid key"):
             await session.process_input("Question")
 
@@ -111,7 +111,7 @@ async def test_session_process_input_context_length_error_emits_warning_and_stay
     start_event = await _next_event(stream)
     assert start_event.kind == agent.EventKind.SESSION_START
 
-    with caplog.at_level(logging.WARNING, logger="unified_llm.agent.session"):
+    with caplog.at_level(logging.WARNING, logger="agent.session"):
         with pytest.raises(
             unified_llm.ContextLengthError,
             match="too many tokens in the prompt",
@@ -226,7 +226,7 @@ async def test_session_process_input_unexpected_exception_logs_and_closes(
     start_event = await _next_event(stream)
     assert start_event.kind == agent.EventKind.SESSION_START
 
-    with caplog.at_level(logging.ERROR, logger="unified_llm.agent.session"):
+    with caplog.at_level(logging.ERROR, logger="agent.session"):
         with pytest.raises(RuntimeError, match="boom"):
             await session.process_input("Question")
 

@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
+import agent
 import unified_llm
-import unified_llm.agent as agent
 
 
 async def _next_event(stream) -> agent.SessionEvent:

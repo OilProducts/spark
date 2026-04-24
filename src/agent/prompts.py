@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from ..models import get_model_info
+from unified_llm.models import get_model_info
+
 from . import project_docs as project_docs_module
 from .environment import ExecutionEnvironment
 from .project_docs import ProjectDocument, ProjectDocuments

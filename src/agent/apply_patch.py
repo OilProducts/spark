@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..tools import ToolResult
+from unified_llm.tools import ToolResult
+
 from .environment import ExecutionEnvironment
 from .tools import ToolDefinition
 

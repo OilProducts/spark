@@ -21,8 +21,8 @@
       "dependencies": [],
       "target_paths": [
         "pyproject.toml",
-        "src/unified_llm/agent/__init__.py",
-        "src/unified_llm/agent/",
+        "src/agent/__init__.py",
+        "src/agent/",
         "tests/agent/"
       ],
       "status": "completed",
@@ -51,8 +51,8 @@
         "REQ-001"
       ],
       "target_paths": [
-        "src/unified_llm/agent/session.py",
-        "src/unified_llm/agent/types.py",
+        "src/agent/session.py",
+        "src/agent/types.py",
         "tests/agent/test_session.py"
       ],
       "status": "completed",
@@ -84,8 +84,8 @@
         "REQ-002"
       ],
       "target_paths": [
-        "src/unified_llm/agent/events.py",
-        "src/unified_llm/agent/session.py",
+        "src/agent/events.py",
+        "src/agent/session.py",
         "tests/agent/test_events.py"
       ],
       "status": "completed",
@@ -128,8 +128,8 @@
         "REQ-014"
       ],
       "target_paths": [
-        "src/unified_llm/agent/session.py",
-        "src/unified_llm/agent/history.py",
+        "src/agent/session.py",
+        "src/agent/history.py",
         "tests/agent/test_agent_loop.py"
       ],
       "status": "completed",
@@ -166,8 +166,8 @@
         "REQ-008"
       ],
       "target_paths": [
-        "src/unified_llm/agent/tools.py",
-        "src/unified_llm/agent/tool_execution.py",
+        "src/agent/tools.py",
+        "src/agent/tool_execution.py",
         "tests/agent/test_tool_registry.py",
         "tests/agent/test_tool_execution.py"
       ],
@@ -203,8 +203,8 @@
         "REQ-007"
       ],
       "target_paths": [
-        "src/unified_llm/agent/builtin_tools.py",
-        "src/unified_llm/agent/tools.py",
+        "src/agent/builtin_tools.py",
+        "src/agent/tools.py",
         "tests/agent/test_builtin_tools.py"
       ],
       "status": "completed",
@@ -245,8 +245,8 @@
         "REQ-002"
       ],
       "target_paths": [
-        "src/unified_llm/agent/environment.py",
-        "src/unified_llm/agent/local_environment.py",
+        "src/agent/environment.py",
+        "src/agent/local_environment.py",
         "tests/agent/test_environment.py",
         "tests/agent/test_local_environment.py"
       ],
@@ -288,8 +288,8 @@
         "REQ-003"
       ],
       "target_paths": [
-        "src/unified_llm/agent/truncation.py",
-        "src/unified_llm/agent/context.py",
+        "src/agent/truncation.py",
+        "src/agent/context.py",
         "tests/agent/test_truncation.py",
         "tests/agent/test_context_usage.py"
       ],
@@ -322,8 +322,8 @@
         "REQ-005"
       ],
       "target_paths": [
-        "src/unified_llm/agent/profiles/base.py",
-        "src/unified_llm/agent/profiles/__init__.py",
+        "src/agent/profiles/base.py",
+        "src/agent/profiles/__init__.py",
         "tests/agent/test_provider_profiles.py"
       ],
       "status": "completed",
@@ -365,8 +365,8 @@
         "REQ-016"
       ],
       "target_paths": [
-        "src/unified_llm/agent/profiles/openai.py",
-        "src/unified_llm/agent/apply_patch.py",
+        "src/agent/profiles/openai.py",
+        "src/agent/apply_patch.py",
         "tests/agent/test_openai_profile.py",
         "tests/agent/test_apply_patch.py"
       ],
@@ -403,7 +403,7 @@
         "REQ-016"
       ],
       "target_paths": [
-        "src/unified_llm/agent/profiles/anthropic.py",
+        "src/agent/profiles/anthropic.py",
         "tests/agent/test_anthropic_profile.py"
       ],
       "status": "completed",
@@ -437,7 +437,7 @@
         "REQ-016"
       ],
       "target_paths": [
-        "src/unified_llm/agent/profiles/gemini.py",
+        "src/agent/profiles/gemini.py",
         "tests/agent/test_gemini_profile.py"
       ],
       "status": "completed",
@@ -474,8 +474,8 @@
         "REQ-009"
       ],
       "target_paths": [
-        "src/unified_llm/agent/prompts.py",
-        "src/unified_llm/agent/project_docs.py",
+        "src/agent/prompts.py",
+        "src/agent/project_docs.py",
         "tests/agent/test_prompts.py",
         "tests/agent/test_project_docs.py"
       ],
@@ -513,8 +513,8 @@
         "REQ-003"
       ],
       "target_paths": [
-        "src/unified_llm/agent/session.py",
-        "src/unified_llm/agent/history.py",
+        "src/agent/session.py",
+        "src/agent/history.py",
         "tests/agent/test_steering.py",
         "tests/agent/test_reasoning_effort.py"
       ],
@@ -548,8 +548,8 @@
         "REQ-005"
       ],
       "target_paths": [
-        "src/unified_llm/agent/loop_detection.py",
-        "src/unified_llm/agent/session.py",
+        "src/agent/loop_detection.py",
+        "src/agent/session.py",
         "tests/agent/test_loop_detection.py"
       ],
       "status": "completed",
@@ -591,8 +591,8 @@
         "REQ-007"
       ],
       "target_paths": [
-        "src/unified_llm/agent/subagents.py",
-        "src/unified_llm/agent/builtin_tools.py",
+        "src/agent/subagents.py",
+        "src/agent/builtin_tools.py",
         "tests/agent/test_subagents.py"
       ],
       "status": "completed",
@@ -628,9 +628,9 @@
         "REQ-016"
       ],
       "target_paths": [
-        "src/unified_llm/agent/errors.py",
-        "src/unified_llm/agent/session.py",
-        "src/unified_llm/agent/tool_execution.py",
+        "src/agent/errors.py",
+        "src/agent/session.py",
+        "src/agent/tool_execution.py",
         "tests/agent/test_error_handling.py",
         "tests/agent/test_shutdown.py"
       ],

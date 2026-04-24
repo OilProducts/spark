@@ -10,7 +10,8 @@ from typing import Any, Protocol
 
 from jsonschema import SchemaError, ValidationError, validate
 
-from ..types import ToolResultData
+from unified_llm.types import ToolResultData
+
 from .environment import ExecResult
 from .events import EventKind, SessionEvent
 from .truncation import truncate_tool_output

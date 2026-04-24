@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..errors import AuthenticationError, ContextLengthError, NetworkError, ProviderError
+from unified_llm.errors import AuthenticationError, ContextLengthError, NetworkError, ProviderError
 
 _TRANSIENT_PROVIDER_STATUS_CODES = frozenset({429, 500, 501, 502, 503})
 

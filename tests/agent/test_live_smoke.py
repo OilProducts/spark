@@ -14,8 +14,8 @@ from typing import Any
 import httpx
 import pytest
 
+import agent
 import unified_llm
-import unified_llm.agent as agent
 
 pytestmark = pytest.mark.live_smoke
 

@@ -4,7 +4,7 @@
 
 This architecture implements `.spark/spec-implementation/current/spec/source.md` and the extracted requirement ledger in `.spark/spec-implementation/current/spec/requirements.json`. The staged source document is the product behavior and external contract for this run.
 
-The repository already contains a Python `src` layout package named `unified_llm`, including the low-level `Client.complete()` and `Client.stream()` APIs that the coding agent must use. The agent implementation extends that package as a programmable library under `src/unified_llm/agent/`; it does not introduce a required CLI, a second package, or a wrapper-only delivery layer.
+The repository already contains a Python `src` layout package named `unified_llm`, including the low-level `Client.complete()` and `Client.stream()` APIs that the coding agent must use. The agent implementation is a top-level `agent` package under `src/agent/` in the same distribution, layered on `unified_llm`; it does not introduce a required CLI, a second distribution, or a wrapper-only delivery layer.
 
 ## Canonical Repository Topology
 
@@ -13,37 +13,37 @@ The implementation should converge on this topology:
 ```text
 pyproject.toml
 src/
+  agent/
+    __init__.py
+    apply_patch.py
+    builtin_tools.py
+    context.py
+    environment.py
+    errors.py
+    events.py
+    history.py
+    local_environment.py
+    loop_detection.py
+    profiles/
+      __init__.py
+      anthropic.py
+      base.py
+      gemini.py
+      openai.py
+    project_docs.py
+    prompts.py
+    session.py
+    subagents.py
+    tool_execution.py
+    tools.py
+    truncation.py
+    types.py
   unified_llm/
     __init__.py
     client.py
     errors.py
     tools.py
     types.py
-    agent/
-      __init__.py
-      apply_patch.py
-      builtin_tools.py
-      context.py
-      environment.py
-      errors.py
-      events.py
-      history.py
-      local_environment.py
-      loop_detection.py
-      profiles/
-        __init__.py
-        anthropic.py
-        base.py
-        gemini.py
-        openai.py
-      project_docs.py
-      prompts.py
-      session.py
-      subagents.py
-      tool_execution.py
-      tools.py
-      truncation.py
-      types.py
 tests/
   agent/
     test_agent_loop.py
@@ -117,7 +117,8 @@ Layer 5, orchestration:
 
 ## Documented Public Interface
 
-The stable import surface is `unified_llm.agent`, not a top-level sibling package. `src/unified_llm/agent/__init__.py` should re-export:
+The stable import surface is the top-level `agent` package, layered on the
+existing `unified_llm` SDK package. `src/agent/__init__.py` should re-export:
 
 - Session API: `Session`, `SessionConfig`, `SessionState`, turn records, `create_session` if a small factory proves useful.
 - Events: `EventKind`, `SessionEvent`, and the public event stream interface. `EventKind` exports every host-visible kind required by the spec: `SESSION_START`, `SESSION_END`, `USER_INPUT`, `PROCESSING_END`, `ASSISTANT_TEXT_START`, `ASSISTANT_TEXT_DELTA`, `ASSISTANT_TEXT_END`, `TOOL_CALL_START`, `TOOL_CALL_OUTPUT_DELTA`, `TOOL_CALL_END`, `STEERING_INJECTED`, `TURN_LIMIT`, `LOOP_DETECTION`, `WARNING`, and `ERROR`.
@@ -131,7 +132,7 @@ Canonical usage is async:
 
 ```python
 from unified_llm import Client
-from unified_llm.agent import (
+from agent import (
     LocalExecutionEnvironment,
     Session,
     create_openai_profile,
@@ -271,7 +272,7 @@ Before reporting completion of code changes in this repository, run `uv run pyte
 
 ## Repository Hygiene Expectations
 
-- Keep implementation in the existing `unified_llm` package and tests under `tests/agent/`.
+- Keep implementation in the top-level `agent` package layered on `unified_llm`, with tests under `tests/agent/`.
 - Do not add a mandatory CLI or wrapper layer for this core library work.
 - Do not use test-only bootstrap behavior, environment-specific hacks, or compatibility shims as the primary runtime path.
 - Do not commit API keys, credentials, local absolute-path assumptions, live-provider outputs, or network-dependent default tests.

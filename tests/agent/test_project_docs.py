@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-import unified_llm.agent as agent
-from unified_llm.agent import project_docs
+import agent
+from agent import project_docs
 
 
 def _initialize_git_repo(

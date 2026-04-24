@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import unified_llm.agent as agent
+import agent
 
 
 def _shell_command(*args: str) -> str:

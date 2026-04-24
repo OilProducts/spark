@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
+import agent
 import unified_llm
-import unified_llm.agent as agent
-from unified_llm.agent import project_docs, prompts
+from agent import project_docs, prompts
 
 
 class _FakeClient:
