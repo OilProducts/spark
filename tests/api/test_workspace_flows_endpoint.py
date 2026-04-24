@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 import spark.app as product_app
+from spark.workspace.attractor_client import AttractorApiClient
 from spark.workspace.flow_catalog import (
     LAUNCH_POLICY_AGENT_REQUESTABLE,
     LAUNCH_POLICY_DISABLED,
@@ -40,6 +42,69 @@ def test_flow_catalog_round_trip_defaults_uncataloged_to_disabled() -> None:
         '[flows."agent-visible.dot"]\n'
         'launch_policy = "agent_requestable"\n'
     )
+
+
+def test_attractor_workspace_start_payload_omits_legacy_backend_and_provider_defaults() -> None:
+    captured: dict[str, object] = {}
+
+    class RecordingAttractorApiClient(AttractorApiClient):
+        async def _request_json(self, method: str, path: str, **kwargs):
+            captured["method"] = method
+            captured["path"] = path
+            captured["json"] = kwargs["json"]
+            return {"status": "started", "run_id": "run-123"}
+
+    client = RecordingAttractorApiClient(base_url="http://attractor.test")
+
+    result = asyncio.run(
+        client.start_pipeline(
+            run_id=None,
+            flow_name="requestable.dot",
+            working_directory="/tmp/project",
+            model="gpt-5.4",
+            goal="Implement the approved scope.",
+            launch_context={"context.request.summary": "Implement the approved scope."},
+        )
+    )
+
+    assert result == {"status": "started", "run_id": "run-123"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/pipelines"
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert "backend" not in payload
+    assert "llm_provider" not in payload
+    assert "reasoning_effort" not in payload
+
+
+def test_attractor_workspace_start_payload_includes_provider_and_reasoning_when_set() -> None:
+    captured: dict[str, object] = {}
+
+    class RecordingAttractorApiClient(AttractorApiClient):
+        async def _request_json(self, method: str, path: str, **kwargs):
+            captured["method"] = method
+            captured["path"] = path
+            captured["json"] = kwargs["json"]
+            return {"status": "started", "run_id": "run-456"}
+
+    client = RecordingAttractorApiClient(base_url="http://attractor.test")
+
+    result = asyncio.run(
+        client.start_pipeline(
+            run_id=None,
+            flow_name="requestable.dot",
+            working_directory="/tmp/project",
+            model="gpt-5.4",
+            llm_provider="openai",
+            reasoning_effort="high",
+        )
+    )
+
+    assert result == {"status": "started", "run_id": "run-456"}
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["llm_provider"] == "openai"
+    assert payload["reasoning_effort"] == "high"
 
 
 def test_list_workspace_flows_human_surface_returns_all_flows_with_metadata_fallbacks(

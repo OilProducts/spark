@@ -51,6 +51,8 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     launch_context_group.add_argument("--launch-context-json", dest="launch_context_json")
     launch_context_group.add_argument("--launch-context-file", dest="launch_context_file")
     run_request.add_argument("--model", help="Optional model override to request if approved.")
+    run_request.add_argument("--llm-provider", dest="llm_provider", help="Optional LLM provider override to request if approved.")
+    run_request.add_argument("--reasoning-effort", dest="reasoning_effort", help="Optional reasoning effort override to request if approved.")
     run_request.add_argument("--base-url")
 
     run = domains.add_parser("run", help="Direct execution commands")
@@ -75,6 +77,8 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     launch_context_group.add_argument("--launch-context-json", dest="launch_context_json")
     launch_context_group.add_argument("--launch-context-file", dest="launch_context_file")
     launch.add_argument("--model", help="Optional model override.")
+    launch.add_argument("--llm-provider", dest="llm_provider", help="Optional LLM provider override.")
+    launch.add_argument("--reasoning-effort", dest="reasoning_effort", help="Optional reasoning effort override.")
     launch.add_argument("--base-url")
 
     flow = domains.add_parser("flow", help="Flow discovery and validation")
@@ -180,6 +184,8 @@ def _run_run_request(args: argparse.Namespace) -> int:
         launch_context_json=getattr(args, "launch_context_json", None),
         launch_context_file=getattr(args, "launch_context_file", None),
         model=getattr(args, "model", None),
+        llm_provider=getattr(args, "llm_provider", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
         source_name="spark convo run-request",
     )
     if isinstance(normalized, tuple):
@@ -209,6 +215,8 @@ def _run_launch(args: argparse.Namespace) -> int:
         launch_context_json=getattr(args, "launch_context_json", None),
         launch_context_file=getattr(args, "launch_context_file", None),
         model=getattr(args, "model", None),
+        llm_provider=getattr(args, "llm_provider", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
         source_name="spark run launch",
     )
     if isinstance(normalized, tuple):
@@ -512,6 +520,8 @@ def _build_flow_payload(
     launch_context_json: str | None,
     launch_context_file: str | None,
     model: str | None,
+    llm_provider: str | None,
+    reasoning_effort: str | None,
     source_name: str,
 ) -> dict[str, Any] | tuple[str, int]:
     try:
@@ -535,6 +545,8 @@ def _build_flow_payload(
                 "goal": goal,
                 "launch_context": launch_context,
                 "model": model,
+                "llm_provider": llm_provider,
+                "reasoning_effort": reasoning_effort,
             },
             source_name=source_name,
         )
