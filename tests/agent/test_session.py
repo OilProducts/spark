@@ -124,7 +124,6 @@ async def test_session_process_input_submit_and_state_helpers_are_public() -> No
                                 thinking=unified_llm.ThinkingData(
                                     text="Assistant thinking",
                                 ),
-                                text="Assistant thinking",
                             ),
                         ]
                     ),
@@ -150,7 +149,6 @@ async def test_session_process_input_submit_and_state_helpers_are_public() -> No
                                 thinking=unified_llm.ThinkingData(
                                     text="Second thinking",
                                 ),
-                                text="Second thinking",
                             ),
                         ]
                     ),

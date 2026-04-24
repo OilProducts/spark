@@ -91,7 +91,6 @@ def test_history_to_messages_converts_turns_to_sdk_messages_without_mutating_the
                 unified_llm.ContentPart(
                     kind=unified_llm.ContentKind.THINKING,
                     thinking=unified_llm.ThinkingData(text="Assistant thinking"),
-                    text="Assistant thinking",
                 ),
                 unified_llm.ContentPart(
                     kind=unified_llm.ContentKind.TOOL_CALL,
@@ -205,7 +204,6 @@ async def test_session_process_input_runs_the_full_non_streaming_loop_and_reuses
                         unified_llm.ContentPart(
                             kind=unified_llm.ContentKind.THINKING,
                             thinking=unified_llm.ThinkingData(text="Assistant thinking"),
-                            text="Assistant thinking",
                         ),
                     ]
                 ),
@@ -225,7 +223,6 @@ async def test_session_process_input_runs_the_full_non_streaming_loop_and_reuses
                         unified_llm.ContentPart(
                             kind=unified_llm.ContentKind.THINKING,
                             thinking=unified_llm.ThinkingData(text="Second thinking"),
-                            text="Second thinking",
                         ),
                     ]
                 ),
@@ -358,7 +355,6 @@ async def test_session_process_input_drains_steering_and_executes_tool_rounds() 
                         unified_llm.ContentPart(
                             kind=unified_llm.ContentKind.THINKING,
                             thinking=unified_llm.ThinkingData(text="Thinking about a tool"),
-                            text="Thinking about a tool",
                         ),
                         unified_llm.ContentPart(
                             kind=unified_llm.ContentKind.TOOL_CALL,

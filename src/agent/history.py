@@ -147,7 +147,6 @@ def _assistant_message_content(turn: AssistantTurn) -> list[ContentPart]:
             ContentPart(
                 kind=ContentKind.THINKING,
                 thinking=ThinkingData(text=turn.reasoning),
-                text=turn.reasoning,
             )
         )
     if turn.tool_calls:
