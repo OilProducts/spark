@@ -239,6 +239,7 @@ The conversation surface should show:
 Conversation UX commitments include:
 - an assistant row should appear promptly after the user sends a message
 - progressive assistant output should stream into that row when available
+- streaming updates in long project-chat threads should stay localized enough that existing history and composer input remain responsive
 - tool-call rows may appear before, between, or after assistant text updates without breaking timeline order
 - a placeholder such as `Thinking...` may remain until the first assistant text arrives
 - final completion should finalize the active assistant row rather than append a duplicate

@@ -7,49 +7,92 @@ import { ProjectConversationHistory } from '@/features/projects/components/Proje
 import type {
     ConversationTimelineEntry,
     ProjectFlowLaunch,
+    ProjectFlowRunRequest,
     ProjectProposedPlan,
 } from '@/features/projects/model/types'
 
-const formatConversationTimestamp = (value: string) => `formatted:${value}`
+const markdownRenderSpy = vi.hoisted(() => vi.fn())
+const flowRunRequestEntryRenderSpy = vi.hoisted(() => vi.fn())
 
-const renderHistory = (
+vi.mock('@/features/projects/components/ProjectConversationMarkdown', async () => {
+    const actual = await vi.importActual<typeof import('@/features/projects/components/ProjectConversationMarkdown')>(
+        '@/features/projects/components/ProjectConversationMarkdown',
+    )
+    const React = await import('react')
+    return {
+        ProjectConversationMarkdown: (props: { content: string }) => {
+            markdownRenderSpy(props.content)
+            return React.createElement(actual.ProjectConversationMarkdown, props)
+        },
+    }
+})
+
+vi.mock('@/features/projects/components/ProjectArtifactEntries', async () => {
+    const actual = await vi.importActual<typeof import('@/features/projects/components/ProjectArtifactEntries')>(
+        '@/features/projects/components/ProjectArtifactEntries',
+    )
+    const React = await import('react')
+    return {
+        ProjectFlowRunRequestEntry: (props: Parameters<typeof actual.ProjectFlowRunRequestEntry>[0]) => {
+            flowRunRequestEntryRenderSpy(props.flowRunRequest?.id ?? null)
+            return React.createElement(actual.ProjectFlowRunRequestEntry, props)
+        },
+        ProjectFlowLaunchEntry: actual.ProjectFlowLaunchEntry,
+    }
+})
+
+const formatConversationTimestamp = (value: string) => `formatted:${value}`
+type FlowRunRequestTimelineEntry = Extract<
+    ConversationTimelineEntry,
+    { kind: 'flow_run_request' | 'flow_launch' }
+> & { kind: 'flow_run_request' }
+
+const makeHistoryElement = (
     activeConversationHistory: ConversationTimelineEntry[],
     overrides: {
+        activeFlowRunRequestsById?: Map<string, ProjectFlowRunRequest>
         activeFlowLaunchesById?: Map<string, ProjectFlowLaunch>
         activeProposedPlansById?: Map<string, ProjectProposedPlan>
+        latestFlowRunRequestId?: string | null
+        onOpenFlowRun?: (request: { run_id?: string | null; flow_name: string }) => void
+        onReviewFlowRunRequest?: (flowRunRequest: ProjectFlowRunRequest, disposition: 'approved' | 'rejected') => void | Promise<void>
         onSubmitRequestUserInput?: (requestId: string, answers: Record<string, string>) => void | Promise<void>
         onReviewProposedPlan?: (proposedPlan: ProjectProposedPlan, disposition: 'approved' | 'rejected', reviewNote?: string | null) => void | Promise<void>
+        pendingFlowRunRequestId?: string | null
         pendingProposedPlanId?: string | null
         requestUserInputActionError?: string | null
         submittingRequestUserInputIds?: Record<string, boolean>
     } = {},
 ) =>
-    render(
-        <ProjectConversationHistory
-            activeConversationId="conversation-1"
-            isConversationHistoryLoading={false}
-            hasRenderableConversationHistory={activeConversationHistory.length > 0}
-            activeConversationHistory={activeConversationHistory}
-            activeFlowRunRequestsById={new Map()}
-            activeFlowLaunchesById={overrides.activeFlowLaunchesById ?? new Map()}
-            activeProposedPlansById={overrides.activeProposedPlansById ?? new Map()}
-            latestFlowRunRequestId={null}
-            latestFlowLaunchId={null}
-            expandedToolCalls={{}}
-            expandedThinkingEntries={{}}
-            pendingFlowRunRequestId={null}
-            pendingProposedPlanId={overrides.pendingProposedPlanId ?? null}
-            requestUserInputActionError={overrides.requestUserInputActionError ?? null}
-            submittingRequestUserInputIds={overrides.submittingRequestUserInputIds ?? {}}
-            formatConversationTimestamp={formatConversationTimestamp}
-            onSubmitRequestUserInput={overrides.onSubmitRequestUserInput ?? vi.fn()}
-            onToggleToolCallExpanded={vi.fn()}
-            onToggleThinkingEntryExpanded={vi.fn()}
-            onReviewFlowRunRequest={vi.fn()}
-            onReviewProposedPlan={overrides.onReviewProposedPlan ?? vi.fn()}
-            onOpenFlowRun={vi.fn()}
-        />,
-    )
+    <ProjectConversationHistory
+        activeConversationId="conversation-1"
+        isConversationHistoryLoading={false}
+        hasRenderableConversationHistory={activeConversationHistory.length > 0}
+        activeConversationHistory={activeConversationHistory}
+        activeFlowRunRequestsById={overrides.activeFlowRunRequestsById ?? new Map()}
+        activeFlowLaunchesById={overrides.activeFlowLaunchesById ?? new Map()}
+        activeProposedPlansById={overrides.activeProposedPlansById ?? new Map()}
+        latestFlowRunRequestId={overrides.latestFlowRunRequestId ?? null}
+        latestFlowLaunchId={null}
+        expandedToolCalls={{}}
+        expandedThinkingEntries={{}}
+        pendingFlowRunRequestId={overrides.pendingFlowRunRequestId ?? null}
+        pendingProposedPlanId={overrides.pendingProposedPlanId ?? null}
+        requestUserInputActionError={overrides.requestUserInputActionError ?? null}
+        submittingRequestUserInputIds={overrides.submittingRequestUserInputIds ?? {}}
+        formatConversationTimestamp={formatConversationTimestamp}
+        onSubmitRequestUserInput={overrides.onSubmitRequestUserInput ?? vi.fn()}
+        onToggleToolCallExpanded={vi.fn()}
+        onToggleThinkingEntryExpanded={vi.fn()}
+        onReviewFlowRunRequest={overrides.onReviewFlowRunRequest ?? vi.fn()}
+        onReviewProposedPlan={overrides.onReviewProposedPlan ?? vi.fn()}
+        onOpenFlowRun={overrides.onOpenFlowRun ?? vi.fn()}
+    />
+
+const renderHistory = (
+    activeConversationHistory: ConversationTimelineEntry[],
+    overrides: Parameters<typeof makeHistoryElement>[1] = {},
+) => render(makeHistoryElement(activeConversationHistory, overrides))
 
 const InteractiveHistory = ({
     activeConversationHistory,
@@ -208,6 +251,59 @@ const makePlanEntry = (
     error: overrides.error ?? null,
 })
 
+const makeFlowRunRequestEntry = (
+    overrides: Partial<FlowRunRequestTimelineEntry> = {},
+): FlowRunRequestTimelineEntry => ({
+    id: overrides.id ?? 'flow-run-request-entry-1',
+    kind: 'flow_run_request',
+    role: 'system',
+    artifactId: overrides.artifactId ?? 'flow-run-request-1',
+    timestamp: overrides.timestamp ?? '2026-04-16T15:28:00Z',
+})
+
+const makeFlowRunRequest = (
+    overrides: Partial<ProjectFlowRunRequest> = {},
+): ProjectFlowRunRequest => ({
+    id: overrides.id ?? 'flow-run-request-1',
+    created_at: overrides.created_at ?? '2026-04-16T15:27:47Z',
+    updated_at: overrides.updated_at ?? '2026-04-16T15:28:00Z',
+    flow_name: overrides.flow_name ?? 'software-development/implement-change-request.dot',
+    summary: overrides.summary ?? 'Implement approved change request',
+    project_path: overrides.project_path ?? '/tmp/project',
+    conversation_id: overrides.conversation_id ?? 'conversation-1',
+    source_turn_id: overrides.source_turn_id ?? 'turn-assistant-1',
+    status: overrides.status ?? 'pending',
+    source_segment_id: overrides.source_segment_id ?? 'segment-flow-run-request-1',
+    goal: overrides.goal ?? null,
+    launch_context: overrides.launch_context ?? null,
+    model: overrides.model ?? null,
+    llm_provider: overrides.llm_provider ?? null,
+    reasoning_effort: overrides.reasoning_effort ?? null,
+    run_id: overrides.run_id ?? null,
+    launch_error: overrides.launch_error ?? null,
+    review_message: overrides.review_message ?? null,
+})
+
+const makeProposedPlan = (
+    overrides: Partial<ProjectProposedPlan> = {},
+): ProjectProposedPlan => ({
+    id: overrides.id ?? 'proposed-plan-1',
+    created_at: overrides.created_at ?? '2026-04-16T15:27:47Z',
+    updated_at: overrides.updated_at ?? '2026-04-16T15:28:00Z',
+    title: overrides.title ?? 'Ship the regression',
+    content: overrides.content ?? '1. Ship the regression test.\n2. Validate the real session path.',
+    project_path: overrides.project_path ?? '/tmp/project',
+    conversation_id: overrides.conversation_id ?? 'conversation-1',
+    source_turn_id: overrides.source_turn_id ?? 'turn-assistant-1',
+    source_segment_id: overrides.source_segment_id ?? 'plan-1',
+    status: overrides.status ?? 'pending_review',
+    review_note: overrides.review_note ?? null,
+    written_change_request_path: overrides.written_change_request_path ?? null,
+    flow_launch_id: overrides.flow_launch_id ?? null,
+    run_id: overrides.run_id ?? null,
+    launch_error: overrides.launch_error ?? null,
+})
+
 describe('ProjectConversationHistory', () => {
     it('renders markdown semantics for normal assistant messages', () => {
         renderHistory([
@@ -234,6 +330,118 @@ describe('ProjectConversationHistory', () => {
         const codeBlock = history.querySelector('pre > code')
         expect(codeBlock).not.toBeNull()
         expect(codeBlock).toHaveTextContent('npm test')
+    })
+
+    it('does not rerender an older unchanged assistant markdown row when the latest assistant markdown changes', () => {
+        const olderAssistantMessage = makeMessageEntry({
+            id: 'assistant-old',
+            content: '## Older answer\n\nKeep **this** parsed markdown stable.',
+            timestamp: '2026-04-16T15:27:47Z',
+        })
+        const latestAssistantMessage = makeMessageEntry({
+            id: 'assistant-latest',
+            content: 'Streaming **first** chunk.',
+            timestamp: '2026-04-16T15:28:47Z',
+            status: 'streaming',
+        })
+
+        const { rerender } = renderHistory([
+            olderAssistantMessage,
+            latestAssistantMessage,
+        ])
+        markdownRenderSpy.mockClear()
+
+        rerender(makeHistoryElement([
+            olderAssistantMessage,
+            {
+                ...latestAssistantMessage,
+                content: 'Streaming **second** chunk.',
+            },
+        ]))
+
+        expect(markdownRenderSpy).toHaveBeenCalledTimes(1)
+        expect(markdownRenderSpy).toHaveBeenCalledWith('Streaming **second** chunk.')
+    })
+
+    it('does not rerender unchanged plan or artifact rows when sibling streaming markdown changes', () => {
+        const planEntry = makePlanEntry({
+            id: 'plan-stable',
+            artifactId: 'proposed-plan-1',
+            content: '## Stable plan\n\nKeep **this plan** parsed once.',
+            timestamp: '2026-04-16T15:27:47Z',
+        })
+        const flowRunRequestEntry = makeFlowRunRequestEntry({
+            id: 'flow-run-request-entry-stable',
+            artifactId: 'flow-run-request-1',
+            timestamp: '2026-04-16T15:28:00Z',
+        })
+        const latestAssistantMessage = makeMessageEntry({
+            id: 'assistant-latest',
+            content: 'Streaming **first** chunk.',
+            timestamp: '2026-04-16T15:28:47Z',
+            status: 'streaming',
+        })
+        const activeFlowRunRequestsById = new Map([
+            ['flow-run-request-1', makeFlowRunRequest()],
+        ])
+        const activeProposedPlansById = new Map([
+            ['proposed-plan-1', makeProposedPlan()],
+        ])
+        const stableOverrides = {
+            activeFlowRunRequestsById,
+            activeProposedPlansById,
+            latestFlowRunRequestId: 'flow-run-request-1',
+            onOpenFlowRun: vi.fn(),
+            onReviewFlowRunRequest: vi.fn(),
+            onReviewProposedPlan: vi.fn(),
+        }
+
+        const { rerender } = renderHistory([
+            planEntry,
+            flowRunRequestEntry,
+            latestAssistantMessage,
+        ], stableOverrides)
+        markdownRenderSpy.mockClear()
+        flowRunRequestEntryRenderSpy.mockClear()
+
+        rerender(makeHistoryElement([
+            planEntry,
+            flowRunRequestEntry,
+            {
+                ...latestAssistantMessage,
+                content: 'Streaming **second** chunk.',
+            },
+        ], stableOverrides))
+
+        expect(markdownRenderSpy).toHaveBeenCalledTimes(1)
+        expect(markdownRenderSpy).toHaveBeenCalledWith('Streaming **second** chunk.')
+        expect(markdownRenderSpy).not.toHaveBeenCalledWith('## Stable plan\n\nKeep **this plan** parsed once.')
+        expect(flowRunRequestEntryRenderSpy).not.toHaveBeenCalled()
+    })
+
+    it('keeps rendering markdown semantics for the latest streaming assistant row as it updates', () => {
+        const latestAssistantMessage = makeMessageEntry({
+            id: 'assistant-streaming',
+            content: '## Draft\n\nUse **markdown** now.',
+            timestamp: '2026-04-16T15:28:47Z',
+            status: 'streaming',
+        })
+
+        const { rerender } = renderHistory([latestAssistantMessage])
+
+        expect(screen.getByRole('heading', { level: 2, name: 'Draft' })).toBeVisible()
+        expect(screen.getByText('markdown', { selector: 'strong' })).toBeVisible()
+
+        rerender(makeHistoryElement([
+            {
+                ...latestAssistantMessage,
+                content: '## Draft\n\nUse **updated markdown** now.',
+            },
+        ]))
+
+        expect(screen.getByRole('heading', { level: 2, name: 'Draft' })).toBeVisible()
+        expect(screen.getByText('updated markdown', { selector: 'strong' })).toBeVisible()
+        expect(screen.queryByText('**updated markdown**')).not.toBeInTheDocument()
     })
 
     it('renders mode-change rows as centered inline system markers', () => {

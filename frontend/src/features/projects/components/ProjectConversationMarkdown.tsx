@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 
 import { cn } from '@/lib/utils'
@@ -108,7 +109,7 @@ interface ProjectConversationMarkdownProps {
     content: string
 }
 
-export function ProjectConversationMarkdown({ content }: ProjectConversationMarkdownProps) {
+function ProjectConversationMarkdownComponent({ content }: ProjectConversationMarkdownProps) {
     return (
         <div className="space-y-2 text-foreground">
             <ReactMarkdown components={markdownComponents} skipHtml>
@@ -117,3 +118,5 @@ export function ProjectConversationMarkdown({ content }: ProjectConversationMark
         </div>
     )
 }
+
+export const ProjectConversationMarkdown = memo(ProjectConversationMarkdownComponent)

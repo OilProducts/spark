@@ -1,4 +1,7 @@
-import { buildConversationTimelineEntries } from '@/features/projects/model/conversationTimeline'
+import {
+  buildConversationTimelineEntries,
+  stabilizeConversationTimelineEntries,
+} from '@/features/projects/model/conversationTimeline'
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
 
 const snapshot: ConversationSnapshotResponse = {
@@ -305,4 +308,79 @@ describe('buildConversationTimelineEntries', () => {
     }))
   })
 
+})
+
+describe('stabilizeConversationTimelineEntries', () => {
+  it('reuses unchanged timeline entry objects across rebuilds for the same conversation', () => {
+    const previousEntries = buildConversationTimelineEntries(snapshot, null)
+    const nextEntries = buildConversationTimelineEntries({ ...snapshot }, null)
+
+    const stabilized = stabilizeConversationTimelineEntries('conversation-1', nextEntries, {
+      conversationId: 'conversation-1',
+      entries: previousEntries,
+    })
+
+    expect(stabilized[0]).toBe(previousEntries[0])
+    expect(stabilized[1]).toBe(previousEntries[1])
+    expect(stabilized[2]).toBe(previousEntries[2])
+    expect(stabilized[3]).toBe(previousEntries[3])
+  })
+
+  it('keeps changed streaming entries fresh while reusing unchanged siblings', () => {
+    const streamingSnapshot: ConversationSnapshotResponse = {
+      ...snapshot,
+      turns: snapshot.turns.map((turn) => (
+        turn.id === 'turn-assistant' ? { ...turn, status: 'streaming' } : turn
+      )),
+      segments: snapshot.segments.map((segment) => (
+        segment.id === 'assistant-segment'
+          ? { ...segment, status: 'running', content: 'Do' }
+          : segment
+      )),
+    }
+    const updatedStreamingSnapshot: ConversationSnapshotResponse = {
+      ...streamingSnapshot,
+      segments: streamingSnapshot.segments.map((segment) => (
+        segment.id === 'assistant-segment'
+          ? { ...segment, content: 'Done streaming.' }
+          : segment
+      )),
+    }
+    const previousEntries = buildConversationTimelineEntries(streamingSnapshot, null)
+    const nextEntries = buildConversationTimelineEntries(updatedStreamingSnapshot, null)
+
+    const stabilized = stabilizeConversationTimelineEntries('conversation-1', nextEntries, {
+      conversationId: 'conversation-1',
+      entries: previousEntries,
+    })
+
+    expect(stabilized[0]).toBe(previousEntries[0])
+    expect(stabilized[1]).toBe(previousEntries[1])
+    expect(stabilized[2]).toBe(previousEntries[2])
+    expect(stabilized[3]).not.toBe(previousEntries[3])
+    expect(stabilized[3]).toMatchObject({
+      kind: 'message',
+      status: 'streaming',
+      content: 'Done streaming.',
+    })
+  })
+
+  it('does not reuse matching entries when the conversation scope changes', () => {
+    const previousEntries = buildConversationTimelineEntries(snapshot, null)
+    const nextEntries = buildConversationTimelineEntries({
+      ...snapshot,
+      conversation_id: 'conversation-2',
+      conversation_handle: 'thread-2',
+    }, null)
+
+    const stabilized = stabilizeConversationTimelineEntries('conversation-2', nextEntries, {
+      conversationId: 'conversation-1',
+      entries: previousEntries,
+    })
+
+    expect(stabilized[0]).not.toBe(previousEntries[0])
+    expect(stabilized[1]).not.toBe(previousEntries[1])
+    expect(stabilized[2]).not.toBe(previousEntries[2])
+    expect(stabilized[3]).not.toBe(previousEntries[3])
+  })
 })

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import {
     reviewFlowRunRequestValidated,
     reviewProposedPlanValidated,
@@ -30,7 +30,7 @@ export function useConversationReviews({
     const [pendingFlowRunRequestId, setPendingFlowRunRequestId] = useState<string | null>(null)
     const [pendingProposedPlanId, setPendingProposedPlanId] = useState<string | null>(null)
 
-    const onReviewFlowRunRequest = async (
+    const onReviewFlowRunRequest = useCallback(async (
         flowRunRequest: FlowRunRequestResponse,
         disposition: 'approved' | 'rejected',
     ) => {
@@ -71,9 +71,18 @@ export function useConversationReviews({
         } finally {
             setPendingFlowRunRequestId(null)
         }
-    }
+    }, [
+        activeConversationId,
+        activeProjectPath,
+        appendLocalProjectEvent,
+        applyConversationSnapshot,
+        formatErrorMessage,
+        model,
+        prompt,
+        setPanelError,
+    ])
 
-    const onReviewProposedPlan = async (
+    const onReviewProposedPlan = useCallback(async (
         proposedPlan: ProposedPlanArtifactResponse,
         disposition: 'approved' | 'rejected',
         reviewNote?: string | null,
@@ -97,7 +106,14 @@ export function useConversationReviews({
         } finally {
             setPendingProposedPlanId(null)
         }
-    }
+    }, [
+        activeConversationId,
+        activeProjectPath,
+        appendLocalProjectEvent,
+        applyConversationSnapshot,
+        formatErrorMessage,
+        setPanelError,
+    ])
 
     return {
         onReviewFlowRunRequest,

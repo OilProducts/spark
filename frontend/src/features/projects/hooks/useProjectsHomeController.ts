@@ -18,6 +18,10 @@ import { usePersistProjectState } from './usePersistProjectState'
 import { useProjectThreadActions } from './projectThreadActions'
 import { debugProjectChat } from '../model/projectChatDebug'
 import { buildProjectsHomeViewModel } from '../model/projectsHomeViewModel'
+import {
+    stabilizeConversationTimelineEntries,
+    type ConversationTimelineStabilizationScope,
+} from '../model/conversationTimeline'
 import type { ConversationTimelineEntry } from '../model/types'
 import {
     buildProjectConversationId,
@@ -133,6 +137,7 @@ export function useProjectsHomeController() {
     const setViewMode = useStore((state) => state.setViewMode)
 
     const resetComposerRef = useRef<() => void>(() => {})
+    const previousConversationHistoryScopeRef = useRef<ConversationTimelineStabilizationScope | null>(null)
     const persistProjectState = usePersistProjectState(upsertProjectRegistryEntry)
 
     const isNarrowViewport = useNarrowViewport()
@@ -188,24 +193,7 @@ export function useProjectsHomeController() {
     const activeProjectConversationSummariesStatus = activeProjectPath
         ? (homeThreadSummariesStatusByProjectPath[activeProjectPath] ?? 'idle')
         : 'idle'
-    const {
-        activeConversationHistory,
-        activeChatMode,
-        activeProjectChatProvider,
-        activeProjectChatModel,
-        activeProjectChatReasoningEffort,
-        activeFlowLaunchesById,
-        activeFlowRunRequestsById,
-        activeProposedPlansById,
-        activeProjectConversationSummaries,
-        activeProjectEventLog,
-        activeProjectLabel,
-        chatSendButtonLabel,
-        hasRenderableConversationHistory,
-        isChatInputDisabled,
-        latestFlowLaunchId,
-        latestFlowRunRequestId,
-    } = useMemo(() => buildProjectsHomeViewModel({
+    const projectsHomeViewModel = useMemo(() => buildProjectsHomeViewModel({
         activeConversationId,
         activeConversationSnapshot,
         activeProjectPath,
@@ -224,6 +212,37 @@ export function useProjectsHomeController() {
         projectGitMetadata,
         uiDefaults,
     ])
+    const activeConversationHistory = useMemo(
+        () => stabilizeConversationTimelineEntries(
+            activeConversationId,
+            projectsHomeViewModel.activeConversationHistory,
+            previousConversationHistoryScopeRef.current,
+        ),
+        [activeConversationId, projectsHomeViewModel.activeConversationHistory],
+    )
+    useEffect(() => {
+        previousConversationHistoryScopeRef.current = {
+            conversationId: activeConversationId,
+            entries: activeConversationHistory,
+        }
+    }, [activeConversationId, activeConversationHistory])
+    const {
+        activeChatMode,
+        activeProjectChatProvider,
+        activeProjectChatModel,
+        activeProjectChatReasoningEffort,
+        activeFlowLaunchesById,
+        activeFlowRunRequestsById,
+        activeProposedPlansById,
+        activeProjectConversationSummaries,
+        activeProjectEventLog,
+        activeProjectLabel,
+        chatSendButtonLabel,
+        hasRenderableConversationHistory,
+        isChatInputDisabled,
+        latestFlowLaunchId,
+        latestFlowRunRequestId,
+    } = projectsHomeViewModel
     const activeProjectChatModels = activeProjectPath
         ? chatModelMetadataByProjectPath[activeProjectPath] || []
         : []
@@ -452,14 +471,14 @@ export function useProjectsHomeController() {
         setPanelError,
     })
 
-    const onOpenFlowRun = (request: { run_id?: string | null; flow_name: string }) => {
+    const onOpenFlowRun = useCallback((request: { run_id?: string | null; flow_name: string }) => {
         if (!request.run_id) {
             return
         }
         setSelectedRunId(request.run_id)
         setExecutionFlow(request.flow_name || null)
         setViewMode('runs')
-    }
+    }, [setExecutionFlow, setSelectedRunId, setViewMode])
 
     const onSubmitRequestUserInput = useCallback(async (requestId: string, answers: Record<string, string>) => {
         if (!activeConversationId || !activeProjectPath) {
