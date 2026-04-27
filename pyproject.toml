@@ -41,6 +41,7 @@ include = ["agent*", "attractor*", "spark*", "spark_common*", "unified_llm*"]
 
 [tool.setuptools.package-data]
 spark = ["flows/*.dot", "flows/*/*.dot", "flows/*/*/*.dot", "guides/*.md", "ui_dist/**"]
+unified_llm = ["data/*.json"]
 
 [dependency-groups]
 dev = [
