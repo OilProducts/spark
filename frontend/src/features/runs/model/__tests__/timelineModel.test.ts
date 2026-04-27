@@ -1,6 +1,8 @@
 import {
   buildGroupedPendingInterviewGates,
   buildPendingInterviewGates,
+  buildRunProgressEntries,
+  buildRunProgressProjection,
   filterTimelineEvents,
   toTimelineEvent,
 } from '@/features/runs/model/timelineModel'
@@ -160,5 +162,155 @@ describe('timelineModel', () => {
       node_id: 'plan',
       index: 1,
     })).toBeNull()
+  })
+
+  it('reconstructs bounded LLM progress entries from content events', () => {
+    const events = [
+      toTimelineEvent({
+        type: 'LLMContent',
+        sequence: 1,
+        emitted_at: '2026-04-06T12:00:00Z',
+        node_id: 'draft',
+        channel: 'assistant',
+        status: 'streaming',
+        content_delta: '## Draft\n\nUse ',
+        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
+      }),
+      toTimelineEvent({
+        type: 'LLMContent',
+        sequence: 2,
+        emitted_at: '2026-04-06T12:00:01Z',
+        node_id: 'draft',
+        channel: 'assistant',
+        status: 'streaming',
+        content_delta: '**markdown**.',
+        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
+      }),
+      toTimelineEvent({
+        type: 'LLMContent',
+        sequence: 3,
+        emitted_at: '2026-04-06T12:00:02Z',
+        node_id: 'draft',
+        channel: 'assistant',
+        status: 'complete',
+        content_delta: '## Draft\n\nUse **markdown**.',
+        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
+      }),
+    ].filter(Boolean)
+
+    const progressEntries = buildRunProgressEntries(events)
+
+    expect(progressEntries).toHaveLength(1)
+    expect(progressEntries[0]).toMatchObject({
+      nodeId: 'draft',
+      channel: 'assistant',
+      status: 'complete',
+      content: '## Draft\n\nUse **markdown**.',
+      latestSequence: 3,
+    })
+  })
+
+  it('selects the newest current-node LLM stream as active progress', () => {
+    const events = [
+      toTimelineEvent({
+        type: 'LLMContent',
+        sequence: 1,
+        emitted_at: '2026-04-06T12:00:00Z',
+        node_id: 'draft',
+        channel: 'assistant',
+        status: 'complete',
+        content_delta: 'Draft output',
+        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
+      }),
+      toTimelineEvent({
+        type: 'LLMContent',
+        sequence: 2,
+        emitted_at: '2026-04-06T12:01:00Z',
+        node_id: 'validate',
+        channel: 'assistant',
+        status: 'complete',
+        content_delta: 'Older validate output',
+        source: { app_turn_id: 'turn-2', item_id: 'msg-1' },
+      }),
+      toTimelineEvent({
+        type: 'LLMContent',
+        sequence: 3,
+        emitted_at: '2026-04-06T12:02:00Z',
+        node_id: 'validate',
+        channel: 'reasoning',
+        status: 'complete',
+        content_delta: 'Newest validate output',
+        source: { app_turn_id: 'turn-3', item_id: 'msg-1' },
+      }),
+    ].filter(Boolean)
+
+    const projection = buildRunProgressProjection(events, 'validate')
+
+    expect(projection.activeEntry).toMatchObject({
+      nodeId: 'validate',
+      channel: 'reasoning',
+      content: 'Newest validate output',
+      latestSequence: 3,
+    })
+    expect(projection.recentEntries.map((entry) => entry.id)).not.toContain(projection.activeEntry?.id)
+    expect(projection.nodeOptions).toEqual(['validate', 'draft'])
+  })
+
+  it('falls back to recent progress entries when the current node has no LLM content', () => {
+    const events = [
+      toTimelineEvent({
+        type: 'LLMContent',
+        sequence: 1,
+        emitted_at: '2026-04-06T12:00:00Z',
+        node_id: 'draft',
+        channel: 'assistant',
+        status: 'complete',
+        content_delta: 'Draft output',
+        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
+      }),
+    ].filter(Boolean)
+
+    const projection = buildRunProgressProjection(events, 'validate')
+
+    expect(projection.activeEntry).toBeNull()
+    expect(projection.recentEntries).toHaveLength(1)
+    expect(projection.recentEntries[0]).toMatchObject({ nodeId: 'draft' })
+  })
+
+  it('supports concrete node filtering from the progress projection', () => {
+    const events = [
+      toTimelineEvent({
+        type: 'LLMContent',
+        sequence: 1,
+        emitted_at: '2026-04-06T12:00:00Z',
+        node_id: 'draft',
+        channel: 'assistant',
+        status: 'complete',
+        content_delta: 'Draft output',
+        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
+      }),
+      toTimelineEvent({
+        type: 'LLMContent',
+        sequence: 2,
+        emitted_at: '2026-04-06T12:01:00Z',
+        node_id: 'validate',
+        channel: 'assistant',
+        status: 'complete',
+        content_delta: 'Validate output',
+        source: { app_turn_id: 'turn-2', item_id: 'msg-1' },
+      }),
+    ].filter(Boolean)
+
+    const projection = buildRunProgressProjection(events, 'validate')
+    const visibleEntries = [
+      projection.activeEntry,
+      ...projection.recentEntries,
+    ].filter((entry) => entry?.nodeId === 'draft')
+
+    expect(visibleEntries).toHaveLength(1)
+    expect(visibleEntries[0]).toMatchObject({
+      nodeId: 'draft',
+      content: 'Draft output',
+    })
   })
 })

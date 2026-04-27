@@ -7,7 +7,7 @@ import {
 } from '@/features/runs/state/runJournalStore'
 import { useStore } from '@/store'
 import { DialogProvider } from '@/components/app/dialog-controller'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -488,6 +488,7 @@ describe('RunsPanel', () => {
       flow_name: 'selected.dot',
       status: 'running',
       ended_at: null,
+      current_node: 'validate',
       project_path: '/tmp/project-one',
       spec_id: 'spec-123',
       plan_id: 'plan-123',
@@ -567,6 +568,22 @@ describe('RunsPanel', () => {
       }
       if (url.includes('/attractor/pipelines/run-selected/journal')) {
         return jsonResponse(makeJournalPage('run-selected', [
+          makeJournalEntry(3, {
+            type: 'LLMContent',
+            node_id: 'draft',
+            channel: 'assistant',
+            status: 'complete',
+            content_delta: 'Draft archive output.',
+            source: { app_turn_id: 'turn-2', item_id: 'msg-1' },
+          }, { summary: 'Assistant output complete for draft' }),
+          makeJournalEntry(2, {
+            type: 'LLMContent',
+            node_id: 'validate',
+            channel: 'assistant',
+            status: 'complete',
+            content_delta: 'Validation **passed**.',
+            source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
+          }, { summary: 'Assistant output complete for validate' }),
           makeJournalEntry(1, { type: 'StageStarted', node_id: 'validate' }, { summary: 'Stage validate started' }),
         ]))
       }
@@ -619,6 +636,8 @@ describe('RunsPanel', () => {
     const scopeSection = screen.getByTestId('run-summary-section-scope')
     const usageSection = screen.getByTestId('run-summary-section-usage')
     const runActivityPanel = screen.getByTestId('run-activity-panel')
+    const runPendingQuestionsPanel = screen.getByTestId('run-pending-human-gates-panel')
+    const runProgressPanel = screen.getByTestId('run-progress-panel')
     const runTimelinePanel = screen.getByTestId('run-event-timeline-panel')
     const runAdvancedPanel = screen.getByTestId('run-advanced-panel')
     expect(screen.getByTestId('run-summary-spec-artifact-link')).toBeVisible()
@@ -638,6 +657,20 @@ describe('RunsPanel', () => {
       expect(screen.getByTestId('run-summary-now-latest-journal')).toHaveTextContent('Stage validate started')
     })
     expect(runActivityPanel).toBeVisible()
+    expect(runPendingQuestionsPanel).toBeVisible()
+    expect(runProgressPanel).toBeVisible()
+    expect(screen.getByTestId('run-progress-node-filter')).toHaveValue('current')
+    expect(screen.getByTestId('run-progress-entry-current-label')).toHaveTextContent('Current node')
+    expect(screen.getAllByTestId('run-progress-entry-node')[0]).toHaveTextContent('validate')
+    expect(screen.getByText('passed', { selector: 'strong' })).toBeVisible()
+    expect(screen.getByText('Draft archive output.')).toBeVisible()
+    await user.selectOptions(screen.getByTestId('run-progress-node-filter'), 'recent')
+    expect(within(screen.getByTestId('run-progress-list')).queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
+    expect(screen.getByText('Draft archive output.')).toBeVisible()
+    await user.selectOptions(screen.getByTestId('run-progress-node-filter'), 'draft')
+    const filteredProgressList = screen.getByTestId('run-progress-list')
+    expect(within(filteredProgressList).getAllByTestId('run-progress-entry-node')).toHaveLength(1)
+    expect(within(filteredProgressList).getByTestId('run-progress-entry-node')).toHaveTextContent('draft')
     expect(runTimelinePanel).toBeVisible()
     expect(runAdvancedPanel).toBeVisible()
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
@@ -645,10 +678,14 @@ describe('RunsPanel', () => {
     expect(screen.getByTestId('run-summary-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-advanced-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-event-timeline-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-progress-toggle-button')).toBeVisible()
     expect(screen.queryByTestId('run-graph-canvas')).not.toBeInTheDocument()
     expect(runSummaryPanel).toContainElement(runActivityPanel)
     expect(
-      runSummaryPanel.compareDocumentPosition(runTimelinePanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runPendingQuestionsPanel.compareDocumentPosition(runProgressPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      runProgressPanel.compareDocumentPosition(runTimelinePanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
       nowSection.compareDocumentPosition(outcomeSection) & Node.DOCUMENT_POSITION_FOLLOWING,

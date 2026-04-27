@@ -30,6 +30,8 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     checkpointStatus: 'idle',
     checkpointError: null,
     isSummaryCollapsed: false,
+    isProgressCollapsed: false,
+    progressNodeFilter: 'current',
     isTimelineCollapsed: false,
     isCheckpointCollapsed: false,
     isContextCollapsed: false,

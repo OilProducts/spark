@@ -18,6 +18,7 @@ import type {
     RunRecord,
     TimelineEventCategory,
     TimelineSeverity,
+    RunProgressNodeFilter,
 } from '@/features/runs/model/shared'
 import type { TriggerFormState } from '@/features/triggers/model/triggerForm'
 
@@ -67,6 +68,8 @@ export interface RunDetailSessionState {
     checkpointStatus: ResourceStatus
     checkpointError: CheckpointErrorState | null
     isSummaryCollapsed: boolean
+    isProgressCollapsed: boolean
+    progressNodeFilter: RunProgressNodeFilter
     isTimelineCollapsed: boolean
     isCheckpointCollapsed: boolean
     isContextCollapsed: boolean

@@ -481,7 +481,7 @@ def _journal_question_id(payload: dict[str, Any]) -> Optional[str]:
 def _journal_kind(raw_type: str) -> str:
     if raw_type == "log":
         return "log"
-    if raw_type in {"runtime", "state"}:
+    if raw_type in {"runtime", "state", "LLMContent"}:
         return raw_type
     if raw_type == "run_meta":
         return "metadata"
@@ -737,6 +737,10 @@ def _journal_summary(
         )
     if raw_type == "CheckpointSaved":
         return f"{source_prefix}Checkpoint saved at {node_id or 'current node'}"
+    if raw_type == "LLMContent":
+        channel = _as_trimmed_string(payload.get("channel")) or "assistant"
+        status = _as_trimmed_string(payload.get("status")) or "streaming"
+        return f"{source_prefix}{channel.capitalize()} output {status} for {node_id or 'current node'}"
     return f"{source_prefix}{raw_type or 'event'}"
 
 

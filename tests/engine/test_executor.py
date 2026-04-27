@@ -34,7 +34,36 @@ STARTER_SPEC_IMPLEMENTATION_MILESTONE_FIXTURE = (
 )
 
 
-class _WorkflowBackend:
+class _RunWithEventsBackend:
+    def run_with_events(
+        self,
+        node_id: str,
+        prompt: str,
+        context: Context,
+        emit_event=None,
+        *,
+        response_contract: str = "",
+        contract_repair_attempts: int = 0,
+        timeout=None,
+        model=None,
+        provider=None,
+        reasoning_effort=None,
+        write_contract=None,
+    ):
+        del emit_event, provider, reasoning_effort
+        return self.run(
+            node_id,
+            prompt,
+            context,
+            response_contract=response_contract,
+            contract_repair_attempts=contract_repair_attempts,
+            timeout=timeout,
+            model=model,
+            write_contract=write_contract,
+        )
+
+
+class _WorkflowBackend(_RunWithEventsBackend):
     def __init__(self, responses: dict[str, bool]):
         self._responses = responses
 
@@ -54,7 +83,7 @@ class _WorkflowBackend:
         return self._responses.get(node_id, True)
 
 
-class _StructuredLoopBackend:
+class _StructuredLoopBackend(_RunWithEventsBackend):
     def __init__(self):
         self.prompts: dict[str, list[str]] = {}
         self.review_calls = 0
@@ -98,7 +127,7 @@ class _StructuredLoopBackend:
         return f"{node_id} completed"
 
 
-class _SpecImplementationLoopBackend:
+class _SpecImplementationLoopBackend(_RunWithEventsBackend):
     def __init__(self):
         self.next_milestone_calls = 0
         self.child_milestone_ids: list[str] = []

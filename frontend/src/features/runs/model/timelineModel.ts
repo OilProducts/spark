@@ -5,6 +5,8 @@ import type {
     PendingQuestionSnapshot,
     PendingQuestionOption,
     GroupedTimelineEntry,
+    RunProgressEntry,
+    RunProgressProjection,
     TimelineCorrelationDescriptor,
     TimelineEventCategory,
     TimelineEventEntry,
@@ -33,6 +35,7 @@ const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
     CheckpointSaved: 'checkpoint',
     log: 'log',
     runtime: 'runtime',
+    LLMContent: 'runtime',
     state: 'state',
     run_meta: 'metadata',
 }
@@ -837,7 +840,113 @@ const buildGroupedPendingInterviewGates = (
     return sortedGroups
 }
 
+const asProgressChannel = (value: unknown): RunProgressEntry['channel'] | null => {
+    if (value === 'assistant' || value === 'reasoning' || value === 'plan') {
+        return value
+    }
+    return null
+}
+
+const asProgressStatus = (value: unknown): RunProgressEntry['status'] => (
+    value === 'complete' ? 'complete' : 'streaming'
+)
+
+const progressSourceKey = (payload: Record<string, unknown>): string => {
+    const source = asRecord(payload.source)
+    if (!source) {
+        return ''
+    }
+    return [
+        asTrimmedString(source.backend) ?? '',
+        asTrimmedString(source.app_turn_id) ?? '',
+        asTrimmedString(source.item_id) ?? '',
+        asTrimmedString(source.response_id) ?? '',
+        typeof source.summary_index === 'number' ? String(source.summary_index) : '',
+    ].join(':')
+}
+
+const buildAllRunProgressEntries = (
+    timelineEntries: Iterable<TimelineEventEntry>,
+): RunProgressEntry[] => {
+    const byKey = new Map<string, RunProgressEntry>()
+    const sortedEntries = Array.from(timelineEntries)
+        .filter((entry) => entry.type === 'LLMContent')
+        .sort((left, right) => left.sequence - right.sequence)
+
+    for (const entry of sortedEntries) {
+        const payload = entry.payload
+        const channel = asProgressChannel(payload.channel)
+        const contentDelta = typeof payload.content_delta === 'string' ? payload.content_delta : ''
+        if (!channel || !contentDelta) {
+            continue
+        }
+        const nodeId = entry.nodeId ?? asTrimmedString(payload.node_id)
+        const key = [
+            entry.sourceScope,
+            entry.sourceParentNodeId ?? 'root',
+            nodeId ?? 'run',
+            channel,
+            progressSourceKey(payload),
+        ].join('::')
+        const previous = byKey.get(key)
+        const status = asProgressStatus(payload.status)
+        byKey.set(key, {
+            id: `progress-${key}`,
+            nodeId,
+            channel,
+            status,
+            content: status === 'complete'
+                ? contentDelta
+                : `${previous?.content ?? ''}${contentDelta}`,
+            updatedAt: entry.receivedAt,
+            latestSequence: entry.sequence,
+        })
+    }
+
+    return Array.from(byKey.values())
+        .sort((left, right) => right.latestSequence - left.latestSequence)
+}
+
+const buildRunProgressEntries = (
+    timelineEntries: Iterable<TimelineEventEntry>,
+    limit = 5,
+): RunProgressEntry[] => (
+    buildAllRunProgressEntries(timelineEntries)
+        .slice(0, Math.max(1, limit))
+)
+
+const buildRunProgressProjection = (
+    timelineEntries: Iterable<TimelineEventEntry>,
+    currentNodeId: string | null | undefined,
+    limit = 5,
+): RunProgressProjection => {
+    const allEntries = buildAllRunProgressEntries(timelineEntries)
+    const normalizedCurrentNodeId = currentNodeId?.trim() || null
+    const activeEntry = normalizedCurrentNodeId
+        ? allEntries.find((entry) => entry.nodeId === normalizedCurrentNodeId) ?? null
+        : null
+    const nodeOptions: string[] = []
+    const seenNodeOptions = new Set<string>()
+    for (const entry of allEntries) {
+        if (!entry.nodeId || seenNodeOptions.has(entry.nodeId)) {
+            continue
+        }
+        seenNodeOptions.add(entry.nodeId)
+        nodeOptions.push(entry.nodeId)
+    }
+
+    return {
+        activeEntry,
+        recentEntries: allEntries
+            .filter((entry) => entry.id !== activeEntry?.id)
+            .slice(0, Math.max(1, limit)),
+        nodeOptions,
+    }
+}
+
 export {
+    buildRunProgressProjection,
+    buildRunProgressEntries,
     buildGroupedPendingInterviewGates,
     buildGroupedTimelineEntries,
     buildJournalPendingInterviewGates,

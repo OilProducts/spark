@@ -588,6 +588,33 @@ def test_pipeline_persists_first_class_child_stage_events_on_child_run(
             del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
             return "child ok"
 
+        def run_with_events(  # type: ignore[no-untyped-def]
+            self,
+            node_id,
+            prompt,
+            context,
+            emit_event=None,
+            *,
+            response_contract="",
+            contract_repair_attempts=0,
+            timeout=None,
+            model=None,
+            provider=None,
+            reasoning_effort=None,
+            write_contract=None,
+        ):
+            del emit_event, provider, reasoning_effort
+            return self.run(
+                node_id,
+                prompt,
+                context,
+                response_contract=response_contract,
+                contract_repair_attempts=contract_repair_attempts,
+                timeout=timeout,
+                model=model,
+                write_contract=write_contract,
+            )
+
     monkeypatch.setattr(
         server,
         "_build_codergen_backend",

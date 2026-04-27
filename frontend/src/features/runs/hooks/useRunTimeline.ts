@@ -6,10 +6,13 @@ import type {
     GroupedTimelineEntry,
     PendingInterviewGate,
     PendingQuestionSnapshot,
+    RunProgressProjection,
+    TimelineEventEntry,
     TimelineEventCategory,
     TimelineSeverity,
 } from '../model/shared'
 import {
+    buildRunProgressProjection,
     buildGroupedPendingInterviewGates,
     filterAnsweredPendingInterviewGates,
     logUnexpectedRunError,
@@ -28,12 +31,14 @@ import {
 
 type UseRunTimelineArgs = {
     pendingQuestionSnapshots: PendingQuestionSnapshot[]
+    selectedRunCurrentNode: string | null | undefined
     selectedRunTimelineId: string | null
 }
 
 type TimelineProjection = {
     filteredCount: number
     groupedEntries: GroupedTimelineEntry[]
+    progressProjection: RunProgressProjection
 }
 
 const DEFAULT_TIMELINE_SESSION = {
@@ -74,10 +79,16 @@ const DEFAULT_RUN_JOURNAL_STATE: RunJournalStateEntry = {
 const EMPTY_TIMELINE_PROJECTION: TimelineProjection = {
     filteredCount: 0,
     groupedEntries: [],
+    progressProjection: {
+        activeEntry: null,
+        recentEntries: [],
+        nodeOptions: [],
+    },
 }
 
 const buildTimelineProjection = (
     journalState: RunJournalStateEntry,
+    selectedRunCurrentNode: string | null | undefined,
     filters: {
         timelineTypeFilter: string
         timelineCategoryFilter: 'all' | TimelineEventCategory
@@ -121,6 +132,7 @@ const buildTimelineProjection = (
     return {
         filteredCount,
         groupedEntries,
+        progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
     }
 }
 
@@ -128,6 +140,7 @@ const applyLiveMutationToProjection = (
     projection: TimelineProjection,
     mutation: Extract<RunJournalMutation, { kind: 'append_live' }>,
     journalState: RunJournalStateEntry,
+    selectedRunCurrentNode: string | null | undefined,
     filters: {
         timelineTypeFilter: string
         timelineCategoryFilter: 'all' | TimelineEventCategory
@@ -139,7 +152,10 @@ const applyLiveMutationToProjection = (
         return null
     }
     if (!matchesTimelineFilters(mutation.entry, filters)) {
-        return projection
+        return {
+            ...projection,
+            progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
+        }
     }
 
     const correlation = timelineCorrelationDescriptorFromEvent(mutation.entry, journalState._retryCorrelationEntityKeys)
@@ -151,6 +167,7 @@ const applyLiveMutationToProjection = (
                 correlation: null,
                 events: [mutation.entry],
             }, ...projection.groupedEntries],
+            progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
         }
     }
 
@@ -163,6 +180,7 @@ const applyLiveMutationToProjection = (
                 correlation,
                 events: [mutation.entry],
             }, ...projection.groupedEntries],
+            progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
         }
     }
 
@@ -179,11 +197,13 @@ const applyLiveMutationToProjection = (
             ...projection.groupedEntries.slice(0, existingIndex),
             ...projection.groupedEntries.slice(existingIndex + 1),
         ],
+        progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
     }
 }
 
 export function useRunTimeline({
     pendingQuestionSnapshots,
+    selectedRunCurrentNode,
     selectedRunTimelineId,
 }: UseRunTimelineArgs) {
     const runDetailSessionsByRunId = useStore((state) => state.runDetailSessionsByRunId)
@@ -242,7 +262,7 @@ export function useRunTimeline({
             && previous.revision === journalState.revision - 1
             && liveMutation
         ) {
-            const nextProjection = applyLiveMutationToProjection(previous.projection, liveMutation, journalState, timelineFilters)
+            const nextProjection = applyLiveMutationToProjection(previous.projection, liveMutation, journalState, selectedRunCurrentNode, timelineFilters)
             if (nextProjection) {
                 projectionCacheRef.current = {
                     filterKey,
@@ -254,7 +274,7 @@ export function useRunTimeline({
             }
         }
 
-        const nextProjection = buildTimelineProjection(journalState, timelineFilters)
+        const nextProjection = buildTimelineProjection(journalState, selectedRunCurrentNode, timelineFilters)
         projectionCacheRef.current = {
             filterKey,
             projection: nextProjection,
@@ -262,7 +282,7 @@ export function useRunTimeline({
             runId: selectedRunTimelineId,
         }
         return nextProjection
-    }, [filterKey, journalState, journalState.lastMutation, journalState.revision, selectedRunTimelineId, timelineFilters])
+    }, [filterKey, journalState, journalState.lastMutation, journalState.revision, selectedRunCurrentNode, selectedRunTimelineId, timelineFilters])
 
     const pendingInterviewGates = useMemo(
         () => mergePendingInterviewGatesWithSnapshots(journalState.pendingInterviewGates, pendingQuestionSnapshots),
@@ -275,6 +295,14 @@ export function useRunTimeline({
     const groupedPendingInterviewGates = useMemo(() => {
         return buildGroupedPendingInterviewGates(visiblePendingInterviewGates)
     }, [visiblePendingInterviewGates])
+    const latestRunStateTimelineEvent = useMemo<TimelineEventEntry | null>(() => {
+        for (const entry of iterateRunJournalEntries(journalState.segments)) {
+            if (entry.type !== 'LLMContent') {
+                return entry
+            }
+        }
+        return null
+    }, [journalState.revision, journalState.segments])
 
     const patchTimelineSession = useCallback((patch: Partial<RunDetailSessionState>) => {
         if (!selectedRunTimelineId) {
@@ -374,9 +402,10 @@ export function useRunTimeline({
         isTimelineLive,
         isTimelineLoadingOlder: journalState.isLoadingOlder,
         latestRetryTimelineEvent: journalState.latestRetryEntry,
-        latestTimelineEvent: journalState.latestEntry,
+        latestTimelineEvent: latestRunStateTimelineEvent,
         loadOlderTimelineEvents,
         pendingGateActionError: timelineSession.pendingGateActionError,
+        progressProjection: timelineProjection.progressProjection,
         setFreeformAnswersByGateId: (next: SetStateAction<Record<string, string>>) => patchTimelineSession({
             freeformAnswersByGateId: typeof next === 'function'
                 ? next(timelineSession.freeformAnswersByGateId)

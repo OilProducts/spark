@@ -181,6 +181,7 @@ Execution owns:
 Runs owns:
 - selected run summary and actions
 - pinned pending questions
+- read-only progress
 - run journal
 - an `Advanced` disclosure for graph, checkpoint, context, and artifacts
 
@@ -190,6 +191,7 @@ The runs list hydrates from `GET /runs` and then updates from `GET /runs/events`
 Selected-run inspection hydrates authoritative run detail from `GET /pipelines/{id}`, durable history from `GET /pipelines/{id}/journal`, and then live tail updates from `GET /pipelines/{id}/events`.
 The run summary should fold in current monitoring facts rather than relying on a separate `Run Activity` card.
 The selected-run summary should prioritize the operator questions `what is happening now?`, `did it work?`, `what work is this?`, and `what did it cost?` over launch-time or diagnostic metadata.
+The selected-run monitoring hierarchy is Summary, pinned questions, Progress, Run Journal, and Advanced.
 It should render those answers as four ordered sections: `Now`, `Outcome`, `Scope`, and `Usage`.
 `Now` shows current lifecycle status, current node, latest journal summary, completed node count, pending question count, and retry or waiting signals when present.
 `Outcome` shows lifecycle status separately from workflow outcome, duration, start/end timestamps, and a failure or outcome reason only when the backend supplies one.
@@ -202,7 +204,10 @@ Run Journal must use durable selected-run history from the journal endpoint, not
 Steady-state polling is not part of the Runs contract.
 The runs list must not show polling-era stale-data warnings or background-refresh affordances.
 Runs must own exactly one per-run SSE transport for the selected run; summary monitoring facts, journal live tail, node status, and pending human-gate state all share that transport.
-The future read-only Runs Progress surface must reuse this selected-run SSE ownership rather than opening a separate progress stream.
+The read-only Runs Progress surface reuses this selected-run journal and SSE ownership rather than opening a separate progress stream.
+Progress is derived from loaded selected-run journal/SSE `LLMContent` data, prioritizes assistant output for the selected run's current node, and lets operators switch between the current node, recent loaded streams, and loaded node ids.
+When the current node has no loaded LLM output, Progress says so and falls back to recent loaded streams.
+Progress must render persisted assistant output with the same markdown semantics as Home assistant output.
 
 ### 8.3 Bridge Surfaces
 
@@ -261,7 +266,7 @@ Conversation UX commitments include:
 
 The UI must not reconstruct chat cards from raw protocol notifications.
 
-A future Runs Progress view must be read-only and derived from persisted run or node LLM output, not an editable conversation. When that view renders persisted assistant output, it must use the same normalized content semantics and markdown/chat rendering rules as Home.
+Runs Progress is read-only and derived from persisted run or node LLM output, not an editable conversation. It uses the same normalized content semantics and markdown/chat rendering rules as Home assistant output.
 
 ## 11. Review and Approval UX
 

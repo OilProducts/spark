@@ -32,6 +32,33 @@ class _MilestoneRecordingBackend:
             self.milestone_ids.append(str(context.get("context.milestone.id", "")))
         return True
 
+    def run_with_events(
+        self,
+        node_id: str,
+        prompt: str,
+        context: Context,
+        emit_event=None,
+        *,
+        response_contract: str = "",
+        contract_repair_attempts: int = 0,
+        timeout=None,
+        model=None,
+        provider=None,
+        reasoning_effort=None,
+        write_contract=None,
+    ) -> bool:
+        del emit_event, provider, reasoning_effort
+        return self.run(
+            node_id,
+            prompt,
+            context,
+            response_contract=response_contract,
+            contract_repair_attempts=contract_repair_attempts,
+            timeout=timeout,
+            model=model,
+            write_contract=write_contract,
+        )
+
 
 class TestManagerLoopHandler:
     def test_manager_loop_autostarts_child_pipeline_from_graph_attr(self, tmp_path):

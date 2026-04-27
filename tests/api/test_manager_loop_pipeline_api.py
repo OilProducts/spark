@@ -39,6 +39,33 @@ class _LoopingManagerBackend:
             return Outcome(status=OutcomeStatus.SUCCESS, preferred_label=preferred_label)
         return Outcome(status=OutcomeStatus.SUCCESS)
 
+    def run_with_events(
+        self,
+        node_id: str,
+        prompt: str,
+        context,
+        emit_event=None,
+        *,
+        response_contract: str = "",
+        contract_repair_attempts: int = 0,
+        timeout=None,
+        model=None,
+        provider=None,
+        reasoning_effort=None,
+        write_contract=None,
+    ) -> Outcome:
+        del emit_event, provider, reasoning_effort
+        return self.run(
+            node_id,
+            prompt,
+            context,
+            response_contract=response_contract,
+            contract_repair_attempts=contract_repair_attempts,
+            timeout=timeout,
+            model=model,
+            write_contract=write_contract,
+        )
+
 
 def test_pipeline_flow_name_resolves_relative_manager_child_paths_from_parent_flow_dir(
     attractor_api_client: TestClient,

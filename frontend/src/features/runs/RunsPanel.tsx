@@ -12,6 +12,7 @@ import { RunContextCard } from './components/RunContextCard'
 import { RunEventTimelineCard } from './components/RunEventTimelineCard'
 import { RunGraphCard } from './components/RunGraphCard'
 import { RunList } from './components/RunList'
+import { RunProgressCard } from './components/RunProgressCard'
 import { RunSummaryCard } from './components/RunSummaryCard'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { STATUS_LABELS, type RunRecord } from './model/shared'
@@ -200,6 +201,7 @@ export function RunsPanel() {
         latestTimelineEvent,
         loadOlderTimelineEvents,
         pendingGateActionError,
+        progressProjection,
         setFreeformAnswersByGateId,
         setTimelineCategoryFilter,
         setTimelineNodeStageFilter,
@@ -217,12 +219,15 @@ export function RunsPanel() {
         visiblePendingInterviewGates,
     } = useRunTimeline({
         pendingQuestionSnapshots,
+        selectedRunCurrentNode: selectedRun?.current_node ?? null,
         selectedRunTimelineId,
     })
     const selectedRunSessionState = useStore((state) => (
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
     const isSummaryCollapsed = selectedRunSessionState?.isSummaryCollapsed ?? false
+    const isProgressCollapsed = selectedRunSessionState?.isProgressCollapsed ?? false
+    const progressNodeFilter = selectedRunSessionState?.progressNodeFilter ?? 'current'
     const isTimelineCollapsed = selectedRunSessionState?.isTimelineCollapsed ?? false
     const isAdvancedCollapsed = selectedRunSessionState?.isAdvancedCollapsed ?? true
     const isCheckpointCollapsed = selectedRunSessionState?.isCheckpointCollapsed ?? false
@@ -512,6 +517,21 @@ export function RunsPanel() {
                                 }}
                                 pendingGateActionError={pendingGateActionError}
                                 submittingGateIds={submittingGateIds}
+                            />
+                        )}
+                        {selectedRun && (
+                            <RunProgressCard
+                                collapsed={isProgressCollapsed}
+                                currentNodeId={selectedRun.current_node}
+                                isLive={isTimelineLive}
+                                progressNodeFilter={progressNodeFilter}
+                                progressProjection={progressProjection}
+                                onCollapsedChange={(collapsed) => {
+                                    patchSelectedRunSession({ isProgressCollapsed: collapsed })
+                                }}
+                                onProgressNodeFilterChange={(filter) => {
+                                    patchSelectedRunSession({ progressNodeFilter: filter })
+                                }}
                             />
                         )}
                         {selectedRun && (

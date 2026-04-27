@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import inspect
 import threading
 import time
 from pathlib import Path
@@ -9,7 +10,39 @@ from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome, OutcomeStatus
 from attractor.interviewer import Answer, Interviewer, Question
 
-class _StubBackend:
+class _RunWithEventsBackend:
+    def run_with_events(
+        self,
+        node_id: str,
+        prompt: str,
+        context: Context,
+        emit_event=None,
+        *,
+        response_contract: str = "",
+        contract_repair_attempts: int = 0,
+        timeout=None,
+        model=None,
+        provider=None,
+        reasoning_effort=None,
+        write_contract=None,
+    ):
+        del emit_event
+        kwargs = {
+            "response_contract": response_contract,
+            "contract_repair_attempts": contract_repair_attempts,
+            "timeout": timeout,
+            "model": model,
+            "provider": provider,
+            "reasoning_effort": reasoning_effort,
+            "write_contract": write_contract,
+        }
+        parameters = inspect.signature(self.run).parameters
+        if not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            kwargs = {key: value for key, value in kwargs.items() if key in parameters}
+        return self.run(node_id, prompt, context, **kwargs)
+
+
+class _StubBackend(_RunWithEventsBackend):
     def __init__(self, ok: bool = True):
         self.ok = ok
         self.calls = []
@@ -34,7 +67,7 @@ class _StubBackend:
         )
         return self.ok
 
-class _ArtifactProbeBackend:
+class _ArtifactProbeBackend(_RunWithEventsBackend):
     def __init__(self, logs_root: Path):
         self.logs_root = logs_root
         self.prompt_exists_during_call = False
@@ -65,7 +98,7 @@ class _ArtifactProbeBackend:
         self.response_exists_during_call = response_path.exists()
         return True
 
-class _TextBackend:
+class _TextBackend(_RunWithEventsBackend):
     def __init__(self, text: str):
         self.text = text
 
@@ -86,7 +119,7 @@ class _TextBackend:
         del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, provider, reasoning_effort, write_contract
         return self.text
 
-class _OutcomeBackend:
+class _OutcomeBackend(_RunWithEventsBackend):
     def __init__(self, outcome: Outcome):
         self.outcome = outcome
 
@@ -107,7 +140,7 @@ class _OutcomeBackend:
         del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, provider, reasoning_effort, write_contract
         return self.outcome
 
-class _FanInRankingBackend:
+class _FanInRankingBackend(_RunWithEventsBackend):
     def __init__(self, response: str):
         self.response = response
         self.calls = []
@@ -143,7 +176,7 @@ class _FanInRankingBackend:
         return self.response
 
 
-class _StageLoggingBackend:
+class _StageLoggingBackend(_RunWithEventsBackend):
     def __init__(self, response: str):
         self.response = response
         self.bind_calls = []

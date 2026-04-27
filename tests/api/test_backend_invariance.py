@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import inspect
 import json
 import itertools
 from pathlib import Path
-from spark_common.turn_stream import TurnStreamEvent
+from spark_common.turn_stream import TurnStreamEvent, TurnStreamSource
 from types import SimpleNamespace
 from typing import List
 
@@ -33,6 +34,38 @@ def _start_pipeline_via_http(attractor_api_client: TestClient, payload: dict) ->
     response = attractor_api_client.post("/pipelines", json=payload)
     assert response.status_code == 200
     return response.json()
+
+
+class _BackendWithEvents:
+    def run_with_events(  # type: ignore[no-untyped-def]
+        self,
+        node_id,
+        prompt,
+        context,
+        emit_event=None,
+        *,
+        response_contract="",
+        contract_repair_attempts=0,
+        timeout=None,
+        model=None,
+        provider=None,
+        reasoning_effort=None,
+        write_contract=None,
+    ):
+        del emit_event
+        kwargs = {
+            "response_contract": response_contract,
+            "contract_repair_attempts": contract_repair_attempts,
+            "timeout": timeout,
+            "model": model,
+            "provider": provider,
+            "reasoning_effort": reasoning_effort,
+            "write_contract": write_contract,
+        }
+        parameters = inspect.signature(self.run).parameters
+        if not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            kwargs = {key: value for key, value in kwargs.items() if key in parameters}
+        return self.run(node_id, prompt, context, **kwargs)
 
 
 def test_pipeline_start_request_requires_flow_content_or_flow_name(
@@ -88,7 +121,7 @@ def test_pipeline_start_uses_flow_ui_default_model_when_request_model_missing(
 
     selected_models: list[str | None] = []
 
-    class _Backend:
+    class _Backend(_BackendWithEvents):
         def run(  # type: ignore[no-untyped-def]
             self,
             node_id,
@@ -145,7 +178,7 @@ def test_pipeline_start_explicit_model_overrides_flow_ui_default_model(
 
     selected_models: list[str | None] = []
 
-    class _Backend:
+    class _Backend(_BackendWithEvents):
         def run(  # type: ignore[no-untyped-def]
             self,
             node_id,
@@ -247,7 +280,7 @@ def test_pipeline_execution_resolves_effective_model_per_node(
     build_models: list[str | None] = []
     run_models: list[str | None] = []
 
-    class _Backend:
+    class _Backend(_BackendWithEvents):
         def run(  # type: ignore[no-untyped-def]
             self,
             node_id,
@@ -856,6 +889,99 @@ def test_codex_app_server_backend_accumulates_live_usage_by_model(
             },
         },
     }
+
+
+def test_codex_app_server_backend_emits_llm_content_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    progress_events: list[dict[str, object]] = []
+    backend = server.CodexAppServerBackend(str(tmp_path), lambda event: None, model=None)
+
+    class FakeResult:
+        assistant_message = "Final"
+        command_text = ""
+        token_total = None
+        token_usage_payload = None
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def ensure_process(self, **kwargs) -> None:
+            return None
+
+        def start_thread(self, **kwargs) -> str:
+            return "thread-123"
+
+        def run_turn(self, **kwargs) -> FakeResult:
+            on_event = kwargs["on_event"]
+            on_event(
+                TurnStreamEvent(
+                    kind="content_delta",
+                    channel="assistant",
+                    content_delta="Hello ",
+                    phase="thinking",
+                    source=TurnStreamSource(
+                        backend="codex_app_server",
+                        app_turn_id="turn-1",
+                        item_id="msg-1",
+                    ),
+                )
+            )
+            on_event(
+                TurnStreamEvent(
+                    kind="content_completed",
+                    channel="assistant",
+                    content_delta="Hello world",
+                    source=TurnStreamSource(
+                        backend="codex_app_server",
+                        app_turn_id="turn-1",
+                        item_id="msg-1",
+                    ),
+                )
+            )
+            return FakeResult()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(codex_backends_module, "CodexAppServerClient", FakeClient)
+
+    result = backend.run_with_events("plan", "hello", Context(), lambda event_type, **payload: progress_events.append({
+        "type": event_type,
+        **payload,
+    }))
+
+    assert result == "Final"
+    assert progress_events == [
+        {
+            "type": "LLMContent",
+            "node_id": "plan",
+            "channel": "assistant",
+            "content_delta": "Hello ",
+            "status": "streaming",
+            "phase": "thinking",
+            "source": {
+                "backend": "codex_app_server",
+                "app_turn_id": "turn-1",
+                "item_id": "msg-1",
+            },
+        },
+        {
+            "type": "LLMContent",
+            "node_id": "plan",
+            "channel": "assistant",
+            "content_delta": "Hello world",
+            "status": "complete",
+            "phase": None,
+            "source": {
+                "backend": "codex_app_server",
+                "app_turn_id": "turn-1",
+                "item_id": "msg-1",
+            },
+        },
+    ]
 
 
 def test_codex_app_server_backend_parses_structured_outcome_agent_text(
@@ -1672,7 +1798,7 @@ def test_provider_router_dispatches_supported_providers(
 ) -> None:
     calls: list[dict[str, object]] = []
 
-    class FakeCodexBackend:
+    class FakeCodexBackend(_BackendWithEvents):
         def __init__(self, *args, **kwargs) -> None:
             calls.append({"backend": "codex_init", "kwargs": kwargs})
 
@@ -1683,7 +1809,7 @@ def test_provider_router_dispatches_supported_providers(
             calls.append({"backend": "codex", "kwargs": kwargs})
             return "codex-result"
 
-    class FakeUnifiedBackend:
+    class FakeUnifiedBackend(_BackendWithEvents):
         def __init__(self, *args, **kwargs) -> None:
             calls.append({"backend": "unified_init", "kwargs": kwargs})
 
@@ -1730,7 +1856,7 @@ def test_pipeline_unified_provider_runtime_failure_writes_codergen_artifacts(
     server.configure_runtime_paths(runs_dir=tmp_path / "runs")
     provider_calls: list[str | None] = []
 
-    class FakeCodexBackend:
+    class FakeCodexBackend(_BackendWithEvents):
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
 
@@ -1741,7 +1867,7 @@ def test_pipeline_unified_provider_runtime_failure_writes_codergen_artifacts(
         def run(self, *args, **kwargs):
             raise AssertionError("codex backend should not run for unified providers")
 
-    class FakeUnifiedBackend:
+    class FakeUnifiedBackend(_BackendWithEvents):
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
 
@@ -1793,14 +1919,14 @@ def test_provider_router_reports_cumulative_unified_usage_across_nodes(
 ) -> None:
     usage_updates: list[codex_backends_module.TokenUsageBreakdown] = []
 
-    class FakeCodexBackend:
+    class FakeCodexBackend(_BackendWithEvents):
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
 
         def bind_stage_raw_rpc_log(self, node_id, logs_root):
             raise AssertionError("not used")
 
-    class FakeUnifiedBackend:
+    class FakeUnifiedBackend(_BackendWithEvents):
         def __init__(self, *args, **kwargs) -> None:
             del args
             self._on_usage_update = kwargs["on_usage_update"]
@@ -1984,6 +2110,79 @@ def test_unified_agent_backend_returns_plain_text_and_records_tool_events(
         "[plan] tool completed: shell",
     ]
     assert usage_snapshots[-1].by_model["gpt-test"].total_tokens == 7
+
+
+def test_unified_agent_backend_emits_llm_content_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    progress_events: list[dict[str, object]] = []
+    events = [
+        SessionEvent(EventKind.ASSISTANT_TEXT_DELTA, data={"delta": "Hello ", "response_id": "r-1"}),
+        SessionEvent(EventKind.ASSISTANT_TEXT_END, data={"text": "Hello world", "response_id": "r-1"}),
+        SessionEvent(EventKind.ASSISTANT_REASONING_DELTA, data={"delta": "Thinking", "response_id": "r-1"}),
+    ]
+    _install_fake_unified_session(
+        monkeypatch,
+        responses=["Hello world"],
+        events=events,
+    )
+    backend = codex_backends_module.UnifiedAgentBackend(
+        str(tmp_path),
+        lambda event: None,
+        provider="openai",
+        client_factory=lambda provider: SimpleNamespace(close=lambda: None),
+    )
+
+    result = backend.run_with_events(
+        "plan",
+        "hello",
+        Context(),
+        lambda event_type, **payload: progress_events.append({
+            "type": event_type,
+            **payload,
+        }),
+    )
+
+    assert result == "Hello world"
+    assert progress_events == [
+        {
+            "type": "LLMContent",
+            "node_id": "plan",
+            "channel": "assistant",
+            "content_delta": "Hello ",
+            "status": "streaming",
+            "source": {
+                "backend": "agent_session",
+                "raw_kind": str(EventKind.ASSISTANT_TEXT_DELTA),
+                "response_id": "r-1",
+            },
+        },
+        {
+            "type": "LLMContent",
+            "node_id": "plan",
+            "channel": "assistant",
+            "content_delta": "Hello world",
+            "status": "complete",
+            "source": {
+                "backend": "agent_session",
+                "raw_kind": str(EventKind.ASSISTANT_TEXT_END),
+                "response_id": "r-1",
+            },
+        },
+        {
+            "type": "LLMContent",
+            "node_id": "plan",
+            "channel": "reasoning",
+            "content_delta": "Thinking",
+            "status": "streaming",
+            "source": {
+                "backend": "agent_session",
+                "raw_kind": str(EventKind.ASSISTANT_REASONING_DELTA),
+                "response_id": "r-1",
+            },
+        },
+    ]
 
 
 def test_unified_agent_backend_coerces_status_envelope(

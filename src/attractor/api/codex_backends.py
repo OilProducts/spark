@@ -45,6 +45,96 @@ from spark_common.codex_app_client import CodexAppServerClient
 from spark_common import codex_app_protocol
 from spark_common.runtime_path import resolve_runtime_workspace_path
 
+
+def _turn_stream_source_payload(event: TurnStreamEvent) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for key in (
+        "backend",
+        "session_id",
+        "app_turn_id",
+        "item_id",
+        "response_id",
+        "summary_index",
+        "raw_kind",
+    ):
+        value = getattr(event.source, key)
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def _emit_turn_stream_progress(
+    emit_event: Optional[Callable[..., None]],
+    *,
+    node_id: str,
+    event: TurnStreamEvent,
+) -> None:
+    if emit_event is None:
+        return
+    if event.kind not in {"content_delta", "content_completed"}:
+        return
+    if event.channel not in {"assistant", "reasoning", "plan"}:
+        return
+    content = str(event.content_delta or "")
+    if not content:
+        return
+    emit_event(
+        "LLMContent",
+        node_id=node_id,
+        channel=event.channel,
+        content_delta=content,
+        status="complete" if event.kind == "content_completed" else "streaming",
+        phase=event.phase,
+        source=_turn_stream_source_payload(event),
+    )
+
+
+def _emit_session_event_progress(
+    emit_event: Optional[Callable[..., None]],
+    *,
+    node_id: str,
+    event: SessionEvent,
+) -> None:
+    if emit_event is None:
+        return
+    channel: str
+    content: str
+    status = "streaming"
+    if event.kind == EventKind.ASSISTANT_TEXT_DELTA:
+        channel = "assistant"
+        content = str(event.data.get("delta", ""))
+    elif event.kind == EventKind.ASSISTANT_TEXT_END:
+        channel = "assistant"
+        content = str(event.data.get("text", ""))
+        status = "complete"
+    elif event.kind == EventKind.ASSISTANT_REASONING_DELTA:
+        channel = "reasoning"
+        content = str(event.data.get("delta", ""))
+    elif event.kind == EventKind.ASSISTANT_REASONING_END:
+        channel = "reasoning"
+        content = str(event.data.get("text", "") or "")
+        status = "complete"
+    else:
+        return
+    if not content:
+        return
+    source: dict[str, object] = {
+        "backend": "agent_session",
+        "raw_kind": str(event.kind),
+    }
+    response_id = event.data.get("response_id")
+    if response_id not in (None, ""):
+        source["response_id"] = str(response_id)
+    emit_event(
+        "LLMContent",
+        node_id=node_id,
+        channel=channel,
+        content_delta=content,
+        status=status,
+        source=source,
+    )
+
+
 class CodexAppServerBackend(CodergenBackend):
     RUNTIME_THREAD_ID_KEY = "_attractor.runtime.thread_id"
 
@@ -64,6 +154,7 @@ class CodexAppServerBackend(CodergenBackend):
         self._session_threads_lock = threading.Lock()
         self._raw_rpc_log_lock = threading.Lock()
         self._raw_rpc_log_state = threading.local()
+        self._progress_event_state = threading.local()
         self._token_usage_lock = threading.Lock()
         self._token_usage_breakdown = TokenUsageBreakdown()
 
@@ -157,6 +248,7 @@ class CodexAppServerBackend(CodergenBackend):
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         del provider
+        progress_emit_event = getattr(self._progress_event_state, "emit_event", None)
         def log_line(message: str) -> None:
             if message:
                 self.emit({"type": "log", "msg": f"[{node_id}] {message}"})
@@ -205,6 +297,8 @@ class CodexAppServerBackend(CodergenBackend):
                 log_line,
                 model=effective_model,
                 reasoning_effort=reasoning_effort,
+                node_id=node_id,
+                emit_event=progress_emit_event,
             )
             if turn_text is None:
                 return "codex app-server completed successfully"
@@ -220,6 +314,7 @@ class CodexAppServerBackend(CodergenBackend):
                 model=effective_model,
                 reasoning_effort=reasoning_effort,
                 write_contract=write_contract,
+                emit_event=progress_emit_event,
             )
         except RuntimeError as exc:
             return fail(str(exc))
@@ -227,6 +322,43 @@ class CodexAppServerBackend(CodergenBackend):
             if callable(clear_raw_rpc_logger):
                 clear_raw_rpc_logger()
             client.close()
+
+    def run_with_events(
+        self,
+        node_id: str,
+        prompt: str,
+        context: Context,
+        emit_event: Optional[Callable[..., None]],
+        *,
+        response_contract: str = "",
+        contract_repair_attempts: int = 0,
+        timeout: Optional[float] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        write_contract: ContextWriteContract | None = None,
+    ) -> str | Outcome:
+        previous = getattr(self._progress_event_state, "emit_event", None)
+        self._progress_event_state.emit_event = emit_event
+        try:
+            return self.run(
+                node_id,
+                prompt,
+                context,
+                response_contract=response_contract,
+                contract_repair_attempts=contract_repair_attempts,
+                timeout=timeout,
+                model=model,
+                provider=provider,
+                reasoning_effort=reasoning_effort,
+                write_contract=write_contract,
+            )
+        finally:
+            if previous is None:
+                if hasattr(self._progress_event_state, "emit_event"):
+                    delattr(self._progress_event_state, "emit_event")
+            else:
+                self._progress_event_state.emit_event = previous
 
     def _run_turn_and_capture_text(
         self,
@@ -238,12 +370,15 @@ class CodexAppServerBackend(CodergenBackend):
         *,
         model: Optional[str],
         reasoning_effort: Optional[str],
+        node_id: str,
+        emit_event: Optional[Callable[..., None]] = None,
     ) -> str | None:
         previous_total: TokenUsageBucket | None = None
         saw_usage_update = False
 
         def handle_turn_event(event: TurnStreamEvent) -> None:
             nonlocal previous_total, saw_usage_update
+            _emit_turn_stream_progress(emit_event, node_id=node_id, event=event)
             if event.kind != "token_usage_updated" or event.token_usage is None:
                 return
             delta, previous_total = compute_live_usage_delta(event.token_usage, previous_total)
@@ -290,6 +425,7 @@ class CodexAppServerBackend(CodergenBackend):
         model: Optional[str],
         reasoning_effort: Optional[str],
         write_contract: ContextWriteContract | None,
+        emit_event: Optional[Callable[..., None]] = None,
     ) -> str | Outcome:
         result = _coerce_structured_text_outcome(response_text, response_contract=response_contract)
         if isinstance(result, Outcome):
@@ -325,6 +461,8 @@ class CodexAppServerBackend(CodergenBackend):
                 log_line,
                 model=model,
                 reasoning_effort=reasoning_effort,
+                node_id=node_id,
+                emit_event=emit_event,
             )
             if repair_text is None:
                 return _contract_failure_outcome(current_violation)
@@ -434,6 +572,7 @@ class UnifiedAgentBackend(CodergenBackend):
         self._client_factory = client_factory or (
             lambda effective_provider: UnifiedLlmClient.from_env(default_provider=effective_provider)
         )
+        self._progress_event_state = threading.local()
         self._token_usage_lock = threading.Lock()
         self._token_usage_breakdown = TokenUsageBreakdown()
 
@@ -460,6 +599,11 @@ class UnifiedAgentBackend(CodergenBackend):
             self._on_usage_update(snapshot)
 
     def _handle_event(self, node_id: str, event: SessionEvent) -> None:
+        _emit_session_event_progress(
+            getattr(self._progress_event_state, "emit_event", None),
+            node_id=node_id,
+            event=event,
+        )
         if event.kind == EventKind.ASSISTANT_TEXT_DELTA:
             delta = str(event.data.get("delta", ""))
             if delta.strip():
@@ -627,6 +771,43 @@ class UnifiedAgentBackend(CodergenBackend):
         except Exception as exc:
             return self._runtime_failure(str(exc) or exc.__class__.__name__)
 
+    def run_with_events(
+        self,
+        node_id: str,
+        prompt: str,
+        context: Context,
+        emit_event: Optional[Callable[..., None]],
+        *,
+        response_contract: str = "",
+        contract_repair_attempts: int = 0,
+        timeout: Optional[float] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        write_contract: ContextWriteContract | None = None,
+    ) -> str | Outcome:
+        previous = getattr(self._progress_event_state, "emit_event", None)
+        self._progress_event_state.emit_event = emit_event
+        try:
+            return self.run(
+                node_id,
+                prompt,
+                context,
+                response_contract=response_contract,
+                contract_repair_attempts=contract_repair_attempts,
+                timeout=timeout,
+                model=model,
+                provider=provider,
+                reasoning_effort=reasoning_effort,
+                write_contract=write_contract,
+            )
+        finally:
+            if previous is None:
+                if hasattr(self._progress_event_state, "emit_event"):
+                    delattr(self._progress_event_state, "emit_event")
+            else:
+                self._progress_event_state.emit_event = previous
+
 
 class ProviderRouterBackend(CodergenBackend):
     def __init__(
@@ -713,6 +894,66 @@ class ProviderRouterBackend(CodergenBackend):
                 node_id,
                 prompt,
                 context,
+                response_contract=response_contract,
+                contract_repair_attempts=contract_repair_attempts,
+                timeout=timeout,
+                model=model,
+                provider=effective_provider,
+                reasoning_effort=reasoning_effort,
+                write_contract=write_contract,
+            )
+        return Outcome(
+            status=OutcomeStatus.FAIL,
+            failure_reason=(
+                "Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini."
+            ),
+            failure_kind=FailureKind.RUNTIME,
+        )
+
+    def run_with_events(
+        self,
+        node_id: str,
+        prompt: str,
+        context: Context,
+        emit_event: Optional[Callable[..., None]],
+        *,
+        response_contract: str = "",
+        contract_repair_attempts: int = 0,
+        timeout: Optional[float] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        write_contract: ContextWriteContract | None = None,
+    ) -> str | Outcome:
+        effective_provider = _normalize_provider(provider)
+        if effective_provider == "codex":
+            return self._codex.run_with_events(
+                node_id,
+                prompt,
+                context,
+                emit_event,
+                response_contract=response_contract,
+                contract_repair_attempts=contract_repair_attempts,
+                timeout=timeout,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                write_contract=write_contract,
+            )
+        if effective_provider in {"openai", "anthropic", "gemini"}:
+            usage_source = object()
+            backend = UnifiedAgentBackend(
+                self.working_dir,
+                self.emit,
+                provider=effective_provider,
+                model=model or self.model,
+                reasoning_effort=reasoning_effort,
+                on_usage_update=lambda snapshot: self._record_source_usage(usage_source, snapshot),
+            )
+            return backend.run_with_events(
+                node_id,
+                prompt,
+                context,
+                emit_event,
                 response_contract=response_contract,
                 contract_repair_attempts=contract_repair_attempts,
                 timeout=timeout,
