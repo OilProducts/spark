@@ -32,6 +32,7 @@ from spark.workspace.conversations.utils import (
 from spark_common.codex_app_client import (
     APP_SERVER_REQUEST_TIMEOUT_SECONDS,
     CodexAppServerClient,
+    CodexAppServerThreadResumeFailure,
 )
 from spark_common import codex_app_protocol
 from spark_common.codex_runtime import build_codex_runtime_environment
@@ -41,6 +42,7 @@ from unified_llm.models import get_latest_model, get_model_info
 
 
 CHAT_TURN_IDLE_TIMEOUT_SECONDS = codex_app_protocol.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS
+CONTINUITY_RESET_ERROR_CODE = "continuity_reset"
 
 
 def _normalize_provider(value: str | None) -> str:
@@ -226,6 +228,47 @@ def _agent_history_from_persisted_turns(turns: list[Any]) -> list[UserTurn | Ass
         elif role == "assistant":
             history.append(AssistantTurn(content))
     return history
+
+
+def _resume_failure_summary(failure: CodexAppServerThreadResumeFailure) -> str:
+    detail = "codex app-server rejected thread/resume"
+    if failure.kind == "missing_thread_id":
+        detail = "codex app-server returned no thread id for thread/resume"
+    qualifiers: list[str] = []
+    if failure.code is not None:
+        qualifiers.append(f"code={failure.code}")
+    if failure.message:
+        qualifiers.append(f"message={failure.message}")
+    if qualifiers:
+        detail = f"{detail} ({', '.join(qualifiers)})"
+    return detail
+
+
+class PersistedThreadContinuityResetError(RuntimeError):
+    """Raised when a persisted backend thread cannot be resumed safely."""
+
+    def __init__(
+        self,
+        persisted_thread_id: str,
+        failure: CodexAppServerThreadResumeFailure,
+    ) -> None:
+        self.persisted_thread_id = persisted_thread_id
+        self.failure = failure
+        self.error_code = CONTINUITY_RESET_ERROR_CODE
+        super().__init__(
+            "Continuity reset: Spark could not resume persisted thread "
+            f"{persisted_thread_id!r}. A new thread was not started automatically for this turn. "
+            f"Resume details: {_resume_failure_summary(failure)}."
+        )
+
+    def to_debug_payload(self) -> dict[str, Any]:
+        return {
+            "event": "continuity_reset",
+            "error_code": self.error_code,
+            "persisted_thread_id": self.persisted_thread_id,
+            "replacement_thread_started": False,
+            "resume_failure": self.failure.to_dict(),
+        }
 
 
 @dataclass
@@ -617,6 +660,9 @@ class CodexAppServerChatSession:
         if self._on_thread_id_updated is not None:
             self._on_thread_id_updated(normalized_thread_id)
 
+    def _clear_thread_id(self) -> None:
+        self._thread_id = None
+
     def _set_model(self, model: Optional[str]) -> Optional[str]:
         normalized_model = as_non_empty_string(model)
         if not normalized_model:
@@ -659,18 +705,22 @@ class CodexAppServerChatSession:
         if self._thread_initialized and self._thread_id:
             return
         if self._thread_id:
-            resumed_thread_id = self._client.resume_thread(
+            persisted_thread_id = self._thread_id
+            resume_result = self._client.resume_thread(
                 self._thread_id,
                 model=model,
                 cwd=self.working_dir,
                 approval_policy="never",
             )
-        else:
-            resumed_thread_id = None
-        if resumed_thread_id:
-            self._set_thread_id(resumed_thread_id)
-            self._thread_initialized = True
-            return
+            if resume_result.thread_id:
+                self._set_thread_id(resume_result.thread_id)
+                self._thread_initialized = True
+                return
+            failure = resume_result.failure or CodexAppServerThreadResumeFailure(
+                kind="missing_thread_id",
+                message="codex app-server returned no thread id for thread/resume",
+            )
+            raise PersistedThreadContinuityResetError(persisted_thread_id, failure)
         started_thread_id = self._client.start_thread(
             model=model,
             cwd=self.working_dir,
@@ -916,35 +966,35 @@ class CodexAppServerChatSession:
         on_event: Optional[Callable[[TurnStreamEvent], None]] = None,
     ) -> ChatTurnResult:
         with self._lock:
-            self._ensure_process()
-            effective_model = self._resolve_turn_model(model)
-            self._ensure_thread(effective_model)
-            tool_calls_by_id: dict[str, ToolCallRecord] = {}
-            current_app_turn_id: Optional[str] = None
-
-            def _handle_turn_started(turn_id: str) -> None:
-                nonlocal current_app_turn_id
-                current_app_turn_id = turn_id
-
-            def _handle_server_request(message: dict[str, Any]) -> dict[str, Any]:
-                method = message.get("method")
-                if method != "item/tool/requestUserInput":
-                    return self._client._handle_server_request(message)
-                return self._handle_request_user_input_server_request(
-                    message,
-                    on_event=on_event,
-                    current_app_turn_id=current_app_turn_id,
-                )
-
-            def _handle_normalized_event(normalized_event: TurnStreamEvent) -> None:
-                self._forward_normalized_turn_event(
-                    normalized_event,
-                    on_event=on_event,
-                    tool_calls_by_id=tool_calls_by_id,
-                    current_app_turn_id=current_app_turn_id,
-                )
-
             try:
+                self._ensure_process()
+                effective_model = self._resolve_turn_model(model)
+                self._ensure_thread(effective_model)
+                tool_calls_by_id: dict[str, ToolCallRecord] = {}
+                current_app_turn_id: Optional[str] = None
+
+                def _handle_turn_started(turn_id: str) -> None:
+                    nonlocal current_app_turn_id
+                    current_app_turn_id = turn_id
+
+                def _handle_server_request(message: dict[str, Any]) -> dict[str, Any]:
+                    method = message.get("method")
+                    if method != "item/tool/requestUserInput":
+                        return self._client._handle_server_request(message)
+                    return self._handle_request_user_input_server_request(
+                        message,
+                        on_event=on_event,
+                        current_app_turn_id=current_app_turn_id,
+                    )
+
+                def _handle_normalized_event(normalized_event: TurnStreamEvent) -> None:
+                    self._forward_normalized_turn_event(
+                        normalized_event,
+                        on_event=on_event,
+                        tool_calls_by_id=tool_calls_by_id,
+                        current_app_turn_id=current_app_turn_id,
+                    )
+
                 result = self._client.run_turn(
                     thread_id=self._thread_id or "",
                     prompt=prompt,
@@ -957,7 +1007,9 @@ class CodexAppServerChatSession:
                     idle_timeout_seconds=CHAT_TURN_IDLE_TIMEOUT_SECONDS,
                     server_request_handler=_handle_server_request,
                 )
-            except RuntimeError:
+            except RuntimeError as exc:
+                if isinstance(exc, PersistedThreadContinuityResetError):
+                    self._clear_thread_id()
                 self._close_unlocked()
                 raise
             for tool_call in tool_calls_by_id.values():

@@ -75,6 +75,9 @@ export interface ConversationSegmentResponse {
 export interface WorkflowEventResponse {
     message: string
     timestamp: string
+    kind?: string
+    error_code?: string
+    details?: Record<string, unknown>
 }
 
 export interface FlowRunRequestResponse {
@@ -363,9 +366,13 @@ function parseWorkflowEventResponse(value: unknown): WorkflowEventResponse | nul
     if (!record || typeof record.message !== 'string' || typeof record.timestamp !== 'string') {
         return null
     }
+    const details = asUnknownRecord(record.details)
     return {
         message: record.message,
         timestamp: record.timestamp,
+        kind: asOptionalString(record.kind),
+        error_code: asOptionalString(record.error_code),
+        details: details ?? undefined,
     }
 }
 

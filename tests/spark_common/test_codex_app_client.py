@@ -644,3 +644,39 @@ def test_shared_client_run_turn_surfaces_turn_start_error_message() -> None:
             },
             next_message=lambda wait: None,
         )
+
+
+def test_resume_thread_preserves_app_server_error_details() -> None:
+    client = CodexAppServerClient("/tmp/project")
+    client.send_request = lambda method, params, **kwargs: {  # type: ignore[method-assign]
+        "error": {
+            "code": -32001,
+            "message": "Persisted thread missing from runtime",
+        }
+    }
+
+    result = client.resume_thread("thread-stale", model="gpt-test")
+
+    assert result.thread_id is None
+    assert result.failure is not None
+    assert result.failure.to_dict() == {
+        "kind": "resume_failed",
+        "code": -32001,
+        "message": "Persisted thread missing from runtime",
+    }
+
+
+def test_resume_thread_distinguishes_missing_thread_id_from_resume_error() -> None:
+    client = CodexAppServerClient("/tmp/project")
+    client.send_request = lambda method, params, **kwargs: {  # type: ignore[method-assign]
+        "result": {
+            "thread": {},
+        }
+    }
+
+    result = client.resume_thread("thread-stale", model="gpt-test")
+
+    assert result.thread_id is None
+    assert result.failure is not None
+    assert result.failure.kind == "missing_thread_id"
+    assert result.failure.message == "codex app-server did not return a thread id for thread/resume"

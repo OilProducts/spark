@@ -127,6 +127,58 @@ describe('conversationsApi parsing', () => {
         })
     })
 
+    it('preserves continuity-reset workflow event fields from snapshots', () => {
+        const snapshot = parseConversationSnapshotResponse({
+            schema_version: 4,
+            conversation_id: 'conversation-plan',
+            conversation_handle: 'steady-harbor',
+            project_path: '/tmp/project-plan',
+            chat_mode: 'chat',
+            title: 'Planning thread',
+            created_at: '2026-04-16T18:00:00Z',
+            updated_at: '2026-04-16T18:00:10Z',
+            turns: [],
+            segments: [],
+            event_log: [
+                {
+                    message: 'Persisted thread thread-stale could not be resumed.',
+                    timestamp: '2026-04-16T18:00:08Z',
+                    kind: 'continuity_reset',
+                    error_code: 'continuity_reset',
+                    details: {
+                        persisted_thread_id: 'thread-stale',
+                        replacement_thread_started: false,
+                        resume_failure: {
+                            kind: 'resume_failed',
+                            code: -32001,
+                            message: 'Persisted thread missing from runtime',
+                        },
+                    },
+                },
+            ],
+            flow_run_requests: [],
+            flow_launches: [],
+        })
+
+        expect(snapshot.event_log).toEqual([
+            {
+                message: 'Persisted thread thread-stale could not be resumed.',
+                timestamp: '2026-04-16T18:00:08Z',
+                kind: 'continuity_reset',
+                error_code: 'continuity_reset',
+                details: {
+                    persisted_thread_id: 'thread-stale',
+                    replacement_thread_started: false,
+                    resume_failure: {
+                        kind: 'resume_failed',
+                        code: -32001,
+                        message: 'Persisted thread missing from runtime',
+                    },
+                },
+            },
+        ])
+    })
+
     it('parses proposed plan artifacts from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
             schema_version: 4,

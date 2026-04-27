@@ -124,6 +124,33 @@ class CodexAppServerTurnResult:
         return self.state.last_token_usage_payload
 
 
+@dataclass(frozen=True)
+class CodexAppServerThreadResumeFailure:
+    kind: str
+    code: Optional[int] = None
+    message: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "kind": self.kind,
+        }
+        if self.code is not None:
+            payload["code"] = self.code
+        if self.message is not None:
+            payload["message"] = self.message
+        return payload
+
+
+@dataclass(frozen=True)
+class CodexAppServerThreadResumeResult:
+    thread_id: Optional[str] = None
+    failure: Optional[CodexAppServerThreadResumeFailure] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.thread_id is not None
+
+
 class CodexAppServerClient:
     def __init__(
         self,
@@ -397,7 +424,7 @@ class CodexAppServerClient:
         cwd: Optional[str] = None,
         approval_policy: str = "never",
         read_line: Optional[Callable[[float], Optional[str]]] = None,
-    ) -> Optional[str]:
+    ) -> CodexAppServerThreadResumeResult:
         params: dict[str, Any] = {
             "threadId": thread_id,
             "cwd": cwd or self.working_dir,
@@ -408,9 +435,26 @@ class CodexAppServerClient:
             params["model"] = model
         response = self.send_request("thread/resume", params, read_line=read_line)
         if response.get("error"):
-            return None
+            error = response.get("error") or {}
+            code = error.get("code")
+            message = codex_app_protocol.as_non_empty_string(error.get("message"))
+            return CodexAppServerThreadResumeResult(
+                failure=CodexAppServerThreadResumeFailure(
+                    kind="resume_failed",
+                    code=code if isinstance(code, int) else None,
+                    message=message,
+                )
+            )
         thread = (response.get("result") or {}).get("thread") or {}
-        return codex_app_protocol.as_non_empty_string(thread.get("id"))
+        resumed_thread_id = codex_app_protocol.as_non_empty_string(thread.get("id"))
+        if resumed_thread_id:
+            return CodexAppServerThreadResumeResult(thread_id=resumed_thread_id)
+        return CodexAppServerThreadResumeResult(
+            failure=CodexAppServerThreadResumeFailure(
+                kind="missing_thread_id",
+                message="codex app-server did not return a thread id for thread/resume",
+            )
+        )
 
     def list_models(self) -> list[CodexModelMetadata]:
         response = self.send_request("model/list", {"limit": 100})

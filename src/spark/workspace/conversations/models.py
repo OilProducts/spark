@@ -131,6 +131,7 @@ class ConversationTurn:
     parent_turn_id: Optional[str] = None
     error: Optional[str] = None
     token_usage: Optional[dict[str, Any]] = None
+    error_code: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -149,6 +150,8 @@ class ConversationTurn:
             payload["error"] = self.error
         if isinstance(self.token_usage, dict):
             payload["token_usage"] = copy.deepcopy(self.token_usage)
+        if self.error_code:
+            payload["error_code"] = self.error_code
         return payload
 
     @classmethod
@@ -165,6 +168,7 @@ class ConversationTurn:
             parent_turn_id=str(payload.get("parent_turn_id")) if payload.get("parent_turn_id") is not None else None,
             error=str(payload.get("error")) if payload.get("error") is not None else None,
             token_usage=copy.deepcopy(token_usage) if isinstance(token_usage, dict) else None,
+            error_code=str(payload.get("error_code")) if payload.get("error_code") is not None else None,
         )
 
 
@@ -373,6 +377,7 @@ class ConversationSegment:
     content: str = ""
     completed_at: Optional[str] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
     artifact_id: Optional[str] = None
     phase: Optional[str] = None
     tool_call: Optional[ToolCallRecord] = None
@@ -396,6 +401,8 @@ class ConversationSegment:
             payload["completed_at"] = self.completed_at
         if self.error is not None:
             payload["error"] = self.error
+        if self.error_code is not None:
+            payload["error_code"] = self.error_code
         if self.artifact_id is not None:
             payload["artifact_id"] = self.artifact_id
         if self.phase is not None:
@@ -421,6 +428,7 @@ class ConversationSegment:
             content=str(payload.get("content", "")),
             completed_at=str(payload.get("completed_at")) if payload.get("completed_at") is not None else None,
             error=str(payload.get("error")) if payload.get("error") is not None else None,
+            error_code=str(payload.get("error_code")) if payload.get("error_code") is not None else None,
             artifact_id=str(payload.get("artifact_id")) if payload.get("artifact_id") is not None else None,
             phase=str(payload.get("phase")) if payload.get("phase") is not None else None,
             tool_call=ToolCallRecord.from_dict(payload.get("tool_call"))
@@ -439,18 +447,31 @@ class ConversationSegment:
 class WorkflowEvent:
     message: str
     timestamp: str
+    kind: Optional[str] = None
+    error_code: Optional[str] = None
+    details: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "message": self.message,
             "timestamp": self.timestamp,
         }
+        if self.kind is not None:
+            payload["kind"] = self.kind
+        if self.error_code is not None:
+            payload["error_code"] = self.error_code
+        if self.details is not None:
+            payload["details"] = dict(self.details)
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "WorkflowEvent":
         return cls(
             message=str(payload.get("message", "")),
             timestamp=str(payload.get("timestamp", "")),
+            kind=str(payload.get("kind")) if payload.get("kind") is not None else None,
+            error_code=str(payload.get("error_code")) if payload.get("error_code") is not None else None,
+            details=dict(payload.get("details")) if isinstance(payload.get("details"), dict) else None,
         )
 
 

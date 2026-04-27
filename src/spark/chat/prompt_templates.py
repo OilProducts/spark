@@ -169,7 +169,8 @@ def _validate_template_variables(template: str, key: str) -> None:
     if "recent_conversation" in placeholders:
         raise RuntimeError(
             f"Prompt template {key!r} uses deprecated placeholder "
-            "{{recent_conversation}}. Remove it from prompts.toml; Spark now relies on backend thread reuse for continuity."
+            "{{recent_conversation}}. Remove it from prompts.toml; Spark does not replay prior transcript text into prompts. "
+            "Continuity depends on backend thread reuse, and failed resume attempts are surfaced as continuity resets."
         )
     unsupported = placeholders - PROMPT_RUNTIME_VARIABLES_SET
     if unsupported:

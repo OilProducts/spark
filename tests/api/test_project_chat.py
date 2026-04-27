@@ -15,7 +15,11 @@ import spark.app as product_app
 import spark.chat.service as project_chat
 import spark.chat.session as project_chat_session
 import spark.workspace.attractor_client as attractor_client
-from spark_common.codex_app_client import CodexAppServerTurnResult
+from spark_common.codex_app_client import (
+    CodexAppServerThreadResumeFailure,
+    CodexAppServerThreadResumeResult,
+    CodexAppServerTurnResult,
+)
 import spark_common.codex_app_protocol as codex_app_protocol
 import spark_common.process_line_reader as process_line_reader
 from spark_common.turn_stream import TurnStreamEvent, TurnStreamSource
@@ -76,6 +80,8 @@ class StubChatClient:
         self.start_calls: list[dict[str, Any]] = []
         self.run_turn_calls: list[dict[str, Any]] = []
         self.resume_result: Optional[str] = None
+        self.resume_failure: CodexAppServerThreadResumeFailure | None = None
+        self.resume_raw_lines: list[tuple[str, str]] = []
         self.start_result: str = "thread-123"
         self.default_model_result: Optional[str] = "gpt-test"
         self.run_turn_handler: Optional[Callable[..., CodexAppServerTurnResult]] = None
@@ -102,7 +108,7 @@ class StubChatClient:
         model: str | None,
         cwd: str | None = None,
         approval_policy: str = "never",
-    ) -> Optional[str]:
+    ) -> CodexAppServerThreadResumeResult:
         self.resume_calls.append(
             {
                 "thread_id": thread_id,
@@ -111,7 +117,13 @@ class StubChatClient:
                 "approval_policy": approval_policy,
             }
         )
-        return self.resume_result
+        if self.raw_logger is not None:
+            for direction, line in self.resume_raw_lines:
+                self.raw_logger(direction, line)
+        return CodexAppServerThreadResumeResult(
+            thread_id=self.resume_result,
+            failure=self.resume_failure,
+        )
 
     def run_turn(self, **kwargs) -> CodexAppServerTurnResult:
         self.run_turn_calls.append(kwargs)
@@ -437,7 +449,10 @@ def test_project_chat_service_rejects_deprecated_recent_conversation_prompt_plac
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match=r"deprecated placeholder .*recent_conversation"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"recent_conversation.*does not replay prior transcript text into prompts.*continuity resets",
+    ):
         project_chat.ProjectChatService(tmp_path)
 
 
@@ -794,6 +809,26 @@ def test_conversation_state_rejects_unsupported_snapshot_shape() -> None:
         )
 
 
+def test_workflow_event_round_trips_structured_fields() -> None:
+    event = project_chat.WorkflowEvent(
+        message="Continuity reset: persisted thread could not be resumed.",
+        timestamp="2026-04-20T21:30:00Z",
+        kind="continuity_reset",
+        error_code=project_chat_session.CONTINUITY_RESET_ERROR_CODE,
+        details={
+            "persisted_thread_id": "thread-stale",
+            "replacement_thread_started": False,
+            "resume_failure": {
+                "kind": "resume_failed",
+                "code": -32001,
+                "message": "Persisted thread missing from runtime",
+            },
+        },
+    )
+
+    assert project_chat.WorkflowEvent.from_dict(event.to_dict()) == event
+
+
 def test_list_conversations_skips_invalid_local_state_files(tmp_path: Path) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     project_path = str(tmp_path.resolve())
@@ -971,7 +1006,7 @@ def test_chat_session_resumes_persisted_thread_before_starting(monkeypatch) -> N
     assert updated_thread_ids == ["thread-existing"]
 
 
-def test_chat_session_starts_new_durable_thread_when_resume_fails(monkeypatch) -> None:
+def test_chat_session_raises_continuity_reset_when_resume_fails(monkeypatch) -> None:
     updated_thread_ids: list[str] = []
     session = project_chat.CodexAppServerChatSession(
         "/tmp/project",
@@ -979,17 +1014,20 @@ def test_chat_session_starts_new_durable_thread_when_resume_fails(monkeypatch) -
         on_thread_id_updated=updated_thread_ids.append,
     )
     client = StubChatClient()
-    client.resume_result = None
-    client.start_result = "thread-fresh"
+    client.resume_failure = CodexAppServerThreadResumeFailure(
+        kind="resume_failed",
+        code=-32001,
+        message="Persisted thread missing from runtime",
+    )
     session._client = client
 
-    session._ensure_thread("gpt-test")
+    with pytest.raises(project_chat_session.PersistedThreadContinuityResetError, match="Continuity reset"):
+        session._ensure_thread("gpt-test")
 
     assert len(client.resume_calls) == 1
-    assert len(client.start_calls) == 1
-    assert client.start_calls[0]["ephemeral"] is False
-    assert session._thread_id == "thread-fresh"
-    assert updated_thread_ids == ["thread-fresh"]
+    assert client.start_calls == []
+    assert session._thread_id == "thread-stale"
+    assert updated_thread_ids == []
 
 
 def test_chat_session_reuses_initialized_thread_across_turns(monkeypatch) -> None:
@@ -1275,7 +1313,6 @@ def test_send_turn_marks_assistant_failed_after_timeout_without_retry(tmp_path: 
     assert assistant_segments[0].status == "failed"
     assert assistant_segments[0].content == "hi"
 
-
 def test_send_turn_marks_assistant_failed_after_non_runtime_exception(tmp_path: Path, monkeypatch) -> None:
     service = project_chat.ProjectChatService(tmp_path)
 
@@ -1305,7 +1342,7 @@ def test_send_turn_marks_assistant_failed_after_non_runtime_exception(tmp_path: 
     assert state.turns[-1].error == "provider exploded"
 
 
-def test_send_turn_starts_new_thread_cleanly_when_persisted_resume_fails(tmp_path: Path) -> None:
+def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(tmp_path: Path) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     conversation_id = "conversation-test"
     project_path = str(tmp_path.resolve())
@@ -1343,40 +1380,136 @@ def test_send_turn_starts_new_thread_cleanly_when_persisted_resume_fails(tmp_pat
 
     session = service._build_session(conversation_id, project_path)
     client = StubChatClient()
-    client.resume_result = None
+    client.resume_failure = CodexAppServerThreadResumeFailure(
+        kind="resume_failed",
+        code=-32001,
+        message="Persisted thread missing from runtime",
+    )
+    client.resume_raw_lines = [
+        (
+            "outgoing",
+            '{"jsonrpc":"2.0","id":1,"method":"thread/resume","params":{"threadId":"thread-stale"}}',
+        ),
+        (
+            "incoming",
+            '{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Persisted thread missing from runtime"}}',
+        ),
+    ]
+    session._client = client
+
+    with pytest.raises(project_chat_session.PersistedThreadContinuityResetError, match="Continuity reset"):
+        service.send_turn(conversation_id, project_path, "Latest message", None)
+
+    state = service._read_state(conversation_id, project_path)
+    assert state is not None
+    assert [turn.role for turn in state.turns] == ["user", "assistant", "user", "assistant"]
+    assert state.turns[-2].content == "Latest message"
+    assert state.turns[-1].role == "assistant"
+    assert state.turns[-1].status == "failed"
+    assert state.turns[-1].error_code == project_chat_session.CONTINUITY_RESET_ERROR_CODE
+    assert "thread-stale" in (state.turns[-1].error or "")
+    assert "Persisted thread missing from runtime" in (state.turns[-1].error or "")
+    assert len(client.resume_calls) == 1
+    assert client.resume_calls[0]["thread_id"] == "thread-stale"
+    assert client.start_calls == []
+    assert client.run_turn_calls == []
+    assert session._thread_id is None
+
+    session_payload = json.loads(
+        (ensure_project_paths(tmp_path, project_path).conversations_dir / conversation_id / "session.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "thread_id" not in session_payload
+
+    raw_log_path = ensure_project_paths(tmp_path, project_path).conversations_dir / conversation_id / "raw-log.jsonl"
+    raw_entries = [json.loads(line) for line in raw_log_path.read_text(encoding="utf-8").splitlines()]
+    assert [entry["direction"] for entry in raw_entries] == ["outgoing", "incoming"]
+    assert "thread/resume" in raw_entries[0]["line"]
+    assert "Persisted thread missing from runtime" in raw_entries[1]["line"]
+    assert "thread/start" not in "\n".join(entry["line"] for entry in raw_entries)
+    assert all(entry["direction"] in {"outgoing", "incoming"} for entry in raw_entries)
+
+    snapshot = service.get_snapshot(conversation_id, project_path)
+    continuity_events = [event for event in snapshot["event_log"] if event.get("kind") == "continuity_reset"]
+    assert len(continuity_events) == 1
+    continuity_event = continuity_events[0]
+    assert continuity_event["error_code"] == project_chat_session.CONTINUITY_RESET_ERROR_CODE
+    assert continuity_event["details"]["persisted_thread_id"] == "thread-stale"
+    assert continuity_event["details"]["replacement_thread_started"] is False
+    assert continuity_event["details"]["resume_failure"] == {
+        "kind": "resume_failed",
+        "code": -32001,
+        "message": "Persisted thread missing from runtime",
+    }
+    assert "thread-stale" in continuity_event["message"]
+
+
+def test_send_turn_starts_fresh_thread_on_next_explicit_message_after_continuity_reset(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    conversation_id = "conversation-test"
+    project_path = str(tmp_path.resolve())
+    service._write_state(
+        project_chat.ConversationState(
+            conversation_id=conversation_id,
+            project_path=project_path,
+        )
+    )
+    service._write_session_state(
+        project_chat.ConversationSessionState(
+            conversation_id=conversation_id,
+            updated_at="2026-03-08T12:02:00Z",
+            project_path=project_path,
+            runtime_project_path=project_path,
+            thread_id="thread-stale",
+        )
+    )
+
+    session = service._build_session(conversation_id, project_path)
+    client = StubChatClient()
+    client.resume_failure = CodexAppServerThreadResumeFailure(
+        kind="resume_failed",
+        code=-32001,
+        message="Persisted thread missing from runtime",
+    )
+    session._client = client
+
+    with pytest.raises(project_chat_session.PersistedThreadContinuityResetError):
+        service.send_turn(conversation_id, project_path, "First try", None)
+
+    client.resume_failure = None
     client.start_result = "thread-fresh"
-    captured_prompts: list[str] = []
 
     def run_turn(**kwargs) -> CodexAppServerTurnResult:
-        captured_prompts.append(kwargs["prompt"])
         kwargs["on_event"](
             TurnStreamEvent(
                 kind="content_completed",
                 channel="assistant",
                 source=TurnStreamSource(item_id="msg-1"),
-                content_delta="Ack",
+                content_delta="Recovered.",
                 phase="final_answer",
             )
         )
-        return _completed_turn_result(thread_id=kwargs["thread_id"], assistant_message="Ack")
+        return _completed_turn_result(
+            thread_id=kwargs["thread_id"],
+            assistant_message="Recovered.",
+        )
 
     client.run_turn_handler = run_turn
-    session._client = client
 
-    snapshot = service.send_turn(conversation_id, project_path, "Latest message", None)
+    snapshot = service.send_turn(conversation_id, project_path, "Retry after reset", None)
 
-    assert snapshot["turns"][-1]["role"] == "assistant"
     assert snapshot["turns"][-1]["status"] == "complete"
-    assert snapshot["turns"][-1]["content"] == "Ack"
-    assert len(client.resume_calls) == 1
-    assert client.resume_calls[0]["thread_id"] == "thread-stale"
+    assert snapshot["turns"][-1]["content"] == "Recovered."
+    assert [call["thread_id"] for call in client.resume_calls] == ["thread-stale"]
     assert len(client.start_calls) == 1
     assert client.start_calls[0]["ephemeral"] is False
-    assert session._thread_id == "thread-fresh"
-    assert len(captured_prompts) == 1
-    assert "Latest user message:\nLatest message" in captured_prompts[0]
-    assert "Older message" not in captured_prompts[0]
-    assert "Older reply" not in captured_prompts[0]
+    session_payload = json.loads(
+        (ensure_project_paths(tmp_path, project_path).conversations_dir / conversation_id / "session.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert session_payload["thread_id"] == "thread-fresh"
 
 
 def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch) -> None:

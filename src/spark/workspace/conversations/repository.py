@@ -391,6 +391,22 @@ class ProjectChatRepository:
             session_state.updated_at = iso_now()
             self.write_session_state(session_state)
 
+    def clear_session_thread(
+        self,
+        conversation_id: str,
+        project_path: str,
+    ) -> None:
+        normalized_project_path = normalize_project_path_value(project_path)
+        with self._lock:
+            session_state = self.read_session_state(conversation_id, normalized_project_path)
+            if session_state is None:
+                return
+            session_state.thread_id = None
+            session_state.project_path = normalized_project_path
+            session_state.runtime_project_path = resolve_runtime_workspace_path(normalized_project_path)
+            session_state.updated_at = iso_now()
+            self.write_session_state(session_state)
+
     def list_conversations(self, project_path: str) -> list[dict[str, Any]]:
         normalized_project_path = normalize_project_path_value(project_path)
         if not normalized_project_path:
@@ -490,6 +506,17 @@ class ProjectChatRepository:
 
     def append_event(self, state: ConversationState, message: str) -> None:
         state.event_log.append(WorkflowEvent(message=message, timestamp=iso_now()))
+
+    def append_workflow_event(self, state: ConversationState, event: WorkflowEvent) -> None:
+        state.event_log.append(
+            WorkflowEvent(
+                message=event.message,
+                timestamp=event.timestamp or iso_now(),
+                kind=event.kind,
+                error_code=event.error_code,
+                details=dict(event.details) if event.details is not None else None,
+            )
+        )
 
     def next_turn_segment_order(self, state: ConversationState, turn_id: str) -> int:
         max_order = 0

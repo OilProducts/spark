@@ -26,8 +26,10 @@ from spark.chat.response_parsing import (
     summarize_turns_for_debug as _summarize_turns_for_debug,
 )
 from spark.chat.session import (
+    CONTINUITY_RESET_ERROR_CODE,
     CodexAppServerChatSession,
     UnifiedAgentChatSession,
+    PersistedThreadContinuityResetError,
 )
 from spark.workspace.conversations.artifacts import ProjectChatReviewService
 from spark.workspace.conversations.models import (
@@ -45,6 +47,7 @@ from spark.workspace.conversations.models import (
     PreparedChatTurn,
     ProposedPlanArtifact,
     ToolCallRecord,
+    WorkflowEvent,
     normalize_chat_mode,
     TURN_KIND_MODE_CHANGE,
     validate_chat_mode,
@@ -337,6 +340,13 @@ class ProjectChatService:
     ) -> None:
         self._repository.persist_session_model(conversation_id, project_path, model, provider=provider)
 
+    def _clear_session_thread(
+        self,
+        conversation_id: str,
+        project_path: str,
+    ) -> None:
+        self._repository.clear_session_thread(conversation_id, project_path)
+
     async def publish_snapshot(self, conversation_id: str) -> None:
         snapshot = self.get_snapshot(conversation_id)
         await self._event_hub.publish(conversation_id, {"type": "conversation_snapshot", "state": snapshot})
@@ -403,6 +413,9 @@ class ProjectChatService:
 
     def _append_event(self, state: ConversationState, message: str) -> None:
         self._repository.append_event(state, message)
+
+    def _append_workflow_event(self, state: ConversationState, event: WorkflowEvent) -> None:
+        self._repository.append_workflow_event(state, event)
 
     def _next_turn_segment_order(self, state: ConversationState, turn_id: str) -> int:
         return self._repository.next_turn_segment_order(state, turn_id)
@@ -1016,6 +1029,8 @@ class ProjectChatService:
         project_path: str,
         assistant_turn: ConversationTurn,
         error_message: str,
+        *,
+        error_code: Optional[str] = None,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> None:
         with self._lock:
@@ -1027,6 +1042,7 @@ class ProjectChatService:
                 current_assistant_turn = ConversationTurn.from_dict(assistant_turn.to_dict())
             current_assistant_turn.status = "failed"
             current_assistant_turn.error = error_message
+            current_assistant_turn.error_code = error_code
             self._upsert_turn(current_state, current_assistant_turn)
             emitted_payloads: list[dict[str, Any]] = []
             for segment in current_state.segments:
@@ -1034,6 +1050,7 @@ class ProjectChatService:
                     continue
                 segment.status = "failed"
                 segment.error = error_message
+                segment.error_code = error_code
                 segment.updated_at = _iso_now()
                 segment.completed_at = segment.updated_at
                 self._upsert_segment(current_state, segment)
@@ -1049,6 +1066,8 @@ class ProjectChatService:
         self,
         prepared: PreparedChatTurn,
         error_message: str,
+        *,
+        error_code: Optional[str] = None,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> None:
         self._persist_assistant_turn_failure_for_turn(
@@ -1056,7 +1075,8 @@ class ProjectChatService:
             prepared.project_path,
             prepared.assistant_turn,
             error_message,
-            progress_callback,
+            error_code=error_code,
+            progress_callback=progress_callback,
         )
 
     def _execute_turn(
@@ -1247,6 +1267,49 @@ class ProjectChatService:
 
         try:
             turn_result = session_runner(persist_live_event, progress_callback)
+        except PersistedThreadContinuityResetError as exc:
+            self._clear_session_thread(conversation_id, project_path)
+            continuity_reset_payload = exc.to_debug_payload()
+            with self._lock:
+                current_state = self._read_state(conversation_id, project_path)
+                if current_state is not None:
+                    self._append_workflow_event(
+                        current_state,
+                        WorkflowEvent(
+                            message=str(exc),
+                            timestamp=_iso_now(),
+                            kind=str(continuity_reset_payload.get("event") or "continuity_reset"),
+                            error_code=(
+                                str(continuity_reset_payload.get("error_code"))
+                                if continuity_reset_payload.get("error_code") is not None
+                                else None
+                            ),
+                            details={
+                                key: value
+                                for key, value in continuity_reset_payload.items()
+                                if key not in {"event", "error_code"}
+                            },
+                        ),
+                    )
+                    self._touch_conversation_state(current_state)
+                    self._write_state(current_state)
+            _log_project_chat_debug(
+                "persisted continuity reset after failed thread resume",
+                conversation_id=conversation_id,
+                project_path=project_path,
+                persisted_thread_id=exc.persisted_thread_id,
+                resume_failure=exc.failure.to_dict(),
+            )
+            if persist_failure:
+                self._persist_assistant_turn_failure_for_turn(
+                    conversation_id,
+                    project_path,
+                    assistant_turn,
+                    str(exc),
+                    error_code=CONTINUITY_RESET_ERROR_CODE,
+                    progress_callback=progress_callback,
+                )
+            raise
         except Exception as exc:
             if persist_failure:
                 self._persist_assistant_turn_failure_for_turn(
@@ -1254,7 +1317,7 @@ class ProjectChatService:
                     project_path,
                     assistant_turn,
                     str(exc),
-                    progress_callback,
+                    progress_callback=progress_callback,
                 )
             raise
 
@@ -1341,7 +1404,7 @@ class ProjectChatService:
                     project_path,
                     assistant_turn,
                     str(failure),
-                    progress_callback,
+                    progress_callback=progress_callback,
                 )
             raise failure
         for payload in emitted_payloads:
