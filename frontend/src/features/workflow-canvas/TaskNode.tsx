@@ -27,7 +27,6 @@ import {
 } from './workflowNodeFrames'
 import { useCanvasSessionMode } from './canvasSessionContext'
 import { getDerivedPreviewMeta } from './derivedPreview'
-import { submitPipelineAnswer } from './services/pipelineAnswers'
 
 const BUILTIN_HANDLER_OPTIONS = [
     'start',
@@ -104,7 +103,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             : false
     ))
     const executionHumanGate = useStore((state) => state.humanGate)
-    const selectedRunId = useStore((state) => (isRunCanvas ? state.selectedRunId : null))
     const graphAttrs = useStore((state) => {
         if (isEditorCanvas) {
             return state.graphAttrs
@@ -868,36 +866,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     </div>
                 </div>
             </NodeToolbar>
-
-            {humanGate?.nodeId === id && isRunCanvas && (
-                <NodeToolbar isVisible position={Position.Bottom} className="nodrag nopan">
-                    <div className="mt-2 w-72 rounded-md border border-amber-200 bg-amber-50 p-3 shadow-lg">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">
-                            Human Input Required
-                        </div>
-                        <div className="mt-2 text-sm text-foreground">
-                            {humanGate.prompt || 'Select next route'}
-                        </div>
-                        <div className="mt-3 flex flex-col gap-2">
-                            {humanGate.options.map((option) => (
-                                <button
-                                    key={option.value}
-                                    onClick={() => {
-                                        if (!humanGate.runId) {
-                                            return
-                                        }
-                                        submitPipelineAnswer(humanGate.runId, humanGate.id, option.value).catch(console.error)
-                                    }}
-                                    disabled={!humanGate.runId || !selectedRunId}
-                                    className="rounded-md border border-amber-200 bg-white px-2 py-1 text-left text-xs font-medium text-amber-900 hover:bg-amber-100"
-                                >
-                                    {option.label}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                </NodeToolbar>
-            )}
         </div>
     )
 }

@@ -2467,7 +2467,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByText('Manager Actions')).toBeVisible()
   })
 
-  it('[CID:10.1.01] keeps pending human gates discoverable in runs and execution views', async () => {
+  it('[CID:10.1.01] keeps pending human gates answerable only from runs controls', async () => {
     const runId = 'run-contract-human-gate'
     const pendingPrompt = 'Approve production deploy?'
     const gateId = 'gate-1'
@@ -2610,8 +2610,9 @@ describe('Frontend contract behavior', () => {
     })
     render(<ExecutionControls />)
 
-    expect(screen.getByTestId('execution-pending-human-gate-banner')).toHaveTextContent('Pending human gate')
-    expect(screen.getByTestId('execution-pending-human-gate-banner')).toHaveTextContent(pendingPrompt)
+    expect(screen.queryByTestId('execution-pending-human-gate-banner')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('execution-pending-human-gate-view-run-button')).not.toBeInTheDocument()
+    expect(screen.queryByText(pendingPrompt)).not.toBeInTheDocument()
   })
 
   it('[CID:10.1.02] lets operator answer pending human gates from runs view controls', async () => {

@@ -167,7 +167,7 @@ Attractor-oriented surfaces include:
 - context view
 - run graph view
 - artifact inspection
-- human-question answering
+- runtime human-gate answering
 
 Execution owns:
 - flow selection for direct runs
@@ -184,6 +184,8 @@ Runs owns:
 - read-only progress
 - run journal
 - an `Advanced` disclosure for graph, checkpoint, context, and artifacts
+
+Runtime human gates are operated only from the Runs pinned pending-questions panel. Execution, run summary, run graph, and Run Journal may expose gate context such as blocked or waiting status, current node, pending question count, and audit history, but they must not duplicate answer controls.
 
 For selected-run inspection, Runs treats backend run-detail state as authoritative.
 The selected run summary, lifecycle badge, and detail surfaces must reconcile against `GET /pipelines/{id}` rather than relying on the runs list row or event-stream-local status.
@@ -404,8 +406,8 @@ Runs session restoration must preserve:
 - artifact and context inspection selection
 - pending freeform human-gate answers
 
-Runs is the canonical run-monitoring surface.
-Execution may show compact handoff notices for the currently selected run, such as a launch-success message or pending human-gate reminder, and may render a launch-planning graph card. It must not own the primary run journal, artifact, or question surfaces.
+Runs is the canonical run-monitoring surface and the only runtime human-gate operating surface.
+Execution may show compact launch handoff notices for the currently selected run, such as a launch-success message, and may render a launch-planning graph card. It must not own runtime human-gate reminders, answer controls, the primary run journal, artifact, or question surfaces.
 
 `Completed + failure outcome` is not a runtime failure surface.
 It should be presented as a completed workflow that reached a negative business conclusion, optionally with a reason code or reason message supplied by Attractor.

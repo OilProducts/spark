@@ -14,7 +14,6 @@ export function ExecutionSidebar() {
     const setExecutionFlow = useStore((state) => state.setExecutionFlow)
     const setExecutionContinuationFlowSourceMode = useStore((state) => state.setExecutionContinuationFlowSourceMode)
     const setExecutionContinuationStartNode = useStore((state) => state.setExecutionContinuationStartNode)
-    const humanGate = useStore((state) => state.humanGate)
     const isNarrowViewport = useNarrowViewport()
     const [flows, setFlows] = useState<string[]>([])
     const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
@@ -129,14 +128,6 @@ export function ExecutionSidebar() {
                     flows={flows}
                     selectedFlow={executionFlow}
                     onSelectFlow={handleSelectFlow}
-                    renderFlowIndicator={(flowName) => (
-                        humanGate?.flowName === flowName ? (
-                            <span
-                                className="h-2 w-2 rounded-full bg-amber-500"
-                                title="Needs human input"
-                            />
-                        ) : null
-                    )}
                 />
             </div>
         </nav>

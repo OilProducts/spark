@@ -55,8 +55,6 @@ export function ExecutionControls() {
     const graphAttrs = useStore((state) => state.executionGraphAttrs)
     const diagnostics = useStore((state) => state.executionDiagnostics)
     const hasValidationErrors = useStore((state) => state.executionHasValidationErrors)
-    const selectedRunId = useStore((state) => state.selectedRunId)
-    const humanGate = useStore((state) => state.humanGate)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const runsScopeMode = useStore((state) => state.runsListSession.scopeMode)
     const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
@@ -122,7 +120,6 @@ export function ExecutionControls() {
         ? Boolean(executionContinuation?.startNodeId) && !hasValidationErrors
         : Boolean(activeProjectPath) && Boolean(executionFlowName) && !hasValidationErrors
     const visibleDiagnostics = diagnostics.slice(0, 8)
-    const pendingHumanGatePrompt = humanGate && humanGate.runId === selectedRunId ? humanGate.prompt : null
     const selectedLlmProvider = typeof graphAttrs.ui_default_llm_provider === 'string'
         ? graphAttrs.ui_default_llm_provider
         : ''
@@ -325,36 +322,6 @@ export function ExecutionControls() {
                     </div>
                 </CardHeader>
                 <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden px-4">
-                    {pendingHumanGatePrompt ? (
-                        <div className="px-4 pb-1">
-                            <Alert
-                                data-testid="execution-pending-human-gate-banner"
-                                className="border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800"
-                            >
-                                <AlertDescription className="text-inherit">
-                                    <div className={`flex ${isNarrowViewport ? 'flex-col items-start gap-2' : 'items-center justify-between gap-3'}`}>
-                                        <div>
-                                            Pending human gate: <span className="font-medium">{pendingHumanGatePrompt}</span>
-                                        </div>
-                                        {selectedRunId ? (
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="xs"
-                                                data-testid="execution-pending-human-gate-view-run-button"
-                                                onClick={() => {
-                                                    setSelectedRunId(selectedRunId)
-                                                    setViewMode('runs')
-                                                }}
-                                            >
-                                                View run
-                                            </Button>
-                                        ) : null}
-                                    </div>
-                                </AlertDescription>
-                            </Alert>
-                        </div>
-                    ) : null}
                     {!executionFlowName && !isContinuationMode ? (
                         <div
                             data-testid="execution-no-flow-state"
