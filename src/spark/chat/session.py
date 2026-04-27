@@ -18,13 +18,13 @@ from agent.profiles.openai import OpenAIProviderProfile
 from agent.session import Session
 from agent.types import AssistantTurn, SessionConfig, SessionState, UserTurn
 from spark.workspace.conversations.models import (
-    ChatTurnLiveEvent,
     ChatTurnResult,
     RequestUserInputOption,
     RequestUserInputQuestion,
     RequestUserInputRecord,
     ToolCallRecord,
 )
+from spark_common.turn_stream import TurnStreamEvent, TurnStreamSource
 from spark.workspace.conversations.utils import (
     as_non_empty_string,
     normalize_project_path_value,
@@ -33,14 +33,14 @@ from spark_common.codex_app_client import (
     APP_SERVER_REQUEST_TIMEOUT_SECONDS,
     CodexAppServerClient,
 )
-from spark_common import codex_app_server
+from spark_common import codex_app_protocol
 from spark_common.codex_runtime import build_codex_runtime_environment
 from spark_common.runtime_path import resolve_runtime_workspace_path
 from unified_llm.client import Client as UnifiedLlmClient
 from unified_llm.models import get_latest_model, get_model_info
 
 
-CHAT_TURN_IDLE_TIMEOUT_SECONDS = codex_app_server.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS
+CHAT_TURN_IDLE_TIMEOUT_SECONDS = codex_app_protocol.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS
 
 
 def _normalize_provider(value: str | None) -> str:
@@ -91,7 +91,7 @@ def _tool_call_from_item(item: dict[str, Any]) -> Optional[ToolCallRecord]:
     item_type = str(item.get("type") or "").strip()
     item_id = as_non_empty_string(item.get("id")) or f"tool-{uuid.uuid4().hex}"
     if item_type == "commandExecution":
-        command = codex_app_server.extract_command_text(item)
+        command = codex_app_protocol.extract_command_text(item)
         raw_output = item.get("aggregatedOutput")
         if raw_output is None:
             raw_output = item.get("aggregated_output")
@@ -110,7 +110,7 @@ def _tool_call_from_item(item: dict[str, Any]) -> Optional[ToolCallRecord]:
             kind="file_change",
             status=_normalize_tool_call_status(item.get("status")),
             title="Apply file changes",
-            file_paths=codex_app_server.extract_file_paths(item),
+            file_paths=codex_app_protocol.extract_file_paths(item),
         )
     return None
 
@@ -177,6 +177,23 @@ def _request_user_input_response_payload(answers: dict[str, str]) -> dict[str, A
 def _token_usage_payload_from_unified_usage(usage: Any) -> Optional[dict[str, Any]]:
     if usage is None:
         return None
+    if isinstance(usage, dict):
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        cached_input_tokens = int(usage.get("cache_read_tokens", 0) or 0)
+        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        total_tokens = int(usage.get("total_tokens", 0) or 0)
+        if total_tokens <= 0:
+            total_tokens = input_tokens + output_tokens
+        if max(input_tokens, cached_input_tokens, output_tokens, total_tokens) <= 0:
+            return None
+        return {
+            "total": {
+                "inputTokens": max(0, input_tokens),
+                "cachedInputTokens": max(0, min(input_tokens, cached_input_tokens)),
+                "outputTokens": max(0, output_tokens),
+                "totalTokens": max(0, total_tokens),
+            }
+        }
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     cached_input_tokens = int(getattr(usage, "cache_read_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
@@ -315,8 +332,8 @@ class UnifiedAgentChatSession:
 
     def _emit_live_event(
         self,
-        callback: Optional[Callable[[ChatTurnLiveEvent], None]],
-        event: ChatTurnLiveEvent,
+        callback: Optional[Callable[[TurnStreamEvent], None]],
+        event: TurnStreamEvent,
     ) -> None:
         if callback is not None:
             callback(event)
@@ -325,25 +342,101 @@ class UnifiedAgentChatSession:
         self,
         event: SessionEvent,
         *,
-        on_event: Optional[Callable[[ChatTurnLiveEvent], None]],
+        on_event: Optional[Callable[[TurnStreamEvent], None]],
     ) -> None:
         if event.kind == EventKind.ASSISTANT_TEXT_DELTA:
             delta = str(event.data.get("delta", ""))
             if delta:
-                self._emit_live_event(on_event, ChatTurnLiveEvent(kind="assistant_delta", content_delta=delta))
+                self._emit_live_event(
+                    on_event,
+                    TurnStreamEvent(
+                        kind="content_delta",
+                        channel="assistant",
+                        content_delta=delta,
+                        source=TurnStreamSource(
+                            backend="agent_session",
+                            response_id=as_non_empty_string(event.data.get("response_id")),
+                            raw_kind=str(event.kind),
+                        ),
+                    ),
+                )
             return
         if event.kind == EventKind.ASSISTANT_TEXT_END:
             text = str(event.data.get("text", ""))
-            self._emit_live_event(on_event, ChatTurnLiveEvent(kind="assistant_completed", content_delta=text))
+            self._emit_live_event(
+                on_event,
+                TurnStreamEvent(
+                    kind="content_completed",
+                    channel="assistant",
+                    content_delta=text,
+                    source=TurnStreamSource(
+                        backend="agent_session",
+                        response_id=as_non_empty_string(event.data.get("response_id")),
+                        raw_kind=str(event.kind),
+                    ),
+                ),
+            )
+            return
+        if event.kind == EventKind.ASSISTANT_REASONING_DELTA:
+            delta = str(event.data.get("delta", ""))
+            if delta:
+                self._emit_live_event(
+                    on_event,
+                    TurnStreamEvent(
+                        kind="content_delta",
+                        channel="reasoning",
+                        content_delta=delta,
+                        source=TurnStreamSource(
+                            backend="agent_session",
+                            response_id=as_non_empty_string(event.data.get("response_id")),
+                            raw_kind=str(event.kind),
+                        ),
+                    ),
+                )
+            return
+        if event.kind == EventKind.ASSISTANT_REASONING_END:
+            text = str(event.data.get("text", "") or "")
+            if text:
+                self._emit_live_event(
+                    on_event,
+                    TurnStreamEvent(
+                        kind="content_completed",
+                        channel="reasoning",
+                        content_delta=text,
+                        source=TurnStreamSource(
+                            backend="agent_session",
+                            response_id=as_non_empty_string(event.data.get("response_id")),
+                            raw_kind=str(event.kind),
+                        ),
+                    ),
+                )
+            return
+        if event.kind == EventKind.MODEL_USAGE_UPDATE:
+            token_usage = _token_usage_payload_from_unified_usage(event.data.get("usage"))
+            if token_usage is not None:
+                self._emit_live_event(
+                    on_event,
+                    TurnStreamEvent(
+                        kind="token_usage_updated",
+                        token_usage=token_usage,
+                        source=TurnStreamSource(backend="agent_session", raw_kind=str(event.kind)),
+                    ),
+                )
+            return
+        if event.kind in {
+            EventKind.MODEL_TOOL_CALL_START,
+            EventKind.MODEL_TOOL_CALL_DELTA,
+            EventKind.MODEL_TOOL_CALL_END,
+        }:
             return
         if event.kind == EventKind.TOOL_CALL_START:
             tool_call = _tool_record_for_session_event(event, status="running")
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="tool_call_started",
-                    tool_call_id=tool_call.id,
                     tool_call=tool_call,
+                    source=TurnStreamSource(backend="agent_session", item_id=tool_call.id, raw_kind=str(event.kind)),
                 ),
             )
             return
@@ -352,17 +445,22 @@ class UnifiedAgentChatSession:
             tool_call = _tool_record_for_session_event(event, status=status)
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="tool_call_failed" if status == "failed" else "tool_call_completed",
-                    tool_call_id=tool_call.id,
                     tool_call=tool_call,
+                    source=TurnStreamSource(backend="agent_session", item_id=tool_call.id, raw_kind=str(event.kind)),
                 ),
             )
             return
         if event.kind == EventKind.ERROR:
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(kind="assistant_failed", message=str(event.data.get("error", ""))),
+                TurnStreamEvent(
+                    kind="error",
+                    message=str(event.data.get("error", "")),
+                    error=str(event.data.get("error", "")),
+                    source=TurnStreamSource(backend="agent_session", raw_kind=str(event.kind)),
+                ),
             )
 
     async def _submit_and_capture(
@@ -370,7 +468,7 @@ class UnifiedAgentChatSession:
         session: Session,
         prompt: str,
         *,
-        on_event: Optional[Callable[[ChatTurnLiveEvent], None]],
+        on_event: Optional[Callable[[TurnStreamEvent], None]],
     ) -> tuple[str, Optional[dict[str, Any]]]:
         task = asyncio.create_task(session.process_input(prompt))
         while True:
@@ -396,7 +494,7 @@ class UnifiedAgentChatSession:
         *,
         chat_mode: str = "chat",
         reasoning_effort: Optional[str] = None,
-        on_event: Optional[Callable[[ChatTurnLiveEvent], None]] = None,
+        on_event: Optional[Callable[[TurnStreamEvent], None]] = None,
     ) -> ChatTurnResult:
         del chat_mode
         with self._lock:
@@ -584,8 +682,8 @@ class CodexAppServerChatSession:
 
     def _emit_live_event(
         self,
-        callback: Optional[Callable[[ChatTurnLiveEvent], None]],
-        event: ChatTurnLiveEvent,
+        callback: Optional[Callable[[TurnStreamEvent], None]],
+        event: TurnStreamEvent,
     ) -> None:
         if callback is None:
             return
@@ -595,7 +693,7 @@ class CodexAppServerChatSession:
         self,
         message: dict[str, Any],
         *,
-        on_event: Optional[Callable[[ChatTurnLiveEvent], None]],
+        on_event: Optional[Callable[[TurnStreamEvent], None]],
         current_app_turn_id: Optional[str],
     ) -> dict[str, Any]:
         params = message.get("params") or {}
@@ -613,10 +711,14 @@ class CodexAppServerChatSession:
             }
         self._emit_live_event(
             on_event,
-            ChatTurnLiveEvent(
+            TurnStreamEvent(
                 kind="request_user_input_requested",
-                app_turn_id=current_app_turn_id,
-                item_id=request.request_id,
+                source=TurnStreamSource(
+                    backend="codex_app_server",
+                    app_turn_id=current_app_turn_id,
+                    item_id=request.request_id,
+                    raw_kind="request_user_input_requested",
+                ),
                 request_user_input=request,
             ),
         )
@@ -634,206 +736,172 @@ class CodexAppServerChatSession:
 
     def _forward_normalized_turn_event(
         self,
-        normalized_event: codex_app_server.CodexAppServerTurnEvent,
+        normalized_event: TurnStreamEvent,
         *,
-        on_event: Optional[Callable[[ChatTurnLiveEvent], None]],
+        on_event: Optional[Callable[[TurnStreamEvent], None]],
         tool_calls_by_id: dict[str, ToolCallRecord],
         current_app_turn_id: Optional[str],
     ) -> None:
-        if normalized_event.kind == "command_approval_requested":
-            payload = normalized_event.item or {}
-            item_id = normalized_event.item_id or f"tool-{uuid.uuid4().hex}"
+        source = TurnStreamSource(
+            backend=normalized_event.source.backend,
+            session_id=normalized_event.source.session_id,
+            app_turn_id=current_app_turn_id or normalized_event.source.app_turn_id,
+            item_id=normalized_event.source.item_id,
+            response_id=normalized_event.source.response_id,
+            summary_index=normalized_event.source.summary_index,
+            raw_kind=normalized_event.source.raw_kind,
+        )
+        if normalized_event.kind == "tool_call_started" and normalized_event.source.raw_kind == "command_approval_requested":
+            payload = normalized_event.tool_call or {}
+            item_id = normalized_event.source.item_id or f"tool-{uuid.uuid4().hex}"
             tool_call = ToolCallRecord(
                 id=item_id,
                 kind="command_execution",
                 status="running",
                 title="Run command",
-                command=normalized_event.text or codex_app_server.extract_command_text(payload),
+                command=normalized_event.content_delta or codex_app_protocol.extract_command_text(payload),
             )
             tool_calls_by_id[item_id] = tool_call
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="tool_call_started",
-                    tool_call_id=item_id,
                     tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
-                    app_turn_id=current_app_turn_id,
-                    item_id=item_id,
+                    source=source,
                 ),
             )
             return
-        if normalized_event.kind == "file_change_approval_requested":
-            payload = normalized_event.item or {}
-            item_id = normalized_event.item_id or f"tool-{uuid.uuid4().hex}"
+        if normalized_event.kind == "tool_call_started" and normalized_event.source.raw_kind == "file_change_approval_requested":
+            payload = normalized_event.tool_call or {}
+            item_id = normalized_event.source.item_id or f"tool-{uuid.uuid4().hex}"
             tool_call = ToolCallRecord(
                 id=item_id,
                 kind="file_change",
                 status="running",
                 title="Apply file changes",
-                file_paths=codex_app_server.extract_file_paths(payload),
+                file_paths=codex_app_protocol.extract_file_paths(payload),
             )
             tool_calls_by_id[item_id] = tool_call
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="tool_call_started",
-                    tool_call_id=item_id,
                     tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
-                    app_turn_id=current_app_turn_id,
-                    item_id=item_id,
+                    source=source,
                 ),
             )
             return
-        if normalized_event.kind == "assistant_delta" and normalized_event.text:
+        if normalized_event.kind == "content_delta" and normalized_event.content_delta:
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
-                    kind="assistant_delta",
-                    content_delta=normalized_event.text,
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id,
+                TurnStreamEvent(
+                    kind="content_delta",
+                    channel=normalized_event.channel,
+                    content_delta=normalized_event.content_delta,
+                    source=source,
                     phase=normalized_event.phase,
                 ),
             )
             return
-        if normalized_event.kind == "reasoning_delta" and normalized_event.text:
+        if normalized_event.kind == "content_completed" and normalized_event.content_delta:
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
-                    kind="reasoning_summary",
-                    content_delta=normalized_event.text,
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id,
-                    summary_index=normalized_event.summary_index,
-                ),
-            )
-            return
-        if normalized_event.kind == "plan_delta" and normalized_event.text:
-            self._emit_live_event(
-                on_event,
-                ChatTurnLiveEvent(
-                    kind="plan_delta",
-                    content_delta=normalized_event.text,
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id,
-                ),
-            )
-            return
-        if normalized_event.kind == "plan_completed" and normalized_event.text:
-            self._emit_live_event(
-                on_event,
-                ChatTurnLiveEvent(
-                    kind="plan_completed",
-                    content_delta=normalized_event.text,
-                    message="Plan item completed.",
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id,
+                TurnStreamEvent(
+                    kind="content_completed",
+                    channel=normalized_event.channel,
+                    content_delta=normalized_event.content_delta,
+                    message="Plan item completed." if normalized_event.channel == "plan" else "Assistant message completed.",
+                    source=source,
+                    phase=normalized_event.phase,
                 ),
             )
             return
         if normalized_event.kind == "context_compaction_started":
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="context_compaction_started",
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id,
+                    source=source,
                 ),
             )
             return
         if normalized_event.kind == "context_compaction_completed":
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="context_compaction_completed",
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id,
+                    source=source,
                 ),
             )
             return
-        if normalized_event.kind == "request_user_input_requested" and isinstance(normalized_event.item, dict):
-            request = _request_user_input_record_from_payload(normalized_event.item)
+        if normalized_event.kind == "request_user_input_requested" and isinstance(normalized_event.request_user_input, dict):
+            request = _request_user_input_record_from_payload(normalized_event.request_user_input)
             if request is None:
                 return
+            source.item_id = request.request_id
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="request_user_input_requested",
-                    app_turn_id=current_app_turn_id,
-                    item_id=request.request_id,
+                    source=source,
                     request_user_input=request,
                 ),
             )
             return
-        if normalized_event.kind == "assistant_message_completed" and normalized_event.text:
-            self._emit_live_event(
-                on_event,
-                ChatTurnLiveEvent(
-                    kind="assistant_completed",
-                    content_delta=normalized_event.text,
-                    message="Assistant message completed.",
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id,
-                    phase=normalized_event.phase,
-                ),
-            )
-            return
-        if normalized_event.kind == "tool_item_started" and isinstance(normalized_event.item, dict):
-            tool_call = _tool_call_from_item(normalized_event.item)
+        if normalized_event.kind == "tool_call_started" and isinstance(normalized_event.tool_call, dict):
+            tool_call = _tool_call_from_item(normalized_event.tool_call)
             if tool_call is None:
                 return
-            if normalized_event.item_id:
-                tool_calls_by_id[normalized_event.item_id] = tool_call
+            if normalized_event.source.item_id:
+                tool_calls_by_id[normalized_event.source.item_id] = tool_call
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="tool_call_started",
-                    tool_call_id=normalized_event.item_id or tool_call.id,
                     tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id,
+                    source=source,
                 ),
             )
             return
-        if normalized_event.kind == "tool_item_completed" and isinstance(normalized_event.item, dict):
-            tool_call = _tool_call_from_item(normalized_event.item)
+        if normalized_event.kind == "tool_call_completed" and isinstance(normalized_event.tool_call, dict):
+            tool_call = _tool_call_from_item(normalized_event.tool_call)
             if tool_call is None:
                 return
-            if normalized_event.item_id:
-                tool_calls_by_id[normalized_event.item_id] = tool_call
+            if normalized_event.source.item_id:
+                tool_calls_by_id[normalized_event.source.item_id] = tool_call
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="tool_call_failed" if tool_call.status == "failed" else "tool_call_completed",
-                    tool_call_id=normalized_event.item_id or tool_call.id,
                     tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id,
+                    source=source,
                 ),
             )
             return
-        if normalized_event.kind == "command_output_delta" and normalized_event.text:
-            tool_call = tool_calls_by_id.get(normalized_event.item_id or "")
+        if (
+            normalized_event.kind == "tool_call_updated"
+            and normalized_event.source.raw_kind == "command_output_delta"
+            and normalized_event.content_delta
+        ):
+            tool_call = tool_calls_by_id.get(normalized_event.source.item_id or "")
             if tool_call is None:
                 return
-            tool_call.output = codex_app_server.append_tool_output(tool_call.output, normalized_event.text)
+            tool_call.output = codex_app_protocol.append_tool_output(tool_call.output, normalized_event.content_delta)
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="tool_call_updated",
-                    tool_call_id=tool_call.id,
                     tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
-                    app_turn_id=current_app_turn_id,
-                    item_id=normalized_event.item_id or tool_call.id,
+                    source=source,
                 ),
             )
             return
         if normalized_event.kind == "token_usage_updated" and normalized_event.token_usage is not None:
             self._emit_live_event(
                 on_event,
-                ChatTurnLiveEvent(
+                TurnStreamEvent(
                     kind="token_usage_updated",
-                    app_turn_id=current_app_turn_id,
+                    source=source,
                     token_usage=copy.deepcopy(normalized_event.token_usage),
                 ),
             )
@@ -845,7 +913,7 @@ class CodexAppServerChatSession:
         *,
         chat_mode: str = "chat",
         reasoning_effort: Optional[str] = None,
-        on_event: Optional[Callable[[ChatTurnLiveEvent], None]] = None,
+        on_event: Optional[Callable[[TurnStreamEvent], None]] = None,
     ) -> ChatTurnResult:
         with self._lock:
             self._ensure_process()
@@ -868,7 +936,7 @@ class CodexAppServerChatSession:
                     current_app_turn_id=current_app_turn_id,
                 )
 
-            def _handle_normalized_event(normalized_event: codex_app_server.CodexAppServerTurnEvent) -> None:
+            def _handle_normalized_event(normalized_event: TurnStreamEvent) -> None:
                 self._forward_normalized_turn_event(
                     normalized_event,
                     on_event=on_event,
@@ -897,11 +965,15 @@ class CodexAppServerChatSession:
                     tool_call.status = "failed" if result.state.last_error else "completed"
                     self._emit_live_event(
                         on_event,
-                        ChatTurnLiveEvent(
+                        TurnStreamEvent(
                             kind="tool_call_failed" if result.state.last_error else "tool_call_completed",
-                            tool_call_id=tool_call.id,
                             tool_call=ToolCallRecord.from_dict(tool_call.to_dict()),
-                            app_turn_id=current_app_turn_id,
+                            source=TurnStreamSource(
+                                backend="codex_app_server",
+                                app_turn_id=current_app_turn_id,
+                                item_id=tool_call.id,
+                                raw_kind="running_tool_call_reconciled",
+                            ),
                         ),
                     )
             response_text = result.assistant_message or result.plan_message

@@ -83,8 +83,8 @@ Layer 1, agent data model and events:
 
 - `agent/types.py` defines `SessionConfig`, `SessionState`, `UserTurn`, `AssistantTurn`, `ToolResultsTurn`, `SystemTurn`, `SteeringTurn`, and related agent records using dataclasses/enums consistent with the existing SDK style. `SessionState` includes `IDLE`, `PROCESSING`, `AWAITING_INPUT`, and `CLOSED`; the waiting state is used only when a text-only assistant response is classified as an open-ended request for user input.
 - `agent/events.py` defines `EventKind`, `SessionEvent`, and an async event emitter or queue-backed event stream. It is the only layer responsible for delivering typed session events to hosts.
-- `EventKind` is the full public event surface from `REQ-003` and includes `SESSION_START`, `SESSION_END`, `USER_INPUT`, `PROCESSING_END`, `ASSISTANT_TEXT_START`, `ASSISTANT_TEXT_DELTA`, `ASSISTANT_TEXT_END`, `TOOL_CALL_START`, `TOOL_CALL_OUTPUT_DELTA`, `TOOL_CALL_END`, `STEERING_INJECTED`, `TURN_LIMIT`, `LOOP_DETECTION`, `WARNING`, and `ERROR`.
-- Agent events are distinct from SDK `StreamEvent` values. SDK stream events are consumed by the session loop and normalized into agent `SessionEvent` values for host observation.
+- `EventKind` is the full public event surface from `REQ-003` and includes `SESSION_START`, `SESSION_END`, `USER_INPUT`, `PROCESSING_END`, `ASSISTANT_TEXT_START`, `ASSISTANT_TEXT_DELTA`, `ASSISTANT_TEXT_END`, `ASSISTANT_REASONING_START`, `ASSISTANT_REASONING_DELTA`, `ASSISTANT_REASONING_END`, `MODEL_TOOL_CALL_START`, `MODEL_TOOL_CALL_DELTA`, `MODEL_TOOL_CALL_END`, `MODEL_USAGE_UPDATE`, `TOOL_CALL_START`, `TOOL_CALL_OUTPUT_DELTA`, `TOOL_CALL_END`, `STEERING_INJECTED`, `TURN_LIMIT`, `LOOP_DETECTION`, `WARNING`, and `ERROR`.
+- Agent events are distinct from SDK `StreamEvent` values. SDK stream events are consumed by the session loop and normalized into agent `SessionEvent` values for host observation. Model-proposed tool-call stream events use `MODEL_TOOL_CALL_*`; actual executed tools use `TOOL_CALL_*`.
 
 Layer 2, execution environments:
 
@@ -121,7 +121,7 @@ The stable import surface is the top-level `agent` package, layered on the
 existing `unified_llm` SDK package. `src/agent/__init__.py` should re-export:
 
 - Session API: `Session`, `SessionConfig`, `SessionState`, turn records, `create_session` if a small factory proves useful.
-- Events: `EventKind`, `SessionEvent`, and the public event stream interface. `EventKind` exports every host-visible kind required by the spec: `SESSION_START`, `SESSION_END`, `USER_INPUT`, `PROCESSING_END`, `ASSISTANT_TEXT_START`, `ASSISTANT_TEXT_DELTA`, `ASSISTANT_TEXT_END`, `TOOL_CALL_START`, `TOOL_CALL_OUTPUT_DELTA`, `TOOL_CALL_END`, `STEERING_INJECTED`, `TURN_LIMIT`, `LOOP_DETECTION`, `WARNING`, and `ERROR`.
+- Events: `EventKind`, `SessionEvent`, and the public event stream interface. `EventKind` exports every host-visible kind required by the spec: `SESSION_START`, `SESSION_END`, `USER_INPUT`, `PROCESSING_END`, `ASSISTANT_TEXT_START`, `ASSISTANT_TEXT_DELTA`, `ASSISTANT_TEXT_END`, `ASSISTANT_REASONING_START`, `ASSISTANT_REASONING_DELTA`, `ASSISTANT_REASONING_END`, `MODEL_TOOL_CALL_START`, `MODEL_TOOL_CALL_DELTA`, `MODEL_TOOL_CALL_END`, `MODEL_USAGE_UPDATE`, `TOOL_CALL_START`, `TOOL_CALL_OUTPUT_DELTA`, `TOOL_CALL_END`, `STEERING_INJECTED`, `TURN_LIMIT`, `LOOP_DETECTION`, `WARNING`, and `ERROR`.
 - Profiles: `ProviderProfile`, `create_openai_profile`, `create_anthropic_profile`, `create_gemini_profile`.
 - Environments: `ExecutionEnvironment`, `LocalExecutionEnvironment`, `ExecResult`, `DirEntry`, `GrepOptions`, and environment inheritance policy types.
 - Tools: `ToolDefinition`, `RegisteredTool`, `ToolRegistry`, tool execution helpers that are intentionally public, and built-in tool registration functions.

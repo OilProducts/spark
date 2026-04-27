@@ -952,10 +952,31 @@ def _assert_events(
         }
         index += 1
 
+        model_tool_events = []
+        while events[index].kind in {
+            agent.EventKind.MODEL_TOOL_CALL_START,
+            agent.EventKind.MODEL_TOOL_CALL_DELTA,
+            agent.EventKind.MODEL_TOOL_CALL_END,
+        }:
+            model_tool_events.append(events[index])
+            index += 1
+        if model_tool_events:
+            assert [
+                event.data["tool_call"]["id"]
+                for event in model_tool_events
+                if event.kind == agent.EventKind.MODEL_TOOL_CALL_START
+            ] == [tool_call.id for tool_call in turn.tool_calls]
+            assert [
+                event.data["tool_call"]["id"]
+                for event in model_tool_events
+                if event.kind == agent.EventKind.MODEL_TOOL_CALL_END
+            ] == [tool_call.id for tool_call in turn.tool_calls]
+
         assert events[index].kind == agent.EventKind.ASSISTANT_TEXT_END
         assert events[index].data == {
             "text": turn.text,
             "reasoning": None,
+            "response_id": turn.response_id,
         }
         index += 1
 
@@ -979,6 +1000,19 @@ def _assert_events(
     assert events[index].data == {"state": "idle"}
     index += 1
     assert index == len(events)
+
+
+def _without_model_tool_events(events: list[agent.SessionEvent]) -> list[agent.SessionEvent]:
+    return [
+        event
+        for event in events
+        if event.kind
+        not in {
+            agent.EventKind.MODEL_TOOL_CALL_START,
+            agent.EventKind.MODEL_TOOL_CALL_DELTA,
+            agent.EventKind.MODEL_TOOL_CALL_END,
+        }
+    ]
 
 
 def _assert_file_tree(
@@ -1590,7 +1624,8 @@ async def _run_parallel_tool_call_parity_case(
         asyncio.gather(first_started.wait(), second_started.wait()),
         timeout=1,
     )
-    assert [event.kind for event in events] == [
+    non_model_events = _without_model_tool_events(events)
+    assert [event.kind for event in non_model_events] == [
         agent.EventKind.SESSION_START,
         agent.EventKind.USER_INPUT,
         agent.EventKind.ASSISTANT_TEXT_START,
@@ -1599,18 +1634,19 @@ async def _run_parallel_tool_call_parity_case(
         agent.EventKind.TOOL_CALL_START,
         agent.EventKind.TOOL_CALL_START,
     ]
-    assert [event.data["tool_call_id"] for event in events[-2:]] == [
+    assert [event.data["tool_call_id"] for event in non_model_events[-2:]] == [
         "call-1",
         "call-2",
     ]
-    assert events[2].data == {"response_id": "resp-1"}
-    assert events[3].data == {
+    assert non_model_events[2].data == {"response_id": "resp-1"}
+    assert non_model_events[3].data == {
         "response_id": "resp-1",
         "delta": "Writing both files in parallel.",
     }
-    assert events[4].data == {
+    assert non_model_events[4].data == {
         "text": "Writing both files in parallel.",
         "reasoning": None,
+        "response_id": "resp-1",
     }
 
     release_second.set()
@@ -1642,7 +1678,16 @@ async def _run_parallel_tool_call_parity_case(
     await asyncio.wait_for(processing_task, timeout=1)
 
     assert session.state == agent.SessionState.IDLE
-    assert [event.kind for event in events] == [
+    model_tool_starts = [event for event in events if event.kind == agent.EventKind.MODEL_TOOL_CALL_START]
+    model_tool_ends = [event for event in events if event.kind == agent.EventKind.MODEL_TOOL_CALL_END]
+    if client_mode == "stream":
+        assert [event.data["tool_call"]["id"] for event in model_tool_starts] == ["call-1", "call-2"]
+        assert [event.data["tool_call"]["id"] for event in model_tool_ends] == ["call-1", "call-2"]
+    else:
+        assert model_tool_starts == []
+        assert model_tool_ends == []
+    non_model_events = _without_model_tool_events(events)
+    assert [event.kind for event in non_model_events] == [
         agent.EventKind.SESSION_START,
         agent.EventKind.USER_INPUT,
         agent.EventKind.ASSISTANT_TEXT_START,
@@ -1657,16 +1702,17 @@ async def _run_parallel_tool_call_parity_case(
         agent.EventKind.ASSISTANT_TEXT_END,
         agent.EventKind.PROCESSING_END,
     ]
-    assert events[9].data == {"response_id": "resp-2"}
-    assert events[10].data == {
+    assert non_model_events[9].data == {"response_id": "resp-2"}
+    assert non_model_events[10].data == {
         "response_id": "resp-2",
         "delta": "Both files were written.",
     }
-    assert events[11].data == {
+    assert non_model_events[11].data == {
         "text": "Both files were written.",
         "reasoning": None,
+        "response_id": "resp-2",
     }
-    assert events[12].data == {"state": "idle"}
+    assert non_model_events[12].data == {"state": "idle"}
     assert len(client.requests) == 2
     for request in client.requests:
         _assert_provider_request_shape(request, provider_case=provider_case)
@@ -1802,7 +1848,8 @@ async def test_cross_provider_parity_steering_mid_task(
     _assert_provider_request_shape(client.requests[0], provider_case=provider_case)
     _assert_provider_request_shape(client.requests[1], provider_case=provider_case)
     _assert_request_history_prefixes(client.requests, session.history, (1, 4))
-    assert [event.kind for event in events] == [
+    non_model_events = _without_model_tool_events(events)
+    assert [event.kind for event in non_model_events] == [
         agent.EventKind.USER_INPUT,
         agent.EventKind.ASSISTANT_TEXT_START,
         agent.EventKind.ASSISTANT_TEXT_DELTA,
@@ -1815,9 +1862,9 @@ async def test_cross_provider_parity_steering_mid_task(
         agent.EventKind.ASSISTANT_TEXT_END,
         agent.EventKind.PROCESSING_END,
     ]
-    assert events[0].data == {"content": "Create hello.txt and steer mid-task."}
-    assert events[6].data == {"content": steering_message}
-    assert events[10].data == {"state": "idle"}
+    assert non_model_events[0].data == {"content": "Create hello.txt and steer mid-task."}
+    assert non_model_events[6].data == {"content": steering_message}
+    assert non_model_events[10].data == {"state": "idle"}
     assert isinstance(session.history[0], agent.UserTurn)
     assert session.history[0].text == "Create hello.txt and steer mid-task."
     assert isinstance(session.history[1], agent.AssistantTurn)
@@ -1831,7 +1878,7 @@ async def test_cross_provider_parity_steering_mid_task(
     assert session.history[3].text == steering_message
     assert isinstance(session.history[4], agent.AssistantTurn)
     assert session.history[4].text == "The steering note was applied."
-    _assert_event_tool_result(events[5].data["output"], write_call)
+    _assert_event_tool_result(non_model_events[5].data["output"], write_call)
     _assert_file_tree(tmp_path, environment, (("hello.txt", file_content),))
 
 
@@ -2033,7 +2080,8 @@ async def test_cross_provider_parity_loop_detection(
     for request in client.requests:
         _assert_provider_request_shape(request, provider_case=provider_case)
     _assert_request_history_prefixes(client.requests, session.history, (1, 3, 6))
-    assert [event.kind for event in events] == [
+    non_model_events = _without_model_tool_events(events)
+    assert [event.kind for event in non_model_events] == [
         agent.EventKind.USER_INPUT,
         agent.EventKind.ASSISTANT_TEXT_START,
         agent.EventKind.ASSISTANT_TEXT_DELTA,
@@ -2051,7 +2099,7 @@ async def test_cross_provider_parity_loop_detection(
         agent.EventKind.ASSISTANT_TEXT_END,
         agent.EventKind.PROCESSING_END,
     ]
-    assert events[11].data == {"message": agent.LOOP_DETECTION_WARNING}
+    assert non_model_events[11].data == {"message": agent.LOOP_DETECTION_WARNING}
     assert isinstance(session.history[5], agent.SteeringTurn)
     assert session.history[5].text == agent.LOOP_DETECTION_WARNING
     assert isinstance(session.history[6], agent.AssistantTurn)

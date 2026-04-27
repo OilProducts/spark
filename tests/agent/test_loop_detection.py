@@ -281,7 +281,7 @@ async def test_session_emits_loop_detection_warning_when_enabled() -> None:
     }
     first_assistant_end = await _next_event(stream)
     assert first_assistant_end.kind == agent.EventKind.ASSISTANT_TEXT_END
-    assert first_assistant_end.data == {"text": "Need tool", "reasoning": None}
+    assert first_assistant_end.data == {"text": "Need tool", "reasoning": None, "response_id": "resp-1"}
     first_tool_start = await _next_event(stream)
     assert first_tool_start.kind == agent.EventKind.TOOL_CALL_START
     assert first_tool_start.data == {"tool_call_id": "call-1", "tool_name": "lookup"}
@@ -307,6 +307,7 @@ async def test_session_emits_loop_detection_warning_when_enabled() -> None:
     assert second_assistant_end.data == {
         "text": "Need tool again",
         "reasoning": None,
+        "response_id": "resp-2",
     }
     second_tool_start = await _next_event(stream)
     assert second_tool_start.kind == agent.EventKind.TOOL_CALL_START
@@ -334,7 +335,7 @@ async def test_session_emits_loop_detection_warning_when_enabled() -> None:
     }
     final_assistant_end = await _next_event(stream)
     assert final_assistant_end.kind == agent.EventKind.ASSISTANT_TEXT_END
-    assert final_assistant_end.data == {"text": "All done", "reasoning": None}
+    assert final_assistant_end.data == {"text": "All done", "reasoning": None, "response_id": "resp-3"}
     processing_end_event = await _next_event(stream)
     assert processing_end_event.kind == agent.EventKind.PROCESSING_END
     assert processing_end_event.data == {"state": "idle"}

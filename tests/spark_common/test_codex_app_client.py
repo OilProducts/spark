@@ -6,7 +6,13 @@ import json
 import pytest
 
 from spark_common.codex_app_client import CodexAppServerClient
-import spark_common.codex_app_server as codex_app_server
+import spark_common.codex_app_protocol as codex_app_protocol
+from spark_common.turn_stream import TurnStreamEvent
+
+
+def test_turn_stream_content_events_require_channel() -> None:
+    with pytest.raises(ValueError, match="must set channel"):
+        TurnStreamEvent(kind="content_delta", content_delta="Ack")
 
 
 def test_shared_client_ensure_process_initializes_with_experimental_api_opt_in() -> None:
@@ -87,13 +93,14 @@ def test_shared_client_wait_for_response_auto_approves_requests_and_queues_norma
         "result": {"decision": "acceptForSession"},
     }
     queued_message = client.pending_messages.popleft()
-    events = codex_app_server.process_turn_message(
+    events = codex_app_protocol.process_turn_message(
         queued_message,
-        codex_app_server.CodexAppServerTurnState(),
+        codex_app_protocol.CodexAppServerTurnState(),
     )
     assert len(events) == 1
-    assert events[0].kind == "command_approval_requested"
-    assert events[0].text == "git status"
+    assert events[0].kind == "tool_call_started"
+    assert events[0].source.raw_kind == "command_approval_requested"
+    assert events[0].content_delta == "git status"
     assert rpc_log == [
         ("incoming", '{"jsonrpc":"2.0","id":2,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-1","command":["git","status"]}}'),
         ("outgoing", '{"jsonrpc": "2.0", "id": 2, "result": {"decision": "acceptForSession"}}'),
@@ -111,7 +118,7 @@ def test_shared_client_run_turn_drains_notifications_queued_during_turn_start_re
             '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-123","status":"completed"}}}',
         ]
     )
-    emitted_events: list[codex_app_server.CodexAppServerTurnEvent] = []
+    emitted_events: list[TurnStreamEvent] = []
 
     class DummyStdin:
         def write(self, text: str) -> None:
@@ -138,8 +145,8 @@ def test_shared_client_run_turn_drains_notifications_queued_during_turn_start_re
 
     assert result.assistant_message == "Ack"
     assert [event.kind for event in emitted_events] == [
-        "assistant_delta",
-        "assistant_message_completed",
+        "content_delta",
+        "content_completed",
         "turn_completed",
     ]
     assert not client.pending_messages
@@ -500,7 +507,7 @@ def test_shared_client_run_turn_tracks_plan_items_without_assistant_message() ->
             '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-123","status":"completed"}}}',
         ]
     )
-    emitted_events: list[codex_app_server.CodexAppServerTurnEvent] = []
+    emitted_events: list[TurnStreamEvent] = []
 
     class DummyStdin:
         def write(self, text: str) -> None:
@@ -528,8 +535,8 @@ def test_shared_client_run_turn_tracks_plan_items_without_assistant_message() ->
     assert result.assistant_message == ""
     assert result.plan_message == "1. Patch the real path.\n2. Add the regression."
     assert [event.kind for event in emitted_events] == [
-        "plan_delta",
-        "plan_completed",
+        "content_delta",
+        "content_completed",
         "turn_completed",
     ]
 
@@ -545,7 +552,7 @@ def test_shared_client_run_turn_ignores_non_matching_turn_completed() -> None:
             '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-123","status":"completed"}}}',
         ]
     )
-    emitted_events: list[codex_app_server.CodexAppServerTurnEvent] = []
+    emitted_events: list[TurnStreamEvent] = []
 
     class DummyStdin:
         def write(self, text: str) -> None:
@@ -572,8 +579,8 @@ def test_shared_client_run_turn_ignores_non_matching_turn_completed() -> None:
 
     assert result.assistant_message == "Ack"
     assert [event.kind for event in emitted_events] == [
-        "assistant_delta",
-        "assistant_message_completed",
+        "content_delta",
+        "content_completed",
         "turn_completed",
     ]
 

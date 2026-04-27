@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from spark_common.turn_stream import TurnStreamEvent, TurnStreamSource
+
 
 APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS = 300.0
 
@@ -164,19 +166,6 @@ def is_context_compaction_item(item: dict[str, Any]) -> bool:
 
 
 @dataclass
-class CodexAppServerTurnEvent:
-    kind: str
-    text: Optional[str] = None
-    item: Optional[dict[str, Any]] = None
-    item_id: Optional[str] = None
-    summary_index: Optional[int] = None
-    phase: Optional[str] = None
-    status: Optional[str] = None
-    error: Optional[str] = None
-    token_usage: Optional[dict[str, Any]] = None
-
-
-@dataclass
 class CodexAppServerTurnState:
     agent_chunks: list[str] = field(default_factory=list)
     plan_chunks: list[str] = field(default_factory=list)
@@ -203,12 +192,51 @@ class CodexAppServerTurnState:
         return "".join(self.command_chunks).strip()
 
 
-def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState) -> list[CodexAppServerTurnEvent]:
+def _source(raw_kind: str, *, item_id: Optional[str] = None, summary_index: Optional[int] = None) -> TurnStreamSource:
+    return TurnStreamSource(
+        backend="codex_app_server",
+        item_id=item_id,
+        summary_index=summary_index,
+        raw_kind=raw_kind,
+    )
+
+
+def _event(
+    kind: str,
+    *,
+    raw_kind: str,
+    channel: Optional[str] = None,
+    content_delta: Optional[str] = None,
+    item: Optional[dict[str, Any]] = None,
+    request_user_input: Optional[dict[str, Any]] = None,
+    item_id: Optional[str] = None,
+    summary_index: Optional[int] = None,
+    phase: Optional[str] = None,
+    status: Optional[str] = None,
+    error: Optional[str] = None,
+    token_usage: Optional[dict[str, Any]] = None,
+) -> TurnStreamEvent:
+    return TurnStreamEvent(
+        kind=kind,
+        channel=channel,
+        content_delta=content_delta,
+        message=content_delta,
+        tool_call=copy.deepcopy(item) if item is not None else None,
+        request_user_input=copy.deepcopy(request_user_input) if request_user_input is not None else None,
+        source=_source(raw_kind, item_id=item_id, summary_index=summary_index),
+        phase=phase,
+        status=status,
+        error=error,
+        token_usage=token_usage,
+    )
+
+
+def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState) -> list[TurnStreamEvent]:
     method = message.get("method")
     if not method:
         return []
     params = message.get("params") or {}
-    events: list[CodexAppServerTurnEvent] = []
+    events: list[TurnStreamEvent] = []
 
     def remember_agent_message_phase(item: dict[str, Any]) -> Optional[str]:
         item_type = str(item.get("type") or "").strip().lower()
@@ -223,9 +251,10 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
     if method == "item/commandExecution/requestApproval":
         if isinstance(params, dict):
             events.append(
-                CodexAppServerTurnEvent(
-                    kind="command_approval_requested",
-                    text=extract_command_text(params),
+                _event(
+                    "tool_call_started",
+                    raw_kind="command_approval_requested",
+                    content_delta=extract_command_text(params),
                     item=dict(params),
                     item_id=as_non_empty_string(params.get("itemId")),
                 )
@@ -235,8 +264,9 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
     if method == "item/fileChange/requestApproval":
         if isinstance(params, dict):
             events.append(
-                CodexAppServerTurnEvent(
-                    kind="file_change_approval_requested",
+                _event(
+                    "tool_call_started",
+                    raw_kind="file_change_approval_requested",
                     item=dict(params),
                     item_id=as_non_empty_string(params.get("itemId")),
                 )
@@ -246,9 +276,10 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
     if method == "item/tool/requestUserInput":
         if isinstance(params, dict):
             events.append(
-                CodexAppServerTurnEvent(
-                    kind="request_user_input_requested",
-                    item=dict(params),
+                _event(
+                    "request_user_input_requested",
+                    raw_kind="request_user_input_requested",
+                    request_user_input=dict(params),
                     item_id=as_non_empty_string(params.get("itemId")),
                 )
             )
@@ -260,8 +291,9 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
             remember_agent_message_phase(item)
             if is_context_compaction_item(item):
                 events.append(
-                    CodexAppServerTurnEvent(
-                        kind="context_compaction_started",
+                    _event(
+                        "context_compaction_started",
+                        raw_kind="context_compaction_started",
                         item=item,
                         item_id=as_non_empty_string(item.get("id")),
                     )
@@ -269,8 +301,9 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
                 return events
             if is_tool_item(item):
                 events.append(
-                    CodexAppServerTurnEvent(
-                        kind="tool_item_started",
+                    _event(
+                        "tool_call_started",
+                        raw_kind="tool_item_started",
                         item=item,
                         item_id=as_non_empty_string(item.get("id")),
                     )
@@ -286,9 +319,11 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
                 phase = remember_agent_message_phase(item) or extract_agent_message_phase(item)
                 state.final_agent_message = agent_message_text
                 events.append(
-                    CodexAppServerTurnEvent(
-                        kind="assistant_message_completed",
-                        text=agent_message_text,
+                    _event(
+                        "content_completed",
+                        raw_kind="assistant_message_completed",
+                        channel="assistant",
+                        content_delta=agent_message_text,
                         item=item,
                         item_id=item_id,
                         phase=phase,
@@ -299,9 +334,11 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
             if plan_text:
                 state.final_plan_message = plan_text
                 events.append(
-                    CodexAppServerTurnEvent(
-                        kind="plan_completed",
-                        text=plan_text,
+                    _event(
+                        "content_completed",
+                        raw_kind="plan_completed",
+                        channel="plan",
+                        content_delta=plan_text,
                         item=item,
                         item_id=item_id,
                     )
@@ -309,8 +346,9 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
                 return events
             if is_context_compaction_item(item):
                 events.append(
-                    CodexAppServerTurnEvent(
-                        kind="context_compaction_completed",
+                    _event(
+                        "context_compaction_completed",
+                        raw_kind="context_compaction_completed",
                         item=item,
                         item_id=item_id,
                     )
@@ -318,8 +356,9 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
                 return events
             if is_tool_item(item):
                 events.append(
-                    CodexAppServerTurnEvent(
-                        kind="tool_item_completed",
+                    _event(
+                        "tool_call_completed",
+                        raw_kind="tool_item_completed",
                         item=item,
                         item_id=as_non_empty_string(item.get("id")),
                     )
@@ -332,9 +371,11 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
             state.agent_chunks.append(str(delta))
             item_id = as_non_empty_string(params.get("itemId"))
             events.append(
-                CodexAppServerTurnEvent(
-                    kind="assistant_delta",
-                    text=str(delta),
+                _event(
+                    "content_delta",
+                    raw_kind="assistant_delta",
+                    channel="assistant",
+                    content_delta=str(delta),
                     item_id=item_id,
                     phase=state.agent_message_phases.get(item_id or ""),
                 )
@@ -346,9 +387,11 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
         if delta:
             state.plan_chunks.append(str(delta))
             events.append(
-                CodexAppServerTurnEvent(
-                    kind="plan_delta",
-                    text=str(delta),
+                _event(
+                    "content_delta",
+                    raw_kind="plan_delta",
+                    channel="plan",
+                    content_delta=str(delta),
                     item_id=as_non_empty_string(params.get("itemId")),
                 )
             )
@@ -362,9 +405,11 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
             normalized_summary_index = int(summary_index) if isinstance(summary_index, int) else None
             state.reasoning_summary_buffer = f"{state.reasoning_summary_buffer}{delta}"
             events.append(
-                CodexAppServerTurnEvent(
-                    kind="reasoning_delta",
-                    text=str(delta),
+                _event(
+                    "content_delta",
+                    raw_kind="reasoning_delta",
+                    channel="reasoning",
+                    content_delta=str(delta),
                     item_id=item_id,
                     summary_index=normalized_summary_index,
                 )
@@ -387,9 +432,11 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
                 state.reasoning_summary_buffer = ""
                 if remaining_summary_text:
                     events.append(
-                        CodexAppServerTurnEvent(
-                            kind="reasoning_delta",
-                            text=remaining_summary_text,
+                        _event(
+                            "content_delta",
+                            raw_kind="reasoning_delta",
+                            channel="reasoning",
+                            content_delta=remaining_summary_text,
                             item_id=as_non_empty_string(params.get("itemId")),
                             summary_index=int(summary_index) if isinstance(summary_index, int) else None,
                         )
@@ -397,9 +444,11 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
             else:
                 state.reasoning_summary_buffer = ""
                 events.append(
-                    CodexAppServerTurnEvent(
-                        kind="reasoning_delta",
-                        text=summary_text,
+                    _event(
+                        "content_delta",
+                        raw_kind="reasoning_delta",
+                        channel="reasoning",
+                        content_delta=summary_text,
                         item_id=as_non_empty_string(params.get("itemId")),
                         summary_index=int(summary_index) if isinstance(summary_index, int) else None,
                     )
@@ -411,9 +460,10 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
         if delta:
             state.command_chunks.append(delta)
             events.append(
-                CodexAppServerTurnEvent(
-                    kind="command_output_delta",
-                    text=delta,
+                _event(
+                    kind="tool_call_updated",
+                    raw_kind="command_output_delta",
+                    content_delta=delta,
                     item_id=as_non_empty_string(params.get("itemId")),
                 )
             )
@@ -428,22 +478,23 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
             state.last_token_total = total_tokens
         if isinstance(token_usage, dict):
             events.append(
-                CodexAppServerTurnEvent(
+                _event(
                     kind="token_usage_updated",
+                    raw_kind="token_usage_updated",
                     token_usage=copy.deepcopy(token_usage),
                 )
         )
         return events
 
     if method == "thread/compacted":
-        events.append(CodexAppServerTurnEvent(kind="context_compaction_completed"))
+        events.append(_event("context_compaction_completed", raw_kind="thread_compacted"))
         return events
 
     if method == "error":
         state.turn_status = "failed"
         state.turn_error = str(params.get("message") or "codex app-server error")
         state.last_error = state.turn_error
-        events.append(CodexAppServerTurnEvent(kind="error", error=state.turn_error))
+        events.append(_event("error", raw_kind="error", error=state.turn_error))
         return events
 
     if method == "turn/completed":
@@ -455,8 +506,9 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
             state.turn_error = str(error.get("message") or state.turn_error or f"turn ended with status '{status}'")
             state.last_error = state.turn_error
         events.append(
-            CodexAppServerTurnEvent(
+            _event(
                 kind="turn_completed",
+                raw_kind="turn_completed",
                 status=state.turn_status,
                 error=state.turn_error,
             )

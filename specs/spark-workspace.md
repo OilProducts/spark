@@ -180,11 +180,17 @@ Conversation turns and segments continue to persist plain string content. Markdo
 
 Spark conversation handling preserves four distinct layers:
 - raw app-server notifications
-- workspace normalization
+- shared `TurnStreamEvent` normalization
 - durable `state.json`
 - rendered chat cards
 
 The frontend consumes normalized workspace events and snapshots, not raw protocol messages.
+
+`TurnStreamEvent` is the canonical live LLM and node-output stream model between raw backend protocols and durable workspace state. Both in-process agent sessions and Codex app-server turns normalize into this backend-neutral shape before Home chat materializes content into conversation segments.
+
+`TurnStreamEvent` content uses `content_delta` or `content_completed` plus a `channel` of `assistant`, `reasoning`, or `plan`. Backend-specific correlation such as app turn IDs, item IDs, response IDs, summary indexes, and raw event kind belongs in `source` metadata rather than top-level workspace event fields.
+
+`SessionEvent` is the generic agent runtime stream. Spark consumes `SessionEvent` from in-process agent sessions and converts it at the Spark boundary into `TurnStreamEvent`; Spark chat rendering does not adapt `unified_llm.StreamEvent` directly. Codex app-server JSON-RPC notifications are a peer runtime path and normalize directly into `TurnStreamEvent` with `source.backend = "codex_app_server"`.
 
 The canonical live workspace events are:
 - `turn_upsert`

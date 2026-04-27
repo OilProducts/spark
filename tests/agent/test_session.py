@@ -201,6 +201,7 @@ async def test_session_process_input_submit_and_state_helpers_are_public() -> No
     assert first_assistant_end.data == {
         "text": "Assistant reply",
         "reasoning": "Assistant thinking",
+        "response_id": "resp-1",
     }
     first_processing_end = await asyncio.wait_for(anext(stream), timeout=1)
     assert first_processing_end.kind == agent.EventKind.PROCESSING_END
@@ -241,6 +242,7 @@ async def test_session_process_input_submit_and_state_helpers_are_public() -> No
     assert second_assistant_end.data == {
         "text": "Second reply",
         "reasoning": "Second thinking",
+        "response_id": "resp-2",
     }
     second_processing_end = await asyncio.wait_for(anext(stream), timeout=1)
     assert second_processing_end.kind == agent.EventKind.PROCESSING_END

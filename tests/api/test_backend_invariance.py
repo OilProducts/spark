@@ -4,6 +4,7 @@ from contextlib import nullcontext
 import json
 import itertools
 from pathlib import Path
+from spark_common.turn_stream import TurnStreamEvent
 from types import SimpleNamespace
 from typing import List
 
@@ -769,7 +770,7 @@ def test_codex_app_server_backend_accumulates_live_usage_by_model(
             model = kwargs.get("model")
             if model == "gpt-5.4":
                 on_event(
-                    codex_backends_module.codex_app_server.CodexAppServerTurnEvent(
+                    codex_backends_module.TurnStreamEvent(
                         kind="token_usage_updated",
                         token_usage={
                             "last": {
@@ -790,7 +791,7 @@ def test_codex_app_server_backend_accumulates_live_usage_by_model(
                     )
                 )
                 on_event(
-                    codex_backends_module.codex_app_server.CodexAppServerTurnEvent(
+                    codex_backends_module.TurnStreamEvent(
                         kind="token_usage_updated",
                         token_usage={
                             "total": {
@@ -805,7 +806,7 @@ def test_codex_app_server_backend_accumulates_live_usage_by_model(
                 )
                 return FakeResult(token_total=24)
             on_event(
-                codex_backends_module.codex_app_server.CodexAppServerTurnEvent(
+                codex_backends_module.TurnStreamEvent(
                     kind="token_usage_updated",
                     token_usage={
                         "last": {
@@ -1536,7 +1537,7 @@ def test_codex_app_server_backend_requires_turn_completed_after_final_answer(
     monotonic_values = itertools.count(0.0, 0.1)
 
     monkeypatch.setattr(codex_backends_module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess(lines))
-    monkeypatch.setattr(codex_backends_module.codex_app_server, "APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(codex_backends_module.codex_app_protocol, "APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(codex_backends_module.time, "monotonic", lambda: next(monotonic_values))
 
     result = backend.run("plan", "hello", Context())

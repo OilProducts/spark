@@ -266,6 +266,7 @@ async def test_session_process_input_runs_the_full_non_streaming_loop_and_reuses
     assert first_assistant_end.data == {
         "text": "Assistant reply",
         "reasoning": "Assistant thinking",
+        "response_id": "resp-1",
     }
     first_processing_end = await _next_event(stream)
     assert first_processing_end.kind == agent.EventKind.PROCESSING_END
@@ -306,6 +307,7 @@ async def test_session_process_input_runs_the_full_non_streaming_loop_and_reuses
     assert second_assistant_end.data == {
         "text": "Second reply",
         "reasoning": "Second thinking",
+        "response_id": "resp-2",
     }
     second_processing_end = await _next_event(stream)
     assert second_processing_end.kind == agent.EventKind.PROCESSING_END
@@ -452,6 +454,7 @@ async def test_session_process_input_drains_steering_and_executes_tool_rounds() 
     assert first_assistant_end.data == {
         "text": "Need tool",
         "reasoning": "Thinking about a tool",
+        "response_id": "resp-1",
     }
     tool_start_event = await _next_event(stream)
     assert tool_start_event.kind == agent.EventKind.TOOL_CALL_START
@@ -474,7 +477,7 @@ async def test_session_process_input_drains_steering_and_executes_tool_rounds() 
     assert second_assistant_delta.data == {"response_id": "resp-2", "delta": "All done"}
     second_assistant_end = await _next_event(stream)
     assert second_assistant_end.kind == agent.EventKind.ASSISTANT_TEXT_END
-    assert second_assistant_end.data == {"text": "All done", "reasoning": None}
+    assert second_assistant_end.data == {"text": "All done", "reasoning": None, "response_id": "resp-2"}
     processing_end_event = await _next_event(stream)
     assert processing_end_event.kind == agent.EventKind.PROCESSING_END
     assert processing_end_event.data == {"state": "idle"}

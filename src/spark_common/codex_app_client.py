@@ -8,7 +8,8 @@ import subprocess
 import time
 from typing import Any, Callable, Optional
 
-from spark_common import codex_app_server
+from spark_common import codex_app_protocol
+from spark_common.turn_stream import TurnStreamEvent
 from spark_common.codex_runtime import build_codex_runtime_environment
 from spark_common.process_line_reader import ProcessLineReader
 
@@ -100,7 +101,7 @@ class CodexModelMetadata:
 class CodexAppServerTurnResult:
     thread_id: str
     turn_id: str
-    state: codex_app_server.CodexAppServerTurnState
+    state: codex_app_protocol.CodexAppServerTurnState
 
     @property
     def assistant_message(self) -> str:
@@ -299,7 +300,7 @@ class CodexAppServerClient:
                     raise RuntimeError("codex app-server request timed out waiting for response")
                 continue
             self._log_incoming_line(line)
-            message = codex_app_server.parse_jsonrpc_line(line)
+            message = codex_app_protocol.parse_jsonrpc_line(line)
             if message is None:
                 self._handle_unparsed_line(line)
                 continue
@@ -334,7 +335,7 @@ class CodexAppServerClient:
             if on_activity is not None:
                 on_activity()
             self._log_incoming_line(line)
-            message = codex_app_server.parse_jsonrpc_line(line)
+            message = codex_app_protocol.parse_jsonrpc_line(line)
             if message is None:
                 self._handle_unparsed_line(line)
                 continue
@@ -378,12 +379,12 @@ class CodexAppServerClient:
             params["model"] = model
         response = self.send_request("thread/start", params, read_line=read_line)
         if response.get("error"):
-            message = codex_app_server.as_non_empty_string((response.get("error") or {}).get("message"))
+            message = codex_app_protocol.as_non_empty_string((response.get("error") or {}).get("message"))
             if message:
                 raise RuntimeError(f"codex app-server thread/start failed: {message}")
             raise RuntimeError("codex app-server thread/start failed")
         thread = (response.get("result") or {}).get("thread") or {}
-        thread_id = codex_app_server.as_non_empty_string(thread.get("id"))
+        thread_id = codex_app_protocol.as_non_empty_string(thread.get("id"))
         if not thread_id:
             raise RuntimeError("codex app-server did not return a thread id")
         return thread_id
@@ -409,7 +410,7 @@ class CodexAppServerClient:
         if response.get("error"):
             return None
         thread = (response.get("result") or {}).get("thread") or {}
-        return codex_app_server.as_non_empty_string(thread.get("id"))
+        return codex_app_protocol.as_non_empty_string(thread.get("id"))
 
     def list_models(self) -> list[CodexModelMetadata]:
         response = self.send_request("model/list", {"limit": 100})
@@ -425,12 +426,12 @@ class CodexAppServerClient:
         for entry in data:
             if not isinstance(entry, dict):
                 continue
-            model_id = codex_app_server.as_non_empty_string(
+            model_id = codex_app_protocol.as_non_empty_string(
                 _pick_first_mapping_value(entry, ("id", "model", "name"))
             )
             if not model_id:
                 continue
-            display = codex_app_server.as_non_empty_string(
+            display = codex_app_protocol.as_non_empty_string(
                 _pick_first_mapping_value(entry, ("display", "displayName", "display_name", "label", "name"))
             ) or model_id
             reasoning_payload = entry.get("reasoning")
@@ -495,9 +496,9 @@ class CodexAppServerClient:
         reasoning_effort: Optional[str] = None,
         chat_mode: Optional[str] = None,
         cwd: Optional[str] = None,
-        on_event: Optional[Callable[[codex_app_server.CodexAppServerTurnEvent], None]] = None,
+        on_event: Optional[Callable[[TurnStreamEvent], None]] = None,
         on_turn_started: Optional[Callable[[str], None]] = None,
-        idle_timeout_seconds: float = codex_app_server.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS,
+        idle_timeout_seconds: float = codex_app_protocol.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS,
         overall_timeout_seconds: Optional[float] = None,
         send_request: Optional[Callable[[str, Optional[dict[str, Any]]], dict[str, Any]]] = None,
         next_message: Optional[Callable[[float], Optional[dict[str, Any]]]] = None,
@@ -513,7 +514,7 @@ class CodexAppServerClient:
             "cwd": cwd or self.working_dir,
         }
         effective_reasoning_effort = self._normalize_reasoning_effort_for_turn(reasoning_effort)
-        effective_model = codex_app_server.as_non_empty_string(model)
+        effective_model = codex_app_protocol.as_non_empty_string(model)
         if chat_mode is not None:
             effective_model = effective_model or self.default_model()
             if not effective_model:
@@ -526,12 +527,12 @@ class CodexAppServerClient:
             params["reasoningEffort"] = effective_reasoning_effort
         response = request("turn/start", params)
         if response.get("error"):
-            message = codex_app_server.as_non_empty_string((response.get("error") or {}).get("message"))
+            message = codex_app_protocol.as_non_empty_string((response.get("error") or {}).get("message"))
             if message:
                 raise RuntimeError(f"codex app-server turn/start failed: {message}")
             raise RuntimeError("codex app-server turn/start failed")
         turn = (response.get("result") or {}).get("turn") or {}
-        expected_turn_id = codex_app_server.as_non_empty_string(turn.get("id"))
+        expected_turn_id = codex_app_protocol.as_non_empty_string(turn.get("id"))
         if not expected_turn_id:
             raise RuntimeError("codex app-server did not return a turn id")
         return self._consume_turn_stream(
@@ -551,15 +552,15 @@ class CodexAppServerClient:
         *,
         thread_id: str,
         expected_turn_id: Optional[str],
-        on_event: Optional[Callable[[codex_app_server.CodexAppServerTurnEvent], None]] = None,
+        on_event: Optional[Callable[[TurnStreamEvent], None]] = None,
         on_turn_started: Optional[Callable[[str], None]] = None,
-        idle_timeout_seconds: float = codex_app_server.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS,
+        idle_timeout_seconds: float = codex_app_protocol.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS,
         overall_timeout_seconds: Optional[float] = None,
         next_message: Optional[Callable[[float], Optional[dict[str, Any]]]] = None,
         now: Callable[[], float] = time.monotonic,
         server_request_handler: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
     ) -> CodexAppServerTurnResult:
-        stream_state = codex_app_server.CodexAppServerTurnState()
+        stream_state = codex_app_protocol.CodexAppServerTurnState()
         started_at = now()
         last_activity_at = started_at
 
@@ -591,15 +592,17 @@ class CodexAppServerClient:
                     raise RuntimeError("codex app-server exited before turn completion")
                 continue
             mark_activity()
-            extracted_turn_id = codex_app_server.extract_turn_id(message)
+            extracted_turn_id = codex_app_protocol.extract_turn_id(message)
             if expected_turn_id is None and extracted_turn_id:
                 expected_turn_id = extracted_turn_id
                 if on_turn_started is not None:
                     on_turn_started(expected_turn_id)
             if extracted_turn_id and extracted_turn_id != expected_turn_id:
                 continue
-            normalized_events = codex_app_server.process_turn_message(message, stream_state)
+            normalized_events = codex_app_protocol.process_turn_message(message, stream_state)
             for event in normalized_events:
+                if expected_turn_id and event.source.app_turn_id is None:
+                    event.source.app_turn_id = expected_turn_id
                 if on_event is not None:
                     on_event(event)
             if any(event.kind == "turn_completed" for event in normalized_events) and extracted_turn_id == expected_turn_id:

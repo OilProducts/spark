@@ -63,6 +63,7 @@ const asSegmentUpsertEvent = (payload: {
     sequence?: number
     timestamp: string
     kind: string
+    channel?: string
     content_delta?: string
     segment_id?: string
     segment?: Record<string, unknown>
@@ -74,16 +75,20 @@ const asSegmentUpsertEvent = (payload: {
     turn_id: payload.event.turn_id,
     order: payload.event.sequence ?? 0,
     kind:
-      payload.event.kind === 'reasoning_summary'
+      payload.event.kind === 'content_delta' && payload.event.channel === 'reasoning'
         ? 'reasoning'
-        : payload.event.kind.startsWith('tool_call_')
-          ? 'tool_call'
-          : 'assistant_message',
+        : payload.event.kind === 'content_delta' && payload.event.channel === 'plan'
+          ? 'plan'
+          : payload.event.kind === 'content_completed' && payload.event.channel === 'plan'
+            ? 'plan'
+            : payload.event.kind.startsWith('tool_call_')
+              ? 'tool_call'
+              : 'assistant_message',
     role: payload.event.kind.startsWith('tool_call_') ? 'system' : 'assistant',
     status:
-      payload.event.kind === 'assistant_completed' || payload.event.kind === 'tool_call_completed'
+      payload.event.kind === 'content_completed' || payload.event.kind === 'tool_call_completed'
         ? 'complete'
-        : payload.event.kind === 'assistant_failed' || payload.event.kind === 'tool_call_failed'
+        : payload.event.kind === 'error' || payload.event.kind === 'tool_call_failed'
           ? 'failed'
           : payload.event.kind === 'tool_call_started'
             ? 'running'
@@ -91,7 +96,7 @@ const asSegmentUpsertEvent = (payload: {
     timestamp: payload.event.timestamp,
     updated_at: payload.updated_at,
     completed_at:
-      payload.event.kind === 'assistant_completed' || payload.event.kind === 'tool_call_completed'
+      payload.event.kind === 'content_completed' || payload.event.kind === 'tool_call_completed'
         ? payload.updated_at
         : null,
     content: payload.event.content_delta ?? '',
@@ -561,7 +566,8 @@ describe('ProjectsPanel', () => {
               turn_id: 'turn-assistant-1',
               sequence: 1,
               timestamp: '2026-03-06T21:45:01Z',
-              kind: 'assistant_delta',
+              kind: 'content_delta',
+              channel: 'assistant',
               content_delta: 'Visible.',
             },
             {
@@ -569,7 +575,8 @@ describe('ProjectsPanel', () => {
               turn_id: 'turn-assistant-1',
               sequence: 2,
               timestamp: '2026-03-06T21:45:02Z',
-              kind: 'assistant_completed',
+              kind: 'content_completed',
+              channel: 'assistant',
               message: 'Assistant turn completed.',
             },
           ],
@@ -1267,7 +1274,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-live',
             sequence: 1,
             timestamp: '2026-03-07T15:30:02Z',
-            kind: 'assistant_delta',
+            kind: 'content_delta',
+              channel: 'assistant',
             content_delta: 'Working on',
           },
         })),
@@ -1425,7 +1433,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-live',
             sequence: 1,
             timestamp: '2026-03-07T15:31:02Z',
-            kind: 'reasoning_summary',
+            kind: 'content_delta',
+              channel: 'reasoning',
             content_delta: 'Scanning the project layout first.',
             segment_id: 'segment-reasoning-live',
             segment: {
@@ -2060,7 +2069,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-plan',
             sequence: 1,
             timestamp: '2026-03-09T21:00:02Z',
-            kind: 'assistant_completed',
+            kind: 'content_completed',
+              channel: 'assistant',
             segment: {
               id: 'segment-plan-inline',
               turn_id: 'turn-assistant-plan',
@@ -2185,7 +2195,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-live',
             sequence: 1,
             timestamp: '2026-03-07T15:30:02Z',
-            kind: 'assistant_delta',
+            kind: 'content_delta',
+              channel: 'assistant',
             content_delta: 'Working on',
           },
         })),
@@ -2208,7 +2219,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-live',
             sequence: 2,
             timestamp: '2026-03-07T15:30:04Z',
-            kind: 'assistant_completed',
+            kind: 'content_completed',
+              channel: 'assistant',
             content_delta: 'Working on it.',
             segment: {
               id: 'segment-assistant-live',
@@ -2417,7 +2429,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-1',
             sequence: 0,
             timestamp: '2026-03-08T19:10:00Z',
-            kind: 'reasoning_summary',
+            kind: 'content_delta',
+              channel: 'reasoning',
             content_delta: 'Scanning the repository structure first.',
             segment_id: 'segment-reasoning-1',
             segment: {
@@ -2450,7 +2463,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-1',
             sequence: 1,
             timestamp: '2026-03-08T19:10:01Z',
-            kind: 'assistant_delta',
+            kind: 'content_delta',
+              channel: 'assistant',
             content_delta: 'I’m going to scan the repository structure first.',
             segment_id: 'segment-assistant-1',
             segment: {
@@ -2533,7 +2547,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-1',
             sequence: 3,
             timestamp: '2026-03-08T19:10:03Z',
-            kind: 'assistant_delta',
+            kind: 'content_delta',
+              channel: 'assistant',
             content_delta: 'I found the main entry points and can summarize them.',
             segment_id: 'segment-assistant-2',
             segment: {
@@ -2770,7 +2785,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-1',
             sequence: 1,
             timestamp: '2026-03-08T19:28:38Z',
-            kind: 'reasoning_summary',
+            kind: 'content_delta',
+              channel: 'reasoning',
             content_delta: 'Considering the flow run request.',
             segment_id: 'segment-reasoning-1',
             segment: {
@@ -2803,7 +2819,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-1',
             sequence: 1,
             timestamp: '2026-03-08T19:28:40Z',
-            kind: 'assistant_delta',
+            kind: 'content_delta',
+              channel: 'assistant',
             content_delta: 'Once you give me a flow and goal, I can create a pending flow run request.',
             segment_id: 'segment-assistant-1',
             segment: {
@@ -3014,7 +3031,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-1',
             sequence: 1,
             timestamp: '2026-03-08T21:18:16Z',
-            kind: 'reasoning_summary',
+            kind: 'content_delta',
+              channel: 'reasoning',
             content_delta: 'Checking the repo before drafting.',
             segment_id: 'segment-reasoning-1',
             segment: {
@@ -3210,7 +3228,8 @@ describe('ProjectsPanel', () => {
           id: 'reason-1',
           segment_id: 'segment-reasoning-1',
           sequence: 1,
-          kind: 'reasoning_summary',
+          kind: 'content_delta',
+              channel: 'reasoning',
           timestamp: '2026-03-08T20:10:00Z',
           content_delta: 'Planning from the project context. ',
           segment: {
@@ -3234,7 +3253,8 @@ describe('ProjectsPanel', () => {
           id: 'assistant-1',
           segment_id: 'segment-assistant-1',
           sequence: 2,
-          kind: 'assistant_delta',
+          kind: 'content_delta',
+              channel: 'assistant',
           timestamp: '2026-03-08T20:10:01Z',
           content_delta: 'I can use the flow run request tool ',
           segment: {
@@ -3258,7 +3278,8 @@ describe('ProjectsPanel', () => {
           id: 'reason-2',
           segment_id: 'segment-reasoning-1',
           sequence: 3,
-          kind: 'reasoning_summary',
+          kind: 'content_delta',
+              channel: 'reasoning',
           timestamp: '2026-03-08T20:10:01Z',
           content_delta: 'and I am checking the repository first.',
           segment: {
@@ -3282,7 +3303,8 @@ describe('ProjectsPanel', () => {
           id: 'assistant-2',
           segment_id: 'segment-assistant-1',
           sequence: 4,
-          kind: 'assistant_delta',
+          kind: 'content_delta',
+              channel: 'assistant',
           timestamp: '2026-03-08T20:10:02Z',
           content_delta: 'once we have a concrete change.',
           segment: {
@@ -3611,7 +3633,8 @@ describe('ProjectsPanel', () => {
             turn_id: 'turn-assistant-upsert',
             sequence: 2,
             timestamp: '2026-03-13T11:00:02Z',
-            kind: 'reasoning_summary',
+            kind: 'content_delta',
+              channel: 'reasoning',
             content_delta: ' Mapping the change to a minimal spec edit.',
             segment_id: 'segment-reasoning-live',
             segment: {
@@ -4172,7 +4195,8 @@ describe('ProjectsPanel', () => {
               turn_id: 'turn-a-3',
               sequence: 1,
               timestamp: '2026-03-07T15:20:00Z',
-              kind: 'assistant_completed',
+              kind: 'content_completed',
+              channel: 'assistant',
               message: 'Assistant turn completed.',
             },
           ],

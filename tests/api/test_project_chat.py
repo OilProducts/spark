@@ -16,8 +16,9 @@ import spark.chat.service as project_chat
 import spark.chat.session as project_chat_session
 import spark.workspace.attractor_client as attractor_client
 from spark_common.codex_app_client import CodexAppServerTurnResult
-import spark_common.codex_app_server as codex_app_server
+import spark_common.codex_app_protocol as codex_app_protocol
 import spark_common.process_line_reader as process_line_reader
+from spark_common.turn_stream import TurnStreamEvent, TurnStreamSource
 from spark.authoring_assets import (
     dot_authoring_guide_path,
     spark_operations_guide_path,
@@ -50,7 +51,7 @@ def _completed_turn_result(
     token_usage_payload: Optional[dict[str, Any]] = None,
     error: Optional[str] = None,
 ) -> CodexAppServerTurnResult:
-    state = codex_app_server.CodexAppServerTurnState()
+    state = codex_app_protocol.CodexAppServerTurnState()
     state.final_agent_message = assistant_message
     state.final_plan_message = plan_message or None
     state.turn_status = "completed"
@@ -192,8 +193,8 @@ def _request_user_input_record(request_id: str = "request-1") -> RequestUserInpu
 
 
 def test_extract_command_text_handles_list_and_string_payloads() -> None:
-    assert codex_app_server.extract_command_text({"command": ["git", "status", "--short"]}) == "git status --short"
-    assert codex_app_server.extract_command_text({"commandLine": "npm test"}) == "npm test"
+    assert codex_app_protocol.extract_command_text({"command": ["git", "status", "--short"]}) == "git status --short"
+    assert codex_app_protocol.extract_command_text({"commandLine": "npm test"}) == "npm test"
 
 
 def test_parse_chat_response_payload_accepts_plain_text_and_json() -> None:
@@ -217,7 +218,7 @@ def test_codex_app_server_chat_session_resumes_request_user_input_after_answer_s
     session = project_chat_session.CodexAppServerChatSession("/tmp/project-chat")
     stub_client = StubChatClient()
     session._client = stub_client
-    events: list[project_chat.ChatTurnLiveEvent] = []
+    events: list[project_chat.TurnStreamEvent] = []
 
     def run_turn_handler(**kwargs) -> CodexAppServerTurnResult:
         on_turn_started = kwargs.get("on_turn_started")
@@ -261,10 +262,11 @@ def test_codex_app_server_chat_session_resumes_request_user_input_after_answer_s
         )
         responder.join(timeout=1)
         kwargs["on_event"](
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="ANSWER=Inline card",
-                item_id="msg-1",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                content_delta="ANSWER=Inline card",
+                source=TurnStreamSource(item_id="msg-1"),
                 phase="final_answer",
             )
         )
@@ -470,7 +472,7 @@ def test_extract_file_paths_deduplicates_nested_entries() -> None:
         ],
     }
 
-    assert codex_app_server.extract_file_paths(payload) == [
+    assert codex_app_protocol.extract_file_paths(payload) == [
         "frontend/src/features/projects/ProjectsPanel.tsx",
         "frontend/src/lib/apiClient.ts",
         "frontend/src/store.ts",
@@ -478,14 +480,14 @@ def test_extract_file_paths_deduplicates_nested_entries() -> None:
 
 
 def test_append_tool_output_keeps_latest_tail() -> None:
-    output = codex_app_server.append_tool_output("abc", "def", limit=4)
+    output = codex_app_protocol.append_tool_output("abc", "def", limit=4)
 
     assert output == "cdef"
 
 
 def test_process_turn_message_normalizes_item_reasoning_delta_by_item_and_summary_index() -> None:
-    state = codex_app_server.CodexAppServerTurnState()
-    events = codex_app_server.process_turn_message(
+    state = codex_app_protocol.CodexAppServerTurnState()
+    events = codex_app_protocol.process_turn_message(
         {
             "method": "item/reasoning/summaryTextDelta",
             "params": {
@@ -498,16 +500,17 @@ def test_process_turn_message_normalizes_item_reasoning_delta_by_item_and_summar
     )
 
     assert len(events) == 1
-    assert events[0].kind == "reasoning_delta"
-    assert events[0].text == "**Summ"
-    assert events[0].item_id == "rs-1"
-    assert events[0].summary_index == 0
+    assert events[0].kind == "content_delta"
+    assert events[0].channel == "reasoning"
+    assert events[0].content_delta == "**Summ"
+    assert events[0].source.item_id == "rs-1"
+    assert events[0].source.summary_index == 0
 
 
 def test_process_turn_message_normalizes_context_compaction_events() -> None:
-    state = codex_app_server.CodexAppServerTurnState()
+    state = codex_app_protocol.CodexAppServerTurnState()
 
-    started = codex_app_server.process_turn_message(
+    started = codex_app_protocol.process_turn_message(
         {
             "method": "item/started",
             "params": {
@@ -519,7 +522,7 @@ def test_process_turn_message_normalizes_context_compaction_events() -> None:
         },
         state,
     )
-    completed = codex_app_server.process_turn_message(
+    completed = codex_app_protocol.process_turn_message(
         {
             "method": "item/completed",
             "params": {
@@ -531,7 +534,7 @@ def test_process_turn_message_normalizes_context_compaction_events() -> None:
         },
         state,
     )
-    fallback = codex_app_server.process_turn_message(
+    fallback = codex_app_protocol.process_turn_message(
         {
             "method": "thread/compacted",
             "params": {},
@@ -540,15 +543,15 @@ def test_process_turn_message_normalizes_context_compaction_events() -> None:
     )
 
     assert [event.kind for event in started] == ["context_compaction_started"]
-    assert started[0].item_id == "compact-1"
+    assert started[0].source.item_id == "compact-1"
     assert [event.kind for event in completed] == ["context_compaction_completed"]
-    assert completed[0].item_id == "compact-1"
+    assert completed[0].source.item_id == "compact-1"
     assert [event.kind for event in fallback] == ["context_compaction_completed"]
-    assert fallback[0].item_id is None
+    assert fallback[0].source.item_id is None
 
 
 def test_process_turn_message_retains_full_token_usage_payload() -> None:
-    state = codex_app_server.CodexAppServerTurnState()
+    state = codex_app_protocol.CodexAppServerTurnState()
     payload = {
         "last": {
             "inputTokens": 120,
@@ -566,7 +569,7 @@ def test_process_turn_message_retains_full_token_usage_payload() -> None:
         },
     }
 
-    events = codex_app_server.process_turn_message(
+    events = codex_app_protocol.process_turn_message(
         {
             "method": "thread/tokenUsage/updated",
             "params": {
@@ -581,6 +584,54 @@ def test_process_turn_message_retains_full_token_usage_payload() -> None:
     assert events[0].token_usage == payload
     assert state.last_token_total == 244
     assert state.last_token_usage_payload == payload
+
+
+def test_process_turn_message_normalizes_command_output_as_tool_call_update() -> None:
+    state = codex_app_protocol.CodexAppServerTurnState()
+
+    events = codex_app_protocol.process_turn_message(
+        {
+            "method": "item/commandExecution/outputDelta",
+            "params": {
+                "itemId": "cmd-1",
+                "delta": "output",
+            },
+        },
+        state,
+    )
+
+    assert len(events) == 1
+    assert events[0].kind == "tool_call_updated"
+    assert events[0].source.raw_kind == "command_output_delta"
+    assert events[0].source.item_id == "cmd-1"
+    assert events[0].content_delta == "output"
+
+
+def test_process_turn_message_uses_request_user_input_payload_field() -> None:
+    state = codex_app_protocol.CodexAppServerTurnState()
+    payload = {
+        "itemId": "request-1",
+        "questions": [
+            {
+                "id": "path_choice",
+                "question": "Which path should I take?",
+            },
+        ],
+    }
+
+    events = codex_app_protocol.process_turn_message(
+        {
+            "method": "item/tool/requestUserInput",
+            "params": payload,
+        },
+        state,
+    )
+
+    assert len(events) == 1
+    assert events[0].kind == "request_user_input_requested"
+    assert events[0].source.raw_kind == "request_user_input_requested"
+    assert events[0].request_user_input == payload
+    assert events[0].tool_call is None
 
 
 def test_codex_app_server_chat_session_returns_token_usage_payload() -> None:
@@ -603,20 +654,21 @@ def test_codex_app_server_chat_session_returns_token_usage_payload() -> None:
             "totalTokens": 244,
         },
     }
-    events: list[project_chat.ChatTurnLiveEvent] = []
+    events: list[project_chat.TurnStreamEvent] = []
 
     def run_turn_handler(**kwargs) -> CodexAppServerTurnResult:
         kwargs["on_event"](
-            codex_app_server.CodexAppServerTurnEvent(
+            TurnStreamEvent(
                 kind="token_usage_updated",
                 token_usage=payload,
             )
         )
         kwargs["on_event"](
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="ACK",
-                item_id="msg-1",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-1"),
+                content_delta="ACK",
                 phase="final_answer",
             )
         )
@@ -633,7 +685,7 @@ def test_codex_app_server_chat_session_returns_token_usage_payload() -> None:
 
     assert result.assistant_message == "ACK"
     assert result.token_usage == payload
-    assert [event.kind for event in events] == ["token_usage_updated", "assistant_completed"]
+    assert [event.kind for event in events] == ["token_usage_updated", "content_completed"]
     assert events[0].token_usage == payload
 
 
@@ -805,36 +857,36 @@ def test_materialize_segment_for_live_event_completes_matching_assistant_item_by
     )
     assistant_turn = state.turns[-1]
 
-    commentary_delta = project_chat.ChatTurnLiveEvent(
-        kind="assistant_delta",
+    commentary_delta = project_chat.TurnStreamEvent(
+        kind="content_delta",
+                channel="assistant",
+        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="item-msg-1"),
         content_delta="I’m checking the prompt template path.",
-        app_turn_id="app-turn-1",
-        item_id="item-msg-1",
         phase="commentary",
     )
-    final_delta = project_chat.ChatTurnLiveEvent(
-        kind="assistant_delta",
+    final_delta = project_chat.TurnStreamEvent(
+        kind="content_delta",
+                channel="assistant",
+        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="item-msg-2"),
         content_delta="Here is the final grounded answer.",
-        app_turn_id="app-turn-1",
-        item_id="item-msg-2",
         phase="final_answer",
     )
 
     service._materialize_segment_for_live_event(state, assistant_turn, commentary_delta)
     service._materialize_segment_for_live_event(state, assistant_turn, final_delta)
 
-    commentary_complete = project_chat.ChatTurnLiveEvent(
-        kind="assistant_completed",
+    commentary_complete = project_chat.TurnStreamEvent(
+        kind="content_completed",
+                channel="assistant",
+        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="item-msg-1"),
         content_delta="I’m checking the prompt template path.",
-        app_turn_id="app-turn-1",
-        item_id="item-msg-1",
         phase="commentary",
     )
-    final_complete = project_chat.ChatTurnLiveEvent(
-        kind="assistant_completed",
+    final_complete = project_chat.TurnStreamEvent(
+        kind="content_completed",
+                channel="assistant",
+        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="item-msg-2"),
         content_delta="Here is the final grounded answer.",
-        app_turn_id="app-turn-1",
-        item_id="item-msg-2",
         phase="final_answer",
     )
 
@@ -975,7 +1027,7 @@ def test_chat_session_turn_forwards_chat_mode_to_run_turn(monkeypatch) -> None:
 
 def test_chat_session_uses_plan_text_when_turn_has_only_plan_item(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    progress_updates: list[project_chat.ChatTurnLiveEvent] = []
+    progress_updates: list[project_chat.TurnStreamEvent] = []
     client = StubChatClient()
     client.resume_result = "thread-existing"
     session._client = client
@@ -984,17 +1036,19 @@ def test_chat_session_uses_plan_text_when_turn_has_only_plan_item(monkeypatch) -
     def run_turn(**kwargs) -> CodexAppServerTurnResult:
         on_event = kwargs["on_event"]
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="plan_delta",
-                text="1. Capture the plan-only session path.\n",
-                item_id="plan-1",
+            TurnStreamEvent(
+                kind="content_delta",
+                source=TurnStreamSource(item_id="plan-1"),
+                channel="plan",
+                content_delta="1. Capture the plan-only session path.\n",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="plan_completed",
-                text="1. Capture the plan-only session path.\n2. Validate the fix.",
-                item_id="plan-1",
+            TurnStreamEvent(
+                kind="content_completed",
+                source=TurnStreamSource(item_id="plan-1"),
+                channel="plan",
+                content_delta="1. Capture the plan-only session path.\n2. Validate the fix.",
             )
         )
         return _completed_turn_result(
@@ -1008,34 +1062,37 @@ def test_chat_session_uses_plan_text_when_turn_has_only_plan_item(monkeypatch) -
     result = session.turn("hello", None, chat_mode="plan", on_event=progress_updates.append)
 
     assert result.assistant_message == "1. Capture the plan-only session path.\n2. Validate the fix."
-    assert [event.kind for event in progress_updates] == ["plan_delta", "plan_completed"]
+    assert [event.kind for event in progress_updates] == ["content_delta", "content_completed"]
 
 
 def test_chat_session_surfaces_reasoning_summary_progress(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    progress_updates: list[project_chat.ChatTurnLiveEvent] = []
+    progress_updates: list[project_chat.TurnStreamEvent] = []
     client = StubChatClient()
     session._client = client
 
     def run_turn(**kwargs) -> CodexAppServerTurnResult:
         on_event = kwargs["on_event"]
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="reasoning_delta",
-                text="Scanning the repository structure.",
+            TurnStreamEvent(
+                kind="content_delta",
+                channel="reasoning",
+                content_delta="Scanning the repository structure.",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_delta",
-                text="I found the main entry points.",
+            TurnStreamEvent(
+                kind="content_delta",
+                channel="assistant",
+                content_delta="I found the main entry points.",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="I found the main entry points.",
-                item_id="msg-123",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-123"),
+                content_delta="I found the main entry points.",
                 phase="final_answer",
             )
         )
@@ -1050,36 +1107,39 @@ def test_chat_session_surfaces_reasoning_summary_progress(monkeypatch) -> None:
 
     assert result.assistant_message == "I found the main entry points."
     assert any(
-        update.kind == "reasoning_summary" and update.content_delta == "Scanning the repository structure."
+        update.kind == "content_delta" and update.content_delta == "Scanning the repository structure."
         for update in progress_updates
     )
 
 
 def test_chat_session_surfaces_reasoning_summary_text_deltas(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    progress_updates: list[project_chat.ChatTurnLiveEvent] = []
+    progress_updates: list[project_chat.TurnStreamEvent] = []
     client = StubChatClient()
     session._client = client
 
     def run_turn(**kwargs) -> CodexAppServerTurnResult:
         on_event = kwargs["on_event"]
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="reasoning_delta",
-                text="Draft draft that minimal proposal a best think",
+            TurnStreamEvent(
+                kind="content_delta",
+                channel="reasoning",
+                content_delta="Draft draft that minimal proposal a best think",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_delta",
-                text="I’m checking the project structure first.",
+            TurnStreamEvent(
+                kind="content_delta",
+                channel="assistant",
+                content_delta="I’m checking the project structure first.",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="I’m checking the project structure first.",
-                item_id="msg-123",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-123"),
+                content_delta="I’m checking the project structure first.",
                 phase="final_answer",
             )
         )
@@ -1094,7 +1154,7 @@ def test_chat_session_surfaces_reasoning_summary_text_deltas(monkeypatch) -> Non
 
     assert result.assistant_message == "I’m checking the project structure first."
     assert any(
-        update.kind == "reasoning_summary"
+        update.kind == "content_delta"
         and update.content_delta == "Draft draft that minimal proposal a best think"
         for update in progress_updates
     )
@@ -1102,7 +1162,7 @@ def test_chat_session_surfaces_reasoning_summary_text_deltas(monkeypatch) -> Non
 
 def test_chat_session_surfaces_context_compaction_progress(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    progress_updates: list[project_chat.ChatTurnLiveEvent] = []
+    progress_updates: list[project_chat.TurnStreamEvent] = []
     client = StubChatClient()
     session._client = client
 
@@ -1111,22 +1171,23 @@ def test_chat_session_surfaces_context_compaction_progress(monkeypatch) -> None:
         on_turn_started("turn-123")
         on_event = kwargs["on_event"]
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
+            TurnStreamEvent(
                 kind="context_compaction_started",
-                item_id="compact-1",
+                source=TurnStreamSource(item_id="compact-1"),
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
+            TurnStreamEvent(
                 kind="context_compaction_completed",
-                item_id="compact-1",
+                source=TurnStreamSource(item_id="compact-1"),
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="Ack",
-                item_id="msg-1",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-1"),
+                content_delta="Ack",
                 phase="final_answer",
             )
         )
@@ -1140,12 +1201,12 @@ def test_chat_session_surfaces_context_compaction_progress(monkeypatch) -> None:
     assert [event.kind for event in progress_updates] == [
         "context_compaction_started",
         "context_compaction_completed",
-        "assistant_completed",
+        "content_completed",
     ]
-    assert progress_updates[0].app_turn_id == "turn-123"
-    assert progress_updates[0].item_id == "compact-1"
-    assert progress_updates[1].app_turn_id == "turn-123"
-    assert progress_updates[1].item_id == "compact-1"
+    assert progress_updates[0].source.app_turn_id == "turn-123"
+    assert progress_updates[0].source.item_id == "compact-1"
+    assert progress_updates[1].source.app_turn_id == "turn-123"
+    assert progress_updates[1].source.item_id == "compact-1"
 
 
 def test_process_line_reader_drains_buffered_lines_in_order() -> None:
@@ -1183,11 +1244,11 @@ def test_send_turn_marks_assistant_failed_after_timeout_without_retry(tmp_path: 
             calls.append(prompt)
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="hi",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -1289,10 +1350,11 @@ def test_send_turn_starts_new_thread_cleanly_when_persisted_resume_fails(tmp_pat
     def run_turn(**kwargs) -> CodexAppServerTurnResult:
         captured_prompts.append(kwargs["prompt"])
         kwargs["on_event"](
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="Ack",
-                item_id="msg-1",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-1"),
+                content_delta="Ack",
                 phase="final_answer",
             )
         )
@@ -1333,11 +1395,11 @@ def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch
         ) -> project_chat.ChatTurnResult:
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="This looks like a Collatz implementation project.",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -1448,11 +1510,11 @@ def test_send_turn_persists_and_forwards_model_and_reasoning_effort(tmp_path: Pa
             )
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Settings acknowledged.",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -1511,11 +1573,11 @@ def test_send_turn_reuses_persisted_model_and_reasoning_effort_when_omitted(tmp_
             )
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Persisted settings used.",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -1553,11 +1615,11 @@ def test_send_turn_persists_and_forwards_provider(tmp_path: Path, monkeypatch) -
             turn_index = len(captured_calls)
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id=f"app-turn-{turn_index}", item_id=f"msg-{turn_index}"),
                         content_delta="Provider acknowledged.",
-                        app_turn_id=f"app-turn-{turn_index}",
-                        item_id=f"msg-{turn_index}",
                         phase="final_answer",
                     )
                 )
@@ -1808,7 +1870,13 @@ def test_project_chat_unified_session_hydrates_persisted_history_without_current
         ) -> project_chat.ChatTurnResult:
             del prompt, model, chat_mode, reasoning_effort
             if on_event is not None:
-                on_event(project_chat.ChatTurnLiveEvent(kind="assistant_completed", content_delta="assistant reply"))
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        content_delta="assistant reply",
+                    )
+                )
             return project_chat.ChatTurnResult(assistant_message="assistant reply")
 
     monkeypatch.setattr(project_chat, "UnifiedAgentChatSession", FakeUnifiedSession)
@@ -1826,6 +1894,51 @@ def test_project_chat_unified_session_hydrates_persisted_history_without_current
     ]
     assert "second question" not in [turn.content for turn in captured_histories[1]]
 
+
+def test_unified_chat_session_maps_session_events_to_turn_stream_source(tmp_path: Path) -> None:
+    session = project_chat_session.UnifiedAgentChatSession(
+        str(tmp_path),
+        provider="openai",
+        model="gpt-test",
+        client_factory=lambda provider: SimpleNamespace(provider=provider),
+    )
+    events: list[TurnStreamEvent] = []
+
+    session._forward_session_event(
+        project_chat_session.SessionEvent(
+            project_chat_session.EventKind.ASSISTANT_REASONING_DELTA,
+            data={"delta": "Thinking", "response_id": "resp-1"},
+        ),
+        on_event=events.append,
+    )
+    session._forward_session_event(
+        project_chat_session.SessionEvent(
+            project_chat_session.EventKind.MODEL_USAGE_UPDATE,
+            data={"usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}},
+        ),
+        on_event=events.append,
+    )
+    session._forward_session_event(
+        project_chat_session.SessionEvent(
+            project_chat_session.EventKind.MODEL_TOOL_CALL_START,
+            data={"tool_call": {"id": "call-model", "name": "shell"}},
+        ),
+        on_event=events.append,
+    )
+
+    assert [event.kind for event in events] == ["content_delta", "token_usage_updated"]
+    assert events[0].channel == "reasoning"
+    assert events[0].content_delta == "Thinking"
+    assert events[0].source.backend == "agent_session"
+    assert events[0].source.response_id == "resp-1"
+    assert events[1].token_usage == {
+        "total": {
+            "inputTokens": 2,
+            "cachedInputTokens": 0,
+            "outputTokens": 3,
+            "totalTokens": 5,
+        }
+    }
 
 def test_unified_chat_session_close_closes_agent_session_and_client(
     tmp_path: Path,
@@ -2058,11 +2171,11 @@ def test_send_turn_persists_mode_change_turn_before_user_turn_when_chat_mode_cha
             captured_chat_modes.append(chat_mode)
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Plan mode acknowledged.",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -2108,11 +2221,11 @@ def test_send_turn_uses_persisted_plan_chat_mode_for_execution(tmp_path: Path, m
             captured_chat_modes.append(chat_mode)
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Still in plan mode.",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -2143,17 +2256,19 @@ def test_send_turn_completes_plan_only_real_session_path_with_plan_preview_fallb
     def run_turn(**kwargs) -> CodexAppServerTurnResult:
         on_event = kwargs["on_event"]
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="plan_delta",
-                text="1. Patch the real session path.\n",
-                item_id="plan-1",
+            TurnStreamEvent(
+                kind="content_delta",
+                source=TurnStreamSource(item_id="plan-1"),
+                channel="plan",
+                content_delta="1. Patch the real session path.\n",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="plan_completed",
-                text="1. Patch the real session path.\n2. Add the regression coverage.",
-                item_id="plan-1",
+            TurnStreamEvent(
+                kind="content_completed",
+                source=TurnStreamSource(item_id="plan-1"),
+                channel="plan",
+                content_delta="1. Patch the real session path.\n2. Add the regression coverage.",
             )
         )
         return _completed_turn_result(
@@ -2214,34 +2329,35 @@ def test_send_turn_buffers_plan_mode_assistant_completion_without_leaking_markup
             assert chat_mode == "plan"
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="reasoning_summary",
+                    project_chat.TurnStreamEvent(
+                        kind="content_delta",
+                        channel="reasoning",
                         content_delta="Checking the active session path.",
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta=raw_plan_markup,
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="plan_delta",
+                    project_chat.TurnStreamEvent(
+                        kind="content_delta",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="plan-1"),
+                        channel="plan",
                         content_delta="1. Patch the real session path.\n",
-                        app_turn_id="app-turn-1",
-                        item_id="plan-1",
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="plan_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="plan-1"),
+                        channel="plan",
                         content_delta="1. Patch the real session path.\n2. Add the regression coverage.",
-                        app_turn_id="app-turn-1",
-                        item_id="plan-1",
                     )
                 )
             return project_chat.ChatTurnResult(assistant_message=raw_plan_markup)
@@ -2289,25 +2405,23 @@ def test_send_turn_persists_context_compaction_segment_transition(
         ) -> project_chat.ChatTurnResult:
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="context_compaction_started",
-                        app_turn_id="app-turn-1",
-                        item_id="compact-1",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="compact-1"),
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="context_compaction_completed",
-                        app_turn_id="app-turn-1",
-                        item_id="compact-1",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="compact-1"),
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Ack",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -2363,17 +2477,17 @@ def test_send_turn_persists_context_compaction_from_thread_compacted_fallback(
         ) -> project_chat.ChatTurnResult:
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="context_compaction_completed",
-                        app_turn_id="app-turn-1",
+                        source=TurnStreamSource(app_turn_id="app-turn-1"),
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Ack",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -2418,31 +2532,29 @@ def test_send_turn_deduplicates_context_compaction_duplicate_completion_signals(
         ) -> project_chat.ChatTurnResult:
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="context_compaction_started",
-                        app_turn_id="app-turn-1",
-                        item_id="compact-1",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="compact-1"),
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="context_compaction_completed",
-                        app_turn_id="app-turn-1",
-                        item_id="compact-1",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="compact-1"),
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="context_compaction_completed",
-                        app_turn_id="app-turn-1",
+                        source=TurnStreamSource(app_turn_id="app-turn-1"),
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Ack",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -2506,10 +2618,9 @@ def test_request_user_input_segments_persist_and_answer_in_place(
         ) -> project_chat.ChatTurnResult:
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="request_user_input_requested",
-                        app_turn_id="app-turn-1",
-                        item_id="request-1",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="request-1"),
                         request_user_input=_request_user_input_record(),
                     )
                 )
@@ -2519,11 +2630,11 @@ def test_request_user_input_segments_persist_and_answer_in_place(
             )
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta=assistant_message,
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -3065,20 +3176,20 @@ def test_send_turn_persists_plan_mode_assistant_remainder_after_completion(
             assert chat_mode == "plan"
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta=raw_response,
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="plan_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="plan-1"),
+                        channel="plan",
                         content_delta="1. Patch the real session path.\n2. Add the regression coverage.",
-                        app_turn_id="app-turn-1",
-                        item_id="plan-1",
                     )
                 )
             return project_chat.ChatTurnResult(assistant_message=raw_response)
@@ -3128,11 +3239,11 @@ def test_send_turn_passes_default_chat_mode_for_execution(tmp_path: Path, monkey
             captured_chat_modes.append(chat_mode)
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Default chat mode.",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -3905,18 +4016,19 @@ def test_direct_flow_launch_uses_flow_ui_default_model_when_request_model_missin
 
 def test_chat_session_emits_assistant_completed_from_item_completed(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    captured_events: list[project_chat.ChatTurnLiveEvent] = []
+    captured_events: list[project_chat.TurnStreamEvent] = []
     client = StubChatClient()
     session._client = client
 
     def run_turn(**kwargs) -> CodexAppServerTurnResult:
         on_event = kwargs["on_event"]
-        on_event(codex_app_server.CodexAppServerTurnEvent(kind="assistant_delta", text="Ack"))
+        on_event(TurnStreamEvent(kind="content_delta", channel="assistant", content_delta="Ack"))
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="Ack",
-                item_id="msg-1",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-1"),
+                content_delta="Ack",
                 phase="final_answer",
             )
         )
@@ -3931,47 +4043,71 @@ def test_chat_session_emits_assistant_completed_from_item_completed(monkeypatch)
     )
 
     assert result.assistant_message == "Ack"
-    assert [event.kind for event in captured_events] == ["assistant_delta", "assistant_completed"]
-    assert captured_events[1].item_id == "msg-1"
+    assert [event.kind for event in captured_events] == ["content_delta", "content_completed"]
+    assert captured_events[1].source.item_id == "msg-1"
     assert captured_events[1].phase == "final_answer"
     assert captured_events[-1].content_delta == "Ack"
 
 
-def test_chat_session_handles_command_output_delta_without_reasoning_fallback_helper(monkeypatch) -> None:
+def test_chat_session_preserves_normalized_app_turn_id_when_local_turn_id_missing() -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    captured_events: list[project_chat.ChatTurnLiveEvent] = []
+    captured_events: list[project_chat.TurnStreamEvent] = []
+
+    session._forward_normalized_turn_event(
+        TurnStreamEvent(
+            kind="content_completed",
+            channel="assistant",
+            source=TurnStreamSource(app_turn_id="normalized-turn", item_id="msg-1"),
+            content_delta="Ack",
+            phase="final_answer",
+        ),
+        on_event=captured_events.append,
+        tool_calls_by_id={},
+        current_app_turn_id=None,
+    )
+
+    assert len(captured_events) == 1
+    assert captured_events[0].source.app_turn_id == "normalized-turn"
+    assert captured_events[0].source.item_id == "msg-1"
+
+
+def test_chat_session_handles_command_output_update_without_reasoning_fallback_helper(monkeypatch) -> None:
+    session = project_chat.CodexAppServerChatSession("/tmp/project")
+    captured_events: list[project_chat.TurnStreamEvent] = []
     client = StubChatClient()
     session._client = client
 
     def run_turn(**kwargs) -> CodexAppServerTurnResult:
         on_event = kwargs["on_event"]
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="reasoning_delta",
-                text="Thinking...",
-                item_id="rs-1",
-                summary_index=0,
+            TurnStreamEvent(
+                kind="content_delta",
+                source=TurnStreamSource(item_id="rs-1", summary_index=0),
+                channel="reasoning",
+                content_delta="Thinking...",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="command_output_delta",
-                text="output",
-                item_id="cmd-1",
+            TurnStreamEvent(
+                kind="tool_call_updated",
+                source=TurnStreamSource(item_id="cmd-1", raw_kind="command_output_delta"),
+                content_delta="output",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_delta",
-                text="Ack",
-                item_id="msg-1",
+            TurnStreamEvent(
+                kind="content_delta",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-1"),
+                content_delta="Ack",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="Ack",
-                item_id="msg-1",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-1"),
+                content_delta="Ack",
                 phase="final_answer",
             )
         )
@@ -3986,44 +4122,48 @@ def test_chat_session_handles_command_output_delta_without_reasoning_fallback_he
     )
 
     assert result.assistant_message == "Ack"
-    assert [event.kind for event in captured_events] == ["reasoning_summary", "assistant_delta", "assistant_completed"]
+    assert [event.kind for event in captured_events] == ["content_delta", "content_delta", "content_completed"]
 
 
 def test_chat_session_emits_assistant_completed_for_commentary_item(monkeypatch) -> None:
     session = project_chat.CodexAppServerChatSession("/tmp/project")
-    captured_events: list[project_chat.ChatTurnLiveEvent] = []
+    captured_events: list[project_chat.TurnStreamEvent] = []
     client = StubChatClient()
     session._client = client
 
     def run_turn(**kwargs) -> CodexAppServerTurnResult:
         on_event = kwargs["on_event"]
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_delta",
-                text="I’m drafting the proposal now.",
-                item_id="msg-1",
+            TurnStreamEvent(
+                kind="content_delta",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-1"),
+                content_delta="I’m drafting the proposal now.",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="I’m drafting the proposal now.",
-                item_id="msg-1",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-1"),
+                content_delta="I’m drafting the proposal now.",
                 phase="commentary",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_delta",
-                text="Done.",
-                item_id="msg-2",
+            TurnStreamEvent(
+                kind="content_delta",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-2"),
+                content_delta="Done.",
             )
         )
         on_event(
-            codex_app_server.CodexAppServerTurnEvent(
-                kind="assistant_message_completed",
-                text="Done.",
-                item_id="msg-2",
+            TurnStreamEvent(
+                kind="content_completed",
+                channel="assistant",
+                source=TurnStreamSource(item_id="msg-2"),
+                content_delta="Done.",
                 phase="final_answer",
             )
         )
@@ -4035,14 +4175,14 @@ def test_chat_session_emits_assistant_completed_for_commentary_item(monkeypatch)
 
     assert result.assistant_message == "Done."
     assert [event.kind for event in captured_events] == [
-        "assistant_delta",
-        "assistant_completed",
-        "assistant_delta",
-        "assistant_completed",
+        "content_delta",
+        "content_completed",
+        "content_delta",
+        "content_completed",
     ]
-    assert captured_events[0].item_id == "msg-1"
+    assert captured_events[0].source.item_id == "msg-1"
     assert captured_events[1].phase == "commentary"
-    assert captured_events[2].item_id == "msg-2"
+    assert captured_events[2].source.item_id == "msg-2"
     assert captured_events[3].phase == "final_answer"
 
 
@@ -4119,11 +4259,11 @@ def test_send_turn_writes_raw_jsonrpc_log(tmp_path: Path, monkeypatch) -> None:
             self.raw_logger("incoming", '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"status":"completed"}}}')
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Logged.",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -4164,17 +4304,18 @@ def test_start_turn_returns_initial_snapshot_before_background_completion(tmp_pa
             assert finish_turn.wait(timeout=2)
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="reasoning_summary",
-                        content_delta="Checking the repository.",
-                    )
+                        project_chat.TurnStreamEvent(
+                            kind="content_delta",
+                            channel="reasoning",
+                            content_delta="Checking the repository.",
+                        )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="ACK",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -4371,33 +4512,34 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
             assert finish_turn.wait(timeout=2)
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="reasoning_summary",
-                        content_delta="Checking whether a flow run request makes sense.",
-                    )
+                        project_chat.TurnStreamEvent(
+                            kind="content_delta",
+                            channel="reasoning",
+                            content_delta="Checking whether a flow run request makes sense.",
+                        )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_delta",
+                    project_chat.TurnStreamEvent(
+                        kind="content_delta",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Working on it",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Working on it",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="tool_call_started",
-                        tool_call_id="call-pwd",
+                        source=TurnStreamSource(item_id="call-pwd"),
                         tool_call=project_chat.ToolCallRecord(
                             id="call-pwd",
                             kind="command_execution",
@@ -4492,17 +4634,17 @@ def test_send_project_conversation_turn_endpoint_persists_token_usage_in_snapsho
             assert finish_turn.wait(timeout=2)
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="token_usage_updated",
                         token_usage=token_usage,
                     )
                 )
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-usage", item_id="msg-usage"),
                         content_delta="Usage captured.",
-                        app_turn_id="app-turn-usage",
-                        item_id="msg-usage",
                         phase="final_answer",
                     )
                 )
@@ -4669,11 +4811,11 @@ def test_send_project_conversation_turn_endpoint_switches_chat_mode_atomically(
             )
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Mode switch acknowledged.",
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -4756,10 +4898,9 @@ def test_submit_project_conversation_request_user_input_endpoint_updates_existin
         ) -> project_chat.ChatTurnResult:
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
+                    project_chat.TurnStreamEvent(
                         kind="request_user_input_requested",
-                        app_turn_id="app-turn-1",
-                        item_id="request-1",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="request-1"),
                         request_user_input=_request_user_input_record(),
                     )
                 )
@@ -4767,11 +4908,11 @@ def test_submit_project_conversation_request_user_input_endpoint_updates_existin
             assistant_message = f"ANSWER={self._answers['path_choice']}"
             if on_event is not None:
                 on_event(
-                    project_chat.ChatTurnLiveEvent(
-                        kind="assistant_completed",
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta=assistant_message,
-                        app_turn_id="app-turn-1",
-                        item_id="msg-1",
                         phase="final_answer",
                     )
                 )
@@ -4920,7 +5061,7 @@ def test_snapshot_rejects_unsupported_turn_event_only_payload(tmp_path: Path) ->
                 "turn_id": "turn-assistant-1",
                 "sequence": 1,
                 "timestamp": "2026-03-07T18:00:01Z",
-                "kind": "assistant_delta",
+                "kind": "content_delta",
                 "content_delta": "hel",
             },
             {
@@ -4928,7 +5069,7 @@ def test_snapshot_rejects_unsupported_turn_event_only_payload(tmp_path: Path) ->
                 "turn_id": "turn-assistant-1",
                 "sequence": 2,
                 "timestamp": "2026-03-07T18:00:01Z",
-                "kind": "reasoning_summary",
+                "kind": "content_delta",
                 "content_delta": "Thinking about the repository structure.",
             },
             {
@@ -4936,7 +5077,7 @@ def test_snapshot_rejects_unsupported_turn_event_only_payload(tmp_path: Path) ->
                 "turn_id": "turn-assistant-1",
                 "sequence": 3,
                 "timestamp": "2026-03-07T18:00:02Z",
-                "kind": "assistant_delta",
+                "kind": "content_delta",
                 "content_delta": "lo",
             },
             {
@@ -4944,7 +5085,7 @@ def test_snapshot_rejects_unsupported_turn_event_only_payload(tmp_path: Path) ->
                 "turn_id": "turn-assistant-1",
                 "sequence": 4,
                 "timestamp": "2026-03-07T18:00:03Z",
-                "kind": "assistant_completed",
+                "kind": "content_completed",
                 "message": "Assistant turn completed.",
             },
         ],

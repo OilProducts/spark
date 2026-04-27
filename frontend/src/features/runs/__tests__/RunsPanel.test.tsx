@@ -76,12 +76,12 @@ const makeRun = (overrides: Partial<Record<string, unknown>> = {}) => ({
   flow_name: String(overrides.flow_name ?? 'review.dot'),
   status: String(overrides.status ?? 'completed'),
   outcome: (overrides.outcome as 'success' | 'failure' | null | undefined) ?? 'success',
-  outcome_reason_code: null,
-  outcome_reason_message: null,
+  outcome_reason_code: (overrides.outcome_reason_code as string | null | undefined) ?? null,
+  outcome_reason_message: (overrides.outcome_reason_message as string | null | undefined) ?? null,
   working_directory: String(overrides.working_directory ?? '/tmp/workdir'),
   project_path: String(overrides.project_path ?? '/tmp/project-one'),
-  git_branch: (overrides.git_branch as string | null | undefined) ?? 'main',
-  git_commit: (overrides.git_commit as string | null | undefined) ?? 'abcdef0',
+  git_branch: overrides.git_branch === undefined ? 'main' : (overrides.git_branch as string | null),
+  git_commit: overrides.git_commit === undefined ? 'abcdef0' : (overrides.git_commit as string | null),
   spec_id: (overrides.spec_id as string | null | undefined) ?? null,
   plan_id: (overrides.plan_id as string | null | undefined) ?? null,
   model: String(overrides.model ?? 'gpt-5.3-codex-spark'),
@@ -96,6 +96,10 @@ const makeRun = (overrides: Partial<Record<string, unknown>> = {}) => ({
   continued_from_node: (overrides.continued_from_node as string | null | undefined) ?? null,
   continued_from_flow_mode: (overrides.continued_from_flow_mode as string | null | undefined) ?? null,
   continued_from_flow_name: (overrides.continued_from_flow_name as string | null | undefined) ?? null,
+  parent_run_id: (overrides.parent_run_id as string | null | undefined) ?? null,
+  parent_node_id: (overrides.parent_node_id as string | null | undefined) ?? null,
+  root_run_id: (overrides.root_run_id as string | null | undefined) ?? null,
+  child_invocation_index: (overrides.child_invocation_index as number | null | undefined) ?? null,
 })
 
 const makeJournalEntry = (
@@ -553,11 +557,18 @@ describe('RunsPanel', () => {
       if (url.includes('/attractor/pipelines/run-selected/questions')) {
         return jsonResponse({
           pipeline_id: 'run-selected',
-          questions: [],
+          questions: [{
+            question_id: 'approve-1',
+            node_id: 'validate',
+            prompt: 'Approve the validation result?',
+            type: 'CONFIRMATION',
+          }],
         })
       }
       if (url.includes('/attractor/pipelines/run-selected/journal')) {
-        return jsonResponse(makeJournalPage('run-selected', []))
+        return jsonResponse(makeJournalPage('run-selected', [
+          makeJournalEntry(1, { type: 'StageStarted', node_id: 'validate' }, { summary: 'Stage validate started' }),
+        ]))
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -603,12 +614,29 @@ describe('RunsPanel', () => {
     expect(detailScrollRegion).toHaveClass('overflow-auto')
 
     const runSummaryPanel = screen.getByTestId('run-summary-panel')
+    const nowSection = screen.getByTestId('run-summary-section-now')
+    const outcomeSection = screen.getByTestId('run-summary-section-outcome')
+    const scopeSection = screen.getByTestId('run-summary-section-scope')
+    const usageSection = screen.getByTestId('run-summary-section-usage')
     const runActivityPanel = screen.getByTestId('run-activity-panel')
     const runTimelinePanel = screen.getByTestId('run-event-timeline-panel')
     const runAdvancedPanel = screen.getByTestId('run-advanced-panel')
     expect(screen.getByTestId('run-summary-spec-artifact-link')).toBeVisible()
     expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
     expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
+    expect(nowSection).toHaveTextContent('Now')
+    expect(outcomeSection).toHaveTextContent('Outcome')
+    expect(scopeSection).toHaveTextContent('Scope')
+    expect(usageSection).toHaveTextContent('Usage')
+    expect(screen.getByTestId('run-summary-now-current-node')).toHaveTextContent('validate')
+    expect(screen.getByTestId('run-summary-now-completed-nodes')).toHaveTextContent('1')
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-now-pending-questions')).toHaveTextContent('1')
+    })
+    expect(screen.getByTestId('run-summary-now-waiting-state')).toHaveTextContent('Operator input')
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-now-latest-journal')).toHaveTextContent('Stage validate started')
+    })
     expect(runActivityPanel).toBeVisible()
     expect(runTimelinePanel).toBeVisible()
     expect(runAdvancedPanel).toBeVisible()
@@ -621,6 +649,15 @@ describe('RunsPanel', () => {
     expect(runSummaryPanel).toContainElement(runActivityPanel)
     expect(
       runSummaryPanel.compareDocumentPosition(runTimelinePanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      nowSection.compareDocumentPosition(outcomeSection) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      outcomeSection.compareDocumentPosition(scopeSection) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      scopeSection.compareDocumentPosition(usageSection) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
       runTimelinePanel.compareDocumentPosition(runAdvancedPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -836,7 +873,7 @@ describe('RunsPanel', () => {
       expect(screen.getByTestId('run-summary-continue-button')).toBeVisible()
     })
 
-    expect(screen.getByTestId('run-summary-model')).toHaveTextContent('Launch model:')
+    expect(screen.getByTestId('run-summary-section-scope')).toHaveTextContent('/tmp/project-one')
 
     await user.click(screen.getByTestId('run-summary-continue-button'))
 
@@ -942,6 +979,138 @@ describe('RunsPanel', () => {
 
     expect(screen.queryByTestId('run-summary-continue-button')).not.toBeInTheDocument()
     expect(screen.getByTestId('run-summary-cancel-button')).toBeVisible()
+  })
+
+  it('keeps outcome, working directory, and lineage rows compact and conditional', async () => {
+    const failedRun = makeRun({
+      run_id: 'run-business-failure',
+      flow_name: 'failure.dot',
+      status: 'completed',
+      outcome: 'failure',
+      outcome_reason_message: 'Release gate rejected',
+      last_error: '',
+      working_directory: '/tmp/project-one',
+      project_path: '/tmp/project-one',
+      git_branch: null,
+      git_commit: null,
+    })
+    const lineageRun = makeRun({
+      run_id: 'run-lineage',
+      flow_name: 'lineage.dot',
+      status: 'completed',
+      outcome: 'success',
+      working_directory: '/srv/spark/worktrees/run-lineage',
+      project_path: '/tmp/project-one',
+      continued_from_run_id: 'run-source',
+      continued_from_node: 'review',
+      parent_run_id: 'run-parent',
+      parent_node_id: 'child_flow',
+      root_run_id: 'run-root',
+      child_invocation_index: 2,
+    })
+    const runsById = {
+      [failedRun.run_id]: failedRun,
+      [lineageRun.run_id]: lineageRun,
+    }
+
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [failedRun, lineageRun] })
+      }
+      const pipelineMatch = url.match(/\/attractor\/pipelines\/([^/]+)\/([^/?#]+)/)
+      const runId = pipelineMatch?.[1] ? decodeURIComponent(pipelineMatch[1]) : null
+      const resource = pipelineMatch?.[2] ?? null
+      if (runId && runId in runsById) {
+        if (resource === 'checkpoint') {
+          return jsonResponse({
+            pipeline_id: runId,
+            checkpoint: {
+              completed_nodes: ['prepare', 'execute'],
+              current_node: 'done',
+            },
+          })
+        }
+        if (resource === 'context') {
+          return jsonResponse({ pipeline_id: runId, context: {} })
+        }
+        if (resource === 'artifacts') {
+          return jsonResponse({ pipeline_id: runId, artifacts: [] })
+        }
+        if (resource === 'questions') {
+          return jsonResponse({ pipeline_id: runId, questions: [] })
+        }
+        if (resource === 'journal') {
+          return jsonResponse(makeJournalPage(runId, []))
+        }
+        if (resource === 'graph-preview') {
+          return jsonResponse({
+            status: 'ok',
+            graph: {
+              graph_attrs: {},
+              nodes: [
+                { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                { id: 'done', label: 'Done', shape: 'Msquare' },
+              ],
+              edges: [
+                { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              ],
+            },
+            diagnostics: [],
+            errors: [],
+          })
+        }
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('failure.dot')).toBeVisible()
+      expect(screen.getByText('lineage.dot')).toBeVisible()
+    })
+
+    await user.click(screen.getAllByTestId('run-history-row')[0]!)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-outcome')).toHaveTextContent('Failure')
+    })
+    expect(screen.getByTestId('run-summary-status')).toHaveTextContent('Completed')
+    expect(screen.getByTestId('run-summary-outcome-reason')).toHaveTextContent('Release gate rejected')
+    expect(screen.queryByTestId('run-summary-working-directory')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-summary-working-directory-note')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-summary-git-ref')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-summary-artifacts')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-summary-lineage')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-summary-last-error')).not.toBeInTheDocument()
+
+    await user.click(screen.getAllByTestId('run-history-row')[1]!)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('lineage.dot')
+    })
+    expect(screen.getByTestId('run-summary-working-directory-note')).toHaveTextContent('Working dir differs')
+    expect(screen.getByTestId('run-summary-working-directory-note')).toHaveTextContent('/srv/spark/worktrees/run-lineage')
+    expect(screen.getByTestId('run-summary-lineage')).toHaveTextContent('Continued from run-source @ review')
+    expect(screen.getByTestId('run-summary-lineage')).toHaveTextContent('Parent run-parent @ child_flow')
+    expect(screen.getByTestId('run-summary-lineage')).toHaveTextContent('Root run-root')
+    expect(screen.getByTestId('run-summary-lineage')).toHaveTextContent('Child invocation #2')
+    expect(screen.queryByTestId('run-summary-continued-from')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-summary-parent-run')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-summary-root-run')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-summary-child-invocation')).not.toBeInTheDocument()
   })
 
   it('converges the selected run summary, activity surface, and list row on authoritative run detail state', async () => {

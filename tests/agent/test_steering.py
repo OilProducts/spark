@@ -89,6 +89,7 @@ async def test_session_process_input_pauses_on_question_and_delays_follow_ups() 
     assert assistant_end_event.data == {
         "text": "Need more info?\n",
         "reasoning": None,
+        "response_id": "resp-1",
     }
     assert session.state == agent.SessionState.AWAITING_INPUT
     assert session.pending_question == "Need more info?\n"
@@ -120,6 +121,7 @@ async def test_session_process_input_pauses_on_question_and_delays_follow_ups() 
     assert answer_assistant_end.data == {
         "text": "Here is the answer",
         "reasoning": None,
+        "response_id": "resp-2",
     }
     follow_up_event = await _next_event(stream)
     assert follow_up_event.kind == agent.EventKind.USER_INPUT
@@ -137,6 +139,7 @@ async def test_session_process_input_pauses_on_question_and_delays_follow_ups() 
     assert follow_up_assistant_end.data == {
         "text": "Queued follow-up handled",
         "reasoning": None,
+        "response_id": "resp-3",
     }
     processing_end_event = await _next_event(stream)
     assert processing_end_event.kind == agent.EventKind.PROCESSING_END
@@ -225,6 +228,7 @@ async def test_session_process_input_replays_follow_ups_after_natural_completion
     assert first_assistant_end.data == {
         "text": "Initial reply",
         "reasoning": None,
+        "response_id": "resp-1",
     }
     first_follow_up = await _next_event(stream)
     assert first_follow_up.kind == agent.EventKind.USER_INPUT
@@ -242,6 +246,7 @@ async def test_session_process_input_replays_follow_ups_after_natural_completion
     assert second_assistant_end.data == {
         "text": "First queued reply",
         "reasoning": None,
+        "response_id": "resp-2",
     }
     second_follow_up = await _next_event(stream)
     assert second_follow_up.kind == agent.EventKind.USER_INPUT
@@ -259,6 +264,7 @@ async def test_session_process_input_replays_follow_ups_after_natural_completion
     assert third_assistant_end.data == {
         "text": "Second queued reply",
         "reasoning": None,
+        "response_id": "resp-3",
     }
     processing_end_event = await _next_event(stream)
     assert processing_end_event.kind == agent.EventKind.PROCESSING_END
@@ -338,6 +344,7 @@ async def test_session_process_input_drains_steering_in_fifo_order() -> None:
     assert assistant_end_event.data == {
         "text": "Assistant reply",
         "reasoning": None,
+        "response_id": "resp-1",
     }
     processing_end_event = await _next_event(stream)
     assert processing_end_event.kind == agent.EventKind.PROCESSING_END
@@ -403,6 +410,7 @@ async def test_session_process_input_allows_profile_text_completion_override() -
     assert assistant_end_event.data == {
         "text": "Need anything else",
         "reasoning": None,
+        "response_id": "resp-1",
     }
     assert session.state == agent.SessionState.AWAITING_INPUT
     assert session.pending_question == "Need anything else"

@@ -312,21 +312,6 @@ class RequestUserInputRecord:
 
 
 @dataclass
-class ChatTurnLiveEvent:
-    kind: str
-    content_delta: Optional[str] = None
-    message: Optional[str] = None
-    tool_call_id: Optional[str] = None
-    tool_call: Optional[ToolCallRecord] = None
-    app_turn_id: Optional[str] = None
-    item_id: Optional[str] = None
-    summary_index: Optional[int] = None
-    phase: Optional[str] = None
-    request_user_input: Optional[RequestUserInputRecord] = None
-    token_usage: Optional[dict[str, Any]] = None
-
-
-@dataclass
 class ChatTurnResult:
     assistant_message: str
     token_usage: Optional[dict[str, Any]] = None

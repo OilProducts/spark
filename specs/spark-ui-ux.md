@@ -189,12 +189,20 @@ The selected run summary, lifecycle badge, and detail surfaces must reconcile ag
 The runs list hydrates from `GET /runs` and then updates from `GET /runs/events`; it remains an overview/navigation surface rather than a second authority for the selected run.
 Selected-run inspection hydrates authoritative run detail from `GET /pipelines/{id}`, durable history from `GET /pipelines/{id}/journal`, and then live tail updates from `GET /pipelines/{id}/events`.
 The run summary should fold in current monitoring facts rather than relying on a separate `Run Activity` card.
+The selected-run summary should prioritize the operator questions `what is happening now?`, `did it work?`, `what work is this?`, and `what did it cost?` over launch-time or diagnostic metadata.
+It should render those answers as four ordered sections: `Now`, `Outcome`, `Scope`, and `Usage`.
+`Now` shows current lifecycle status, current node, latest journal summary, completed node count, pending question count, and retry or waiting signals when present.
+`Outcome` shows lifecycle status separately from workflow outcome, duration, start/end timestamps, and a failure or outcome reason only when the backend supplies one.
+`Scope` shows flow name, project path using the active-project fallback when needed, a compact git ref, spec/plan artifacts when present, and a compact lineage row only when continuation, parent/root, or child-flow lineage exists.
+`Usage` shows compact token and estimated-cost telemetry, including input/cached/output counts when detailed telemetry exists, cost notes when relevant, and an always-visible per-model breakdown when model rows exist.
+Working directory is diagnostic evidence rather than normal summary content; hide it unless it meaningfully differs from the project path, and then show only a compact difference note.
 The `Advanced` disclosure must be collapsed by default.
 Run Journal must use durable selected-run history from the journal endpoint, not only events observed while the tab was open.
 `GET /pipelines/{id}/events` is a live-tail SSE channel with optional `after_sequence` gap-fill; it is not the primary full-history API.
 Steady-state polling is not part of the Runs contract.
 The runs list must not show polling-era stale-data warnings or background-refresh affordances.
 Runs must own exactly one per-run SSE transport for the selected run; summary monitoring facts, journal live tail, node status, and pending human-gate state all share that transport.
+The future read-only Runs Progress surface must reuse this selected-run SSE ownership rather than opening a separate progress stream.
 
 ### 8.3 Bridge Surfaces
 
@@ -247,11 +255,13 @@ Conversation UX commitments include:
 - switching away from Home and back must preserve the selected thread, visible history, draft text, layout state, and expansion state
 - background assistant activity must continue to reconcile into the active thread session even while Home is hidden
 - returning to Home must not transiently drop the thread list or show a false `No threads` state while session-backed data is still restoring
-- normal assistant text rows in Home chat render markdown as a frontend presentation rule over existing string content
+- normal assistant text rows in Home chat render markdown from normalized `TurnStreamEvent` assistant content semantics as a frontend presentation rule over existing string content
 - user text, thinking summaries, tool rows, and inline flow artifact rows keep their literal or custom rendering paths
 - markdown links render as non-interactive label text until dedicated link handling exists
 
 The UI must not reconstruct chat cards from raw protocol notifications.
+
+A future Runs Progress view must be read-only and derived from persisted run or node LLM output, not an editable conversation. When that view renders persisted assistant output, it must use the same normalized content semantics and markdown/chat rendering rules as Home.
 
 ## 11. Review and Approval UX
 

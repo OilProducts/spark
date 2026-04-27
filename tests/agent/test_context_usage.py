@@ -155,7 +155,7 @@ async def test_context_warning_is_emitted_after_tool_results_push_history_over_t
     }
     assistant_end_event = await _next_event(stream)
     assert assistant_end_event.kind == agent.EventKind.ASSISTANT_TEXT_END
-    assert assistant_end_event.data == {"text": "tool", "reasoning": None}
+    assert assistant_end_event.data == {"text": "tool", "reasoning": None, "response_id": "resp-1"}
     tool_start_event = await _next_event(stream)
     assert tool_start_event.kind == agent.EventKind.TOOL_CALL_START
     tool_end_event = await _next_event(stream)

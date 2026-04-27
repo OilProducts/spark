@@ -164,7 +164,11 @@ async def test_session_process_input_streaming_emits_text_events_while_stream_is
     assert assistant_end_event.data == {
         "text": "Hello world!",
         "reasoning": None,
+        "response_id": "resp-1",
     }
+    usage_event = await _next_event(stream)
+    assert usage_event.kind == agent.EventKind.MODEL_USAGE_UPDATE
+    assert usage_event.data["usage"]["total_tokens"] == 6
     processing_end_event = await _next_event(stream)
     assert processing_end_event.kind == agent.EventKind.PROCESSING_END
     assert processing_end_event.data == {"state": "idle"}
@@ -361,12 +365,25 @@ async def test_session_process_input_streaming_reconstructs_text_and_metadata() 
     second_delta_event = await _next_event(stream)
     assert second_delta_event.kind == agent.EventKind.ASSISTANT_TEXT_DELTA
     assert second_delta_event.data == {"response_id": "resp-1", "delta": "world"}
+    reasoning_start_event = await _next_event(stream)
+    assert reasoning_start_event.kind == agent.EventKind.ASSISTANT_REASONING_START
+    assert reasoning_start_event.data == {"response_id": "resp-1"}
+    reasoning_delta_event = await _next_event(stream)
+    assert reasoning_delta_event.kind == agent.EventKind.ASSISTANT_REASONING_DELTA
+    assert reasoning_delta_event.data == {"response_id": "resp-1", "delta": "think"}
+    reasoning_end_event = await _next_event(stream)
+    assert reasoning_end_event.kind == agent.EventKind.ASSISTANT_REASONING_END
+    assert reasoning_end_event.data == {"response_id": "resp-1", "text": "think"}
     assistant_end_event = await _next_event(stream)
     assert assistant_end_event.kind == agent.EventKind.ASSISTANT_TEXT_END
     assert assistant_end_event.data == {
         "text": "Hello world!",
         "reasoning": "think",
+        "response_id": "resp-1",
     }
+    usage_event = await _next_event(stream)
+    assert usage_event.kind == agent.EventKind.MODEL_USAGE_UPDATE
+    assert usage_event.data["usage"]["total_tokens"] == 6
     processing_end_event = await _next_event(stream)
     assert processing_end_event.kind == agent.EventKind.PROCESSING_END
     assert processing_end_event.data == {"state": "idle"}
@@ -553,9 +570,21 @@ async def test_session_process_input_streaming_tool_round_preserves_result_order
     second_delta_event = await _next_event(stream)
     assert second_delta_event.kind == agent.EventKind.ASSISTANT_TEXT_DELTA
     assert second_delta_event.data == {"response_id": "resp-1", "delta": "tools"}
+    first_model_tool_start = await _next_event(stream)
+    assert first_model_tool_start.kind == agent.EventKind.MODEL_TOOL_CALL_START
+    assert first_model_tool_start.data["tool_call"]["id"] == "call-1"
+    first_model_tool_end = await _next_event(stream)
+    assert first_model_tool_end.kind == agent.EventKind.MODEL_TOOL_CALL_END
+    assert first_model_tool_end.data["tool_call"]["id"] == "call-1"
+    second_model_tool_start = await _next_event(stream)
+    assert second_model_tool_start.kind == agent.EventKind.MODEL_TOOL_CALL_START
+    assert second_model_tool_start.data["tool_call"]["id"] == "call-2"
+    second_model_tool_end = await _next_event(stream)
+    assert second_model_tool_end.kind == agent.EventKind.MODEL_TOOL_CALL_END
+    assert second_model_tool_end.data["tool_call"]["id"] == "call-2"
     assistant_end_event = await _next_event(stream)
     assert assistant_end_event.kind == agent.EventKind.ASSISTANT_TEXT_END
-    assert assistant_end_event.data == {"text": "Need tools!", "reasoning": None}
+    assert assistant_end_event.data == {"text": "Need tools!", "reasoning": None, "response_id": "resp-1"}
     first_tool_start = await _next_event(stream)
     assert first_tool_start.kind == agent.EventKind.TOOL_CALL_START
     assert first_tool_start.data == {"tool_call_id": "call-1", "tool_name": "first_tool"}
@@ -587,7 +616,10 @@ async def test_session_process_input_streaming_tool_round_preserves_result_order
     assert third_assistant_delta.data == {"response_id": "resp-2", "delta": "done"}
     second_assistant_end = await _next_event(stream)
     assert second_assistant_end.kind == agent.EventKind.ASSISTANT_TEXT_END
-    assert second_assistant_end.data == {"text": "All done.", "reasoning": None}
+    assert second_assistant_end.data == {"text": "All done.", "reasoning": None, "response_id": "resp-2"}
+    usage_event = await _next_event(stream)
+    assert usage_event.kind == agent.EventKind.MODEL_USAGE_UPDATE
+    assert usage_event.data["usage"]["total_tokens"] == 8
     processing_end_event = await _next_event(stream)
     assert processing_end_event.kind == agent.EventKind.PROCESSING_END
     assert processing_end_event.data == {"state": "idle"}
@@ -714,7 +746,7 @@ async def test_session_process_input_streaming_error_closes_session_and_records_
     }
     assistant_end_event = await _next_event(stream)
     assert assistant_end_event.kind == agent.EventKind.ASSISTANT_TEXT_END
-    assert assistant_end_event.data == {"text": "partial", "reasoning": None}
+    assert assistant_end_event.data == {"text": "partial", "reasoning": None, "response_id": "resp-err"}
     error_event = await _next_event(stream)
     assert error_event.kind == agent.EventKind.ERROR
     assert error_event.data == {"error": "boom"}

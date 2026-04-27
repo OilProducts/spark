@@ -413,7 +413,7 @@ class Session:
     ) -> None:
         self._emit_assistant_text_start(response_id)
         self._emit_assistant_text_delta(response_text, response_id)
-        self._emit_assistant_text_end(response_text, reasoning)
+        self._emit_assistant_text_end(response_text, reasoning, response_id)
 
     def _emit_assistant_text_start(self, response_id: str | None = None) -> None:
         payload: dict[str, Any] = {}
@@ -431,11 +431,62 @@ class Session:
             payload["response_id"] = response_id
         self._emit_event(EventKind.ASSISTANT_TEXT_DELTA, payload)
 
-    def _emit_assistant_text_end(self, text: str, reasoning: str | None) -> None:
-        self._emit_event(
-            EventKind.ASSISTANT_TEXT_END,
-            {"text": text, "reasoning": reasoning},
-        )
+    def _emit_assistant_text_end(
+        self,
+        text: str,
+        reasoning: str | None,
+        response_id: str | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"text": text, "reasoning": reasoning}
+        if response_id not in (None, ""):
+            payload["response_id"] = response_id
+        self._emit_event(EventKind.ASSISTANT_TEXT_END, payload)
+
+    def _emit_assistant_reasoning_start(self, response_id: str | None = None) -> None:
+        payload: dict[str, Any] = {}
+        if response_id not in (None, ""):
+            payload["response_id"] = response_id
+        self._emit_event(EventKind.ASSISTANT_REASONING_START, payload)
+
+    def _emit_assistant_reasoning_delta(self, delta: str, response_id: str | None = None) -> None:
+        payload: dict[str, Any] = {"delta": delta}
+        if response_id not in (None, ""):
+            payload["response_id"] = response_id
+        self._emit_event(EventKind.ASSISTANT_REASONING_DELTA, payload)
+
+    def _emit_assistant_reasoning_end(self, text: str | None, response_id: str | None = None) -> None:
+        payload: dict[str, Any] = {"text": text}
+        if response_id not in (None, ""):
+            payload["response_id"] = response_id
+        self._emit_event(EventKind.ASSISTANT_REASONING_END, payload)
+
+    def _model_tool_call_payload(self, stream_event: Any, response_id: str | None) -> dict[str, Any]:
+        tool_call = getattr(stream_event, "tool_call", None)
+        payload: dict[str, Any] = {}
+        if response_id not in (None, ""):
+            payload["response_id"] = response_id
+        if tool_call is not None:
+            payload["tool_call"] = {
+                "id": getattr(tool_call, "id", ""),
+                "name": getattr(tool_call, "name", ""),
+                "arguments": getattr(tool_call, "arguments", None),
+                "raw_arguments": getattr(tool_call, "raw_arguments", None),
+                "type": getattr(tool_call, "type", "function"),
+            }
+        if getattr(stream_event, "delta", None) is not None:
+            payload["delta"] = stream_event.delta
+        return payload
+
+    def _usage_payload(self, usage: Any) -> dict[str, Any]:
+        return {
+            "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+            "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+            "reasoning_tokens": getattr(usage, "reasoning_tokens", None),
+            "cache_read_tokens": getattr(usage, "cache_read_tokens", None),
+            "cache_write_tokens": getattr(usage, "cache_write_tokens", None),
+            "raw": getattr(usage, "raw", None),
+        }
 
     def _assistant_turn_from_response(
         self,
@@ -646,7 +697,9 @@ class Session:
             provider=request.provider or "",
         )
         assistant_text_started = False
+        assistant_reasoning_started = False
         response_id: str | None = None
+        pending_usage_payload: dict[str, Any] | None = None
         async for stream_event in self.client.stream(request):
             accumulator.add(stream_event)
             current_response_id = accumulator.response.id or response_id
@@ -672,11 +725,54 @@ class Session:
             if stream_event.type == StreamEventType.TEXT_END and not assistant_text_started:
                 self._emit_assistant_text_start(response_id)
                 assistant_text_started = True
+                continue
+
+            if stream_event.type == StreamEventType.REASONING_START:
+                if not assistant_reasoning_started:
+                    self._emit_assistant_reasoning_start(response_id)
+                    assistant_reasoning_started = True
+                delta = stream_event.reasoning_delta if stream_event.reasoning_delta is not None else stream_event.delta
+                if delta is not None:
+                    self._emit_assistant_reasoning_delta(delta, response_id)
+                continue
+
+            if stream_event.type == StreamEventType.REASONING_DELTA:
+                if not assistant_reasoning_started:
+                    self._emit_assistant_reasoning_start(response_id)
+                    assistant_reasoning_started = True
+                delta = stream_event.reasoning_delta if stream_event.reasoning_delta is not None else stream_event.delta
+                if delta is not None:
+                    self._emit_assistant_reasoning_delta(delta, response_id)
+                continue
+
+            if stream_event.type == StreamEventType.REASONING_END:
+                if not assistant_reasoning_started:
+                    self._emit_assistant_reasoning_start(response_id)
+                    assistant_reasoning_started = True
+                self._emit_assistant_reasoning_end(accumulator.response.reasoning, response_id)
+                continue
+
+            if stream_event.type == StreamEventType.TOOL_CALL_START:
+                self._emit_event(EventKind.MODEL_TOOL_CALL_START, self._model_tool_call_payload(stream_event, response_id))
+                continue
+
+            if stream_event.type == StreamEventType.TOOL_CALL_DELTA:
+                self._emit_event(EventKind.MODEL_TOOL_CALL_DELTA, self._model_tool_call_payload(stream_event, response_id))
+                continue
+
+            if stream_event.type == StreamEventType.TOOL_CALL_END:
+                self._emit_event(EventKind.MODEL_TOOL_CALL_END, self._model_tool_call_payload(stream_event, response_id))
+                continue
+
+            if stream_event.type == StreamEventType.FINISH and stream_event.usage is not None:
+                pending_usage_payload = self._usage_payload(stream_event.usage)
+                continue
 
         if assistant_text_started:
             self._emit_assistant_text_end(
                 accumulator.response.text,
                 accumulator.response.reasoning,
+                response_id,
             )
         else:
             self._emit_assistant_text_events(
@@ -684,6 +780,8 @@ class Session:
                 reasoning=accumulator.response.reasoning,
                 response_id=response_id,
             )
+        if pending_usage_payload is not None:
+            self._emit_event(EventKind.MODEL_USAGE_UPDATE, {"usage": pending_usage_payload})
         return accumulator.response, accumulator.error
 
     async def _model_response(self, request: Request) -> tuple[Response, BaseException | None]:

@@ -37,11 +37,12 @@ from attractor.engine.context import Context
 from attractor.engine.context_contracts import ContextWriteContract
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from attractor.handlers.base import CodergenBackend
+from spark_common.turn_stream import TurnStreamEvent
 from unified_llm.client import Client as UnifiedLlmClient
 from unified_llm.models import get_latest_model, get_model_info
 from unified_llm.types import Usage
 from spark_common.codex_app_client import CodexAppServerClient
-from spark_common import codex_app_server
+from spark_common import codex_app_protocol
 from spark_common.runtime_path import resolve_runtime_workspace_path
 
 class CodexAppServerBackend(CodergenBackend):
@@ -241,7 +242,7 @@ class CodexAppServerBackend(CodergenBackend):
         previous_total: TokenUsageBucket | None = None
         saw_usage_update = False
 
-        def handle_turn_event(event: codex_app_server.CodexAppServerTurnEvent) -> None:
+        def handle_turn_event(event: TurnStreamEvent) -> None:
             nonlocal previous_total, saw_usage_update
             if event.kind != "token_usage_updated" or event.token_usage is None:
                 return

@@ -75,6 +75,13 @@ const mergeSelectedRunTelemetry = (currentRecord: RunRecord, summaryRecord: RunR
 
 const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
+const summarizeCompletedNodeCount = (completedNodesSummary: string) => {
+    if (completedNodesSummary === '—') {
+        return '0'
+    }
+    return String(completedNodesSummary.split(',').map((node) => node.trim()).filter(Boolean).length)
+}
+
 export function RunsPanel() {
     const isNarrowViewport = useNarrowViewport()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -277,7 +284,7 @@ export function RunsPanel() {
             {
                 id: 'completed-nodes',
                 label: 'Completed nodes',
-                value: checkpointCompletedNodes === '—' ? '0' : checkpointCompletedNodes,
+                value: summarizeCompletedNodeCount(checkpointCompletedNodes),
                 testId: 'run-summary-now-completed-nodes',
             },
             {
@@ -292,6 +299,14 @@ export function RunsPanel() {
                 value: latestTimelineEvent ? latestTimelineEvent.summary : '—',
                 testId: 'run-summary-now-latest-journal',
             },
+            ...(visiblePendingInterviewGates.length > 0
+                ? [{
+                    id: 'waiting-state',
+                    label: 'Waiting on',
+                    value: 'Operator input',
+                    testId: 'run-summary-now-waiting-state',
+                }]
+                : []),
             ...(retryState
                 ? [{
                     id: 'retry-state',

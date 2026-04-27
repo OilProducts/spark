@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import type { RunRecord } from '../model/shared'
 import {
@@ -58,6 +59,90 @@ function formatEstimatedModelCostNote(run: RunRecord): string | null {
     return `${label}: ${estimatedCost.unpriced_models.join(', ')}`
 }
 
+function compactPath(value: string): string {
+    return value.trim().replace(/\/+$/, '') || value.trim()
+}
+
+function shouldShowWorkingDirectoryDifference(run: RunRecord, activeProjectPath: string | null): boolean {
+    const workingDirectory = run.working_directory ? compactPath(run.working_directory) : ''
+    const projectPath = run.project_path || activeProjectPath || ''
+    const compactProjectPath = projectPath ? compactPath(projectPath) : ''
+    return Boolean(workingDirectory && compactProjectPath && workingDirectory !== compactProjectPath)
+}
+
+function formatGitRef(run: RunRecord): string | null {
+    const branch = run.git_branch?.trim()
+    const commit = run.git_commit?.trim()
+    if (branch && commit) {
+        return `${branch} @ ${commit.slice(0, 7)}`
+    }
+    return branch || (commit ? commit.slice(0, 7) : null)
+}
+
+function formatLineage(run: RunRecord): string | null {
+    const lineageParts: string[] = []
+    if (run.continued_from_run_id) {
+        lineageParts.push(`Continued from ${run.continued_from_run_id}${run.continued_from_node ? ` @ ${run.continued_from_node}` : ''}`)
+    }
+    if (run.parent_run_id) {
+        lineageParts.push(`Parent ${run.parent_run_id}${run.parent_node_id ? ` @ ${run.parent_node_id}` : ''}`)
+    }
+    if (run.root_run_id && run.root_run_id !== run.run_id) {
+        lineageParts.push(`Root ${run.root_run_id}`)
+    }
+    if (run.child_invocation_index !== null && run.child_invocation_index !== undefined) {
+        lineageParts.push(`Child invocation #${run.child_invocation_index}`)
+    }
+    return lineageParts.length > 0 ? lineageParts.join(' · ') : null
+}
+
+function formatOutcomeReason(run: RunRecord): string | null {
+    const reasonMessage = run.outcome_reason_message?.trim()
+    const reasonCode = run.outcome_reason_code?.trim()
+    if (reasonMessage && reasonCode) {
+        return `${reasonMessage} (${reasonCode})`
+    }
+    if (reasonMessage || reasonCode) {
+        return reasonMessage || reasonCode || null
+    }
+    return run.last_error?.trim() || null
+}
+
+function SummarySection({
+    children,
+    testId,
+    title,
+}: {
+    children: ReactNode
+    testId: string
+    title: string
+}) {
+    return (
+        <section data-testid={testId} className="space-y-3 rounded-md border border-border/70 bg-muted/20 px-3 py-3">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h4>
+            {children}
+        </section>
+    )
+}
+
+function SummaryRow({
+    children,
+    className = '',
+    label,
+    testId,
+}: {
+    children: ReactNode
+    className?: string
+    label: string
+    testId: string
+}) {
+    return (
+        <div data-testid={testId} className={`text-sm ${className}`}>
+            <span className="font-medium text-foreground">{label}:</span> {children}
+        </div>
+    )
+}
+
 interface RunSummaryCardProps {
     run: RunRecord
     activeProjectPath: string | null
@@ -93,6 +178,12 @@ export function RunSummaryCard({
     const retryAvailable = canRetryRun(run.status)
     const usageBreakdown = run.token_usage_breakdown
     const modelUsageEntries = Object.entries(usageBreakdown?.by_model ?? {})
+    const projectPath = run.project_path || activeProjectPath || '—'
+    const gitRef = formatGitRef(run)
+    const lineage = formatLineage(run)
+    const outcomeReason = formatOutcomeReason(run)
+    const costNote = formatEstimatedModelCostNote(run)
+    const showWorkingDirectoryDifference = shouldShowWorkingDirectoryDifference(run, activeProjectPath)
     return (
         <Card data-testid="run-summary-panel" className="gap-4 py-4">
             <CardHeader className="gap-1 px-4">
@@ -100,7 +191,7 @@ export function RunSummaryCard({
                     <div className="min-w-0 space-y-1">
                         <h3 className="text-sm font-semibold text-foreground">Run Summary</h3>
                         <p className="text-xs leading-5 text-muted-foreground">
-                            Execution metadata, scope, and final outcome.
+                            Current activity, outcome, scope, and usage.
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -115,138 +206,190 @@ export function RunSummaryCard({
             </CardHeader>
             {!collapsed ? (
                 <CardContent className="space-y-4 px-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
-                        {run.spec_id ? (
-                            <span
-                                data-testid="run-summary-spec-artifact-link"
-                                className="font-mono text-xs text-muted-foreground"
-                                title={run.spec_id}
-                            >
-                                Spec {run.spec_id}
-                            </span>
-                        ) : null}
-                        {run.plan_id ? (
-                            <span
-                                data-testid="run-summary-plan-artifact-link"
-                                className="font-mono text-xs text-muted-foreground"
-                                title={run.plan_id}
-                            >
-                                Plan {run.plan_id}
-                            </span>
-                        ) : null}
-                        </div>
-                        <div className="flex items-center gap-2">
-                            {continueAvailable ? (
-                                <Button
-                                    type="button"
-                                    data-testid="run-summary-continue-button"
-                                    onClick={() => onContinueFromRun(run)}
-                                    variant="outline"
-                                    size="xs"
-                                >
-                                    Continue from node
-                                </Button>
-                            ) : null}
-                            {retryAvailable ? (
-                                <Button
-                                    type="button"
-                                    data-testid="run-summary-retry-button"
-                                    onClick={() => onRequestRetry(run.run_id, run.status)}
-                                    variant="secondary"
-                                    size="xs"
-                                >
-                                    Retry run
-                                </Button>
-                            ) : null}
+                    <div className="flex flex-wrap justify-end gap-2">
+                        {continueAvailable ? (
                             <Button
                                 type="button"
-                                data-testid="run-summary-cancel-button"
-                                onClick={() => onRequestCancel(run.run_id, run.status)}
-                                disabled={!cancelAvailable}
-                                title={cancelAvailable ? undefined : cancelRunDisabledReason(run.status)}
-                                variant={cancelAvailable ? 'destructive' : 'outline'}
+                                data-testid="run-summary-continue-button"
+                                onClick={() => onContinueFromRun(run)}
+                                variant="outline"
                                 size="xs"
                             >
-                                {cancelRunActionLabel(run.status)}
+                                Continue from node
                             </Button>
-                        </div>
-                </div>
-                <div className="grid gap-x-6 gap-y-2 text-sm md:grid-cols-2">
-                <div data-testid="run-activity-panel" className="md:col-span-2 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Now</div>
-                        <div data-testid="run-activity-status" className="text-xs text-muted-foreground">
-                            {STATUS_LABELS[run.status] || run.status}
-                        </div>
+                        ) : null}
+                        {retryAvailable ? (
+                            <Button
+                                type="button"
+                                data-testid="run-summary-retry-button"
+                                onClick={() => onRequestRetry(run.run_id, run.status)}
+                                variant="secondary"
+                                size="xs"
+                            >
+                                Retry run
+                            </Button>
+                        ) : null}
+                        <Button
+                            type="button"
+                            data-testid="run-summary-cancel-button"
+                            onClick={() => onRequestCancel(run.run_id, run.status)}
+                            disabled={!cancelAvailable}
+                            title={cancelAvailable ? undefined : cancelRunDisabledReason(run.status)}
+                            variant={cancelAvailable ? 'destructive' : 'outline'}
+                            size="xs"
+                        >
+                            {cancelRunActionLabel(run.status)}
+                        </Button>
                     </div>
-                    <div data-testid="run-activity-headline" className="mt-1 text-sm text-foreground">{monitoringHeadline}</div>
-                    {monitoringFacts.length > 0 ? (
-                        <div className="mt-2 grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
-                            {monitoringFacts.map((fact) => (
-                                <div key={fact.id} data-testid={fact.testId}>
-                                    <span className="font-medium text-foreground">{fact.label}:</span> {fact.value}
+                    <div className="grid gap-4 xl:grid-cols-2">
+                        <SummarySection testId="run-summary-section-now" title="Now">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div data-testid="run-activity-headline" className="text-sm font-medium text-foreground">
+                                    {monitoringHeadline}
                                 </div>
-                            ))}
-                        </div>
-                    ) : null}
-                </div>
-                <div data-testid="run-summary-status"><span className="font-medium">Status:</span> {STATUS_LABELS[run.status] || run.status}</div>
-                <div data-testid="run-summary-outcome"><span className="font-medium">Outcome:</span> {formatOutcomeLabel(run.outcome)}</div>
-                <div data-testid="run-summary-flow-name"><span className="font-medium">Flow:</span> {run.flow_name || 'Untitled'}</div>
-                <div data-testid="run-summary-started-at"><span className="font-medium">Started:</span> {formatTimestamp(run.started_at)}</div>
-                <div data-testid="run-summary-ended-at"><span className="font-medium">Ended:</span> {formatTimestamp(run.ended_at)}</div>
-                <div data-testid="run-summary-duration"><span className="font-medium">Duration:</span> {formatDuration(run.started_at, run.ended_at, run.status, now)}</div>
-                <div data-testid="run-summary-model"><span className="font-medium">Launch model:</span> {run.model || 'default model'}</div>
-                <div data-testid="run-summary-working-directory" className="break-all"><span className="font-medium">Working Dir:</span> {run.working_directory || '—'}</div>
-                <div data-testid="run-summary-project-path" className="break-all"><span className="font-medium">Project Path:</span> {run.project_path || activeProjectPath || '—'}</div>
-                <div data-testid="run-summary-git-branch"><span className="font-medium">Git Branch:</span> {run.git_branch || '—'}</div>
-                <div data-testid="run-summary-git-commit"><span className="font-medium">Git Commit:</span> {run.git_commit || '—'}</div>
-                <div data-testid="run-summary-continued-from"><span className="font-medium">Continued From:</span> {run.continued_from_run_id ? `${run.continued_from_run_id} @ ${run.continued_from_node || '—'}` : '—'}</div>
-                <div data-testid="run-summary-parent-run"><span className="font-medium">Parent Run:</span> {run.parent_run_id ? `${run.parent_run_id} @ ${run.parent_node_id || '—'}` : '—'}</div>
-                <div data-testid="run-summary-root-run"><span className="font-medium">Root Run:</span> {run.root_run_id || '—'}</div>
-                <div data-testid="run-summary-child-invocation"><span className="font-medium">Child Invocation:</span> {run.child_invocation_index ?? '—'}</div>
-                <div data-testid="run-summary-last-error" className="break-all"><span className="font-medium">Last Error:</span> {run.last_error || '—'}</div>
-                <div data-testid="run-summary-estimated-model-cost"><span className="font-medium">Estimated model cost:</span> {formatEstimatedModelCostLabel(run)}</div>
-                <div data-testid="run-summary-token-usage"><span className="font-medium">Total tokens:</span> {formatTokenCount(usageBreakdown?.total_tokens ?? run.token_usage)}</div>
-                <div data-testid="run-summary-input-tokens"><span className="font-medium">Input tokens:</span> {formatTokenCount(usageBreakdown?.input_tokens)}</div>
-                <div data-testid="run-summary-cached-input-tokens"><span className="font-medium">Cached input tokens:</span> {formatTokenCount(usageBreakdown?.cached_input_tokens)}</div>
-                <div data-testid="run-summary-output-tokens"><span className="font-medium">Output tokens:</span> {formatTokenCount(usageBreakdown?.output_tokens)}</div>
-                </div>
-                {formatEstimatedModelCostNote(run) ? (
-                    <div data-testid="run-summary-estimated-model-cost-note" className="text-xs text-muted-foreground">
-                        {formatEstimatedModelCostNote(run)}
-                    </div>
-                ) : null}
-                {modelUsageEntries.length > 0 ? (
-                    <div data-testid="run-summary-model-breakdown" className="space-y-2 rounded-md border border-border/70 bg-muted/20 p-3">
-                        <div className="text-sm font-medium">Per-model breakdown</div>
-                        <div className="space-y-2">
-                            {modelUsageEntries.map(([modelId, usage]) => {
-                                const modelCost = run.estimated_model_cost?.by_model?.[modelId]
-                                const modelCostLabel = modelCost?.status === 'estimated'
-                                    ? formatEstimatedCost(modelCost.amount, modelCost.currency)
-                                    : 'Unpriced'
-                                return (
-                                    <div
-                                        key={modelId}
-                                        data-testid="run-summary-model-row"
-                                        className="rounded-sm border border-border/70 bg-background/70 px-3 py-2 text-sm"
-                                    >
-                                        <div className="font-mono text-xs text-muted-foreground">{modelId}</div>
-                                        <div className="mt-1 grid gap-x-4 gap-y-1 md:grid-cols-5">
-                                            <div><span className="font-medium">Input:</span> {formatTokenCount(usage.input_tokens)}</div>
-                                            <div><span className="font-medium">Cached:</span> {formatTokenCount(usage.cached_input_tokens)}</div>
-                                            <div><span className="font-medium">Output:</span> {formatTokenCount(usage.output_tokens)}</div>
-                                            <div><span className="font-medium">Total:</span> {formatTokenCount(usage.total_tokens)}</div>
-                                            <div><span className="font-medium">Cost:</span> {modelCostLabel}</div>
-                                        </div>
+                                <div data-testid="run-activity-status" className="text-xs text-muted-foreground">
+                                    {STATUS_LABELS[run.status] || run.status}
+                                </div>
+                            </div>
+                            <div data-testid="run-activity-panel" className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                                {monitoringFacts.map((fact) => (
+                                    <div key={fact.id} data-testid={fact.testId}>
+                                        <span className="font-medium text-foreground">{fact.label}:</span> {fact.value}
                                     </div>
-                                )
-                            })}
-                        </div>
+                                ))}
+                            </div>
+                        </SummarySection>
+                        <SummarySection testId="run-summary-section-outcome" title="Outcome">
+                            <div className="grid gap-x-4 gap-y-2 md:grid-cols-2">
+                                <SummaryRow testId="run-summary-status" label="Status">
+                                    {STATUS_LABELS[run.status] || run.status}
+                                </SummaryRow>
+                                <SummaryRow testId="run-summary-outcome" label="Outcome">
+                                    {formatOutcomeLabel(run.outcome)}
+                                </SummaryRow>
+                                <SummaryRow testId="run-summary-duration" label="Duration">
+                                    {formatDuration(run.started_at, run.ended_at, run.status, now)}
+                                </SummaryRow>
+                                <SummaryRow testId="run-summary-started-at" label="Started">
+                                    {formatTimestamp(run.started_at)}
+                                </SummaryRow>
+                                <SummaryRow testId="run-summary-ended-at" label="Ended">
+                                    {formatTimestamp(run.ended_at)}
+                                </SummaryRow>
+                                {outcomeReason ? (
+                                    <SummaryRow testId="run-summary-outcome-reason" label="Reason" className="break-all md:col-span-2">
+                                        {outcomeReason}
+                                    </SummaryRow>
+                                ) : null}
+                            </div>
+                        </SummarySection>
+                        <SummarySection testId="run-summary-section-scope" title="Scope">
+                            <div className="grid gap-x-4 gap-y-2 md:grid-cols-2">
+                                <SummaryRow testId="run-summary-flow-name" label="Flow">
+                                    {run.flow_name || 'Untitled'}
+                                </SummaryRow>
+                                <SummaryRow testId="run-summary-project-path" label="Project" className="break-all">
+                                    {projectPath}
+                                </SummaryRow>
+                                {gitRef ? (
+                                    <SummaryRow testId="run-summary-git-ref" label="Git">
+                                        {gitRef}
+                                    </SummaryRow>
+                                ) : null}
+                                {run.spec_id || run.plan_id ? (
+                                    <SummaryRow testId="run-summary-artifacts" label="Artifacts" className="md:col-span-2">
+                                        <span className="inline-flex flex-wrap gap-2">
+                                            {run.spec_id ? (
+                                                <span
+                                                    data-testid="run-summary-spec-artifact-link"
+                                                    className="font-mono text-xs text-muted-foreground"
+                                                    title={run.spec_id}
+                                                >
+                                                    Spec {run.spec_id}
+                                                </span>
+                                            ) : null}
+                                            {run.plan_id ? (
+                                                <span
+                                                    data-testid="run-summary-plan-artifact-link"
+                                                    className="font-mono text-xs text-muted-foreground"
+                                                    title={run.plan_id}
+                                                >
+                                                    Plan {run.plan_id}
+                                                </span>
+                                            ) : null}
+                                        </span>
+                                    </SummaryRow>
+                                ) : null}
+                                {lineage ? (
+                                    <SummaryRow testId="run-summary-lineage" label="Lineage" className="md:col-span-2">
+                                        {lineage}
+                                    </SummaryRow>
+                                ) : null}
+                                {showWorkingDirectoryDifference ? (
+                                    <SummaryRow testId="run-summary-working-directory-note" label="Working dir differs" className="break-all md:col-span-2">
+                                        {run.working_directory}
+                                    </SummaryRow>
+                                ) : null}
+                            </div>
+                        </SummarySection>
+                        <SummarySection testId="run-summary-section-usage" title="Usage">
+                            <div className="grid gap-x-4 gap-y-2 md:grid-cols-2">
+                                <SummaryRow testId="run-summary-token-usage" label="Total tokens">
+                                    {formatTokenCount(usageBreakdown?.total_tokens ?? run.token_usage)}
+                                </SummaryRow>
+                                <SummaryRow testId="run-summary-estimated-model-cost" label="Estimated cost">
+                                    {formatEstimatedModelCostLabel(run)}
+                                </SummaryRow>
+                                {usageBreakdown ? (
+                                    <>
+                                        <SummaryRow testId="run-summary-input-tokens" label="Input tokens">
+                                            {formatTokenCount(usageBreakdown.input_tokens)}
+                                        </SummaryRow>
+                                        <SummaryRow testId="run-summary-cached-input-tokens" label="Cached input tokens">
+                                            {formatTokenCount(usageBreakdown.cached_input_tokens)}
+                                        </SummaryRow>
+                                        <SummaryRow testId="run-summary-output-tokens" label="Output tokens">
+                                            {formatTokenCount(usageBreakdown.output_tokens)}
+                                        </SummaryRow>
+                                    </>
+                                ) : null}
+                            </div>
+                            {costNote ? (
+                                <div data-testid="run-summary-estimated-model-cost-note" className="text-xs text-muted-foreground">
+                                    {costNote}
+                                </div>
+                            ) : null}
+                            {modelUsageEntries.length > 0 ? (
+                                <div data-testid="run-summary-model-breakdown" className="space-y-2 rounded-md border border-border/70 bg-background/70 p-3">
+                                    <div className="text-sm font-medium">Per-model breakdown</div>
+                                    <div className="space-y-2">
+                                        {modelUsageEntries.map(([modelId, usage]) => {
+                                            const modelCost = run.estimated_model_cost?.by_model?.[modelId]
+                                            const modelCostLabel = modelCost?.status === 'estimated'
+                                                ? formatEstimatedCost(modelCost.amount, modelCost.currency)
+                                                : 'Unpriced'
+                                            return (
+                                                <div
+                                                    key={modelId}
+                                                    data-testid="run-summary-model-row"
+                                                    className="rounded-sm border border-border/70 bg-card px-3 py-2 text-sm"
+                                                >
+                                                    <div className="font-mono text-xs text-muted-foreground">{modelId}</div>
+                                                    <div className="mt-1 grid gap-x-4 gap-y-1 md:grid-cols-5">
+                                                        <div><span className="font-medium">Input:</span> {formatTokenCount(usage.input_tokens)}</div>
+                                                        <div><span className="font-medium">Cached:</span> {formatTokenCount(usage.cached_input_tokens)}</div>
+                                                        <div><span className="font-medium">Output:</span> {formatTokenCount(usage.output_tokens)}</div>
+                                                        <div><span className="font-medium">Total:</span> {formatTokenCount(usage.total_tokens)}</div>
+                                                        <div><span className="font-medium">Cost:</span> {modelCostLabel}</div>
+                                                    </div>
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                </div>
+                            ) : null}
+                        </SummarySection>
                     </div>
-                ) : null}
                 </CardContent>
             ) : null}
         </Card>

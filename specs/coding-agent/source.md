@@ -119,6 +119,8 @@ This spec assumes the companion Unified LLM Client Specification is implemented.
 
 The agent builds `Request` objects, calls `Client.complete()` or `Client.stream()`, processes the `Response`, executes any `ToolCall` objects through the execution environment, constructs `ToolResult` objects, appends them to the conversation, and loops.
 
+When consuming `StreamEvent` values, the agent converts provider text, reasoning, model-proposed tool calls, and finish usage into `SessionEvent` values. Assistant text uses `ASSISTANT_TEXT_*`, assistant reasoning uses `ASSISTANT_REASONING_*`, model-proposed tool calls use `MODEL_TOOL_CALL_*`, and finish usage uses `MODEL_USAGE_UPDATE`. These model-proposed tool-call events are separate from actual tool execution events, which remain `TOOL_CALL_START`, optional `TOOL_CALL_OUTPUT_DELTA`, and `TOOL_CALL_END`.
+
 ---
 
 ## 2. Agentic Loop

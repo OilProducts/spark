@@ -31,7 +31,6 @@ from spark.chat.session import (
 )
 from spark.workspace.conversations.artifacts import ProjectChatReviewService
 from spark.workspace.conversations.models import (
-    ChatTurnLiveEvent,
     ChatTurnResult,
     ConversationSegment,
     ConversationSegmentSource,
@@ -51,6 +50,7 @@ from spark.workspace.conversations.models import (
     validate_chat_mode,
     validate_reasoning_effort,
 )
+from spark_common.turn_stream import TurnStreamEvent, TurnStreamSource
 from spark.workspace.conversations.repository import ProjectChatRepository
 from spark.workspace.conversations.utils import (
     as_non_empty_string as _as_non_empty_string,
@@ -415,48 +415,48 @@ class ProjectChatService:
 
     def _build_segment_source(
         self,
-        event: ChatTurnLiveEvent,
+        event: TurnStreamEvent,
         *,
         tool_call_id: Optional[str] = None,
     ) -> ConversationSegmentSource:
         return ConversationSegmentSource(
-            app_turn_id=event.app_turn_id,
-            item_id=event.item_id,
-            summary_index=event.summary_index,
-            call_id=tool_call_id or event.tool_call_id,
+            app_turn_id=event.source.app_turn_id,
+            item_id=event.source.item_id,
+            summary_index=event.source.summary_index,
+            call_id=tool_call_id or (event.tool_call.id if isinstance(event.tool_call, ToolCallRecord) else None),
         )
 
-    def _build_reasoning_segment_id(self, turn_id: str, event: ChatTurnLiveEvent) -> str:
-        app_turn_id = event.app_turn_id or turn_id
-        item_id = event.item_id or "reasoning"
-        summary_index = event.summary_index if event.summary_index is not None else 0
+    def _build_reasoning_segment_id(self, turn_id: str, event: TurnStreamEvent) -> str:
+        app_turn_id = event.source.app_turn_id or turn_id
+        item_id = event.source.item_id or "reasoning"
+        summary_index = event.source.summary_index if event.source.summary_index is not None else 0
         return f"segment-reasoning-{app_turn_id}-{item_id}-{summary_index}"
 
-    def _build_assistant_segment_id(self, turn_id: str, event: ChatTurnLiveEvent) -> str:
-        if event.app_turn_id and event.item_id:
-            return f"segment-assistant-{event.app_turn_id}-{event.item_id}"
+    def _build_assistant_segment_id(self, turn_id: str, event: TurnStreamEvent) -> str:
+        if event.source.app_turn_id and event.source.item_id:
+            return f"segment-assistant-{event.source.app_turn_id}-{event.source.item_id}"
         return f"segment-assistant-{turn_id}"
 
-    def _build_plan_segment_id(self, turn_id: str, event: ChatTurnLiveEvent) -> str:
-        if event.app_turn_id and event.item_id:
-            return f"segment-plan-{event.app_turn_id}-{event.item_id}"
+    def _build_plan_segment_id(self, turn_id: str, event: TurnStreamEvent) -> str:
+        if event.source.app_turn_id and event.source.item_id:
+            return f"segment-plan-{event.source.app_turn_id}-{event.source.item_id}"
         return f"segment-plan-{turn_id}"
 
-    def _build_tool_segment_id(self, turn_id: str, event: ChatTurnLiveEvent) -> str:
-        app_turn_id = event.app_turn_id or turn_id
-        call_id = event.tool_call_id or event.item_id or "tool"
+    def _build_tool_segment_id(self, turn_id: str, event: TurnStreamEvent) -> str:
+        app_turn_id = event.source.app_turn_id or turn_id
+        call_id = (event.tool_call.id if isinstance(event.tool_call, ToolCallRecord) else None) or event.source.item_id or "tool"
         return f"segment-tool-{app_turn_id}-{call_id}"
 
-    def _build_context_compaction_segment_id(self, turn_id: str, event: ChatTurnLiveEvent) -> str:
-        app_turn_id = event.app_turn_id or turn_id
+    def _build_context_compaction_segment_id(self, turn_id: str, event: TurnStreamEvent) -> str:
+        app_turn_id = event.source.app_turn_id or turn_id
         return f"segment-context-compaction-{app_turn_id}"
 
-    def _build_request_user_input_segment_id(self, turn_id: str, event: ChatTurnLiveEvent) -> str:
-        app_turn_id = event.app_turn_id or turn_id
-        request_id = event.request_user_input.request_id if event.request_user_input is not None else (event.item_id or "request")
+    def _build_request_user_input_segment_id(self, turn_id: str, event: TurnStreamEvent) -> str:
+        app_turn_id = event.source.app_turn_id or turn_id
+        request_id = event.request_user_input.request_id if event.request_user_input is not None else (event.source.item_id or "request")
         return f"segment-request-user-input-{app_turn_id}-{request_id}"
 
-    def _assistant_segment_phase(self, event: ChatTurnLiveEvent, segment: Optional[ConversationSegment] = None) -> Optional[str]:
+    def _assistant_segment_phase(self, event: TurnStreamEvent, segment: Optional[ConversationSegment] = None) -> Optional[str]:
         if event.phase is not None:
             return _normalize_assistant_phase(event.phase)
         if segment is not None:
@@ -567,10 +567,10 @@ class ProjectChatService:
         self,
         state: ConversationState,
         turn: ConversationTurn,
-        event: ChatTurnLiveEvent,
+        event: TurnStreamEvent,
     ) -> Optional[ConversationSegment]:
         timestamp = _iso_now()
-        if event.kind == "reasoning_summary":
+        if event.kind == "content_delta" and event.channel == "reasoning":
             segment_id = self._build_reasoning_segment_id(turn.id, event)
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
@@ -588,7 +588,7 @@ class ProjectChatService:
             segment.updated_at = timestamp
             self._upsert_segment(state, segment)
             return segment
-        if event.kind == "assistant_delta":
+        if event.kind == "content_delta" and event.channel == "assistant":
             segment_id = self._build_assistant_segment_id(turn.id, event)
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
@@ -609,7 +609,7 @@ class ProjectChatService:
             segment.phase = self._assistant_segment_phase(event, segment)
             self._upsert_segment(state, segment)
             return segment
-        if event.kind == "plan_delta":
+        if event.kind == "content_delta" and event.channel == "plan":
             segment_id = self._build_plan_segment_id(turn.id, event)
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
@@ -654,10 +654,10 @@ class ProjectChatService:
                 )
                 self._upsert_segment(state, segment)
                 return segment
-            if segment.source.app_turn_id is None and event.app_turn_id is not None:
-                segment.source.app_turn_id = event.app_turn_id
-            if event.item_id is not None:
-                segment.source.item_id = event.item_id
+            if segment.source.app_turn_id is None and event.source.app_turn_id is not None:
+                segment.source.app_turn_id = event.source.app_turn_id
+            if event.source.item_id is not None:
+                segment.source.item_id = event.source.item_id
             if segment.status == target_status and segment.content == target_content:
                 return None
             if segment.status == "complete" and not complete:
@@ -721,7 +721,7 @@ class ProjectChatService:
                 segment.completed_at = timestamp
             self._upsert_segment(state, segment)
             return segment
-        if event.kind == "assistant_completed":
+        if event.kind == "content_completed" and event.channel == "assistant":
             segment_id = self._build_assistant_segment_id(turn.id, event)
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
@@ -746,7 +746,27 @@ class ProjectChatService:
             segment.phase = self._assistant_segment_phase(event, segment)
             self._upsert_segment(state, segment)
             return segment
-        if event.kind == "plan_completed":
+        if event.kind == "content_completed" and event.channel == "reasoning":
+            segment_id = self._build_reasoning_segment_id(turn.id, event)
+            segment = self._get_segment(state, segment_id) or ConversationSegment(
+                id=segment_id,
+                turn_id=turn.id,
+                order=self._next_turn_segment_order(state, turn.id),
+                kind="reasoning",
+                role="assistant",
+                status="complete",
+                timestamp=timestamp,
+                updated_at=timestamp,
+                source=self._build_segment_source(event),
+            )
+            if event.content_delta:
+                segment.content = event.content_delta
+            segment.status = "complete"
+            segment.updated_at = timestamp
+            segment.completed_at = timestamp
+            self._upsert_segment(state, segment)
+            return segment
+        if event.kind == "content_completed" and event.channel == "plan":
             segment_id = self._build_plan_segment_id(turn.id, event)
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
@@ -767,7 +787,7 @@ class ProjectChatService:
             segment.error = None
             self._upsert_segment(state, segment)
             return segment
-        if event.kind == "assistant_failed":
+        if event.kind == "error":
             segment_id = self._build_assistant_segment_id(turn.id, event)
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
@@ -1042,7 +1062,7 @@ class ProjectChatService:
     def _execute_turn(
         self,
         prepared: PreparedChatTurn,
-        persist_live_event: Callable[[ChatTurnLiveEvent], None],
+        persist_live_event: Callable[[TurnStreamEvent], None],
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> ChatTurnResult:
         def bind_raw_rpc_logger(target_session: Any) -> None:
@@ -1120,7 +1140,7 @@ class ProjectChatService:
         chat_mode: str,
         assistant_turn: ConversationTurn,
         session_runner: Callable[
-            [Callable[[ChatTurnLiveEvent], None], Optional[Callable[[dict[str, Any]], None]]],
+            [Callable[[TurnStreamEvent], None], Optional[Callable[[dict[str, Any]], None]]],
             ChatTurnResult,
         ],
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
@@ -1131,9 +1151,9 @@ class ProjectChatService:
             if state is None:
                 raise RuntimeError("Conversation state disappeared before the turn started.")
 
-        buffered_plan_assistant_event: ChatTurnLiveEvent | None = None
+        buffered_plan_assistant_event: TurnStreamEvent | None = None
 
-        def persist_live_event(event: ChatTurnLiveEvent) -> None:
+        def persist_live_event(event: TurnStreamEvent) -> None:
             nonlocal buffered_plan_assistant_event
             with self._lock:
                 current_state = self._read_state(conversation_id, project_path) or state
@@ -1152,22 +1172,26 @@ class ProjectChatService:
                     current_assistant_turn.token_usage = copy.deepcopy(event.token_usage)
                     self._upsert_turn(current_state, current_assistant_turn)
                     emitted_payloads.append(self._build_turn_upsert_payload(current_state, current_assistant_turn))
-                elif event.kind == "assistant_delta":
+                elif event.kind == "content_delta" and event.channel == "assistant":
                     if event.content_delta and chat_mode != "plan":
                         segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
                         if segment is not None:
                             emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
-                elif event.kind == "reasoning_summary":
+                elif event.kind == "content_delta" and event.channel == "reasoning":
                     if event.content_delta:
                         segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
                         if segment is not None:
                             emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
-                elif event.kind == "plan_delta":
+                elif event.kind == "content_completed" and event.channel == "reasoning":
+                    segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
+                    if segment is not None:
+                        emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
+                elif event.kind == "content_delta" and event.channel == "plan":
                     if event.content_delta:
                         segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
                         if segment is not None:
                             emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
-                elif event.kind == "plan_completed":
+                elif event.kind == "content_completed" and event.channel == "plan":
                     segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
                     if segment is not None:
                         self._persist_proposed_plan_segment_artifact(current_state, current_assistant_turn, segment)
@@ -1180,19 +1204,19 @@ class ProjectChatService:
                     segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
                     if segment is not None:
                         emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
-                elif event.kind == "assistant_completed":
+                elif event.kind == "content_completed" and event.channel == "assistant":
                     assistant_message = _as_non_empty_string(event.content_delta)
                     current_assistant_turn.status = "streaming"
                     current_assistant_turn.error = None
                     self._upsert_turn(current_state, current_assistant_turn)
                     if chat_mode == "plan":
                         if assistant_message and self._is_final_answer_phase(event.phase):
-                            buffered_plan_assistant_event = ChatTurnLiveEvent(
+                            buffered_plan_assistant_event = TurnStreamEvent(
                                 kind=event.kind,
+                                channel=event.channel,
                                 content_delta=assistant_message,
                                 message=event.message,
-                                app_turn_id=event.app_turn_id,
-                                item_id=event.item_id,
+                                source=event.source,
                                 phase=event.phase,
                             )
                     else:
@@ -1256,11 +1280,11 @@ class ProjectChatService:
                     final_answer_segment = self._materialize_segment_for_live_event(
                         state,
                         current_assistant_turn,
-                        ChatTurnLiveEvent(
-                            kind="assistant_completed",
+                        TurnStreamEvent(
+                            kind="content_completed",
+                            channel="assistant",
                             content_delta=assistant_display_text,
-                            app_turn_id=base_event.app_turn_id if base_event is not None else None,
-                            item_id=base_event.item_id if base_event is not None else None,
+                            source=base_event.source if base_event is not None else TurnStreamSource(),
                             phase=base_event.phase if base_event is not None and base_event.phase is not None else "final_answer",
                         ),
                     )
