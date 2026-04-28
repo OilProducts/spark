@@ -86,6 +86,8 @@ from attractor.llm_runtime import (
     RUNTIME_LAUNCH_MODEL_KEY,
     RUNTIME_LAUNCH_PROVIDER_KEY,
     RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+    node_uses_llm_backend,
+    resolve_effective_llm_provider,
 )
 from attractor.interviewer.base import Interviewer
 from attractor.interviewer.models import Answer, AnswerValue, Question
@@ -96,6 +98,7 @@ from attractor.api.runtime_paths import (
     validate_runtime_paths as validate_attractor_runtime_paths,
 )
 from spark_common.runtime_path import resolve_runtime_workspace_path
+from spark_common.codex_runtime import build_codex_runtime_environment
 
 
 attractor_app = FastAPI(title="Attractor API", docs_url="/docs", redoc_url=None, openapi_url="/openapi.json")
@@ -329,6 +332,89 @@ def _resolve_launch_reasoning_effort(graph, requested_reasoning_effort: Optional
     if selected_reasoning_effort:
         return selected_reasoning_effort
     return None
+
+
+class ProviderConfigurationError(ValueError):
+    pass
+
+
+def _provider_configuration_error(provider: str, missing_material: str) -> ProviderConfigurationError:
+    return ProviderConfigurationError(
+        f"Provider {provider} is not configured: missing {missing_material}."
+    )
+
+
+def _validate_provider_configuration(provider: str) -> None:
+    normalized_provider = provider.strip().lower() or "codex"
+    if normalized_provider == "openai":
+        if not str(os.environ.get("OPENAI_API_KEY", "")).strip():
+            raise _provider_configuration_error("openai", "OPENAI_API_KEY")
+        return
+    if normalized_provider == "anthropic":
+        if not str(os.environ.get("ANTHROPIC_API_KEY", "")).strip():
+            raise _provider_configuration_error("anthropic", "ANTHROPIC_API_KEY")
+        return
+    if normalized_provider == "gemini":
+        if not (
+            str(os.environ.get("GEMINI_API_KEY", "")).strip()
+            or str(os.environ.get("GOOGLE_API_KEY", "")).strip()
+        ):
+            raise _provider_configuration_error("gemini", "GEMINI_API_KEY or GOOGLE_API_KEY")
+        return
+    if normalized_provider == "codex":
+        env = build_codex_runtime_environment()
+        codex_home_value = str(env.get("CODEX_HOME", "")).strip()
+        if not codex_home_value:
+            raise _provider_configuration_error("codex", "CODEX_HOME")
+        codex_home = Path(codex_home_value).expanduser()
+        if not codex_home.exists():
+            raise _provider_configuration_error("codex", "CODEX_HOME directory")
+        if not (codex_home / "auth.json").exists():
+            raise _provider_configuration_error("codex", "CODEX_HOME/auth.json")
+        return
+    raise ProviderConfigurationError(
+        "Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini."
+    )
+
+
+def _provider_preflight_context(
+    graph,
+    *,
+    launch_context: Optional[dict[str, Any]],
+    selected_provider: str,
+    selected_model: Optional[str],
+    selected_reasoning_effort: Optional[str],
+) -> Context:
+    context = Context(values=dict(launch_context or {}))
+    context.apply_updates(_graph_attr_context_seed(graph))
+    context.set(RUNTIME_LAUNCH_MODEL_KEY, selected_model or "")
+    context.set(RUNTIME_LAUNCH_PROVIDER_KEY, selected_provider)
+    context.set(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, selected_reasoning_effort or "")
+    return context
+
+
+def _validate_graph_provider_configuration(
+    graph,
+    *,
+    launch_context: Optional[dict[str, Any]],
+    selected_provider: str,
+    selected_model: Optional[str],
+    selected_reasoning_effort: Optional[str],
+) -> None:
+    context = _provider_preflight_context(
+        graph,
+        launch_context=launch_context,
+        selected_provider=selected_provider,
+        selected_model=selected_model,
+        selected_reasoning_effort=selected_reasoning_effort,
+    )
+    providers = {
+        resolve_effective_llm_provider(node.attrs, context, fallback_provider=selected_provider)
+        for node in graph.nodes.values()
+        if node_uses_llm_backend(node)
+    }
+    for provider in sorted(providers):
+        _validate_provider_configuration(provider)
 
 
 def _run_meta_path(run_id: str) -> Path:
@@ -1890,6 +1976,18 @@ def _run_first_class_child_pipeline(
         flow_content = f"digraph {request.child_graph.graph_id or 'child'} {{}}"
     graphviz_export = export_graphviz_artifact(flow_content, run_root)
 
+    parent_launch_context = dict(request.parent_context.values)
+    try:
+        _validate_graph_provider_configuration(
+            request.child_graph,
+            launch_context=parent_launch_context,
+            selected_provider=selected_provider,
+            selected_model=selected_model,
+            selected_reasoning_effort=selected_reasoning_effort,
+        )
+    except ProviderConfigurationError as exc:
+        return ChildRunResult(run_id=child_run_id, status="failed", failure_reason=str(exc))
+
     _record_run_start(
         child_run_id,
         request.child_flow_name,
@@ -2188,6 +2286,14 @@ def _build_pipeline_runner_for_run(
     selected_model, display_model = _resolve_launch_model(graph, model)
     selected_provider = _resolve_launch_provider(graph, llm_provider)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
+
+    _validate_graph_provider_configuration(
+        graph,
+        launch_context=None,
+        selected_provider=selected_provider,
+        selected_model=selected_model,
+        selected_reasoning_effort=selected_reasoning_effort,
+    )
 
     def emit(message: dict):
         _publish_run_event_sync(loop, run_id, message)
@@ -2564,6 +2670,27 @@ async def _launch_pipeline_run(
     selected_model, display_model = _resolve_launch_model(graph, model)
     selected_provider = _resolve_launch_provider(graph, llm_provider)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
+
+    try:
+        _validate_graph_provider_configuration(
+            graph,
+            launch_context=launch_context,
+            selected_provider=selected_provider,
+            selected_model=selected_model,
+            selected_reasoning_effort=selected_reasoning_effort,
+        )
+    except ProviderConfigurationError as exc:
+        RUNTIME.status = "validation_error"
+        RUNTIME.outcome = None
+        RUNTIME.outcome_reason_code = None
+        RUNTIME.outcome_reason_message = None
+        RUNTIME.last_error = str(exc)
+        return {
+            "status": "validation_error",
+            "error": str(exc),
+            "diagnostics": diagnostic_payloads,
+            "errors": error_payloads,
+        }
 
     await _publish_run_event(
         resolved_run_id,

@@ -490,7 +490,8 @@ def _resolve_child_status(context: Context) -> Outcome | None:
             failure_reason=failure_reason or "Child completed with failure outcome",
         )
     if child_status == "failed":
-        return Outcome(status=OutcomeStatus.FAIL, failure_reason="Child failed")
+        failure_reason = str(context.get("context.stack.child.failure_reason", "")).strip()
+        return Outcome(status=OutcomeStatus.FAIL, failure_reason=failure_reason or "Child failed")
     if child_status in {"aborted", "canceled"}:
         return Outcome(status=OutcomeStatus.FAIL, failure_reason="aborted_by_user")
     return None

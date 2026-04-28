@@ -14,6 +14,15 @@ def _reset_api_server_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     monkeypatch.delenv("SPARK_HOME", raising=False)
     monkeypatch.delenv("SPARK_FLOWS_DIR", raising=False)
     monkeypatch.delenv("SPARK_UI_DIR", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    codex_runtime_root = tmp_path / "codex-runtime"
+    codex_home = codex_runtime_root / ".codex"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(codex_runtime_root))
     server.shutdown_attractor_runtime()
     product_app.configure_settings(
         data_dir=tmp_path / ".spark",

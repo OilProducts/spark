@@ -565,6 +565,7 @@ def test_codex_app_server_backend_missing_binary_returns_fail_outcome_and_emits_
     assert result.status == OutcomeStatus.FAIL
     assert result.failure_reason == "codex app-server not found on PATH"
     assert result.failure_kind == FailureKind.RUNTIME
+    assert result.retryable is False
     assert events[-1] == {"type": "log", "msg": "[plan] codex app-server not found on PATH"}
 
 
@@ -599,6 +600,7 @@ def test_codex_app_server_backend_missing_runtime_working_directory_returns_spec
     assert result.status == OutcomeStatus.FAIL
     assert "working directory is unavailable in the runtime" in str(result.failure_reason)
     assert result.failure_kind == FailureKind.RUNTIME
+    assert result.retryable is False
     assert str(missing_dir.resolve(strict=False)) in str(result.failure_reason)
     assert "working directory is unavailable in the runtime" in events[-1]["msg"]
 
@@ -2027,6 +2029,98 @@ def test_launch_reasoning_ignores_ui_default_reasoning_until_materialized() -> N
     assert server._resolve_launch_reasoning_effort(graph, None) is None
 
 
+def test_pipeline_launch_rejects_missing_api_provider_key_before_scheduling(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    run_id = "missing-openai-key"
+
+    payload = _start_pipeline_via_http(
+        attractor_api_client,
+        {
+            "run_id": run_id,
+            "flow_content": """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, prompt="Use OpenAI"]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """,
+            "working_directory": str(tmp_path / "work"),
+            "llm_provider": "openai",
+        },
+    )
+
+    assert payload["status"] == "validation_error"
+    assert payload["error"] == "Provider openai is not configured: missing OPENAI_API_KEY."
+    assert server._get_active_run(run_id) is None
+    assert server._read_run_meta(server._run_meta_path(run_id)) is None
+
+
+def test_pipeline_launch_rejects_missing_codex_auth_before_scheduling(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "empty-codex-runtime"
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("ATTRACTOR_CODEX_SEED_DIR", str(tmp_path / "empty-seed"))
+    run_id = "missing-codex-auth"
+
+    payload = _start_pipeline_via_http(
+        attractor_api_client,
+        {
+            "run_id": run_id,
+            "flow_content": """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, prompt="Use Codex"]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """,
+            "working_directory": str(tmp_path / "work"),
+            "llm_provider": "codex",
+        },
+    )
+
+    assert payload["status"] == "validation_error"
+    assert payload["error"] == "Provider codex is not configured: missing CODEX_HOME/auth.json."
+    assert server._get_active_run(run_id) is None
+    assert server._read_run_meta(server._run_meta_path(run_id)) is None
+
+
+def test_pipeline_launch_skips_provider_preflight_for_non_llm_flow(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    payload = _start_pipeline_via_http(
+        attractor_api_client,
+        {
+            "flow_content": """
+            digraph G {
+                start [shape=Mdiamond]
+                done [shape=Msquare]
+                start -> done
+            }
+            """,
+            "working_directory": str(tmp_path / "work"),
+            "llm_provider": "openai",
+        },
+    )
+
+    assert payload["status"] == "started"
+    final_payload = _wait_for_pipeline_completion(attractor_api_client, str(payload["run_id"]))
+    assert final_payload["status"] == "completed"
+
+
 def _install_fake_unified_session(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -2313,6 +2407,25 @@ def test_unified_agent_backend_normalizes_provider_exception_and_closes_session(
     assert result.failure_reason == "provider exploded"
     assert closed_sessions == ["gpt-test"]
     assert closed_clients == ["closed"]
+
+
+def test_unified_agent_backend_marks_auth_setup_failures_non_retryable(
+    tmp_path: Path,
+) -> None:
+    backend = codex_backends_module.UnifiedAgentBackend(
+        str(tmp_path),
+        lambda event: None,
+        provider="openai",
+        client_factory=lambda provider: (_ for _ in ()).throw(ValueError("missing OPENAI_API_KEY")),
+    )
+
+    result = backend.run("plan", "hello", Context(), model="gpt-test")
+
+    assert isinstance(result, Outcome)
+    assert result.status == OutcomeStatus.FAIL
+    assert result.failure_kind == FailureKind.RUNTIME
+    assert result.failure_reason == "missing OPENAI_API_KEY"
+    assert result.retryable is False
 
 
 def test_unified_agent_backend_enforces_timeout_and_closes_session(

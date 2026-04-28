@@ -135,6 +135,28 @@ def _emit_session_event_progress(
     )
 
 
+def _is_provider_setup_failure(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    non_retryable_tokens = (
+        "api key",
+        "auth",
+        "credential",
+        "permission",
+        "forbidden",
+        "unauthorized",
+        "configuration",
+        "config",
+        "not configured",
+        "missing",
+        "not found on path",
+        "unsupported llm_provider",
+        "thread/start failed",
+    )
+    return any(token in text for token in non_retryable_tokens)
+
+
 class CodexAppServerBackend(CodergenBackend):
     RUNTIME_THREAD_ID_KEY = "_attractor.runtime.thread_id"
 
@@ -258,6 +280,7 @@ class CodexAppServerBackend(CodergenBackend):
             return Outcome(
                 status=OutcomeStatus.FAIL,
                 failure_reason=reason,
+                retryable=False if _is_provider_setup_failure(reason) else None,
                 failure_kind=FailureKind.RUNTIME,
             )
 
@@ -584,6 +607,7 @@ class UnifiedAgentBackend(CodergenBackend):
         return Outcome(
             status=OutcomeStatus.FAIL,
             failure_reason=reason,
+            retryable=False if _is_provider_setup_failure(reason) else None,
             failure_kind=FailureKind.RUNTIME,
         )
 
@@ -907,6 +931,7 @@ class ProviderRouterBackend(CodergenBackend):
             failure_reason=(
                 "Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini."
             ),
+            retryable=False,
             failure_kind=FailureKind.RUNTIME,
         )
 
@@ -967,6 +992,7 @@ class ProviderRouterBackend(CodergenBackend):
             failure_reason=(
                 "Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini."
             ),
+            retryable=False,
             failure_kind=FailureKind.RUNTIME,
         )
 

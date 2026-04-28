@@ -147,6 +147,57 @@ def test_manager_child_launch_creates_first_class_child_run(
     assert "ChildRunCompleted" in parent_event_types
 
 
+def test_manager_child_provider_validation_failure_fails_parent_with_specific_reason(
+    attractor_api_client: TestClient,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    child_dot_path = tmp_path / "child.dot"
+    child_dot_path.write_text(
+        """
+        digraph Child {
+            start [shape=Mdiamond]
+            task [shape=box, prompt="Child task"]
+            done [shape=Msquare]
+
+            start -> task -> done
+        }
+        """,
+        encoding="utf-8",
+    )
+    workdir = tmp_path / "project"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    response = attractor_api_client.post(
+        "/pipelines",
+        json={
+            "flow_content": f"""
+            digraph Parent {{
+                graph [stack.child_dotfile="{child_dot_path}"]
+                start [shape=Mdiamond]
+                manager [shape=house, type="stack.manager_loop", manager.actions="", manager.max_cycles=1]
+                done [shape=Msquare]
+
+                start -> manager -> done
+            }}
+            """,
+            "working_directory": str(workdir),
+            "llm_provider": "openai",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    parent_run_id = str(response.json()["run_id"])
+    final_payload = wait_for_pipeline_completion(attractor_api_client, parent_run_id)
+
+    assert final_payload["status"] == "failed"
+    assert final_payload["last_error"] == "Provider openai is not configured: missing OPENAI_API_KEY."
+    parent_context = attractor_api_client.get(f"/pipelines/{parent_run_id}/context").json()["context"]
+    assert parent_context["context.stack.child.status"] == "failed"
+    assert parent_context["context.stack.child.failure_reason"] == final_payload["last_error"]
+
+
 def test_revisiting_same_manager_node_creates_separate_child_runs_with_own_state(
     attractor_api_client: TestClient,
     monkeypatch,

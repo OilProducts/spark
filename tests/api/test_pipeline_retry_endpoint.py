@@ -216,6 +216,55 @@ def test_retry_failed_pipeline_uses_provider_router_and_launch_reasoning_context
     assert listed_run["reasoning_effort"] == "low"
 
 
+def test_retry_rejects_missing_inherited_provider_configuration(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend = _SequenceBackend(
+        [
+            Outcome(status=OutcomeStatus.FAIL, failure_reason="first attempt failed"),
+            Outcome(status=OutcomeStatus.SUCCESS),
+        ]
+    )
+
+    def fake_build_backend(backend_name, working_dir, emit, *, model, on_usage_update=None):  # type: ignore[no-untyped-def]
+        del backend_name, working_dir, emit, model, on_usage_update
+        return backend
+
+    monkeypatch.setattr(server, "_build_codergen_backend", fake_build_backend)
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    start_response = attractor_api_client.post(
+        "/pipelines",
+        json={
+            "flow_content": """
+            digraph RetryProviderFlow {
+                start [shape=Mdiamond]
+                task [shape=box, prompt="Try once"]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """,
+            "working_directory": str(workdir),
+            "model": "gpt-test",
+            "llm_provider": "openai",
+        },
+    )
+    assert start_response.status_code == 200
+    run_id = str(start_response.json()["run_id"])
+    failed_payload = wait_for_pipeline_completion(attractor_api_client, run_id)
+    assert failed_payload["status"] == "failed"
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    retry_response = attractor_api_client.post(f"/pipelines/{run_id}/retry")
+
+    assert retry_response.status_code == 409
+    assert retry_response.json()["detail"] == "Provider openai is not configured: missing OPENAI_API_KEY."
+    assert backend.calls == ["task"]
+
+
 def test_retry_start_publishes_running_run_list_upsert_without_sync_helper(
     attractor_api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
