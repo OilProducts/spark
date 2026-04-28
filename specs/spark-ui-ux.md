@@ -441,7 +441,7 @@ For run inspection specifically:
 - selected-run live updates come from `/pipelines/{id}/events` after initial `GET /pipelines/{id}` hydration
 - the selected run may have only one live per-run stream subscription at a time
 - selected-run journal history must survive reselecting the run later; the UI must not depend on the run having been open live
-- selected-run journal history may include inline child-flow events when the backend marks them with child-source metadata
+- selected-run journal history may include child-run linkage entries and child-source metadata when the backend links parent and child timelines
 
 The frontend may keep local ephemeral state for:
 - selected tab

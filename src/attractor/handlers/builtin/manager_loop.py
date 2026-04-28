@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import re
 import time
@@ -12,11 +11,9 @@ from attractor.dsl import DiagnosticSeverity, DotParseError, parse_dot
 from attractor.dsl.models import DotAttribute, Duration
 from attractor.engine.conditions import evaluate_condition
 from attractor.engine.context import Context
-from attractor.engine.executor import PipelineExecutor
 from attractor.engine.outcome import Outcome, OutcomeStatus
 from attractor.graph_prep import prepare_graph
 from attractor.handlers.base import ChildRunRequest, ChildRunResult, PIPELINE_RETRY_RUN_ID_CONTEXT_KEY
-from attractor.handlers.runner import HandlerRunner
 
 from ..base import HandlerRuntime
 
@@ -135,70 +132,13 @@ def _autostart_child_pipeline(runtime: HandlerRuntime) -> Outcome | None:
             failure_reason=f"Child DOT graph failed validation: {child_errors[0].message}",
         )
 
-    if runtime.child_run_launcher is not None:
-        return _autostart_first_class_child_pipeline(
-            runtime,
-            child_graph=child_graph,
-            child_flow_name=child_dot_path.name or child_graph.graph_id or "child",
-            child_dot_path=child_dot_path,
-            child_workdir_path=child_workdir_path,
-        )
-
-    registry = getattr(runtime.runner, "registry", None)
-    if registry is None:
-        return Outcome(
-            status=OutcomeStatus.FAIL,
-            failure_reason="Manager loop requires HandlerRunner-compatible runtime.runner",
-        )
-
-    child_logs_root = runtime.logs_root / runtime.node_id / "child" if runtime.logs_root else None
-    child_runner = HandlerRunner(child_graph, registry, logs_root=child_logs_root)
-    child_flow_name = child_dot_path.name or child_graph.graph_id or "child"
-
-    def emit_child_event(event: dict[str, Any]) -> None:
-        _forward_child_event(runtime, event, child_flow_name=child_flow_name)
-
-    child_executor = PipelineExecutor(
-        child_graph,
-        child_runner,
-        logs_root=str(child_logs_root) if child_logs_root else None,
-        control=runtime.control,
-        on_event=emit_child_event,
+    return _autostart_first_class_child_pipeline(
+        runtime,
+        child_graph=child_graph,
+        child_flow_name=child_dot_path.name or child_graph.graph_id or "child",
+        child_dot_path=child_dot_path,
+        child_workdir_path=child_workdir_path,
     )
-    try:
-        child_result = _run_child_executor_in_workdir(
-            child_executor,
-            context=runtime.context.clone(),
-            workdir=child_workdir_path,
-        )
-    except OSError as exc:
-        return Outcome(
-            status=OutcomeStatus.FAIL,
-            failure_reason=f"Unable to run child pipeline from {child_workdir_path}: {exc}",
-        )
-
-    if child_result.status == "completed":
-        child_status = "completed"
-    elif child_result.status == "aborted":
-        child_status = "aborted"
-    else:
-        child_status = "failed"
-    _apply_child_run_result(
-        runtime.context,
-        ChildRunResult(
-            run_id="",
-            status=child_status,
-            outcome=child_result.outcome,
-            outcome_reason_code=child_result.outcome_reason_code,
-            outcome_reason_message=child_result.outcome_reason_message,
-            current_node=child_result.current_node,
-            completed_nodes=list(child_result.completed_nodes),
-            route_trace=list(child_result.route_trace),
-            failure_reason=child_result.failure_reason,
-        ),
-    )
-
-    return None
 
 
 def _refresh_linked_child_snapshot(runtime: HandlerRuntime, child_run_id: str) -> bool:
@@ -317,26 +257,6 @@ def _clear_child_snapshot(context: Context) -> None:
             "context.stack.child.intervention": "",
         }
     )
-
-
-def _forward_child_event(
-    runtime: HandlerRuntime,
-    event: dict[str, Any],
-    *,
-    child_flow_name: str,
-) -> None:
-    event_type = str(event.get("type", "")).strip()
-    if not event_type:
-        return
-    payload = dict(event)
-    payload.pop("type", None)
-    payload.pop("run_id", None)
-    payload.pop("sequence", None)
-    payload.pop("emitted_at", None)
-    payload.setdefault("source_scope", "child")
-    payload["source_parent_node_id"] = runtime.node_id
-    payload["source_flow_name"] = child_flow_name
-    runtime.emit(event_type, **payload)
 
 
 def _poll_interval_seconds(attr: DotAttribute | None) -> float:
@@ -544,20 +464,6 @@ def _append_manager_artifact(
             handle.write("\n")
     except OSError:
         return
-
-
-def _run_child_executor_in_workdir(
-    child_executor: PipelineExecutor,
-    *,
-    context: Context,
-    workdir: Path,
-):
-    original_cwd = Path.cwd()
-    os.chdir(workdir)
-    try:
-        return child_executor.run(context=context, resume=False)
-    finally:
-        os.chdir(original_cwd)
 
 
 def _parse_duration_string(raw: str, default: float) -> float:

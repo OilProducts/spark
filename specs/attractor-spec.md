@@ -1042,6 +1042,10 @@ ManagerLoopHandler:
                 )
                 start_child_pipeline(resolved_child_dotfile, cwd=resolved_child_workdir)
 
+                -- The child run owns its logs, checkpoints, durable status,
+                -- and event stream. The parent manager stores only the linked
+                -- child run id/status snapshot and parent-side lifecycle events.
+
         -- 2. Observation loop
         FOR cycle FROM 1 TO max_cycles:
             IF "observe" IN actions:
@@ -1798,7 +1802,7 @@ It must:
 - support `limit`
 - support `before_sequence` for explicit older-page loading
 - preserve stable journal fields including `id`, `sequence`, `emitted_at`, `kind`, `raw_type`, `severity`, `summary`, `node_id`, `stage_index`, `source_scope`, `source_parent_node_id`, `source_flow_name`, `question_id`, and `payload`
-- include forwarded child-flow metadata on child entries
+- include child-flow linkage metadata on parent entries that reference child timelines
 
 `GET /pipelines/{id}/events` is the live-tail channel for run inspection.
 It must:
@@ -1806,7 +1810,7 @@ It must:
 - optionally accept `after_sequence` and, when provided, gap-fill normalized entries with `sequence > after_sequence` before yielding live updates
 - use stable per-run event identity via monotonically increasing `sequence`
 - include a server-assigned `emitted_at` timestamp on every event
-- allow parent runs to include forwarded child-flow events, labeled with `source_scope="child"` plus `source_parent_node_id` and `source_flow_name`
+- allow parent runs to include child-run lifecycle/linkage events, and allow entries that reference child timelines to be labeled with `source_scope="child"` plus `source_parent_node_id` and `source_flow_name`
 
 Clients should reconcile selected-run state against `GET /pipelines/{id}`, browse durable history through `GET /pipelines/{id}/journal`, and treat `GET /pipelines/{id}/events` as a live-tail bridge rather than the sole source of terminal lifecycle truth or full history.
 
@@ -1868,7 +1872,7 @@ FOR EACH event IN pipeline.events():
 ```
 
 For HTTP/SSE inspection, implementations should persist emitted run events durably per run so selected-run history survives server restarts and late inspection.
-Forwarded child-flow events from `stack.manager_loop` are part of the parent run's event history rather than a separate child-only API surface.
+Child runs launched by `stack.manager_loop` own their logs, checkpoints, status, and event stream. Parent runs may record child lifecycle/linkage events and link to child timelines; they do not depend on embedded child execution or forwarded child events as the only parent/child model.
 Run-overview payloads exposed through `/runs/events` should include:
 - `snapshot` events with a `runs` array of full `RunRecord` payloads
 - `run_upsert` events with one full `RunRecord` in `run`

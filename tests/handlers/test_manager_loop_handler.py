@@ -1,63 +1,25 @@
 import json
-from pathlib import Path
 
 import pytest
 
 from attractor.dsl import parse_dot
 from attractor.engine.context import Context
 from attractor.engine.outcome import OutcomeStatus
+from attractor.handlers.base import ChildRunRequest, ChildRunResult
 from attractor.handlers import HandlerRunner, build_default_registry
 
 from tests.handlers._support.fakes import _StubBackend
 
 
-class _MilestoneRecordingBackend:
-    def __init__(self):
-        self.milestone_ids: list[str] = []
-
-    def run(
-        self,
-        node_id: str,
-        prompt: str,
-        context: Context,
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout=None,
-        model=None,
-        write_contract=None,
-    ) -> bool:
-        del prompt, response_contract, contract_repair_attempts, timeout, model, write_contract
-        if node_id == "task":
-            self.milestone_ids.append(str(context.get("context.milestone.id", "")))
-        return True
-
-    def run_with_events(
-        self,
-        node_id: str,
-        prompt: str,
-        context: Context,
-        emit_event=None,
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout=None,
-        model=None,
-        provider=None,
-        reasoning_effort=None,
-        write_contract=None,
-    ) -> bool:
-        del emit_event, provider, reasoning_effort
-        return self.run(
-            node_id,
-            prompt,
-            context,
-            response_contract=response_contract,
-            contract_repair_attempts=contract_repair_attempts,
-            timeout=timeout,
-            model=model,
-            write_contract=write_contract,
-        )
+def _completed_child_result(request: ChildRunRequest) -> ChildRunResult:
+    return ChildRunResult(
+        run_id=request.child_run_id,
+        status="completed",
+        outcome="success",
+        current_node="done",
+        completed_nodes=["start", "task", "done"],
+        route_trace=["start", "task", "done"],
+    )
 
 
 class TestManagerLoopHandler:
@@ -84,21 +46,34 @@ class TestManagerLoopHandler:
             }}
             """
         )
-        backend = _StubBackend(ok=True)
-        registry = build_default_registry(codergen_backend=backend)
-        runner = HandlerRunner(graph, registry, logs_root=tmp_path / "logs")
+        launched_requests: list[ChildRunRequest] = []
+
+        def launch_child(request: ChildRunRequest) -> ChildRunResult:
+            launched_requests.append(request)
+            return _completed_child_result(request)
+
+        registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_run_launcher=launch_child,
+        )
         context = Context()
 
         outcome = runner("manager", "", context)
 
         assert outcome.status == OutcomeStatus.SUCCESS
         assert outcome.notes == "Child completed"
-        assert [call[0] for call in backend.calls] == ["task"]
+        assert len(launched_requests) == 1
+        assert launched_requests[0].child_flow_path == child_dot_path
+        assert launched_requests[0].child_flow_name == "child.dot"
+        assert launched_requests[0].parent_node_id == "manager"
         assert context.get("context.stack.child.status") == "completed"
         assert context.get("context.stack.child.outcome") == "success"
         assert context.get("context.stack.child.active_stage") == "done"
 
-    def test_manager_loop_forwards_child_events_into_parent_stream(self, tmp_path):
+    def test_manager_loop_emits_first_class_child_lifecycle_events(self, tmp_path):
         child_dot_path = tmp_path / "child.dot"
         child_dot_path.write_text(
             """
@@ -121,9 +96,13 @@ class TestManagerLoopHandler:
             }}
             """
         )
-        backend = _StubBackend(ok=True)
-        registry = build_default_registry(codergen_backend=backend)
-        runner = HandlerRunner(graph, registry, logs_root=tmp_path / "logs")
+        registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_run_launcher=_completed_child_result,
+        )
         captured_events: list[dict[str, object]] = []
 
         outcome = runner.run_with_events(
@@ -136,16 +115,12 @@ class TestManagerLoopHandler:
         assert outcome is not None
         assert outcome.status == OutcomeStatus.SUCCESS
         event_types = [event["type"] for event in captured_events]
-        assert event_types[0] == "PipelineStarted"
-        assert event_types[-1] == "PipelineCompleted"
-        assert event_types.count("StageStarted") == 2
-        assert event_types.count("StageCompleted") == 2
-        assert "CheckpointSaved" in event_types
-        assert all(event.get("source_scope") == "child" for event in captured_events)
-        assert all(event.get("source_parent_node_id") == "manager" for event in captured_events)
-        assert all(event.get("source_flow_name") == "child.dot" for event in captured_events)
+        assert event_types == ["ChildRunStarted", "ChildRunCompleted"]
+        assert captured_events[0]["parent_node_id"] == "manager"
+        assert captured_events[0]["child_flow_name"] == "child.dot"
+        assert captured_events[1]["status"] == "completed"
 
-    def test_manager_loop_propagates_parent_cancel_control_to_child_executor(self, tmp_path):
+    def test_manager_loop_propagates_parent_cancel_control_to_child_launcher(self, tmp_path):
         child_dot_path = tmp_path / "child.dot"
         child_dot_path.write_text(
             """
@@ -169,14 +144,29 @@ class TestManagerLoopHandler:
             }}
             """
         )
-        backend = _StubBackend(ok=True)
-        registry = build_default_registry(codergen_backend=backend)
-        runner = HandlerRunner(graph, registry, logs_root=tmp_path / "logs")
-        def control() -> str | None:
-            if backend.calls:
-                return "abort"
-            return None
+        control_calls = 0
 
+        def control() -> str | None:
+            return "abort"
+
+        def launch_child(request: ChildRunRequest) -> ChildRunResult:
+            nonlocal control_calls
+            if request.control is not None:
+                control_calls += 1
+                assert request.control() == "abort"
+            return ChildRunResult(
+                run_id=request.child_run_id,
+                status="aborted",
+                failure_reason="aborted_by_user",
+            )
+
+        registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_run_launcher=launch_child,
+        )
         runner.set_control(control)
         context = Context()
 
@@ -184,7 +174,7 @@ class TestManagerLoopHandler:
 
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_reason == "aborted_by_user"
-        assert [call[0] for call in backend.calls] == ["task1"]
+        assert control_calls == 1
         assert context.get("context.stack.child.status") == "aborted"
         assert context.get("context.stack.child.failure_reason") == "aborted_by_user"
 
@@ -211,9 +201,13 @@ class TestManagerLoopHandler:
             }}
             """
         )
-        backend = _StubBackend(ok=True)
-        registry = build_default_registry(codergen_backend=backend)
-        runner = HandlerRunner(graph, registry, logs_root=tmp_path / "logs")
+        registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_run_launcher=_completed_child_result,
+        )
         context = Context(
             values={
                 "context.stack.child.status": "completed",
@@ -229,7 +223,6 @@ class TestManagerLoopHandler:
 
         assert outcome.status == OutcomeStatus.SUCCESS
         assert outcome.notes == "Child completed"
-        assert [call[0] for call in backend.calls] == ["task"]
         assert context.get("context.stack.child.active_stage") == "done"
         assert context.get("context.stack.child.outcome_reason_message") == ""
         assert context.get("context.stack.child.failure_reason") == ""
@@ -258,9 +251,13 @@ class TestManagerLoopHandler:
             }}
             """
         )
-        backend = _StubBackend(ok=True)
-        registry = build_default_registry(codergen_backend=backend)
-        runner = HandlerRunner(graph, registry, logs_root=tmp_path / "logs")
+        registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_run_launcher=_completed_child_result,
+        )
         context = Context(
             values={
                 "context.stack.child.status": "failed",
@@ -272,12 +269,11 @@ class TestManagerLoopHandler:
         outcome = runner("manager", "", context)
 
         assert outcome.status == OutcomeStatus.SUCCESS
-        assert [call[0] for call in backend.calls] == ["task"]
         assert context.get("context.stack.child.status") == "completed"
         assert context.get("context.stack.child.outcome") == "success"
         assert context.get("context.stack.child.failure_reason") == ""
 
-    def test_manager_loop_applies_child_graph_transforms_before_execution(self, tmp_path):
+    def test_manager_loop_applies_child_graph_transforms_before_launch(self, tmp_path):
         child_dot_path = tmp_path / "child.dot"
         child_dot_path.write_text(
             """
@@ -301,15 +297,25 @@ class TestManagerLoopHandler:
             }}
             """
         )
-        backend = _StubBackend(ok=True)
-        registry = build_default_registry(codergen_backend=backend)
-        runner = HandlerRunner(graph, registry, logs_root=tmp_path / "logs")
+        launched_requests: list[ChildRunRequest] = []
+
+        def launch_child(request: ChildRunRequest) -> ChildRunResult:
+            launched_requests.append(request)
+            return _completed_child_result(request)
+
+        registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_run_launcher=launch_child,
+        )
 
         outcome = runner("manager", "", Context())
 
         assert outcome.status == OutcomeStatus.SUCCESS
-        assert len(backend.calls) == 1
-        assert backend.calls[0][1].endswith("Current stage task:\n\nPlan for Ship child")
+        assert len(launched_requests) == 1
+        assert launched_requests[0].child_graph.nodes["task"].attrs["prompt"].value == "Plan for Ship child"
 
     def test_manager_loop_fails_when_child_graph_validation_fails(self, tmp_path):
         child_dot_path = tmp_path / "child.dot"
@@ -340,6 +346,35 @@ class TestManagerLoopHandler:
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_reason is not None
         assert outcome.failure_reason.startswith("Child DOT graph failed validation:")
+
+    def test_manager_loop_autostart_without_child_launcher_is_wiring_error(self, tmp_path):
+        child_dot_path = tmp_path / "child.dot"
+        child_dot_path.write_text(
+            """
+            digraph Child {
+                start [shape=Mdiamond]
+                task [shape=box, prompt="Child task"]
+                done [shape=Msquare]
+
+                start -> task -> done
+            }
+            """,
+            encoding="utf-8",
+        )
+
+        graph = parse_dot(
+            f"""
+            digraph G {{
+                graph [stack.child_dotfile="{child_dot_path}"]
+                manager [shape=house, manager.poll_interval=0ms, manager.max_cycles=1, manager.actions=""]
+            }}
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
+        runner = HandlerRunner(graph, registry, logs_root=tmp_path / "logs")
+
+        with pytest.raises(AssertionError):
+            runner("manager", "", Context())
 
     def test_manager_loop_observe_action_writes_telemetry_artifacts(self, monkeypatch, tmp_path):
         def _fake_observe(context: Context, node_id: str, cycle: int) -> None:
@@ -582,7 +617,7 @@ class TestManagerLoopHandler:
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_reason == "blocked on human approval"
 
-    def test_manager_loop_runs_autostarted_child_pipeline_from_stack_child_workdir(self, tmp_path):
+    def test_manager_loop_launches_autostarted_child_pipeline_from_stack_child_workdir(self, tmp_path):
         child_workdir = tmp_path / "child-workdir"
         child_workdir.mkdir(parents=True, exist_ok=True)
         child_dot_path = child_workdir / "child.dot"
@@ -607,19 +642,24 @@ class TestManagerLoopHandler:
             }}
             """
         )
+        launched_requests: list[ChildRunRequest] = []
+
+        def launch_child(request: ChildRunRequest) -> ChildRunResult:
+            launched_requests.append(request)
+            return _completed_child_result(request)
+
         registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
         logs_root = tmp_path / "logs"
-        runner = HandlerRunner(graph, registry, logs_root=logs_root)
+        runner = HandlerRunner(graph, registry, logs_root=logs_root, child_run_launcher=launch_child)
 
         outcome = runner("manager", "", Context())
 
         assert outcome.status == OutcomeStatus.SUCCESS
-        child_tool_output = (logs_root / "manager" / "child" / "task" / "tool_output.txt").read_text(
-            encoding="utf-8"
-        )
-        assert Path(child_tool_output.strip()) == child_workdir
+        assert len(launched_requests) == 1
+        assert launched_requests[0].child_flow_path == child_dot_path
+        assert launched_requests[0].child_workdir == child_workdir
 
-    def test_manager_loop_resolves_relative_child_dotfile_from_flow_source_dir_and_runs_in_parent_workdir(
+    def test_manager_loop_resolves_relative_child_dotfile_from_flow_source_dir_and_launches_in_parent_workdir(
         self, tmp_path
     ):
         flow_source_dir = tmp_path / "flows"
@@ -648,9 +688,15 @@ class TestManagerLoopHandler:
             }
             """
         )
+        launched_requests: list[ChildRunRequest] = []
+
+        def launch_child(request: ChildRunRequest) -> ChildRunResult:
+            launched_requests.append(request)
+            return _completed_child_result(request)
+
         registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
         logs_root = tmp_path / "logs"
-        runner = HandlerRunner(graph, registry, logs_root=logs_root)
+        runner = HandlerRunner(graph, registry, logs_root=logs_root, child_run_launcher=launch_child)
         context = Context(
             values={
                 "internal.flow_source_dir": str(flow_source_dir),
@@ -661,10 +707,9 @@ class TestManagerLoopHandler:
         outcome = runner("manager", "", context)
 
         assert outcome.status == OutcomeStatus.SUCCESS
-        child_tool_output = (logs_root / "manager" / "child" / "task" / "tool_output.txt").read_text(
-            encoding="utf-8"
-        )
-        assert Path(child_tool_output.strip()) == run_workdir
+        assert len(launched_requests) == 1
+        assert launched_requests[0].child_flow_path == child_dot_path
+        assert launched_requests[0].child_workdir == run_workdir
 
     def test_manager_loop_steer_action_honors_cooldown(self, monkeypatch):
         steered = []
@@ -806,9 +851,19 @@ class TestManagerLoopHandler:
             }}
             """
         )
-        backend = _MilestoneRecordingBackend()
-        registry = build_default_registry(codergen_backend=backend)
-        runner = HandlerRunner(graph, registry, logs_root=tmp_path / "logs")
+        milestone_ids: list[str] = []
+
+        def launch_child(request: ChildRunRequest) -> ChildRunResult:
+            milestone_ids.append(str(request.parent_context.get("context.milestone.id", "")))
+            return _completed_child_result(request)
+
+        registry = build_default_registry(codergen_backend=_StubBackend(ok=True))
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_run_launcher=launch_child,
+        )
         context = Context(values={"context.milestone.id": "M-ONE"})
 
         first = runner("manager", "", context)
@@ -817,4 +872,4 @@ class TestManagerLoopHandler:
 
         assert first.status == OutcomeStatus.SUCCESS
         assert second.status == OutcomeStatus.SUCCESS
-        assert backend.milestone_ids == ["M-ONE", "M-TWO"]
+        assert milestone_ids == ["M-ONE", "M-TWO"]

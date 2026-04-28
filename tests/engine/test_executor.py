@@ -8,6 +8,7 @@ from attractor.dsl import parse_dot
 from attractor.engine.context import Context
 from attractor.engine.executor import PipelineExecutor
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
+from attractor.handlers.base import ChildRunRequest, ChildRunResult
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.interviewer import Answer, QueueInterviewer
 from attractor.llm_runtime import RUNTIME_LAUNCH_MODEL_KEY
@@ -1362,10 +1363,23 @@ class TestExecutor:
         backend = _SpecImplementationLoopBackend()
         interviewer = QueueInterviewer([Answer(selected_values=["Approve"])])
         logs_root = tmp_path / "logs"
+
+        def launch_child(request: ChildRunRequest) -> ChildRunResult:
+            backend.child_milestone_ids.append(str(request.parent_context.get("context.milestone.id", "")))
+            return ChildRunResult(
+                run_id=request.child_run_id,
+                status="completed",
+                outcome="success",
+                current_node="done",
+                completed_nodes=["start", "prepare_milestone_state", "done"],
+                route_trace=["start", "prepare_milestone_state", "done"],
+            )
+
         runner = HandlerRunner(
             graph,
             build_default_registry(codergen_backend=backend, interviewer=interviewer),
             logs_root=logs_root,
+            child_run_launcher=launch_child,
         )
 
         result = PipelineExecutor(graph, runner, logs_root=str(logs_root)).run(
