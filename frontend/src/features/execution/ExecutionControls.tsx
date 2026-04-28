@@ -123,6 +123,9 @@ export function ExecutionControls() {
     const selectedLlmProvider = typeof graphAttrs.ui_default_llm_provider === 'string'
         ? graphAttrs.ui_default_llm_provider
         : ''
+    const selectedLlmProfile = typeof graphAttrs.ui_default_llm_profile === 'string'
+        ? graphAttrs.ui_default_llm_profile
+        : ''
     const selectedReasoningEffort = typeof graphAttrs.ui_default_reasoning_effort === 'string'
         ? graphAttrs.ui_default_reasoning_effort
         : ''
@@ -131,7 +134,8 @@ export function ExecutionControls() {
         flowSource: executionFlowName || '',
         workingDirectory: workingDir,
         model: model.trim() || null,
-        llmProvider: selectedLlmProvider,
+        llmProvider: selectedLlmProfile ? '' : selectedLlmProvider,
+        llmProfile: selectedLlmProfile,
         reasoningEffort: selectedReasoningEffort,
         launchContext: null,
     }
@@ -203,7 +207,8 @@ export function ExecutionControls() {
                         projectPath: activeProjectPath || executionContinuation.sourceWorkingDirectory,
                         workingDirectory: workingDir,
                         model: model.trim() || null,
-                        llmProvider: selectedLlmProvider,
+                        llmProvider: selectedLlmProfile ? '' : selectedLlmProvider,
+                        llmProfile: selectedLlmProfile,
                         reasoningEffort: selectedReasoningEffort,
                     },
                     {

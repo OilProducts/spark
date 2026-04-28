@@ -14,6 +14,7 @@ const GRAPH_ATTR_STRING_KEYS: (keyof GraphAttrs)[] = [
     'tool.hooks.post',
     'ui_default_llm_model',
     'ui_default_llm_provider',
+    'ui_default_llm_profile',
     'ui_default_reasoning_effort',
 ]
 

@@ -29,6 +29,7 @@ class AttractorApiClient:
         working_directory: str,
         model: Optional[str],
         llm_provider: Optional[str] = None,
+        llm_profile: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         goal: Optional[str] = None,
         launch_context: dict[str, Any] | None = None,
@@ -47,6 +48,8 @@ class AttractorApiClient:
         }
         if llm_provider is not None:
             payload["llm_provider"] = llm_provider
+        if llm_profile is not None:
+            payload["llm_profile"] = llm_profile
         if reasoning_effort is not None:
             payload["reasoning_effort"] = reasoning_effort
         return await self._request_json("POST", "/pipelines", json=payload)

@@ -26,6 +26,18 @@ def __getattr__(name: str) -> Any:
         globals()["OpenAICompatibleAdapter"] = _OpenAICompatibleAdapter
         return _OpenAICompatibleAdapter
 
+    if name == "OpenRouterAdapter":
+        from .openai_compatible import OpenRouterAdapter as _OpenRouterAdapter
+
+        globals()["OpenRouterAdapter"] = _OpenRouterAdapter
+        return _OpenRouterAdapter
+
+    if name == "LiteLLMAdapter":
+        from .openai_compatible import LiteLLMAdapter as _LiteLLMAdapter
+
+        globals()["LiteLLMAdapter"] = _LiteLLMAdapter
+        return _LiteLLMAdapter
+
     if name == "GeminiAdapter":
         from .gemini import GeminiAdapter as _GeminiAdapter
 
@@ -40,6 +52,8 @@ __all__ = [
     "GeminiAdapter",
     "OpenAIAdapter",
     "OpenAICompatibleAdapter",
+    "OpenRouterAdapter",
+    "LiteLLMAdapter",
     "ProviderAdapter",
     "SupportsClose",
     "SupportsInitialize",

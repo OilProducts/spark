@@ -18,7 +18,7 @@ VALID_FIDELITY = {
 _CONDITION_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)\s*(=|!=)\s*(.+)$")
 _CONDITION_BARE_KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)$")
 _CONTEXT_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
-_STYLESHEET_ALLOWED_PROPERTIES = {"llm_model", "llm_provider", "reasoning_effort"}
+_STYLESHEET_ALLOWED_PROPERTIES = {"llm_model", "llm_provider", "llm_profile", "reasoning_effort"}
 _STYLESHEET_CLASS_RE = re.compile(r"^[a-z0-9-]+$")
 _STYLESHEET_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _STYLESHEET_SHAPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -881,7 +881,7 @@ def _lint_stylesheet_syntax(stylesheet: str, line: int) -> List[Diagnostic]:
                             severity=DiagnosticSeverity.ERROR,
                             message=(
                                 f"unsupported stylesheet property '{key}', expected one of "
-                                "llm_model, llm_provider, reasoning_effort"
+                                "llm_model, llm_provider, llm_profile, reasoning_effort"
                             ),
                             line=line,
                         )

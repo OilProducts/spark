@@ -267,6 +267,7 @@ class ActiveRun:
     working_directory: str
     model: str
     llm_provider: str = "codex"
+    llm_profile: str | None = None
     reasoning_effort: str | None = None
     status: str = "running"
     outcome: str | None = None

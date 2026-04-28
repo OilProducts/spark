@@ -329,6 +329,7 @@ class PreparedChatTurn:
     prompt: str
     provider: str
     model: Optional[str]
+    llm_profile: Optional[str]
     reasoning_effort: Optional[str]
     user_turn: "ConversationTurn"
     assistant_turn: "ConversationTurn"
@@ -491,6 +492,7 @@ class FlowRunRequest:
     launch_context: Optional[dict[str, Any]] = None
     model: Optional[str] = None
     llm_provider: Optional[str] = None
+    llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
     run_id: Optional[str] = None
     launch_error: Optional[str] = None
@@ -518,6 +520,8 @@ class FlowRunRequest:
             payload["model"] = self.model
         if self.llm_provider:
             payload["llm_provider"] = self.llm_provider
+        if self.llm_profile:
+            payload["llm_profile"] = self.llm_profile
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
         if self.run_id:
@@ -545,6 +549,7 @@ class FlowRunRequest:
             launch_context=copy.deepcopy(payload.get("launch_context")) if isinstance(payload.get("launch_context"), dict) else None,
             model=str(payload.get("model")) if payload.get("model") is not None else None,
             llm_provider=str(payload.get("llm_provider")) if payload.get("llm_provider") is not None else None,
+            llm_profile=str(payload.get("llm_profile")) if payload.get("llm_profile") is not None else None,
             reasoning_effort=str(payload.get("reasoning_effort")) if payload.get("reasoning_effort") is not None else None,
             run_id=str(payload.get("run_id")) if payload.get("run_id") is not None else None,
             launch_error=str(payload.get("launch_error")) if payload.get("launch_error") is not None else None,
@@ -568,6 +573,7 @@ class FlowLaunch:
     launch_context: Optional[dict[str, Any]] = None
     model: Optional[str] = None
     llm_provider: Optional[str] = None
+    llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
     run_id: Optional[str] = None
     launch_error: Optional[str] = None
@@ -594,6 +600,8 @@ class FlowLaunch:
             payload["model"] = self.model
         if self.llm_provider:
             payload["llm_provider"] = self.llm_provider
+        if self.llm_profile:
+            payload["llm_profile"] = self.llm_profile
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
         if self.run_id:
@@ -619,6 +627,7 @@ class FlowLaunch:
             launch_context=copy.deepcopy(payload.get("launch_context")) if isinstance(payload.get("launch_context"), dict) else None,
             model=str(payload.get("model")) if payload.get("model") is not None else None,
             llm_provider=str(payload.get("llm_provider")) if payload.get("llm_provider") is not None else None,
+            llm_profile=str(payload.get("llm_profile")) if payload.get("llm_profile") is not None else None,
             reasoning_effort=str(payload.get("reasoning_effort")) if payload.get("reasoning_effort") is not None else None,
             run_id=str(payload.get("run_id")) if payload.get("run_id") is not None else None,
             launch_error=str(payload.get("launch_error")) if payload.get("launch_error") is not None else None,
@@ -701,6 +710,7 @@ class ConversationState:
     chat_mode: str = CHAT_MODE_CHAT
     provider: str = "codex"
     model: Optional[str] = None
+    llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
     conversation_handle: str = ""
     title: str = "New thread"
@@ -754,6 +764,7 @@ class ConversationState:
             "chat_mode": self.chat_mode,
             "provider": self.provider,
             "model": self.model,
+            "llm_profile": self.llm_profile,
             "reasoning_effort": self.reasoning_effort,
             "title": self.title,
             "created_at": self.created_at,
@@ -801,6 +812,7 @@ class ConversationState:
             chat_mode=normalize_chat_mode(payload.get("chat_mode")),
             provider=_as_non_empty_string(payload.get("provider")) or "codex",
             model=_as_non_empty_string(payload.get("model")),
+            llm_profile=_as_non_empty_string(payload.get("llm_profile")),
             reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
             title=_as_non_empty_string(payload.get("title")) or _derive_conversation_title(turns),
             created_at=created_at or _iso_now(),

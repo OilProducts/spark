@@ -7,6 +7,7 @@ from attractor.dsl.models import DotAttribute, DotNode
 
 RUNTIME_LAUNCH_MODEL_KEY = "_attractor.runtime.launch_model"
 RUNTIME_LAUNCH_PROVIDER_KEY = "_attractor.runtime.launch_provider"
+RUNTIME_LAUNCH_PROFILE_KEY = "_attractor.runtime.launch_profile"
 RUNTIME_LAUNCH_REASONING_EFFORT_KEY = "_attractor.runtime.launch_reasoning_effort"
 
 _NON_LLM_BACKEND_SHAPES = {
@@ -74,6 +75,27 @@ def resolve_effective_llm_provider(
     if normalized_fallback:
         return normalized_fallback.lower()
     return "codex"
+
+
+def resolve_effective_llm_profile(
+    node_attrs: Dict[str, DotAttribute],
+    context: ContextLike,
+    *,
+    fallback_profile: Optional[str] = None,
+) -> Optional[str]:
+    profile_attr = node_attrs.get("llm_profile")
+    node_profile = _normalize_optional_text(getattr(profile_attr, "value", None))
+    if node_profile:
+        return node_profile
+
+    runtime_launch_profile = _normalize_optional_text(context.get(RUNTIME_LAUNCH_PROFILE_KEY, ""))
+    if runtime_launch_profile:
+        return runtime_launch_profile
+
+    normalized_fallback = _normalize_optional_text(fallback_profile)
+    if normalized_fallback:
+        return normalized_fallback
+    return None
 
 
 def resolve_effective_reasoning_effort(

@@ -37,6 +37,7 @@ class OpenAICompatibleAdapter:
         transport: httpx.AsyncBaseTransport | None = None,
         *,
         owns_client: bool = False,
+        require_api_key: bool = True,
     ) -> None:
         if client is not None and transport is not None:
             raise ValueError("client and transport are mutually exclusive")
@@ -45,6 +46,7 @@ class OpenAICompatibleAdapter:
         self.base_url = normalize_openai_compatible_base_url(base_url)
         self.timeout = timeout
         self.default_headers = dict(default_headers or {})
+        self.require_api_key = require_api_key
         self.config = {
             "api_key": self.api_key,
             "base_url": self.base_url,
@@ -80,8 +82,10 @@ class OpenAICompatibleAdapter:
             headers.update(header_overrides)
 
         if self.api_key is None:
-            raise ConfigurationError("OpenAI-compatible API key is required")
-        headers["Authorization"] = f"Bearer {self.api_key}"
+            if self.require_api_key:
+                raise ConfigurationError(f"{self.name} API key is required")
+        else:
+            headers["Authorization"] = f"Bearer {self.api_key}"
 
         kwargs: dict[str, Any] = {
             "headers": headers,
@@ -219,4 +223,59 @@ async def normalize_stream_events(
             yield translated_event
 
 
-__all__ = ["OpenAICompatibleAdapter"]
+class OpenRouterAdapter(OpenAICompatibleAdapter):
+    name = "openrouter"
+    default_base_url = "https://openrouter.ai/api/v1"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float | httpx.Timeout | None = None,
+        default_headers: Mapping[str, Any] | None = None,
+        client: httpx.AsyncClient | Any | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        owns_client: bool = False,
+    ) -> None:
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url or self.default_base_url,
+            timeout=timeout,
+            default_headers=default_headers,
+            client=client,
+            transport=transport,
+            owns_client=owns_client,
+            require_api_key=True,
+        )
+
+
+class LiteLLMAdapter(OpenAICompatibleAdapter):
+    name = "litellm"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float | httpx.Timeout | None = None,
+        default_headers: Mapping[str, Any] | None = None,
+        client: httpx.AsyncClient | Any | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        owns_client: bool = False,
+    ) -> None:
+        if base_url is None or str(base_url).strip() == "":
+            raise ConfigurationError("LITELLM_BASE_URL is required for LiteLLM")
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            default_headers=default_headers,
+            client=client,
+            transport=transport,
+            owns_client=owns_client,
+            require_api_key=False,
+        )
+
+
+__all__ = ["OpenAICompatibleAdapter", "OpenRouterAdapter", "LiteLLMAdapter"]

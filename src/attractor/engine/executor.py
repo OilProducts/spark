@@ -21,6 +21,7 @@ from attractor.llm_runtime import (
     RUNTIME_LAUNCH_MODEL_KEY,
     node_uses_llm_backend,
     resolve_effective_llm_model,
+    resolve_effective_llm_profile,
 )
 from attractor.transforms.runtime_preamble import RuntimePreambleTransform
 from attractor.transforms.runtime_preamble import (
@@ -1808,7 +1809,11 @@ class PipelineExecutor:
         effective_model = resolve_effective_llm_model(node.attrs, context)
         if not effective_model:
             return {}
-        return {"llm_model": effective_model}
+        payload: Dict[str, object] = {"llm_model": effective_model}
+        effective_profile = resolve_effective_llm_profile(node.attrs, context)
+        if effective_profile:
+            payload["llm_profile"] = effective_profile
+        return payload
 
     def _mirror_graph_attrs(self, context: Context) -> None:
         goal_attr = self.graph.graph_attrs.get("goal")

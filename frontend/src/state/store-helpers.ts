@@ -12,6 +12,7 @@ import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
 export const DEFAULT_UI_DEFAULTS: UiDefaults = {
     llm_model: 'gpt-5.5',
     llm_provider: '',
+    llm_profile: '',
     reasoning_effort: '',
 }
 
@@ -51,6 +52,7 @@ const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
     'tool.hooks.post',
     'ui_default_llm_model',
     'ui_default_llm_provider',
+    'ui_default_llm_profile',
     'ui_default_reasoning_effort',
 ]
 

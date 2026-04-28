@@ -98,6 +98,71 @@ def _unsupported_instruction_part(
 def test_openai_compatible_adapter_is_distinct_from_openai_adapter() -> None:
     assert unified_llm.OpenAICompatibleAdapter is not unified_llm.OpenAIAdapter
     assert unified_llm.OpenAICompatibleAdapter.name == "openai_compatible"
+    assert unified_llm.OpenRouterAdapter.name == "openrouter"
+    assert unified_llm.LiteLLMAdapter.name == "litellm"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_adapter_uses_hosted_default_and_provider_identity() -> None:
+    captured_requests, transport = _make_complete_transport(
+        {
+            "id": "chatcmpl_openrouter",
+            "model": "anthropic/claude-sonnet-4.5",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        },
+    )
+    adapter = unified_llm.OpenRouterAdapter(
+        api_key="openrouter-key",
+        default_headers={"HTTP-Referer": "https://spark.example", "X-Title": "Spark"},
+        transport=transport,
+    )
+
+    response = await adapter.complete(
+        unified_llm.Request(
+            model="anthropic/claude-sonnet-4.5",
+            messages=[unified_llm.Message.user("hello")],
+            provider_options={"openrouter": {"headers": {"X-Request-ID": "req-1"}}},
+        )
+    )
+
+    assert adapter.base_url == "https://openrouter.ai/api/v1"
+    assert response.provider == "openrouter"
+    sent_request = captured_requests[0]
+    assert str(sent_request.url) == "https://openrouter.ai/api/v1/chat/completions"
+    assert sent_request.headers["authorization"] == "Bearer openrouter-key"
+    assert sent_request.headers["http-referer"] == "https://spark.example"
+    assert sent_request.headers["x-title"] == "Spark"
+    assert sent_request.headers["x-request-id"] == "req-1"
+
+
+@pytest.mark.asyncio
+async def test_litellm_adapter_allows_missing_api_key_with_explicit_base_url() -> None:
+    captured_requests, transport = _make_complete_transport(
+        {
+            "id": "chatcmpl_litellm",
+            "model": "team-model",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        },
+    )
+    adapter = unified_llm.LiteLLMAdapter(
+        base_url="https://litellm.example/v1",
+        transport=transport,
+    )
+
+    response = await adapter.complete(
+        unified_llm.Request(
+            model="team-model",
+            messages=[unified_llm.Message.user("hello")],
+        )
+    )
+
+    assert response.provider == "litellm"
+    assert "authorization" not in captured_requests[0].headers
+
+
+def test_litellm_adapter_requires_explicit_base_url() -> None:
+    with pytest.raises(unified_llm.ConfigurationError, match="LITELLM_BASE_URL"):
+        unified_llm.LiteLLMAdapter()
 
 
 @pytest.mark.asyncio

@@ -91,6 +91,7 @@ class ProjectChatReviewService:
         launch_context = copy.deepcopy(flow_run_request_payload.get("launch_context")) if isinstance(flow_run_request_payload.get("launch_context"), dict) else None
         model = str(flow_run_request_payload.get("model", "")).strip() or None
         llm_provider = str(flow_run_request_payload.get("llm_provider", "")).strip().lower() or None
+        llm_profile = str(flow_run_request_payload.get("llm_profile", "")).strip() or None
         reasoning_effort = str(flow_run_request_payload.get("reasoning_effort", "")).strip().lower() or None
 
         requests_by_id = {request.id: request for request in state.flow_run_requests}
@@ -107,6 +108,7 @@ class ProjectChatReviewService:
                 and existing_request.launch_context == launch_context
                 and existing_request.model == model
                 and existing_request.llm_provider == llm_provider
+                and existing_request.llm_profile == llm_profile
                 and existing_request.reasoning_effort == reasoning_effort
             ):
                 return None
@@ -125,6 +127,7 @@ class ProjectChatReviewService:
             launch_context=launch_context,
             model=model,
             llm_provider=llm_provider,
+            llm_profile=llm_profile,
             reasoning_effort=reasoning_effort,
         )
         request_segment = ConversationSegment(
@@ -196,6 +199,7 @@ class ProjectChatReviewService:
         launch_context = copy.deepcopy(flow_launch_payload.get("launch_context")) if isinstance(flow_launch_payload.get("launch_context"), dict) else None
         model = str(flow_launch_payload.get("model", "")).strip() or None
         llm_provider = str(flow_launch_payload.get("llm_provider", "")).strip().lower() or None
+        llm_profile = str(flow_launch_payload.get("llm_profile", "")).strip() or None
         reasoning_effort = str(flow_launch_payload.get("reasoning_effort", "")).strip().lower() or None
 
         now = iso_now()
@@ -212,6 +216,7 @@ class ProjectChatReviewService:
             launch_context=launch_context,
             model=model,
             llm_provider=llm_provider,
+            llm_profile=llm_profile,
             reasoning_effort=reasoning_effort,
         )
         state.flow_launches.append(launch)
@@ -323,6 +328,7 @@ class ProjectChatReviewService:
         flow_name: Optional[str],
         model: Optional[str],
         llm_provider: Optional[str] = None,
+        llm_profile: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
     ) -> tuple[dict[str, object], FlowRunRequest]:
         normalized_project_path = normalize_project_path_value(project_path)
@@ -349,6 +355,8 @@ class ProjectChatReviewService:
                     request.model = model
                 if llm_provider is not None:
                     request.llm_provider = llm_provider.strip().lower() or None
+                if llm_profile is not None:
+                    request.llm_profile = llm_profile.strip() or None
                 if reasoning_effort is not None:
                     request.reasoning_effort = reasoning_effort.strip().lower() or None
                 self._repository.append_event(state, f"Approved flow run request {request.id}.")

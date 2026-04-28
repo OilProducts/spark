@@ -7,6 +7,7 @@ import agent.profiles as profiles
 import agent.profiles.anthropic as anthropic_profile_module
 import agent.profiles.gemini as gemini_profile_module
 import agent.profiles.openai as openai_profile_module
+import agent.profiles.openai_compatible as openai_compatible_profile_module
 
 
 def _noop_executor(arguments: dict[str, object], execution_environment: object) -> str:
@@ -67,6 +68,40 @@ PROVIDER_CASES = [
             "close_agent",
         ],
     ),
+    (
+        "openrouter",
+        agent.create_openrouter_profile,
+        profiles.OpenAICompatibleProviderProfile,
+        [
+            "read_file",
+            "apply_patch",
+            "write_file",
+            "shell",
+            "grep",
+            "glob",
+            "spawn_agent",
+            "send_input",
+            "wait",
+            "close_agent",
+        ],
+    ),
+    (
+        "litellm",
+        agent.create_litellm_profile,
+        profiles.OpenAICompatibleProviderProfile,
+        [
+            "read_file",
+            "apply_patch",
+            "write_file",
+            "shell",
+            "grep",
+            "glob",
+            "spawn_agent",
+            "send_input",
+            "wait",
+            "close_agent",
+        ],
+    ),
 ]
 
 
@@ -90,6 +125,12 @@ def test_provider_profile_package_exports_provider_factories_and_registry_builde
     assert profiles.build_gemini_tool_registry is gemini_profile_module.build_gemini_tool_registry
     assert profiles.register_gemini_tools is gemini_profile_module.register_gemini_tools
 
+    assert (
+        profiles.create_openrouter_profile
+        is openai_compatible_profile_module.create_openrouter_profile
+    )
+    assert profiles.create_litellm_profile is openai_compatible_profile_module.create_litellm_profile
+
 
 @pytest.mark.parametrize(
     ("provider_name", "factory", "profile_type", "expected_tool_names"),
@@ -105,6 +146,8 @@ def test_provider_profiles_expose_provider_specific_tools_and_object_root_schema
         "openai": "gpt-5.2",
         "anthropic": "claude-sonnet-4-5",
         "gemini": "gemini-3.1-pro-preview",
+        "openrouter": "anthropic/claude-sonnet-4.5",
+        "litellm": "team-model",
     }[provider_name])
 
     assert isinstance(profile, profile_type)
@@ -129,6 +172,8 @@ def test_provider_profiles_build_requests_through_the_public_session_api(
             "openai": "gpt-5.2",
             "anthropic": "claude-sonnet-4-5",
             "gemini": "gemini-3.1-pro-preview",
+            "openrouter": "anthropic/claude-sonnet-4.5",
+            "litellm": "team-model",
         }[provider_name],
     )
     session = agent.Session(
@@ -143,6 +188,21 @@ def test_provider_profiles_build_requests_through_the_public_session_api(
     assert [tool.name for tool in request.tools] == expected_tool_names
     assert request.tool_choice is not None
     assert request.tool_choice.mode == "auto"
+
+
+@pytest.mark.parametrize("factory", [agent.create_openrouter_profile, agent.create_litellm_profile])
+def test_openai_compatible_profiles_do_not_inject_openai_reasoning_options(factory) -> None:
+    profile = factory(model="explicit-model")
+    session = agent.Session(
+        profile=profile,
+        execution_env=agent.LocalExecutionEnvironment(working_dir="."),
+        config=agent.SessionConfig(reasoning_effort="high"),
+    )
+
+    request = session.build_request("Session system prompt")
+
+    assert request.provider in {"openrouter", "litellm"}
+    assert request.provider_options == {request.provider: {}}
 
 
 def test_provider_profile_exposes_fields_capabilities_and_copying_behavior(

@@ -16,6 +16,7 @@ from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from attractor.engine.status_envelope_prompting import build_status_envelope_prompt_appendix
 from attractor.llm_runtime import (
     resolve_effective_llm_model,
+    resolve_effective_llm_profile,
     resolve_effective_llm_provider,
     resolve_effective_reasoning_effort,
 )
@@ -90,6 +91,7 @@ class CodergenHandler:
             runtime.context,
             fallback_provider=getattr(self.backend, "provider", None) if self.backend is not None else None,
         )
+        effective_profile = resolve_effective_llm_profile(runtime.node_attrs, runtime.context)
         effective_reasoning_effort = resolve_effective_reasoning_effort(
             runtime.node_attrs,
             runtime.context,
@@ -103,6 +105,7 @@ class CodergenHandler:
             "timeout": timeout,
             "write_contract": write_contract,
             "provider": effective_provider,
+            "llm_profile": effective_profile,
         }
         if effective_model is not None:
             backend_kwargs["model"] = effective_model

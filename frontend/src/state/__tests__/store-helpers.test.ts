@@ -9,6 +9,7 @@ describe('store helpers', () => {
     expect(loadUiDefaults()).toEqual({
       llm_model: 'gpt-5.5',
       llm_provider: '',
+      llm_profile: '',
       reasoning_effort: '',
     })
   })
@@ -17,12 +18,14 @@ describe('store helpers', () => {
     localStorage.setItem(UI_DEFAULTS_STORAGE_KEY, JSON.stringify({
       llm_model: 'claude-sonnet-4-6',
       llm_provider: 'anthropic',
+      llm_profile: '',
       reasoning_effort: 'high',
     }))
 
     expect(loadUiDefaults()).toEqual({
       llm_model: 'claude-sonnet-4-6',
       llm_provider: 'anthropic',
+      llm_profile: '',
       reasoning_effort: 'high',
     })
   })

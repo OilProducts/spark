@@ -3,7 +3,8 @@ import { Handle, NodeToolbar, Position, type Node, type NodeProps, useReactFlow 
 
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { getToolHookCommandWarning } from '@/lib/graphAttrValidation'
-import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
+import { fetchLlmProfiles } from '@/lib/api/llmProfilesApi'
+import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from '@/lib/llmSuggestions'
 import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility'
 import {
     WORKFLOW_NODE_SHAPE_OPTIONS,
@@ -165,7 +166,9 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const [draftTimeout, setDraftTimeout] = useState<string>((data.timeout as string) || '')
     const [draftLlmModel, setDraftLlmModel] = useState<string>((data.llm_model as string) || '')
     const [draftLlmProvider, setDraftLlmProvider] = useState<string>((data.llm_provider as string) || '')
+    const [draftLlmProfile, setDraftLlmProfile] = useState<string>((data.llm_profile as string) || '')
     const [draftReasoningEffort, setDraftReasoningEffort] = useState<string>((data.reasoning_effort as string) || '')
+    const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
     const [draftAutoStatus, setDraftAutoStatus] = useState<boolean>(
         data.auto_status === true || data.auto_status === 'true',
     )
@@ -220,6 +223,10 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             inputRef.current?.select()
         }
     }, [isEditingLabel])
+
+    useEffect(() => {
+        void fetchLlmProfiles().then(setLlmProfiles)
+    }, [])
 
     const persistNodeData = (nextData: Record<string, unknown>) => {
         if (!isEditorCanvas || !flowName || isReadOnlyEditorCanvas) {
@@ -309,6 +316,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setDraftTimeout((data.timeout as string) || '')
         setDraftLlmModel((data.llm_model as string) || '')
         setDraftLlmProvider((data.llm_provider as string) || '')
+        setDraftLlmProfile((data.llm_profile as string) || '')
         setDraftReasoningEffort((data.reasoning_effort as string) || '')
         setDraftAutoStatus(data.auto_status === true || data.auto_status === 'true')
         setDraftAllowPartial(data.allow_partial === true || data.allow_partial === 'true')
@@ -348,6 +356,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             timeout: draftTimeout,
             llm_model: draftLlmModel,
             llm_provider: draftLlmProvider,
+            llm_profile: draftLlmProfile,
             reasoning_effort: draftReasoningEffort,
             auto_status: draftAutoStatus,
             allow_partial: draftAllowPartial,
@@ -794,7 +803,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                     className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 />
                                                 <datalist id={`llm-model-options-${id}`}>
-                                                    {getModelSuggestions(draftLlmProvider).map((model) => (
+                                                    {getModelSuggestions(draftLlmProfile || draftLlmProvider, llmProfiles).map((model) => (
                                                         <option key={model} value={model} />
                                                     ))}
                                                 </datalist>
@@ -802,13 +811,17 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                             <div className="space-y-1">
                                                 <label className="text-xs font-medium text-foreground">LLM Provider</label>
                                                 <input
-                                                    value={draftLlmProvider}
-                                                    onChange={(event) => setDraftLlmProvider(event.target.value)}
+                                                    value={draftLlmProfile || draftLlmProvider}
+                                                    onChange={(event) => {
+                                                        const selection = splitLlmSelection(event.target.value, llmProfiles)
+                                                        setDraftLlmProvider(selection.llm_provider)
+                                                        setDraftLlmProfile(selection.llm_profile)
+                                                    }}
                                                     list={`llm-provider-options-${id}`}
                                                     className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 />
                                                 <datalist id={`llm-provider-options-${id}`}>
-                                                    {LLM_PROVIDER_OPTIONS.map((provider) => (
+                                                    {getLlmSelectionOptions(llmProfiles).map((provider) => (
                                                         <option key={provider} value={provider} />
                                                     ))}
                                                 </datalist>

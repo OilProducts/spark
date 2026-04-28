@@ -375,6 +375,7 @@ const KNOWN_GRAPH_ATTR_KEYS = new Set<string>([
     'tool.hooks.post',
     'ui_default_llm_model',
     'ui_default_llm_provider',
+    'ui_default_llm_profile',
     'ui_default_reasoning_effort',
 ])
 
@@ -402,6 +403,7 @@ const KNOWN_NODE_ATTR_KEYS = new Set<string>([
     'timeout',
     'llm_model',
     'llm_provider',
+    'llm_profile',
     'reasoning_effort',
     'auto_status',
     'allow_partial',
@@ -507,6 +509,7 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         formatGraphAttr('tool.hooks.post', readStringAttr(graphAttrs, 'tool.hooks.post')),
         formatGraphAttr('ui_default_llm_model', readStringAttr(graphAttrs, 'ui_default_llm_model')),
         formatGraphAttr('ui_default_llm_provider', readStringAttr(graphAttrs, 'ui_default_llm_provider')),
+        formatGraphAttr('ui_default_llm_profile', readStringAttr(graphAttrs, 'ui_default_llm_profile')),
         formatGraphAttr('ui_default_reasoning_effort', readStringAttr(graphAttrs, 'ui_default_reasoning_effort')),
         ...formatCanonicalAttrEntries(graphAttrs, KNOWN_GRAPH_ATTR_KEYS),
     ].filter(Boolean)
@@ -543,6 +546,7 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         const timeoutValue = readStringAttr(attrs, 'timeout')
         const llmModelValue = readStringAttr(attrs, 'llm_model')
         const llmProviderValue = readStringAttr(attrs, 'llm_provider')
+        const llmProfileValue = readStringAttr(attrs, 'llm_profile')
         const reasoningEffortValue = readStringAttr(attrs, 'reasoning_effort')
         const autoStatusValue = readExplicitBooleanAttr(attrs, 'auto_status')
         const allowPartialValue = readExplicitBooleanAttr(attrs, 'allow_partial')
@@ -597,6 +601,7 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
             timeoutValue ? formatDurationAttr('timeout', timeoutValue) : '',
             llmModelValue ? `llm_model=${formatAttrValue(llmModelValue)}` : '',
             llmProviderValue ? `llm_provider=${formatAttrValue(llmProviderValue)}` : '',
+            llmProfileValue ? `llm_profile=${formatAttrValue(llmProfileValue)}` : '',
             reasoningEffortValue ? `reasoning_effort=${formatAttrValue(reasoningEffortValue)}` : '',
             formatExplicitBooleanAttr('auto_status', autoStatusValue),
             formatExplicitBooleanAttr('allow_partial', allowPartialValue),

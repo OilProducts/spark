@@ -15,6 +15,7 @@ from agent.local_environment import LocalExecutionEnvironment
 from agent.profiles.anthropic import AnthropicProviderProfile
 from agent.profiles.gemini import GeminiProviderProfile
 from agent.profiles.openai import OpenAIProviderProfile
+from agent.profiles.openai_compatible import OpenAICompatibleProviderProfile
 from agent.session import Session
 from agent.types import AssistantTurn, SessionConfig, SessionState, UserTurn
 from spark.workspace.conversations.models import (
@@ -37,6 +38,7 @@ from spark_common.codex_app_client import (
 from spark_common import codex_app_protocol
 from spark_common.codex_runtime import build_codex_runtime_environment
 from spark_common.runtime_path import resolve_runtime_workspace_path
+from spark.llm_profiles import LlmProfileConfigurationError, get_llm_profile
 from unified_llm.client import Client as UnifiedLlmClient
 from unified_llm.models import get_latest_model, get_model_info
 
@@ -52,6 +54,8 @@ def _normalize_provider(value: str | None) -> str:
 
 def _profile_for_provider(provider: str, model: str | None):
     model_id = as_non_empty_string(model)
+    if provider in {"openrouter", "litellm", "openai_compatible"} and model_id is None:
+        raise ValueError(f"Provider {provider} requires an explicit model.")
     if model_id is None:
         latest = get_latest_model(provider, "tools") or get_latest_model(provider)
         model_id = latest.id if latest is not None else ""
@@ -63,7 +67,40 @@ def _profile_for_provider(provider: str, model: str | None):
         return AnthropicProviderProfile(model=model_id, supports_streaming=supports_streaming)
     if provider == "gemini":
         return GeminiProviderProfile(model=model_id, supports_streaming=supports_streaming)
-    raise ValueError("Provider must be blank or one of: codex, openai, anthropic, gemini.")
+    if provider in {"openrouter", "litellm"}:
+        return OpenAICompatibleProviderProfile(
+            id=provider,
+            model=model_id,
+            display_name="OpenRouter" if provider == "openrouter" else "LiteLLM",
+            supports_streaming=supports_streaming,
+        )
+    if provider == "openai_compatible":
+        return OpenAICompatibleProviderProfile(
+            id=provider,
+            model=model_id,
+            display_name="OpenAI Compatible",
+            supports_streaming=supports_streaming,
+        )
+    raise ValueError("Provider must be blank or one of: codex, openai, anthropic, gemini, openrouter, litellm, openai_compatible.")
+
+
+def _session_for_llm_profile(config_dir: Path, profile_id: str, model: str | None):
+    model_id = as_non_empty_string(model)
+    if model_id is None:
+        raise ValueError(f"LLM profile {profile_id} requires an explicit model.")
+    configured_profile = get_llm_profile(config_dir, profile_id)
+    return (
+        OpenAICompatibleProviderProfile(
+            id=configured_profile.id,
+            model=model_id,
+            display_name=configured_profile.label or configured_profile.id,
+            supports_streaming=True,
+        ),
+        UnifiedLlmClient(
+            providers={configured_profile.id: configured_profile.build_adapter()},
+            default_provider=configured_profile.id,
+        ),
+    )
 
 
 def _tool_record_for_session_event(event: SessionEvent, *, status: str) -> ToolCallRecord:
@@ -297,6 +334,8 @@ class UnifiedAgentChatSession:
         *,
         provider: str,
         model: Optional[str] = None,
+        llm_profile: Optional[str] = None,
+        config_dir: Path | str | None = None,
         persisted_history: list[Any] | None = None,
         client_factory: Callable[[str], UnifiedLlmClient] | None = None,
     ) -> None:
@@ -304,6 +343,8 @@ class UnifiedAgentChatSession:
         self.working_dir = resolve_runtime_workspace_path(working_dir)
         self.provider = _normalize_provider(provider)
         self.model = as_non_empty_string(model)
+        self.llm_profile = as_non_empty_string(llm_profile)
+        self.config_dir = Path(config_dir) if config_dir is not None else None
         self._persisted_history = list(persisted_history or [])
         self._client_factory = client_factory or (
             lambda effective_provider: UnifiedLlmClient.from_env(default_provider=effective_provider)
@@ -361,8 +402,13 @@ class UnifiedAgentChatSession:
         return self._runner.run(coro)
 
     def _build_session(self, reasoning_effort: Optional[str]) -> Session:
-        profile = _profile_for_provider(self.provider, self.model)
-        client = self._client_factory(self.provider)
+        if self.llm_profile is not None:
+            if self.config_dir is None:
+                raise LlmProfileConfigurationError("LLM profile config directory is unavailable.")
+            profile, client = _session_for_llm_profile(self.config_dir, self.llm_profile, self.model)
+        else:
+            profile = _profile_for_provider(self.provider, self.model)
+            client = self._client_factory(self.provider)
         self._client = client
         session = Session(
             provider_profile=profile,

@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react"
 import { useStore } from "@/store"
-import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from "@/lib/llmSuggestions"
+import { fetchLlmProfiles } from "@/lib/api/llmProfilesApi"
+import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from "@/lib/llmSuggestions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -8,6 +10,11 @@ import { NativeSelect } from "@/components/ui/native-select"
 export function SettingsPanel() {
     const uiDefaults = useStore((state) => state.uiDefaults)
     const setUiDefault = useStore((state) => state.setUiDefault)
+    const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
+
+    useEffect(() => {
+        void fetchLlmProfiles().then(setLlmProfiles)
+    }, [])
 
     return (
         <div data-testid="settings-panel" className="flex-1 overflow-auto p-6">
@@ -30,14 +37,18 @@ export function SettingsPanel() {
                             </FieldLabel>
                             <Input
                                 id="settings-default-llm-provider"
-                                value={uiDefaults.llm_provider}
-                                onChange={(event) => setUiDefault('llm_provider', event.target.value)}
+                                value={uiDefaults.llm_profile || uiDefaults.llm_provider}
+                                onChange={(event) => {
+                                    const selection = splitLlmSelection(event.target.value, llmProfiles)
+                                    setUiDefault('llm_provider', selection.llm_provider)
+                                    setUiDefault('llm_profile', selection.llm_profile)
+                                }}
                                 list="settings-llm-provider-options"
                                 className="text-xs"
                                 placeholder="openai"
                             />
                             <datalist id="settings-llm-provider-options">
-                                {LLM_PROVIDER_OPTIONS.map((provider) => (
+                                {getLlmSelectionOptions(llmProfiles).map((provider) => (
                                     <option key={provider} value={provider} />
                                 ))}
                             </datalist>
@@ -55,7 +66,7 @@ export function SettingsPanel() {
                                 placeholder="gpt-5.5"
                             />
                             <datalist id="settings-llm-model-options">
-                                {getModelSuggestions(uiDefaults.llm_provider).map((modelOption) => (
+                                {getModelSuggestions(uiDefaults.llm_profile || uiDefaults.llm_provider, llmProfiles).map((modelOption) => (
                                     <option key={modelOption} value={modelOption} />
                                 ))}
                             </datalist>

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 from attractor.llm_runtime import (
+    RUNTIME_LAUNCH_PROFILE_KEY,
     RUNTIME_LAUNCH_PROVIDER_KEY,
     RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
 )
@@ -340,6 +341,55 @@ def test_continue_pipeline_preserves_source_provider_and_reasoning_when_request_
     assert detail_payload["provider"] == "anthropic"
     assert detail_payload["llm_provider"] == "anthropic"
     assert detail_payload["reasoning_effort"] == "medium"
+
+
+def test_continue_pipeline_preserves_source_llm_profile_when_request_omits_it(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    (server.get_runtime_paths().config_dir / "llm-profiles.toml").write_text(
+        """
+        [profiles.local]
+        provider = "openai_compatible"
+        base_url = "http://127.0.0.1:1234/v1"
+        models = ["local-model"]
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
+
+    source_record, _ = _seed_inactive_source_run(
+        tmp_path,
+        run_id="source-profile",
+        status="completed",
+    )
+    source_record.model = "local-model"
+    source_record.llm_profile = "local"
+    server._write_run_meta(source_record)
+    source_checkpoint = server.load_checkpoint(server._run_root(source_record.run_id) / "state.json")
+    assert source_checkpoint is not None
+    source_checkpoint.context[RUNTIME_LAUNCH_PROFILE_KEY] = "local"
+    server.save_checkpoint(server._run_root(source_record.run_id) / "state.json", source_checkpoint)
+
+    response = attractor_api_client.post(
+        f"/pipelines/{source_record.run_id}/continue",
+        json={
+            "start_node": "checkpoint",
+            "flow_source_mode": "snapshot",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "started"
+    assert payload["llm_profile"] == "local"
+    derived_checkpoint = server.load_checkpoint(server._run_root(str(payload["run_id"])) / "state.json")
+    assert derived_checkpoint is not None
+    assert derived_checkpoint.context[RUNTIME_LAUNCH_PROFILE_KEY] == "local"
+    detail_payload = attractor_api_client.get(f"/pipelines/{payload['run_id']}").json()
+    assert detail_payload["llm_profile"] == "local"
 
 
 def test_continue_pipeline_response_uses_explicit_request_provider_and_reasoning(

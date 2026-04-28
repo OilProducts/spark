@@ -86,8 +86,8 @@ def _normalize_provider(value: Any) -> str:
 
 def _validate_provider(value: Any) -> str:
     normalized = _normalize_provider(value)
-    if normalized not in {"codex", "openai", "anthropic", "gemini"}:
-        raise ValueError("Provider must be blank or one of: codex, openai, anthropic, gemini.")
+    if normalized not in {"codex", "openai", "anthropic", "gemini", "openrouter", "litellm", "openai_compatible"}:
+        raise ValueError("Provider must be blank or one of: codex, openai, anthropic, gemini, openrouter, litellm, openai_compatible.")
     return normalized
 
 
@@ -372,7 +372,7 @@ class ProjectChatService:
                 "default_reasoning_effort": "medium" if model.supports_reasoning else None,
             }
             for model in list_unified_models()
-            if model.provider in {"openai", "anthropic", "gemini"}
+            if model.provider in {"openai", "anthropic", "gemini", "openrouter", "litellm"}
         ]
         runtime_project_path = str(_normalize_project_path(resolve_runtime_workspace_path(normalized_project_path)))
         client = CodexAppServerClient(
@@ -889,12 +889,14 @@ class ProjectChatService:
         model: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         provider: Optional[str] = None,
+        llm_profile: Optional[str] = None,
     ) -> dict[str, Any]:
         normalized_project_path = _normalize_project_path(project_path)
         if not normalized_project_path:
             raise ValueError("Project path is required.")
         normalized_chat_mode = validate_chat_mode(chat_mode) if chat_mode is not None else None
         normalized_provider = _validate_provider(provider) if provider is not None else None
+        normalized_profile = _as_non_empty_string(llm_profile) if llm_profile is not None else None
         normalized_model = _as_non_empty_string(model) if model is not None else None
         normalized_reasoning_effort = (
             validate_reasoning_effort(reasoning_effort)
@@ -920,6 +922,8 @@ class ProjectChatService:
                 state.model = normalized_model
             if provider is not None:
                 state.provider = normalized_provider or "codex"
+            if llm_profile is not None:
+                state.llm_profile = normalized_profile
             if reasoning_effort is not None:
                 state.reasoning_effort = normalized_reasoning_effort
             self._touch_conversation_state(state)
@@ -936,6 +940,7 @@ class ProjectChatService:
         reasoning_effort: Optional[str] = None,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
         provider: Optional[str] = None,
+        llm_profile: Optional[str] = None,
     ) -> tuple[PreparedChatTurn, dict[str, Any]]:
         normalized_project_path = _normalize_project_path(project_path)
         if not normalized_project_path:
@@ -960,11 +965,16 @@ class ProjectChatService:
                 state.model = _as_non_empty_string(model)
             if provider is not None:
                 state.provider = _validate_provider(provider)
+            if llm_profile is not None:
+                state.llm_profile = _as_non_empty_string(llm_profile)
             if reasoning_effort is not None:
                 state.reasoning_effort = validate_reasoning_effort(reasoning_effort)
             effective_provider = _normalize_provider(state.provider)
             effective_model = state.model
+            effective_profile = state.llm_profile
             effective_reasoning_effort = state.reasoning_effort
+            if (effective_profile or effective_provider in {"openrouter", "litellm", "openai_compatible"}) and not effective_model:
+                raise ValueError(f"Provider {effective_provider} requires an explicit model.")
             active_assistant_turn = next(
                 (
                     turn
@@ -1016,6 +1026,7 @@ class ProjectChatService:
                 prompt=prompt,
                 provider=effective_provider,
                 model=effective_model,
+                llm_profile=effective_profile,
                 reasoning_effort=effective_reasoning_effort,
                 user_turn=user_turn,
                 assistant_turn=assistant_turn,
@@ -1119,16 +1130,26 @@ class ProjectChatService:
                 prepared.project_path,
                 prepared.provider,
                 prepared.model,
+                llm_profile=prepared.llm_profile,
                 history_exclude_turn_ids={prepared.user_turn.id, prepared.assistant_turn.id},
             )
         except TypeError:
             try:
-                session = self._build_session(
-                    prepared.conversation_id,
-                    prepared.project_path,
-                    prepared.provider,
-                    prepared.model,
-                )
+                if prepared.llm_profile is not None:
+                    session = self._build_session(
+                        prepared.conversation_id,
+                        prepared.project_path,
+                        prepared.provider,
+                        prepared.model,
+                        llm_profile=prepared.llm_profile,
+                    )
+                else:
+                    session = self._build_session(
+                        prepared.conversation_id,
+                        prepared.project_path,
+                        prepared.provider,
+                        prepared.model,
+                    )
             except TypeError:
                 session = self._build_session(prepared.conversation_id, prepared.project_path)
         return run_session(session)
@@ -1435,7 +1456,10 @@ class ProjectChatService:
         conversation_id: str,
         provider: str,
         model: Optional[str],
+        llm_profile: Optional[str] = None,
     ) -> str:
+        if llm_profile:
+            return f"{conversation_id}::{_normalize_provider(provider)}::{str(llm_profile).strip()}::{str(model or '').strip()}"
         return f"{conversation_id}::{_normalize_provider(provider)}::{str(model or '').strip()}"
 
     def _build_session(
@@ -1444,15 +1468,17 @@ class ProjectChatService:
         project_path: str,
         provider: str = "codex",
         model: Optional[str] = None,
+        llm_profile: Optional[str] = None,
         history_exclude_turn_ids: set[str] | None = None,
     ) -> Any:
         normalized_provider = _validate_provider(provider)
-        session_key = self._session_key(conversation_id, normalized_provider, model)
+        normalized_profile = _as_non_empty_string(llm_profile)
+        session_key = self._session_key(conversation_id, normalized_provider, model, normalized_profile)
         with self._sessions_lock:
             session = self._sessions.get(session_key)
             if session is not None:
                 target_session = session
-            elif normalized_provider != "codex":
+            elif normalized_provider != "codex" or normalized_profile is not None:
                 state = self._read_state(conversation_id, project_path)
                 excluded = history_exclude_turn_ids or set()
                 persisted_history = [
@@ -1460,12 +1486,15 @@ class ProjectChatService:
                     for turn in (state.turns if state is not None else [])
                     if turn.id not in excluded
                 ]
-                target_session = UnifiedAgentChatSession(
-                    project_path,
-                    provider=normalized_provider,
-                    model=model,
-                    persisted_history=persisted_history,
-                )
+                session_kwargs: dict[str, Any] = {
+                    "provider": normalized_provider,
+                    "model": model,
+                    "persisted_history": persisted_history,
+                }
+                if normalized_profile is not None:
+                    session_kwargs["llm_profile"] = normalized_profile
+                    session_kwargs["config_dir"] = self._data_dir / "config"
+                target_session = UnifiedAgentChatSession(project_path, **session_kwargs)
                 self._sessions[session_key] = target_session
             else:
                 persisted_session = self._read_session_state(
@@ -1526,6 +1555,7 @@ class ProjectChatService:
         reasoning_effort: Optional[str] = None,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
         provider: Optional[str] = None,
+        llm_profile: Optional[str] = None,
     ) -> dict[str, Any]:
         prepared, snapshot = self._prepare_turn(
             conversation_id,
@@ -1536,6 +1566,7 @@ class ProjectChatService:
             reasoning_effort,
             progress_callback,
             provider=provider,
+            llm_profile=llm_profile,
         )
         worker = threading.Thread(
             target=self._run_prepared_turn_background,
@@ -1556,6 +1587,7 @@ class ProjectChatService:
         reasoning_effort: Optional[str] = None,
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
         provider: Optional[str] = None,
+        llm_profile: Optional[str] = None,
     ) -> dict[str, Any]:
         prepared, _ = self._prepare_turn(
             conversation_id,
@@ -1566,6 +1598,7 @@ class ProjectChatService:
             reasoning_effort,
             progress_callback,
             provider=provider,
+            llm_profile=llm_profile,
         )
         return self._run_prepared_turn(prepared, progress_callback)
 
@@ -1729,6 +1762,7 @@ class ProjectChatService:
         flow_name: Optional[str],
         model: Optional[str],
         llm_provider: Optional[str] = None,
+        llm_profile: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
     ) -> tuple[dict[str, Any], "FlowRunRequest"]:
         return self._reviews.review_flow_run_request(
@@ -1740,6 +1774,7 @@ class ProjectChatService:
             flow_name,
             model,
             llm_provider,
+            llm_profile,
             reasoning_effort,
         )
 

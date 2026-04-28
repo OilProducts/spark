@@ -90,8 +90,10 @@ Environment variable conventions:
 | OpenAI    | OPENAI_API_KEY         | OPENAI_BASE_URL, OPENAI_ORG_ID, OPENAI_PROJECT_ID  |
 | Anthropic | ANTHROPIC_API_KEY      | ANTHROPIC_BASE_URL                                  |
 | Gemini    | GEMINI_API_KEY         | GEMINI_BASE_URL                                     |
+| OpenRouter | OPENROUTER_API_KEY    | OPENROUTER_BASE_URL, OPENROUTER_HTTP_REFERER, OPENROUTER_TITLE |
+| LiteLLM   | LITELLM_BASE_URL       | LITELLM_API_KEY                                     |
 
-Alternate key names may be accepted (e.g., `GOOGLE_API_KEY` as a fallback for `GEMINI_API_KEY`). Only providers whose keys are present in the environment are registered. The first registered provider becomes the default.
+Alternate key names may be accepted (e.g., `GOOGLE_API_KEY` as a fallback for `GEMINI_API_KEY`). Only providers whose required environment is present are registered. The first registered provider becomes the default. OpenRouter and LiteLLM are first-class OpenAI-compatible providers and require explicit model selection rather than catalog defaults.
 
 #### Programmatic Setup
 
@@ -1791,6 +1793,8 @@ adapter = OpenAICompatibleAdapter(
 
 This adapter is distinct from the primary OpenAI adapter (which uses the Responses API) because third-party services typically only implement the Chat Completions protocol. The compatible adapter does not support reasoning tokens, built-in tools, or other Responses API features.
 
+`OpenRouterAdapter` and `LiteLLMAdapter` are named wrappers over this Chat Completions path. OpenRouter defaults to `https://openrouter.ai/api/v1` and requires `OPENROUTER_API_KEY`; LiteLLM requires an explicit proxy base URL and allows a missing API key.
+
 ---
 
 ## Appendix A: Conversation Examples
@@ -1996,7 +2000,7 @@ This section defines how to validate that an implementation of this spec is comp
 
 ### 8.2 Provider Adapters
 
-For EACH provider (OpenAI, Anthropic, Gemini), verify:
+For EACH native provider (OpenAI, Anthropic, Gemini), verify:
 
 - [ ] Adapter uses the provider's **native API** (OpenAI: Responses API, Anthropic: Messages API, Gemini: Gemini API) -- NOT a compatibility shim
 - [ ] Authentication works (API key from env var or explicit config)
@@ -2008,6 +2012,13 @@ For EACH provider (OpenAI, Anthropic, Gemini), verify:
 - [ ] Beta headers are supported (especially Anthropic's `anthropic-beta` header)
 - [ ] HTTP errors are translated to the correct error hierarchy types
 - [ ] `Retry-After` headers are parsed and set on the error object
+
+For EACH OpenAI-compatible first-class provider (OpenRouter, LiteLLM), verify:
+
+- [ ] Adapter uses the Chat Completions compatibility path, not the OpenAI Responses API
+- [ ] Authentication and required environment are enforced per provider
+- [ ] Explicit model selection is required rather than a catalog default
+- [ ] `complete()` and `stream()` return correctly populated unified responses and events
 
 ### 8.3 Message & Content Model
 

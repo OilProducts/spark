@@ -153,6 +153,7 @@ function buildHydratedNode(
         timeout: typeof node.attrs.timeout === 'string' ? node.attrs.timeout : '',
         llm_model: typeof node.attrs.llm_model === 'string' ? node.attrs.llm_model : '',
         llm_provider: typeof node.attrs.llm_provider === 'string' ? node.attrs.llm_provider : '',
+        llm_profile: typeof node.attrs.llm_profile === 'string' ? node.attrs.llm_profile : '',
         reasoning_effort: typeof node.attrs.reasoning_effort === 'string' ? node.attrs.reasoning_effort : '',
         'manager.poll_interval': typeof node.attrs['manager.poll_interval'] === 'string'
             ? node.attrs['manager.poll_interval']

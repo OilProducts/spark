@@ -36,6 +36,7 @@ def _apply_settings(settings: SparkSettings) -> SparkSettings:
         runtime_dir=settings.runtime_dir,
         runs_dir=settings.runs_dir,
         flows_dir=settings.flows_dir,
+        config_dir=settings.config_dir,
     )
     with _SETTINGS_LOCK:
         _SETTINGS = settings

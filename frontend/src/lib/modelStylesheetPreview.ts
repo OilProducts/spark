@@ -1,4 +1,4 @@
-export type ModelProperty = 'llm_model' | 'llm_provider' | 'reasoning_effort'
+export type ModelProperty = 'llm_model' | 'llm_provider' | 'llm_profile' | 'reasoning_effort'
 export type ModelValueSource = 'node' | 'stylesheet' | 'graph_default' | 'system_default'
 
 export interface StylesheetPreviewNodeInput {
@@ -7,12 +7,14 @@ export interface StylesheetPreviewNodeInput {
     class?: string
     llm_model?: string
     llm_provider?: string
+    llm_profile?: string
     reasoning_effort?: string
 }
 
 export interface StylesheetGraphDefaults {
     llm_model?: string
     llm_provider?: string
+    llm_profile?: string
     reasoning_effort?: string
 }
 
@@ -45,7 +47,7 @@ interface ParsedRule {
     order: number
 }
 
-const ALLOWED_PROPERTIES = new Set<ModelProperty>(['llm_model', 'llm_provider', 'reasoning_effort'])
+const ALLOWED_PROPERTIES = new Set<ModelProperty>(['llm_model', 'llm_provider', 'llm_profile', 'reasoning_effort'])
 const ALLOWED_REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh'])
 const CLASS_NAME_RE = /^[a-z0-9-]+$/
 const NODE_ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -54,9 +56,10 @@ const QUOTED_VALUE_RE = /^"(?:[^"\\]|\\.)+"$/
 const SYSTEM_DEFAULTS: Record<ModelProperty, string> = {
     llm_model: '',
     llm_provider: '',
+    llm_profile: '',
     reasoning_effort: 'high',
 }
-const MODEL_PROPERTIES: ModelProperty[] = ['llm_model', 'llm_provider', 'reasoning_effort']
+const MODEL_PROPERTIES: ModelProperty[] = ['llm_model', 'llm_provider', 'llm_profile', 'reasoning_effort']
 
 export function resolveModelStylesheetPreview(
     stylesheet: string,
@@ -96,6 +99,7 @@ export function resolveModelStylesheetPreview(
         const effective: Record<ModelProperty, EffectivePreviewValue> = {
             llm_model: resolveEffectiveValue('llm_model', node, candidates, graphDefaults),
             llm_provider: resolveEffectiveValue('llm_provider', node, candidates, graphDefaults),
+            llm_profile: resolveEffectiveValue('llm_profile', node, candidates, graphDefaults),
             reasoning_effort: resolveEffectiveValue('reasoning_effort', node, candidates, graphDefaults),
         }
 

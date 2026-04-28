@@ -95,6 +95,7 @@ export interface FlowRunRequestResponse {
     launch_context?: Record<string, unknown> | null
     model?: string | null
     llm_provider?: string | null
+    llm_profile?: string | null
     reasoning_effort?: string | null
     run_id?: string | null
     launch_error?: string | null
@@ -116,6 +117,7 @@ export interface FlowLaunchResponse {
     launch_context?: Record<string, unknown> | null
     model?: string | null
     llm_provider?: string | null
+    llm_profile?: string | null
     reasoning_effort?: string | null
     run_id?: string | null
     launch_error?: string | null
@@ -412,6 +414,7 @@ function parseFlowRunRequestResponse(value: unknown): FlowRunRequestResponse | n
         launch_context: asUnknownRecord(record.launch_context),
         model: asOptionalNullableString(record.model),
         llm_provider: asOptionalNullableString(record.llm_provider),
+        llm_profile: asOptionalNullableString(record.llm_profile),
         reasoning_effort: asOptionalNullableString(record.reasoning_effort),
         run_id: asOptionalNullableString(record.run_id),
         launch_error: asOptionalNullableString(record.launch_error),
@@ -453,6 +456,7 @@ function parseFlowLaunchResponse(value: unknown): FlowLaunchResponse | null {
         launch_context: asUnknownRecord(record.launch_context),
         model: asOptionalNullableString(record.model),
         llm_provider: asOptionalNullableString(record.llm_provider),
+        llm_profile: asOptionalNullableString(record.llm_profile),
         reasoning_effort: asOptionalNullableString(record.reasoning_effort),
         run_id: asOptionalNullableString(record.run_id),
         launch_error: asOptionalNullableString(record.launch_error),
@@ -698,6 +702,7 @@ export async function sendConversationTurnValidated(
         project_path: string
         message: string
         provider?: string | null
+        llm_profile?: string | null
         model?: string | null
         reasoning_effort?: string | null
         chat_mode?: ConversationChatMode | null
@@ -767,6 +772,7 @@ export async function reviewFlowRunRequestValidated(
         flow_name?: string | null
         model?: string | null
         llm_provider?: string | null
+        llm_profile?: string | null
         reasoning_effort?: string | null
     },
 ): Promise<ConversationSnapshotResponse> {

@@ -15,6 +15,7 @@ from agent.local_environment import LocalExecutionEnvironment
 from agent.profiles.anthropic import AnthropicProviderProfile
 from agent.profiles.gemini import GeminiProviderProfile
 from agent.profiles.openai import OpenAIProviderProfile
+from agent.profiles.openai_compatible import OpenAICompatibleProviderProfile
 from agent.session import Session
 from agent.types import AssistantTurn, SessionConfig, SessionState
 from attractor.api.token_usage import (
@@ -38,12 +39,20 @@ from attractor.engine.context_contracts import ContextWriteContract
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from attractor.handlers.base import CodergenBackend
 from spark_common.turn_stream import TurnStreamEvent
+from spark.llm_profiles import LlmProfileConfigurationError, get_llm_profile
 from unified_llm.client import Client as UnifiedLlmClient
+from unified_llm.adapters import OpenAICompatibleAdapter
 from unified_llm.models import get_latest_model, get_model_info
 from unified_llm.types import Usage
 from spark_common.codex_app_client import CodexAppServerClient
 from spark_common import codex_app_protocol
 from spark_common.runtime_path import resolve_runtime_workspace_path
+
+UNIFIED_AGENT_PROVIDERS = {"openai", "anthropic", "gemini", "openrouter", "litellm", "openai_compatible"}
+SUPPORTED_LLM_PROVIDERS = {"codex", *UNIFIED_AGENT_PROVIDERS}
+SUPPORTED_LLM_PROVIDER_MESSAGE = (
+    "Supported providers: codex, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
+)
 
 
 def _turn_stream_source_payload(event: TurnStreamEvent) -> dict[str, object]:
@@ -559,6 +568,8 @@ def _breakdown_delta_from(
 
 def _profile_for_provider(provider: str, model: Optional[str]):
     model_id = str(model or "").strip()
+    if provider in {"openrouter", "litellm", "openai_compatible"} and not model_id:
+        raise ValueError(f"Provider {provider} requires an explicit model.")
     if not model_id:
         latest = get_latest_model(provider, "tools") or get_latest_model(provider)
         model_id = latest.id if latest is not None else ""
@@ -570,7 +581,21 @@ def _profile_for_provider(provider: str, model: Optional[str]):
         return AnthropicProviderProfile(model=model_id, supports_streaming=supports_streaming)
     if provider == "gemini":
         return GeminiProviderProfile(model=model_id, supports_streaming=supports_streaming)
-    raise ValueError("Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini.")
+    if provider in {"openrouter", "litellm"}:
+        return OpenAICompatibleProviderProfile(
+            id=provider,
+            model=model_id,
+            display_name="OpenRouter" if provider == "openrouter" else "LiteLLM",
+            supports_streaming=supports_streaming,
+        )
+    if provider == "openai_compatible":
+        return OpenAICompatibleProviderProfile(
+            id=provider,
+            model=model_id,
+            display_name="OpenAI Compatible",
+            supports_streaming=supports_streaming,
+        )
+    raise ValueError(f"Unsupported llm_provider. {SUPPORTED_LLM_PROVIDER_MESSAGE}")
 
 
 class UnifiedAgentBackend(CodergenBackend):
@@ -584,6 +609,7 @@ class UnifiedAgentBackend(CodergenBackend):
         reasoning_effort: Optional[str] = None,
         on_usage_update: Optional[Callable[[TokenUsageBreakdown], None]] = None,
         client_factory: Callable[[str], UnifiedLlmClient] | None = None,
+        config_dir: Path | str | None = None,
     ):
         self.requested_working_dir = str(Path(working_dir).expanduser().resolve(strict=False))
         self.working_dir = resolve_runtime_workspace_path(working_dir)
@@ -591,6 +617,7 @@ class UnifiedAgentBackend(CodergenBackend):
         self.provider = _normalize_provider(provider)
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.config_dir = Path(config_dir) if config_dir is not None else None
         self._on_usage_update = on_usage_update
         self._client_factory = client_factory or (
             lambda effective_provider: UnifiedLlmClient.from_env(default_provider=effective_provider)
@@ -682,9 +709,25 @@ class UnifiedAgentBackend(CodergenBackend):
         response_contract: str,
         contract_repair_attempts: int,
         write_contract: ContextWriteContract | None,
+        llm_profile: Optional[str] = None,
     ) -> str | Outcome:
-        profile = _profile_for_provider(provider, model)
-        client = self._client_factory(provider)
+        if llm_profile:
+            if self.config_dir is None:
+                raise LlmProfileConfigurationError("LLM profile config directory is unavailable.")
+            configured_profile = get_llm_profile(self.config_dir, llm_profile)
+            profile = OpenAICompatibleProviderProfile(
+                id=configured_profile.id,
+                model=str(model or "").strip(),
+                display_name=configured_profile.label or configured_profile.id,
+                supports_streaming=True,
+            )
+            client = UnifiedLlmClient(
+                providers={configured_profile.id: configured_profile.build_adapter()},
+                default_provider=configured_profile.id,
+            )
+        else:
+            profile = _profile_for_provider(provider, model)
+            client = self._client_factory(provider)
         session = Session(
             provider_profile=profile,
             execution_environment=LocalExecutionEnvironment(working_dir=self.working_dir),
@@ -763,13 +806,14 @@ class UnifiedAgentBackend(CodergenBackend):
         model: Optional[str] = None,
         provider: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        llm_profile: Optional[str] = None,
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         del context
         effective_provider = _normalize_provider(provider or self.provider)
-        if effective_provider not in {"openai", "anthropic", "gemini"}:
+        if not llm_profile and effective_provider not in UNIFIED_AGENT_PROVIDERS:
             return self._runtime_failure(
-                "Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini."
+                f"Unsupported llm_provider. {SUPPORTED_LLM_PROVIDER_MESSAGE}"
             )
         try:
             session_coro = self._run_session(
@@ -780,6 +824,7 @@ class UnifiedAgentBackend(CodergenBackend):
                 reasoning_effort=reasoning_effort or self.reasoning_effort,
                 response_contract=response_contract,
                 contract_repair_attempts=contract_repair_attempts,
+                llm_profile=llm_profile,
                 write_contract=write_contract,
             )
             if timeout is not None and timeout > 0:
@@ -808,6 +853,7 @@ class UnifiedAgentBackend(CodergenBackend):
         model: Optional[str] = None,
         provider: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        llm_profile: Optional[str] = None,
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         previous = getattr(self._progress_event_state, "emit_event", None)
@@ -823,6 +869,7 @@ class UnifiedAgentBackend(CodergenBackend):
                 model=model,
                 provider=provider,
                 reasoning_effort=reasoning_effort,
+                llm_profile=llm_profile,
                 write_contract=write_contract,
             )
         finally:
@@ -841,11 +888,13 @@ class ProviderRouterBackend(CodergenBackend):
         *,
         model: Optional[str] = None,
         on_usage_update: Optional[Callable[[TokenUsageBreakdown], None]] = None,
+        config_dir: Path | str | None = None,
     ):
         self.working_dir = working_dir
         self.emit = emit
         self.model = model
         self.provider = "codex"
+        self.config_dir = Path(config_dir) if config_dir is not None else None
         self._on_usage_update = on_usage_update
         self._token_usage_lock = threading.Lock()
         self._token_usage_breakdown = TokenUsageBreakdown()
@@ -889,10 +938,11 @@ class ProviderRouterBackend(CodergenBackend):
         model: Optional[str] = None,
         provider: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        llm_profile: Optional[str] = None,
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         effective_provider = _normalize_provider(provider)
-        if effective_provider == "codex":
+        if effective_provider == "codex" and not llm_profile:
             return self._codex.run(
                 node_id,
                 prompt,
@@ -904,7 +954,7 @@ class ProviderRouterBackend(CodergenBackend):
                 reasoning_effort=reasoning_effort,
                 write_contract=write_contract,
             )
-        if effective_provider in {"openai", "anthropic", "gemini"}:
+        if llm_profile or effective_provider in UNIFIED_AGENT_PROVIDERS:
             usage_source = object()
             backend = UnifiedAgentBackend(
                 self.working_dir,
@@ -913,23 +963,24 @@ class ProviderRouterBackend(CodergenBackend):
                 model=model or self.model,
                 reasoning_effort=reasoning_effort,
                 on_usage_update=lambda snapshot: self._record_source_usage(usage_source, snapshot),
+                config_dir=self.config_dir,
             )
-            return backend.run(
-                node_id,
-                prompt,
-                context,
-                response_contract=response_contract,
-                contract_repair_attempts=contract_repair_attempts,
-                timeout=timeout,
-                model=model,
-                provider=effective_provider,
-                reasoning_effort=reasoning_effort,
-                write_contract=write_contract,
-            )
+            kwargs = {
+                "response_contract": response_contract,
+                "contract_repair_attempts": contract_repair_attempts,
+                "timeout": timeout,
+                "model": model,
+                "provider": effective_provider,
+                "reasoning_effort": reasoning_effort,
+                "write_contract": write_contract,
+            }
+            if llm_profile:
+                kwargs["llm_profile"] = llm_profile
+            return backend.run(node_id, prompt, context, **kwargs)
         return Outcome(
             status=OutcomeStatus.FAIL,
             failure_reason=(
-                "Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini."
+                f"Unsupported llm_provider. {SUPPORTED_LLM_PROVIDER_MESSAGE}"
             ),
             retryable=False,
             failure_kind=FailureKind.RUNTIME,
@@ -948,10 +999,11 @@ class ProviderRouterBackend(CodergenBackend):
         model: Optional[str] = None,
         provider: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        llm_profile: Optional[str] = None,
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         effective_provider = _normalize_provider(provider)
-        if effective_provider == "codex":
+        if effective_provider == "codex" and not llm_profile:
             return self._codex.run_with_events(
                 node_id,
                 prompt,
@@ -964,7 +1016,7 @@ class ProviderRouterBackend(CodergenBackend):
                 reasoning_effort=reasoning_effort,
                 write_contract=write_contract,
             )
-        if effective_provider in {"openai", "anthropic", "gemini"}:
+        if llm_profile or effective_provider in UNIFIED_AGENT_PROVIDERS:
             usage_source = object()
             backend = UnifiedAgentBackend(
                 self.working_dir,
@@ -973,24 +1025,24 @@ class ProviderRouterBackend(CodergenBackend):
                 model=model or self.model,
                 reasoning_effort=reasoning_effort,
                 on_usage_update=lambda snapshot: self._record_source_usage(usage_source, snapshot),
+                config_dir=self.config_dir,
             )
-            return backend.run_with_events(
-                node_id,
-                prompt,
-                context,
-                emit_event,
-                response_contract=response_contract,
-                contract_repair_attempts=contract_repair_attempts,
-                timeout=timeout,
-                model=model,
-                provider=effective_provider,
-                reasoning_effort=reasoning_effort,
-                write_contract=write_contract,
-            )
+            kwargs = {
+                "response_contract": response_contract,
+                "contract_repair_attempts": contract_repair_attempts,
+                "timeout": timeout,
+                "model": model,
+                "provider": effective_provider,
+                "reasoning_effort": reasoning_effort,
+                "write_contract": write_contract,
+            }
+            if llm_profile:
+                kwargs["llm_profile"] = llm_profile
+            return backend.run_with_events(node_id, prompt, context, emit_event, **kwargs)
         return Outcome(
             status=OutcomeStatus.FAIL,
             failure_reason=(
-                "Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini."
+                f"Unsupported llm_provider. {SUPPORTED_LLM_PROVIDER_MESSAGE}"
             ),
             retryable=False,
             failure_kind=FailureKind.RUNTIME,
@@ -1004,10 +1056,17 @@ def build_codergen_backend(
     *,
     model: Optional[str],
     on_usage_update: Optional[Callable[[TokenUsageBreakdown], None]] = None,
+    config_dir: Path | str | None = None,
 ) -> CodergenBackend:
     normalized = backend_name.strip().lower()
     if normalized in {"", "provider-router"}:
-        return ProviderRouterBackend(working_dir, emit, model=model, on_usage_update=on_usage_update)
+        return ProviderRouterBackend(
+            working_dir,
+            emit,
+            model=model,
+            on_usage_update=on_usage_update,
+            config_dir=config_dir,
+        )
     if normalized == "codex-app-server":
         return CodexAppServerBackend(working_dir, emit, model=model, on_usage_update=on_usage_update)
     raise ValueError(

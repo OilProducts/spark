@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 from attractor.engine.outcome import Outcome, OutcomeStatus
+from attractor.llm_runtime import RUNTIME_LAUNCH_PROFILE_KEY
 from tests.api._support import wait_for_pipeline_completion
 
 
@@ -29,6 +30,7 @@ class _SequenceBackend:
         timeout=None,
         model=None,
         provider=None,
+        llm_profile=None,
         reasoning_effort=None,
         write_contract=None,
     ) -> Outcome:
@@ -38,6 +40,7 @@ class _SequenceBackend:
             {
                 "model": model,
                 "provider": provider,
+                "llm_profile": llm_profile,
                 "reasoning_effort": reasoning_effort,
             }
         )
@@ -57,6 +60,7 @@ class _SequenceBackend:
         timeout=None,
         model=None,
         provider=None,
+        llm_profile=None,
         reasoning_effort=None,
         write_contract=None,
     ) -> Outcome:
@@ -70,6 +74,7 @@ class _SequenceBackend:
             timeout=timeout,
             model=model,
             provider=provider,
+            llm_profile=llm_profile,
             reasoning_effort=reasoning_effort,
             write_contract=write_contract,
         )
@@ -207,13 +212,83 @@ def test_retry_failed_pipeline_uses_provider_router_and_launch_reasoning_context
     assert backend_names == ["provider-router", "provider-router"]
     assert backend.calls == ["task", "task"]
     assert backend.run_kwargs == [
-        {"model": "gpt-test", "provider": "openai", "reasoning_effort": "low"},
-        {"model": "gpt-test", "provider": "openai", "reasoning_effort": "low"},
+        {"model": "gpt-test", "provider": "openai", "llm_profile": None, "reasoning_effort": "low"},
+        {"model": "gpt-test", "provider": "openai", "llm_profile": None, "reasoning_effort": "low"},
     ]
     listed_run = next(run for run in attractor_api_client.get("/runs").json()["runs"] if run["run_id"] == run_id)
     assert listed_run["provider"] == "openai"
     assert listed_run["llm_provider"] == "openai"
     assert listed_run["reasoning_effort"] == "low"
+
+
+def test_retry_failed_pipeline_preserves_launch_llm_profile(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_dir = server.get_runtime_paths().config_dir
+    (config_dir / "llm-profiles.toml").write_text(
+        """
+        [profiles.local]
+        provider = "openai_compatible"
+        base_url = "http://127.0.0.1:1234/v1"
+        models = ["local-model"]
+        """,
+        encoding="utf-8",
+    )
+    backend = _SequenceBackend(
+        [
+            Outcome(status=OutcomeStatus.FAIL, failure_reason="first attempt failed"),
+            Outcome(status=OutcomeStatus.SUCCESS),
+        ]
+    )
+
+    def fake_build_backend(backend_name, working_dir, emit, *, model, on_usage_update=None):  # type: ignore[no-untyped-def]
+        del backend_name, working_dir, emit, model, on_usage_update
+        return backend
+
+    monkeypatch.setattr(server, "_build_codergen_backend", fake_build_backend)
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    start_response = attractor_api_client.post(
+        "/pipelines",
+        json={
+            "flow_content": """
+            digraph RetryProfileFlow {
+                start [shape=Mdiamond]
+                task [shape=box, prompt="Try once"]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """,
+            "working_directory": str(workdir),
+            "model": "local-model",
+            "llm_profile": "local",
+        },
+    )
+    assert start_response.status_code == 200
+    run_id = str(start_response.json()["run_id"])
+    failed_payload = wait_for_pipeline_completion(attractor_api_client, run_id)
+    assert failed_payload["status"] == "failed"
+
+    retry_response = attractor_api_client.post(f"/pipelines/{run_id}/retry")
+
+    assert retry_response.status_code == 200
+    retry_payload = retry_response.json()
+    assert retry_payload["llm_profile"] == "local"
+    final_payload = wait_for_pipeline_completion(attractor_api_client, run_id)
+    assert final_payload["status"] == "completed"
+    assert final_payload["llm_profile"] == "local"
+    checkpoint = server.load_checkpoint(server._run_root(run_id) / "state.json")
+    assert checkpoint is not None
+    assert checkpoint.context[RUNTIME_LAUNCH_PROFILE_KEY] == "local"
+    assert backend.run_kwargs == [
+        {"model": "local-model", "provider": "openai_compatible", "llm_profile": "local", "reasoning_effort": None},
+        {"model": "local-model", "provider": "openai_compatible", "llm_profile": "local", "reasoning_effort": None},
+    ]
+    listed_run = next(run for run in attractor_api_client.get("/runs").json()["runs"] if run["run_id"] == run_id)
+    assert listed_run["llm_profile"] == "local"
 
 
 def test_retry_rejects_missing_inherited_provider_configuration(

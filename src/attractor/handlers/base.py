@@ -27,6 +27,7 @@ class CodergenBackend(Protocol):
         timeout: Optional[float] = None,
         model: Optional[str] = None,
         provider: Optional[str] = None,
+        llm_profile: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:

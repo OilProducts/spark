@@ -197,6 +197,8 @@ Unified provider-backed chat and workflow runs read provider API keys from the S
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- `OPENROUTER_API_KEY`
+- `LITELLM_BASE_URL` for a user-operated LiteLLM proxy; `LITELLM_API_KEY` is optional.
 
 For the Linux user-level systemd service, keep keys outside the project repo and add them through a private environment file under `SPARK_HOME`. For a stable install, that file lives at `~/.spark/config/provider.env`:
 
@@ -211,7 +213,11 @@ Add the key values to `$SPARK_HOME/config/provider.env`:
 
 ```bash
 ANTHROPIC_API_KEY=your_key_here
+OPENROUTER_API_KEY=your_key_here
+LITELLM_BASE_URL=https://litellm.example.com/v1
 ```
+
+OpenRouter defaults to `https://openrouter.ai/api/v1` and accepts optional `OPENROUTER_BASE_URL`, `OPENROUTER_HTTP_REFERER`, and `OPENROUTER_TITLE`. OpenRouter and LiteLLM require explicit model selection in chat and workflow runs.
 
 The generated user service now attaches that file automatically with an optional `EnvironmentFile=-$SPARK_HOME/config/provider.env` entry.
 
@@ -274,7 +280,7 @@ That starts the backend on port `8000` and the frontend on port `5173` via `dock
 If `~/.spark-dev/config/provider.env` exists, the wrapper sources it before launching Docker.
 
 The tracked `compose.yaml` is public-safe by default and does not mount personal Codex auth, config, or skills files from your machine.
-It passes through provider environment variables including `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `GEMINI_API_KEY`, `GEMINI_BASE_URL`, and `GOOGLE_API_KEY`.
+It passes through provider environment variables including `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `GEMINI_API_KEY`, `GEMINI_BASE_URL`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `OPENROUTER_HTTP_REFERER`, `OPENROUTER_TITLE`, `LITELLM_BASE_URL`, and `LITELLM_API_KEY`.
 If you want containerized Codex auth or custom skills, add them in an untracked `compose.override.yaml`, for example:
 
 ```yaml

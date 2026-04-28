@@ -65,6 +65,7 @@ export interface GraphAttrs {
     'tool.hooks.post'?: string
     ui_default_llm_model?: string
     ui_default_llm_provider?: string
+    ui_default_llm_profile?: string
     ui_default_reasoning_effort?: string
 }
 
@@ -100,6 +101,7 @@ export interface DiagnosticEntry {
 export interface UiDefaults {
     llm_model: string
     llm_provider: string
+    llm_profile: string
     reasoning_effort: string
 }
 

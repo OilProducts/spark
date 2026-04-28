@@ -91,6 +91,7 @@ function RunGraphCanvasInner({
                     {
                         llm_model: '',
                         llm_provider: '',
+                        llm_profile: '',
                         reasoning_effort: '',
                     },
                     undefined,

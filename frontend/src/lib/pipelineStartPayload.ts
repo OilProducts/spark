@@ -4,6 +4,7 @@ export interface RunInitiationFormState {
     workingDirectory: string
     model: string | null
     llmProvider?: string | null
+    llmProfile?: string | null
     reasoningEffort?: string | null
     launchContext?: Record<string, unknown> | null
 }
@@ -13,6 +14,7 @@ export interface PipelineStartPayload {
     working_directory: string
     model: string | null
     llm_provider?: string | null
+    llm_profile?: string | null
     reasoning_effort?: string | null
     launch_context?: Record<string, unknown> | null
     flow_name: string | null
@@ -27,6 +29,7 @@ export interface PipelineContinuePayload {
     working_directory?: string
     model?: string | null
     llm_provider?: string | null
+    llm_profile?: string | null
     reasoning_effort?: string | null
 }
 
@@ -93,8 +96,12 @@ export function buildPipelineStartPayload(
     if (form.launchContext && Object.keys(form.launchContext).length > 0) {
         payload.launch_context = form.launchContext
     }
+    const llmProfile = form.llmProfile?.trim()
+    if (llmProfile) {
+        payload.llm_profile = llmProfile
+    }
     const llmProvider = form.llmProvider?.trim()
-    if (llmProvider) {
+    if (llmProvider && llmProvider !== llmProfile) {
         payload.llm_provider = llmProvider
     }
     const reasoningEffort = form.reasoningEffort?.trim()
@@ -105,7 +112,7 @@ export function buildPipelineStartPayload(
 }
 
 export function buildPipelineContinuePayload(
-    form: Pick<RunInitiationFormState, 'projectPath' | 'workingDirectory' | 'model' | 'llmProvider' | 'reasoningEffort'>,
+    form: Pick<RunInitiationFormState, 'projectPath' | 'workingDirectory' | 'model' | 'llmProvider' | 'llmProfile' | 'reasoningEffort'>,
     continuation: {
         startNodeId: string
         flowSourceMode: PipelineContinueFlowSourceMode
@@ -119,8 +126,12 @@ export function buildPipelineContinuePayload(
         working_directory: resolveExecutionWorkingDirectory(form),
         model: form.model,
     }
+    const llmProfile = form.llmProfile?.trim()
+    if (llmProfile) {
+        payload.llm_profile = llmProfile
+    }
     const llmProvider = form.llmProvider?.trim()
-    if (llmProvider) {
+    if (llmProvider && llmProvider !== llmProfile) {
         payload.llm_provider = llmProvider
     }
     const reasoningEffort = form.reasoningEffort?.trim()

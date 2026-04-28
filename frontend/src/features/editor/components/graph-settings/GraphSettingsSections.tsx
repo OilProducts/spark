@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import { GRAPH_FIDELITY_OPTIONS } from '@/lib/graphAttrValidation'
-import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
+import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from '@/lib/llmSuggestions'
 import type { ModelStylesheetPreview, ModelValueSource } from '@/lib/modelStylesheetPreview'
 import type { DiagnosticEntry, GraphAttrErrors, GraphAttrs, UiDefaults } from '@/store'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -64,6 +64,7 @@ export const CORE_GRAPH_ATTR_KEYS = new Set<string>([
     'tool.hooks.post',
     'ui_default_llm_model',
     'ui_default_llm_provider',
+    'ui_default_llm_profile',
     'ui_default_reasoning_effort',
 ])
 
@@ -567,6 +568,9 @@ export function GraphAdvancedAttrsSection({
                                                 llm_provider: {node.effective.llm_provider.value || '(empty)'} ({MODEL_VALUE_SOURCE_LABEL[node.effective.llm_provider.source]})
                                             </p>
                                             <p className="text-[11px] text-muted-foreground">
+                                                llm_profile: {node.effective.llm_profile.value || '(empty)'} ({MODEL_VALUE_SOURCE_LABEL[node.effective.llm_profile.source]})
+                                            </p>
+                                            <p className="text-[11px] text-muted-foreground">
                                                 reasoning_effort: {node.effective.reasoning_effort.value || '(empty)'} ({MODEL_VALUE_SOURCE_LABEL[node.effective.reasoning_effort.source]})
                                             </p>
                                         </div>
@@ -692,6 +696,7 @@ interface GraphLlmDefaultsSectionProps {
     flowProviderFallback: string
     graphAttrs: GraphAttrs
     uiDefaults: UiDefaults
+    llmProfiles: LlmProfileMetadata[]
     applyDefaultsToNodes: () => void
     updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
 }
@@ -701,6 +706,7 @@ export function GraphLlmDefaultsSection({
     flowProviderFallback,
     graphAttrs,
     uiDefaults,
+    llmProfiles,
     applyDefaultsToNodes,
     updateGraphAttr,
 }: GraphLlmDefaultsSectionProps) {
@@ -714,14 +720,18 @@ export function GraphLlmDefaultsSection({
                 <GraphSettingsField label="Default LLM Provider" htmlFor="graph-default-llm-provider">
                     <Input
                         id="graph-default-llm-provider"
-                        value={graphAttrs.ui_default_llm_provider || ''}
-                        onChange={(event) => updateGraphAttr('ui_default_llm_provider', event.target.value)}
+                        value={graphAttrs.ui_default_llm_profile || graphAttrs.ui_default_llm_provider || ''}
+                        onChange={(event) => {
+                            const selection = splitLlmSelection(event.target.value, llmProfiles)
+                            updateGraphAttr('ui_default_llm_provider', selection.llm_provider)
+                            updateGraphAttr('ui_default_llm_profile', selection.llm_profile)
+                        }}
                         list="flow-llm-provider-options"
                         className="h-8 text-xs"
                         placeholder={uiDefaults.llm_provider ? `Snapshot: ${uiDefaults.llm_provider}` : 'Snapshot of global default'}
                     />
                     <datalist id="flow-llm-provider-options">
-                        {LLM_PROVIDER_OPTIONS.map((provider) => (
+                        {getLlmSelectionOptions(llmProfiles).map((provider) => (
                             <option key={provider} value={provider} />
                         ))}
                     </datalist>
@@ -736,7 +746,7 @@ export function GraphLlmDefaultsSection({
                         placeholder={uiDefaults.llm_model ? `Snapshot: ${uiDefaults.llm_model}` : 'Snapshot of global default'}
                     />
                     <datalist id="flow-llm-model-options">
-                        {getModelSuggestions(flowProviderFallback).map((modelOption) => (
+                        {getModelSuggestions(graphAttrs.ui_default_llm_profile || flowProviderFallback, llmProfiles).map((modelOption) => (
                             <option key={modelOption} value={modelOption} />
                         ))}
                     </datalist>
@@ -774,6 +784,7 @@ export function GraphLlmDefaultsSection({
                         className="h-8 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
                         onClick={() => {
                             updateGraphAttr('ui_default_llm_provider', uiDefaults.llm_provider)
+                            updateGraphAttr('ui_default_llm_profile', uiDefaults.llm_profile)
                             updateGraphAttr('ui_default_llm_model', uiDefaults.llm_model)
                             updateGraphAttr('ui_default_reasoning_effort', uiDefaults.reasoning_effort)
                         }}

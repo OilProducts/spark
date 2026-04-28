@@ -36,8 +36,10 @@ __all__ = [
     "NetworkError",
     "NoObjectGeneratedError",
     "NotFoundError",
+    "LiteLLMAdapter",
     "OpenAIAdapter",
     "OpenAICompatibleAdapter",
+    "OpenRouterAdapter",
     "RetryPolicy",
     "ProviderAdapter",
     "ProviderError",
@@ -98,8 +100,10 @@ _MODULE_EXPORTS: dict[str, tuple[str, ...]] = {
     "adapters": (
         "AnthropicAdapter",
         "GeminiAdapter",
+        "LiteLLMAdapter",
         "OpenAIAdapter",
         "OpenAICompatibleAdapter",
+        "OpenRouterAdapter",
     ),
     "adapters.base": (
         "ProviderAdapter",

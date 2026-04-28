@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { Node } from '@xyflow/react'
 
-import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
+import { fetchLlmProfiles } from '@/lib/api/llmProfilesApi'
+import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from '@/lib/llmSuggestions'
 import { WORKFLOW_NODE_SHAPE_OPTIONS } from '@/lib/workflowNodeShape'
 import type { DiagnosticEntry, GraphAttrs } from '@/store'
 import { Button } from '@/components/ui/button'
@@ -89,6 +90,12 @@ export function NodeInspectorPanel({
     onNodeExtensionAdd,
     renderFieldDiagnostics,
 }: NodeInspectorPanelProps) {
+    const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
+    useEffect(() => {
+        void fetchLlmProfiles().then(setLlmProfiles)
+    }, [])
+    const selectedProfile = (selectedNode?.data?.llm_profile as string) || ''
+    const selectedProvider = (selectedNode?.data?.llm_provider as string) || ''
     return (
         <div className="flex-1 overflow-y-auto px-5 pb-5 pt-3">
             <InspectorScaffold
@@ -477,7 +484,7 @@ export function NodeInspectorPanel({
                                                     list="llm-model-options-panel"
                                                 />
                                                 <datalist id="llm-model-options-panel">
-                                                    {getModelSuggestions((selectedNode?.data?.llm_provider as string) || '').map((model) => (
+                                                    {getModelSuggestions(selectedProfile || selectedProvider, llmProfiles).map((model) => (
                                                         <option key={model} value={model} />
                                                     ))}
                                                 </datalist>
@@ -485,12 +492,16 @@ export function NodeInspectorPanel({
                                             <div className="space-y-1.5">
                                                 <Label>LLM Provider</Label>
                                                 <Input
-                                                    value={(selectedNode?.data?.llm_provider as string) || ''}
-                                                    onChange={(event) => onPropertyChange('llm_provider', event.target.value)}
+                                                    value={((selectedNode?.data?.llm_profile as string) || (selectedNode?.data?.llm_provider as string)) || ''}
+                                                    onChange={(event) => {
+                                                        const selection = splitLlmSelection(event.target.value, llmProfiles)
+                                                        onPropertyChange('llm_provider', selection.llm_provider)
+                                                        onPropertyChange('llm_profile', selection.llm_profile)
+                                                    }}
                                                     list="llm-provider-options-panel"
                                                 />
                                                 <datalist id="llm-provider-options-panel">
-                                                    {LLM_PROVIDER_OPTIONS.map((provider) => (
+                                                    {getLlmSelectionOptions(llmProfiles).map((provider) => (
                                                         <option key={provider} value={provider} />
                                                     ))}
                                                 </datalist>

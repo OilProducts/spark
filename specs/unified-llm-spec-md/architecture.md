@@ -19,7 +19,7 @@ src/
       base.py
       gemini.py
       openai.py
-      openai_compatible.py
+      openai_compatible.py  # includes OpenRouterAdapter and LiteLLMAdapter wrappers
     client.py
     data/
       models.json
@@ -112,7 +112,7 @@ The package root `unified_llm` re-exports the stable API:
 - Tools: `Tool`, `ToolChoice`, `ToolCall`, and `ToolResult`.
 - Catalog helpers: `ModelInfo`, `get_model_info`, `list_models`, and `get_latest_model`.
 - Errors: all SDK error classes from `errors.py`.
-- Adapters: `OpenAIAdapter`, `OpenAICompatibleAdapter`, `AnthropicAdapter`, `GeminiAdapter`, and `ProviderAdapter`.
+- Adapters: `OpenAIAdapter`, `OpenAICompatibleAdapter`, `OpenRouterAdapter`, `LiteLLMAdapter`, `AnthropicAdapter`, `GeminiAdapter`, and `ProviderAdapter`.
 
 Python implementation is async-first. Canonical calls are:
 
@@ -126,7 +126,7 @@ object_result = await generate_object(model="...", prompt="...", schema={...})
 
 No synchronous duplicate layer is required for this run. Sync wrappers may be added later as convenience APIs if they preserve the async core contract and do not become the primary implementation path.
 
-Provider names are normalized to lowercase strings: `openai`, `anthropic`, `gemini`, and `openai_compatible`. Model identifiers are never rewritten and are never used to infer providers. A request resolves only through its explicit `provider` or the client's configured default provider.
+Provider names are normalized to lowercase strings: `openai`, `anthropic`, `gemini`, `openai_compatible`, `openrouter`, and `litellm`. Model identifiers are never rewritten and are never used to infer providers. A request resolves only through its explicit `provider` or the client's configured default provider. OpenRouter and LiteLLM are first-class OpenAI-compatible providers and require explicit model selection rather than catalog defaults.
 
 High-level operations (`generate`, `stream`, `generate_object`, and `stream_object`) accept `model=None` or an omitted model only after a provider can be resolved from the call's explicit `provider` argument or the selected client's `default_provider`. In that supported omitted-model path, the high-level API calls `get_latest_model(provider).id` and places that provider-native string in every `Request` sent to `Client.complete` or `Client.stream`. Explicit model arguments remain pass-through values and are never replaced by catalog data.
 
@@ -157,6 +157,7 @@ OpenAI-compatible:
 
 - `OpenAICompatibleAdapter` is a separate adapter for `/v1/chat/completions`.
 - It does not claim Responses-only support. Unsupported features produce warnings or `UnsupportedToolChoiceError` as appropriate.
+- `OpenRouterAdapter` and `LiteLLMAdapter` are named wrappers over this path. OpenRouter defaults to `https://openrouter.ai/api/v1` and requires `OPENROUTER_API_KEY`, with optional `OPENROUTER_BASE_URL`, `OPENROUTER_HTTP_REFERER`, and `OPENROUTER_TITLE`. LiteLLM requires `LITELLM_BASE_URL` for a user-operated proxy and allows `LITELLM_API_KEY` to be absent.
 
 Anthropic:
 

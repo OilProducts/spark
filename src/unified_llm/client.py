@@ -128,6 +128,43 @@ class Client:
                 gemini_config["base_url"] = base_url
             env_providers["gemini"] = GeminiAdapter(**gemini_config)
 
+        openrouter_api_key = _env_value("OPENROUTER_API_KEY")
+        if openrouter_api_key is not None:
+            from .adapters import OpenRouterAdapter
+
+            openrouter_headers: dict[str, str] = {}
+            if http_referer := _env_value("OPENROUTER_HTTP_REFERER"):
+                openrouter_headers["HTTP-Referer"] = http_referer
+            if title := _env_value("OPENROUTER_TITLE"):
+                openrouter_headers["X-Title"] = title
+            openrouter_config: dict[str, Any] = {"api_key": openrouter_api_key}
+            if base_url := _env_value("OPENROUTER_BASE_URL"):
+                openrouter_config["base_url"] = base_url
+            if openrouter_headers:
+                openrouter_config["default_headers"] = openrouter_headers
+            env_providers["openrouter"] = OpenRouterAdapter(**openrouter_config)
+
+        litellm_base_url = _env_value("LITELLM_BASE_URL")
+        if litellm_base_url is not None:
+            from .adapters import LiteLLMAdapter
+
+            litellm_config: dict[str, Any] = {"base_url": litellm_base_url}
+            if litellm_api_key := _env_value("LITELLM_API_KEY"):
+                litellm_config["api_key"] = litellm_api_key
+            env_providers["litellm"] = LiteLLMAdapter(**litellm_config)
+
+        openai_compatible_base_url = _env_value("OPENAI_COMPATIBLE_BASE_URL")
+        if openai_compatible_base_url is not None:
+            from .adapters import OpenAICompatibleAdapter
+
+            openai_compatible_config: dict[str, Any] = {
+                "base_url": openai_compatible_base_url,
+                "require_api_key": False,
+            }
+            if openai_compatible_api_key := _env_value("OPENAI_COMPATIBLE_API_KEY"):
+                openai_compatible_config["api_key"] = openai_compatible_api_key
+            env_providers["openai_compatible"] = OpenAICompatibleAdapter(**openai_compatible_config)
+
         merged_providers: dict[str, ProviderAdapter] = dict(env_providers)
         if providers:
             merged_providers.update(providers)

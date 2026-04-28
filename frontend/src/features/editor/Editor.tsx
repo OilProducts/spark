@@ -190,12 +190,14 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const uiDefaults = useStore((state) => state.uiDefaults);
     const uiDefaultModel = uiDefaults.llm_model;
     const uiDefaultProvider = uiDefaults.llm_provider;
+    const uiDefaultProfile = uiDefaults.llm_profile;
     const uiDefaultReasoningEffort = uiDefaults.reasoning_effort;
     const resolvedUiDefaults = useMemo(() => ({
         llm_model: uiDefaultModel,
         llm_provider: uiDefaultProvider,
+        llm_profile: uiDefaultProfile,
         reasoning_effort: uiDefaultReasoningEffort,
-    }), [uiDefaultModel, uiDefaultProvider, uiDefaultReasoningEffort]);
+    }), [uiDefaultModel, uiDefaultProvider, uiDefaultProfile, uiDefaultReasoningEffort]);
     const replaceGraphAttrs = useStore((state) => state.replaceGraphAttrs);
     const setDiagnostics = useStore((state) => state.setDiagnostics);
     const clearDiagnostics = useStore((state) => state.clearDiagnostics);
@@ -1015,7 +1017,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const onAddNode = useCallback(() => {
         if (!flowName || expandChildFlows) return;
         const defaultModel = graphAttrs.ui_default_llm_model || uiDefaults.llm_model || '';
-        const defaultProvider = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '';
+        const defaultProfile = graphAttrs.ui_default_llm_profile || uiDefaults.llm_profile || '';
+        const defaultProvider = defaultProfile ? '' : (graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '');
         const defaultReasoning = graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || '';
         const newNodeId = `node_${Math.floor(Math.random() * 10000)}`;
         const shape = 'box'
@@ -1030,6 +1033,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 status: 'idle',
                 llm_model: defaultModel,
                 llm_provider: defaultProvider,
+                llm_profile: defaultProfile,
                 reasoning_effort: defaultReasoning,
             }
         };

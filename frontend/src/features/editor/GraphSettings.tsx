@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
 import { useStore, type DiagnosticEntry } from '@/store'
 import { generateDot } from '@/lib/dotUtils'
+import { fetchLlmProfiles } from '@/lib/api/llmProfilesApi'
+import type { LlmProfileMetadata } from '@/lib/llmSuggestions'
 import { extractDebugErrorSummary, recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { getToolHookCommandWarning } from '@/lib/graphAttrValidation'
 import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
@@ -76,6 +78,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [launchPolicyLoadError, setLaunchPolicyLoadError] = useState<string | null>(null)
     const [launchPolicySaveState, setLaunchPolicySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
     const [launchPolicySaveError, setLaunchPolicySaveError] = useState<string | null>(null)
+    const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
     const flowProviderFallback = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
     const toolHookPreWarning = getToolHookCommandWarning(graphAttrs['tool.hooks.pre'] || '')
@@ -95,6 +98,10 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         () => parseLaunchInputDefinitions(rawLaunchInputsValue),
         [rawLaunchInputsValue],
     )
+
+    useEffect(() => {
+        void fetchLlmProfiles().then(setLlmProfiles)
+    }, [])
     const isOpen = activeFlow ? (editorGraphSettingsPanelOpenByFlow[activeFlow] ?? false) : false
     const showAdvancedGraphAttrs = activeFlow
         ? (editorShowAdvancedGraphAttrsByFlow[activeFlow] ?? false)
@@ -151,11 +158,13 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 class: typeof node.data?.class === 'string' ? node.data.class : '',
                 llm_model: typeof node.data?.llm_model === 'string' ? node.data.llm_model : '',
                 llm_provider: typeof node.data?.llm_provider === 'string' ? node.data.llm_provider : '',
+                llm_profile: typeof node.data?.llm_profile === 'string' ? node.data.llm_profile : '',
                 reasoning_effort: typeof node.data?.reasoning_effort === 'string' ? node.data.reasoning_effort : '',
             })),
             {
                 llm_model: graphAttrs.ui_default_llm_model || uiDefaults.llm_model || '',
                 llm_provider: graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '',
+                llm_profile: graphAttrs.ui_default_llm_profile || uiDefaults.llm_profile || '',
                 reasoning_effort: graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || 'high',
             },
         )
@@ -163,10 +172,12 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         graphAttrs.model_stylesheet,
         graphAttrs.ui_default_llm_model,
         graphAttrs.ui_default_llm_provider,
+        graphAttrs.ui_default_llm_profile,
         graphAttrs.ui_default_reasoning_effort,
         flowNodes,
         uiDefaults.llm_model,
         uiDefaults.llm_provider,
+        uiDefaults.llm_profile,
         uiDefaults.reasoning_effort,
     ])
 
@@ -184,7 +195,8 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const applyDefaultsToNodes = () => {
         if (!activeFlow) return
         const defaultModel = graphAttrs.ui_default_llm_model || uiDefaults.llm_model || ''
-        const defaultProvider = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
+        const defaultProfile = graphAttrs.ui_default_llm_profile || uiDefaults.llm_profile || ''
+        const defaultProvider = defaultProfile ? '' : (graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '')
         const defaultReasoning = graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || ''
 
         const currentNodes = readNodes()
@@ -196,6 +208,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 ...node.data,
                 llm_model: defaultModel,
                 llm_provider: defaultProvider,
+                llm_profile: defaultProfile,
                 reasoning_effort: defaultReasoning,
             },
         }))
@@ -452,6 +465,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     flowProviderFallback={flowProviderFallback}
                     graphAttrs={graphAttrs}
                     uiDefaults={uiDefaults}
+                    llmProfiles={llmProfiles}
                     applyDefaultsToNodes={applyDefaultsToNodes}
                     updateGraphAttr={updateGraphAttr}
                 />

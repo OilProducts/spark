@@ -24,6 +24,12 @@ services:
       - GEMINI_API_KEY
       - GEMINI_BASE_URL
       - GOOGLE_API_KEY
+      - OPENROUTER_API_KEY
+      - OPENROUTER_BASE_URL
+      - OPENROUTER_HTTP_REFERER
+      - OPENROUTER_TITLE
+      - LITELLM_BASE_URL
+      - LITELLM_API_KEY
     command: uvicorn spark.app:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app

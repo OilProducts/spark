@@ -143,6 +143,7 @@ describe('Graph and settings behavior', () => {
     expect(useStore.getState().uiDefaults).toEqual({
       llm_provider: 'anthropic',
       llm_model: 'claude-3.7-sonnet',
+      llm_profile: '',
       reasoning_effort: 'xhigh',
     })
   })

@@ -24,6 +24,7 @@ class RunRecord:
     model: str
     started_at: str
     llm_provider: str = ""
+    llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
     ended_at: Optional[str] = None
     project_path: str = ""
@@ -45,6 +46,9 @@ class RunRecord:
     estimated_model_cost: Optional[EstimatedModelCost] = None
 
     def to_dict(self) -> Dict[str, object]:
+        provider = self.llm_provider or "codex"
+        if self.llm_profile and provider == self.llm_profile:
+            provider = "codex"
         return {
             "run_id": self.run_id,
             "flow_name": self.flow_name,
@@ -54,8 +58,9 @@ class RunRecord:
             "outcome_reason_message": self.outcome_reason_message,
             "working_directory": self.working_directory,
             "model": self.model,
-            "provider": self.llm_provider or "codex",
-            "llm_provider": self.llm_provider or "codex",
+            "provider": provider,
+            "llm_provider": provider,
+            "llm_profile": self.llm_profile,
             "reasoning_effort": self.reasoning_effort,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
@@ -111,6 +116,7 @@ class RunRecord:
             model=str(data.get("model", "")),
             started_at=str(data.get("started_at", "")),
             llm_provider=str(data.get("llm_provider") or data.get("provider") or ""),
+            llm_profile=str(data.get("llm_profile")) if data.get("llm_profile") is not None else None,
             reasoning_effort=(
                 str(data.get("reasoning_effort")) if data.get("reasoning_effort") is not None else None
             ),

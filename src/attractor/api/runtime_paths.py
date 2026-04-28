@@ -11,6 +11,7 @@ class AttractorRuntimePaths:
     runtime_dir: Path
     runs_dir: Path
     flows_dir: Path
+    config_dir: Path
 
 
 def resolve_runtime_paths(
@@ -18,6 +19,7 @@ def resolve_runtime_paths(
     runtime_dir: Path | str | None,
     runs_dir: Path | str | None,
     flows_dir: Path | str | None,
+    config_dir: Path | str | None = None,
 ) -> AttractorRuntimePaths:
     if runtime_dir is None or runs_dir is None or flows_dir is None:
         raise RuntimeError(
@@ -27,6 +29,7 @@ def resolve_runtime_paths(
         runtime_dir=_normalize_path(runtime_dir),
         runs_dir=_normalize_path(runs_dir),
         flows_dir=_normalize_path(flows_dir),
+        config_dir=_normalize_path(config_dir or (Path(runtime_dir).expanduser().resolve(strict=False).parent / "config")),
     )
 
 
@@ -34,6 +37,7 @@ def validate_runtime_paths(paths: AttractorRuntimePaths) -> None:
     ensure_writable_directory(paths.runtime_dir, "runtime")
     ensure_writable_directory(paths.runs_dir, "runs")
     ensure_writable_directory(paths.flows_dir, "flows")
+    ensure_writable_directory(paths.config_dir, "config")
 
 
 def ensure_writable_directory(path: Path, label: str) -> None:

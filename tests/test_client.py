@@ -178,10 +178,16 @@ def test_client_from_env_registers_env_providers_in_order_and_passes_optional_co
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_API_KEY", "gemini-google-key")
     monkeypatch.setenv("GEMINI_BASE_URL", "https://gemini.example/v1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.example/api/v1")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://spark.example")
+    monkeypatch.setenv("OPENROUTER_TITLE", "Spark")
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://litellm.example/v1")
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
 
     client = unified_llm.Client.from_env()
 
-    assert list(client.providers) == ["openai", "anthropic", "gemini"]
+    assert list(client.providers) == ["openai", "anthropic", "gemini", "openrouter", "litellm"]
     assert client.default_provider == "openai"
     assert client.providers["openai"].config == {
         "api_key": "openai-key",
@@ -197,12 +203,26 @@ def test_client_from_env_registers_env_providers_in_order_and_passes_optional_co
         "api_key": "gemini-google-key",
         "base_url": "https://gemini.example/v1beta",
     }
+    assert client.providers["openrouter"].config == {
+        "api_key": "openrouter-key",
+        "base_url": "https://openrouter.example/api/v1",
+    }
+    assert client.providers["openrouter"].default_headers == {
+        "HTTP-Referer": "https://spark.example",
+        "X-Title": "Spark",
+    }
+    assert client.providers["litellm"].config == {
+        "api_key": None,
+        "base_url": "https://litellm.example/v1",
+    }
 
 
 def test_client_from_env_selects_the_first_registered_provider_as_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_BASE_URL", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
 

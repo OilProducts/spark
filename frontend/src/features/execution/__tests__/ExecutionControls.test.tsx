@@ -265,6 +265,23 @@ describe('Execution controls behavior', () => {
     expect(payload).not.toHaveProperty('reasoning_effort')
   })
 
+  it('does not duplicate a profile id into llm_provider in start payloads', () => {
+    const payload = buildPipelineStartPayload(
+      {
+        projectPath: '/tmp/project',
+        flowSource: TEST_SPEC_FLOW,
+        workingDirectory: '/tmp/project',
+        model: 'local-model',
+        llmProvider: 'lan-lmstudio',
+        llmProfile: 'lan-lmstudio',
+      },
+      'digraph G { start -> done }',
+    )
+
+    expect(payload.llm_profile).toBe('lan-lmstudio')
+    expect(payload).not.toHaveProperty('llm_provider')
+  })
+
   it('includes structured launch context in the start payload when provided', () => {
     const payload = buildPipelineStartPayload(
       {

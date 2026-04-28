@@ -82,10 +82,13 @@ from attractor.handlers.base import (
     PIPELINE_RETRY_RUN_ID_CONTEXT_KEY,
 )
 from attractor.llm_runtime import (
+    RUNTIME_LAUNCH_PROFILE_KEY,
     RUNTIME_LAUNCH_MODEL_KEY,
     RUNTIME_LAUNCH_PROVIDER_KEY,
     RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
     node_uses_llm_backend,
+    resolve_effective_llm_model,
+    resolve_effective_llm_profile,
     resolve_effective_llm_provider,
 )
 from attractor.interviewer.base import Interviewer
@@ -98,6 +101,7 @@ from attractor.api.runtime_paths import (
 )
 from spark_common.runtime_path import resolve_runtime_workspace_path
 from spark_common.codex_runtime import build_codex_runtime_environment
+from spark.llm_profiles import LlmProfileConfigurationError, get_llm_profile, public_llm_profiles
 
 
 attractor_app = FastAPI(title="Attractor API", docs_url="/docs", redoc_url=None, openapi_url="/openapi.json")
@@ -125,6 +129,7 @@ def configure_runtime_paths(
     runtime_dir: Path | str | None | object = _UNSET,
     runs_dir: Path | str | None | object = _UNSET,
     flows_dir: Path | str | None | object = _UNSET,
+    config_dir: Path | str | None | object = _UNSET,
 ) -> AttractorRuntimePaths:
     global RUNTIME_PATHS
     with RUNTIME_PATHS_LOCK:
@@ -133,6 +138,7 @@ def configure_runtime_paths(
         runtime_dir=current.runtime_dir if runtime_dir is _UNSET and current is not None else runtime_dir,
         runs_dir=current.runs_dir if runs_dir is _UNSET and current is not None else runs_dir,
         flows_dir=current.flows_dir if flows_dir is _UNSET and current is not None else flows_dir,
+        config_dir=current.config_dir if config_dir is _UNSET and current is not None else config_dir if config_dir is not _UNSET else None,
     )
     validate_attractor_runtime_paths(updated)
     with RUNTIME_PATHS_LOCK:
@@ -325,6 +331,31 @@ def _resolve_launch_provider(graph, requested_provider: Optional[str]) -> str:
     return "codex"
 
 
+def _resolve_launch_profile(graph, requested_profile: Optional[str]) -> Optional[str]:
+    selected_profile = (requested_profile or "").strip()
+    if selected_profile:
+        return selected_profile
+    flow_default = _dot_attr_value(graph.graph_attrs, "ui_default_llm_profile")
+    return flow_default.strip() if flow_default else None
+
+
+def _resolve_launch_provider_profile(
+    graph,
+    requested_provider: Optional[str],
+    requested_profile: Optional[str],
+) -> tuple[str, Optional[str]]:
+    selected_profile = _resolve_launch_profile(graph, requested_profile)
+    selected_provider = _resolve_launch_provider(graph, requested_provider)
+    if not selected_profile:
+        return selected_provider, None
+
+    profile = get_llm_profile(get_runtime_paths().config_dir, selected_profile)
+    requested_provider_value = (requested_provider or "").strip().lower()
+    if not requested_provider_value or requested_provider_value == selected_profile.lower():
+        selected_provider = profile.provider
+    return selected_provider, selected_profile
+
+
 def _resolve_launch_reasoning_effort(graph, requested_reasoning_effort: Optional[str]) -> Optional[str]:
     del graph
     selected_reasoning_effort = (requested_reasoning_effort or "").strip().lower()
@@ -360,6 +391,18 @@ def _validate_provider_configuration(provider: str) -> None:
         ):
             raise _provider_configuration_error("gemini", "GEMINI_API_KEY or GOOGLE_API_KEY")
         return
+    if normalized_provider == "openrouter":
+        if not str(os.environ.get("OPENROUTER_API_KEY", "")).strip():
+            raise _provider_configuration_error("openrouter", "OPENROUTER_API_KEY")
+        return
+    if normalized_provider == "litellm":
+        if not str(os.environ.get("LITELLM_BASE_URL", "")).strip():
+            raise _provider_configuration_error("litellm", "LITELLM_BASE_URL")
+        return
+    if normalized_provider == "openai_compatible":
+        if not str(os.environ.get("OPENAI_COMPATIBLE_BASE_URL", "")).strip():
+            raise _provider_configuration_error("openai_compatible", "OPENAI_COMPATIBLE_BASE_URL")
+        return
     if normalized_provider == "codex":
         env = build_codex_runtime_environment()
         codex_home_value = str(env.get("CODEX_HOME", "")).strip()
@@ -372,7 +415,7 @@ def _validate_provider_configuration(provider: str) -> None:
             raise _provider_configuration_error("codex", "CODEX_HOME/auth.json")
         return
     raise ProviderConfigurationError(
-        "Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini."
+        "Unsupported llm_provider. Supported providers: codex, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
     )
 
 
@@ -381,6 +424,7 @@ def _provider_preflight_context(
     *,
     launch_context: Optional[dict[str, Any]],
     selected_provider: str,
+    selected_profile: Optional[str],
     selected_model: Optional[str],
     selected_reasoning_effort: Optional[str],
 ) -> Context:
@@ -388,6 +432,7 @@ def _provider_preflight_context(
     context.apply_updates(_graph_attr_context_seed(graph))
     context.set(RUNTIME_LAUNCH_MODEL_KEY, selected_model or "")
     context.set(RUNTIME_LAUNCH_PROVIDER_KEY, selected_provider)
+    context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
     context.set(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, selected_reasoning_effort or "")
     return context
 
@@ -397,6 +442,7 @@ def _validate_graph_provider_configuration(
     *,
     launch_context: Optional[dict[str, Any]],
     selected_provider: str,
+    selected_profile: Optional[str],
     selected_model: Optional[str],
     selected_reasoning_effort: Optional[str],
 ) -> None:
@@ -404,14 +450,52 @@ def _validate_graph_provider_configuration(
         graph,
         launch_context=launch_context,
         selected_provider=selected_provider,
+        selected_profile=selected_profile,
         selected_model=selected_model,
         selected_reasoning_effort=selected_reasoning_effort,
     )
-    providers = {
-        resolve_effective_llm_provider(node.attrs, context, fallback_provider=selected_provider)
-        for node in graph.nodes.values()
-        if node_uses_llm_backend(node)
-    }
+    providers: set[str] = set()
+    profiles: set[str] = set()
+    explicit_model_required: list[str] = []
+    for node in graph.nodes.values():
+        if not node_uses_llm_backend(node):
+            continue
+        model_id = resolve_effective_llm_model(
+            node.attrs,
+            context,
+            fallback_model=selected_model,
+        )
+        profile_id = resolve_effective_llm_profile(
+            node.attrs,
+            context,
+            fallback_profile=selected_profile,
+        )
+        if profile_id:
+            profile = get_llm_profile(get_runtime_paths().config_dir, profile_id)
+            if profile.api_key_env is not None and not profile.configured:
+                raise LlmProfileConfigurationError(
+                    f"LLM profile {profile.id!r} is not configured: missing environment variable {profile.api_key_env}."
+                )
+            profiles.add(profile_id)
+            if not model_id:
+                explicit_model_required.append(node.node_id)
+            continue
+        provider = resolve_effective_llm_provider(
+            node.attrs,
+            context,
+            fallback_provider=selected_provider,
+        )
+        providers.add(provider)
+        if provider in {"openrouter", "litellm", "openai_compatible"} and not model_id:
+            explicit_model_required.append(node.node_id)
+
+    if explicit_model_required:
+        provider_names = ", ".join(sorted(profiles or providers.intersection({"openrouter", "litellm", "openai_compatible"})))
+        node_list = ", ".join(sorted(explicit_model_required))
+        raise ProviderConfigurationError(
+            f"Provider {provider_names} requires explicit llm_model/model selection for node(s): {node_list}."
+        )
+
     for provider in sorted(providers):
         _validate_provider_configuration(provider)
 
@@ -891,6 +975,7 @@ def _record_run_start(
     working_directory: str,
     model: str,
     llm_provider: str = "codex",
+    llm_profile: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     spec_id: Optional[str] = None,
     plan_id: Optional[str] = None,
@@ -911,6 +996,7 @@ def _record_run_start(
         working_directory=working_directory,
         model=model,
         llm_provider=llm_provider,
+        llm_profile=llm_profile,
         reasoning_effort=reasoning_effort,
         resolve_runtime_workspace_path=resolve_runtime_workspace_path,
         spec_id=spec_id,
@@ -1141,6 +1227,9 @@ def _hydrate_run_record_launch_options(record: RunRecord, run_id: str) -> None:
     if record.reasoning_effort is None:
         reasoning_effort = str(checkpoint_context.get(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, "")).strip().lower()
         record.reasoning_effort = reasoning_effort or None
+    if not str(record.llm_profile or "").strip():
+        profile = str(checkpoint_context.get(RUNTIME_LAUNCH_PROFILE_KEY, "")).strip()
+        record.llm_profile = profile or None
 
 
 def _apply_active_run_to_record(record: RunRecord, active: Optional[ActiveRun]) -> RunRecord:
@@ -1153,6 +1242,7 @@ def _apply_active_run_to_record(record: RunRecord, active: Optional[ActiveRun]) 
     record.outcome_reason_message = active.outcome_reason_message
     record.last_error = active.last_error
     record.llm_provider = active.llm_provider or record.llm_provider or "codex"
+    record.llm_profile = active.llm_profile or record.llm_profile
     record.reasoning_effort = active.reasoning_effort
     if active_status not in TERMINAL_RUN_STATUSES:
         record.ended_at = None
@@ -1191,6 +1281,7 @@ def _pipeline_status_payload(run_id: str) -> Dict[str, object]:
             "model": active.model if active else "",
             "provider": active.llm_provider if active else "codex",
             "llm_provider": active.llm_provider if active else "codex",
+            "llm_profile": active.llm_profile if active else None,
             "reasoning_effort": active.reasoning_effort if active else None,
             "started_at": "",
             "ended_at": None,
@@ -1296,6 +1387,7 @@ class PipelineStartRequest(BaseModel):
     working_directory: str = "./workspace"
     model: Optional[str] = None
     llm_provider: Optional[str] = None
+    llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
     flow_name: Optional[str] = None
     goal: Optional[str] = None
@@ -1311,6 +1403,7 @@ class PipelineContinueRequest(BaseModel):
     working_directory: Optional[str] = None
     model: Optional[str] = None
     llm_provider: Optional[str] = None
+    llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
 
 
@@ -1362,6 +1455,7 @@ def _build_codergen_backend(
         emit,
         model=model,
         on_usage_update=on_usage_update,
+        config_dir=get_runtime_paths().config_dir,
     )
 
 
@@ -1618,6 +1712,7 @@ def _graph_payload(graph, *, child_previews: dict[str, dict] | None = None) -> d
                 "timeout": _dot_attr_value(n.attrs, "timeout"),
                 "llm_model": _dot_attr_value(n.attrs, "llm_model"),
                 "llm_provider": _dot_attr_value(n.attrs, "llm_provider"),
+                "llm_profile": _dot_attr_value(n.attrs, "llm_profile"),
                 "reasoning_effort": _dot_attr_value(n.attrs, "reasoning_effort"),
                 "auto_status": _dot_attr_value(n.attrs, "auto_status"),
                 "allow_partial": _dot_attr_value(n.attrs, "allow_partial"),
@@ -1643,6 +1738,7 @@ def _graph_payload(graph, *, child_previews: dict[str, dict] | None = None) -> d
             "tool.hooks.post": _dot_attr_value(canonical_graph_attrs, "tool.hooks.post"),
             "ui_default_llm_model": _dot_attr_value(canonical_graph_attrs, "ui_default_llm_model"),
             "ui_default_llm_provider": _dot_attr_value(canonical_graph_attrs, "ui_default_llm_provider"),
+            "ui_default_llm_profile": _dot_attr_value(canonical_graph_attrs, "ui_default_llm_profile"),
             "ui_default_reasoning_effort": _dot_attr_value(canonical_graph_attrs, "ui_default_reasoning_effort"),
         }, canonical_graph_attrs),
         "edges": [
@@ -1790,6 +1886,7 @@ def _resolve_continue_source_record(pipeline_id: str) -> tuple[RunRecord, Checkp
             working_directory=active.working_directory,
             model=active.model,
             llm_provider=active.llm_provider,
+            llm_profile=active.llm_profile,
             reasoning_effort=active.reasoning_effort,
             started_at="",
         )
@@ -1976,15 +2073,17 @@ def _run_first_class_child_pipeline(
     graphviz_export = export_graphviz_artifact(flow_content, run_root)
 
     parent_launch_context = dict(request.parent_context.values)
+    selected_profile = str(request.parent_context.get(RUNTIME_LAUNCH_PROFILE_KEY, "")).strip() or None
     try:
         _validate_graph_provider_configuration(
             request.child_graph,
             launch_context=parent_launch_context,
             selected_provider=selected_provider,
+            selected_profile=selected_profile,
             selected_model=selected_model,
             selected_reasoning_effort=selected_reasoning_effort,
         )
-    except ProviderConfigurationError as exc:
+    except (ProviderConfigurationError, LlmProfileConfigurationError) as exc:
         return ChildRunResult(run_id=child_run_id, status="failed", failure_reason=str(exc))
 
     _record_run_start(
@@ -1993,6 +2092,7 @@ def _run_first_class_child_pipeline(
         working_dir,
         display_model,
         llm_provider=selected_provider,
+        llm_profile=selected_profile,
         reasoning_effort=selected_reasoning_effort,
         parent_run_id=request.parent_run_id,
         parent_node_id=request.parent_node_id,
@@ -2007,6 +2107,7 @@ def _run_first_class_child_pipeline(
             working_directory=working_dir,
             model=display_model,
             llm_provider=selected_provider,
+            llm_profile=selected_profile,
             reasoning_effort=selected_reasoning_effort,
             status="running",
             control=control,
@@ -2067,6 +2168,7 @@ def _run_first_class_child_pipeline(
     context.set("preferred_label", "")
     context.set(RUNTIME_LAUNCH_MODEL_KEY, selected_model or "")
     context.set(RUNTIME_LAUNCH_PROVIDER_KEY, selected_provider)
+    context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
     context.set(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, selected_reasoning_effort or "")
     context.set("internal.run_id", child_run_id)
     context.set("internal.parent_run_id", request.parent_run_id)
@@ -2106,6 +2208,7 @@ def _run_first_class_child_pipeline(
             "model": display_model,
             "provider": selected_provider,
             "llm_provider": selected_provider,
+            "llm_profile": selected_profile,
             "reasoning_effort": selected_reasoning_effort,
             "flow_name": request.child_flow_name,
             "run_id": child_run_id,
@@ -2219,6 +2322,7 @@ def _record_run_retry_start(
     run_id: str,
     *,
     llm_provider: str,
+    llm_profile: str | None,
     reasoning_effort: str | None,
 ) -> None:
     with RUN_HISTORY_LOCK:
@@ -2226,6 +2330,7 @@ def _record_run_retry_start(
         if record is None:
             return
         record.llm_provider = llm_provider or record.llm_provider or "codex"
+        record.llm_profile = llm_profile or record.llm_profile
         record.reasoning_effort = reasoning_effort
         record.status = "running"
         record.outcome = None
@@ -2272,18 +2377,20 @@ def _build_pipeline_runner_for_run(
     backend_name: str,
     model: Optional[str],
     llm_provider: Optional[str],
+    llm_profile: Optional[str],
     reasoning_effort: Optional[str],
     loop: asyncio.AbstractEventLoop,
     on_usage_update: Optional[Callable[[TokenUsageBreakdown], None]] = None,
-) -> tuple[PipelineExecutor, Context, str, Optional[str], Optional[str]]:
+) -> tuple[PipelineExecutor, Context, str, Optional[str], Optional[str], Optional[str]]:
     selected_model, display_model = _resolve_launch_model(graph, model)
-    selected_provider = _resolve_launch_provider(graph, llm_provider)
+    selected_provider, selected_profile = _resolve_launch_provider_profile(graph, llm_provider, llm_profile)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
 
     _validate_graph_provider_configuration(
         graph,
         launch_context=None,
         selected_provider=selected_provider,
+        selected_profile=selected_profile,
         selected_model=selected_model,
         selected_reasoning_effort=selected_reasoning_effort,
     )
@@ -2331,6 +2438,7 @@ def _build_pipeline_runner_for_run(
         on_event=emit,
     )
     context = Context()
+    context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
     with ACTIVE_RUNS_LOCK:
         ACTIVE_RUNS[run_id] = ActiveRun(
             run_id=run_id,
@@ -2338,11 +2446,12 @@ def _build_pipeline_runner_for_run(
             working_directory=working_dir,
             model=display_model,
             llm_provider=selected_provider,
+            llm_profile=selected_profile,
             reasoning_effort=selected_reasoning_effort,
             status="running",
             control=control,
         )
-    return executor, context, display_model, selected_provider, selected_reasoning_effort
+    return executor, context, display_model, selected_provider, selected_profile, selected_reasoning_effort
 
 
 async def _retry_pipeline_run(pipeline_id: str) -> dict:
@@ -2389,12 +2498,17 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
             or record.llm_provider
             or "codex"
         )
+        retry_profile = (
+            str(checkpoint.context.get(RUNTIME_LAUNCH_PROFILE_KEY, "")).strip()
+            or str(record.llm_profile or "").strip()
+            or None
+        )
         retry_reasoning_effort = (
             str(checkpoint.context.get(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, "")).strip().lower()
             or record.reasoning_effort
             or None
         )
-        executor, context, display_model, selected_provider, selected_reasoning_effort = _build_pipeline_runner_for_run(
+        executor, context, display_model, selected_provider, selected_profile, selected_reasoning_effort = _build_pipeline_runner_for_run(
             graph=graph,
             run_id=pipeline_id,
             flow_name=record.flow_name,
@@ -2402,6 +2516,7 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
             backend_name="provider-router",
             model=record.model,
             llm_provider=retry_provider,
+            llm_profile=retry_profile,
             reasoning_effort=retry_reasoning_effort,
             loop=loop,
             on_usage_update=handle_usage_update,
@@ -2414,6 +2529,7 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
     _record_run_retry_start(
         pipeline_id,
         llm_provider=selected_provider,
+        llm_profile=selected_profile,
         reasoning_effort=selected_reasoning_effort,
     )
     await _publish_run_list_upsert(pipeline_id)
@@ -2557,6 +2673,7 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
         "model": display_model,
         "provider": selected_provider,
         "llm_provider": selected_provider,
+        "llm_profile": selected_profile,
         "reasoning_effort": selected_reasoning_effort,
         "diagnostics": [_diagnostic_payload(diagnostic) for diagnostic in diagnostics],
         "errors": [],
@@ -2572,6 +2689,7 @@ async def _launch_pipeline_run(
     backend_name: str,
     model: Optional[str],
     llm_provider: Optional[str] = None,
+    llm_profile: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     launch_context: Optional[dict[str, Any]] = None,
     spec_id: Optional[str] = None,
@@ -2654,18 +2772,19 @@ async def _launch_pipeline_run(
     os.makedirs(working_directory, exist_ok=True)
     working_dir = str(Path(working_directory).resolve())
     selected_model, display_model = _resolve_launch_model(graph, model)
-    selected_provider = _resolve_launch_provider(graph, llm_provider)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
 
     try:
+        selected_provider, selected_profile = _resolve_launch_provider_profile(graph, llm_provider, llm_profile)
         _validate_graph_provider_configuration(
             graph,
             launch_context=launch_context,
             selected_provider=selected_provider,
+            selected_profile=selected_profile,
             selected_model=selected_model,
             selected_reasoning_effort=selected_reasoning_effort,
         )
-    except ProviderConfigurationError as exc:
+    except (ProviderConfigurationError, LlmProfileConfigurationError) as exc:
         RUNTIME.status = "validation_error"
         RUNTIME.outcome = None
         RUNTIME.outcome_reason_code = None
@@ -2751,6 +2870,7 @@ async def _launch_pipeline_run(
     context.set("preferred_label", "")
     context.set(RUNTIME_LAUNCH_MODEL_KEY, selected_model or "")
     context.set(RUNTIME_LAUNCH_PROVIDER_KEY, selected_provider)
+    context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
     context.set(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, selected_reasoning_effort or "")
     context.set("internal.run_id", resolved_run_id)
     context.set("internal.root_run_id", resolved_run_id)
@@ -2789,6 +2909,7 @@ async def _launch_pipeline_run(
             working_directory=working_dir,
             model=display_model,
             llm_provider=selected_provider,
+            llm_profile=selected_profile,
             reasoning_effort=selected_reasoning_effort,
             status="running",
             control=control,
@@ -2809,6 +2930,7 @@ async def _launch_pipeline_run(
         working_dir,
         display_model,
         llm_provider=selected_provider,
+        llm_profile=selected_profile,
         reasoning_effort=selected_reasoning_effort,
         spec_id=(spec_id or "").strip() or None,
         plan_id=(plan_id or "").strip() or None,
@@ -2839,6 +2961,7 @@ async def _launch_pipeline_run(
             "model": display_model,
             "provider": selected_provider,
             "llm_provider": selected_provider,
+            "llm_profile": selected_profile,
             "reasoning_effort": selected_reasoning_effort,
             "flow_name": flow_name,
             "run_id": resolved_run_id,
@@ -2995,6 +3118,7 @@ async def _launch_pipeline_run(
         "model": display_model,
         "provider": selected_provider,
         "llm_provider": selected_provider,
+        "llm_profile": selected_profile,
         "reasoning_effort": selected_reasoning_effort,
         "diagnostics": diagnostic_payloads,
         "errors": error_payloads,
@@ -3059,6 +3183,7 @@ async def _start_pipeline(
         backend_name="provider-router",
         model=req.model,
         llm_provider=req.llm_provider,
+        llm_profile=req.llm_profile,
         reasoning_effort=req.reasoning_effort,
         launch_context=launch_context,
         spec_id=req.spec_id,
@@ -3110,6 +3235,9 @@ async def continue_pipeline(pipeline_id: str, req: PipelineContinueRequest):
     llm_provider = req.llm_provider
     if llm_provider is None:
         llm_provider = str(source_context.get(RUNTIME_LAUNCH_PROVIDER_KEY, "")).strip() or None
+    llm_profile = req.llm_profile
+    if llm_profile is None:
+        llm_profile = str(source_context.get(RUNTIME_LAUNCH_PROFILE_KEY, "")).strip() or None
     reasoning_effort = req.reasoning_effort
     if reasoning_effort is None:
         reasoning_effort = str(source_context.get(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, "")).strip() or None
@@ -3122,6 +3250,7 @@ async def continue_pipeline(pipeline_id: str, req: PipelineContinueRequest):
         backend_name="provider-router",
         model=model,
         llm_provider=llm_provider,
+        llm_profile=llm_profile,
         reasoning_effort=reasoning_effort,
         launch_context=source_context,
         spec_id=source_record.spec_id,
@@ -3433,6 +3562,14 @@ async def list_flows():
         key=lambda path: _flow_name_from_path_impl(flows_dir, path),
     )
     return [_flow_name_from_path_impl(flows_dir, flow_path) for flow_path in flow_paths]
+
+
+@attractor_router.get("/api/llm-profiles")
+async def list_llm_profiles():
+    try:
+        return {"profiles": public_llm_profiles(get_runtime_paths().config_dir)}
+    except LlmProfileConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _flows_dir() -> Path:

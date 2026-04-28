@@ -253,7 +253,13 @@ export function useProjectsHomeController() {
     const chatProviderOptions = useMemo(
         () => LLM_PROVIDER_OPTIONS.map((provider) => ({
             value: provider,
-            label: provider === 'codex' ? 'Codex' : provider[0].toUpperCase() + provider.slice(1),
+            label: provider === 'codex'
+                ? 'Codex'
+                : provider === 'openrouter'
+                    ? 'OpenRouter'
+                    : provider === 'litellm'
+                        ? 'LiteLLM'
+                        : provider[0].toUpperCase() + provider.slice(1),
         })),
         [],
     )

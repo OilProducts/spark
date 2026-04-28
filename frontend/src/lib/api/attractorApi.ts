@@ -88,6 +88,7 @@ export interface PipelineStartResponse {
     model?: string
     provider?: string | null
     llm_provider?: string | null
+    llm_profile?: string | null
     reasoning_effort?: string | null
     diagnostics?: import('@/state/store-types').DiagnosticEntry[]
     errors?: import('@/state/store-types').DiagnosticEntry[]
@@ -136,6 +137,7 @@ export interface PipelineStatusResponse {
     model?: string
     provider?: string | null
     llm_provider?: string | null
+    llm_profile?: string | null
     reasoning_effort?: string | null
     last_error?: string | null
     token_usage?: number | null
@@ -228,6 +230,7 @@ export interface RunRecordResponse {
     model: string
     provider?: string | null
     llm_provider?: string | null
+    llm_profile?: string | null
     reasoning_effort?: string | null
     started_at: string
     ended_at?: string | null
@@ -373,6 +376,7 @@ export function parsePipelineStartResponse(payload: unknown, endpoint = '/attrac
         model: asOptionalString(record.model),
         provider: asOptionalNullableString(record.provider),
         llm_provider: asOptionalNullableString(record.llm_provider),
+        llm_profile: asOptionalNullableString(record.llm_profile),
         reasoning_effort: asOptionalNullableString(record.reasoning_effort),
         diagnostics: parseDiagnosticList(record.diagnostics, endpoint, 'diagnostics'),
         errors: parseDiagnosticList(record.errors, endpoint, 'errors'),
@@ -636,6 +640,7 @@ function parseRunRecord(payload: unknown): RunRecordResponse | null {
         model: typeof record.model === 'string' ? record.model : '',
         provider: asOptionalNullableString(record.provider),
         llm_provider: asOptionalNullableString(record.llm_provider),
+        llm_profile: asOptionalNullableString(record.llm_profile),
         reasoning_effort: asOptionalNullableString(record.reasoning_effort),
         started_at: typeof record.started_at === 'string' ? record.started_at : '',
         ended_at: asOptionalNullableString(record.ended_at),

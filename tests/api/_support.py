@@ -40,15 +40,22 @@ def start_pipeline(
     flow_content: str = SIMPLE_FLOW,
     backend: str = "codex-app-server",
     launch_context: dict[str, object] | None = None,
+    model: str | None = None,
+    llm_profile: str | None = None,
 ) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "flow_content": flow_content,
+        "working_directory": str(working_directory),
+        "backend": backend,
+        "launch_context": launch_context,
+    }
+    if model is not None:
+        payload["model"] = model
+    if llm_profile is not None:
+        payload["llm_profile"] = llm_profile
     response = api_client.post(
         "/pipelines",
-        json={
-            "flow_content": flow_content,
-            "working_directory": str(working_directory),
-            "backend": backend,
-            "launch_context": launch_context,
-        },
+        json=payload,
     )
     assert response.status_code == 200
     payload = response.json()

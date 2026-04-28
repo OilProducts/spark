@@ -66,6 +66,7 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'timeout',
     'llm_model',
     'llm_provider',
+    'llm_profile',
     'reasoning_effort',
     'auto_status',
     'allow_partial',
@@ -201,6 +202,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         const uiAttrLines = [
             uiDefaults.llm_model ? `ui_default_llm_model="${escapeDot(uiDefaults.llm_model)}"` : '',
             uiDefaults.llm_provider ? `ui_default_llm_provider="${escapeDot(uiDefaults.llm_provider)}"` : '',
+            uiDefaults.llm_profile ? `ui_default_llm_profile="${escapeDot(uiDefaults.llm_profile)}"` : '',
             uiDefaults.reasoning_effort ? `ui_default_reasoning_effort="${escapeDot(uiDefaults.reasoning_effort)}"` : '',
         ].filter(Boolean)
         const graphAttrBlock = uiAttrLines.length ? `  graph [${uiAttrLines.join(', ')}];\n` : ''

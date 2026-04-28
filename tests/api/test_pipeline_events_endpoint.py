@@ -557,6 +557,15 @@ def test_pipeline_persists_first_class_child_stage_events_on_child_run(
     tmp_path: Path,
 ) -> None:
     server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    (server.get_runtime_paths().config_dir / "llm-profiles.toml").write_text(
+        """
+        [profiles.local]
+        provider = "openai_compatible"
+        base_url = "http://127.0.0.1:1234/v1"
+        models = ["local-model"]
+        """,
+        encoding="utf-8",
+    )
 
     child_dot_path = tmp_path / "child.dot"
     child_dot_path.write_text(
@@ -634,6 +643,8 @@ def test_pipeline_persists_first_class_child_stage_events_on_child_run(
             start -> manager -> done
         }}
         """,
+        model="local-model",
+        llm_profile="local",
     )
     run_id = str(start_payload["pipeline_id"])
     final_payload = _wait_for_pipeline_completion(attractor_api_client, run_id)
@@ -662,6 +673,7 @@ def test_pipeline_persists_first_class_child_stage_events_on_child_run(
     assert child_record is not None
     assert child_record.parent_run_id == run_id
     assert child_record.parent_node_id == "manager"
+    assert child_record.llm_profile == "local"
 
 
 def test_pipeline_events_drop_oldest_events_under_sustained_throughput(

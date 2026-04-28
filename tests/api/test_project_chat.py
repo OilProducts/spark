@@ -1836,21 +1836,95 @@ def test_build_session_keys_chat_sessions_by_provider_and_model(tmp_path: Path, 
     codex_default = service._build_session("conversation-provider-switch", str(tmp_path))
     openai = service._build_session("conversation-provider-switch", str(tmp_path), "openai", "gpt-5.4")
     anthropic = service._build_session("conversation-provider-switch", str(tmp_path), "anthropic", "claude-test")
+    openrouter = service._build_session("conversation-provider-switch", str(tmp_path), "openrouter", "openai/gpt-test")
+    litellm = service._build_session("conversation-provider-switch", str(tmp_path), "litellm", "team-model")
     codex_again = service._build_session("conversation-provider-switch", str(tmp_path), "codex", None)
 
     assert codex_default is codex_again
     assert openai is not codex_default
     assert anthropic is not openai
+    assert openrouter is not openai
+    assert litellm is not openrouter
     assert created == [
         {"provider": "codex", "model": None},
         {"provider": "openai", "model": "gpt-5.4"},
         {"provider": "anthropic", "model": "claude-test"},
+        {"provider": "openrouter", "model": "openai/gpt-test"},
+        {"provider": "litellm", "model": "team-model"},
     ]
     assert sorted(service._sessions) == [
         "conversation-provider-switch::anthropic::claude-test",
         "conversation-provider-switch::codex::",
+        "conversation-provider-switch::litellm::team-model",
         "conversation-provider-switch::openai::gpt-5.4",
+        "conversation-provider-switch::openrouter::openai/gpt-test",
     ]
+
+
+def test_project_chat_starts_profile_session_with_explicit_model(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "config" / "llm-profiles.toml").write_text(
+        """
+        [profiles.local]
+        provider = "openai_compatible"
+        base_url = "http://127.0.0.1:1234/v1"
+        models = ["local-model"]
+        """,
+        encoding="utf-8",
+    )
+    created: list[dict[str, object | None]] = []
+
+    class FakeUnifiedSession:
+        def __init__(
+            self,
+            working_dir: str,
+            *,
+            provider: str,
+            model: str | None = None,
+            llm_profile: str | None = None,
+            config_dir: Path | None = None,
+            persisted_history: list[project_chat.ConversationTurn] | None = None,
+        ) -> None:
+            del persisted_history
+            created.append(
+                {
+                    "working_dir": working_dir,
+                    "provider": provider,
+                    "model": model,
+                    "llm_profile": llm_profile,
+                    "config_dir": config_dir,
+                }
+            )
+
+    monkeypatch.setattr(project_chat, "UnifiedAgentChatSession", FakeUnifiedSession)
+
+    session = service._build_session(
+        "conversation-profile",
+        str(tmp_path),
+        provider="codex",
+        model="local-model",
+        llm_profile="local",
+    )
+    same_session = service._build_session(
+        "conversation-profile",
+        str(tmp_path),
+        provider="codex",
+        model="local-model",
+        llm_profile="local",
+    )
+
+    assert session is same_session
+    assert created == [
+        {
+            "working_dir": str(tmp_path),
+            "provider": "codex",
+            "model": "local-model",
+            "llm_profile": "local",
+            "config_dir": tmp_path / "config",
+        }
+    ]
+    assert sorted(service._sessions) == ["conversation-profile::codex::local::local-model"]
 
 
 def test_delete_conversation_closes_all_provider_model_keyed_sessions(tmp_path: Path) -> None:

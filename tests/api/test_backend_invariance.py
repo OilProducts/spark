@@ -1790,6 +1790,8 @@ def test_codex_app_server_backend_forwards_reasoning_effort_to_turn(
         ("openai", "unified"),
         ("anthropic", "unified"),
         ("gemini", "unified"),
+        ("openrouter", "unified"),
+        ("litellm", "unified"),
     ],
 )
 def test_provider_router_dispatches_supported_providers(
@@ -2058,6 +2060,62 @@ def test_pipeline_launch_rejects_missing_api_provider_key_before_scheduling(
     assert payload["error"] == "Provider openai is not configured: missing OPENAI_API_KEY."
     assert server._get_active_run(run_id) is None
     assert server._read_run_meta(server._run_meta_path(run_id)) is None
+
+
+def test_pipeline_launch_rejects_missing_openrouter_key_before_scheduling(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    payload = _start_pipeline_via_http(
+        attractor_api_client,
+        {
+            "run_id": "missing-openrouter-key",
+            "flow_content": """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, prompt="Use OpenRouter"]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """,
+            "working_directory": str(tmp_path / "work"),
+            "llm_provider": "openrouter",
+            "model": "openai/gpt-test",
+        },
+    )
+
+    assert payload["status"] == "validation_error"
+    assert payload["error"] == "Provider openrouter is not configured: missing OPENROUTER_API_KEY."
+
+
+def test_pipeline_launch_rejects_missing_litellm_base_url_before_scheduling(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("LITELLM_BASE_URL", raising=False)
+    payload = _start_pipeline_via_http(
+        attractor_api_client,
+        {
+            "run_id": "missing-litellm-base-url",
+            "flow_content": """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, prompt="Use LiteLLM"]
+                done [shape=Msquare]
+                start -> task -> done
+            }
+            """,
+            "working_directory": str(tmp_path / "work"),
+            "llm_provider": "litellm",
+            "model": "team-model",
+        },
+    )
+
+    assert payload["status"] == "validation_error"
+    assert payload["error"] == "Provider litellm is not configured: missing LITELLM_BASE_URL."
 
 
 def test_pipeline_launch_rejects_missing_codex_auth_before_scheduling(

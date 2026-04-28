@@ -10,6 +10,7 @@ from attractor.dsl.models import Duration
 from attractor.engine.outcome import Outcome, OutcomeStatus
 from attractor.llm_runtime import (
     resolve_effective_llm_model,
+    resolve_effective_llm_profile,
     resolve_effective_llm_provider,
     resolve_effective_reasoning_effort,
 )
@@ -131,13 +132,14 @@ def _backend_select(
         context,
         fallback_provider=getattr(backend, "provider", None),
     )
+    effective_profile = resolve_effective_llm_profile(node_attrs, context)
     effective_reasoning_effort = resolve_effective_reasoning_effort(
         node_attrs,
         context,
         fallback_reasoning_effort=getattr(backend, "reasoning_effort", None),
     )
     with _backend_stage_logging_context(backend, node_id, logs_root):
-        backend_kwargs = {"timeout": timeout, "provider": effective_provider}
+        backend_kwargs = {"timeout": timeout, "provider": effective_provider, "llm_profile": effective_profile}
         if effective_model is not None:
             backend_kwargs["model"] = effective_model
         if effective_reasoning_effort is not None:
