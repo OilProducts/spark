@@ -24,9 +24,10 @@ class _Backend:
         contract_repair_attempts=0,
         timeout=None,
         model=None,
+        emit_event=None,
         write_contract=None,
     ):
-        del context, response_contract, contract_repair_attempts, timeout, model, write_contract
+        del context, response_contract, contract_repair_attempts, timeout, model, emit_event, write_contract
         self.calls.append((node_id, prompt))
         value = self.plan.get(node_id, True)
         if isinstance(value, list):
@@ -34,34 +35,6 @@ class _Backend:
             idx = min(idx, len(value) - 1)
             return bool(value[idx])
         return bool(value)
-
-    def run_with_events(
-        self,
-        node_id,
-        prompt,
-        context,
-        emit_event=None,
-        *,
-        response_contract="",
-        contract_repair_attempts=0,
-        timeout=None,
-        model=None,
-        provider=None,
-        reasoning_effort=None,
-        write_contract=None,
-    ):
-        del emit_event, provider, reasoning_effort
-        return self.run(
-            node_id,
-            prompt,
-            context,
-            response_contract=response_contract,
-            contract_repair_attempts=contract_repair_attempts,
-            timeout=timeout,
-            model=model,
-            write_contract=write_contract,
-        )
-
 
 class _FlakyHandler:
     def __init__(self):

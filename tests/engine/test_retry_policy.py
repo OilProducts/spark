@@ -13,7 +13,7 @@ from attractor.engine.executor import (
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 
 
-def _runner(node_id: str, prompt: str, context: Context) -> Outcome:
+def _runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
     return Outcome(status=OutcomeStatus.SUCCESS)
 
 
@@ -177,7 +177,7 @@ def test_retry_loop_uses_computed_delay_for_retry_event():
     events: list[dict[str, object]] = []
     attempts = {"count": 0}
 
-    def _runner(node_id: str, prompt: str, context: Context) -> Outcome:
+    def _runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
         if node_id != "task":
             return Outcome(status=OutcomeStatus.SUCCESS)
         attempts["count"] += 1

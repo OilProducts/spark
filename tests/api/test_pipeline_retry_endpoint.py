@@ -32,9 +32,10 @@ class _SequenceBackend:
         provider=None,
         llm_profile=None,
         reasoning_effort=None,
+        emit_event=None,
         write_contract=None,
     ) -> Outcome:
-        del prompt, context, response_contract, contract_repair_attempts, timeout, write_contract
+        del prompt, context, response_contract, contract_repair_attempts, timeout, emit_event, write_contract
         self.calls.append(node_id)
         self.run_kwargs.append(
             {
@@ -47,38 +48,6 @@ class _SequenceBackend:
         if self._outcomes:
             return self._outcomes.pop(0)
         return Outcome(status=OutcomeStatus.SUCCESS)
-
-    def run_with_events(
-        self,
-        node_id: str,
-        prompt: str,
-        context,
-        emit_event=None,
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout=None,
-        model=None,
-        provider=None,
-        llm_profile=None,
-        reasoning_effort=None,
-        write_contract=None,
-    ) -> Outcome:
-        del emit_event
-        return self.run(
-            node_id,
-            prompt,
-            context,
-            response_contract=response_contract,
-            contract_repair_attempts=contract_repair_attempts,
-            timeout=timeout,
-            model=model,
-            provider=provider,
-            llm_profile=llm_profile,
-            reasoning_effort=reasoning_effort,
-            write_contract=write_contract,
-        )
-
 
 def test_retry_failed_pipeline_reuses_run_id_and_resumes_failed_checkpoint(
     attractor_api_client: TestClient,

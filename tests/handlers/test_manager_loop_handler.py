@@ -105,11 +105,11 @@ class TestManagerLoopHandler:
         )
         captured_events: list[dict[str, object]] = []
 
-        outcome = runner.run_with_events(
+        outcome = runner(
             "manager",
             "",
             Context(),
-            lambda event_type, **payload: captured_events.append({"type": event_type, **payload}),
+            emit_event=lambda event_type, **payload: captured_events.append({"type": event_type, **payload}),
         )
 
         assert outcome is not None

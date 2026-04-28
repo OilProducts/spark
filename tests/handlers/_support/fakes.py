@@ -10,39 +10,24 @@ from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome, OutcomeStatus
 from attractor.interviewer import Answer, Interviewer, Question
 
-class _RunWithEventsBackend:
-    def run_with_events(
-        self,
-        node_id: str,
-        prompt: str,
-        context: Context,
-        emit_event=None,
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout=None,
-        model=None,
-        provider=None,
-        reasoning_effort=None,
-        write_contract=None,
-    ):
-        del emit_event
-        kwargs = {
-            "response_contract": response_contract,
-            "contract_repair_attempts": contract_repair_attempts,
-            "timeout": timeout,
-            "model": model,
-            "provider": provider,
-            "reasoning_effort": reasoning_effort,
-            "write_contract": write_contract,
-        }
-        parameters = inspect.signature(self.run).parameters
-        if not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
-            kwargs = {key: value for key, value in kwargs.items() if key in parameters}
-        return self.run(node_id, prompt, context, **kwargs)
+class _BackendRunAdapter:
+    def __init_subclass__(cls) -> None:
+        super().__init_subclass__()
+        if "run" not in cls.__dict__:
+            return
+        original_run = cls.run
+
+        def run(self, node_id, prompt, context, *, emit_event=None, **kwargs):  # type: ignore[no-untyped-def]
+            del emit_event
+            parameters = inspect.signature(original_run).parameters
+            if not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+                kwargs = {key: value for key, value in kwargs.items() if key in parameters}
+            return original_run(self, node_id, prompt, context, **kwargs)
+
+        cls.run = run  # type: ignore[method-assign]
 
 
-class _StubBackend(_RunWithEventsBackend):
+class _StubBackend(_BackendRunAdapter):
     def __init__(self, ok: bool = True):
         self.ok = ok
         self.calls = []
@@ -67,7 +52,7 @@ class _StubBackend(_RunWithEventsBackend):
         )
         return self.ok
 
-class _ArtifactProbeBackend(_RunWithEventsBackend):
+class _ArtifactProbeBackend(_BackendRunAdapter):
     def __init__(self, logs_root: Path):
         self.logs_root = logs_root
         self.prompt_exists_during_call = False
@@ -98,7 +83,7 @@ class _ArtifactProbeBackend(_RunWithEventsBackend):
         self.response_exists_during_call = response_path.exists()
         return True
 
-class _TextBackend(_RunWithEventsBackend):
+class _TextBackend(_BackendRunAdapter):
     def __init__(self, text: str):
         self.text = text
 
@@ -119,7 +104,7 @@ class _TextBackend(_RunWithEventsBackend):
         del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, provider, reasoning_effort, write_contract
         return self.text
 
-class _OutcomeBackend(_RunWithEventsBackend):
+class _OutcomeBackend(_BackendRunAdapter):
     def __init__(self, outcome: Outcome):
         self.outcome = outcome
 
@@ -140,7 +125,7 @@ class _OutcomeBackend(_RunWithEventsBackend):
         del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, provider, reasoning_effort, write_contract
         return self.outcome
 
-class _FanInRankingBackend(_RunWithEventsBackend):
+class _FanInRankingBackend(_BackendRunAdapter):
     def __init__(self, response: str):
         self.response = response
         self.calls = []
@@ -176,7 +161,7 @@ class _FanInRankingBackend(_RunWithEventsBackend):
         return self.response
 
 
-class _StageLoggingBackend(_RunWithEventsBackend):
+class _StageLoggingBackend(_BackendRunAdapter):
     def __init__(self, response: str):
         self.response = response
         self.bind_calls = []

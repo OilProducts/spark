@@ -32,7 +32,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "run-logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=f"{node_id} complete")
 
             result = PipelineExecutor(
@@ -79,7 +79,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "run-logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=f"{node_id} complete")
 
             result = PipelineExecutor(
@@ -194,7 +194,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "plan":
                     return Outcome(
                         status=OutcomeStatus.SUCCESS,
@@ -235,7 +235,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "plan":
                     return Outcome(
                         status=OutcomeStatus.FAIL,
@@ -273,7 +273,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "plan":
                     raise RuntimeError("runner exploded")
                 return Outcome(status=OutcomeStatus.SUCCESS)
@@ -313,7 +313,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "plan":
                     return Outcome(
                         status=OutcomeStatus.FAIL,
@@ -351,7 +351,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "plan":
                     return Outcome(
                         status="not-a-valid-status",  # type: ignore[arg-type]
@@ -396,7 +396,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "plan":
                     return Outcome(status=OutcomeStatus.SKIPPED, notes="condition not met")
                 return Outcome(status=OutcomeStatus.SUCCESS)
@@ -433,7 +433,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "plan":
                     return Outcome(
                         status=OutcomeStatus.SUCCESS,
@@ -475,7 +475,7 @@ class TestCheckpointAndArtifacts:
             logs_root = Path(tmp) / "logs"
             checkpoint_file = Path(tmp) / "attractor.state.json"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=f"response for {node_id}")
 
             result = PipelineExecutor(
@@ -518,7 +518,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint_file = Path(tmp) / "attractor.state.json"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 return Outcome(status=OutcomeStatus.SUCCESS)
 
             context = Context()
@@ -558,7 +558,7 @@ class TestCheckpointAndArtifacts:
             logs_root = Path(tmp) / "logs"
             work_calls = {"count": 0}
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "work":
                     work_calls["count"] += 1
                     if work_calls["count"] == 1:
@@ -594,7 +594,7 @@ class TestCheckpointAndArtifacts:
             checkpoint_file = Path(tmp) / "attractor.state.json"
             calls = []
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 calls.append(node_id)
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
 
@@ -637,7 +637,7 @@ class TestCheckpointAndArtifacts:
             checkpoint_file = Path(tmp) / "attractor.state.json"
             calls = []
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 calls.append(node_id)
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
 
@@ -683,7 +683,7 @@ class TestCheckpointAndArtifacts:
             checkpoint_file = Path(tmp) / "attractor.state.json"
             seen_fidelity: list[str] = []
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 seen_fidelity.append(str(context.get("_attractor.runtime.fidelity", "")))
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
 
@@ -733,7 +733,7 @@ class TestCheckpointAndArtifacts:
                 ),
             )
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "work":
                     attempts["work"] += 1
                     seen_resume_markers.append(str(context.get("context.resume.marker", "")))
@@ -773,7 +773,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint_file = Path(tmp) / "attractor.state.json"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
 
             executor = PipelineExecutor(
@@ -808,7 +808,7 @@ class TestCheckpointAndArtifacts:
             checkpoint_file = Path(tmp) / "attractor.state.json"
             events = []
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 raise RuntimeError("runner exploded")
 
             executor = PipelineExecutor(
@@ -895,7 +895,7 @@ class TestCheckpointAndArtifacts:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=f"{node_id} complete")
 
             result = PipelineExecutor(
@@ -934,7 +934,7 @@ class TestCheckpointAndArtifacts:
 
             monkeypatch.setattr(executor_module, "save_checkpoint", capture_checkpoint)
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
 
             result = PipelineExecutor(
@@ -972,7 +972,7 @@ class TestCheckpointAndArtifacts:
 
             monkeypatch.setattr(executor_module, "save_checkpoint", capture_checkpoint)
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 if node_id == "start":
                     return Outcome(
                         status=OutcomeStatus.SUCCESS,

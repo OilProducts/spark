@@ -20,38 +20,12 @@ class _SmokeBackend:
         contract_repair_attempts: int = 0,
         timeout: float | None = None,
         model: str | None = None,
+        emit_event=None,
         write_contract=None,
     ) -> str:
-        del context, response_contract, contract_repair_attempts, timeout, model, write_contract
+        del context, response_contract, contract_repair_attempts, timeout, model, emit_event, write_contract
         self.calls.append((node_id, prompt))
         return f"{node_id} completed"
-
-    def run_with_events(
-        self,
-        node_id: str,
-        prompt: str,
-        context: Context,
-        emit_event=None,
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout: float | None = None,
-        model: str | None = None,
-        provider=None,
-        reasoning_effort=None,
-        write_contract=None,
-    ) -> str:
-        del emit_event, provider, reasoning_effort
-        return self.run(
-            node_id,
-            prompt,
-            context,
-            response_contract=response_contract,
-            contract_repair_attempts=contract_repair_attempts,
-            timeout=timeout,
-            model=model,
-            write_contract=write_contract,
-        )
 
 
 def test_spec_smoke_pipeline_fixture_matches_structure() -> None:

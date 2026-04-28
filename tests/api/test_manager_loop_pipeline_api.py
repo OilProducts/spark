@@ -26,9 +26,10 @@ class _LoopingManagerBackend:
         contract_repair_attempts: int = 0,
         timeout=None,
         model=None,
+        emit_event=None,
         write_contract=None,
     ) -> Outcome:
-        del prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
+        del prompt, context, response_contract, contract_repair_attempts, timeout, model, emit_event, write_contract
         if node_id == "task":
             note = f"child-task-{len(self.child_task_notes) + 1}"
             self.child_task_notes.append(note)
@@ -38,34 +39,6 @@ class _LoopingManagerBackend:
             preferred_label = "Again" if self.gate_calls == 1 else "Done"
             return Outcome(status=OutcomeStatus.SUCCESS, preferred_label=preferred_label)
         return Outcome(status=OutcomeStatus.SUCCESS)
-
-    def run_with_events(
-        self,
-        node_id: str,
-        prompt: str,
-        context,
-        emit_event=None,
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout=None,
-        model=None,
-        provider=None,
-        reasoning_effort=None,
-        write_contract=None,
-    ) -> Outcome:
-        del emit_event, provider, reasoning_effort
-        return self.run(
-            node_id,
-            prompt,
-            context,
-            response_contract=response_contract,
-            contract_repair_attempts=contract_repair_attempts,
-            timeout=timeout,
-            model=model,
-            write_contract=write_contract,
-        )
-
 
 def test_pipeline_flow_name_resolves_relative_manager_child_paths_from_parent_flow_dir(
     attractor_api_client: TestClient,

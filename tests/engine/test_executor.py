@@ -1,4 +1,5 @@
 import pytest
+import inspect
 from pathlib import Path
 import threading
 import tempfile
@@ -35,36 +36,24 @@ STARTER_SPEC_IMPLEMENTATION_MILESTONE_FIXTURE = (
 )
 
 
-class _RunWithEventsBackend:
-    def run_with_events(
-        self,
-        node_id: str,
-        prompt: str,
-        context: Context,
-        emit_event=None,
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout=None,
-        model=None,
-        provider=None,
-        reasoning_effort=None,
-        write_contract=None,
-    ):
-        del emit_event, provider, reasoning_effort
-        return self.run(
-            node_id,
-            prompt,
-            context,
-            response_contract=response_contract,
-            contract_repair_attempts=contract_repair_attempts,
-            timeout=timeout,
-            model=model,
-            write_contract=write_contract,
-        )
+class _BackendRunAdapter:
+    def __init_subclass__(cls) -> None:
+        super().__init_subclass__()
+        if "run" not in cls.__dict__:
+            return
+        original_run = cls.run
+
+        def run(self, node_id, prompt, context, *, emit_event=None, **kwargs):  # type: ignore[no-untyped-def]
+            del emit_event
+            parameters = inspect.signature(original_run).parameters
+            if not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+                kwargs = {key: value for key, value in kwargs.items() if key in parameters}
+            return original_run(self, node_id, prompt, context, **kwargs)
+
+        cls.run = run  # type: ignore[method-assign]
 
 
-class _WorkflowBackend(_RunWithEventsBackend):
+class _WorkflowBackend(_BackendRunAdapter):
     def __init__(self, responses: dict[str, bool]):
         self._responses = responses
 
@@ -84,7 +73,7 @@ class _WorkflowBackend(_RunWithEventsBackend):
         return self._responses.get(node_id, True)
 
 
-class _StructuredLoopBackend(_RunWithEventsBackend):
+class _StructuredLoopBackend(_BackendRunAdapter):
     def __init__(self):
         self.prompts: dict[str, list[str]] = {}
         self.review_calls = 0
@@ -128,7 +117,7 @@ class _StructuredLoopBackend(_RunWithEventsBackend):
         return f"{node_id} completed"
 
 
-class _SpecImplementationLoopBackend(_RunWithEventsBackend):
+class _SpecImplementationLoopBackend(_BackendRunAdapter):
     def __init__(self):
         self.next_milestone_calls = 0
         self.child_milestone_ids: list[str] = []
@@ -208,7 +197,7 @@ class TestExecutor:
         graph = parse_dot(BRANCHING_CONDITION_FIXTURE.read_text(encoding="utf-8"))
         validate_attempts = {"count": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "validate":
                 idx = validate_attempts["count"]
                 validate_attempts["count"] += 1
@@ -239,7 +228,7 @@ class TestExecutor:
 
         calls: list[str] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             calls.append(node_id)
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -271,7 +260,7 @@ class TestExecutor:
         with tempfile.TemporaryDirectory() as tmp:
             logs_root = Path(tmp) / "logs"
 
-            def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
                 return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
 
             result = PipelineExecutor(graph, runner, logs_root=str(logs_root)).run(Context())
@@ -302,7 +291,7 @@ class TestExecutor:
         )
         events = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS)
 
         result = PipelineExecutor(graph, runner, on_event=events.append).run(Context())
@@ -330,7 +319,7 @@ class TestExecutor:
         )
         seen_thread_ids: list[str] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_thread_ids.append(str(context.get("_attractor.runtime.thread_id", "")))
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -354,7 +343,7 @@ class TestExecutor:
         )
         seen_fidelity: list[str] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_fidelity.append(str(context.get("_attractor.runtime.fidelity", "")))
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -378,7 +367,7 @@ class TestExecutor:
         )
         seen_fidelity: list[str] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_fidelity.append(str(context.get("_attractor.runtime.fidelity", "")))
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -402,7 +391,7 @@ class TestExecutor:
         )
         seen_fidelity: list[str] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_fidelity.append(str(context.get("_attractor.runtime.fidelity", "")))
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -422,7 +411,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             del prompt, context
             if node_id == "slow":
                 time.sleep(0.1)
@@ -448,7 +437,7 @@ class TestExecutor:
         )
         seen_thread_ids: list[str] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_thread_ids.append(str(context.get("_attractor.runtime.thread_id", "")))
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -472,7 +461,7 @@ class TestExecutor:
         )
         seen_thread_ids: list[str] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_thread_ids.append(str(context.get("_attractor.runtime.thread_id", "")))
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -496,7 +485,7 @@ class TestExecutor:
         )
         seen_thread_ids: list[str] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_thread_ids.append(str(context.get("_attractor.runtime.thread_id", "")))
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -525,7 +514,7 @@ class TestExecutor:
         )
         seen_thread_ids: list[str] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_thread_ids.append(str(context.get("_attractor.runtime.thread_id", "")))
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -560,7 +549,7 @@ class TestExecutor:
 
         seen_payload = ""
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             nonlocal seen_payload
             if node_id == "start":
                 return Outcome(
@@ -599,7 +588,7 @@ class TestExecutor:
 
         seen_payload = "not-set"
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             nonlocal seen_payload
             if node_id == "work":
                 seen_payload = str(context.get("_attractor.runtime.context_carryover", ""))
@@ -660,7 +649,7 @@ class TestExecutor:
         work_calls = 0
         second_attempt_carryover = ""
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             nonlocal work_calls, second_attempt_carryover
             del prompt
             if node_id == "work":
@@ -701,7 +690,7 @@ class TestExecutor:
         )
         seen_goals: list[object] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_goals.append(context.get("graph.goal"))
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -728,7 +717,7 @@ class TestExecutor:
         )
         snapshots: list[dict[str, str]] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             snapshots.append(
                 {
                     "node_id": node_id,
@@ -787,7 +776,7 @@ class TestExecutor:
         )
         events = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -822,7 +811,7 @@ class TestExecutor:
         )
         events: list[dict] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS)
 
         result = PipelineExecutor(graph, runner, on_event=events.append).run(Context())
@@ -845,7 +834,7 @@ class TestExecutor:
         )
         events: list[dict] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS)
 
         result = PipelineExecutor(graph, runner, on_event=events.append).run(Context())
@@ -872,7 +861,7 @@ class TestExecutor:
         )
         events: list[dict] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "work":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="boom")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -901,7 +890,7 @@ class TestExecutor:
         events = []
         calls = {"work": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "work":
                 calls["work"] += 1
                 if calls["work"] == 1:
@@ -934,7 +923,7 @@ class TestExecutor:
         )
         events: list[dict] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS)
 
         result = PipelineExecutor(graph, runner, on_event=events.append).run(Context())
@@ -964,7 +953,7 @@ class TestExecutor:
         )
         events: list[dict] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS)
 
         result = PipelineExecutor(graph, runner, on_event=events.append).run(
@@ -990,7 +979,7 @@ class TestExecutor:
         )
         events: list[dict] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "work":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="boom")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -1019,7 +1008,7 @@ class TestExecutor:
         )
         events: list[dict] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS)
 
         result = PipelineExecutor(graph, runner, on_event=events.append).run(
@@ -1047,7 +1036,7 @@ class TestExecutor:
         events: list[dict] = []
         attempts = {"work": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id != "work":
                 return Outcome(status=OutcomeStatus.SUCCESS)
             attempts["work"] += 1
@@ -1082,7 +1071,7 @@ class TestExecutor:
         )
         events: list[dict] = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "work":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="boom")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -1109,7 +1098,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             del prompt, context
             if node_id == "work":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="boom")
@@ -1134,7 +1123,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             del prompt, context
             if node_id == "work":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="boom")
@@ -1162,7 +1151,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             del prompt, context
             if node_id == "work":
                 return Outcome(status=OutcomeStatus.FAIL, preferred_label="Blocked", failure_reason="blocked")
@@ -1193,7 +1182,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             del prompt
             if node_id == "review":
                 return Outcome(
@@ -1247,7 +1236,7 @@ class TestExecutor:
     def test_starter_spec_implementation_flow_stops_after_failed_requirements_extraction(self):
         graph = parse_dot(STARTER_SPEC_IMPLEMENTATION_FIXTURE.read_text(encoding="utf-8"))
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             del prompt, context
             if node_id == "extract_requirements":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="timed out")
@@ -1269,7 +1258,7 @@ class TestExecutor:
         calls: list[str] = []
         validate_attempts = 0
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             nonlocal validate_attempts
             del prompt, context
             calls.append(node_id)
@@ -1317,7 +1306,7 @@ class TestExecutor:
         calls: list[str] = []
         validate_attempts = 0
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             nonlocal validate_attempts
             del prompt, context
             calls.append(node_id)
@@ -1482,7 +1471,7 @@ class TestExecutor:
         entered_start = threading.Event()
         release_start = threading.Event()
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "start":
                 entered_start.set()
                 release_start.wait(timeout=2.0)
@@ -1521,7 +1510,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "review":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="needs changes")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -1567,7 +1556,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
 
         result = PipelineExecutor(graph, runner).run_from("work", Context())
@@ -1641,7 +1630,7 @@ class TestExecutor:
 
         calls = {"plan": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "plan":
                 calls["plan"] += 1
                 return Outcome(status=OutcomeStatus.SUCCESS)
@@ -1672,7 +1661,7 @@ class TestExecutor:
 
         calls = []
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             calls.append((node_id, prompt))
             if node_id == "start":
                 return Outcome(status=OutcomeStatus.SUCCESS)
@@ -1704,7 +1693,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "plan":
                 return Outcome(
                     status=OutcomeStatus.SUCCESS,
@@ -1738,7 +1727,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             del prompt, context
             if node_id == "plan":
                 return Outcome(status=OutcomeStatus.SUCCESS, context_updates={"context.custom.flag": None})
@@ -1900,7 +1889,7 @@ class TestExecutor:
 
         seen_prompts: dict[str, str] = {}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             seen_prompts[node_id] = prompt
             return Outcome(status=OutcomeStatus.SUCCESS)
 
@@ -1929,7 +1918,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "plan":
                 return Outcome(status=OutcomeStatus.FAIL)
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -1958,7 +1947,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "plan":
                 return Outcome(status=OutcomeStatus.SUCCESS, preferred_label="Fix")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -1989,7 +1978,7 @@ class TestExecutor:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "plan":
                 return Outcome(status=OutcomeStatus.SUCCESS, preferred_label=" Fix ")
             return Outcome(status=OutcomeStatus.SUCCESS)

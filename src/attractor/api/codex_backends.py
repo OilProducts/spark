@@ -185,7 +185,6 @@ class CodexAppServerBackend(CodergenBackend):
         self._session_threads_lock = threading.Lock()
         self._raw_rpc_log_lock = threading.Lock()
         self._raw_rpc_log_state = threading.local()
-        self._progress_event_state = threading.local()
         self._token_usage_lock = threading.Lock()
         self._token_usage_breakdown = TokenUsageBreakdown()
 
@@ -276,10 +275,10 @@ class CodexAppServerBackend(CodergenBackend):
         model: Optional[str] = None,
         provider: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        emit_event: Optional[Callable[..., None]] = None,
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         del provider
-        progress_emit_event = getattr(self._progress_event_state, "emit_event", None)
         def log_line(message: str) -> None:
             if message:
                 self.emit({"type": "log", "msg": f"[{node_id}] {message}"})
@@ -330,7 +329,7 @@ class CodexAppServerBackend(CodergenBackend):
                 model=effective_model,
                 reasoning_effort=reasoning_effort,
                 node_id=node_id,
-                emit_event=progress_emit_event,
+                emit_event=emit_event,
             )
             if turn_text is None:
                 return "codex app-server completed successfully"
@@ -346,7 +345,7 @@ class CodexAppServerBackend(CodergenBackend):
                 model=effective_model,
                 reasoning_effort=reasoning_effort,
                 write_contract=write_contract,
-                emit_event=progress_emit_event,
+                emit_event=emit_event,
             )
         except RuntimeError as exc:
             return fail(str(exc))
@@ -354,43 +353,6 @@ class CodexAppServerBackend(CodergenBackend):
             if callable(clear_raw_rpc_logger):
                 clear_raw_rpc_logger()
             client.close()
-
-    def run_with_events(
-        self,
-        node_id: str,
-        prompt: str,
-        context: Context,
-        emit_event: Optional[Callable[..., None]],
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout: Optional[float] = None,
-        model: Optional[str] = None,
-        provider: Optional[str] = None,
-        reasoning_effort: Optional[str] = None,
-        write_contract: ContextWriteContract | None = None,
-    ) -> str | Outcome:
-        previous = getattr(self._progress_event_state, "emit_event", None)
-        self._progress_event_state.emit_event = emit_event
-        try:
-            return self.run(
-                node_id,
-                prompt,
-                context,
-                response_contract=response_contract,
-                contract_repair_attempts=contract_repair_attempts,
-                timeout=timeout,
-                model=model,
-                provider=provider,
-                reasoning_effort=reasoning_effort,
-                write_contract=write_contract,
-            )
-        finally:
-            if previous is None:
-                if hasattr(self._progress_event_state, "emit_event"):
-                    delattr(self._progress_event_state, "emit_event")
-            else:
-                self._progress_event_state.emit_event = previous
 
     def _run_turn_and_capture_text(
         self,
@@ -622,7 +584,6 @@ class UnifiedAgentBackend(CodergenBackend):
         self._client_factory = client_factory or (
             lambda effective_provider: UnifiedLlmClient.from_env(default_provider=effective_provider)
         )
-        self._progress_event_state = threading.local()
         self._token_usage_lock = threading.Lock()
         self._token_usage_breakdown = TokenUsageBreakdown()
 
@@ -649,9 +610,14 @@ class UnifiedAgentBackend(CodergenBackend):
         if self._on_usage_update is not None:
             self._on_usage_update(snapshot)
 
-    def _handle_event(self, node_id: str, event: SessionEvent) -> None:
+    def _handle_event(
+        self,
+        node_id: str,
+        event: SessionEvent,
+        emit_event: Optional[Callable[..., None]],
+    ) -> None:
         _emit_session_event_progress(
-            getattr(self._progress_event_state, "emit_event", None),
+            emit_event,
             node_id=node_id,
             event=event,
         )
@@ -672,7 +638,13 @@ class UnifiedAgentBackend(CodergenBackend):
         if event.kind == EventKind.ERROR:
             self._log(node_id, str(event.data.get("error", "")))
 
-    async def _submit_and_capture(self, session: Session, node_id: str, prompt: str) -> str:
+    async def _submit_and_capture(
+        self,
+        session: Session,
+        node_id: str,
+        prompt: str,
+        emit_event: Optional[Callable[..., None]],
+    ) -> str:
         task = asyncio.create_task(session.process_input(prompt))
         try:
             while True:
@@ -682,7 +654,7 @@ class UnifiedAgentBackend(CodergenBackend):
                     event = await asyncio.wait_for(session.event_queue.get(), timeout=0.05)
                 except asyncio.TimeoutError:
                     continue
-                self._handle_event(node_id, event)
+                self._handle_event(node_id, event, emit_event)
             await task
         except BaseException:
             if not task.done():
@@ -710,6 +682,7 @@ class UnifiedAgentBackend(CodergenBackend):
         contract_repair_attempts: int,
         write_contract: ContextWriteContract | None,
         llm_profile: Optional[str] = None,
+        emit_event: Optional[Callable[..., None]] = None,
     ) -> str | Outcome:
         if llm_profile:
             if self.config_dir is None:
@@ -735,7 +708,7 @@ class UnifiedAgentBackend(CodergenBackend):
             config=SessionConfig(reasoning_effort=reasoning_effort),
         )
         try:
-            response_text = await self._submit_and_capture(session, node_id, prompt)
+            response_text = await self._submit_and_capture(session, node_id, prompt, emit_event)
             result = _coerce_structured_text_outcome(response_text, response_contract=response_contract)
             if isinstance(result, Outcome):
                 return result
@@ -764,6 +737,7 @@ class UnifiedAgentBackend(CodergenBackend):
                     session,
                     node_id,
                     _build_contract_repair_prompt(current_violation),
+                    emit_event,
                 )
                 repaired = _coerce_structured_text_outcome(
                     repair_text,
@@ -807,6 +781,7 @@ class UnifiedAgentBackend(CodergenBackend):
         provider: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         llm_profile: Optional[str] = None,
+        emit_event: Optional[Callable[..., None]] = None,
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         del context
@@ -825,6 +800,7 @@ class UnifiedAgentBackend(CodergenBackend):
                 response_contract=response_contract,
                 contract_repair_attempts=contract_repair_attempts,
                 llm_profile=llm_profile,
+                emit_event=emit_event,
                 write_contract=write_contract,
             )
             if timeout is not None and timeout > 0:
@@ -839,45 +815,6 @@ class UnifiedAgentBackend(CodergenBackend):
             return self._runtime_failure(str(exc))
         except Exception as exc:
             return self._runtime_failure(str(exc) or exc.__class__.__name__)
-
-    def run_with_events(
-        self,
-        node_id: str,
-        prompt: str,
-        context: Context,
-        emit_event: Optional[Callable[..., None]],
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout: Optional[float] = None,
-        model: Optional[str] = None,
-        provider: Optional[str] = None,
-        reasoning_effort: Optional[str] = None,
-        llm_profile: Optional[str] = None,
-        write_contract: ContextWriteContract | None = None,
-    ) -> str | Outcome:
-        previous = getattr(self._progress_event_state, "emit_event", None)
-        self._progress_event_state.emit_event = emit_event
-        try:
-            return self.run(
-                node_id,
-                prompt,
-                context,
-                response_contract=response_contract,
-                contract_repair_attempts=contract_repair_attempts,
-                timeout=timeout,
-                model=model,
-                provider=provider,
-                reasoning_effort=reasoning_effort,
-                llm_profile=llm_profile,
-                write_contract=write_contract,
-            )
-        finally:
-            if previous is None:
-                if hasattr(self._progress_event_state, "emit_event"):
-                    delattr(self._progress_event_state, "emit_event")
-            else:
-                self._progress_event_state.emit_event = previous
 
 
 class ProviderRouterBackend(CodergenBackend):
@@ -939,6 +876,7 @@ class ProviderRouterBackend(CodergenBackend):
         provider: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         llm_profile: Optional[str] = None,
+        emit_event: Optional[Callable[..., None]] = None,
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         effective_provider = _normalize_provider(provider)
@@ -952,6 +890,7 @@ class ProviderRouterBackend(CodergenBackend):
                 timeout=timeout,
                 model=model,
                 reasoning_effort=reasoning_effort,
+                emit_event=emit_event,
                 write_contract=write_contract,
             )
         if llm_profile or effective_provider in UNIFIED_AGENT_PROVIDERS:
@@ -972,73 +911,12 @@ class ProviderRouterBackend(CodergenBackend):
                 "model": model,
                 "provider": effective_provider,
                 "reasoning_effort": reasoning_effort,
+                "emit_event": emit_event,
                 "write_contract": write_contract,
             }
             if llm_profile:
                 kwargs["llm_profile"] = llm_profile
             return backend.run(node_id, prompt, context, **kwargs)
-        return Outcome(
-            status=OutcomeStatus.FAIL,
-            failure_reason=(
-                f"Unsupported llm_provider. {SUPPORTED_LLM_PROVIDER_MESSAGE}"
-            ),
-            retryable=False,
-            failure_kind=FailureKind.RUNTIME,
-        )
-
-    def run_with_events(
-        self,
-        node_id: str,
-        prompt: str,
-        context: Context,
-        emit_event: Optional[Callable[..., None]],
-        *,
-        response_contract: str = "",
-        contract_repair_attempts: int = 0,
-        timeout: Optional[float] = None,
-        model: Optional[str] = None,
-        provider: Optional[str] = None,
-        reasoning_effort: Optional[str] = None,
-        llm_profile: Optional[str] = None,
-        write_contract: ContextWriteContract | None = None,
-    ) -> str | Outcome:
-        effective_provider = _normalize_provider(provider)
-        if effective_provider == "codex" and not llm_profile:
-            return self._codex.run_with_events(
-                node_id,
-                prompt,
-                context,
-                emit_event,
-                response_contract=response_contract,
-                contract_repair_attempts=contract_repair_attempts,
-                timeout=timeout,
-                model=model,
-                reasoning_effort=reasoning_effort,
-                write_contract=write_contract,
-            )
-        if llm_profile or effective_provider in UNIFIED_AGENT_PROVIDERS:
-            usage_source = object()
-            backend = UnifiedAgentBackend(
-                self.working_dir,
-                self.emit,
-                provider=effective_provider,
-                model=model or self.model,
-                reasoning_effort=reasoning_effort,
-                on_usage_update=lambda snapshot: self._record_source_usage(usage_source, snapshot),
-                config_dir=self.config_dir,
-            )
-            kwargs = {
-                "response_contract": response_contract,
-                "contract_repair_attempts": contract_repair_attempts,
-                "timeout": timeout,
-                "model": model,
-                "provider": effective_provider,
-                "reasoning_effort": reasoning_effort,
-                "write_contract": write_contract,
-            }
-            if llm_profile:
-                kwargs["llm_profile"] = llm_profile
-            return backend.run_with_events(node_id, prompt, context, emit_event, **kwargs)
         return Outcome(
             status=OutcomeStatus.FAIL,
             failure_reason=(

@@ -232,11 +232,11 @@ class TestWaitHumanHandler:
             interviewer=QueueInterviewer([Answer(value="TIMEOUT")]),
         )
         runner = HandlerRunner(graph, registry)
-        outcome = runner.run_with_events(
+        outcome = runner(
             "gate",
             "Choose",
             Context(),
-            lambda event_type, **payload: events.append({"type": event_type, **payload}),
+            emit_event=lambda event_type, **payload: events.append({"type": event_type, **payload}),
         )
 
         assert outcome.status == OutcomeStatus.SUCCESS
@@ -335,11 +335,11 @@ class TestWaitHumanHandler:
             interviewer=QueueInterviewer([Answer(selected_values=["Approve"])]),
         )
         runner = HandlerRunner(graph, registry)
-        outcome = runner.run_with_events(
+        outcome = runner(
             "gate",
             "Choose",
             Context(),
-            lambda event_type, **payload: events.append({"type": event_type, **payload}),
+            emit_event=lambda event_type, **payload: events.append({"type": event_type, **payload}),
         )
 
         assert outcome.status == OutcomeStatus.SUCCESS

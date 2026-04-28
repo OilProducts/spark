@@ -309,20 +309,16 @@ class BroadcastingRunner:
         if callable(setter):
             setter(control)
 
-    def __call__(self, node_id: str, prompt: str, context: Context):
-        return self._run(node_id, prompt, context, emit_event=None)
-
-    def run_with_events(self, node_id: str, prompt: str, context: Context, emit_event=None):
+    def __call__(self, node_id: str, prompt: str, context: Context, *, emit_event=None):
         return self._run(node_id, prompt, context, emit_event=emit_event)
 
     def _run(self, node_id: str, prompt: str, context: Context, *, emit_event=None):
         self.emit({"type": "state", "node": node_id, "status": "running"})
         self.emit({"type": "log", "msg": f"[{node_id}] running"})
-        delegate_with_events = getattr(self.delegate, "run_with_events", None)
-        if callable(delegate_with_events):
-            outcome = delegate_with_events(node_id, prompt, context, emit_event)
-        else:
+        if emit_event is None:
             outcome = self.delegate(node_id, prompt, context)
+        else:
+            outcome = self.delegate(node_id, prompt, context, emit_event=emit_event)
         status_map = {
             "success": "success",
             "partial_success": "success",

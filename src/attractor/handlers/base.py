@@ -29,6 +29,7 @@ class CodergenBackend(Protocol):
         provider: Optional[str] = None,
         llm_profile: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        emit_event: Optional[Callable[..., None]] = None,
         write_contract: ContextWriteContract | None = None,
     ) -> str | Outcome:
         ...

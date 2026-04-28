@@ -592,37 +592,11 @@ def test_pipeline_persists_first_class_child_stage_events_on_child_run(
             contract_repair_attempts=0,
             timeout=None,
             model=None,
-            write_contract=None,
-        ):
-            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
-            return "child ok"
-
-        def run_with_events(  # type: ignore[no-untyped-def]
-            self,
-            node_id,
-            prompt,
-            context,
             emit_event=None,
-            *,
-            response_contract="",
-            contract_repair_attempts=0,
-            timeout=None,
-            model=None,
-            provider=None,
-            reasoning_effort=None,
             write_contract=None,
         ):
-            del emit_event, provider, reasoning_effort
-            return self.run(
-                node_id,
-                prompt,
-                context,
-                response_contract=response_contract,
-                contract_repair_attempts=contract_repair_attempts,
-                timeout=timeout,
-                model=model,
-                write_contract=write_contract,
-            )
+            del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, emit_event, write_contract
+            return "child ok"
 
     monkeypatch.setattr(
         server,
@@ -674,6 +648,90 @@ def test_pipeline_persists_first_class_child_stage_events_on_child_run(
     assert child_record.parent_run_id == run_id
     assert child_record.parent_node_id == "manager"
     assert child_record.llm_profile == "local"
+
+
+def test_pipeline_api_persists_llm_content_emitted_from_canonical_run_path(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+
+    class _Backend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, bool]] = []
+
+        def run(  # type: ignore[no-untyped-def]
+            self,
+            node_id,
+            prompt,
+            context,
+            *,
+            response_contract="",
+            contract_repair_attempts=0,
+            timeout=None,
+            model=None,
+            emit_event=None,
+            write_contract=None,
+        ):
+            del prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
+            self.calls.append((node_id, emit_event is not None))
+            assert emit_event is not None
+            emit_event(
+                "LLMContent",
+                node_id=node_id,
+                channel="assistant",
+                status="complete",
+                content_delta="Progress card content from backend.run",
+            )
+            return "node outcome from backend.run"
+
+    backend = _Backend()
+    monkeypatch.setattr(
+        server,
+        "_build_codergen_backend",
+        lambda backend_name, working_dir, emit, model=None, on_usage_update=None: backend,
+    )
+
+    start_payload = _start_pipeline(
+        attractor_api_client,
+        tmp_path / "work",
+        flow_content="""
+        digraph G {
+            start [shape=Mdiamond]
+            task [shape=box, prompt="Produce progress content"]
+            done [shape=Msquare]
+
+            start -> task -> done
+        }
+        """,
+    )
+    run_id = str(start_payload["pipeline_id"])
+    final_payload = _wait_for_pipeline_completion(attractor_api_client, run_id)
+
+    assert final_payload["status"] == "completed"
+    assert backend.calls == [("task", True)]
+
+    persisted_llm_events = [
+        event
+        for event in server._read_persisted_run_events(run_id)
+        if event.get("type") == "LLMContent"
+    ]
+    assert len(persisted_llm_events) == 1
+    assert persisted_llm_events[0]["node_id"] == "task"
+    assert persisted_llm_events[0]["content_delta"] == "Progress card content from backend.run"
+
+    journal_response = attractor_api_client.get(f"/pipelines/{run_id}/journal")
+    assert journal_response.status_code == 200
+    llm_entries = [
+        entry
+        for entry in journal_response.json()["entries"]
+        if entry.get("raw_type") == "LLMContent"
+    ]
+    assert len(llm_entries) == 1
+    assert llm_entries[0]["kind"] == "LLMContent"
+    assert llm_entries[0]["node_id"] == "task"
+    assert llm_entries[0]["payload"]["content_delta"] == "Progress card content from backend.run"
 
 
 def test_pipeline_events_drop_oldest_events_under_sustained_throughput(

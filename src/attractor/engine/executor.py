@@ -45,7 +45,7 @@ from .outcome import FailureKind, Outcome, OutcomeStatus
 from .routing import select_next_edge
 
 
-RunnerFn = Callable[[str, str, Context], Outcome | None]
+RunnerFn = Callable[..., Outcome | None]
 ControlFn = Callable[[], Optional[str]]
 EventFn = Callable[[Dict[str, object]], None]
 ShouldRetryFn = Callable[[Outcome], bool]
@@ -1607,15 +1607,10 @@ class PipelineExecutor:
         return self._validate_outcome_context_updates(node_id, normalized)
 
     def _invoke_runner(self, node_id: str, prompt: str, context: Context) -> Outcome | None:
-        runner_with_events = getattr(self.runner, "run_with_events", None)
-        if callable(runner_with_events):
-            return runner_with_events(
-                node_id,
-                prompt,
-                context,
-                self._emit_event if self.on_event else None,
-            )
-        return self.runner(node_id, prompt, context)
+        emit_event = self._emit_event if self.on_event else None
+        if emit_event is None:
+            return self.runner(node_id, prompt, context)
+        return self.runner(node_id, prompt, context, emit_event=emit_event)
 
     def _node_timeout_seconds(self, node_id: str) -> float | None:
         node = self.graph.nodes[node_id]

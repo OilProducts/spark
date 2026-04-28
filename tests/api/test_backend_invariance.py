@@ -36,36 +36,21 @@ def _start_pipeline_via_http(attractor_api_client: TestClient, payload: dict) ->
     return response.json()
 
 
-class _BackendWithEvents:
-    def run_with_events(  # type: ignore[no-untyped-def]
-        self,
-        node_id,
-        prompt,
-        context,
-        emit_event=None,
-        *,
-        response_contract="",
-        contract_repair_attempts=0,
-        timeout=None,
-        model=None,
-        provider=None,
-        reasoning_effort=None,
-        write_contract=None,
-    ):
-        del emit_event
-        kwargs = {
-            "response_contract": response_contract,
-            "contract_repair_attempts": contract_repair_attempts,
-            "timeout": timeout,
-            "model": model,
-            "provider": provider,
-            "reasoning_effort": reasoning_effort,
-            "write_contract": write_contract,
-        }
-        parameters = inspect.signature(self.run).parameters
-        if not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
-            kwargs = {key: value for key, value in kwargs.items() if key in parameters}
-        return self.run(node_id, prompt, context, **kwargs)
+class _BackendRunAdapter:
+    def __init_subclass__(cls) -> None:
+        super().__init_subclass__()
+        if "run" not in cls.__dict__:
+            return
+        original_run = cls.run
+
+        def run(self, node_id, prompt, context, *, emit_event=None, **kwargs):  # type: ignore[no-untyped-def]
+            del emit_event
+            parameters = inspect.signature(original_run).parameters
+            if not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+                kwargs = {key: value for key, value in kwargs.items() if key in parameters}
+            return original_run(self, node_id, prompt, context, **kwargs)
+
+        cls.run = run  # type: ignore[method-assign]
 
 
 def test_pipeline_start_request_requires_flow_content_or_flow_name(
@@ -121,7 +106,7 @@ def test_pipeline_start_uses_flow_ui_default_model_when_request_model_missing(
 
     selected_models: list[str | None] = []
 
-    class _Backend(_BackendWithEvents):
+    class _Backend(_BackendRunAdapter):
         def run(  # type: ignore[no-untyped-def]
             self,
             node_id,
@@ -178,7 +163,7 @@ def test_pipeline_start_explicit_model_overrides_flow_ui_default_model(
 
     selected_models: list[str | None] = []
 
-    class _Backend(_BackendWithEvents):
+    class _Backend(_BackendRunAdapter):
         def run(  # type: ignore[no-untyped-def]
             self,
             node_id,
@@ -280,7 +265,7 @@ def test_pipeline_execution_resolves_effective_model_per_node(
     build_models: list[str | None] = []
     run_models: list[str | None] = []
 
-    class _Backend(_BackendWithEvents):
+    class _Backend(_BackendRunAdapter):
         def run(  # type: ignore[no-untyped-def]
             self,
             node_id,
@@ -950,10 +935,15 @@ def test_codex_app_server_backend_emits_llm_content_progress(
 
     monkeypatch.setattr(codex_backends_module, "CodexAppServerClient", FakeClient)
 
-    result = backend.run_with_events("plan", "hello", Context(), lambda event_type, **payload: progress_events.append({
-        "type": event_type,
-        **payload,
-    }))
+    result = backend.run(
+        "plan",
+        "hello",
+        Context(),
+        emit_event=lambda event_type, **payload: progress_events.append({
+            "type": event_type,
+            **payload,
+        }),
+    )
 
     assert result == "Final"
     assert progress_events == [
@@ -1802,7 +1792,7 @@ def test_provider_router_dispatches_supported_providers(
 ) -> None:
     calls: list[dict[str, object]] = []
 
-    class FakeCodexBackend(_BackendWithEvents):
+    class FakeCodexBackend(_BackendRunAdapter):
         def __init__(self, *args, **kwargs) -> None:
             calls.append({"backend": "codex_init", "kwargs": kwargs})
 
@@ -1813,7 +1803,7 @@ def test_provider_router_dispatches_supported_providers(
             calls.append({"backend": "codex", "kwargs": kwargs})
             return "codex-result"
 
-    class FakeUnifiedBackend(_BackendWithEvents):
+    class FakeUnifiedBackend(_BackendRunAdapter):
         def __init__(self, *args, **kwargs) -> None:
             calls.append({"backend": "unified_init", "kwargs": kwargs})
 
@@ -1860,7 +1850,7 @@ def test_pipeline_unified_provider_runtime_failure_writes_codergen_artifacts(
     server.configure_runtime_paths(runs_dir=tmp_path / "runs")
     provider_calls: list[str | None] = []
 
-    class FakeCodexBackend(_BackendWithEvents):
+    class FakeCodexBackend(_BackendRunAdapter):
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
 
@@ -1871,7 +1861,7 @@ def test_pipeline_unified_provider_runtime_failure_writes_codergen_artifacts(
         def run(self, *args, **kwargs):
             raise AssertionError("codex backend should not run for unified providers")
 
-    class FakeUnifiedBackend(_BackendWithEvents):
+    class FakeUnifiedBackend(_BackendRunAdapter):
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
 
@@ -1923,14 +1913,14 @@ def test_provider_router_reports_cumulative_unified_usage_across_nodes(
 ) -> None:
     usage_updates: list[codex_backends_module.TokenUsageBreakdown] = []
 
-    class FakeCodexBackend(_BackendWithEvents):
+    class FakeCodexBackend(_BackendRunAdapter):
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
 
         def bind_stage_raw_rpc_log(self, node_id, logs_root):
             raise AssertionError("not used")
 
-    class FakeUnifiedBackend(_BackendWithEvents):
+    class FakeUnifiedBackend(_BackendRunAdapter):
         def __init__(self, *args, **kwargs) -> None:
             del args
             self._on_usage_update = kwargs["on_usage_update"]
@@ -2286,11 +2276,11 @@ def test_unified_agent_backend_emits_llm_content_progress(
         client_factory=lambda provider: SimpleNamespace(close=lambda: None),
     )
 
-    result = backend.run_with_events(
+    result = backend.run(
         "plan",
         "hello",
         Context(),
-        lambda event_type, **payload: progress_events.append({
+        emit_event=lambda event_type, **payload: progress_events.append({
             "type": event_type,
             **payload,
         }),

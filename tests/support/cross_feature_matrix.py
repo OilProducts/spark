@@ -64,38 +64,12 @@ class _Backend:
         contract_repair_attempts=0,
         timeout=None,
         model=None,
+        emit_event=None,
         write_contract=None,
     ):
-        del prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
+        del prompt, context, response_contract, contract_repair_attempts, timeout, model, emit_event, write_contract
         self.calls.append(node_id)
         return bool(self.plan.get(node_id, True))
-
-    def run_with_events(  # noqa: ANN001, ANN201
-        self,
-        node_id,
-        prompt,
-        context,
-        emit_event=None,
-        *,
-        response_contract="",
-        contract_repair_attempts=0,
-        timeout=None,
-        model=None,
-        provider=None,
-        reasoning_effort=None,
-        write_contract=None,
-    ):
-        del emit_event, provider, reasoning_effort
-        return self.run(
-            node_id,
-            prompt,
-            context,
-            response_contract=response_contract,
-            contract_repair_attempts=contract_repair_attempts,
-            timeout=timeout,
-            model=model,
-            write_contract=write_contract,
-        )
 
 
 class _FlakyHandler:

@@ -111,13 +111,13 @@ class CodergenHandler:
             backend_kwargs["model"] = effective_model
         if effective_reasoning_effort is not None:
             backend_kwargs["reasoning_effort"] = effective_reasoning_effort
-        backend_kwargs = _filter_backend_kwargs(self.backend.run_with_events, backend_kwargs)
+        backend_kwargs = _filter_backend_kwargs(self.backend.run, backend_kwargs)
         with _backend_stage_logging_context(self.backend, runtime.node_id, runtime.logs_root):
-            result = self.backend.run_with_events(
+            result = self.backend.run(
                 runtime.node_id,
                 prompt,
                 runtime.context,
-                runtime.event_emitter,
+                emit_event=runtime.event_emitter,
                 **backend_kwargs,
             )
         outcome: Outcome

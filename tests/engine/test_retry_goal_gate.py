@@ -28,7 +28,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 if calls["task"] < 3:
@@ -55,7 +55,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 if calls["task"] == 1:
@@ -84,7 +84,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="network timeout")
@@ -110,7 +110,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 return Outcome(status=OutcomeStatus.RETRY, failure_reason="stuck")
@@ -136,7 +136,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 return Outcome(
@@ -171,7 +171,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 if calls["task"] in {1, 3}:
@@ -211,7 +211,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 if calls["task"] == 2:
@@ -250,7 +250,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 return Outcome(status=OutcomeStatus.RETRY, failure_reason="temporary")
@@ -282,7 +282,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
@@ -308,7 +308,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -332,7 +332,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -357,7 +357,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -386,7 +386,7 @@ class TestRetryAndGoalGate:
 
         context = Context(values={"force_route": "true"})
 
-        def runner(node_id: str, prompt: str, ctx: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, ctx: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -411,7 +411,7 @@ class TestRetryAndGoalGate:
 
         calls = {"implement": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "implement":
                 calls["implement"] += 1
                 if calls["implement"] == 1:
@@ -436,7 +436,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "implement":
                 return Outcome(status=OutcomeStatus.PARTIAL_SUCCESS, notes="good enough")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -459,7 +459,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             return Outcome(status=OutcomeStatus.SUCCESS)
 
         result = PipelineExecutor(graph, runner).run(Context())
@@ -483,7 +483,7 @@ class TestRetryAndGoalGate:
 
         calls = {"implement": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "implement":
                 calls["implement"] += 1
                 if calls["implement"] == 1:
@@ -511,7 +511,7 @@ class TestRetryAndGoalGate:
 
         calls = {"implement": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "implement":
                 calls["implement"] += 1
                 if calls["implement"] == 1:
@@ -536,7 +536,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "implement":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="needs fix")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -565,7 +565,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "gate":
                 return Outcome(
                     status=OutcomeStatus.FAIL,
@@ -609,7 +609,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "implement":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="needs fix")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -636,7 +636,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "implement":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="needs fix")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -663,7 +663,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "implement":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="needs fix")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -718,7 +718,7 @@ class TestRetryAndGoalGate:
         events = []
         calls = {"implement": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "implement":
                 calls["implement"] += 1
                 if calls["implement"] == 1:
@@ -764,7 +764,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -791,7 +791,7 @@ class TestRetryAndGoalGate:
             """
         )
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 return Outcome(status=OutcomeStatus.FAIL, failure_reason="permanent")
             return Outcome(status=OutcomeStatus.SUCCESS)
@@ -820,7 +820,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 raise RuntimeError("transient backend outage")
@@ -852,7 +852,7 @@ class TestRetryAndGoalGate:
 
         calls = {"audit": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "audit":
                 calls["audit"] += 1
                 return Outcome(
@@ -886,7 +886,7 @@ class TestRetryAndGoalGate:
 
         calls = {"audit": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "audit":
                 calls["audit"] += 1
                 return Outcome(
@@ -920,7 +920,7 @@ class TestRetryAndGoalGate:
 
         calls = {"task": 0}
 
-        def runner(node_id: str, prompt: str, context: Context) -> Outcome:
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
             if node_id == "task":
                 calls["task"] += 1
                 raise RuntimeError("401 unauthorized")

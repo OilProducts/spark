@@ -53,15 +53,13 @@ class HandlerRunner:
             self.logs_root = Path(self.logs_root)
         self._sync_artifact_store()
 
-    def __call__(self, node_id: str, prompt: str, context: Context) -> Outcome | None:
-        return self._run(node_id, prompt, context, emit_event=None)
-
-    def run_with_events(
+    def __call__(
         self,
         node_id: str,
         prompt: str,
         context: Context,
-        emit_event: Callable[..., None] | None,
+        *,
+        emit_event: Callable[..., None] | None = None,
     ) -> Outcome | None:
         return self._run(node_id, prompt, context, emit_event=emit_event)
 
