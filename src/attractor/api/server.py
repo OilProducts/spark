@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import copy
-import inspect
 import json
 import logging
 import threading
@@ -2022,19 +2021,13 @@ def _run_first_class_child_pipeline(
         _set_active_run_usage(child_run_id, token_usage_breakdown)
         _publish_run_list_upsert_sync(loop, child_run_id)
 
-    backend_kwargs: dict[str, object] = {"model": selected_model}
-    try:
-        backend_signature = inspect.signature(_build_codergen_backend)
-    except (TypeError, ValueError):
-        backend_signature = None
-    if backend_signature is None or "on_usage_update" in backend_signature.parameters:
-        backend_kwargs["on_usage_update"] = handle_usage_update
     try:
         backend = _build_codergen_backend(
             backend_name,
             working_dir,
             emit,
-            **backend_kwargs,
+            model=selected_model,
+            on_usage_update=handle_usage_update,
         )
     except ValueError as exc:
         _set_active_run_status(child_run_id, "failed", last_error=str(exc))
@@ -2282,7 +2275,7 @@ def _build_pipeline_runner_for_run(
     reasoning_effort: Optional[str],
     loop: asyncio.AbstractEventLoop,
     on_usage_update: Optional[Callable[[TokenUsageBreakdown], None]] = None,
-) -> tuple[PipelineExecutor, Context, str]:
+) -> tuple[PipelineExecutor, Context, str, Optional[str], Optional[str]]:
     selected_model, display_model = _resolve_launch_model(graph, model)
     selected_provider = _resolve_launch_provider(graph, llm_provider)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
@@ -2298,19 +2291,12 @@ def _build_pipeline_runner_for_run(
     def emit(message: dict):
         _publish_run_event_sync(loop, run_id, message)
 
-    backend_kwargs: dict[str, object] = {"model": selected_model}
-    if on_usage_update is not None:
-        try:
-            backend_signature = inspect.signature(_build_codergen_backend)
-        except (TypeError, ValueError):
-            backend_signature = None
-        if backend_signature is None or "on_usage_update" in backend_signature.parameters:
-            backend_kwargs["on_usage_update"] = on_usage_update
     backend = _build_codergen_backend(
         backend_name,
         working_dir,
         emit,
-        **backend_kwargs,
+        model=selected_model,
+        on_usage_update=on_usage_update,
     )
     interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, run_id)
     registry = build_default_registry(
@@ -2711,18 +2697,12 @@ async def _launch_pipeline_run(
         asyncio.run_coroutine_threadsafe(_publish_run_list_upsert(resolved_run_id), loop)
 
     try:
-        backend_kwargs: dict[str, object] = {"model": selected_model}
-        try:
-            backend_signature = inspect.signature(_build_codergen_backend)
-        except (TypeError, ValueError):
-            backend_signature = None
-        if backend_signature is None or "on_usage_update" in backend_signature.parameters:
-            backend_kwargs["on_usage_update"] = handle_usage_update
         backend = _build_codergen_backend(
             backend_name,
             working_dir,
             emit,
-            **backend_kwargs,
+            model=selected_model,
+            on_usage_update=handle_usage_update,
         )
     except ValueError as exc:
         return {

@@ -618,7 +618,7 @@ def test_pipeline_persists_first_class_child_stage_events_on_child_run(
     monkeypatch.setattr(
         server,
         "_build_codergen_backend",
-        lambda backend_name, working_dir, emit, model=None: _Backend(),
+        lambda backend_name, working_dir, emit, model=None, on_usage_update=None: _Backend(),
     )
 
     start_payload = _start_pipeline(

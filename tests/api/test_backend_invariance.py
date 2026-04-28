@@ -137,8 +137,8 @@ def test_pipeline_start_uses_flow_ui_default_model_when_request_model_missing(
             del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
             return ""
 
-    def fake_build_backend(backend_name, working_dir, emit, *, model):  # type: ignore[no-untyped-def]
-        del backend_name, working_dir, emit
+    def fake_build_backend(backend_name, working_dir, emit, *, model, on_usage_update=None):  # type: ignore[no-untyped-def]
+        del backend_name, working_dir, emit, on_usage_update
         selected_models.append(model)
         return _Backend()
 
@@ -194,8 +194,8 @@ def test_pipeline_start_explicit_model_overrides_flow_ui_default_model(
             del node_id, prompt, context, response_contract, contract_repair_attempts, timeout, model, write_contract
             return ""
 
-    def fake_build_backend(backend_name, working_dir, emit, *, model):  # type: ignore[no-untyped-def]
-        del backend_name, working_dir, emit
+    def fake_build_backend(backend_name, working_dir, emit, *, model, on_usage_update=None):  # type: ignore[no-untyped-def]
+        del backend_name, working_dir, emit, on_usage_update
         selected_models.append(model)
         return _Backend()
 
@@ -297,8 +297,8 @@ def test_pipeline_execution_resolves_effective_model_per_node(
             run_models.append(model)
             return ""
 
-    def fake_build_backend(backend_name, working_dir, emit, *, model):  # type: ignore[no-untyped-def]
-        del backend_name, working_dir, emit
+    def fake_build_backend(backend_name, working_dir, emit, *, model, on_usage_update=None):  # type: ignore[no-untyped-def]
+        del backend_name, working_dir, emit, on_usage_update
         build_models.append(model)
         return _Backend()
 
