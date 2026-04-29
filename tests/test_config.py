@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from attractor.api.runtime_paths import resolve_runtime_paths, validate_runtime_paths
@@ -23,6 +24,34 @@ def test_resolve_settings_defaults_flows_dir_under_resolved_data_dir_from_env(tm
 
     assert settings.data_dir == data_dir.resolve(strict=False)
     assert settings.flows_dir == data_dir.resolve(strict=False) / "flows"
+
+
+def test_resolve_settings_defaults_to_no_project_roots() -> None:
+    settings = resolve_settings(env={})
+
+    assert settings.project_roots == ()
+
+
+def test_resolve_settings_parses_single_project_root(tmp_path: Path) -> None:
+    projects_dir = tmp_path / "projects"
+
+    settings = resolve_settings(env={"SPARK_PROJECT_ROOTS": str(projects_dir)})
+
+    assert settings.project_roots == (projects_dir.resolve(strict=False),)
+
+
+def test_resolve_settings_parses_multiple_project_roots(tmp_path: Path) -> None:
+    primary_dir = tmp_path / "primary"
+    secondary_dir = tmp_path / "secondary"
+
+    settings = resolve_settings(
+        env={"SPARK_PROJECT_ROOTS": os.pathsep.join([str(primary_dir), "", str(secondary_dir)])}
+    )
+
+    assert settings.project_roots == (
+        primary_dir.resolve(strict=False),
+        secondary_dir.resolve(strict=False),
+    )
 
 
 def test_resolve_attractor_runtime_paths_requires_explicit_runtime_runs_and_flows(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from attractor.api.runtime_paths import ensure_writable_directory
 ENV_HOME_DIR = "SPARK_HOME"
 ENV_FLOWS_DIR = "SPARK_FLOWS_DIR"
 ENV_UI_DIR = "SPARK_UI_DIR"
+ENV_PROJECT_ROOTS = "SPARK_PROJECT_ROOTS"
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class SparkSettings:
     runs_dir: Path
     flows_dir: Path
     ui_dir: Path | None
+    project_roots: tuple[Path, ...]
 
 
 def resolve_settings(
@@ -65,6 +67,7 @@ def resolve_settings(
         env_value=env_map.get(ENV_UI_DIR),
         default_value=None,
     )
+    resolved_project_roots = _parse_project_roots(env_map.get(ENV_PROJECT_ROOTS))
 
     return SparkSettings(
         project_root=project_root,
@@ -78,6 +81,7 @@ def resolve_settings(
         runs_dir=resolved_runs_dir,
         flows_dir=resolved_flows_dir,
         ui_dir=resolved_ui_dir,
+        project_roots=resolved_project_roots,
     )
 
 
@@ -130,3 +134,19 @@ def _coalesce_optional_path(
 
 def _normalize_path(value: Path | str) -> Path:
     return Path(value).expanduser().resolve(strict=False)
+
+
+def _parse_project_roots(value: str | None) -> tuple[Path, ...]:
+    if not value:
+        return ()
+
+    roots: list[Path] = []
+    for entry in value.split(os.pathsep):
+        trimmed_entry = entry.strip()
+        if not trimmed_entry:
+            continue
+        if not Path(trimmed_entry).expanduser().is_absolute():
+            continue
+        path = _normalize_path(trimmed_entry)
+        roots.append(path)
+    return tuple(roots)

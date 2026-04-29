@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -105,6 +106,30 @@ def test_project_directory_browser_defaults_to_service_user_home_directory(
     assert response.json() == {
         "current_path": str(home_dir),
         "parent_path": str(home_dir.parent),
+        "roots": [],
+        "entries": [],
+    }
+
+
+def test_project_directory_browser_defaults_to_first_configured_project_root(
+    product_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_root = (tmp_path / "projects-a").resolve()
+    second_root = (tmp_path / "projects-b").resolve()
+    first_root.mkdir()
+    second_root.mkdir()
+    monkeypatch.setenv("SPARK_PROJECT_ROOTS", os.pathsep.join([str(first_root), str(second_root)]))
+    product_app.configure_settings(data_dir=product_app.get_settings().data_dir, flows_dir=product_app.get_settings().flows_dir)
+
+    response = product_api_client.get("/workspace/api/projects/browse")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "current_path": str(first_root),
+        "parent_path": str(first_root.parent),
+        "roots": [str(first_root), str(second_root)],
         "entries": [],
     }
 
@@ -116,6 +141,7 @@ def test_project_directory_browser_supports_root_directory(product_api_client: T
     payload = response.json()
     assert payload["current_path"] == "/"
     assert payload["parent_path"] is None
+    assert payload["roots"] == []
     assert all(entry["is_dir"] is True for entry in payload["entries"])
 
 
@@ -139,6 +165,7 @@ def test_project_directory_browser_returns_normalized_directory_only_entries(
     assert response.json() == {
         "current_path": str(project_dir),
         "parent_path": str(project_dir.parent),
+        "roots": [],
         "entries": [
             {
                 "name": ".hidden-dir",
@@ -220,6 +247,23 @@ def test_project_registry_endpoints_persist_project_metadata(
     assert project_file.exists()
     project_text = project_file.read_text(encoding="utf-8")
     assert f'project_path = "{project_dir}"' in project_text
+
+
+def test_project_registry_persists_container_project_path_unchanged(product_api_client: TestClient) -> None:
+    container_project_path = "/projects/my-app"
+
+    register_response = product_api_client.post(
+        "/workspace/api/projects/register",
+        json={"project_path": container_project_path},
+    )
+
+    assert register_response.status_code == 200
+    register_payload = register_response.json()
+    assert register_payload["project_path"] == container_project_path
+
+    project_file = product_app.get_settings().projects_dir / register_payload["project_id"] / "project.toml"
+    assert project_file.exists()
+    assert f'project_path = "{container_project_path}"' in project_file.read_text(encoding="utf-8")
 
 
 def test_project_registry_logs_malformed_project_records(

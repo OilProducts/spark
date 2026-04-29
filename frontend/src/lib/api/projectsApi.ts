@@ -16,6 +16,7 @@ export interface ProjectBrowseEntryResponse {
 export interface ProjectBrowseResponse {
     current_path: string
     parent_path: string | null
+    roots: string[]
     entries: ProjectBrowseEntryResponse[]
 }
 
@@ -135,6 +136,9 @@ export function parseProjectBrowseResponse(
     if (!Array.isArray(record.entries)) {
         throw new ApiSchemaError(endpoint, 'Expected "entries" to be an array.')
     }
+    if (record.roots !== undefined && !Array.isArray(record.roots)) {
+        throw new ApiSchemaError(endpoint, 'Expected "roots" to be an array when present.')
+    }
     const parentPath = record.parent_path
     if (parentPath !== null && typeof parentPath !== 'string') {
         throw new ApiSchemaError(endpoint, 'Expected "parent_path" to be a string or null.')
@@ -142,6 +146,9 @@ export function parseProjectBrowseResponse(
     return {
         current_path: expectString(record.current_path, endpoint, 'current_path'),
         parent_path: parentPath,
+        roots: Array.isArray(record.roots)
+            ? record.roots.map((entry) => expectString(entry, endpoint, 'roots'))
+            : [],
         entries: record.entries.map((entry) => parseProjectBrowseEntryResponse(entry, endpoint)),
     }
 }

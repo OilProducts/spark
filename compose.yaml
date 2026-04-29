@@ -30,7 +30,7 @@ services:
       - OPENROUTER_TITLE
       - LITELLM_BASE_URL
       - LITELLM_API_KEY
-    command: uvicorn spark.app:app --host 0.0.0.0 --port 8000 --reload
+    command: sh -lc "pip install -e /app && uvicorn spark.app:app --host 0.0.0.0 --port 8000 --reload"
     volumes:
       - .:/app
       - codex_runtime:/codex-runtime

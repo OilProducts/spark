@@ -16,6 +16,7 @@ type ProjectBrowserDialogProps = {
     open: boolean
     currentPath: string | null
     parentPath: string | null
+    roots: string[]
     entries: ProjectBrowseEntryResponse[]
     errorMessage: string | null
     isLoading: boolean
@@ -61,6 +62,7 @@ export function ProjectBrowserDialog({
     open,
     currentPath,
     parentPath,
+    roots,
     entries,
     errorMessage,
     isLoading,
@@ -79,9 +81,9 @@ export function ProjectBrowserDialog({
                     className="max-w-3xl gap-0 overflow-hidden p-0"
                 >
                     <DialogHeader className="border-b border-border/70 px-6 py-5">
-                        <DialogTitle>Browse Spark Host Projects</DialogTitle>
+                        <DialogTitle>Browse Spark Projects</DialogTitle>
                         <DialogDescription>
-                            Select a directory on the Spark host, then confirm the current folder to register it.
+                            Select a directory Spark can access, then confirm the current folder to register it.
                         </DialogDescription>
                     </DialogHeader>
 
@@ -147,6 +149,25 @@ export function ProjectBrowserDialog({
                                 Parent
                             </Button>
                         </div>
+
+                        {roots.length > 0 ? (
+                            <div className="flex flex-wrap items-center gap-2" data-testid="project-browser-root-shortcuts">
+                                {roots.map((root) => (
+                                    <Button
+                                        key={root}
+                                        type="button"
+                                        variant={root === currentPath ? 'secondary' : 'outline'}
+                                        size="xs"
+                                        onClick={() => onBrowse(root)}
+                                        disabled={isLoading}
+                                        data-testid={`project-browser-root-${root.replace(/[^A-Za-z0-9_-]+/g, '-')}`}
+                                    >
+                                        <FolderOpen className="h-3.5 w-3.5" />
+                                        <span className="max-w-56 truncate font-mono text-xs">{root}</span>
+                                    </Button>
+                                ))}
+                            </div>
+                        ) : null}
 
                         {errorMessage ? (
                             <Alert data-testid="project-browser-error" variant="destructive">

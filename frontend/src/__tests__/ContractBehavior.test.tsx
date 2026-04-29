@@ -544,10 +544,12 @@ describe('Frontend contract behavior', () => {
     expect(parseProjectBrowseResponse({
       current_path: '/tmp/project',
       parent_path: '/tmp',
+      roots: ['/tmp/project'],
       entries: [{ name: 'child', path: '/tmp/project/child', is_dir: true }],
     })).toEqual({
       current_path: '/tmp/project',
       parent_path: '/tmp',
+      roots: ['/tmp/project'],
       entries: [{ name: 'child', path: '/tmp/project/child', is_dir: true }],
     })
     expect(() => parseProjectBrowseResponse({ current_path: '/tmp/project', parent_path: '/tmp' })).toThrow(ApiSchemaError)
@@ -622,6 +624,7 @@ describe('Frontend contract behavior', () => {
     await expect(fetchProjectBrowseValidated()).resolves.toEqual({
       current_path: '/tmp/project one',
       parent_path: '/tmp',
+      roots: [],
       entries: [{ name: 'child', path: '/tmp/project one/child', is_dir: true }],
     })
     await expect(fetchFlowListValidated()).resolves.toEqual(['alpha.dot'])

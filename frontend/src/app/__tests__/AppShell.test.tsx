@@ -645,10 +645,11 @@ describe('App shell behavior', () => {
         const url = new URL(resolveRequestUrl(input), 'http://localhost')
         if (url.pathname === '/workspace/api/projects/browse') {
           const requestedPath = url.searchParams.get('path')
-          if (requestedPath === null) {
+          if (requestedPath === null || requestedPath === '/home/spark') {
             return jsonResponse({
               current_path: '/home/spark',
               parent_path: '/home',
+              roots: ['/projects', '/home/spark'],
               entries: [
                 { name: 'broken', path: '/home/spark/broken', is_dir: true },
                 { name: 'repo', path: '/home/spark/repo', is_dir: true },
@@ -662,13 +663,23 @@ describe('App shell behavior', () => {
             return jsonResponse({
               current_path: '/home/spark/repo',
               parent_path: '/home/spark',
+              roots: ['/projects', '/home/spark'],
               entries: [],
+            })
+          }
+          if (requestedPath === '/projects') {
+            return jsonResponse({
+              current_path: '/projects',
+              parent_path: '/',
+              roots: ['/projects', '/home/spark'],
+              entries: [{ name: 'mounted-app', path: '/projects/mounted-app', is_dir: true }],
             })
           }
           if (requestedPath === '/home') {
             return jsonResponse({
               current_path: '/home',
               parent_path: '/',
+              roots: ['/projects', '/home/spark'],
               entries: [{ name: 'spark', path: '/home/spark', is_dir: true }],
             })
           }
@@ -676,6 +687,7 @@ describe('App shell behavior', () => {
             return jsonResponse({
               current_path: '/',
               parent_path: null,
+              roots: ['/projects', '/home/spark'],
               entries: [{ name: 'home', path: '/home', is_dir: true }],
             })
           }
@@ -701,6 +713,15 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('top-nav-project-add-button'))
     expect(await screen.findByTestId('project-browser-dialog')).toBeVisible()
     expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark')
+    await user.click(screen.getByTestId('project-browser-root--projects'))
+    await waitFor(() => {
+      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/projects')
+    })
+    expect(screen.getByTestId('project-browser-entry-mounted-app')).toBeVisible()
+    await user.click(screen.getByTestId('project-browser-root--home-spark'))
+    await waitFor(() => {
+      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark')
+    })
 
     await user.click(screen.getByTestId('project-browser-entry-broken'))
     expect(await screen.findByTestId('project-browser-error')).toHaveTextContent('Browse backend unavailable.')

@@ -251,6 +251,7 @@ export function Navbar() {
                 open={isProjectBrowserOpen}
                 currentPath={projectBrowserState?.current_path ?? null}
                 parentPath={projectBrowserState?.parent_path ?? null}
+                roots={projectBrowserState?.roots ?? []}
                 entries={projectBrowserState?.entries ?? []}
                 errorMessage={projectBrowserErrorMessage}
                 isLoading={isProjectBrowserLoading}

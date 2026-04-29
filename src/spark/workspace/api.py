@@ -153,6 +153,7 @@ class WorkspaceSettings(Protocol):
     data_dir: Path
     config_dir: Path
     flows_dir: Path
+    project_roots: tuple[Path, ...]
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,9 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
 
     def _normalize_browse_path_or_400(requested_path: str | None) -> Path:
         if requested_path is None:
+            project_roots = deps.get_settings().project_roots
+            if project_roots:
+                return project_roots[0]
             return Path(normalize_project_path(str(Path.home())))
 
         trimmed_path = requested_path.strip()
@@ -1059,6 +1063,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
     @router.get("/api/projects/browse")
     async def browse_project_directories(path: str | None = None):
         current_path = _normalize_browse_path_or_400(path)
+        browse_roots = [normalize_project_path(str(root)) for root in deps.get_settings().project_roots]
         if not current_path.exists():
             raise HTTPException(status_code=404, detail=f"Browse path does not exist: {current_path}")
         if not current_path.is_dir():
@@ -1084,6 +1089,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         return {
             "current_path": str(current_path),
             "parent_path": None if parent_path == current_path else str(parent_path),
+            "roots": browse_roots,
             "entries": entries,
         }
 

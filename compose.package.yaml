@@ -1,0 +1,33 @@
+services:
+  spark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: spark:package
+    ports:
+      - "8000:8000"
+    environment:
+      - SPARK_HOME=/spark
+      - SPARK_PROJECT_ROOTS=/projects
+      - ATTRACTOR_CODEX_RUNTIME_ROOT=/spark/runtime/codex
+      - OPENAI_API_KEY
+      - OPENAI_BASE_URL
+      - OPENAI_ORG_ID
+      - OPENAI_PROJECT_ID
+      - ANTHROPIC_API_KEY
+      - ANTHROPIC_BASE_URL
+      - GEMINI_API_KEY
+      - GEMINI_BASE_URL
+      - GOOGLE_API_KEY
+      - OPENROUTER_API_KEY
+      - OPENROUTER_BASE_URL
+      - OPENROUTER_HTTP_REFERER
+      - OPENROUTER_TITLE
+      - LITELLM_BASE_URL
+      - LITELLM_API_KEY
+    volumes:
+      - spark_data:/spark
+      - ${SPARK_PROJECTS_HOST_DIR:-$HOME/projects}:/projects
+
+volumes:
+  spark_data:
