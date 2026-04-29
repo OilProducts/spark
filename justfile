@@ -23,7 +23,7 @@ test: frontend-deps
 
 deliverable:
   docker build -f Dockerfile.wheel -t spark-wheel-builder .
-  docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/workspace" -w /workspace spark-wheel-builder uv run python scripts/build_deliverable.py
+  docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/workspace" -w /workspace spark-wheel-builder uv run python scripts/build_deliverable.py
 
 [private]
 install-wheel: deliverable
