@@ -302,12 +302,15 @@ just run-docker
 
 That stack keeps the container's internal Spark home at `/spark`, but bind-mounts it from `${SPARK_DOCKER_HOME:-$HOME/.spark-docker}` on the host.
 Packaged Docker state therefore lives under `~/.spark-docker` by default, seeded packaged flows appear at `~/.spark-docker/flows`, and provider secrets for that runtime belong in `~/.spark-docker/config/provider.env`.
+On first launch through `just run-docker`, Codex auth and config are seeded from `${CODEX_HOME:-$HOME/.codex}` into `~/.spark-docker/runtime/codex/.codex/` when `auth.json` or `config.toml` exist on the host and are not already present in the packaged Docker home.
+Existing packaged Docker Codex auth and config files are preserved, so that runtime can keep separate credentials after initialization.
 Use a different host location with:
 
 ```bash
 SPARK_DOCKER_HOME=/some/path just run-docker
 ```
 
+Raw `docker compose -f compose.package.yaml up --build` does not perform this host-side Codex seeding; `just run-docker` is the supported packaged Docker launcher.
 The native packaged install continues to use `~/.spark`, and source-checkout development continues to use `~/.spark-dev` by default.
 The packaged Docker stack also keeps project work mounted from `${SPARK_PROJECTS_HOST_DIR:-$HOME/projects}` into `/projects`.
 
