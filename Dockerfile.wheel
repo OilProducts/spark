@@ -1,17 +1,20 @@
 FROM python:3.11-slim
 
-WORKDIR /workspace
+WORKDIR /src
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    SPARK_DELIVERABLE_OUT=/out \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git gnupg build-essential \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg build-essential \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && pip install --no-cache-dir --upgrade pip uv \
     && apt-get purge -y --auto-remove curl gnupg \
     && rm -rf /var/lib/apt/lists/*
+
+COPY . /src
 
 CMD ["uv", "run", "python", "scripts/build_deliverable.py"]

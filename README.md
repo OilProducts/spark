@@ -395,7 +395,7 @@ For distributable artifacts, use the Dockerized deliverable workflow:
 just deliverable
 ```
 
-`just deliverable` builds `Dockerfile.wheel`, bind-mounts the checkout at `/workspace`, and runs `uv run python scripts/build_deliverable.py` against the mounted repository so the builder can use the real `.git` checkout and `git ls-files`. The builder compiles `frontend/dist`, stages the bundled UI into a temporary packaging tree, builds the wheel and sdist with standard setuptools, and verifies both install paths before copying the artifacts into `dist/`. The resulting `dist/` directory receives exactly one `spark-*.whl` wheel and one `spark-*.tar.gz` source distribution.
+`just deliverable` builds `Dockerfile.wheel`, which copies the source tree into the builder image and runs `uv run python scripts/build_deliverable.py` from that internal `/src` tree. The host only provides Docker build context and a mounted `dist/` directory for final artifact output. The builder compiles `frontend/dist`, stages the bundled UI into a temporary packaging tree, builds the wheel and sdist with standard setuptools, verifies the wheel contents, and copies the artifacts into `dist/`. The resulting `dist/` directory receives exactly one `spark-*.whl` wheel and one `spark-*.tar.gz` source distribution.
 
 `Dockerfile.wheel` is only the deliverable builder environment; the root `Dockerfile` and `compose.package.yaml` remain the packaged application runtime surfaces.
 
