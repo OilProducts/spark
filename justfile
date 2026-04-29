@@ -2,12 +2,7 @@ set shell := ["bash", "-lc"]
 
 [private]
 frontend-deps:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -x frontend/node_modules/.bin/vitest || ! -x frontend/node_modules/.bin/playwright ]]; then
-    echo "Installing frontend dependencies with npm ci..." >&2
-    npm --prefix frontend ci
-  fi
+  if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -x frontend/node_modules/.bin/vitest || ! -x frontend/node_modules/.bin/playwright ]]; then echo "Installing frontend dependencies with npm ci..." >&2; npm --prefix frontend ci; fi
 
 setup:
   uv sync --dev
@@ -17,60 +12,16 @@ clean:
   rm -rf dist frontend/dist frontend/node_modules/.tmp
 
 dev-docker:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  spark_home="${SPARK_HOME:-$HOME/.spark-dev}"
-  env_file="${spark_home}/config/provider.env"
-  if [[ -f "${env_file}" ]]; then
-    # shellcheck disable=SC1090
-    set -a
-    source "${env_file}"
-    set +a
-  fi
-  docker compose up --build
+  bash scripts/dev-docker.sh
 
 run-docker:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  spark_home="${SPARK_HOME:-$HOME/.spark}"
-  env_file="${spark_home}/config/provider.env"
-  if [[ -f "${env_file}" ]]; then
-    # shellcheck disable=SC1090
-    set -a
-    source "${env_file}"
-    set +a
-  fi
-  docker compose -f compose.package.yaml up --build
+  bash scripts/run-docker.sh
 
 dev-run: frontend-deps
-  #!/usr/bin/env bash
-  set -euo pipefail
-  trap 'kill "${backend_pid:-}" "${frontend_pid:-}" 2>/dev/null || true; wait || true' EXIT INT TERM
-  spark_home="${SPARK_HOME:-$HOME/.spark-dev}"
-  spark_port="${SPARK_PORT:-8010}"
-  backend_url="${VITE_BACKEND_URL:-http://127.0.0.1:${spark_port}}"
-  env_file="${spark_home}/config/provider.env"
-  backend() {
-    if [[ -f "${env_file}" ]]; then
-      # shellcheck disable=SC1090
-      set -a
-      source "${env_file}"
-      set +a
-    fi
-    SPARK_HOME="${spark_home}" uv run spark-server serve --host 127.0.0.1 --port "${spark_port}" --reload
-  }
-  backend &
-  backend_pid=$!
-  VITE_BACKEND_URL="${backend_url}" npm --prefix frontend run dev -- --host 127.0.0.1 &
-  frontend_pid=$!
-  while kill -0 "${backend_pid}" 2>/dev/null && kill -0 "${frontend_pid}" 2>/dev/null; do sleep 1; done
-  if ! kill -0 "${backend_pid}" 2>/dev/null; then wait "${backend_pid}"; else wait "${frontend_pid}"; fi
+  bash scripts/dev-run.sh
 
 dev-init:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  spark_home="${SPARK_HOME:-$HOME/.spark-dev}"
-  SPARK_HOME="${spark_home}" uv run spark-server init
+  spark_home="${SPARK_HOME:-$HOME/.spark-dev}"; SPARK_HOME="${spark_home}" uv run spark-server init
 
 stop:
   docker compose down
@@ -96,28 +47,7 @@ frontend-unit: frontend-deps
   npm --prefix frontend run test:unit
 
 ui-smoke: frontend-deps
-  #!/usr/bin/env bash
-  set -euo pipefail
-  spark_home="${SPARK_HOME:-$HOME/.spark-dev}"
-  spark_port="${SPARK_PORT:-8000}"
-  backend_log="${SPARK_UI_SMOKE_BACKEND_LOG:-/tmp/spark-ui-smoke-backend.log}"
-  SPARK_HOME="${spark_home}" uv run uvicorn spark.app:app --host 127.0.0.1 --port "${spark_port}" --log-level warning > "${backend_log}" 2>&1 &
-  backend_pid=$!
-  cleanup() {
-    if kill -0 "${backend_pid}" 2>/dev/null; then
-      kill "${backend_pid}" || true
-    fi
-    wait "${backend_pid}" 2>/dev/null || true
-  }
-  trap cleanup EXIT INT TERM
-  for _ in $(seq 1 60); do
-    if curl -sf "http://127.0.0.1:${spark_port}/attractor/status" >/dev/null; then
-      break
-    fi
-    sleep 1
-  done
-  curl -sf "http://127.0.0.1:${spark_port}/attractor/status" >/dev/null
-  npm --prefix frontend run ui:smoke
+  bash scripts/ui-smoke.sh
 
 frontend-build: frontend-deps
   npm --prefix frontend run build
@@ -130,28 +60,10 @@ build:
 
 [private]
 install-wheel:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  just deliverable
-  spark_home="${SPARK_HOME:-$HOME/.spark}"
-  venv_dir="${spark_home}/venv"
-  mkdir -p "${spark_home}"
-  python3 -m venv "${venv_dir}"
-  wheel_path="$(ls -t dist/spark-[0-9]*.whl | head -n 1)"
-  "${venv_dir}/bin/pip" install --upgrade --force-reinstall "${wheel_path}"
+  bash scripts/install-wheel.sh
 
 install: install-wheel
-  #!/usr/bin/env bash
-  set -euo pipefail
-  spark_home="${SPARK_HOME:-$HOME/.spark}"
-  venv_dir="${spark_home}/venv"
-  SPARK_HOME="${spark_home}" "${venv_dir}/bin/spark-server" init
+  bash scripts/install.sh
 
 install-systemd: install-wheel
-  #!/usr/bin/env bash
-  set -euo pipefail
-  spark_home="${SPARK_HOME:-$HOME/.spark}"
-  venv_dir="${spark_home}/venv"
-  spark_host="${SPARK_HOST:-0.0.0.0}"
-  spark_port="${SPARK_PORT:-8000}"
-  "${venv_dir}/bin/spark-server" service install --host "${spark_host}" --port "${spark_port}" --data-dir "${spark_home}"
+  bash scripts/install-systemd.sh
