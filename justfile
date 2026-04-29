@@ -8,9 +8,6 @@ setup:
   uv sync --dev
   npm --prefix frontend ci
 
-clean:
-  rm -rf dist frontend/dist frontend/node_modules/.tmp
-
 dev-docker:
   bash scripts/dev-docker.sh
 
@@ -20,50 +17,20 @@ run-docker:
 dev-run: frontend-deps
   bash scripts/dev-run.sh
 
-dev-init:
-  spark_home="${SPARK_HOME:-$HOME/.spark-dev}"; SPARK_HOME="${spark_home}" uv run spark-server init
-
-stop:
-  docker compose down
-
-logs:
-  docker compose logs -f
-
-restart:
-  docker compose down
-  docker compose up --build
-
-dot-lint:
-  uv run pytest -q tests/repo_hygiene/test_dot_format_lint.py
-
-parser-unsupported-grammar:
-  uv run pytest -q tests/dsl/test_parser.py -k unsupported_grammar_regression
-
 test: frontend-deps
   uv run pytest -q
   npm --prefix frontend run test:unit
 
-frontend-unit: frontend-deps
-  npm --prefix frontend run test:unit
-
-ui-smoke: frontend-deps
-  bash scripts/ui-smoke.sh
-
-frontend-build: frontend-deps
-  npm --prefix frontend run build
-
-deliverable: frontend-deps
-  uv run python scripts/build_deliverable.py
-
-build:
-  just deliverable
+deliverable:
+  docker build -f Dockerfile.wheel -t spark-wheel-builder .
+  docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/spark-builder-home -e UV_CACHE_DIR=/tmp/uv-cache -e UV_PROJECT_ENVIRONMENT=/tmp/spark-builder-venv -e npm_config_cache=/tmp/npm-cache -v "$PWD:/workspace" -w /workspace spark-wheel-builder uv run python scripts/build_deliverable.py
 
 [private]
-install-wheel:
-  bash scripts/install-wheel.sh
+install-wheel: deliverable
+  spark_home="${SPARK_HOME:-$HOME/.spark}"; venv_dir="${spark_home}/venv"; mkdir -p "${spark_home}"; python3 -m venv "${venv_dir}"; wheel_path="$(ls -t dist/spark-[0-9]*.whl | head -n 1)"; "${venv_dir}/bin/pip" install --upgrade --force-reinstall "${wheel_path}"
 
 install: install-wheel
-  bash scripts/install.sh
+  spark_home="${SPARK_HOME:-$HOME/.spark}"; venv_dir="${spark_home}/venv"; SPARK_HOME="${spark_home}" "${venv_dir}/bin/spark-server" init
 
 install-systemd: install-wheel
-  bash scripts/install-systemd.sh
+  spark_home="${SPARK_HOME:-$HOME/.spark}"; venv_dir="${spark_home}/venv"; spark_host="${SPARK_HOST:-0.0.0.0}"; spark_port="${SPARK_PORT:-8000}"; "${venv_dir}/bin/spark-server" service install --host "${spark_host}" --port "${spark_port}" --data-dir "${spark_home}"

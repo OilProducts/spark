@@ -267,7 +267,7 @@ The source-checkout dev wrapper intentionally uses a separate runtime home and p
 Initialize that dev runtime explicitly with:
 
 ```bash
-just dev-init
+SPARK_HOME=~/.spark-dev uv run spark-server init
 ```
 
 For Docker-based development:
@@ -363,17 +363,12 @@ Current API groups include:
 
 Useful `just` targets from [justfile](justfile):
 
-- `just clean`: remove generated build artifacts without deleting installed dependencies or runtime state
 - `just setup`: install Python and frontend development dependencies for a fresh checkout
 - `just dev-run`: backend + Vite frontend for local development
-- `just dev-init`: initialize the source-checkout dev runtime under `~/.spark-dev`
 - `just dev-docker`: `docker compose up --build`
-- `just test`: full Python test suite
-- `just frontend-unit`: frontend unit tests
-- `just ui-smoke`: Playwright smoke checks
-- `just dot-lint`: DOT formatting lint regression
-- `just deliverable`: canonical wheel + sdist packaging workflow with bundled UI verification
-- `just build`: compatibility alias for `just deliverable`
+- `just run-docker`: packaged-app compose stack
+- `just test`: full Python test suite plus frontend unit tests
+- `just deliverable`: Dockerized wheel + sdist packaging workflow
 - `just install`: install the packaged wheel into `~/.spark/venv` and initialize the stable runtime
 - `just install-systemd`: Linux-only install flow that registers the packaged app as a `systemd --user` service
 
@@ -391,26 +386,18 @@ Frontend unit tests:
 npm --prefix frontend run test:unit
 ```
 
-Frontend smoke tests:
-
-```bash
-just ui-smoke
-```
-
-`just ui-smoke` launches the product ASGI app from [`app.py`](src/spark/app.py), waits for `GET /attractor/status`, and then runs `npm --prefix frontend run ui:smoke`.
-
 ## Packaging
 
 From a source checkout, `just dev-run` remains the canonical development path.
-For distributable artifacts, use the explicit deliverable workflow:
+For distributable artifacts, use the Dockerized deliverable workflow:
 
 ```bash
 just deliverable
 ```
 
-`just deliverable` builds `frontend/dist`, stages the bundled UI into a temporary packaging tree, builds the wheel and sdist with standard setuptools, and verifies both install paths before copying the artifacts into `dist/`.
+`just deliverable` builds `Dockerfile.wheel`, bind-mounts the checkout at `/workspace`, and runs `uv run python scripts/build_deliverable.py` against the mounted repository so the builder can use the real `.git` checkout and `git ls-files`. The builder compiles `frontend/dist`, stages the bundled UI into a temporary packaging tree, builds the wheel and sdist with standard setuptools, and verifies both install paths before copying the artifacts into `dist/`. The resulting `dist/` directory receives exactly one `spark-*.whl` wheel and one `spark-*.tar.gz` source distribution.
 
-`just build` remains available as a compatibility alias, but `just deliverable` is the supported packaging command.
+`Dockerfile.wheel` is only the deliverable builder environment; the root `Dockerfile` and `compose.package.yaml` remain the packaged application runtime surfaces.
 
 Install the resulting wheel:
 

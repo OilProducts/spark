@@ -151,52 +151,6 @@ def test_starter_nodes_that_request_context_updates_declare_writes_contracts() -
             )
 
 
-def test_justfile_exposes_dot_lint_recipe() -> None:
-    justfile = Path(__file__).resolve().parents[2] / "justfile"
-    content = justfile.read_text(encoding="utf-8")
-
-    assert "\ndot-lint:\n" in f"\n{content}"
-    assert "uv run pytest -q tests/repo_hygiene/test_dot_format_lint.py" in content
-
-
-def test_ci_runs_dot_lint() -> None:
-    workflows_dir = Path(__file__).resolve().parents[2] / ".github" / "workflows"
-    workflow_paths = sorted(workflows_dir.glob("*.yml")) + sorted(workflows_dir.glob("*.yaml"))
-
-    assert workflow_paths, "expected at least one CI workflow under .github/workflows/"
-
-    has_dot_lint_step = False
-    for path in workflow_paths:
-        content = path.read_text(encoding="utf-8")
-        if "just dot-lint" in content or "tests/repo_hygiene/test_dot_format_lint.py" in content:
-            has_dot_lint_step = True
-            break
-
-    assert has_dot_lint_step, "expected CI workflow to run DOT lint check"
-
-
-def test_ci_runs_parser_unsupported_grammar_regression_suite() -> None:
-    justfile = Path(__file__).resolve().parents[2] / "justfile"
-    justfile_content = justfile.read_text(encoding="utf-8")
-
-    assert "\nparser-unsupported-grammar:\n" in f"\n{justfile_content}"
-    assert "uv run pytest -q tests/dsl/test_parser.py -k unsupported_grammar_regression" in justfile_content
-
-    workflows_dir = Path(__file__).resolve().parents[2] / ".github" / "workflows"
-    workflow_paths = sorted(workflows_dir.glob("*.yml")) + sorted(workflows_dir.glob("*.yaml"))
-
-    assert workflow_paths, "expected at least one CI workflow under .github/workflows/"
-
-    has_parser_guard_step = False
-    for path in workflow_paths:
-        content = path.read_text(encoding="utf-8")
-        if "just parser-unsupported-grammar" in content:
-            has_parser_guard_step = True
-            break
-
-    assert has_parser_guard_step, "expected CI workflow to run parser unsupported-grammar regression suite"
-
-
 def _resolved_handler_type(node) -> str:
     explicit = node.attrs.get("type")
     if explicit is not None:

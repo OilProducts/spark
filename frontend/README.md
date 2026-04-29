@@ -46,10 +46,6 @@ From the repo root, `just dev-run` is the normal full-stack workflow.
 - `npm run shadcn:verify`: verify `components.json` and the shadcn-managed primitives against the pinned repo-local baseline, including `native-select`, without depending on live `shadcn@latest` network calls at evaluation time
 - `npm run test:unit`: run Vitest unit tests
 - `npm run test:unit:watch`: run Vitest in watch mode
-- `npm run ui:smoke`: run Playwright smoke checks
-
-`npm run ui:smoke` expects the product backend to already be serving on `http://127.0.0.1:8000`.
-From the repo root, use `just ui-smoke` to launch [`app.py`](../src/spark/app.py) and wait for `/attractor/status` automatically before Playwright starts.
 
 ## Build Output
 
@@ -59,8 +55,6 @@ From the repo root, use `just deliverable` to build the distributable wheel and 
 ```bash
 just deliverable
 ```
-
-`just build` remains available as a compatibility alias.
 
 ## Related Docs
 
