@@ -294,6 +294,23 @@ services:
 
 That container path matches the tracked `compose.yaml`, which explicitly sets `ATTRACTOR_CODEX_RUNTIME_ROOT=/codex-runtime` for Docker development.
 
+For the packaged Docker runtime:
+
+```bash
+just run-docker
+```
+
+That stack keeps the container's internal Spark home at `/spark`, but bind-mounts it from `${SPARK_DOCKER_HOME:-$HOME/.spark-docker}` on the host.
+Packaged Docker state therefore lives under `~/.spark-docker` by default, seeded packaged flows appear at `~/.spark-docker/flows`, and provider secrets for that runtime belong in `~/.spark-docker/config/provider.env`.
+Use a different host location with:
+
+```bash
+SPARK_DOCKER_HOME=/some/path just run-docker
+```
+
+The native packaged install continues to use `~/.spark`, and source-checkout development continues to use `~/.spark-dev` by default.
+The packaged Docker stack also keeps project work mounted from `${SPARK_PROJECTS_HOST_DIR:-$HOME/projects}` into `/projects`.
+
 ## Backend-Only Usage
 
 Start the server directly:

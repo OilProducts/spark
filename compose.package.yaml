@@ -26,8 +26,5 @@ services:
       - LITELLM_BASE_URL
       - LITELLM_API_KEY
     volumes:
-      - spark_data:/spark
+      - ${SPARK_DOCKER_HOME:-$HOME/.spark-docker}:/spark
       - ${SPARK_PROJECTS_HOST_DIR:-$HOME/projects}:/projects
-
-volumes:
-  spark_data:
