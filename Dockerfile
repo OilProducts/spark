@@ -31,10 +31,11 @@ RUN apt-get update \
 
 COPY pyproject.toml README-package.md ./
 COPY src/ ./src/
+COPY scripts/package-entrypoint.sh ./scripts/package-entrypoint.sh
 COPY --from=frontend-build /frontend/dist ./src/spark/ui_dist/
 
 RUN pip install --no-cache-dir /app
 
 EXPOSE 8000
 
-CMD ["spark-server", "serve", "--host", "0.0.0.0", "--port", "8000", "--data-dir", "/spark"]
+CMD ["bash", "scripts/package-entrypoint.sh"]
