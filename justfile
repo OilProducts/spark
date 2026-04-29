@@ -23,7 +23,7 @@ test: frontend-deps
 
 deliverable:
   docker build -f Dockerfile.wheel -t spark-wheel-builder .
-  docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/spark-builder-home -e UV_CACHE_DIR=/tmp/uv-cache -e UV_PROJECT_ENVIRONMENT=/tmp/spark-builder-venv -e npm_config_cache=/tmp/npm-cache -v "$PWD:/workspace" -w /workspace spark-wheel-builder uv run python scripts/build_deliverable.py
+  docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/workspace" -w /workspace spark-wheel-builder uv run python scripts/build_deliverable.py
 
 [private]
 install-wheel: deliverable
