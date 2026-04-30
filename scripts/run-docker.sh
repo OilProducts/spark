@@ -1,9 +1,13 @@
 set -euo pipefail
 
-spark_home="${SPARK_DOCKER_HOME:-$HOME/.spark-docker}"
-host_codex_home="${CODEX_HOME:-$HOME/.codex}"
+real_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+real_home="${real_home:-$HOME}"
+
+spark_home="${SPARK_DOCKER_HOME:-$real_home/.spark-docker}"
+host_codex_home="${CODEX_HOME:-$real_home/.codex}"
 docker_codex_home="${spark_home}/runtime/codex/.codex"
 env_file="${spark_home}/config/provider.env"
+export SPARK_DOCKER_HOME="${spark_home}"
 if [[ -f "${env_file}" ]]; then
   set -a
   source "${env_file}"
