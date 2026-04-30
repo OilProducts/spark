@@ -108,12 +108,12 @@ export function useProjectConversationCache({
                 conversationId: snapshot.conversation_id,
                 snapshotUpdatedAt: snapshot.updated_at,
             })
-            return
+            return result
         }
         const { cache } = result
         const record = cache.conversationsById[snapshot.conversation_id]
         if (!record) {
-            return
+            return result
         }
         debugProjectChat('apply conversation snapshot', {
             source,
@@ -141,6 +141,7 @@ export function useProjectConversationCache({
                 })
             }
         }
+        return result
     }, [commitConversationCache, persistProjectState, updateProjectSessionState])
 
     const applyConversationStreamEvent = useCallback((
@@ -154,18 +155,30 @@ export function useProjectConversationCache({
             eventType: event.type,
             conversationId: event.conversation_id,
         })
-        const { cache, record } = applyConversationStreamEventToCache(
+        const result = applyConversationStreamEventToCache(
             conversationCacheRef.current,
             projectPath,
             event as ConversationStreamEvent,
         )
+        if (result.status === 'missing_record') {
+            debugProjectChat('buffer conversation stream event without cached record', {
+                source,
+                projectPath,
+                eventType: event.type,
+                conversationId: event.conversation_id,
+            })
+            return result
+        }
+        const { cache, record } = result
         commitConversationCache(cache)
         debugProjectChat('apply merged stream conversation record', {
             source,
             projectPath,
             conversationId: record.conversation_id,
             turnCount: record.orderedTurnIds.length,
+            status: result.status,
         })
+        return result
     }, [commitConversationCache])
 
     return {

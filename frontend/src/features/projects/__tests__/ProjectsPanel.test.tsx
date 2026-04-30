@@ -133,6 +133,54 @@ const asSegmentUpsertEvent = (payload: {
   }
 }
 
+const buildPendingSendSnapshot = ({
+  conversationId,
+  title,
+  userContent,
+  userTurnId = 'turn-user-1',
+  assistantTurnId = 'turn-assistant-live',
+  createdAt,
+  updatedAt,
+}: {
+  conversationId: string
+  title: string
+  userContent: string
+  userTurnId?: string
+  assistantTurnId?: string
+  createdAt: string
+  updatedAt: string
+}) => withSnapshotSchema({
+  conversation_id: conversationId,
+  project_path: '/tmp/chat-project',
+  title,
+  created_at: createdAt,
+  updated_at: updatedAt,
+  revision: testRevisionFromTimestamp(updatedAt),
+  turns: [
+    {
+      id: userTurnId,
+      role: 'user',
+      content: userContent,
+      timestamp: createdAt,
+      status: 'complete',
+      kind: 'message',
+      artifact_id: null,
+    },
+    {
+      id: assistantTurnId,
+      role: 'assistant',
+      content: '',
+      timestamp: updatedAt,
+      status: 'pending',
+      kind: 'message',
+      artifact_id: null,
+      parent_turn_id: userTurnId,
+    },
+  ],
+  segments: [],
+  event_log: [],
+})
+
 const resetProjectScopeState = () => {
   useStore.setState((state) => ({
     ...state,
@@ -1206,7 +1254,7 @@ describe('ProjectsPanel', () => {
     expect(screen.getByText('Looking for the smallest safe change first.')).toBeInTheDocument()
   })
 
-  it('streams assistant text into the history before the turn response completes', async () => {
+  it('replays stream events that arrive before the initial conversation snapshot', async () => {
     class MockEventSource {
       static instances: MockEventSource[] = []
 
@@ -1221,13 +1269,110 @@ describe('ProjectsPanel', () => {
       close() {}
     }
 
-    const user = userEvent.setup()
-    let resolveTurnResponse: ((response: Response) => void) | null = null
+    let resolveSnapshot: ((response: Response) => void) | null = null
+    let snapshotFetchCount = 0
+    const initialSnapshot = withSnapshotSchema({
+      conversation_id: 'conversation-pre-snapshot-replay',
+      project_path: '/tmp/chat-project',
+      title: 'Pre-snapshot replay',
+      created_at: '2026-03-07T15:30:00Z',
+      updated_at: '2026-03-07T15:30:01Z',
+      revision: testRevisionFromTimestamp('2026-03-07T15:30:01Z'),
+      turns: [
+        {
+          id: 'turn-user-1',
+          role: 'user',
+          content: 'Start from the real snapshot.',
+          timestamp: '2026-03-07T15:30:00Z',
+          status: 'complete',
+          kind: 'message',
+          artifact_id: null,
+        },
+      ],
+      segments: [],
+      event_log: [],
+      flow_run_requests: [],
+      flow_launches: [],
+      proposed_plans: [],
+    })
+    const refreshedSnapshot = withSnapshotSchema({
+      ...initialSnapshot,
+      updated_at: '2026-03-07T15:30:04Z',
+      revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
+      turns: [
+        ...initialSnapshot.turns,
+        {
+          id: 'turn-assistant-live',
+          role: 'assistant',
+          content: 'Working on the streamed update.\n\n## Proposed steps',
+          timestamp: '2026-03-07T15:30:04Z',
+          status: 'complete',
+          kind: 'message',
+          artifact_id: null,
+        },
+      ],
+      segments: [
+        {
+          id: 'segment-assistant-pre-snapshot',
+          turn_id: 'turn-assistant-live',
+          order: 1,
+          kind: 'assistant_message',
+          role: 'assistant',
+          status: 'complete',
+          timestamp: '2026-03-07T15:30:02Z',
+          updated_at: '2026-03-07T15:30:02Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
+          completed_at: '2026-03-07T15:30:02Z',
+          content: 'Working on the streamed update.',
+          artifact_id: null,
+          error: null,
+          tool_call: null,
+          source: null,
+        },
+        {
+          id: 'segment-plan-pre-snapshot',
+          turn_id: 'turn-assistant-live',
+          order: 2,
+          kind: 'plan',
+          role: 'assistant',
+          status: 'complete',
+          timestamp: '2026-03-07T15:30:03Z',
+          updated_at: '2026-03-07T15:30:03Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:03Z'),
+          completed_at: '2026-03-07T15:30:03Z',
+          content: '## Proposed steps',
+          artifact_id: 'proposed-plan-pre-snapshot',
+          error: null,
+          tool_call: null,
+          source: null,
+        },
+      ],
+      proposed_plans: [
+        {
+          id: 'proposed-plan-pre-snapshot',
+          created_at: '2026-03-07T15:30:03Z',
+          updated_at: '2026-03-07T15:30:03Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:03Z'),
+          title: 'Proposed steps',
+          content: '## Proposed steps',
+          project_path: '/tmp/chat-project',
+          conversation_id: 'conversation-pre-snapshot-replay',
+          source_turn_id: 'turn-assistant-live',
+          source_segment_id: 'segment-plan-pre-snapshot',
+          status: 'pending_review',
+          review_note: null,
+          written_change_request_path: null,
+          flow_launch_id: null,
+          run_id: null,
+          launch_error: null,
+        },
+      ],
+    })
 
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      vi.fn(async (input: RequestInfo | URL) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
@@ -1236,20 +1381,31 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify([
+            {
+              conversation_id: 'conversation-pre-snapshot-replay',
+              project_path: '/tmp/chat-project',
+              title: 'Pre-snapshot replay',
+              created_at: '2026-03-07T15:30:00Z',
+              updated_at: '2026-03-07T15:30:01Z',
+              revision: testRevisionFromTimestamp('2026-03-07T15:30:01Z'),
+              last_message_preview: 'Start from the real snapshot.',
+            },
+          ]), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (url.includes('/workspace/api/conversations/') && !init?.method) {
-          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
-            status: 404,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        }
-        if (url.includes('/workspace/api/conversations/') && init?.method === 'POST') {
+        if (url.includes('/workspace/api/conversations/conversation-pre-snapshot-replay') && !url.includes('/events')) {
+          snapshotFetchCount += 1
+          if (snapshotFetchCount > 1) {
+            return new Response(JSON.stringify(refreshedSnapshot), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          }
           return await new Promise<Response>((resolve) => {
-            resolveTurnResponse = resolve
+            resolveSnapshot = resolve
           })
         }
         return new Response(JSON.stringify({}), {
@@ -1261,32 +1417,29 @@ describe('ProjectsPanel', () => {
 
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
+    useStore.getState().setConversationId('conversation-pre-snapshot-replay')
 
     renderProjectsPanel()
-
-    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Stream this reply.')
-    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
-    const conversationId = useStore.getState().projectSessionsByPath['/tmp/chat-project']?.conversationId
-    expect(conversationId).toBeTruthy()
 
     await waitFor(() => {
       expect(MockEventSource.instances.length).toBeGreaterThan(0)
     })
     expect(MockEventSource.instances).toHaveLength(1)
+    expect(snapshotFetchCount).toBe(1)
 
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
         data: JSON.stringify({
           type: 'turn_upsert',
-          conversation_id: conversationId,
+          conversation_id: 'conversation-pre-snapshot-replay',
           project_path: '/tmp/chat-project',
-          title: 'Stream this reply.',
+          title: 'Pre-snapshot replay',
           updated_at: '2026-03-07T15:30:02Z',
           revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
           turn: {
             id: 'turn-assistant-live',
             role: 'assistant',
-            content: 'Working on',
+            content: 'Working on the streamed update.',
             timestamp: '2026-03-07T15:30:02Z',
             status: 'streaming',
             kind: 'message',
@@ -1296,9 +1449,9 @@ describe('ProjectsPanel', () => {
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
         data: JSON.stringify(asSegmentUpsertEvent({
-          conversation_id: conversationId,
+          conversation_id: 'conversation-pre-snapshot-replay',
           project_path: '/tmp/chat-project',
-          title: 'Stream this reply.',
+          title: 'Pre-snapshot replay',
           updated_at: '2026-03-07T15:30:02Z',
           revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
           event: {
@@ -1308,50 +1461,51 @@ describe('ProjectsPanel', () => {
             timestamp: '2026-03-07T15:30:02Z',
             kind: 'content_delta',
               channel: 'assistant',
-            content_delta: 'Working on',
+            content_delta: 'Working on the streamed update.',
+          },
+        })),
+      } as MessageEvent)
+      MockEventSource.instances[0]?.onmessage?.({
+        data: JSON.stringify(asSegmentUpsertEvent({
+          conversation_id: 'conversation-pre-snapshot-replay',
+          project_path: '/tmp/chat-project',
+          title: 'Pre-snapshot replay',
+          updated_at: '2026-03-07T15:30:03Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:03Z'),
+          event: {
+            id: 'event-plan-pre-snapshot',
+            turn_id: 'turn-assistant-live',
+            sequence: 2,
+            timestamp: '2026-03-07T15:30:03Z',
+            kind: 'content_completed',
+            channel: 'plan',
+            segment: {
+              id: 'segment-plan-pre-snapshot',
+              turn_id: 'turn-assistant-live',
+              order: 2,
+              kind: 'plan',
+              role: 'assistant',
+              status: 'complete',
+              timestamp: '2026-03-07T15:30:03Z',
+              updated_at: '2026-03-07T15:30:03Z',
+              revision: testRevisionFromTimestamp('2026-03-07T15:30:03Z'),
+              completed_at: '2026-03-07T15:30:03Z',
+              content: '## Proposed steps',
+              artifact_id: 'proposed-plan-pre-snapshot',
+              error: null,
+              tool_call: null,
+              source: null,
+            },
           },
         })),
       } as MessageEvent)
     })
 
-    await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Working on')
-    })
-    expect(MockEventSource.instances).toHaveLength(1)
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Thinking...')
+    expect(screen.queryByText('Working on the streamed update.')).not.toBeInTheDocument()
 
-    resolveTurnResponse?.(
+    resolveSnapshot?.(
       new Response(
-        JSON.stringify(withSnapshotSchema({
-          conversation_id: conversationId,
-          project_path: '/tmp/chat-project',
-          title: 'Stream this reply.',
-          created_at: '2026-03-07T15:30:00Z',
-          updated_at: '2026-03-07T15:30:04Z',
-          revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
-          turns: [
-            {
-              id: 'turn-user-1',
-              role: 'user',
-              content: 'Stream this reply.',
-              timestamp: '2026-03-07T15:30:00Z',
-              kind: 'message',
-              artifact_id: null,
-            },
-            {
-              id: 'turn-assistant-1',
-              role: 'assistant',
-              content: 'Working on it.',
-              timestamp: '2026-03-07T15:30:04Z',
-              kind: 'message',
-              artifact_id: null,
-            },
-          ],
-          event_log: [],
-
-
-
-        })),
+        JSON.stringify(initialSnapshot),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -1359,13 +1513,16 @@ describe('ProjectsPanel', () => {
       ),
     )
 
+    const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Working on it.')
+      expect(history).toHaveTextContent('Start from the real snapshot.')
+      expect(history).toHaveTextContent('Working on the streamed update.')
     })
-    expect(MockEventSource.instances).toHaveLength(1)
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Send')
+      expect(snapshotFetchCount).toBe(2)
+      expect(screen.getByTestId('project-proposed-plan-approve-button-proposed-plan-pre-snapshot')).toBeVisible()
     })
+    expect(within(history).getAllByText('Working on the streamed update.')).toHaveLength(1)
   })
 
   it('ignores a stale send-response snapshot after the stream has already advanced the turn', async () => {
@@ -1404,8 +1561,15 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
-          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
-            status: 404,
+          const conversationId = decodeURIComponent(url.match(/\/workspace\/api\/conversations\/([^/?]+)/)?.[1] ?? 'conversation-stale-stream')
+          return new Response(JSON.stringify(buildPendingSendSnapshot({
+            conversationId,
+            title: 'Keep the streamed thinking visible.',
+            userContent: 'Keep the streamed thinking visible.',
+            createdAt: '2026-03-07T15:31:00Z',
+            updatedAt: '2026-03-07T15:31:01Z',
+          })), {
+            status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
@@ -2193,8 +2357,15 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
-          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
-            status: 404,
+          const conversationId = decodeURIComponent(url.match(/\/workspace\/api\/conversations\/([^/?]+)/)?.[1] ?? 'conversation-completes-before-post')
+          return new Response(JSON.stringify(buildPendingSendSnapshot({
+            conversationId,
+            title: 'Stream this reply.',
+            userContent: 'Stream this reply.',
+            createdAt: '2026-03-07T15:30:00Z',
+            updatedAt: '2026-03-07T15:30:01Z',
+          })), {
+            status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
@@ -2433,8 +2604,16 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
-          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
-            status: 404,
+          const conversationId = decodeURIComponent(url.match(/\/workspace\/api\/conversations\/([^/?]+)/)?.[1] ?? 'conversation-compacted-transient')
+          return new Response(JSON.stringify(buildPendingSendSnapshot({
+            conversationId,
+            title: 'Draft a spec.',
+            userContent: 'Draft a spec.',
+            assistantTurnId: 'turn-assistant-1',
+            createdAt: '2026-03-08T19:10:00Z',
+            updatedAt: '2026-03-08T19:10:01Z',
+          })), {
+            status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
@@ -3268,8 +3447,17 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
-          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
-            status: 404,
+          const conversationId = decodeURIComponent(url.match(/\/workspace\/api\/conversations\/([^/?]+)/)?.[1] ?? 'conversation-interleaved-streaming')
+          return new Response(JSON.stringify(buildPendingSendSnapshot({
+            conversationId,
+            title: 'Test interleaved streaming.',
+            userContent: 'Test interleaved streaming.',
+            userTurnId: 'turn-user-interleaved',
+            assistantTurnId: 'turn-assistant-interleaved',
+            createdAt: '2026-03-08T20:09:59Z',
+            updatedAt: '2026-03-08T20:10:00Z',
+          })), {
+            status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }

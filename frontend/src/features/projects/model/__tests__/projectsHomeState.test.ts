@@ -413,6 +413,30 @@ describe('applyConversationSnapshotToCache', () => {
     expect(result.record.orderedTurnIds).toEqual(['turn-user', 'turn-assistant'])
   })
 
+  it('reports stream events for unknown conversations as missing records', () => {
+    const result = applyConversationStreamEventToCache(
+      EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      '/tmp/project-contract-behavior',
+      {
+        type: 'turn_upsert',
+        revision: 1,
+        conversation_id: 'conversation-missing',
+        project_path: '/tmp/project-contract-behavior',
+        title: 'Missing conversation',
+        updated_at: '2026-03-06T15:01:30Z',
+        turn: buildTurn({
+          id: 'turn-missing',
+          content: 'This should wait for a real snapshot.',
+          timestamp: '2026-03-06T15:01:30Z',
+        }),
+      },
+    )
+
+    expect(result.status).toBe('missing_record')
+    expect(result.cache).toBe(EMPTY_PROJECT_CONVERSATION_CACHE_STATE)
+    expect(result.cache.conversationsById['conversation-missing']).toBeUndefined()
+  })
+
   it('ignores stream events below the cached revision', () => {
     const initialSnapshot = buildSnapshot({
       revision: 5,

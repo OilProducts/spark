@@ -17,7 +17,6 @@ import {
 } from '@/lib/workspaceClient'
 import type { ProjectGitMetadata } from './presentation'
 import {
-    ensureConversationSnapshotShell,
     sanitizeStreamingTurnUpsert,
     sortConversationSummaries,
     upsertConversationSummary,
@@ -60,6 +59,22 @@ export type ProjectConversationCacheState = {
     conversationsById: Record<string, NormalizedConversationRecord>
     summariesByProjectPath: Record<string, ConversationSummaryResponse[]>
 }
+
+export type ApplyConversationStreamEventResult =
+    | {
+        status: 'applied'
+        record: NormalizedConversationRecord
+        cache: ProjectConversationCacheState
+    }
+    | {
+        status: 'stale'
+        record: NormalizedConversationRecord
+        cache: ProjectConversationCacheState
+    }
+    | {
+        status: 'missing_record'
+        cache: ProjectConversationCacheState
+    }
 
 export const EMPTY_PROJECT_CONVERSATION_CACHE_STATE: ProjectConversationCacheState = {
     conversationsById: {},
@@ -442,16 +457,22 @@ export function applyConversationStreamEventToCache(
     current: ProjectConversationCacheState,
     projectPath: string,
     event: ConversationStreamEvent,
-) {
+): ApplyConversationStreamEventResult {
     const cachedRecord = current.conversationsById[event.conversation_id]
     if (cachedRecord && event.revision < cachedRecord.revision) {
         return {
+            status: 'stale',
             record: cachedRecord,
             cache: current,
         }
     }
+    if (!cachedRecord) {
+        return {
+            status: 'missing_record',
+            cache: current,
+        }
+    }
     const existingRecord = cachedRecord
-        || hydrateConversationRecordFromSnapshot(ensureConversationSnapshotShell(event.conversation_id, projectPath, event.title))
     let mergedRecord: NormalizedConversationRecord = {
         ...existingRecord,
         project_path: projectPath,
@@ -510,6 +531,7 @@ export function applyConversationStreamEventToCache(
     }
 
     return {
+        status: 'applied',
         record: mergedRecord,
         cache: {
             conversationsById: {

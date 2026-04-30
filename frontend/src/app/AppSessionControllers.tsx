@@ -10,17 +10,15 @@ import { useRunsList } from '@/features/runs/hooks/useRunsList'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
 import type {
-    ConversationSegmentUpsertEventResponse,
     ConversationSnapshotResponse,
     ConversationSummaryResponse,
-    ConversationTurnUpsertEventResponse,
 } from '@/lib/workspaceClient'
+import type {
+    ApplyConversationStreamEventResult,
+    ConversationStreamEvent,
+} from '@/features/projects/model/projectsHomeState'
 import { useStore } from '@/store'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
-
-type HomeConversationStreamEvent =
-    | ConversationTurnUpsertEventResponse
-    | ConversationSegmentUpsertEventResponse
 
 const completedNodesMatch = (left: string[], right: string[]) => (
     left.length === right.length && left.every((value, index) => value === right[index])
@@ -76,9 +74,9 @@ type HomeConversationSyncControllerProps = {
     ) => void
     applyConversationStreamEvent: (
         projectPath: string,
-        event: HomeConversationStreamEvent,
+        event: ConversationStreamEvent,
         source?: string,
-    ) => void
+    ) => ApplyConversationStreamEventResult | undefined
     appendProjectEvent: (projectPath: string, message: string) => void
     setProjectPanelError: (projectPath: string, value: string | null) => void
 }

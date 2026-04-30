@@ -15,32 +15,6 @@ export type OptimisticSendState = {
 
 export type ConversationStreamEvent = ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse
 
-export function ensureConversationSnapshotShell(
-    conversationId: string,
-    projectPath: string,
-    title = 'New thread',
-): ConversationSnapshotResponse {
-    return {
-        schema_version: 5,
-        revision: 0,
-        conversation_id: conversationId,
-        conversation_handle: '',
-        project_path: projectPath,
-        chat_mode: 'chat',
-        model: null,
-        reasoning_effort: null,
-        title,
-        created_at: '',
-        updated_at: '',
-        turns: [],
-        segments: [],
-        event_log: [],
-        flow_run_requests: [],
-        flow_launches: [],
-        proposed_plans: [],
-    }
-}
-
 export function upsertConversationTurn(
     snapshot: ConversationSnapshotResponse,
     turn: ConversationTurnResponse,

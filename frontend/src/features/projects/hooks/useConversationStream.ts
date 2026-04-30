@@ -9,6 +9,7 @@ import {
     type ConversationTurnUpsertEventResponse,
     type ConversationSegmentUpsertEventResponse,
 } from '@/lib/workspaceClient'
+import type { ApplyConversationStreamEventResult } from '../model/projectsHomeState'
 
 type ConversationStreamEvent = ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse
 
@@ -16,8 +17,12 @@ type UseConversationStreamArgs = {
     activeConversationId: string | null
     activeProjectPath: string | null
     appendLocalProjectEvent: (message: string) => void
-    applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => void
-    applyConversationStreamEvent: (projectPath: string, event: ConversationStreamEvent, source?: string) => void
+    applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => unknown
+    applyConversationStreamEvent: (
+        projectPath: string,
+        event: ConversationStreamEvent,
+        source?: string,
+    ) => ApplyConversationStreamEventResult | undefined
     formatErrorMessage: (error: unknown, fallback: string) => string
     setPanelError: (message: string | null) => void
 }
@@ -75,25 +80,56 @@ export function useConversationStream({
 
         let isCancelled = false
         let eventSource: EventSource | null = null
+        let snapshotFetchInFlight: Promise<void> | null = null
+        let snapshotFetchMarker: object | null = null
+        let pendingPreSnapshotEvents: ConversationStreamEvent[] = []
+
+        const replayPendingEventsAfterSnapshot = (snapshot: ConversationSnapshotResponse) => {
+            const replayableEvents = pendingPreSnapshotEvents
+                .filter((pendingEvent) => pendingEvent.revision > snapshot.revision)
+                .sort((left, right) => left.revision - right.revision)
+            pendingPreSnapshotEvents = []
+            replayableEvents.forEach((pendingEvent) => {
+                eventHandlerRef.current(activeProjectPath, pendingEvent, 'event-stream-replay')
+                maybeRefreshSnapshotForArtifactSegment(pendingEvent, loadSnapshot)
+            })
+        }
 
         const loadSnapshot = async () => {
-            try {
-                const snapshot = await fetchConversationSnapshotValidated(activeConversationId, activeProjectPath)
-                if (isCancelled) {
-                    return
-                }
-                snapshotHandlerRef.current(activeProjectPath, snapshot, 'snapshot-fetch')
-            } catch (error) {
-                if (isCancelled) {
-                    return
-                }
-                if (error instanceof ApiHttpError && error.status === 404) {
-                    return
-                }
-                const message = errorFormatterRef.current(error, 'Unable to load project conversation.')
-                setPanelErrorRef.current(message)
-                appendEventRef.current(`Project chat sync failed: ${message}`)
+            if (snapshotFetchInFlight) {
+                return snapshotFetchInFlight
             }
+            const currentFetchMarker = {}
+            snapshotFetchMarker = currentFetchMarker
+            const currentFetch = (async () => {
+                try {
+                    const snapshot = await fetchConversationSnapshotValidated(activeConversationId, activeProjectPath)
+                    if (isCancelled) {
+                        return
+                    }
+                    snapshotHandlerRef.current(activeProjectPath, snapshot, 'snapshot-fetch')
+                    snapshotFetchInFlight = null
+                    snapshotFetchMarker = null
+                    replayPendingEventsAfterSnapshot(snapshot)
+                } catch (error) {
+                    if (isCancelled) {
+                        return
+                    }
+                    if (error instanceof ApiHttpError && error.status === 404) {
+                        return
+                    }
+                    const message = errorFormatterRef.current(error, 'Unable to load project conversation.')
+                    setPanelErrorRef.current(message)
+                    appendEventRef.current(`Project chat sync failed: ${message}`)
+                } finally {
+                    if (snapshotFetchMarker === currentFetchMarker) {
+                        snapshotFetchInFlight = null
+                        snapshotFetchMarker = null
+                    }
+                }
+            })()
+            snapshotFetchInFlight = currentFetch
+            return snapshotFetchInFlight
         }
 
         void loadSnapshot()
@@ -113,6 +149,7 @@ export function useConversationStream({
                             '/workspace/api/conversations/{id}/events',
                         )
                         snapshotHandlerRef.current(activeProjectPath, snapshot, 'event-stream-snapshot')
+                        replayPendingEventsAfterSnapshot(snapshot)
                         return
                     }
                     const parsedEvent = parseConversationStreamEventResponse(
@@ -122,7 +159,12 @@ export function useConversationStream({
                     if (!parsedEvent) {
                         return
                     }
-                    eventHandlerRef.current(activeProjectPath, parsedEvent, 'event-stream')
+                    const result = eventHandlerRef.current(activeProjectPath, parsedEvent, 'event-stream')
+                    if (result?.status === 'missing_record') {
+                        pendingPreSnapshotEvents.push(parsedEvent)
+                        void loadSnapshot()
+                        return
+                    }
                     maybeRefreshSnapshotForArtifactSegment(parsedEvent, loadSnapshot)
                 } catch {
                     // Ignore malformed stream events.
