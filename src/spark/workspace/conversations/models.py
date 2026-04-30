@@ -44,14 +44,8 @@ def _truncate_text(value: str, limit: int) -> str:
     return collapsed[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _normalize_request_user_input_status(
-    value: Any,
-    *,
-    legacy_delivery_status: Any = None,
-) -> str:
+def _normalize_request_user_input_status(value: Any) -> str:
     normalized = _as_non_empty_string(value)
-    if normalized == "answered" and _as_non_empty_string(legacy_delivery_status) == "pending_delivery":
-        return "expired"
     if normalized in {"answered", "expired"}:
         return normalized
     return "pending"
@@ -297,10 +291,7 @@ class RequestUserInputRecord:
         status = str(payload.get("status", "pending") or "pending")
         return cls(
             request_id=str(payload.get("request_id", "")),
-            status=_normalize_request_user_input_status(
-                status,
-                legacy_delivery_status=payload.get("delivery_status"),
-            ),
+            status=_normalize_request_user_input_status(status),
             questions=[
                 RequestUserInputQuestion.from_dict(question)
                 for question in raw_questions

@@ -44,6 +44,8 @@ export interface ConversationSegmentResponse {
         title: string
         command?: string | null
         output?: string | null
+        output_size?: number | null
+        output_truncated?: boolean
         file_paths: string[]
     } | null
     request_user_input?: {
@@ -178,6 +180,11 @@ export interface ConversationDeleteResponse {
     project_path: string
 }
 
+export interface ConversationToolOutputResponse {
+    output: string
+    output_size: number
+}
+
 export interface ConversationTurnUpsertEventResponse {
     type: 'turn_upsert'
     conversation_id: string
@@ -305,6 +312,8 @@ function parseConversationSegmentResponse(value: unknown): ConversationSegmentRe
                 title: toolCall.title,
                 command: asOptionalNullableString(toolCall.command),
                 output: asOptionalNullableString(toolCall.output),
+                output_size: typeof toolCall.output_size === 'number' ? toolCall.output_size : null,
+                output_truncated: toolCall.output_truncated === true,
                 file_paths: Array.isArray(toolCall.file_paths) ? toolCall.file_paths.map((entry) => String(entry)) : [],
             }
             : null,
@@ -679,6 +688,27 @@ export async function fetchConversationSnapshotValidated(
         undefined,
         '/workspace/api/conversations/{id}',
         parseConversationSnapshotResponse,
+    )
+}
+
+export async function fetchConversationSegmentToolOutputValidated(
+    conversationId: string,
+    segmentId: string,
+    projectPath: string,
+): Promise<ConversationToolOutputResponse> {
+    return fetchWorkspaceJsonValidated(
+        `/conversations/${encodeURIComponent(conversationId)}/segments/${encodeURIComponent(segmentId)}/tool-output?project_path=${encodeURIComponent(projectPath)}`,
+        undefined,
+        '/workspace/api/conversations/{id}/segments/{segmentId}/tool-output',
+        (payload) => {
+            const endpoint = '/workspace/api/conversations/{id}/segments/{segmentId}/tool-output'
+            const record = expectObjectRecord(payload, endpoint)
+            const output = expectString(record.output, endpoint, 'output')
+            return {
+                output,
+                output_size: typeof record.output_size === 'number' ? record.output_size : output.length,
+            }
+        },
     )
 }
 

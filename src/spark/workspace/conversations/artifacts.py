@@ -367,7 +367,7 @@ class ProjectChatReviewService:
                 self._repository.append_event(state, f"Rejected flow run request {request.id}.")
             self._repository.touch_conversation_state(state, title_hint=trimmed_message)
             self._repository.write_state(state)
-            return state.to_dict(), request
+            return self._repository.serialize_conversation_state_for_ui(state), request
 
     def review_proposed_plan(
         self,
@@ -400,7 +400,7 @@ class ProjectChatReviewService:
                 self._repository.append_event(state, f"Rejected proposed plan {proposed_plan.id}.")
                 self._repository.touch_conversation_state(state)
                 self._repository.write_state(state)
-                return state.to_dict(), proposed_plan, None
+                return self._repository.serialize_conversation_state_for_ui(state), proposed_plan, None
 
             source_turn = next((turn for turn in state.turns if turn.id == proposed_plan.source_turn_id), None)
             if source_turn is None:
@@ -445,7 +445,7 @@ class ProjectChatReviewService:
             )
             self._repository.touch_conversation_state(state)
             self._repository.write_state(state)
-            return state.to_dict(), proposed_plan, launch
+            return self._repository.serialize_conversation_state_for_ui(state), proposed_plan, launch
 
     def note_proposed_plan_launch_started(
         self,
@@ -479,7 +479,7 @@ class ProjectChatReviewService:
             )
             self._repository.touch_conversation_state(state)
             self._repository.write_state(state)
-            return state.to_dict()
+            return self._repository.serialize_conversation_state_for_ui(state)
 
     def fail_proposed_plan_launch(
         self,
@@ -512,7 +512,7 @@ class ProjectChatReviewService:
             )
             self._repository.touch_conversation_state(state)
             self._repository.write_state(state)
-            return state.to_dict()
+            return self._repository.serialize_conversation_state_for_ui(state)
 
     def note_flow_launch_started(
         self,
@@ -536,7 +536,7 @@ class ProjectChatReviewService:
             self._repository.append_event(state, f"Launched direct flow {launch.id} as run {run_id} using {flow_name}.")
             self._repository.touch_conversation_state(state)
             self._repository.write_state(state)
-            return state.to_dict()
+            return self._repository.serialize_conversation_state_for_ui(state)
 
     def fail_flow_launch(
         self,
@@ -559,7 +559,7 @@ class ProjectChatReviewService:
             self._repository.append_event(state, f"Direct flow launch {launch.id} failed for {flow_name}: {launch.launch_error}")
             self._repository.touch_conversation_state(state)
             self._repository.write_state(state)
-            return state.to_dict()
+            return self._repository.serialize_conversation_state_for_ui(state)
 
     def note_flow_run_request_launched(
         self,
@@ -586,7 +586,7 @@ class ProjectChatReviewService:
             )
             self._repository.touch_conversation_state(state)
             self._repository.write_state(state)
-            return state.to_dict()
+            return self._repository.serialize_conversation_state_for_ui(state)
 
     def fail_flow_run_request_launch(
         self,
@@ -612,4 +612,4 @@ class ProjectChatReviewService:
             )
             self._repository.touch_conversation_state(state)
             self._repository.write_state(state)
-            return state.to_dict()
+            return self._repository.serialize_conversation_state_for_ui(state)

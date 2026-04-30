@@ -357,6 +357,17 @@ class ProjectChatService:
     def get_snapshot(self, conversation_id: str, project_path: Optional[str] = None) -> dict[str, Any]:
         return self._repository.get_snapshot(conversation_id, project_path)
 
+    def _serialize_conversation_state_for_ui(self, state: ConversationState) -> dict[str, Any]:
+        return self._repository.serialize_conversation_state_for_ui(state)
+
+    def get_segment_tool_output(
+        self,
+        conversation_id: str,
+        segment_id: str,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        return self._repository.get_segment_tool_output(conversation_id, segment_id, project_path)
+
     def list_chat_models(self, project_path: str) -> dict[str, Any]:
         normalized_project_path = _normalize_project_path(project_path)
         if not normalized_project_path:
@@ -928,7 +939,7 @@ class ProjectChatService:
                 state.reasoning_effort = normalized_reasoning_effort
             self._touch_conversation_state(state)
             self._write_state(state)
-            return state.to_dict()
+            return self._serialize_conversation_state_for_ui(state)
 
     def _prepare_turn(
         self,
@@ -1007,7 +1018,7 @@ class ProjectChatService:
             self._touch_conversation_state(state, title_hint=trimmed_message)
             prompt = self._build_prompt(state, trimmed_message, effective_chat_mode)
             self._write_state(state)
-            snapshot = state.to_dict()
+            snapshot = self._serialize_conversation_state_for_ui(state)
             _log_project_chat_debug(
                 "appended user and assistant turns",
                 conversation_id=conversation_id,
@@ -1411,7 +1422,7 @@ class ProjectChatService:
                     emitted_payloads.append(self._build_turn_upsert_payload(state, current_assistant_turn))
                 self._touch_conversation_state(state)
                 self._write_state(state)
-                snapshot = state.to_dict()
+                snapshot = self._serialize_conversation_state_for_ui(state)
             _log_project_chat_debug(
                 "persisted final assistant turn",
                 conversation_id=conversation_id,
@@ -1633,12 +1644,12 @@ class ProjectChatService:
             normalized_answers = _normalize_request_user_input_answers(request, answers)
             if request.status == "answered":
                 if request.answers == normalized_answers:
-                    snapshot = state.to_dict()
+                    snapshot = self._serialize_conversation_state_for_ui(state)
                 else:
                     raise ValueError("That conversation request is already answered.")
             elif request.status == "expired":
                 if request.answers == normalized_answers:
-                    snapshot = state.to_dict()
+                    snapshot = self._serialize_conversation_state_for_ui(state)
                 else:
                     raise ValueError(REQUEST_USER_INPUT_EXPIRED_ERROR)
             else:
@@ -1681,7 +1692,7 @@ class ProjectChatService:
                 self._touch_conversation_state(state)
                 emitted_payloads.append(self._build_segment_upsert_payload(state, segment))
                 self._write_state(state)
-                snapshot = state.to_dict()
+                snapshot = self._serialize_conversation_state_for_ui(state)
 
         for payload in emitted_payloads:
             self._publish_progress_payload(progress_callback, payload)

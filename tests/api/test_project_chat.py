@@ -14,6 +14,7 @@ import attractor.api.server as server
 import spark.app as product_app
 import spark.chat.service as project_chat
 import spark.chat.session as project_chat_session
+import spark.workspace.api as workspace_api
 import spark.workspace.attractor_client as attractor_client
 from spark_common.codex_app_client import (
     CodexAppServerThreadResumeFailure,
@@ -30,18 +31,84 @@ from spark.authoring_assets import (
 from tests.support.flow_fixtures import seed_flow_fixture
 from spark.chat.prompt_templates import PROMPTS_FILE_NAME
 from spark.workspace.conversations.models import (
+    ConversationSegment,
+    ConversationState,
+    ConversationTurn,
     RequestUserInputOption,
     RequestUserInputQuestion,
     RequestUserInputRecord,
+    ToolCallRecord,
 )
 from spark.workspace.storage import conversation_handles_path, ensure_project_paths
 
 
 TEST_DISPATCH_FLOW = "test-dispatch.dot"
+TEST_TIMESTAMP = "2026-04-30T12:00:00Z"
 
 
 def _project_chat_service() -> project_chat.ProjectChatService:
     return product_app.get_project_chat()
+
+
+def _seed_tool_output_conversation(
+    *,
+    conversation_id: str = "conversation-tool-output",
+    project_path: str = "/tmp/project-tool-output",
+    output: str,
+) -> ConversationState:
+    service = _project_chat_service()
+    state = ConversationState(
+        conversation_id=conversation_id,
+        project_path=project_path,
+        title="Tool output",
+        created_at=TEST_TIMESTAMP,
+        updated_at=TEST_TIMESTAMP,
+        turns=[
+            ConversationTurn(
+                id="turn-user",
+                role="user",
+                content="Run it",
+                timestamp=TEST_TIMESTAMP,
+            ),
+            ConversationTurn(
+                id="turn-assistant",
+                role="assistant",
+                content="Done",
+                timestamp=TEST_TIMESTAMP,
+            ),
+        ],
+        segments=[
+            ConversationSegment(
+                id="segment-tool",
+                turn_id="turn-assistant",
+                order=1,
+                kind="tool_call",
+                role="system",
+                status="complete",
+                timestamp=TEST_TIMESTAMP,
+                updated_at=TEST_TIMESTAMP,
+                tool_call=ToolCallRecord(
+                    id="tool-call",
+                    kind="command_execution",
+                    status="completed",
+                    title="Large output",
+                    command="printf output",
+                    output=output,
+                ),
+            )
+        ],
+    )
+    service._touch_conversation_state(state)
+    service._write_state(state)
+    return state
+
+
+def _assert_ui_tool_output_preview(snapshot: dict[str, Any], full_output: str) -> None:
+    tool_segment = next(segment for segment in snapshot["segments"] if segment["id"] == "segment-tool")
+    tool_call = tool_segment["tool_call"]
+    assert tool_call["output"] == full_output[:8192]
+    assert tool_call["output_truncated"] is True
+    assert tool_call["output_size"] == len(full_output.encode("utf-8"))
 
 
 def _completed_turn_result(
@@ -224,6 +291,289 @@ def test_parse_chat_response_payload_accepts_plain_text_and_json() -> None:
         "assistant_message": "Hello.",
         "flow_run_request": None,
     }
+
+
+def test_conversation_snapshot_truncates_tool_output_without_mutating_persisted_state() -> None:
+    large_output = "x" * 9000
+    state = _seed_tool_output_conversation(output=large_output)
+
+    snapshot = _project_chat_service().get_snapshot(state.conversation_id, state.project_path)
+
+    tool_call = snapshot["segments"][0]["tool_call"]
+    assert tool_call["output"] == large_output[:8192]
+    assert tool_call["output_truncated"] is True
+    assert tool_call["output_size"] == len(large_output)
+
+    persisted_state = _project_chat_service()._read_state(state.conversation_id, state.project_path)
+    assert persisted_state is not None
+    assert persisted_state.segments[0].tool_call is not None
+    assert persisted_state.segments[0].tool_call.output == large_output
+
+
+def test_conversation_snapshot_marks_small_tool_output_untruncated() -> None:
+    output = "small output"
+    state = _seed_tool_output_conversation(output=output)
+
+    snapshot = _project_chat_service().get_snapshot(state.conversation_id, state.project_path)
+
+    tool_call = snapshot["segments"][0]["tool_call"]
+    assert tool_call["output"] == output
+    assert tool_call["output_truncated"] is False
+    assert tool_call["output_size"] == len(output)
+
+
+def test_conversation_segment_tool_output_endpoint_returns_full_output(product_api_client) -> None:
+    large_output = "full output\n" * 1000
+    state = _seed_tool_output_conversation(output=large_output)
+
+    response = product_api_client.get(
+        f"/workspace/api/conversations/{state.conversation_id}/segments/segment-tool/tool-output",
+        params={"project_path": state.project_path},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "output": large_output,
+        "output_size": len(large_output.encode("utf-8")),
+    }
+
+
+def test_segment_upsert_payload_truncates_tool_output() -> None:
+    state = _seed_tool_output_conversation(output="y" * 9000)
+    segment = state.segments[0]
+
+    payload = _project_chat_service()._build_segment_upsert_payload(state, segment)
+
+    tool_call = payload["segment"]["tool_call"]
+    assert len(tool_call["output"].encode("utf-8")) == 8192
+    assert tool_call["output_truncated"] is True
+    assert tool_call["output_size"] == 9000
+
+
+def test_update_conversation_settings_return_truncates_historical_tool_output() -> None:
+    large_output = "settings-output" * 700
+    state = _seed_tool_output_conversation(output=large_output)
+
+    snapshot = _project_chat_service().update_conversation_settings(
+        state.conversation_id,
+        state.project_path,
+        chat_mode="plan",
+    )
+
+    _assert_ui_tool_output_preview(snapshot, large_output)
+    persisted_state = _project_chat_service()._read_state(state.conversation_id, state.project_path)
+    assert persisted_state is not None
+    assert persisted_state.segments[0].tool_call is not None
+    assert persisted_state.segments[0].tool_call.output == large_output
+
+
+def test_start_turn_return_truncates_historical_tool_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    large_output = "start-output" * 800
+    state = _seed_tool_output_conversation(output=large_output)
+    entered_turn = threading.Event()
+    finish_turn = threading.Event()
+
+    class BlockingSession:
+        def turn(self, *args, **kwargs) -> project_chat.ChatTurnResult:
+            entered_turn.set()
+            assert finish_turn.wait(timeout=2)
+            on_event = kwargs.get("on_event")
+            if on_event is not None:
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
+                        content_delta="Done.",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Done.")
+
+    service = _project_chat_service()
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: BlockingSession())
+
+    snapshot = service.start_turn(state.conversation_id, state.project_path, "Continue.", None)
+
+    _assert_ui_tool_output_preview(snapshot, large_output)
+    assert entered_turn.wait(timeout=2)
+    finish_turn.set()
+
+
+def test_send_turn_final_return_truncates_historical_tool_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    large_output = "final-output" * 800
+    state = _seed_tool_output_conversation(output=large_output)
+
+    class PlainTextSession:
+        def turn(self, *args, **kwargs) -> project_chat.ChatTurnResult:
+            on_event = kwargs.get("on_event")
+            if on_event is not None:
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
+                        content_delta="Done.",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Done.")
+
+    service = _project_chat_service()
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: PlainTextSession())
+
+    snapshot = service.send_turn(state.conversation_id, state.project_path, "Continue.", None)
+
+    _assert_ui_tool_output_preview(snapshot, large_output)
+
+
+def test_request_user_input_answer_return_truncates_historical_tool_output() -> None:
+    large_output = "request-output" * 800
+    state = _seed_tool_output_conversation(output=large_output)
+    request = _request_user_input_record()
+    state.segments.append(
+        project_chat.ConversationSegment(
+            id="segment-request-user-input-app-turn-1-request-1",
+            turn_id="turn-assistant",
+            order=2,
+            kind="request_user_input",
+            role="system",
+            status="pending",
+            timestamp=TEST_TIMESTAMP,
+            updated_at=TEST_TIMESTAMP,
+            content="Which path should I take?",
+            request_user_input=request,
+        )
+    )
+    _project_chat_service()._write_state(state)
+
+    snapshot = _project_chat_service().submit_request_user_input_answer(
+        state.conversation_id,
+        state.project_path,
+        request.request_id,
+        {
+            "path_choice": "Inline card",
+            "constraints": "Preserve the inline timeline.",
+        },
+    )
+
+    _assert_ui_tool_output_preview(snapshot, large_output)
+
+
+def test_review_flow_run_request_return_truncates_historical_tool_output() -> None:
+    large_output = "flow-review-output" * 600
+    state = _seed_tool_output_conversation(output=large_output)
+    state.flow_run_requests.append(
+        project_chat.FlowRunRequest(
+            id="flow-request-1",
+            created_at=TEST_TIMESTAMP,
+            updated_at=TEST_TIMESTAMP,
+            flow_name=TEST_DISPATCH_FLOW,
+            summary="Run implementation.",
+            project_path=state.project_path,
+            conversation_id=state.conversation_id,
+            source_turn_id="turn-assistant",
+        )
+    )
+    _project_chat_service()._write_state(state)
+
+    snapshot, flow_request = _project_chat_service().review_flow_run_request(
+        state.conversation_id,
+        state.project_path,
+        "flow-request-1",
+        "rejected",
+        "Not now.",
+        None,
+        None,
+    )
+
+    assert flow_request.status == "rejected"
+    _assert_ui_tool_output_preview(snapshot, large_output)
+
+
+def test_review_proposed_plan_return_truncates_historical_tool_output(tmp_path: Path) -> None:
+    large_output = "plan-review-output" * 600
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    state = _seed_tool_output_conversation(
+        conversation_id="conversation-plan-tool-output",
+        project_path=str(project_dir),
+        output=large_output,
+    )
+    plan_segment = project_chat.ConversationSegment(
+        id="segment-plan-inline",
+        turn_id="turn-assistant",
+        order=2,
+        kind="plan",
+        role="assistant",
+        status="complete",
+        timestamp=TEST_TIMESTAMP,
+        updated_at=TEST_TIMESTAMP,
+        completed_at=TEST_TIMESTAMP,
+        content="# Proposed Plan\n\nDo the work.",
+        artifact_id="proposed-plan-inline",
+        source=project_chat.ConversationSegmentSource(),
+    )
+    state.segments.append(plan_segment)
+    state.proposed_plans.append(
+        project_chat.ProposedPlanArtifact(
+            id="proposed-plan-inline",
+            created_at=TEST_TIMESTAMP,
+            updated_at=TEST_TIMESTAMP,
+            title="Proposed Plan",
+            content=plan_segment.content,
+            project_path=str(project_dir),
+            conversation_id=state.conversation_id,
+            source_turn_id="turn-assistant",
+            source_segment_id=plan_segment.id,
+        )
+    )
+    _project_chat_service()._write_state(state)
+
+    snapshot, proposed_plan, flow_launch = _project_chat_service().review_proposed_plan(
+        state.conversation_id,
+        state.project_path,
+        "proposed-plan-inline",
+        "rejected",
+        "Needs work.",
+    )
+
+    assert proposed_plan.status == "rejected"
+    assert flow_launch is None
+    _assert_ui_tool_output_preview(snapshot, large_output)
+
+
+def test_conversation_events_stream_does_not_emit_initial_snapshot(product_api_client, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _seed_tool_output_conversation(output="small output")
+
+    async def timeout_immediately(awaitable, timeout):
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(workspace_api.asyncio, "wait_for", timeout_immediately)
+
+    class ConnectedRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def read_first_stream_chunk() -> str:
+        endpoint = None
+        for route in product_app.app.routes:
+            if getattr(route, "path", None) != "/workspace":
+                continue
+            for child_route in route.routes:
+                if getattr(child_route, "path", None) == "/api/conversations/{conversation_id}/events":
+                    endpoint = child_route.endpoint
+                    break
+        assert endpoint is not None
+        response = await endpoint(state.conversation_id, ConnectedRequest(), state.project_path)
+        iterator = response.body_iterator
+        try:
+            return await anext(iterator)
+        finally:
+            await iterator.aclose()
+
+    assert asyncio.run(read_first_stream_chunk()) == ": keepalive\n\n"
 
 
 def test_codex_app_server_chat_session_resumes_request_user_input_after_answer_submission() -> None:
@@ -3072,84 +3422,6 @@ def test_request_user_input_answers_expire_without_live_session(tmp_path: Path) 
     assert snapshot["turns"][-1]["status"] == "failed"
     assert snapshot["turns"][-1]["error"] == "The requested input expired before the answer could be used."
 
-def test_request_user_input_legacy_pending_delivery_state_normalizes_to_expired(tmp_path: Path) -> None:
-    service = project_chat.ProjectChatService(tmp_path)
-    project_path = str(tmp_path)
-    conversation_id = "conversation-request-legacy"
-    service._write_state(
-        project_chat.ConversationState(
-            conversation_id=conversation_id,
-            project_path=project_path,
-            turns=[
-                project_chat.ConversationTurn(
-                    id="turn-user-1",
-                    role="user",
-                    content="Ask me the missing question.",
-                    timestamp="2026-04-17T12:00:00Z",
-                ),
-                project_chat.ConversationTurn(
-                    id="turn-assistant-1",
-                    role="assistant",
-                    content="",
-                    timestamp="2026-04-17T12:00:01Z",
-                    status="streaming",
-                    parent_turn_id="turn-user-1",
-                ),
-            ],
-            segments=[
-                project_chat.ConversationSegment(
-                    id="segment-request-user-input-app-turn-1-request-1",
-                    turn_id="turn-assistant-1",
-                    order=1,
-                    kind="request_user_input",
-                    role="system",
-                    status="complete",
-                    timestamp="2026-04-17T12:00:02Z",
-                    updated_at="2026-04-17T12:00:03Z",
-                    completed_at="2026-04-17T12:00:03Z",
-                    content=(
-                        "Which path should I take?\n"
-                        "Answer: Inline card\n\n"
-                        "What constraints matter?\n"
-                        "Answer: Preserve the inline timeline."
-                    ),
-                    source=project_chat.ConversationSegmentSource(
-                        app_turn_id="app-turn-1",
-                        item_id="request-1",
-                    ),
-                    request_user_input=RequestUserInputRecord(
-                        request_id="request-1",
-                        status="answered",
-                        questions=_request_user_input_record().questions,
-                        answers={
-                            "path_choice": "Inline card",
-                            "constraints": "Preserve the inline timeline.",
-                        },
-                        submitted_at="2026-04-17T12:00:03Z",
-                    ),
-                ),
-            ],
-        )
-    )
-    raw_state_path = service._conversation_state_path(conversation_id, project_path)
-    payload = json.loads(raw_state_path.read_text(encoding="utf-8"))
-    payload["segments"][0]["request_user_input"]["delivery_status"] = "pending_delivery"
-    raw_state_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-    normalized_snapshot = service.get_snapshot(conversation_id, project_path)
-    normalized_request = next(
-        segment["request_user_input"]
-        for segment in normalized_snapshot["segments"]
-        if segment["kind"] == "request_user_input"
-    )
-
-    assert normalized_request["status"] == "expired"
-    assert normalized_request["submitted_at"] == "2026-04-17T12:00:03Z"
-    assert "delivery_status" not in normalized_request
-    assert normalized_snapshot["turns"][-1]["status"] == "failed"
-    assert normalized_snapshot["turns"][-1]["error"] == "The requested input expired before the answer could be used."
-
-
 def test_get_snapshot_does_not_build_or_resume_request_user_input_delivery(tmp_path: Path, monkeypatch) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     project_path = str(tmp_path)
@@ -4946,6 +5218,145 @@ def test_update_project_conversation_settings_endpoint_updates_model_without_mes
     assert payload["model"] == "gpt-5.4"
     assert payload["reasoning_effort"] == "high"
     assert payload["turns"] == []
+
+
+def test_mutation_endpoints_return_bounded_historical_tool_output(
+    product_api_client,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    large_output = "api-output" * 1000
+    state = _seed_tool_output_conversation(
+        conversation_id="conversation-api-tool-output",
+        project_path=str(tmp_path),
+        output=large_output,
+    )
+
+    settings_response = product_api_client.put(
+        f"/workspace/api/conversations/{state.conversation_id}/settings",
+        json={
+            "project_path": state.project_path,
+            "chat_mode": "plan",
+        },
+    )
+    assert settings_response.status_code == 200
+    _assert_ui_tool_output_preview(settings_response.json(), large_output)
+
+    finish_turn = threading.Event()
+
+    class BlockingSession:
+        def turn(self, *args, **kwargs) -> project_chat.ChatTurnResult:
+            assert finish_turn.wait(timeout=2)
+            on_event = kwargs.get("on_event")
+            if on_event is not None:
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
+                        content_delta="Done.",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message="Done.")
+
+    monkeypatch.setattr(_project_chat_service(), "_build_session", lambda *args, **kwargs: BlockingSession())
+    turn_response = product_api_client.post(
+        f"/workspace/api/conversations/{state.conversation_id}/turns",
+        json={
+            "project_path": state.project_path,
+            "message": "Continue.",
+        },
+    )
+    assert turn_response.status_code == 200
+    _assert_ui_tool_output_preview(turn_response.json(), large_output)
+    finish_turn.set()
+
+
+def test_review_endpoints_return_bounded_historical_tool_output(
+    product_api_client,
+    tmp_path: Path,
+) -> None:
+    service = _project_chat_service()
+    flow_output = "api-flow-review-output" * 600
+    flow_state = _seed_tool_output_conversation(
+        conversation_id="conversation-api-flow-review-output",
+        project_path=str(tmp_path),
+        output=flow_output,
+    )
+    flow_state.flow_run_requests.append(
+        project_chat.FlowRunRequest(
+            id="flow-request-1",
+            created_at=TEST_TIMESTAMP,
+            updated_at=TEST_TIMESTAMP,
+            flow_name=TEST_DISPATCH_FLOW,
+            summary="Run implementation.",
+            project_path=flow_state.project_path,
+            conversation_id=flow_state.conversation_id,
+            source_turn_id="turn-assistant",
+        )
+    )
+    service._write_state(flow_state)
+
+    flow_response = product_api_client.post(
+        f"/workspace/api/conversations/{flow_state.conversation_id}/flow-run-requests/flow-request-1/review",
+        json={
+            "project_path": flow_state.project_path,
+            "disposition": "rejected",
+            "message": "Not now.",
+        },
+    )
+    assert flow_response.status_code == 200
+    _assert_ui_tool_output_preview(flow_response.json(), flow_output)
+
+    plan_output = "api-plan-review-output" * 600
+    project_dir = tmp_path / "plan-project"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    plan_state = _seed_tool_output_conversation(
+        conversation_id="conversation-api-plan-review-output",
+        project_path=str(project_dir),
+        output=plan_output,
+    )
+    plan_segment = project_chat.ConversationSegment(
+        id="segment-plan-inline",
+        turn_id="turn-assistant",
+        order=2,
+        kind="plan",
+        role="assistant",
+        status="complete",
+        timestamp=TEST_TIMESTAMP,
+        updated_at=TEST_TIMESTAMP,
+        completed_at=TEST_TIMESTAMP,
+        content="# Proposed Plan\n\nDo the work.",
+        artifact_id="proposed-plan-inline",
+        source=project_chat.ConversationSegmentSource(),
+    )
+    plan_state.segments.append(plan_segment)
+    plan_state.proposed_plans.append(
+        project_chat.ProposedPlanArtifact(
+            id="proposed-plan-inline",
+            created_at=TEST_TIMESTAMP,
+            updated_at=TEST_TIMESTAMP,
+            title="Proposed Plan",
+            content=plan_segment.content,
+            project_path=str(project_dir),
+            conversation_id=plan_state.conversation_id,
+            source_turn_id="turn-assistant",
+            source_segment_id=plan_segment.id,
+        )
+    )
+    service._write_state(plan_state)
+
+    plan_response = product_api_client.post(
+        f"/workspace/api/conversations/{plan_state.conversation_id}/proposed-plans/proposed-plan-inline/review",
+        json={
+            "project_path": plan_state.project_path,
+            "disposition": "rejected",
+            "review_note": "Needs work.",
+        },
+    )
+    assert plan_response.status_code == 200
+    _assert_ui_tool_output_preview(plan_response.json(), plan_output)
 
 
 def test_project_chat_models_endpoint_returns_normalized_model_metadata(

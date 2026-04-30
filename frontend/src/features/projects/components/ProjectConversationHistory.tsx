@@ -1,5 +1,6 @@
 import { memo, useCallback, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
+import { fetchConversationSegmentToolOutputValidated } from '@/lib/workspaceClient'
 import type {
     ConversationTimelineEntry,
     ProjectFlowLaunch,
@@ -35,6 +36,7 @@ type ContextCompactionEntry = Extract<ConversationTimelineEntry, { kind: 'contex
 
 interface ProjectConversationHistoryProps {
     activeConversationId: string | null
+    activeProjectPath: string | null
     isConversationHistoryLoading: boolean
     hasRenderableConversationHistory: boolean
     activeConversationHistory: ConversationTimelineEntry[]
@@ -71,15 +73,23 @@ function conversationEntryKey(entry: ConversationTimelineEntry) {
 
 const ToolCallRow = memo(function ToolCallRow({
     entry,
+    fullOutput,
+    isLoadingFullOutput,
     isExpanded,
+    loadFullOutputError,
     onToggleToolCallExpanded,
 }: {
     entry: ToolCallEntry
+    fullOutput: string | null
+    isLoadingFullOutput: boolean
     isExpanded: boolean
+    loadFullOutputError: string | null
     onToggleToolCallExpanded: (toolCallId: string) => void
 }) {
     const statusPresentation = getToolCallStatusPresentation(entry.toolCall.status)
     const summaryDetail = summarizeToolCallDetail(entry.toolCall)
+    const displayedOutput = fullOutput ?? entry.toolCall.output
+    const hasPreviewOnly = entry.toolCall.outputTruncated === true && fullOutput === null
 
     return (
         <li className="flex justify-start">
@@ -131,10 +141,19 @@ const ToolCallRow = memo(function ToolCallRow({
                                 ))}
                             </ul>
                         ) : null}
-                        {entry.toolCall.output ? (
+                        {displayedOutput ? (
                             <pre className="max-h-40 overflow-auto rounded border border-border/60 bg-background/80 px-2 py-1 whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
-                                {entry.toolCall.output}
+                                {displayedOutput}
                             </pre>
+                        ) : null}
+                        {hasPreviewOnly || isLoadingFullOutput || loadFullOutputError ? (
+                            <p className="text-[11px] text-muted-foreground">
+                                {isLoadingFullOutput
+                                    ? 'Loading full output...'
+                                    : loadFullOutputError
+                                        ? loadFullOutputError
+                                        : `Showing preview${entry.toolCall.outputSize ? ` of ${entry.toolCall.outputSize.toLocaleString()} bytes` : ''}.`}
+                            </p>
                         ) : null}
                     </div>
                 ) : null}
@@ -523,6 +542,7 @@ const MessageRow = memo(function MessageRow({
 
 export function ProjectConversationHistory({
     activeConversationId,
+    activeProjectPath,
     isConversationHistoryLoading,
     hasRenderableConversationHistory,
     activeConversationHistory,
@@ -546,12 +566,64 @@ export function ProjectConversationHistory({
     onOpenFlowRun,
 }: ProjectConversationHistoryProps) {
     const [planReviewNotes, setPlanReviewNotes] = useState<Record<string, string>>({})
+    const [fullToolOutputs, setFullToolOutputs] = useState<Record<string, string>>({})
+    const [loadingFullToolOutputs, setLoadingFullToolOutputs] = useState<Record<string, boolean>>({})
+    const [fullToolOutputErrors, setFullToolOutputErrors] = useState<Record<string, string>>({})
     const onPlanReviewNoteChange = useCallback((proposedPlanId: string, value: string) => {
         setPlanReviewNotes((current) => ({
             ...current,
             [proposedPlanId]: value,
         }))
     }, [])
+    const onToolCallExpanded = useCallback((entry: ToolCallEntry) => {
+        onToggleToolCallExpanded(entry.toolCall.id)
+        if (
+            !activeConversationId
+            || !activeProjectPath
+            || entry.toolCall.outputTruncated !== true
+            || expandedToolCalls[entry.toolCall.id] === true
+            || fullToolOutputs[entry.id] !== undefined
+            || loadingFullToolOutputs[entry.id] === true
+        ) {
+            return
+        }
+        setLoadingFullToolOutputs((current) => ({
+            ...current,
+            [entry.id]: true,
+        }))
+        setFullToolOutputErrors((current) => {
+            const next = { ...current }
+            delete next[entry.id]
+            return next
+        })
+        void fetchConversationSegmentToolOutputValidated(activeConversationId, entry.id, activeProjectPath)
+            .then((payload) => {
+                setFullToolOutputs((current) => ({
+                    ...current,
+                    [entry.id]: payload.output,
+                }))
+            })
+            .catch(() => {
+                setFullToolOutputErrors((current) => ({
+                    ...current,
+                    [entry.id]: 'Unable to load full output.',
+                }))
+            })
+            .finally(() => {
+                setLoadingFullToolOutputs((current) => {
+                    const next = { ...current }
+                    delete next[entry.id]
+                    return next
+                })
+            })
+    }, [
+        activeConversationId,
+        activeProjectPath,
+        expandedToolCalls,
+        fullToolOutputs,
+        loadingFullToolOutputs,
+        onToggleToolCallExpanded,
+    ])
 
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col">
@@ -579,8 +651,11 @@ export function ProjectConversationHistory({
                                 <ToolCallRow
                                     key={key}
                                     entry={entry}
+                                    fullOutput={fullToolOutputs[entry.id] ?? null}
+                                    isLoadingFullOutput={loadingFullToolOutputs[entry.id] === true}
                                     isExpanded={expandedToolCalls[entry.toolCall.id] === true}
-                                    onToggleToolCallExpanded={onToggleToolCallExpanded}
+                                    loadFullOutputError={fullToolOutputErrors[entry.id] ?? null}
+                                    onToggleToolCallExpanded={() => onToolCallExpanded(entry)}
                                 />
                             )
                         }

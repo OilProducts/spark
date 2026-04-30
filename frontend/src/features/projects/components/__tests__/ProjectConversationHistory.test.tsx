@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
@@ -66,6 +66,7 @@ const makeHistoryElement = (
 ) =>
     <ProjectConversationHistory
         activeConversationId="conversation-1"
+        activeProjectPath="/tmp/project"
         isConversationHistoryLoading={false}
         hasRenderableConversationHistory={activeConversationHistory.length > 0}
         activeConversationHistory={activeConversationHistory}
@@ -105,6 +106,7 @@ const InteractiveHistory = ({
     return (
         <ProjectConversationHistory
             activeConversationId="conversation-1"
+            activeProjectPath="/tmp/project"
             isConversationHistoryLoading={false}
             hasRenderableConversationHistory
             activeConversationHistory={activeConversationHistory}
@@ -768,5 +770,51 @@ describe('ProjectConversationHistory', () => {
 
         expect(screen.getByText('[README](https://example.com)')).toBeVisible()
         expect(within(history).queryByRole('link', { name: 'README' })).not.toBeInTheDocument()
+    })
+
+    it('loads full output when a truncated tool call is expanded', async () => {
+        const user = userEvent.setup()
+        const fetchSpy = vi.fn(async () => new Response(
+            JSON.stringify({
+                output: 'preview plus full output',
+                output_size: 24,
+            }),
+            {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            },
+        ))
+        vi.stubGlobal('fetch', fetchSpy)
+
+        render(
+            <InteractiveHistory
+                activeConversationHistory={[
+                    makeToolCallEntry({
+                        id: 'segment-tool-1',
+                        toolCall: {
+                            id: 'tool-1',
+                            kind: 'command_execution',
+                            status: 'completed',
+                            title: 'Large output',
+                            command: 'run-large-output',
+                            output: 'preview',
+                            outputSize: 24,
+                            outputTruncated: true,
+                            filePaths: [],
+                        },
+                    }),
+                ]}
+            />,
+        )
+
+        await user.click(screen.getByTestId('project-tool-call-toggle-tool-1'))
+
+        await waitFor(() => {
+            expect(screen.getByText('preview plus full output')).toBeVisible()
+        })
+        expect(fetchSpy).toHaveBeenCalledWith(
+            expect.stringContaining('/workspace/api/conversations/conversation-1/segments/segment-tool-1/tool-output?project_path='),
+            undefined,
+        )
     })
 })

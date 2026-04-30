@@ -21,6 +21,8 @@ export interface ConversationTimelineToolCall {
     title: string
     command?: string | null
     output?: string | null
+    outputSize?: number | null
+    outputTruncated?: boolean
     filePaths: string[]
 }
 

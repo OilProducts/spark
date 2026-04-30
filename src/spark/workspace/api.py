@@ -404,6 +404,24 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @router.get("/api/conversations/{conversation_id}/segments/{segment_id}/tool-output")
+    async def get_project_conversation_segment_tool_output(
+        conversation_id: str,
+        segment_id: str,
+        project_path: Optional[str] = None,
+    ):
+        try:
+            return await asyncio.to_thread(
+                deps.get_project_chat().get_segment_tool_output,
+                conversation_id,
+                segment_id,
+                project_path,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Unknown conversation segment tool output.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @router.put("/api/conversations/{conversation_id}/settings")
     async def update_project_conversation_settings(conversation_id: str, req: ConversationSettingsRequest):
         try:
@@ -679,7 +697,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
     async def project_conversation_events(conversation_id: str, request: Request, project_path: Optional[str] = None):
         project_chat = deps.get_project_chat()
         try:
-            snapshot = await asyncio.to_thread(project_chat.get_snapshot, conversation_id, project_path)
+            await asyncio.to_thread(project_chat.get_snapshot, conversation_id, project_path)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown conversation: {conversation_id}") from exc
         except ValueError as exc:
@@ -689,7 +707,6 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
 
         async def stream():
             try:
-                yield f"data: {json.dumps({'type': 'conversation_snapshot', 'state': snapshot})}\n\n"
                 while True:
                     if await request.is_disconnected():
                         break

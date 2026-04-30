@@ -522,6 +522,7 @@ export function useProjectsHomeController() {
         isNarrowViewport,
         historyProps: {
             activeConversationId,
+            activeProjectPath,
             isConversationHistoryLoading,
             hasRenderableConversationHistory,
             activeConversationHistory,

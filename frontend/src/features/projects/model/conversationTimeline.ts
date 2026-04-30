@@ -160,6 +160,8 @@ function buildAssistantTimelineEntries(
                     title: segment.tool_call.title,
                     command: segment.tool_call.command ?? null,
                     output: segment.tool_call.output ?? null,
+                    outputSize: segment.tool_call.output_size ?? null,
+                    outputTruncated: segment.tool_call.output_truncated === true,
                     filePaths: segment.tool_call.file_paths,
                 },
             })

@@ -37,6 +37,15 @@ from spark.workspace.storage import (
 )
 from spark_common.runtime_path import resolve_runtime_workspace_path
 
+UI_TOOL_OUTPUT_PREVIEW_BYTES = 8 * 1024
+
+
+def _truncate_utf8(value: str, byte_limit: int) -> tuple[str, bool]:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= byte_limit:
+        return value, False
+    return encoded[:byte_limit].decode("utf-8", errors="ignore"), True
+
 
 class ProjectChatRepository:
     def __init__(self, data_dir: Path, lock: threading.Lock) -> None:
@@ -455,7 +464,49 @@ class ProjectChatRepository:
                 should_write_state = True
             if should_write_state:
                 self.write_state(state)
-        return state.to_dict()
+        return self.serialize_conversation_state_for_ui(state)
+
+    def serialize_tool_call_for_ui(self, tool_call: Any) -> dict[str, Any]:
+        payload = tool_call.to_dict()
+        output = tool_call.output
+        if output is None:
+            return payload
+        output_size = len(output.encode("utf-8"))
+        preview, output_truncated = _truncate_utf8(output, UI_TOOL_OUTPUT_PREVIEW_BYTES)
+        payload["output"] = preview
+        payload["output_size"] = output_size
+        payload["output_truncated"] = output_truncated
+        return payload
+
+    def serialize_segment_for_ui(self, segment: ConversationSegment) -> dict[str, Any]:
+        payload = segment.to_dict()
+        if segment.tool_call is not None:
+            payload["tool_call"] = self.serialize_tool_call_for_ui(segment.tool_call)
+        return payload
+
+    def serialize_conversation_state_for_ui(self, state: ConversationState) -> dict[str, Any]:
+        payload = state.to_dict()
+        payload["segments"] = [self.serialize_segment_for_ui(segment) for segment in state.segments]
+        return payload
+
+    def get_segment_tool_output(
+        self,
+        conversation_id: str,
+        segment_id: str,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            state = self.read_state(conversation_id, project_path)
+            if state is None:
+                raise FileNotFoundError(conversation_id)
+            segment = self.get_segment(state, segment_id)
+            if segment is None or segment.tool_call is None or segment.tool_call.output is None:
+                raise FileNotFoundError(segment_id)
+            output = segment.tool_call.output
+            return {
+                "output": output,
+                "output_size": len(output.encode("utf-8")),
+            }
 
     def delete_conversation(self, conversation_id: str, project_path: str) -> dict[str, Any]:
         normalized_project_path = normalize_project_path_value(project_path)
@@ -585,5 +636,5 @@ class ProjectChatRepository:
             "project_path": state.project_path,
             "title": state.title,
             "updated_at": state.updated_at,
-            "segment": segment.to_dict(),
+            "segment": self.serialize_segment_for_ui(segment),
         }

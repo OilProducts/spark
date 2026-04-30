@@ -127,6 +127,52 @@ describe('conversationsApi parsing', () => {
         })
     })
 
+    it('parses truncated tool output metadata from snapshots', () => {
+        const snapshot = parseConversationSnapshotResponse({
+            schema_version: 4,
+            conversation_id: 'conversation-tool-output',
+            conversation_handle: 'steady-harbor',
+            project_path: '/tmp/project-plan',
+            chat_mode: 'chat',
+            title: 'Tool output thread',
+            created_at: '2026-04-16T18:00:00Z',
+            updated_at: '2026-04-16T18:00:10Z',
+            turns: [],
+            segments: [
+                {
+                    id: 'segment-tool-1',
+                    turn_id: 'turn-assistant-1',
+                    order: 1,
+                    kind: 'tool_call',
+                    role: 'system',
+                    status: 'complete',
+                    timestamp: '2026-04-16T18:00:08Z',
+                    updated_at: '2026-04-16T18:00:08Z',
+                    content: '',
+                    tool_call: {
+                        id: 'tool-call-1',
+                        kind: 'command_execution',
+                        status: 'completed',
+                        title: 'List files',
+                        output: 'preview',
+                        output_size: 12000,
+                        output_truncated: true,
+                        file_paths: [],
+                    },
+                },
+            ],
+            event_log: [],
+            flow_run_requests: [],
+            flow_launches: [],
+        })
+
+        expect(snapshot.segments[0].tool_call).toMatchObject({
+            output: 'preview',
+            output_size: 12000,
+            output_truncated: true,
+        })
+    })
+
     it('preserves continuity-reset workflow event fields from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
             schema_version: 4,
