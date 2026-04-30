@@ -1,11 +1,9 @@
 import type {
     ConversationChatMode,
     ConversationSegmentResponse,
-    ConversationSnapshotResponse,
     ConversationTurnResponse,
 } from '@/lib/workspaceClient'
 import type { ConversationTimelineEntry } from './types'
-import type { OptimisticSendState } from './conversationState'
 
 function formatWorkedDuration(elapsedSeconds: number): string {
     if (elapsedSeconds < 60) {
@@ -235,52 +233,4 @@ export function buildConversationTimelineEntriesForTurn(
         }]
     }
     return []
-}
-
-export function buildConversationTimelineEntries(
-    snapshot: ConversationSnapshotResponse | null,
-    optimisticSend: OptimisticSendState | null,
-): ConversationTimelineEntry[] {
-    if (!snapshot) {
-        if (!optimisticSend) {
-            return []
-        }
-        return [
-            {
-                id: `${optimisticSend.conversationId}:optimistic:user`,
-                kind: 'message',
-                role: 'user',
-                content: optimisticSend.message,
-                timestamp: optimisticSend.createdAt,
-                status: 'complete',
-            },
-        ]
-    }
-
-    const timeline: ConversationTimelineEntry[] = []
-    const segmentsByTurn = new Map<string, ConversationSegmentResponse[]>()
-    snapshot.segments.forEach((segment) => {
-        const entries = segmentsByTurn.get(segment.turn_id) || []
-        entries.push(segment)
-        segmentsByTurn.set(segment.turn_id, entries)
-    })
-    snapshot.turns.forEach((turn) => {
-        timeline.push(...buildConversationTimelineEntriesForTurn(turn, segmentsByTurn.get(turn.id) || []))
-    })
-
-    if (!optimisticSend) {
-        return timeline
-    }
-
-    return [
-        ...timeline,
-        {
-            id: `${optimisticSend.conversationId}:optimistic:user`,
-            kind: 'message',
-            role: 'user',
-            content: optimisticSend.message,
-            timestamp: optimisticSend.createdAt,
-            status: 'complete',
-        },
-    ]
 }

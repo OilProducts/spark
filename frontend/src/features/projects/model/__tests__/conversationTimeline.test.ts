@@ -1,9 +1,7 @@
-import {
-  buildConversationTimelineEntries,
-} from '@/features/projects/model/conversationTimeline'
+import { getConversationTimelineEntries, hydrateConversationRecordFromSnapshot } from '@/features/projects/model/projectsHomeState'
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
 
-const snapshot: ConversationSnapshotResponse = {
+const baseSnapshot: ConversationSnapshotResponse = {
   schema_version: 5,
   revision: 0,
   conversation_id: 'conversation-1',
@@ -76,16 +74,19 @@ const snapshot: ConversationSnapshotResponse = {
     },
   ],
   event_log: [],
-
   flow_run_requests: [],
   flow_launches: [],
-
-
+  proposed_plans: [],
 }
 
-describe('buildConversationTimelineEntries', () => {
-  it('inserts a worked separator before the final assistant message after tool activity', () => {
-    const timeline = buildConversationTimelineEntries(snapshot, null)
+function buildTimeline(snapshot: ConversationSnapshotResponse) {
+  const record = hydrateConversationRecordFromSnapshot(snapshot)
+  return getConversationTimelineEntries(record)
+}
+
+describe('conversation timeline normalization', () => {
+  it('preserves tool row, worked separator, and assistant message ordering from a hydrated snapshot', () => {
+    const timeline = buildTimeline(baseSnapshot)
 
     expect(timeline.map((entry) => entry.kind)).toEqual(['message', 'tool_call', 'final_separator', 'message'])
     expect(timeline[2]).toMatchObject({
@@ -94,24 +95,9 @@ describe('buildConversationTimelineEntries', () => {
     })
   })
 
-  it('shows the optimistic user message when no snapshot exists yet', () => {
-    const timeline = buildConversationTimelineEntries(null, {
-      conversationId: 'conversation-2',
-      createdAt: '2026-03-10T12:00:00Z',
-      message: 'Please start.',
-    })
-
-    expect(timeline).toEqual([
-      expect.objectContaining({
-        role: 'user',
-        content: 'Please start.',
-      }),
-    ])
-  })
-
-  it('includes mode_change entries in chronological order', () => {
-    const timeline = buildConversationTimelineEntries({
-      ...snapshot,
+  it('keeps mode-change entries in chronological order when hydrated from a snapshot', () => {
+    const timeline = buildTimeline({
+      ...baseSnapshot,
       chat_mode: 'plan',
       turns: [
         {
@@ -123,9 +109,9 @@ describe('buildConversationTimelineEntries', () => {
           status: 'complete',
           artifact_id: null,
         },
-        ...snapshot.turns,
+        ...baseSnapshot.turns,
       ],
-    }, null)
+    })
 
     expect(timeline.slice(0, 2)).toEqual([
       expect.objectContaining({
@@ -140,9 +126,9 @@ describe('buildConversationTimelineEntries', () => {
     ])
   })
 
-  it('renders plan segments as dedicated timeline entries', () => {
-    const timeline = buildConversationTimelineEntries({
-      ...snapshot,
+  it('renders plan segments as dedicated timeline entries after hydration', () => {
+    const timeline = buildTimeline({
+      ...baseSnapshot,
       chat_mode: 'plan',
       segments: [
         {
@@ -162,7 +148,7 @@ describe('buildConversationTimelineEntries', () => {
           tool_call: null,
         },
       ],
-    }, null)
+    })
 
     expect(timeline).toContainEqual(expect.objectContaining({
       kind: 'plan',
@@ -171,9 +157,9 @@ describe('buildConversationTimelineEntries', () => {
     }))
   })
 
-  it('renders context_compaction segments as inline system timeline entries', () => {
-    const timeline = buildConversationTimelineEntries({
-      ...snapshot,
+  it('renders context compaction segments as inline system timeline entries after hydration', () => {
+    const timeline = buildTimeline({
+      ...baseSnapshot,
       segments: [
         {
           id: 'context-compaction-segment',
@@ -193,9 +179,9 @@ describe('buildConversationTimelineEntries', () => {
           },
           tool_call: null,
         },
-        ...snapshot.segments,
+        ...baseSnapshot.segments,
       ],
-    }, null)
+    })
 
     expect(timeline).toContainEqual(expect.objectContaining({
       kind: 'context_compaction',
@@ -203,9 +189,9 @@ describe('buildConversationTimelineEntries', () => {
     }))
   })
 
-  it('renders request_user_input segments as inline conversation request entries', () => {
-    const timeline = buildConversationTimelineEntries({
-      ...snapshot,
+  it('renders pending request_user_input segments as inline conversation request entries after hydration', () => {
+    const timeline = buildTimeline({
+      ...baseSnapshot,
       segments: [
         {
           id: 'request-user-input-segment',
@@ -248,9 +234,9 @@ describe('buildConversationTimelineEntries', () => {
             submitted_at: null,
           },
         },
-        ...snapshot.segments,
+        ...baseSnapshot.segments,
       ],
-    }, null)
+    })
 
     expect(timeline).toContainEqual(expect.objectContaining({
       kind: 'request_user_input',
@@ -262,9 +248,9 @@ describe('buildConversationTimelineEntries', () => {
     }))
   })
 
-  it('preserves expired request_user_input status in timeline entries', () => {
-    const timeline = buildConversationTimelineEntries({
-      ...snapshot,
+  it('preserves expired request_user_input status in hydrated timeline entries', () => {
+    const timeline = buildTimeline({
+      ...baseSnapshot,
       segments: [
         {
           id: 'request-user-input-expired',
@@ -294,9 +280,9 @@ describe('buildConversationTimelineEntries', () => {
             submitted_at: '2026-03-10T10:00:12Z',
           },
         },
-        ...snapshot.segments,
+        ...baseSnapshot.segments,
       ],
-    }, null)
+    })
 
     expect(timeline).toContainEqual(expect.objectContaining({
       kind: 'request_user_input',
@@ -307,5 +293,4 @@ describe('buildConversationTimelineEntries', () => {
       }),
     }))
   })
-
 })
