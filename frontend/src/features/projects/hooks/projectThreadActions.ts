@@ -78,6 +78,7 @@ export function useProjectThreadActions({
                 title: 'New thread',
                 created_at: now,
                 updated_at: now,
+                revision: 0,
                 last_message_preview: null,
             },
             ...(conversationCacheRef.current.summariesByProjectPath[activeProjectPath] || []),

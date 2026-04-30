@@ -48,16 +48,32 @@ const resolveRequestUrl = (input: RequestInfo | URL): string => {
   return input.url
 }
 
-const withSnapshotSchema = <T extends Record<string, unknown>>(snapshot: T) => ({
-  schema_version: 4,
-  ...snapshot,
-})
+const testRevisionFromTimestamp = (value: unknown): number => {
+  if (typeof value !== 'string') return 0
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
+}
+
+const withSnapshotSchema = <T extends Record<string, unknown>>(snapshot: T) => {
+  const {
+    schema_version: _schemaVersion,
+    revision: _revision,
+    revision_override: revisionOverride,
+    ...rest
+  } = snapshot
+  return {
+    schema_version: 5,
+    revision: typeof revisionOverride === 'number' ? revisionOverride : testRevisionFromTimestamp(rest.updated_at),
+    ...rest,
+  }
+}
 
 const asSegmentUpsertEvent = (payload: {
   conversation_id: string
   project_path: string
   title: string
   updated_at: string
+  revision?: number
   event: {
     turn_id: string
     sequence?: number
@@ -108,6 +124,7 @@ const asSegmentUpsertEvent = (payload: {
 
   return {
     type: 'segment_upsert' as const,
+    revision: payload.revision ?? testRevisionFromTimestamp(payload.updated_at),
     conversation_id: payload.conversation_id,
     project_path: payload.project_path,
     title: payload.title,
@@ -634,6 +651,7 @@ describe('ProjectsPanel', () => {
               title: 'Reply with a one-line acknowledgement only.',
               created_at: '2026-03-07T15:55:00Z',
               updated_at: '2026-03-07T15:55:04Z',
+              revision: testRevisionFromTimestamp('2026-03-07T15:55:04Z'),
               turns: [
                 {
                   id: 'turn-user-1',
@@ -706,6 +724,7 @@ describe('ProjectsPanel', () => {
               title: 'Active thread',
               created_at: '2026-03-15T14:05:00Z',
               updated_at: '2026-03-15T14:05:02Z',
+              revision: testRevisionFromTimestamp('2026-03-15T14:05:02Z'),
               last_message_preview: 'Still working on it.',
             },
           ]), {
@@ -721,6 +740,7 @@ describe('ProjectsPanel', () => {
             title: 'Active thread',
             created_at: '2026-03-15T14:05:00Z',
             updated_at: '2026-03-15T14:05:02Z',
+            revision: testRevisionFromTimestamp('2026-03-15T14:05:02Z'),
             turns: [
               {
                 id: 'turn-user-1',
@@ -752,6 +772,7 @@ describe('ProjectsPanel', () => {
                 status: 'streaming',
                 timestamp: '2026-03-15T14:05:02Z',
                 updated_at: '2026-03-15T14:05:02Z',
+                revision: testRevisionFromTimestamp('2026-03-15T14:05:02Z'),
                 completed_at: null,
                 content: 'Still working on it.',
                 artifact_id: null,
@@ -828,6 +849,7 @@ describe('ProjectsPanel', () => {
               title: 'Ordering thread',
               created_at: '2026-03-07T19:45:43Z',
               updated_at: '2026-03-07T19:46:30Z',
+              revision: testRevisionFromTimestamp('2026-03-07T19:46:30Z'),
               turns: [
                 {
                   id: 'turn-user-1',
@@ -859,6 +881,7 @@ describe('ProjectsPanel', () => {
                   status: 'completed',
                   timestamp: '2026-03-07T19:46:10Z',
                   updated_at: '2026-03-07T19:46:12Z',
+                  revision: testRevisionFromTimestamp('2026-03-07T19:46:12Z'),
                   completed_at: '2026-03-07T19:46:12Z',
                   content: '',
                   artifact_id: null,
@@ -883,6 +906,7 @@ describe('ProjectsPanel', () => {
                   status: 'completed',
                   timestamp: '2026-03-07T19:46:20Z',
                   updated_at: '2026-03-07T19:46:22Z',
+                  revision: testRevisionFromTimestamp('2026-03-07T19:46:22Z'),
                   completed_at: '2026-03-07T19:46:22Z',
                   content: '',
                   artifact_id: null,
@@ -907,6 +931,7 @@ describe('ProjectsPanel', () => {
                   status: 'complete',
                   timestamp: '2026-03-07T19:46:30Z',
                   updated_at: '2026-03-07T19:46:30Z',
+                  revision: testRevisionFromTimestamp('2026-03-07T19:46:30Z'),
                   completed_at: '2026-03-07T19:46:30Z',
                   content: 'Summary after tools.',
                   artifact_id: null,
@@ -978,6 +1003,7 @@ describe('ProjectsPanel', () => {
               title: 'Collapsed tool call thread',
               created_at: '2026-03-07T19:45:43Z',
               updated_at: '2026-03-07T19:46:30Z',
+              revision: testRevisionFromTimestamp('2026-03-07T19:46:30Z'),
               turns: [
                 {
                   id: 'turn-user-1',
@@ -1009,6 +1035,7 @@ describe('ProjectsPanel', () => {
                   status: 'completed',
                   timestamp: '2026-03-07T19:46:12Z',
                   updated_at: '2026-03-07T19:46:12Z',
+                  revision: testRevisionFromTimestamp('2026-03-07T19:46:12Z'),
                   completed_at: '2026-03-07T19:46:12Z',
                   content: '',
                   artifact_id: null,
@@ -1033,6 +1060,7 @@ describe('ProjectsPanel', () => {
                   status: 'complete',
                   timestamp: '2026-03-07T19:46:30Z',
                   updated_at: '2026-03-07T19:46:30Z',
+                  revision: testRevisionFromTimestamp('2026-03-07T19:46:30Z'),
                   completed_at: '2026-03-07T19:46:30Z',
                   content: 'Summary after tools.',
                   artifact_id: null,
@@ -1103,6 +1131,7 @@ describe('ProjectsPanel', () => {
               title: 'Collapsed thinking thread',
               created_at: '2026-03-07T20:10:00Z',
               updated_at: '2026-03-07T20:10:04Z',
+              revision: testRevisionFromTimestamp('2026-03-07T20:10:04Z'),
               turns: [
                 {
                   id: 'turn-user-1',
@@ -1134,6 +1163,7 @@ describe('ProjectsPanel', () => {
                   status: 'streaming',
                   timestamp: '2026-03-07T20:10:02Z',
                   updated_at: '2026-03-07T20:10:02Z',
+                  revision: testRevisionFromTimestamp('2026-03-07T20:10:02Z'),
                   completed_at: null,
                   content: '**Considering proposal** Looking for the smallest safe change first.',
                   artifact_id: null,
@@ -1252,6 +1282,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Stream this reply.',
           updated_at: '2026-03-07T15:30:02Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
           turn: {
             id: 'turn-assistant-live',
             role: 'assistant',
@@ -1269,6 +1300,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Stream this reply.',
           updated_at: '2026-03-07T15:30:02Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
           event: {
             id: 'event-assistant-delta-live',
             turn_id: 'turn-assistant-live',
@@ -1296,6 +1328,7 @@ describe('ProjectsPanel', () => {
           title: 'Stream this reply.',
           created_at: '2026-03-07T15:30:00Z',
           updated_at: '2026-03-07T15:30:04Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
           turns: [
             {
               id: 'turn-user-1',
@@ -1410,6 +1443,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Keep the streamed thinking visible.',
           updated_at: '2026-03-07T15:31:02Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:31:02Z'),
           turn: {
             id: 'turn-assistant-live',
             role: 'assistant',
@@ -1428,6 +1462,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Keep the streamed thinking visible.',
           updated_at: '2026-03-07T15:31:02Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:31:02Z'),
           event: {
             id: 'event-reasoning-live',
             turn_id: 'turn-assistant-live',
@@ -1446,6 +1481,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-07T15:31:02Z',
               updated_at: '2026-03-07T15:31:02Z',
+              revision: testRevisionFromTimestamp('2026-03-07T15:31:02Z'),
               completed_at: null,
               content: 'Scanning the project layout first.',
               artifact_id: null,
@@ -1470,6 +1506,7 @@ describe('ProjectsPanel', () => {
           title: 'Keep the streamed thinking visible.',
           created_at: '2026-03-07T15:31:00Z',
           updated_at: '2026-03-07T15:31:02Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:31:02Z'),
           turns: [
             {
               id: 'turn-user-1',
@@ -1501,6 +1538,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-07T15:31:02Z',
               updated_at: '2026-03-07T15:31:02Z',
+              revision: testRevisionFromTimestamp('2026-03-07T15:31:02Z'),
               completed_at: null,
               content: 'Scanning the project layout first.',
               artifact_id: null,
@@ -1537,6 +1575,7 @@ describe('ProjectsPanel', () => {
       title: 'Run implementation',
       created_at: '2026-03-09T21:00:00Z',
       updated_at: '2026-03-09T21:00:03Z',
+      revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
       turns: [
         {
           id: 'turn-user-flow-run',
@@ -1567,6 +1606,7 @@ describe('ProjectsPanel', () => {
           status: 'complete',
           timestamp: '2026-03-09T21:00:02Z',
           updated_at: '2026-03-09T21:00:02Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
           completed_at: '2026-03-09T21:00:02Z',
           content: '',
           artifact_id: 'flow-run-request-inline',
@@ -1582,6 +1622,7 @@ describe('ProjectsPanel', () => {
           id: 'flow-run-request-inline',
           created_at: '2026-03-09T21:00:02Z',
           updated_at: '2026-03-09T21:00:02Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
           flow_name: 'test-dispatch.dot',
           summary: 'Run implementation for the approved scope.',
           project_path: '/tmp/chat-project',
@@ -1603,10 +1644,12 @@ describe('ProjectsPanel', () => {
     const launchedSnapshot = withSnapshotSchema({
       ...pendingSnapshot,
       updated_at: '2026-03-09T21:00:05Z',
+      revision: testRevisionFromTimestamp('2026-03-09T21:00:05Z'),
       flow_run_requests: [
         {
           ...pendingSnapshot.flow_run_requests[0],
           updated_at: '2026-03-09T21:00:05Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:05Z'),
           status: 'launched',
           run_id: 'run-flow-123',
           review_message: 'Approved for launch.',
@@ -1633,6 +1676,7 @@ describe('ProjectsPanel', () => {
               title: 'Run implementation',
               created_at: '2026-03-09T21:00:00Z',
               updated_at: '2026-03-09T21:00:03Z',
+              revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
               last_message_preview: 'I can request that launch.',
             },
           ]), {
@@ -1706,6 +1750,7 @@ describe('ProjectsPanel', () => {
       title: 'Plan review',
       created_at: '2026-03-09T21:00:00Z',
       updated_at: '2026-03-09T21:00:03Z',
+      revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
       turns: [
         {
           id: 'turn-user-plan',
@@ -1736,6 +1781,7 @@ describe('ProjectsPanel', () => {
           status: 'complete',
           timestamp: '2026-03-09T21:00:02Z',
           updated_at: '2026-03-09T21:00:02Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
           completed_at: '2026-03-09T21:00:02Z',
           content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
           artifact_id: 'proposed-plan-inline',
@@ -1752,6 +1798,7 @@ describe('ProjectsPanel', () => {
           id: 'proposed-plan-inline',
           created_at: '2026-03-09T21:00:02Z',
           updated_at: '2026-03-09T21:00:02Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
           title: 'Proposed steps',
           content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
           project_path: '/tmp/chat-project',
@@ -1771,6 +1818,7 @@ describe('ProjectsPanel', () => {
     const approvedSnapshot = withSnapshotSchema({
       ...pendingSnapshot,
       updated_at: '2026-03-09T21:00:05Z',
+      revision: testRevisionFromTimestamp('2026-03-09T21:00:05Z'),
       segments: [
         ...pendingSnapshot.segments,
         {
@@ -1782,6 +1830,7 @@ describe('ProjectsPanel', () => {
           status: 'complete',
           timestamp: '2026-03-09T21:00:05Z',
           updated_at: '2026-03-09T21:00:05Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:05Z'),
           completed_at: '2026-03-09T21:00:05Z',
           content: '',
           artifact_id: 'flow-launch-1',
@@ -1795,6 +1844,7 @@ describe('ProjectsPanel', () => {
           id: 'flow-launch-1',
           created_at: '2026-03-09T21:00:05Z',
           updated_at: '2026-03-09T21:00:05Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:05Z'),
           flow_name: 'software-development/implement-change-request.dot',
           summary: 'Implement approved change request: Proposed steps',
           project_path: '/tmp/chat-project',
@@ -1813,6 +1863,7 @@ describe('ProjectsPanel', () => {
         {
           ...pendingSnapshot.proposed_plans[0],
           updated_at: '2026-03-09T21:00:05Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:05Z'),
           status: 'approved',
           review_note: 'Ready to implement.',
           written_change_request_path: '/tmp/chat-project/changes/CR-2026-0007-proposed-steps/request.md',
@@ -1841,6 +1892,7 @@ describe('ProjectsPanel', () => {
               title: 'Plan review',
               created_at: '2026-03-09T21:00:00Z',
               updated_at: '2026-03-09T21:00:03Z',
+              revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
               last_message_preview: 'Draft the implementation plan.',
             },
           ]), {
@@ -1926,6 +1978,7 @@ describe('ProjectsPanel', () => {
       title: 'Plan review',
       created_at: '2026-03-09T21:00:00Z',
       updated_at: '2026-03-09T21:00:01Z',
+      revision: testRevisionFromTimestamp('2026-03-09T21:00:01Z'),
       turns: [
         {
           id: 'turn-user-plan',
@@ -1956,6 +2009,7 @@ describe('ProjectsPanel', () => {
     const snapshotWithArtifact = withSnapshotSchema({
       ...snapshotWithoutArtifact,
       updated_at: '2026-03-09T21:00:03Z',
+      revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
       turns: [
         {
           ...snapshotWithoutArtifact.turns[0],
@@ -1976,6 +2030,7 @@ describe('ProjectsPanel', () => {
           status: 'complete',
           timestamp: '2026-03-09T21:00:02Z',
           updated_at: '2026-03-09T21:00:02Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
           completed_at: '2026-03-09T21:00:02Z',
           content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
           artifact_id: 'proposed-plan-inline',
@@ -1989,6 +2044,7 @@ describe('ProjectsPanel', () => {
           id: 'proposed-plan-inline',
           created_at: '2026-03-09T21:00:02Z',
           updated_at: '2026-03-09T21:00:02Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
           title: 'Proposed steps',
           content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
           project_path: '/tmp/chat-project',
@@ -2025,6 +2081,7 @@ describe('ProjectsPanel', () => {
               title: 'Plan review',
               created_at: '2026-03-09T21:00:00Z',
               updated_at: '2026-03-09T21:00:03Z',
+              revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
               last_message_preview: 'Draft the implementation plan.',
             },
           ]), {
@@ -2065,6 +2122,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Plan review',
           updated_at: '2026-03-09T21:00:02Z',
+          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
           event: {
             turn_id: 'turn-assistant-plan',
             sequence: 1,
@@ -2080,6 +2138,7 @@ describe('ProjectsPanel', () => {
               status: 'complete',
               timestamp: '2026-03-09T21:00:02Z',
               updated_at: '2026-03-09T21:00:02Z',
+              revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
               completed_at: '2026-03-09T21:00:02Z',
               content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
               artifact_id: 'proposed-plan-inline',
@@ -2173,6 +2232,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Stream this reply.',
           updated_at: '2026-03-07T15:30:02Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
           turn: {
             id: 'turn-assistant-live',
             role: 'assistant',
@@ -2190,6 +2250,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Stream this reply.',
           updated_at: '2026-03-07T15:30:02Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
           event: {
             id: 'event-assistant-delta-live',
             turn_id: 'turn-assistant-live',
@@ -2214,6 +2275,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Stream this reply.',
           updated_at: '2026-03-07T15:30:04Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
           event: {
             id: 'event-assistant-complete-live',
             turn_id: 'turn-assistant-live',
@@ -2231,6 +2293,7 @@ describe('ProjectsPanel', () => {
               status: 'complete',
               timestamp: '2026-03-07T15:30:04Z',
               updated_at: '2026-03-07T15:30:04Z',
+              revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
               completed_at: '2026-03-07T15:30:04Z',
               content: 'Working on it.',
               artifact_id: null,
@@ -2249,6 +2312,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Stream this reply.',
           updated_at: '2026-03-07T15:30:04Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
           turn: {
             id: 'turn-assistant-live',
             role: 'assistant',
@@ -2275,6 +2339,7 @@ describe('ProjectsPanel', () => {
           title: 'Stream this reply.',
           created_at: '2026-03-07T15:30:00Z',
           updated_at: '2026-03-07T15:30:04Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
           turns: [
             {
               id: 'turn-user-1',
@@ -2305,6 +2370,7 @@ describe('ProjectsPanel', () => {
               status: 'complete',
               timestamp: '2026-03-07T15:30:04Z',
               updated_at: '2026-03-07T15:30:04Z',
+              revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
               completed_at: '2026-03-07T15:30:04Z',
               content: 'Working on it.',
               artifact_id: null,
@@ -2406,6 +2472,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
           updated_at: '2026-03-08T19:10:01Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:10:01Z'),
           turn: {
             id: 'turn-assistant-1',
             role: 'assistant',
@@ -2424,6 +2491,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
           updated_at: '2026-03-08T19:10:00Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:10:01Z'),
           event: {
             id: 'event-reasoning-1',
             turn_id: 'turn-assistant-1',
@@ -2442,6 +2510,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-08T19:10:00Z',
               updated_at: '2026-03-08T19:10:00Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:10:00Z'),
               completed_at: null,
               content: 'Scanning the repository structure first.',
               artifact_id: null,
@@ -2458,6 +2527,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
           updated_at: '2026-03-08T19:10:01Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:10:01Z'),
           event: {
             id: 'event-assistant-delta-1',
             turn_id: 'turn-assistant-1',
@@ -2476,6 +2546,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-08T19:10:01Z',
               updated_at: '2026-03-08T19:10:01Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:10:01Z'),
               completed_at: null,
               content: 'I’m going to scan the repository structure first.',
               artifact_id: null,
@@ -2492,6 +2563,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
           updated_at: '2026-03-08T19:10:02Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:10:02Z'),
           event: {
             id: 'event-tool-started-1',
             turn_id: 'turn-assistant-1',
@@ -2518,6 +2590,7 @@ describe('ProjectsPanel', () => {
               status: 'running',
               timestamp: '2026-03-08T19:10:02Z',
               updated_at: '2026-03-08T19:10:02Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:10:02Z'),
               completed_at: null,
               content: '',
               artifact_id: null,
@@ -2542,6 +2615,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
           updated_at: '2026-03-08T19:10:03Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:10:03Z'),
           event: {
             id: 'event-assistant-delta-2',
             turn_id: 'turn-assistant-1',
@@ -2560,6 +2634,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-08T19:10:03Z',
               updated_at: '2026-03-08T19:10:03Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:10:03Z'),
               completed_at: null,
               content: 'I found the main entry points and can summarize them.',
               artifact_id: null,
@@ -2581,10 +2656,12 @@ describe('ProjectsPanel', () => {
       new Response(
         JSON.stringify(withSnapshotSchema({
           conversation_id: conversationId,
+          revision_override: 9_999_999_999,
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
           created_at: '2026-03-08T19:10:00Z',
           updated_at: '2026-03-08T19:10:04Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:10:04Z'),
           turns: [
             {
               id: 'turn-user-1',
@@ -2616,6 +2693,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-08T19:10:00Z',
               updated_at: '2026-03-08T19:10:00Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:10:00Z'),
               completed_at: null,
               content: 'Scanning the repository structure first.',
               artifact_id: null,
@@ -2632,6 +2710,7 @@ describe('ProjectsPanel', () => {
               status: 'completed',
               timestamp: '2026-03-08T19:10:02Z',
               updated_at: '2026-03-08T19:10:02Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:10:02Z'),
               completed_at: '2026-03-08T19:10:02Z',
               content: '',
               artifact_id: null,
@@ -2656,6 +2735,7 @@ describe('ProjectsPanel', () => {
               status: 'complete',
               timestamp: '2026-03-08T19:10:03Z',
               updated_at: '2026-03-08T19:10:04Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:10:04Z'),
               completed_at: '2026-03-08T19:10:04Z',
               content: 'I found the main entry points and can summarize them.',
               artifact_id: null,
@@ -2762,6 +2842,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
           updated_at: '2026-03-08T19:28:40Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:28:40Z'),
           turn: {
             id: 'turn-assistant-1',
             role: 'assistant',
@@ -2780,6 +2861,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
           updated_at: '2026-03-08T19:28:38Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:28:38Z'),
           event: {
             id: 'event-reasoning-1',
             turn_id: 'turn-assistant-1',
@@ -2798,6 +2880,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-08T19:28:38Z',
               updated_at: '2026-03-08T19:28:38Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:28:38Z'),
               completed_at: null,
               content: 'Considering the flow run request.',
               artifact_id: null,
@@ -2814,6 +2897,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
           updated_at: '2026-03-08T19:28:40Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:28:40Z'),
           event: {
             id: 'event-assistant-delta-1',
             turn_id: 'turn-assistant-1',
@@ -2832,6 +2916,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-08T19:28:40Z',
               updated_at: '2026-03-08T19:28:40Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:28:40Z'),
               completed_at: null,
               content: 'Once you give me a flow and goal, I can create a pending flow run request.',
               artifact_id: null,
@@ -2852,6 +2937,7 @@ describe('ProjectsPanel', () => {
           title: 'Can you use the flow run request too?',
           created_at: '2026-03-08T19:28:30Z',
           updated_at: '2026-03-08T19:28:43Z',
+          revision: testRevisionFromTimestamp('2026-03-08T19:28:43Z'),
           turns: [
             {
               id: 'turn-user-1',
@@ -2883,6 +2969,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-08T19:28:38Z',
               updated_at: '2026-03-08T19:28:38Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:28:38Z'),
               completed_at: null,
               content: 'Considering the flow run request.',
               artifact_id: null,
@@ -2899,6 +2986,7 @@ describe('ProjectsPanel', () => {
               status: 'complete',
               timestamp: '2026-03-08T19:28:40Z',
               updated_at: '2026-03-08T19:28:43Z',
+              revision: testRevisionFromTimestamp('2026-03-08T19:28:43Z'),
               completed_at: '2026-03-08T19:28:43Z',
               content: 'Once you give me a flow and goal, I can create a pending flow run request.',
               artifact_id: null,
@@ -3008,6 +3096,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
           updated_at: '2026-03-08T21:18:16Z',
+          revision: testRevisionFromTimestamp('2026-03-08T21:18:16Z'),
           turn: {
             id: 'turn-assistant-1',
             role: 'assistant',
@@ -3026,6 +3115,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
           updated_at: '2026-03-08T21:18:16Z',
+          revision: testRevisionFromTimestamp('2026-03-08T21:18:16Z'),
           event: {
             id: 'event-reasoning-1',
             turn_id: 'turn-assistant-1',
@@ -3044,6 +3134,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-08T21:18:16Z',
               updated_at: '2026-03-08T21:18:16Z',
+              revision: testRevisionFromTimestamp('2026-03-08T21:18:16Z'),
               completed_at: null,
               content: 'Checking the repo before drafting.',
               artifact_id: null,
@@ -3064,6 +3155,7 @@ describe('ProjectsPanel', () => {
           title: 'Can you use the flow run request too?',
           created_at: '2026-03-08T21:18:13Z',
           updated_at: '2026-03-08T21:18:33Z',
+          revision: testRevisionFromTimestamp('2026-03-08T21:18:33Z'),
           turns: [
             {
               id: 'turn-user-1',
@@ -3095,6 +3187,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-08T21:18:16Z',
               updated_at: '2026-03-08T21:18:16Z',
+              revision: testRevisionFromTimestamp('2026-03-08T21:18:16Z'),
               completed_at: null,
               content: 'Checking the repo before drafting.',
               artifact_id: null,
@@ -3111,6 +3204,7 @@ describe('ProjectsPanel', () => {
               status: 'complete',
               timestamp: '2026-03-08T21:18:33Z',
               updated_at: '2026-03-08T21:18:33Z',
+              revision: testRevisionFromTimestamp('2026-03-08T21:18:33Z'),
               completed_at: '2026-03-08T21:18:33Z',
               content: 'I can create a pending flow run request, but there is not yet a concrete project change to draft.',
               artifact_id: null,
@@ -3211,6 +3305,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Test interleaved streaming.',
           updated_at: '2026-03-08T20:10:00Z',
+          revision: testRevisionFromTimestamp('2026-03-08T20:10:00Z'),
           turn: {
             id: 'turn-assistant-interleaved',
             role: 'assistant',
@@ -3241,6 +3336,7 @@ describe('ProjectsPanel', () => {
             status: 'streaming',
             timestamp: '2026-03-08T20:10:00Z',
             updated_at: '2026-03-08T20:10:00Z',
+            revision: testRevisionFromTimestamp('2026-03-08T20:10:00Z'),
             completed_at: null,
             content: 'Planning from the project context. ',
             artifact_id: null,
@@ -3266,6 +3362,7 @@ describe('ProjectsPanel', () => {
             status: 'streaming',
             timestamp: '2026-03-08T20:10:01Z',
             updated_at: '2026-03-08T20:10:01Z',
+            revision: testRevisionFromTimestamp('2026-03-08T20:10:01Z'),
             completed_at: null,
             content: 'I can use the flow run request tool ',
             artifact_id: null,
@@ -3291,6 +3388,7 @@ describe('ProjectsPanel', () => {
             status: 'streaming',
             timestamp: '2026-03-08T20:10:00Z',
             updated_at: '2026-03-08T20:10:01Z',
+            revision: testRevisionFromTimestamp('2026-03-08T20:10:01Z'),
             completed_at: null,
             content: 'Planning from the project context. and I am checking the repository first.',
             artifact_id: null,
@@ -3316,6 +3414,7 @@ describe('ProjectsPanel', () => {
             status: 'streaming',
             timestamp: '2026-03-08T20:10:01Z',
             updated_at: '2026-03-08T20:10:02Z',
+            revision: testRevisionFromTimestamp('2026-03-08T20:10:02Z'),
             completed_at: null,
             content: 'I can use the flow run request tool once we have a concrete change.',
             artifact_id: null,
@@ -3374,6 +3473,7 @@ describe('ProjectsPanel', () => {
               title: 'Segment thread',
               created_at: '2026-03-13T10:00:00Z',
               updated_at: '2026-03-13T10:00:05Z',
+              revision: testRevisionFromTimestamp('2026-03-13T10:00:05Z'),
               last_message_preview: 'Here is the grounded plan.',
             },
           ]), {
@@ -3388,6 +3488,7 @@ describe('ProjectsPanel', () => {
             title: 'Segment thread',
             created_at: '2026-03-13T10:00:00Z',
             updated_at: '2026-03-13T10:00:05Z',
+            revision: testRevisionFromTimestamp('2026-03-13T10:00:05Z'),
             turns: [
               {
                 id: 'turn-user-segments',
@@ -3418,6 +3519,7 @@ describe('ProjectsPanel', () => {
                 status: 'complete',
                 timestamp: '2026-03-13T10:00:01Z',
                 updated_at: '2026-03-13T10:00:02Z',
+                revision: testRevisionFromTimestamp('2026-03-13T10:00:02Z'),
                 completed_at: '2026-03-13T10:00:02Z',
                 content: '**Reviewing repo** Looking through the project layout.',
                 artifact_id: null,
@@ -3439,6 +3541,7 @@ describe('ProjectsPanel', () => {
                 status: 'complete',
                 timestamp: '2026-03-13T10:00:03Z',
                 updated_at: '2026-03-13T10:00:03Z',
+                revision: testRevisionFromTimestamp('2026-03-13T10:00:03Z'),
                 completed_at: '2026-03-13T10:00:03Z',
                 content: '**Considering proposal** Mapping the change to a minimal spec edit.',
                 artifact_id: null,
@@ -3460,6 +3563,7 @@ describe('ProjectsPanel', () => {
                 status: 'complete',
                 timestamp: '2026-03-13T10:00:05Z',
                 updated_at: '2026-03-13T10:00:05Z',
+                revision: testRevisionFromTimestamp('2026-03-13T10:00:05Z'),
                 completed_at: '2026-03-13T10:00:05Z',
                 content: 'Here is the grounded plan.',
                 artifact_id: null,
@@ -3533,6 +3637,7 @@ describe('ProjectsPanel', () => {
               title: 'Segment upsert thread',
               created_at: '2026-03-13T11:00:00Z',
               updated_at: '2026-03-13T11:00:01Z',
+              revision: testRevisionFromTimestamp('2026-03-13T11:00:01Z'),
               last_message_preview: 'Planning',
             },
           ]), {
@@ -3547,6 +3652,7 @@ describe('ProjectsPanel', () => {
             title: 'Segment upsert thread',
             created_at: '2026-03-13T11:00:00Z',
             updated_at: '2026-03-13T11:00:01Z',
+            revision: testRevisionFromTimestamp('2026-03-13T11:00:01Z'),
             turns: [
               {
                 id: 'turn-user-upsert',
@@ -3577,6 +3683,7 @@ describe('ProjectsPanel', () => {
                 status: 'streaming',
                 timestamp: '2026-03-13T11:00:01Z',
                 updated_at: '2026-03-13T11:00:01Z',
+                revision: testRevisionFromTimestamp('2026-03-13T11:00:01Z'),
                 completed_at: null,
                 content: '**Considering proposal** Drafting the minimal edit.',
                 artifact_id: null,
@@ -3628,6 +3735,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           title: 'Segment upsert thread',
           updated_at: '2026-03-13T11:00:02Z',
+          revision: testRevisionFromTimestamp('2026-03-13T11:00:02Z'),
           event: {
             id: 'event-reasoning-live-2',
             turn_id: 'turn-assistant-upsert',
@@ -3646,6 +3754,7 @@ describe('ProjectsPanel', () => {
               status: 'streaming',
               timestamp: '2026-03-13T11:00:01Z',
               updated_at: '2026-03-13T11:00:02Z',
+              revision: testRevisionFromTimestamp('2026-03-13T11:00:02Z'),
               completed_at: null,
               content: '**Considering proposal** Drafting the minimal edit. Mapping the change to a minimal spec edit.',
               artifact_id: null,
@@ -3759,6 +3868,7 @@ describe('ProjectsPanel', () => {
             title: 'Scroll thread',
             created_at: '2026-03-06T18:00:00Z',
             updated_at: '2026-03-06T18:00:05Z',
+            revision: testRevisionFromTimestamp('2026-03-06T18:00:05Z'),
             turns: [
               {
                 id: 'turn-user-1',
@@ -3845,6 +3955,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-scroll-project',
           title: 'Scroll thread',
           updated_at: '2026-03-06T18:00:10Z',
+          revision: testRevisionFromTimestamp('2026-03-06T18:00:10Z'),
           turn: {
             id: 'turn-assistant-2',
             role: 'assistant',
@@ -3879,6 +3990,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-scroll-project',
           title: 'Scroll thread',
           updated_at: '2026-03-06T18:00:15Z',
+          revision: testRevisionFromTimestamp('2026-03-06T18:00:15Z'),
           turn: {
             id: 'turn-assistant-3',
             role: 'assistant',
@@ -3912,6 +4024,7 @@ describe('ProjectsPanel', () => {
         title: 'Planning thread',
         created_at: '2026-03-07T15:00:00Z',
         updated_at: '2026-03-07T15:10:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T15:10:00Z'),
         last_message_preview: 'This is the planning thread history.',
       },
       {
@@ -3920,6 +4033,7 @@ describe('ProjectsPanel', () => {
         title: 'Design thread',
         created_at: '2026-03-07T14:00:00Z',
         updated_at: '2026-03-07T14:05:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T14:05:00Z'),
         last_message_preview: 'Discuss the design changes.',
       },
     ]
@@ -3930,6 +4044,7 @@ describe('ProjectsPanel', () => {
         title: 'Design thread',
         created_at: '2026-03-07T14:00:00Z',
         updated_at: '2026-03-07T14:05:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T14:05:00Z'),
         turns: [
           {
             id: 'turn-a-1',
@@ -3951,6 +4066,7 @@ describe('ProjectsPanel', () => {
         title: 'Planning thread',
         created_at: '2026-03-07T15:00:00Z',
         updated_at: '2026-03-07T15:10:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T15:10:00Z'),
         turns: [
           {
             id: 'turn-b-1',
@@ -4035,6 +4151,7 @@ describe('ProjectsPanel', () => {
         title: 'Planning thread',
         created_at: '2026-03-07T15:00:00Z',
         updated_at: '2026-03-07T15:10:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T15:10:00Z'),
         last_message_preview: 'This is the planning thread history.',
       },
       {
@@ -4043,6 +4160,7 @@ describe('ProjectsPanel', () => {
         title: 'Design thread',
         created_at: '2026-03-07T14:00:00Z',
         updated_at: '2026-03-07T14:05:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T14:05:00Z'),
         last_message_preview: 'Discuss the design changes.',
       },
     ]
@@ -4054,6 +4172,7 @@ describe('ProjectsPanel', () => {
         title: 'Design thread',
         created_at: '2026-03-07T14:00:00Z',
         updated_at: '2026-03-07T14:05:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T14:05:00Z'),
         turns: [
           {
             id: 'turn-a-1',
@@ -4075,6 +4194,7 @@ describe('ProjectsPanel', () => {
         title: 'Planning thread',
         created_at: '2026-03-07T15:00:00Z',
         updated_at: '2026-03-07T15:10:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T15:10:00Z'),
         turns: [
           {
             id: 'turn-b-1',
@@ -4160,6 +4280,7 @@ describe('ProjectsPanel', () => {
           title: 'Design thread',
           created_at: '2026-03-07T14:00:00Z',
           updated_at: '2026-03-07T15:20:00Z',
+          revision: testRevisionFromTimestamp('2026-03-07T15:20:00Z'),
           turns: [
             {
               id: 'turn-a-1',
@@ -4229,6 +4350,7 @@ describe('ProjectsPanel', () => {
         title: 'Planning thread',
         created_at: '2026-03-07T12:10:00Z',
         updated_at: '2026-03-07T12:40:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T12:40:00Z'),
         last_message_preview: 'This is the planning thread history.',
       },
       {
@@ -4237,6 +4359,7 @@ describe('ProjectsPanel', () => {
         title: 'Design thread',
         created_at: '2026-03-07T12:00:00Z',
         updated_at: '2026-03-07T12:30:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T12:30:00Z'),
         last_message_preview: 'Discuss the design changes.',
       },
     ]
@@ -4248,6 +4371,7 @@ describe('ProjectsPanel', () => {
         title: 'Design thread',
         created_at: '2026-03-07T12:00:00Z',
         updated_at: '2026-03-07T12:30:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T12:30:00Z'),
         turns: [
           {
             id: 'turn-a-1',
@@ -4267,6 +4391,7 @@ describe('ProjectsPanel', () => {
         title: 'Planning thread',
         created_at: '2026-03-07T12:10:00Z',
         updated_at: '2026-03-07T12:40:00Z',
+        revision: testRevisionFromTimestamp('2026-03-07T12:40:00Z'),
         turns: [
           {
             id: 'turn-b-1',
@@ -4382,6 +4507,7 @@ describe('ProjectsPanel', () => {
             title: 'New thread',
             created_at: '2026-04-16T18:00:00Z',
             updated_at: '2026-04-16T18:00:01Z',
+            revision: testRevisionFromTimestamp('2026-04-16T18:00:01Z'),
             turns: [
               {
                 id: 'turn-mode-1',
@@ -4412,6 +4538,7 @@ describe('ProjectsPanel', () => {
                 status: 'pending',
                 timestamp: '2026-04-16T18:00:02Z',
                 updated_at: '2026-04-16T18:00:02Z',
+                revision: testRevisionFromTimestamp('2026-04-16T18:00:02Z'),
                 completed_at: null,
                 content: 'Which planning path should I take for this change?',
                 artifact_id: null,
@@ -4519,6 +4646,7 @@ describe('ProjectsPanel', () => {
         title: 'Planning thread',
         created_at: '2026-04-16T18:00:00Z',
         updated_at: '2026-04-16T18:10:00Z',
+        revision: testRevisionFromTimestamp('2026-04-16T18:10:00Z'),
         last_message_preview: 'Draft the implementation plan.',
       },
       {
@@ -4527,6 +4655,7 @@ describe('ProjectsPanel', () => {
         title: 'Chat thread',
         created_at: '2026-04-16T18:11:00Z',
         updated_at: '2026-04-16T18:20:00Z',
+        revision: testRevisionFromTimestamp('2026-04-16T18:20:00Z'),
         last_message_preview: 'Answer directly.',
       },
     ]
@@ -4538,6 +4667,7 @@ describe('ProjectsPanel', () => {
         title: 'Planning thread',
         created_at: '2026-04-16T18:00:00Z',
         updated_at: '2026-04-16T18:10:00Z',
+        revision: testRevisionFromTimestamp('2026-04-16T18:10:00Z'),
         turns: [
           {
             id: 'turn-a-mode',
@@ -4565,6 +4695,7 @@ describe('ProjectsPanel', () => {
         title: 'Chat thread',
         created_at: '2026-04-16T18:11:00Z',
         updated_at: '2026-04-16T18:20:00Z',
+        revision: testRevisionFromTimestamp('2026-04-16T18:20:00Z'),
         turns: [
           {
             id: 'turn-b-1',
@@ -4703,6 +4834,7 @@ describe('ProjectsPanel', () => {
             title: 'New thread',
             created_at: '2026-04-16T18:10:00Z',
             updated_at: '2026-04-16T18:10:01Z',
+            revision: testRevisionFromTimestamp('2026-04-16T18:10:01Z'),
             turns: [
               {
                 id: 'turn-mode-1',
@@ -4831,6 +4963,7 @@ describe('ProjectsPanel', () => {
             title: 'New thread',
             created_at: '2026-04-16T18:10:00Z',
             updated_at: '2026-04-16T18:10:01Z',
+            revision: testRevisionFromTimestamp('2026-04-16T18:10:01Z'),
             turns: [
               {
                 id: 'turn-user-1',
@@ -4988,6 +5121,7 @@ describe('ProjectsPanel', () => {
             title: 'New thread',
             created_at: '2026-04-16T18:10:00Z',
             updated_at: '2026-04-16T18:10:01Z',
+            revision: testRevisionFromTimestamp('2026-04-16T18:10:01Z'),
             turns: [],
             segments: [],
             event_log: [],
@@ -5075,6 +5209,7 @@ describe('ProjectsPanel', () => {
         title: 'Full model thread',
         created_at: '2026-04-16T18:00:00Z',
         updated_at: '2026-04-16T18:10:00Z',
+        revision: testRevisionFromTimestamp('2026-04-16T18:10:00Z'),
       },
       {
         conversation_id: 'conversation-thread-b',
@@ -5082,6 +5217,7 @@ describe('ProjectsPanel', () => {
         title: 'Mini model thread',
         created_at: '2026-04-16T18:11:00Z',
         updated_at: '2026-04-16T18:20:00Z',
+        revision: testRevisionFromTimestamp('2026-04-16T18:20:00Z'),
       },
     ]
     const conversationSnapshots = {
@@ -5094,6 +5230,7 @@ describe('ProjectsPanel', () => {
         title: 'Full model thread',
         created_at: '2026-04-16T18:00:00Z',
         updated_at: '2026-04-16T18:10:00Z',
+        revision: testRevisionFromTimestamp('2026-04-16T18:10:00Z'),
         turns: [],
         segments: [],
         event_log: [],
@@ -5109,6 +5246,7 @@ describe('ProjectsPanel', () => {
         title: 'Mini model thread',
         created_at: '2026-04-16T18:11:00Z',
         updated_at: '2026-04-16T18:20:00Z',
+        revision: testRevisionFromTimestamp('2026-04-16T18:20:00Z'),
         turns: [],
         segments: [],
         event_log: [],

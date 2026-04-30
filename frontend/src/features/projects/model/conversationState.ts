@@ -21,7 +21,8 @@ export function ensureConversationSnapshotShell(
     title = 'New thread',
 ): ConversationSnapshotResponse {
     return {
-        schema_version: 4,
+        schema_version: 5,
+        revision: 0,
         conversation_id: conversationId,
         conversation_handle: '',
         project_path: projectPath,
@@ -107,85 +108,11 @@ export function sanitizeStreamingTurnUpsert(
     }
 }
 
-function scoreConversationSnapshotFreshness(snapshot: ConversationSnapshotResponse): number {
-    const flowRunRequestScore = snapshot.flow_run_requests.reduce((score, request) => {
-        if (request.status === 'launched') {
-            return score + 50
-        }
-        if (request.status === 'launch_failed') {
-            return score + 40
-        }
-        if (request.status === 'approved') {
-            return score + 30
-        }
-        if (request.status === 'rejected') {
-            return score + 20
-        }
-        return score + 10
-    }, 0)
-    const flowLaunchScore = snapshot.flow_launches.reduce((score, launch) => {
-        if (launch.status === 'launched') {
-            return score + 30
-        }
-        if (launch.status === 'launch_failed') {
-            return score + 20
-        }
-        return score + 10
-    }, 0)
-    const proposedPlanScore = (snapshot.proposed_plans || []).reduce((score, plan) => {
-        if (plan.status === 'launch_failed') {
-            return score + 45
-        }
-        if (plan.status === 'approved') {
-            return score + 35
-        }
-        if (plan.status === 'rejected') {
-            return score + 25
-        }
-        return score + 15
-    }, 0)
-    const turnStatusScore = snapshot.turns.reduce((score, turn) => {
-        if (turn.status === 'failed') {
-            return score + 4
-        }
-        if (turn.status === 'complete') {
-            return score + 3
-        }
-        if (turn.status === 'streaming') {
-            return score + 2
-        }
-        return score + 1
-    }, 0)
-    const contentScore = snapshot.turns.reduce((score, turn) => score + turn.content.length, 0)
-    const eventLogScore = snapshot.event_log.reduce(
-        (score, entry) => score + 25 + Math.min(entry.message.length, 200),
-        0,
-    )
-    return (
-        snapshot.turns.length * 100000
-        + snapshot.segments.length * 1000
-        + turnStatusScore * 100
-        + contentScore
-        + eventLogScore
-        + flowRunRequestScore
-        + flowLaunchScore
-        + proposedPlanScore
-    )
-}
-
-export function compareConversationSnapshotFreshness(
-    left: ConversationSnapshotResponse,
-    right: ConversationSnapshotResponse,
-): number {
-    const updatedAtCompare = left.updated_at.localeCompare(right.updated_at)
-    if (updatedAtCompare !== 0) {
-        return updatedAtCompare
-    }
-    return scoreConversationSnapshotFreshness(left) - scoreConversationSnapshotFreshness(right)
-}
-
 export function sortConversationSummaries(items: ConversationSummaryResponse[]): ConversationSummaryResponse[] {
-    return [...items].sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+    return [...items].sort((left, right) => {
+        const updatedAtCompare = right.updated_at.localeCompare(left.updated_at)
+        return updatedAtCompare !== 0 ? updatedAtCompare : right.revision - left.revision
+    })
 }
 
 export function upsertConversationSummary(

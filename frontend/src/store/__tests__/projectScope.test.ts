@@ -73,7 +73,8 @@ const buildConversationSnapshot = (
   conversationId: string,
   projectPath: string,
 ): ConversationSnapshotResponse => ({
-  schema_version: 4,
+  schema_version: 5,
+  revision: 0,
   conversation_id: conversationId,
   conversation_handle: '',
   project_path: projectPath,

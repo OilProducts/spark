@@ -67,7 +67,8 @@ const jsonResponse = (payload: unknown, init?: ResponseInit) =>
   })
 
 const conversationSnapshot = <T extends Record<string, unknown>>(payload: T) => ({
-  schema_version: 4,
+  schema_version: 5,
+  revision: 0,
   ...payload,
 })
 
@@ -1907,6 +1908,7 @@ describe('Frontend contract behavior', () => {
       title,
       created_at: '2026-03-25T12:00:00Z',
       updated_at: '2026-03-25T12:05:00Z',
+      revision: 1,
       last_message_preview: null,
     })
     const buildRunRecord = ({

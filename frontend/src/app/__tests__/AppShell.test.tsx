@@ -200,10 +200,12 @@ const buildConversationSummary = ({
   conversationId,
   projectPath,
   title,
+  revision = 0,
 }: {
   conversationId: string
   projectPath: string
   title: string
+  revision?: number
 }) => ({
   conversation_id: conversationId,
   conversation_handle: null,
@@ -211,6 +213,7 @@ const buildConversationSummary = ({
   title,
   created_at: '2026-03-25T12:00:00Z',
   updated_at: '2026-03-25T12:05:00Z',
+  revision,
   last_message_preview: null,
 })
 
@@ -220,6 +223,7 @@ const buildConversationSnapshot = ({
   title,
   turns = [],
   segments = [],
+  revision,
 }: {
   conversationId: string
   projectPath: string
@@ -232,23 +236,29 @@ const buildConversationSnapshot = ({
     timestamp: string
   }>
   segments?: Array<Record<string, unknown>>
-}) => ({
-  schema_version: 4,
-  conversation_id: conversationId,
-  conversation_handle: `${conversationId}-handle`,
-  project_path: projectPath,
-  title,
-  created_at: '2026-03-25T12:00:00Z',
-  updated_at: '2026-03-25T12:05:00Z',
-  turns,
-  segments,
-  event_log: [],
-
-  flow_run_requests: [],
-  flow_launches: [],
-
-
-})
+  revision?: number
+}) => {
+  const latestTimestamp = turns.reduce((latest, turn) => {
+    const parsed = Date.parse(turn.timestamp)
+    return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest
+  }, Date.parse('2026-03-25T12:00:00Z'))
+  const updatedAt = new Date(latestTimestamp).toISOString().replace('.000Z', 'Z')
+  return {
+    schema_version: 5,
+    revision: revision ?? Math.floor(latestTimestamp / 1000),
+    conversation_id: conversationId,
+    conversation_handle: `${conversationId}-handle`,
+    project_path: projectPath,
+    title,
+    created_at: '2026-03-25T12:00:00Z',
+    updated_at: updatedAt,
+    turns,
+    segments,
+    event_log: [],
+    flow_run_requests: [],
+    flow_launches: [],
+  }
+}
 
 const buildRunRecord = ({
   flowName,

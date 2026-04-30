@@ -9,7 +9,7 @@ from time import gmtime, strftime
 from typing import Any, Optional
 
 CHAT_SESSION_VERSION = 2
-CONVERSATION_STATE_SCHEMA_VERSION = 4
+CONVERSATION_STATE_SCHEMA_VERSION = 5
 CHAT_MODE_CHAT = "chat"
 CHAT_MODE_PLAN = "plan"
 CHAT_MODES = frozenset({CHAT_MODE_CHAT, CHAT_MODE_PLAN})
@@ -708,6 +708,7 @@ class ConversationState:
     created_at: str = ""
     updated_at: str = ""
     schema_version: int = CONVERSATION_STATE_SCHEMA_VERSION
+    revision: int = 0
     turns: list[ConversationTurn] = field(default_factory=list)
     segments: list[ConversationSegment] = field(default_factory=list)
     event_log: list[WorkflowEvent] = field(default_factory=list)
@@ -749,6 +750,7 @@ class ConversationState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
+            "revision": self.revision,
             "conversation_id": self.conversation_id,
             "conversation_handle": self.conversation_handle,
             "project_path": self.project_path,
@@ -781,6 +783,11 @@ class ConversationState:
             raise ValueError(
                 "Unsupported conversation state schema. Delete the local conversation and recreate it."
             )
+        revision = payload.get("revision")
+        if not isinstance(revision, int) or isinstance(revision, bool):
+            raise ValueError(
+                "Unsupported conversation state schema. Delete the local conversation and recreate it."
+            )
         if not isinstance(raw_segments, list):
             raise ValueError(
                 "Unsupported conversation state payload: missing canonical segments. Delete the local conversation and recreate it."
@@ -809,6 +816,7 @@ class ConversationState:
             created_at=created_at or _iso_now(),
             updated_at=updated_at or created_at or _iso_now(),
             schema_version=schema_version,
+            revision=revision,
             turns=turns,
             segments=[
                 ConversationSegment.from_dict(segment)
@@ -846,6 +854,7 @@ class ConversationSummary:
     title: str
     created_at: str
     updated_at: str
+    revision: int
     last_message_preview: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -856,6 +865,7 @@ class ConversationSummary:
             "title": self.title,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "revision": self.revision,
         }
         if self.last_message_preview:
             payload["last_message_preview"] = self.last_message_preview

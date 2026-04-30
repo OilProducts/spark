@@ -1159,6 +1159,87 @@ def test_conversation_state_rejects_unsupported_snapshot_shape() -> None:
         )
 
 
+def test_conversation_state_rejects_schema_four_without_revision() -> None:
+    with pytest.raises(ValueError, match="Unsupported conversation state schema"):
+        project_chat.ConversationState.from_dict(
+            {
+                "schema_version": 4,
+                "conversation_id": "conversation-test",
+                "project_path": "/tmp/project",
+                "title": "Legacy state",
+                "turns": [],
+                "segments": [],
+            }
+        )
+
+
+def test_read_state_normalizes_request_user_input_without_persisting_revision(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    project_path = str((tmp_path / "project").resolve())
+    state = project_chat.ConversationState(
+        conversation_id="conversation-read-normalization",
+        project_path=project_path,
+        revision=7,
+        title="Read normalization",
+        created_at="2026-04-30T12:00:00Z",
+        updated_at="2026-04-30T12:00:00Z",
+        turns=[
+            project_chat.ConversationTurn(
+                id="turn-assistant-1",
+                role="assistant",
+                content="",
+                timestamp="2026-04-30T12:00:00Z",
+                status="streaming",
+            ),
+        ],
+        segments=[
+            project_chat.ConversationSegment(
+                id="segment-request-user-input-1",
+                turn_id="turn-assistant-1",
+                order=1,
+                kind="request_user_input",
+                role="system",
+                status="pending",
+                timestamp="2026-04-30T12:00:00Z",
+                updated_at="2026-04-30T12:00:00Z",
+                content="Which path should I take?",
+                request_user_input=project_chat.RequestUserInputRecord(
+                    request_id="request-1",
+                    status="expired",
+                    questions=[],
+                    answers={"path_choice": "Inline card"},
+                    submitted_at="2026-04-30T12:00:01Z",
+                ),
+            ),
+        ],
+    )
+    service._write_state(state)
+    state_path = service._conversation_state_path(state.conversation_id, project_path)
+    persisted_before = state_path.read_text(encoding="utf-8")
+
+    loaded = service._read_state(state.conversation_id, project_path)
+
+    assert loaded is not None
+    assert loaded.revision == 7
+    assert loaded.segments[0].status == "failed"
+    assert loaded.turns[0].status == "failed"
+    assert state_path.read_text(encoding="utf-8") == persisted_before
+
+
+def test_get_snapshot_for_missing_conversation_returns_revision_zero_without_persisting(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    project_path = str((tmp_path / "project").resolve())
+    project_paths = ensure_project_paths(tmp_path, project_path)
+    state_path = project_paths.conversations_dir / "conversation-empty" / "state.json"
+
+    snapshot = service.get_snapshot("conversation-empty", project_path)
+
+    assert snapshot["conversation_id"] == "conversation-empty"
+    assert snapshot["revision"] == 0
+    assert snapshot["turns"] == []
+    assert not state_path.exists()
+
+
 def test_workflow_event_round_trips_structured_fields() -> None:
     event = project_chat.WorkflowEvent(
         message="Continuity reset: persisted thread could not be resumed.",
@@ -1864,6 +1945,7 @@ def test_send_turn_starts_fresh_thread_on_next_explicit_message_after_continuity
 
 def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch) -> None:
     service = project_chat.ProjectChatService(tmp_path)
+    progress_updates: list[dict[str, Any]] = []
 
     class PlainTextSession:
         def turn(
@@ -1895,8 +1977,17 @@ def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: PlainTextSession())
 
-    snapshot = service.send_turn("conversation-test", str(tmp_path), "What's this project about?", None)
+    snapshot = service.send_turn(
+        "conversation-test",
+        str(tmp_path),
+        "What's this project about?",
+        None,
+        progress_callback=progress_updates.append,
+    )
 
+    assert snapshot["schema_version"] == 5
+    assert snapshot["revision"] == 3
+    assert {payload["revision"] for payload in progress_updates} == {1, 2, 3}
     assert snapshot["turns"][-1]["role"] == "assistant"
     assert snapshot["turns"][-1]["status"] == "complete"
     assert snapshot["turns"][-1]["content"] == "This looks like a Collatz implementation project."
@@ -1908,6 +1999,7 @@ def test_update_conversation_settings_upserts_shell_and_persists_chat_mode(tmp_p
     snapshot = service.update_conversation_settings("conversation-settings", str(tmp_path), "plan")
 
     assert snapshot["conversation_id"] == "conversation-settings"
+    assert snapshot["revision"] == 1
     assert snapshot["chat_mode"] == "plan"
     assert snapshot["turns"] == [
         {
@@ -1920,6 +2012,7 @@ def test_update_conversation_settings_upserts_shell_and_persists_chat_mode(tmp_p
         }
     ]
     reloaded = service.get_snapshot("conversation-settings", str(tmp_path))
+    assert reloaded["revision"] == 1
     assert reloaded["chat_mode"] == "plan"
     assert [turn["kind"] for turn in reloaded["turns"]] == ["mode_change"]
 
@@ -1931,7 +2024,9 @@ def test_update_conversation_settings_does_not_duplicate_mode_change_when_mode_m
     second = service.update_conversation_settings("conversation-settings", str(tmp_path), "plan")
 
     assert first["chat_mode"] == "plan"
+    assert first["revision"] == 1
     assert second["chat_mode"] == "plan"
+    assert second["revision"] == 2
     assert [turn["kind"] for turn in second["turns"]] == ["mode_change"]
     assert second["turns"][0]["content"] == "plan"
 
@@ -1948,11 +2043,13 @@ def test_update_conversation_settings_persists_model_and_reasoning_effort(tmp_pa
     )
 
     assert snapshot["chat_mode"] == "chat"
+    assert snapshot["revision"] == 1
     assert snapshot["provider"] == "openai"
     assert snapshot["model"] == "gpt-5.4"
     assert snapshot["reasoning_effort"] == "high"
     assert snapshot["turns"] == []
     reloaded = service.get_snapshot("conversation-settings", str(tmp_path))
+    assert reloaded["revision"] == 1
     assert reloaded["provider"] == "openai"
     assert reloaded["model"] == "gpt-5.4"
     assert reloaded["reasoning_effort"] == "high"
@@ -3222,6 +3319,7 @@ def test_request_user_input_segments_persist_and_answer_in_place(
         time.sleep(0.02)
 
     assert pending_snapshot is not None
+    pending_revision = pending_snapshot["revision"]
     request_segments = [segment for segment in pending_snapshot["segments"] if segment["kind"] == "request_user_input"]
     assert len(request_segments) == 1
     assert request_segments[0]["status"] == "pending"
@@ -3241,6 +3339,7 @@ def test_request_user_input_segments_persist_and_answer_in_place(
     answered_request_segments = [
         segment for segment in answered_snapshot["segments"] if segment["kind"] == "request_user_input"
     ]
+    assert answered_snapshot["revision"] == pending_revision + 1
     assert len(answered_request_segments) == 1
     assert answered_request_segments[0]["status"] == "complete"
     assert answered_request_segments[0]["request_user_input"]["status"] == "answered"
@@ -3261,6 +3360,7 @@ def test_request_user_input_segments_persist_and_answer_in_place(
         time.sleep(0.02)
 
     assert final_snapshot is not None
+    assert final_snapshot["revision"] > answered_snapshot["revision"]
     assert final_snapshot["turns"][-1]["content"] == "ANSWER=Inline card / Preserve the inline timeline."
     assert [segment["kind"] for segment in final_snapshot["segments"]] == [
         "request_user_input",
@@ -3910,6 +4010,8 @@ def test_flow_run_request_routes_create_and_approve_launch(
     assert create_payload["ok"] is True
     assert create_payload["conversation_id"] == conversation_id
     request_id = create_payload["flow_run_request_id"]
+    created_snapshot = _project_chat_service().get_snapshot(conversation_id, str(project_dir))
+    assert created_snapshot["revision"] == snapshot["revision"] + 1
 
     review_response = product_api_client.post(
         f"/workspace/api/conversations/{conversation_id}/flow-run-requests/{request_id}/review",
@@ -3922,6 +4024,7 @@ def test_flow_run_request_routes_create_and_approve_launch(
 
     assert review_response.status_code == 200
     approved_snapshot = review_response.json()
+    assert approved_snapshot["revision"] == created_snapshot["revision"] + 2
     request_payload = next(
         entry for entry in approved_snapshot["flow_run_requests"] if entry["id"] == request_id
     )
@@ -4051,6 +4154,7 @@ def test_direct_flow_launch_routes_create_inline_artifact_and_launch(
     assert launch_payload["flow_launch_id"].startswith("flow-launch-")
 
     updated_snapshot = _project_chat_service().get_snapshot(conversation_id, str(project_dir))
+    assert updated_snapshot["revision"] == snapshot["revision"] + 2
     flow_launch = next(
         entry for entry in updated_snapshot["flow_launches"] if entry["id"] == launch_payload["flow_launch_id"]
     )
@@ -4160,6 +4264,7 @@ def test_review_proposed_plan_writes_change_request_and_creates_launch_artifact(
     )
 
     assert snapshot["chat_mode"] == "plan"
+    assert snapshot["revision"] == state.revision + 1
     assert proposed_plan.status == "approved"
     assert proposed_plan.review_note == "Ready to implement."
     assert proposed_plan.written_change_request_path is not None
@@ -4254,6 +4359,7 @@ def test_review_proposed_plan_rejects_and_locks_the_artifact(tmp_path: Path) -> 
     )
 
     assert proposed_plan.status == "rejected"
+    assert snapshot["revision"] == 1
     assert proposed_plan.review_note == "Needs acceptance criteria first."
     assert flow_launch is None
     assert snapshot["flow_launches"] == []
@@ -4402,6 +4508,7 @@ def test_proposed_plan_review_route_launches_in_owner_conversation_and_records_r
 
     assert review_response.status_code == 200
     approved_snapshot = review_response.json()
+    assert approved_snapshot["revision"] == 2
     approved_plan = next(
         entry for entry in approved_snapshot["proposed_plans"] if entry["id"] == "proposed-plan-inline"
     )

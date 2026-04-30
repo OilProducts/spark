@@ -150,6 +150,7 @@ class ProjectChatRepository:
             if derived_title != "New thread":
                 state.title = derived_title
         state.updated_at = iso_now()
+        state.revision += 1
 
     def build_conversation_summary(self, state: ConversationState) -> ConversationSummary:
         self.ensure_state_handle(state)
@@ -160,6 +161,7 @@ class ProjectChatRepository:
             title=as_non_empty_string(state.title) or derive_conversation_title(state.turns),
             created_at=state.created_at or iso_now(),
             updated_at=state.updated_at or state.created_at or iso_now(),
+            revision=state.revision,
             last_message_preview=build_conversation_preview(state.turns),
         )
 
@@ -186,14 +188,9 @@ class ProjectChatRepository:
         if proposed_plans_payload:
             payload["proposed_plans"] = proposed_plans_payload.get("proposed_plans", [])
         state = ConversationState.from_dict(payload)
-        should_write_state = state.normalize_request_user_input_state()
+        state.normalize_request_user_input_state()
         if not state.conversation_id:
             state.conversation_id = conversation_id
-        self.ensure_state_handle(state)
-        if payload.get("conversation_handle") != state.conversation_handle:
-            should_write_state = True
-        if should_write_state:
-            self.write_state(state)
         return state
 
     def write_state(self, state: ConversationState) -> None:
@@ -203,6 +200,7 @@ class ProjectChatRepository:
         path.parent.mkdir(parents=True, exist_ok=True)
         conversation_payload = {
             "schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
+            "revision": state.revision,
             "conversation_id": state.conversation_id,
             "conversation_handle": state.conversation_handle,
             "project_path": state.project_path,
@@ -438,7 +436,6 @@ class ProjectChatRepository:
 
     def get_snapshot(self, conversation_id: str, project_path: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
-            should_write_state = False
             state = self.read_state(conversation_id, project_path)
             if state is None:
                 normalized_project_path = normalize_project_path_value(project_path or "")
@@ -448,8 +445,6 @@ class ProjectChatRepository:
                     conversation_id=conversation_id,
                     project_path=normalized_project_path,
                 )
-                self.touch_conversation_state(state)
-                should_write_state = True
             elif project_path:
                 normalized_project_path = normalize_project_path_value(project_path)
                 if normalized_project_path and normalized_project_path != state.project_path:
@@ -461,9 +456,6 @@ class ProjectChatRepository:
                     state.updated_at = state.created_at
                 if not as_non_empty_string(state.title):
                     state.title = derive_conversation_title(state.turns)
-                should_write_state = True
-            if should_write_state:
-                self.write_state(state)
         return self.serialize_conversation_state_for_ui(state)
 
     def serialize_tool_call_for_ui(self, tool_call: Any) -> dict[str, Any]:
@@ -618,6 +610,7 @@ class ProjectChatRepository:
             serialized_turn["content"] = ""
         return {
             "type": "turn_upsert",
+            "revision": state.revision,
             "conversation_id": state.conversation_id,
             "project_path": state.project_path,
             "title": state.title,
@@ -632,6 +625,7 @@ class ProjectChatRepository:
     ) -> dict[str, Any]:
         return {
             "type": "segment_upsert",
+            "revision": state.revision,
             "conversation_id": state.conversation_id,
             "project_path": state.project_path,
             "title": state.title,

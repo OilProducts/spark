@@ -17,7 +17,6 @@ import {
 } from '@/lib/workspaceClient'
 import type { ProjectGitMetadata } from './presentation'
 import {
-    compareConversationSnapshotFreshness,
     ensureConversationSnapshotShell,
     sanitizeStreamingTurnUpsert,
     sortConversationSummaries,
@@ -30,6 +29,7 @@ export type ConversationStreamEvent = ConversationTurnUpsertEventResponse | Conv
 
 export type NormalizedConversationRecord = {
     schema_version: ConversationSnapshotResponse['schema_version']
+    revision: ConversationSnapshotResponse['revision']
     conversation_id: string
     conversation_handle: string | null
     project_path: string
@@ -230,6 +230,7 @@ function buildConversationSummaryFromRecord(record: NormalizedConversationRecord
         title: record.title,
         created_at: record.created_at,
         updated_at: record.updated_at,
+        revision: record.revision,
         last_message_preview: lastMessageTurn?.content || null,
     }
 }
@@ -345,6 +346,7 @@ export function hydrateConversationRecordFromSnapshot(
 
     let record: NormalizedConversationRecord = {
         schema_version: snapshot.schema_version,
+        revision: snapshot.revision,
         conversation_id: snapshot.conversation_id,
         conversation_handle: snapshot.conversation_handle ?? null,
         project_path: snapshot.project_path,
@@ -376,34 +378,11 @@ export function hydrateConversationRecordFromSnapshot(
     return record
 }
 
-export function conversationRecordToSnapshot(record: NormalizedConversationRecord): ConversationSnapshotResponse {
-    return {
-        schema_version: record.schema_version,
-        conversation_id: record.conversation_id,
-        conversation_handle: record.conversation_handle,
-        project_path: record.project_path,
-        chat_mode: record.chat_mode,
-        provider: record.provider ?? null,
-        model: record.model,
-        reasoning_effort: record.reasoning_effort,
-        title: record.title,
-        created_at: record.created_at,
-        updated_at: record.updated_at,
-        turns: record.orderedTurnIds.map((turnId) => record.turnsById[turnId]).filter(Boolean),
-        segments: Object.values(record.segmentsById).sort((left, right) => {
-            if (left.turn_id === right.turn_id) {
-                const orderDelta = left.order - right.order
-                if (orderDelta !== 0) {
-                    return orderDelta
-                }
-            }
-            return left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id)
-        }),
-        event_log: record.event_log,
-        flow_run_requests: getConversationFlowRunRequests(record),
-        flow_launches: getConversationFlowLaunches(record),
-        proposed_plans: getConversationProposedPlans(record),
-    }
+function isConversationRecordAtLeastAsFreshAsSnapshot(
+    record: NormalizedConversationRecord,
+    snapshot: ConversationSnapshotResponse,
+): boolean {
+    return record.revision >= snapshot.revision
 }
 
 export function setProjectConversationSummaryList(
@@ -432,10 +411,7 @@ export function applyConversationSnapshotToCache(
             project_path: projectPath,
         }
     const existingRecord = current.conversationsById[scopedSnapshot.conversation_id]
-    if (
-        existingRecord
-        && compareConversationSnapshotFreshness(conversationRecordToSnapshot(existingRecord), scopedSnapshot) >= 0
-    ) {
+    if (existingRecord && isConversationRecordAtLeastAsFreshAsSnapshot(existingRecord, scopedSnapshot)) {
         return {
             applied: false,
             cache: current,
@@ -467,13 +443,21 @@ export function applyConversationStreamEventToCache(
     projectPath: string,
     event: ConversationStreamEvent,
 ) {
-    const existingRecord = current.conversationsById[event.conversation_id]
+    const cachedRecord = current.conversationsById[event.conversation_id]
+    if (cachedRecord && event.revision < cachedRecord.revision) {
+        return {
+            record: cachedRecord,
+            cache: current,
+        }
+    }
+    const existingRecord = cachedRecord
         || hydrateConversationRecordFromSnapshot(ensureConversationSnapshotShell(event.conversation_id, projectPath, event.title))
     let mergedRecord: NormalizedConversationRecord = {
         ...existingRecord,
         project_path: projectPath,
         title: event.title,
         updated_at: event.updated_at,
+        revision: event.revision,
     }
     if (event.type === 'turn_upsert') {
         const currentTurn = existingRecord.turnsById[event.turn.id] || null

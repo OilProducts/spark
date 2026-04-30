@@ -88,7 +88,8 @@ const buildProposedPlan = (overrides: Partial<ProposedPlanArtifactResponse> = {}
 const buildSnapshot = (
   overrides: Partial<ConversationSnapshotResponse> = {},
 ): ConversationSnapshotResponse => ({
-  schema_version: 4,
+  schema_version: 5,
+  revision: 0,
   conversation_id: 'conversation-1',
   conversation_handle: '',
   project_path: '/tmp/project-contract-behavior',
@@ -173,7 +174,7 @@ describe('applyConversationSnapshotToCache', () => {
     ])
   })
 
-  it('accepts same-timestamp snapshots when the event log advances', () => {
+  it('accepts same-timestamp snapshots when revision advances', () => {
     const initialSnapshot = buildSnapshot()
     const cacheWithInitialSnapshot = applyConversationSnapshotToCache(
       EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
@@ -182,6 +183,7 @@ describe('applyConversationSnapshotToCache', () => {
     ).cache
 
     const updatedSnapshot = buildSnapshot({
+      revision: initialSnapshot.revision + 1,
       event_log: [
         ...initialSnapshot.event_log,
         {
@@ -203,6 +205,7 @@ describe('applyConversationSnapshotToCache', () => {
 
   it('rejects stale snapshots instead of replacing a fresher normalized record', () => {
     const freshSnapshot = buildSnapshot({
+      revision: 2,
       updated_at: '2026-03-06T15:03:00Z',
       turns: [
         buildSnapshot().turns[0],
@@ -219,6 +222,7 @@ describe('applyConversationSnapshotToCache', () => {
     ).cache
 
     const staleSnapshot = buildSnapshot({
+      revision: 1,
       updated_at: '2026-03-06T15:02:00Z',
       turns: [
         buildSnapshot().turns[0],
@@ -240,6 +244,34 @@ describe('applyConversationSnapshotToCache', () => {
       .toBe('Fresher assistant content.')
   })
 
+  it('rejects equal-revision snapshots even when content changes', () => {
+    const initialSnapshot = buildSnapshot({ revision: 4 })
+    const cacheWithInitialSnapshot = applyConversationSnapshotToCache(
+      EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      initialSnapshot.project_path,
+      initialSnapshot,
+    ).cache
+
+    const equalRevisionSnapshot = buildSnapshot({
+      revision: 4,
+      updated_at: '2026-03-06T15:03:00Z',
+      turns: [
+        buildSnapshot().turns[0],
+        buildTurn({ content: 'Equal revision should not replace cached content.' }),
+      ],
+    })
+
+    const result = applyConversationSnapshotToCache(
+      cacheWithInitialSnapshot,
+      equalRevisionSnapshot.project_path,
+      equalRevisionSnapshot,
+    )
+
+    expect(result.applied).toBe(false)
+    expect(result.cache.conversationsById[equalRevisionSnapshot.conversation_id]?.turnsById['turn-assistant']?.content)
+      .toBe('I prepared the run request for review.')
+  })
+
   it('updates cached chat_mode when a mode_change turn-upsert arrives', () => {
     const initialSnapshot = buildSnapshot()
     const cacheWithInitialSnapshot = applyConversationSnapshotToCache(
@@ -253,6 +285,7 @@ describe('applyConversationSnapshotToCache', () => {
       initialSnapshot.project_path,
       {
         type: 'turn_upsert',
+        revision: initialSnapshot.revision,
         conversation_id: initialSnapshot.conversation_id,
         project_path: initialSnapshot.project_path,
         title: initialSnapshot.title,
@@ -286,6 +319,7 @@ describe('applyConversationSnapshotToCache', () => {
       initialSnapshot.project_path,
       {
         type: 'turn_upsert',
+        revision: 1,
         conversation_id: initialSnapshot.conversation_id,
         project_path: initialSnapshot.project_path,
         title: 'Updated thread',
@@ -311,6 +345,7 @@ describe('applyConversationSnapshotToCache', () => {
       initialSnapshot.project_path,
       {
         type: 'turn_upsert',
+        revision: 2,
         conversation_id: initialSnapshot.conversation_id,
         project_path: initialSnapshot.project_path,
         title: 'Updated thread',
@@ -358,6 +393,7 @@ describe('applyConversationSnapshotToCache', () => {
       initialSnapshot.project_path,
       {
         type: 'segment_upsert',
+        revision: 1,
         conversation_id: initialSnapshot.conversation_id,
         project_path: initialSnapshot.project_path,
         title: initialSnapshot.title,
@@ -375,6 +411,38 @@ describe('applyConversationSnapshotToCache', () => {
       content: 'Hello from streaming.',
     }))
     expect(result.record.orderedTurnIds).toEqual(['turn-user', 'turn-assistant'])
+  })
+
+  it('ignores stream events below the cached revision', () => {
+    const initialSnapshot = buildSnapshot({
+      revision: 5,
+      turns: [
+        buildSnapshot().turns[0],
+        buildTurn({ content: 'Cached assistant content.' }),
+      ],
+    })
+    const cacheWithInitialSnapshot = applyConversationSnapshotToCache(
+      EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      initialSnapshot.project_path,
+      initialSnapshot,
+    ).cache
+
+    const result = applyConversationStreamEventToCache(
+      cacheWithInitialSnapshot,
+      initialSnapshot.project_path,
+      {
+        type: 'turn_upsert',
+        revision: 4,
+        conversation_id: initialSnapshot.conversation_id,
+        project_path: initialSnapshot.project_path,
+        title: initialSnapshot.title,
+        updated_at: '2026-03-06T15:02:00Z',
+        turn: buildTurn({ content: 'Outdated stream content.' }),
+      },
+    )
+
+    expect(result.record.turnsById['turn-assistant']?.content).toBe('Cached assistant content.')
+    expect(result.cache).toBe(cacheWithInitialSnapshot)
   })
 
   it('hydrates refreshed artifact snapshots into normalized artifact records and timeline rows', () => {
@@ -403,6 +471,7 @@ describe('applyConversationSnapshotToCache', () => {
     ).cache
 
     const refreshedSnapshot = buildSnapshot({
+      revision: initialSnapshot.revision + 1,
       updated_at: '2026-03-06T15:02:00Z',
       segments: initialSnapshot.segments,
       flow_run_requests: [

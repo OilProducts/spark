@@ -145,6 +145,7 @@ export interface ProposedPlanArtifactResponse {
 
 export interface ConversationSnapshotResponse {
     schema_version: number
+    revision: number
     conversation_id: string
     conversation_handle?: string | null
     project_path: string
@@ -170,6 +171,7 @@ export interface ConversationSummaryResponse {
     title: string
     created_at: string
     updated_at: string
+    revision: number
     last_message_preview?: string | null
 }
 
@@ -187,6 +189,7 @@ export interface ConversationToolOutputResponse {
 
 export interface ConversationTurnUpsertEventResponse {
     type: 'turn_upsert'
+    revision: number
     conversation_id: string
     project_path: string
     title: string
@@ -196,6 +199,7 @@ export interface ConversationTurnUpsertEventResponse {
 
 export interface ConversationSegmentUpsertEventResponse {
     type: 'segment_upsert'
+    revision: number
     conversation_id: string
     project_path: string
     title: string
@@ -520,6 +524,8 @@ function parseConversationSummaryResponse(value: unknown): ConversationSummaryRe
         || typeof record.title !== 'string'
         || typeof record.created_at !== 'string'
         || typeof record.updated_at !== 'string'
+        || typeof record.revision !== 'number'
+        || !Number.isFinite(record.revision)
     ) {
         return null
     }
@@ -530,6 +536,7 @@ function parseConversationSummaryResponse(value: unknown): ConversationSummaryRe
         title: record.title,
         created_at: record.created_at,
         updated_at: record.updated_at,
+        revision: record.revision,
         last_message_preview: asOptionalNullableString(record.last_message_preview),
     }
 }
@@ -568,6 +575,10 @@ export function parseConversationSnapshotResponse(
     if (typeof schemaVersion !== 'number') {
         throw new ApiSchemaError(endpoint, 'Expected conversation snapshot schema_version.')
     }
+    const revision = record.revision
+    if (typeof revision !== 'number' || !Number.isFinite(revision)) {
+        throw new ApiSchemaError(endpoint, 'Expected conversation snapshot revision.')
+    }
     const turns = Array.isArray(record.turns)
         ? record.turns
             .map((entry) => parseConversationTurnResponse(entry))
@@ -600,6 +611,7 @@ export function parseConversationSnapshotResponse(
         : []
     return {
         schema_version: schemaVersion,
+        revision,
         conversation_id: expectString(record.conversation_id, endpoint, 'conversation_id'),
         conversation_handle: asOptionalNullableString(record.conversation_handle),
         project_path: expectString(record.project_path, endpoint, 'project_path'),
@@ -625,6 +637,9 @@ export function parseConversationStreamEventResponse(
 ): ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse | null {
     const record = expectObjectRecord(payload, endpoint)
     const type = typeof record.type === 'string' ? record.type : ''
+    const eventRevision = typeof record.revision === 'number' && Number.isFinite(record.revision)
+        ? record.revision
+        : null
     if (type === 'turn_upsert') {
         const turn = parseConversationTurnResponse(record.turn)
         if (
@@ -633,11 +648,13 @@ export function parseConversationStreamEventResponse(
             || typeof record.project_path !== 'string'
             || typeof record.title !== 'string'
             || typeof record.updated_at !== 'string'
+            || eventRevision === null
         ) {
             return null
         }
         return {
             type: 'turn_upsert',
+            revision: eventRevision,
             conversation_id: record.conversation_id,
             project_path: record.project_path,
             title: record.title,
@@ -653,11 +670,13 @@ export function parseConversationStreamEventResponse(
             || typeof record.project_path !== 'string'
             || typeof record.title !== 'string'
             || typeof record.updated_at !== 'string'
+            || eventRevision === null
         ) {
             return null
         }
         return {
             type: 'segment_upsert',
+            revision: eventRevision,
             conversation_id: record.conversation_id,
             project_path: record.project_path,
             title: record.title,

@@ -1,11 +1,13 @@
 import {
+    parseConversationStreamEventResponse,
     parseConversationSnapshotResponse,
 } from '@/lib/api/conversationsApi'
 
 describe('conversationsApi parsing', () => {
     it('parses chat_mode and mode_change turns from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
-            schema_version: 4,
+            schema_version: 5,
+            revision: 0,
             conversation_id: 'conversation-plan',
             conversation_handle: 'steady-harbor',
             project_path: '/tmp/project-plan',
@@ -59,7 +61,8 @@ describe('conversationsApi parsing', () => {
             },
         }
         const snapshot = parseConversationSnapshotResponse({
-            schema_version: 4,
+            schema_version: 5,
+            revision: 0,
             conversation_id: 'conversation-usage',
             conversation_handle: 'steady-harbor',
             project_path: '/tmp/project-plan',
@@ -89,7 +92,8 @@ describe('conversationsApi parsing', () => {
 
     it('parses plan segments from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
-            schema_version: 4,
+            schema_version: 5,
+            revision: 0,
             conversation_id: 'conversation-plan',
             conversation_handle: 'steady-harbor',
             project_path: '/tmp/project-plan',
@@ -129,7 +133,8 @@ describe('conversationsApi parsing', () => {
 
     it('parses truncated tool output metadata from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
-            schema_version: 4,
+            schema_version: 5,
+            revision: 0,
             conversation_id: 'conversation-tool-output',
             conversation_handle: 'steady-harbor',
             project_path: '/tmp/project-plan',
@@ -175,7 +180,8 @@ describe('conversationsApi parsing', () => {
 
     it('preserves continuity-reset workflow event fields from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
-            schema_version: 4,
+            schema_version: 5,
+            revision: 0,
             conversation_id: 'conversation-plan',
             conversation_handle: 'steady-harbor',
             project_path: '/tmp/project-plan',
@@ -227,7 +233,8 @@ describe('conversationsApi parsing', () => {
 
     it('parses proposed plan artifacts from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
-            schema_version: 4,
+            schema_version: 5,
+            revision: 0,
             conversation_id: 'conversation-plan',
             conversation_handle: 'steady-harbor',
             project_path: '/tmp/project-plan',
@@ -267,7 +274,8 @@ describe('conversationsApi parsing', () => {
 
     it('parses context_compaction segments from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
-            schema_version: 4,
+            schema_version: 5,
+            revision: 0,
             conversation_id: 'conversation-plan',
             conversation_handle: 'steady-harbor',
             project_path: '/tmp/project-plan',
@@ -307,7 +315,8 @@ describe('conversationsApi parsing', () => {
 
     it('parses request_user_input segments from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
-            schema_version: 4,
+            schema_version: 5,
+            revision: 0,
             conversation_id: 'conversation-plan',
             conversation_handle: 'steady-harbor',
             project_path: '/tmp/project-plan',
@@ -378,7 +387,8 @@ describe('conversationsApi parsing', () => {
 
     it('parses expired request_user_input status from snapshots', () => {
         const snapshot = parseConversationSnapshotResponse({
-            schema_version: 4,
+            schema_version: 5,
+            revision: 0,
             conversation_id: 'conversation-plan',
             conversation_handle: 'steady-harbor',
             project_path: '/tmp/project-plan',
@@ -428,5 +438,48 @@ describe('conversationsApi parsing', () => {
                 },
             },
         })
+    })
+
+    it('rejects turn_upsert stream events without a numeric revision', () => {
+        const event = parseConversationStreamEventResponse({
+            type: 'turn_upsert',
+            conversation_id: 'conversation-plan',
+            project_path: '/tmp/project-plan',
+            title: 'Planning thread',
+            updated_at: '2026-04-16T18:00:10Z',
+            turn: {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                kind: 'message',
+                status: 'streaming',
+                content: '',
+                timestamp: '2026-04-16T18:00:01Z',
+            },
+        })
+
+        expect(event).toBeNull()
+    })
+
+    it('rejects segment_upsert stream events without a numeric revision', () => {
+        const event = parseConversationStreamEventResponse({
+            type: 'segment_upsert',
+            conversation_id: 'conversation-plan',
+            project_path: '/tmp/project-plan',
+            title: 'Planning thread',
+            updated_at: '2026-04-16T18:00:10Z',
+            segment: {
+                id: 'segment-assistant-1',
+                turn_id: 'turn-assistant-1',
+                order: 1,
+                kind: 'assistant_message',
+                role: 'assistant',
+                status: 'streaming',
+                timestamp: '2026-04-16T18:00:08Z',
+                updated_at: '2026-04-16T18:00:08Z',
+                content: 'Hello',
+            },
+        })
+
+        expect(event).toBeNull()
     })
 })

@@ -850,6 +850,15 @@ class ProjectChatService:
             return
         progress_callback(payload)
 
+    def _stamp_progress_payloads_with_state_revision(
+        self,
+        state: ConversationState,
+        payloads: list[dict[str, Any]],
+    ) -> None:
+        for payload in payloads:
+            payload["revision"] = state.revision
+            payload["updated_at"] = state.updated_at
+
     def _build_turn_upsert_payload(
         self,
         state: ConversationState,
@@ -1078,6 +1087,7 @@ class ProjectChatService:
                 self._upsert_segment(current_state, segment)
                 emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
             self._touch_conversation_state(current_state)
+            self._stamp_progress_payloads_with_state_revision(current_state, emitted_payloads)
             self._write_state(current_state)
             assistant_upsert_payload = self._build_turn_upsert_payload(current_state, current_assistant_turn)
         for payload in emitted_payloads:
@@ -1287,6 +1297,7 @@ class ProjectChatService:
                     return
 
                 self._touch_conversation_state(current_state)
+                self._stamp_progress_payloads_with_state_revision(current_state, emitted_payloads)
                 self._write_state(current_state)
                 _log_project_chat_debug(
                     "persisted progress events",
@@ -1421,6 +1432,7 @@ class ProjectChatService:
                 if turn_changed:
                     emitted_payloads.append(self._build_turn_upsert_payload(state, current_assistant_turn))
                 self._touch_conversation_state(state)
+                self._stamp_progress_payloads_with_state_revision(state, emitted_payloads)
                 self._write_state(state)
                 snapshot = self._serialize_conversation_state_for_ui(state)
             _log_project_chat_debug(
@@ -1690,6 +1702,7 @@ class ProjectChatService:
                         emitted_payloads.append(self._build_turn_upsert_payload(state, expired_turn))
                     segment = expired_segment
                 self._touch_conversation_state(state)
+                self._stamp_progress_payloads_with_state_revision(state, emitted_payloads)
                 emitted_payloads.append(self._build_segment_upsert_payload(state, segment))
                 self._write_state(state)
                 snapshot = self._serialize_conversation_state_for_ui(state)

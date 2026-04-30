@@ -5,7 +5,8 @@ import { hydrateConversationRecordFromSnapshot } from '@/features/projects/model
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
 
 const snapshot: ConversationSnapshotResponse = {
-  schema_version: 4,
+  schema_version: 5,
+  revision: 0,
   conversation_id: 'conversation-1',
   conversation_handle: 'thread-1',
   project_path: '/tmp/project-alpha',
