@@ -1,11 +1,11 @@
 import type { LaunchInputFormValues } from '@/lib/flowContracts'
 import type { Edge, Node } from '@xyflow/react'
 import type {
-    ConversationSnapshotResponse,
     ConversationSummaryResponse,
     TriggerResponse,
 } from '@/lib/workspaceClient'
 import type { OptimisticSendState } from '@/features/projects/model/conversationState'
+import type { NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
 import type { ProjectGitMetadata } from '@/features/projects/model/presentation'
 import type {
     ArtifactErrorState,
@@ -25,7 +25,7 @@ import type { TriggerFormState } from '@/features/triggers/model/triggerForm'
 export type ResourceStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 export interface HomeConversationCacheState {
-    snapshotsByConversationId: Record<string, ConversationSnapshotResponse>
+    conversationsById: Record<string, NormalizedConversationRecord>
     summariesByProjectPath: Record<string, ConversationSummaryResponse[]>
 }
 

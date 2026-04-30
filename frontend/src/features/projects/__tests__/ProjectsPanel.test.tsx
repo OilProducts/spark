@@ -135,7 +135,7 @@ const resetProjectScopeState = () => {
     projectRegistrationError: null,
     recentProjectPaths: [],
     homeConversationCache: {
-      snapshotsByConversationId: {},
+      conversationsById: {},
       summariesByProjectPath: {},
     },
     homeThreadSummariesStatusByProjectPath: {},

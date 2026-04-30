@@ -18,10 +18,6 @@ import { usePersistProjectState } from './usePersistProjectState'
 import { useProjectThreadActions } from './projectThreadActions'
 import { debugProjectChat } from '../model/projectChatDebug'
 import { buildProjectsHomeViewModel } from '../model/projectsHomeViewModel'
-import {
-    stabilizeConversationTimelineEntries,
-    type ConversationTimelineStabilizationScope,
-} from '../model/conversationTimeline'
 import type { ConversationTimelineEntry } from '../model/types'
 import {
     buildProjectConversationId,
@@ -137,7 +133,6 @@ export function useProjectsHomeController() {
     const setViewMode = useStore((state) => state.setViewMode)
 
     const resetComposerRef = useRef<() => void>(() => {})
-    const previousConversationHistoryScopeRef = useRef<ConversationTimelineStabilizationScope | null>(null)
     const persistProjectState = usePersistProjectState(upsertProjectRegistryEntry)
 
     const isNarrowViewport = useNarrowViewport()
@@ -154,10 +149,10 @@ export function useProjectsHomeController() {
         projectSessionsByPath,
         updateProjectSessionState,
     })
-    const activeConversationSnapshot = activeConversationId
-        ? conversationCache.snapshotsByConversationId[activeConversationId] || null
+    const activeConversationRecord = activeConversationId
+        ? conversationCache.conversationsById[activeConversationId] || null
         : null
-    const isConversationHistoryLoading = Boolean(activeConversationId) && activeConversationSnapshot === null
+    const isConversationHistoryLoading = Boolean(activeConversationId) && activeConversationRecord === null
     const {
         chatDraft,
         expandedThinkingEntries,
@@ -195,7 +190,7 @@ export function useProjectsHomeController() {
         : 'idle'
     const projectsHomeViewModel = useMemo(() => buildProjectsHomeViewModel({
         activeConversationId,
-        activeConversationSnapshot,
+        activeConversationRecord,
         activeProjectPath,
         activeProjectScope,
         conversationCache,
@@ -204,7 +199,7 @@ export function useProjectsHomeController() {
         uiDefaults,
     }), [
         activeConversationId,
-        activeConversationSnapshot,
+        activeConversationRecord,
         activeProjectPath,
         activeProjectScope,
         conversationCache,
@@ -212,20 +207,7 @@ export function useProjectsHomeController() {
         projectGitMetadata,
         uiDefaults,
     ])
-    const activeConversationHistory = useMemo(
-        () => stabilizeConversationTimelineEntries(
-            activeConversationId,
-            projectsHomeViewModel.activeConversationHistory,
-            previousConversationHistoryScopeRef.current,
-        ),
-        [activeConversationId, projectsHomeViewModel.activeConversationHistory],
-    )
-    useEffect(() => {
-        previousConversationHistoryScopeRef.current = {
-            conversationId: activeConversationId,
-            entries: activeConversationHistory,
-        }
-    }, [activeConversationId, activeConversationHistory])
+    const activeConversationHistory = projectsHomeViewModel.activeConversationHistory
     const {
         activeChatMode,
         activeProjectChatProvider,
@@ -449,7 +431,6 @@ export function useProjectsHomeController() {
         activeConversationId,
         conversationCacheRef,
         setConversationSummaryList,
-        applyConversationSnapshot,
         activateConversationThread,
         resetComposer,
         setConversationId,

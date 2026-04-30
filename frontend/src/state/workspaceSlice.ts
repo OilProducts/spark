@@ -254,15 +254,15 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 delete nextHomeProjectGitMetadataByPath[normalizedCurrentPath]
             }
             const nextHomeConversationCache = {
-                snapshotsByConversationId: Object.fromEntries(
-                    Object.entries(state.homeConversationCache.snapshotsByConversationId).map(([conversationId, snapshot]) => ([
+                conversationsById: Object.fromEntries(
+                    Object.entries(state.homeConversationCache.conversationsById).map(([conversationId, conversation]) => ([
                         conversationId,
-                        snapshot.project_path === normalizedCurrentPath
+                        conversation.project_path === normalizedCurrentPath
                             ? {
-                                ...snapshot,
+                                ...conversation,
                                 project_path: normalizedNextPath,
                             }
-                            : snapshot,
+                            : conversation,
                     ])),
                 ),
                 summariesByProjectPath: {

@@ -7,11 +7,6 @@ import type {
 import type { ConversationTimelineEntry } from './types'
 import type { OptimisticSendState } from './conversationState'
 
-export interface ConversationTimelineStabilizationScope {
-    conversationId: string | null
-    entries: ConversationTimelineEntry[]
-}
-
 function formatWorkedDuration(elapsedSeconds: number): string {
     if (elapsedSeconds < 60) {
         return `${elapsedSeconds}s`
@@ -61,7 +56,7 @@ function buildAssistantTimelineEntries(
                 ? 'Worked'
                 : `Worked for ${formatWorkedDuration(elapsedSeconds)}`
             entries.push({
-                id: `${turn.id}:final-separator:${entries.length}`,
+                id: `${turn.id}:final-separator:${segment.id}`,
                 kind: 'final_separator',
                 role: 'system',
                 timestamp: segment.timestamp,
@@ -218,6 +213,30 @@ function buildModeChangeTimelineEntry(turn: ConversationTurnResponse): Conversat
     }
 }
 
+export function buildConversationTimelineEntriesForTurn(
+    turn: ConversationTurnResponse,
+    turnSegments: ConversationSegmentResponse[],
+): ConversationTimelineEntry[] {
+    if (turn.kind === 'mode_change') {
+        return [buildModeChangeTimelineEntry(turn)]
+    }
+    if (turn.role === 'assistant') {
+        return buildAssistantTimelineEntries(turn, turnSegments)
+    }
+    if (turn.role === 'user') {
+        return [{
+            id: turn.id,
+            kind: 'message',
+            role: turn.role,
+            content: turn.content,
+            timestamp: turn.timestamp,
+            status: turn.status,
+            error: turn.error ?? null,
+        }]
+    }
+    return []
+}
+
 export function buildConversationTimelineEntries(
     snapshot: ConversationSnapshotResponse | null,
     optimisticSend: OptimisticSendState | null,
@@ -246,25 +265,7 @@ export function buildConversationTimelineEntries(
         segmentsByTurn.set(segment.turn_id, entries)
     })
     snapshot.turns.forEach((turn) => {
-        if (turn.kind === 'mode_change') {
-            timeline.push(buildModeChangeTimelineEntry(turn))
-            return
-        }
-        if (turn.role === 'user' || turn.role === 'assistant') {
-            if (turn.role === 'assistant') {
-                timeline.push(...buildAssistantTimelineEntries(turn, segmentsByTurn.get(turn.id) || []))
-                return
-            }
-            timeline.push({
-                id: turn.id,
-                kind: 'message',
-                role: turn.role,
-                content: turn.content,
-                timestamp: turn.timestamp,
-                status: turn.status,
-                error: turn.error ?? null,
-            })
-        }
+        timeline.push(...buildConversationTimelineEntriesForTurn(turn, segmentsByTurn.get(turn.id) || []))
     })
 
     if (!optimisticSend) {
@@ -282,136 +283,4 @@ export function buildConversationTimelineEntries(
             status: 'complete',
         },
     ]
-}
-
-function optionalStringEqual(left?: string | null, right?: string | null) {
-    return (left ?? null) === (right ?? null)
-}
-
-function stringRecordEqual(left: Record<string, string>, right: Record<string, string>) {
-    const leftKeys = Object.keys(left)
-    const rightKeys = Object.keys(right)
-    return leftKeys.length === rightKeys.length
-        && leftKeys.every((key) => left[key] === right[key])
-}
-
-function stringArrayEqual(left: string[], right: string[]) {
-    return left.length === right.length && left.every((value, index) => value === right[index])
-}
-
-function requestUserInputEqual(
-    left: Extract<ConversationTimelineEntry, { kind: 'request_user_input' }>['requestUserInput'],
-    right: Extract<ConversationTimelineEntry, { kind: 'request_user_input' }>['requestUserInput'],
-) {
-    return left.requestId === right.requestId
-        && left.status === right.status
-        && optionalStringEqual(left.submittedAt, right.submittedAt)
-        && stringRecordEqual(left.answers, right.answers)
-        && left.questions.length === right.questions.length
-        && left.questions.every((leftQuestion, questionIndex) => {
-            const rightQuestion = right.questions[questionIndex]
-            return rightQuestion
-                && leftQuestion.id === rightQuestion.id
-                && leftQuestion.header === rightQuestion.header
-                && leftQuestion.question === rightQuestion.question
-                && leftQuestion.questionType === rightQuestion.questionType
-                && leftQuestion.allowOther === rightQuestion.allowOther
-                && leftQuestion.isSecret === rightQuestion.isSecret
-                && leftQuestion.options.length === rightQuestion.options.length
-                && leftQuestion.options.every((leftOption, optionIndex) => {
-                    const rightOption = rightQuestion.options[optionIndex]
-                    return rightOption
-                        && leftOption.label === rightOption.label
-                        && optionalStringEqual(leftOption.description, rightOption.description)
-                })
-        })
-}
-
-function conversationTimelineEntryKey(entry: ConversationTimelineEntry) {
-    return `${entry.kind}:${entry.id}`
-}
-
-function conversationTimelineEntryRenderedFieldsEqual(
-    left: ConversationTimelineEntry,
-    right: ConversationTimelineEntry,
-) {
-    if (left.kind !== right.kind || left.role !== right.role || left.id !== right.id || left.timestamp !== right.timestamp) {
-        return false
-    }
-
-    switch (left.kind) {
-    case 'message': {
-        const rightMessage = right as Extract<ConversationTimelineEntry, { kind: 'message' }>
-        return left.content === rightMessage.content
-            && left.status === rightMessage.status
-            && optionalStringEqual(left.error, rightMessage.error)
-            && (left.presentation ?? 'default') === (rightMessage.presentation ?? 'default')
-    }
-    case 'plan': {
-        const rightPlan = right as Extract<ConversationTimelineEntry, { kind: 'plan' }>
-        return left.content === rightPlan.content
-            && left.status === rightPlan.status
-            && optionalStringEqual(left.artifactId, rightPlan.artifactId)
-            && optionalStringEqual(left.error, rightPlan.error)
-    }
-    case 'mode_change': {
-        const rightModeChange = right as Extract<ConversationTimelineEntry, { kind: 'mode_change' }>
-        return left.mode === rightModeChange.mode
-    }
-    case 'context_compaction': {
-        const rightContextCompaction = right as Extract<ConversationTimelineEntry, { kind: 'context_compaction' }>
-        return left.content === rightContextCompaction.content
-            && left.status === rightContextCompaction.status
-    }
-    case 'request_user_input': {
-        const rightRequestUserInput = right as Extract<ConversationTimelineEntry, { kind: 'request_user_input' }>
-        return left.content === rightRequestUserInput.content
-            && left.status === rightRequestUserInput.status
-            && requestUserInputEqual(left.requestUserInput, rightRequestUserInput.requestUserInput)
-    }
-    case 'tool_call': {
-        const rightToolCall = right as Extract<ConversationTimelineEntry, { kind: 'tool_call' }>
-        return left.toolCall.id === rightToolCall.toolCall.id
-            && left.toolCall.kind === rightToolCall.toolCall.kind
-            && left.toolCall.status === rightToolCall.toolCall.status
-            && left.toolCall.title === rightToolCall.toolCall.title
-            && optionalStringEqual(left.toolCall.command, rightToolCall.toolCall.command)
-            && optionalStringEqual(left.toolCall.output, rightToolCall.toolCall.output)
-            && stringArrayEqual(left.toolCall.filePaths, rightToolCall.toolCall.filePaths)
-    }
-    case 'final_separator': {
-        const rightFinalSeparator = right as Extract<ConversationTimelineEntry, { kind: 'final_separator' }>
-        return left.label === rightFinalSeparator.label
-    }
-    case 'flow_run_request':
-    case 'flow_launch': {
-        const rightArtifact = right as Extract<ConversationTimelineEntry, { kind: 'flow_run_request' | 'flow_launch' }>
-        return left.artifactId === rightArtifact.artifactId
-    }
-    }
-}
-
-export function stabilizeConversationTimelineEntries(
-    conversationId: string | null,
-    entries: ConversationTimelineEntry[],
-    previousScope: ConversationTimelineStabilizationScope | null,
-): ConversationTimelineEntry[] {
-    if (!conversationId || previousScope?.conversationId !== conversationId || previousScope.entries.length === 0) {
-        return entries
-    }
-
-    const previousEntriesByKey = new Map(
-        previousScope.entries.map((entry) => [conversationTimelineEntryKey(entry), entry]),
-    )
-    let reusedAnyEntry = false
-    const stabilizedEntries = entries.map((entry) => {
-        const previousEntry = previousEntriesByKey.get(conversationTimelineEntryKey(entry))
-        if (!previousEntry || !conversationTimelineEntryRenderedFieldsEqual(previousEntry, entry)) {
-            return entry
-        }
-        reusedAnyEntry = true
-        return previousEntry
-    })
-
-    return reusedAnyEntry ? stabilizedEntries : entries
 }

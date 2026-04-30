@@ -1,5 +1,7 @@
 import { useStore } from '@/store'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { applyConversationSnapshotToCache } from '@/features/projects/model/projectsHomeState'
+import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
@@ -30,6 +32,15 @@ const resetStore = () => {
     editorLaunchInputDraftsByFlow: {},
     editorLaunchInputDraftErrorByFlow: {},
     editorNodeInspectorSessionsByNodeId: {},
+    homeConversationCache: {
+      conversationsById: {},
+      summariesByProjectPath: {},
+    },
+    homeThreadSummariesStatusByProjectPath: {},
+    homeThreadSummariesErrorByProjectPath: {},
+    homeProjectSessionsByPath: {},
+    homeConversationSessionsById: {},
+    homeProjectGitMetadataByPath: {},
   }))
 }
 
@@ -56,6 +67,36 @@ const buildRunRecord = (runId: string, projectPath: string, flowName: string) =>
   continued_from_node: null,
   continued_from_flow_mode: null,
   continued_from_flow_name: null,
+})
+
+const buildConversationSnapshot = (
+  conversationId: string,
+  projectPath: string,
+): ConversationSnapshotResponse => ({
+  schema_version: 4,
+  conversation_id: conversationId,
+  conversation_handle: '',
+  project_path: projectPath,
+  chat_mode: 'chat',
+  title: `Thread ${conversationId}`,
+  created_at: '2026-03-22T00:00:00Z',
+  updated_at: '2026-03-22T00:01:00Z',
+  turns: [
+    {
+      id: `${conversationId}-turn-user`,
+      role: 'user',
+      content: 'Hello',
+      timestamp: '2026-03-22T00:00:00Z',
+      status: 'complete',
+      kind: 'message',
+      artifact_id: null,
+    },
+  ],
+  segments: [],
+  event_log: [],
+  flow_run_requests: [],
+  flow_launches: [],
+  proposed_plans: [],
 })
 
 describe('project scope store behavior', () => {
@@ -250,5 +291,60 @@ describe('project scope store behavior', () => {
     expect(next.runsListSession.selectedRunIdByScopeKey[buildRunsScopeKey('active', '/tmp/project-b')]).toBe('run-b')
     expect(next.runDetailSessionsByRunId['run-a']).toBeUndefined()
     expect(next.runDetailSessionsByRunId['run-b']?.summaryRecord?.run_id).toBe('run-b')
+  })
+
+  it('renames normalized home conversation cache entries with project path updates', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/project-a')
+    store.commitHomeConversationCache((cache) => applyConversationSnapshotToCache(
+      cache,
+      '/tmp/project-a',
+      buildConversationSnapshot('conversation-a', '/tmp/project-a'),
+    ).cache)
+    store.updateHomeConversationSession('conversation-a', {
+      isPinnedToBottom: false,
+      scrollTop: 120,
+    })
+
+    const result = useStore.getState().updateProjectPath('/tmp/project-a', '/tmp/project-renamed')
+
+    expect(result.ok).toBe(true)
+    const next = useStore.getState()
+    expect(next.homeConversationCache.conversationsById['conversation-a']?.project_path).toBe('/tmp/project-renamed')
+    expect(next.homeConversationCache.summariesByProjectPath['/tmp/project-a']).toBeUndefined()
+    expect(next.homeConversationCache.summariesByProjectPath['/tmp/project-renamed']?.[0]).toMatchObject({
+      conversation_id: 'conversation-a',
+      project_path: '/tmp/project-renamed',
+    })
+    expect(next.homeConversationSessionsById['conversation-a']?.scrollTop).toBe(120)
+  })
+
+  it('removes normalized home conversation cache and scroll sessions with project deletion', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/project-a')
+    store.registerProject('/tmp/project-b')
+    store.commitHomeConversationCache((cache) => {
+      const withProjectA = applyConversationSnapshotToCache(
+        cache,
+        '/tmp/project-a',
+        buildConversationSnapshot('conversation-a', '/tmp/project-a'),
+      ).cache
+      return applyConversationSnapshotToCache(
+        withProjectA,
+        '/tmp/project-b',
+        buildConversationSnapshot('conversation-b', '/tmp/project-b'),
+      ).cache
+    })
+    store.updateHomeConversationSession('conversation-a', { scrollTop: 120 })
+    store.updateHomeConversationSession('conversation-b', { scrollTop: 240 })
+
+    store.removeProject('/tmp/project-a', '/tmp/project-b')
+
+    const next = useStore.getState()
+    expect(next.homeConversationCache.conversationsById['conversation-a']).toBeUndefined()
+    expect(next.homeConversationCache.summariesByProjectPath['/tmp/project-a']).toBeUndefined()
+    expect(next.homeConversationSessionsById['conversation-a']).toBeUndefined()
+    expect(next.homeConversationCache.conversationsById['conversation-b']?.project_path).toBe('/tmp/project-b')
+    expect(next.homeConversationSessionsById['conversation-b']?.scrollTop).toBe(240)
   })
 })

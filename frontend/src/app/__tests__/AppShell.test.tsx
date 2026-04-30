@@ -105,7 +105,7 @@ const resetAppShellState = () => {
     projectRegistrationError: null,
     recentProjectPaths: [],
     homeConversationCache: {
-      snapshotsByConversationId: {},
+      conversationsById: {},
       summariesByProjectPath: {},
     },
     homeThreadSummariesStatusByProjectPath: {},

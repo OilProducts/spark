@@ -53,7 +53,15 @@ type ProjectScopeTransitionState = Pick<
     | 'saveErrorKind'
     | 'runsListSession'
     | 'runDetailSessionsByRunId'
->
+> & Partial<Pick<
+    AppState,
+    | 'homeConversationCache'
+    | 'homeConversationSessionsById'
+    | 'homeThreadSummariesStatusByProjectPath'
+    | 'homeThreadSummariesErrorByProjectPath'
+    | 'homeProjectSessionsByPath'
+    | 'homeProjectGitMetadataByPath'
+>>
 
 const pathBelongsToProject = (path: string | null | undefined, projectPath: string) => (
     typeof path === 'string'
@@ -279,6 +287,36 @@ export const buildRemoveProjectTransition = (
     const nextProjectSessionStates = { ...state.projectSessionsByPath }
     delete nextProjectSessionStates[normalizedPath]
 
+    const nextHomeProjectSessionsByPath = { ...state.homeProjectSessionsByPath }
+    delete nextHomeProjectSessionsByPath[normalizedPath]
+
+    const nextHomeThreadSummariesStatusByProjectPath = { ...state.homeThreadSummariesStatusByProjectPath }
+    delete nextHomeThreadSummariesStatusByProjectPath[normalizedPath]
+
+    const nextHomeThreadSummariesErrorByProjectPath = { ...state.homeThreadSummariesErrorByProjectPath }
+    delete nextHomeThreadSummariesErrorByProjectPath[normalizedPath]
+
+    const nextHomeProjectGitMetadataByPath = { ...state.homeProjectGitMetadataByPath }
+    delete nextHomeProjectGitMetadataByPath[normalizedPath]
+
+    const nextHomeSummariesByProjectPath = { ...state.homeConversationCache.summariesByProjectPath }
+    const removedConversationIds = new Set(
+        (nextHomeSummariesByProjectPath[normalizedPath] ?? []).map((summary) => summary.conversation_id),
+    )
+    delete nextHomeSummariesByProjectPath[normalizedPath]
+
+    const nextHomeConversationsById = { ...state.homeConversationCache.conversationsById }
+    Object.entries(state.homeConversationCache.conversationsById).forEach(([conversationId, conversation]) => {
+        if (conversation.project_path === normalizedPath) {
+            removedConversationIds.add(conversationId)
+            delete nextHomeConversationsById[conversationId]
+        }
+    })
+    const nextHomeConversationSessionsById = { ...state.homeConversationSessionsById }
+    removedConversationIds.forEach((conversationId) => {
+        delete nextHomeConversationSessionsById[conversationId]
+    })
+
     const normalizedFallbackPath = nextActiveProjectPath ? normalizeProjectPath(nextActiveProjectPath) : null
     const derivedFallbackPath =
         normalizedFallbackPath && nextProjectRegistry[normalizedFallbackPath]
@@ -317,6 +355,15 @@ export const buildRemoveProjectTransition = (
         workingDir: nextResolvedActiveProjectPath
             ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY
             : DEFAULT_WORKING_DIRECTORY,
+        homeConversationCache: {
+            conversationsById: nextHomeConversationsById,
+            summariesByProjectPath: nextHomeSummariesByProjectPath,
+        },
+        homeConversationSessionsById: nextHomeConversationSessionsById,
+        homeThreadSummariesStatusByProjectPath: nextHomeThreadSummariesStatusByProjectPath,
+        homeThreadSummariesErrorByProjectPath: nextHomeThreadSummariesErrorByProjectPath,
+        homeProjectSessionsByPath: nextHomeProjectSessionsByPath,
+        homeProjectGitMetadataByPath: nextHomeProjectGitMetadataByPath,
     }
 }
 

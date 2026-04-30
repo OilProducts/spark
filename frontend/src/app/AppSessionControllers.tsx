@@ -209,8 +209,8 @@ export function HomeSessionController() {
         Object.keys(homeConversationCache.summariesByProjectPath).forEach((projectPath) => {
             nextProjectPaths.add(projectPath)
         })
-        Object.values(homeConversationCache.snapshotsByConversationId).forEach((snapshot) => {
-            nextProjectPaths.add(snapshot.project_path)
+        Object.values(homeConversationCache.conversationsById).forEach((conversation) => {
+            nextProjectPaths.add(conversation.project_path)
         })
 
         return [...nextProjectPaths].filter((projectPath) => Boolean(projectRegistry[projectPath]))
@@ -273,8 +273,8 @@ export function HomeSessionController() {
         Object.keys(homeConversationCache.summariesByProjectPath).forEach((projectPath) => {
             knownHomeProjectPaths.add(projectPath)
         })
-        Object.values(homeConversationCache.snapshotsByConversationId).forEach((snapshot) => {
-            knownHomeProjectPaths.add(snapshot.project_path)
+        Object.values(homeConversationCache.conversationsById).forEach((conversation) => {
+            knownHomeProjectPaths.add(conversation.project_path)
         })
 
         knownHomeProjectPaths.forEach((projectPath) => {

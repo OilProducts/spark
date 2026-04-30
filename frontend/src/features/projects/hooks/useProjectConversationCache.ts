@@ -96,12 +96,12 @@ export function useProjectConversationCache({
         const latestProjectScope = projectSessionsRef.current[projectPath]
         const shouldSyncActiveWorkspace = options?.forceWorkspaceSync === true
             || latestProjectScope?.conversationId === snapshot.conversation_id
-        const { applied, cache } = applyConversationSnapshotToCache(
+        const result = applyConversationSnapshotToCache(
             conversationCacheRef.current,
             projectPath,
             snapshot,
         )
-        if (!applied) {
+        if (!result.applied) {
             debugProjectChat('skip stale conversation snapshot', {
                 source,
                 projectPath,
@@ -110,14 +110,19 @@ export function useProjectConversationCache({
             })
             return
         }
+        const { cache } = result
+        const record = cache.conversationsById[snapshot.conversation_id]
+        if (!record) {
+            return
+        }
         debugProjectChat('apply conversation snapshot', {
             source,
             projectPath,
             snapshotProjectPath: snapshot.project_path,
             conversationId: snapshot.conversation_id,
             shouldSyncActiveWorkspace,
-            turnCount: snapshot.turns.length,
-            turns: summarizeConversationTurnsForDebug(snapshot.turns),
+            turnCount: record.orderedTurnIds.length,
+            turns: summarizeConversationTurnsForDebug(record.orderedTurnIds.map((turnId) => record.turnsById[turnId])),
         })
         commitConversationCache(cache)
 
@@ -149,20 +154,18 @@ export function useProjectConversationCache({
             eventType: event.type,
             conversationId: event.conversation_id,
         })
-        const { cache, snapshot } = applyConversationStreamEventToCache(
+        const { cache, record } = applyConversationStreamEventToCache(
             conversationCacheRef.current,
             projectPath,
             event as ConversationStreamEvent,
         )
         commitConversationCache(cache)
-        if (snapshot) {
-            debugProjectChat('apply merged stream snapshot', {
-                source,
-                projectPath,
-                conversationId: snapshot.conversation_id,
-                turnCount: snapshot.turns.length,
-            })
-        }
+        debugProjectChat('apply merged stream conversation record', {
+            source,
+            projectPath,
+            conversationId: record.conversation_id,
+            turnCount: record.orderedTurnIds.length,
+        })
     }, [commitConversationCache])
 
     return {

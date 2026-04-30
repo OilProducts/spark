@@ -3,7 +3,6 @@ import { useCallback, type MutableRefObject } from 'react'
 import {
     deleteConversationValidated,
     fetchProjectConversationListValidated,
-    type ConversationSnapshotResponse,
     type ConversationSummaryResponse,
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
@@ -30,12 +29,6 @@ type UseProjectThreadActionsArgs = {
     activeConversationId: string | null
     conversationCacheRef: ConversationCacheRef
     setConversationSummaryList: (projectPath: string, summaries: ConversationSummaryResponse[]) => void
-    applyConversationSnapshot: (
-        projectPath: string,
-        snapshot: ConversationSnapshotResponse,
-        source?: string,
-        options?: { forceWorkspaceSync?: boolean },
-    ) => void
     activateConversationThread: (projectPath: string, conversationId: string, source?: string) => void
     resetComposer: () => void
     setConversationId: (conversationId: string | null) => void
@@ -57,7 +50,6 @@ export function useProjectThreadActions({
     activeConversationId,
     conversationCacheRef,
     setConversationSummaryList,
-    applyConversationSnapshot,
     activateConversationThread,
     resetComposer,
     setConversationId,
@@ -105,15 +97,9 @@ export function useProjectThreadActions({
         }
         setPanelError(null)
         activateConversationThread(activeProjectPath, conversationId, 'select-thread')
-        const cachedSnapshot = conversationCacheRef.current.snapshotsByConversationId[conversationId]
-        if (cachedSnapshot) {
-            applyConversationSnapshot(activeProjectPath, cachedSnapshot, 'thread-cache')
-        }
     }, [
         activeProjectPath,
         activateConversationThread,
-        applyConversationSnapshot,
-        conversationCacheRef,
         setPanelError,
     ])
 

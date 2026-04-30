@@ -1,6 +1,7 @@
 import type { ProjectSessionState } from '@/store'
 
 import { buildProjectsHomeViewModel } from '@/features/projects/model/projectsHomeViewModel'
+import { hydrateConversationRecordFromSnapshot } from '@/features/projects/model/projectsHomeState'
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
 
 const snapshot: ConversationSnapshotResponse = {
@@ -90,12 +91,12 @@ describe('buildProjectsHomeViewModel', () => {
   it('derives conversation, artifact, and surface state for the home controller', () => {
     const viewModel = buildProjectsHomeViewModel({
       activeConversationId: 'conversation-1',
-      activeConversationSnapshot: snapshot,
+      activeConversationRecord: hydrateConversationRecordFromSnapshot(snapshot),
       activeProjectPath: '/tmp/project-alpha',
       activeProjectScope,
       conversationCache: {
-        snapshotsByConversationId: {
-          'conversation-1': snapshot,
+        conversationsById: {
+          'conversation-1': hydrateConversationRecordFromSnapshot(snapshot),
         },
         summariesByProjectPath: {
           '/tmp/project-alpha': [

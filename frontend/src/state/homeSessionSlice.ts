@@ -46,7 +46,7 @@ const resolveHomeConversationSession = (
 
 export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionSlice> = (set) => ({
     homeConversationCache: {
-        snapshotsByConversationId: {},
+        conversationsById: {},
         summariesByProjectPath: {},
     },
     homeThreadSummariesStatusByProjectPath: {},
@@ -140,12 +140,12 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
             )
             delete nextSummariesByProjectPath[projectPath]
 
-            const nextSnapshotsByConversationId = { ...state.homeConversationCache.snapshotsByConversationId }
+            const nextConversationsById = { ...state.homeConversationCache.conversationsById }
             const nextConversationSessionsById = { ...state.homeConversationSessionsById }
-            Object.entries(state.homeConversationCache.snapshotsByConversationId).forEach(([conversationId, snapshot]) => {
-                if (snapshot.project_path === projectPath) {
+            Object.entries(state.homeConversationCache.conversationsById).forEach(([conversationId, conversation]) => {
+                if (conversation.project_path === projectPath) {
                     removedConversationIds.add(conversationId)
-                    delete nextSnapshotsByConversationId[conversationId]
+                    delete nextConversationsById[conversationId]
                 }
             })
             removedConversationIds.forEach((conversationId) => {
@@ -154,7 +154,7 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
 
             return {
                 homeConversationCache: {
-                    snapshotsByConversationId: nextSnapshotsByConversationId,
+                    conversationsById: nextConversationsById,
                     summariesByProjectPath: nextSummariesByProjectPath,
                 },
                 homeThreadSummariesStatusByProjectPath: nextThreadStatuses,
@@ -206,21 +206,21 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
                 delete nextSummariesByProjectPath[currentProjectPath]
             }
 
-            const nextSnapshotsByConversationId = Object.fromEntries(
-                Object.entries(state.homeConversationCache.snapshotsByConversationId).map(([conversationId, snapshot]) => ([
+            const nextConversationsById = Object.fromEntries(
+                Object.entries(state.homeConversationCache.conversationsById).map(([conversationId, conversation]) => ([
                     conversationId,
-                    snapshot.project_path === currentProjectPath
+                    conversation.project_path === currentProjectPath
                         ? {
-                            ...snapshot,
+                            ...conversation,
                             project_path: nextProjectPath,
                         }
-                        : snapshot,
+                        : conversation,
                 ])),
             )
 
             return {
                 homeConversationCache: {
-                    snapshotsByConversationId: nextSnapshotsByConversationId,
+                    conversationsById: nextConversationsById,
                     summariesByProjectPath: nextSummariesByProjectPath,
                 },
                 homeThreadSummariesStatusByProjectPath: nextThreadStatuses,

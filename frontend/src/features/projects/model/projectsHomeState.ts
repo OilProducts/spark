@@ -5,10 +5,15 @@ import type {
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
 import {
     ApiHttpError,
+    type ConversationSegmentResponse,
     type ConversationSegmentUpsertEventResponse,
     type ConversationSnapshotResponse,
     type ConversationSummaryResponse,
+    type ConversationTurnResponse,
     type ConversationTurnUpsertEventResponse,
+    type FlowLaunchResponse,
+    type FlowRunRequestResponse,
+    type ProposedPlanArtifactResponse,
 } from '@/lib/workspaceClient'
 import type { ProjectGitMetadata } from './presentation'
 import {
@@ -16,20 +21,48 @@ import {
     ensureConversationSnapshotShell,
     sanitizeStreamingTurnUpsert,
     sortConversationSummaries,
-    upsertConversationSegment,
     upsertConversationSummary,
-    upsertConversationTurn,
 } from './conversationState'
+import { buildConversationTimelineEntriesForTurn } from './conversationTimeline'
+import type { ConversationTimelineEntry } from './types'
 
 export type ConversationStreamEvent = ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse
 
+export type NormalizedConversationRecord = {
+    schema_version: ConversationSnapshotResponse['schema_version']
+    conversation_id: string
+    conversation_handle: string | null
+    project_path: string
+    chat_mode: ConversationSnapshotResponse['chat_mode']
+    provider?: string | null
+    model: string | null
+    reasoning_effort: string | null
+    title: string
+    created_at: string
+    updated_at: string
+    orderedTurnIds: string[]
+    turnsById: Record<string, ConversationTurnResponse>
+    orderedSegmentIdsByTurnId: Record<string, string[]>
+    segmentsById: Record<string, ConversationSegmentResponse>
+    event_log: ConversationSnapshotResponse['event_log']
+    flowRunRequestIds: string[]
+    flowRunRequestsById: Record<string, FlowRunRequestResponse>
+    flowLaunchIds: string[]
+    flowLaunchesById: Record<string, FlowLaunchResponse>
+    proposedPlanIds: string[]
+    proposedPlansById: Record<string, ProposedPlanArtifactResponse>
+    timelineEntryIds: string[]
+    timelineEntriesById: Record<string, ConversationTimelineEntry>
+    timelineEntryIdsByTurnId: Record<string, string[]>
+}
+
 export type ProjectConversationCacheState = {
-    snapshotsByConversationId: Record<string, ConversationSnapshotResponse>
+    conversationsById: Record<string, NormalizedConversationRecord>
     summariesByProjectPath: Record<string, ConversationSummaryResponse[]>
 }
 
 export const EMPTY_PROJECT_CONVERSATION_CACHE_STATE: ProjectConversationCacheState = {
-    snapshotsByConversationId: {},
+    conversationsById: {},
     summariesByProjectPath: {},
 }
 
@@ -181,17 +214,195 @@ export function resolveProjectPathValidation(
     }
 }
 
-function buildConversationSummaryFromSnapshot(snapshot: ConversationSnapshotResponse): ConversationSummaryResponse {
+function indexById<T extends { id: string }>(items: T[]): Record<string, T> {
+    return Object.fromEntries(items.map((item) => [item.id, item]))
+}
+
+function buildConversationSummaryFromRecord(record: NormalizedConversationRecord): ConversationSummaryResponse {
+    const lastMessageTurn = record.orderedTurnIds
+        .map((turnId) => record.turnsById[turnId])
+        .filter((turn) => turn?.kind === 'message' && typeof turn.content === 'string' && turn.content.trim().length > 0)
+        .slice(-1)[0]
     return {
+        conversation_id: record.conversation_id,
+        conversation_handle: record.conversation_handle,
+        project_path: record.project_path,
+        title: record.title,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        last_message_preview: lastMessageTurn?.content || null,
+    }
+}
+
+export function getConversationTimelineEntries(record: NormalizedConversationRecord | null): ConversationTimelineEntry[] {
+    if (!record) {
+        return []
+    }
+    return record.timelineEntryIds
+        .map((entryId) => record.timelineEntriesById[entryId])
+        .filter((entry): entry is ConversationTimelineEntry => Boolean(entry))
+}
+
+export function getConversationFlowRunRequests(record: NormalizedConversationRecord | null): FlowRunRequestResponse[] {
+    return record ? record.flowRunRequestIds.map((id) => record.flowRunRequestsById[id]).filter(Boolean) : []
+}
+
+export function getConversationFlowLaunches(record: NormalizedConversationRecord | null): FlowLaunchResponse[] {
+    return record ? record.flowLaunchIds.map((id) => record.flowLaunchesById[id]).filter(Boolean) : []
+}
+
+export function getConversationProposedPlans(record: NormalizedConversationRecord | null): ProposedPlanArtifactResponse[] {
+    return record ? record.proposedPlanIds.map((id) => record.proposedPlansById[id]).filter(Boolean) : []
+}
+
+function rebuildTurnTimelineEntries(
+    record: NormalizedConversationRecord,
+    turnId: string,
+): NormalizedConversationRecord {
+    const turn = record.turnsById[turnId]
+    const previousTurnEntryIds = record.timelineEntryIdsByTurnId[turnId] || []
+    const previousTurnEntryIdSet = new Set(previousTurnEntryIds)
+    const nextTurnEntries = turn
+        ? buildConversationTimelineEntriesForTurn(
+            turn,
+            (record.orderedSegmentIdsByTurnId[turnId] || [])
+                .map((segmentId) => record.segmentsById[segmentId])
+                .filter(Boolean),
+        )
+        : []
+    const nextTurnEntryIds = nextTurnEntries.map((entry) => entry.id)
+    const nextTimelineEntriesById = { ...record.timelineEntriesById }
+    previousTurnEntryIds.forEach((entryId) => {
+        delete nextTimelineEntriesById[entryId]
+    })
+    nextTurnEntries.forEach((entry) => {
+        nextTimelineEntriesById[entry.id] = entry
+    })
+
+    let inserted = false
+    const nextTimelineEntryIds = record.timelineEntryIds.flatMap((entryId) => {
+        if (!previousTurnEntryIdSet.has(entryId)) {
+            return [entryId]
+        }
+        if (inserted) {
+            return []
+        }
+        inserted = true
+        return nextTurnEntryIds
+    })
+    if (!inserted && nextTurnEntryIds.length > 0) {
+        const turnIndex = record.orderedTurnIds.indexOf(turnId)
+        let insertAt = nextTimelineEntryIds.length
+        for (let index = turnIndex + 1; index < record.orderedTurnIds.length; index += 1) {
+            const followingEntryId = record.timelineEntryIdsByTurnId[record.orderedTurnIds[index]]?.[0]
+            if (followingEntryId) {
+                const followingIndex = nextTimelineEntryIds.indexOf(followingEntryId)
+                if (followingIndex >= 0) {
+                    insertAt = followingIndex
+                    break
+                }
+            }
+        }
+        nextTimelineEntryIds.splice(insertAt, 0, ...nextTurnEntryIds)
+    }
+
+    return {
+        ...record,
+        timelineEntryIds: nextTimelineEntryIds,
+        timelineEntriesById: nextTimelineEntriesById,
+        timelineEntryIdsByTurnId: {
+            ...record.timelineEntryIdsByTurnId,
+            [turnId]: nextTurnEntryIds,
+        },
+    }
+}
+
+export function hydrateConversationRecordFromSnapshot(
+    snapshot: ConversationSnapshotResponse,
+): NormalizedConversationRecord {
+    const orderedSegmentIdsByTurnId: Record<string, string[]> = {}
+    snapshot.segments.forEach((segment) => {
+        orderedSegmentIdsByTurnId[segment.turn_id] = [
+            ...(orderedSegmentIdsByTurnId[segment.turn_id] || []),
+            segment.id,
+        ]
+    })
+    Object.keys(orderedSegmentIdsByTurnId).forEach((turnId) => {
+        orderedSegmentIdsByTurnId[turnId].sort((leftId, rightId) => {
+            const left = snapshot.segments.find((segment) => segment.id === leftId)
+            const right = snapshot.segments.find((segment) => segment.id === rightId)
+            if (!left || !right) {
+                return leftId.localeCompare(rightId)
+            }
+            const orderDelta = left.order - right.order
+            if (orderDelta !== 0) {
+                return orderDelta
+            }
+            const timestampDelta = left.timestamp.localeCompare(right.timestamp)
+            return timestampDelta !== 0 ? timestampDelta : left.id.localeCompare(right.id)
+        })
+    })
+
+    let record: NormalizedConversationRecord = {
+        schema_version: snapshot.schema_version,
         conversation_id: snapshot.conversation_id,
-        conversation_handle: snapshot.conversation_handle,
+        conversation_handle: snapshot.conversation_handle ?? null,
         project_path: snapshot.project_path,
+        chat_mode: snapshot.chat_mode,
+        provider: snapshot.provider ?? null,
+        model: snapshot.model ?? null,
+        reasoning_effort: snapshot.reasoning_effort ?? null,
         title: snapshot.title,
         created_at: snapshot.created_at,
         updated_at: snapshot.updated_at,
-        last_message_preview: snapshot.turns
-            .filter((turn) => turn.kind === 'message' && typeof turn.content === 'string' && turn.content.trim().length > 0)
-            .slice(-1)[0]?.content || null,
+        orderedTurnIds: snapshot.turns.map((turn) => turn.id),
+        turnsById: indexById(snapshot.turns),
+        orderedSegmentIdsByTurnId,
+        segmentsById: indexById(snapshot.segments),
+        event_log: snapshot.event_log,
+        flowRunRequestIds: snapshot.flow_run_requests.map((request) => request.id),
+        flowRunRequestsById: indexById(snapshot.flow_run_requests),
+        flowLaunchIds: snapshot.flow_launches.map((launch) => launch.id),
+        flowLaunchesById: indexById(snapshot.flow_launches),
+        proposedPlanIds: (snapshot.proposed_plans || []).map((plan) => plan.id),
+        proposedPlansById: indexById(snapshot.proposed_plans || []),
+        timelineEntryIds: [],
+        timelineEntriesById: {},
+        timelineEntryIdsByTurnId: {},
+    }
+    record.orderedTurnIds.forEach((turnId) => {
+        record = rebuildTurnTimelineEntries(record, turnId)
+    })
+    return record
+}
+
+export function conversationRecordToSnapshot(record: NormalizedConversationRecord): ConversationSnapshotResponse {
+    return {
+        schema_version: record.schema_version,
+        conversation_id: record.conversation_id,
+        conversation_handle: record.conversation_handle,
+        project_path: record.project_path,
+        chat_mode: record.chat_mode,
+        provider: record.provider ?? null,
+        model: record.model,
+        reasoning_effort: record.reasoning_effort,
+        title: record.title,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        turns: record.orderedTurnIds.map((turnId) => record.turnsById[turnId]).filter(Boolean),
+        segments: Object.values(record.segmentsById).sort((left, right) => {
+            if (left.turn_id === right.turn_id) {
+                const orderDelta = left.order - right.order
+                if (orderDelta !== 0) {
+                    return orderDelta
+                }
+            }
+            return left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id)
+        }),
+        event_log: record.event_log,
+        flow_run_requests: getConversationFlowRunRequests(record),
+        flow_launches: getConversationFlowLaunches(record),
+        proposed_plans: getConversationProposedPlans(record),
     }
 }
 
@@ -220,26 +431,31 @@ export function applyConversationSnapshotToCache(
             ...snapshot,
             project_path: projectPath,
         }
-    const existingSnapshot = current.snapshotsByConversationId[scopedSnapshot.conversation_id]
-    if (existingSnapshot && compareConversationSnapshotFreshness(existingSnapshot, scopedSnapshot) >= 0) {
+    const existingRecord = current.conversationsById[scopedSnapshot.conversation_id]
+    if (
+        existingRecord
+        && compareConversationSnapshotFreshness(conversationRecordToSnapshot(existingRecord), scopedSnapshot) >= 0
+    ) {
         return {
             applied: false,
             cache: current,
         }
     }
+    const record = hydrateConversationRecordFromSnapshot(scopedSnapshot)
 
     return {
         applied: true,
+        record,
         cache: {
-            snapshotsByConversationId: {
-                ...current.snapshotsByConversationId,
-                [scopedSnapshot.conversation_id]: scopedSnapshot,
+            conversationsById: {
+                ...current.conversationsById,
+                [scopedSnapshot.conversation_id]: record,
             },
             summariesByProjectPath: {
                 ...current.summariesByProjectPath,
                 [projectPath]: upsertConversationSummary(
                     current.summariesByProjectPath[projectPath] || [],
-                    buildConversationSummaryFromSnapshot(scopedSnapshot),
+                    buildConversationSummaryFromRecord(record),
                 ),
             },
         },
@@ -251,44 +467,76 @@ export function applyConversationStreamEventToCache(
     projectPath: string,
     event: ConversationStreamEvent,
 ) {
-    const existingSnapshot = current.snapshotsByConversationId[event.conversation_id]
-        || ensureConversationSnapshotShell(event.conversation_id, projectPath, event.title)
-    let mergedSnapshot = existingSnapshot
+    const existingRecord = current.conversationsById[event.conversation_id]
+        || hydrateConversationRecordFromSnapshot(ensureConversationSnapshotShell(event.conversation_id, projectPath, event.title))
+    let mergedRecord: NormalizedConversationRecord = {
+        ...existingRecord,
+        project_path: projectPath,
+        title: event.title,
+        updated_at: event.updated_at,
+    }
     if (event.type === 'turn_upsert') {
-        const currentTurn = existingSnapshot.turns.find((turn) => turn.id === event.turn.id) || null
-        mergedSnapshot = {
-            ...upsertConversationTurn(existingSnapshot, sanitizeStreamingTurnUpsert(currentTurn, event.turn)),
+        const currentTurn = existingRecord.turnsById[event.turn.id] || null
+        const turn = sanitizeStreamingTurnUpsert(currentTurn, event.turn)
+        mergedRecord = {
+            ...mergedRecord,
             chat_mode: event.turn.kind === 'mode_change'
                 ? (event.turn.content === 'plan' ? 'plan' : 'chat')
-                : existingSnapshot.chat_mode,
-            project_path: projectPath,
-            title: event.title,
-            updated_at: event.updated_at,
+                : existingRecord.chat_mode,
+            orderedTurnIds: existingRecord.turnsById[turn.id]
+                ? existingRecord.orderedTurnIds
+                : [...existingRecord.orderedTurnIds, turn.id],
+            turnsById: {
+                ...existingRecord.turnsById,
+                [turn.id]: turn,
+            },
         }
-    } else {
-        mergedSnapshot = {
-            ...existingSnapshot,
-            project_path: projectPath,
-            title: event.title,
-            updated_at: event.updated_at,
+        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, turn.id)
+    } else if (event.type === 'segment_upsert') {
+        const segment = event.segment
+        const turnSegmentIds = existingRecord.orderedSegmentIdsByTurnId[segment.turn_id] || []
+        const nextTurnSegmentIds = turnSegmentIds.includes(segment.id)
+            ? turnSegmentIds
+            : [...turnSegmentIds, segment.id]
+        const nextSegmentsById = {
+            ...existingRecord.segmentsById,
+            [segment.id]: segment,
         }
-    }
-    if (event.type === 'segment_upsert') {
-        mergedSnapshot = upsertConversationSegment(mergedSnapshot, event.segment)
+        nextTurnSegmentIds.sort((leftId, rightId) => {
+            const left = nextSegmentsById[leftId]
+            const right = nextSegmentsById[rightId]
+            if (!left || !right) {
+                return leftId.localeCompare(rightId)
+            }
+            const orderDelta = left.order - right.order
+            if (orderDelta !== 0) {
+                return orderDelta
+            }
+            return left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id)
+        })
+        mergedRecord = {
+            ...mergedRecord,
+            segmentsById: nextSegmentsById,
+            orderedSegmentIdsByTurnId: {
+                ...existingRecord.orderedSegmentIdsByTurnId,
+                [segment.turn_id]: nextTurnSegmentIds,
+            },
+        }
+        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, segment.turn_id)
     }
 
     return {
-        snapshot: mergedSnapshot,
+        record: mergedRecord,
         cache: {
-            snapshotsByConversationId: {
-                ...current.snapshotsByConversationId,
-                [event.conversation_id]: mergedSnapshot,
+            conversationsById: {
+                ...current.conversationsById,
+                [event.conversation_id]: mergedRecord,
             },
             summariesByProjectPath: {
                 ...current.summariesByProjectPath,
                 [projectPath]: upsertConversationSummary(
                     current.summariesByProjectPath[projectPath] || [],
-                    buildConversationSummaryFromSnapshot(mergedSnapshot),
+                    buildConversationSummaryFromRecord(mergedRecord),
                 ),
             },
         },
@@ -299,11 +547,11 @@ export function removeConversationFromCache(
     current: ProjectConversationCacheState,
     conversationId: string,
 ): ProjectConversationCacheState {
-    const nextSnapshots = { ...current.snapshotsByConversationId }
-    delete nextSnapshots[conversationId]
+    const nextConversations = { ...current.conversationsById }
+    delete nextConversations[conversationId]
     return {
         ...current,
-        snapshotsByConversationId: nextSnapshots,
+        conversationsById: nextConversations,
     }
 }
 
@@ -314,15 +562,15 @@ export function removeProjectFromCache(
     const nextSummariesByProjectPath = { ...current.summariesByProjectPath }
     delete nextSummariesByProjectPath[projectPath]
 
-    const nextSnapshotsByConversationId: Record<string, ConversationSnapshotResponse> = {}
-    Object.entries(current.snapshotsByConversationId).forEach(([conversationId, snapshot]) => {
-        if (snapshot.project_path !== projectPath) {
-            nextSnapshotsByConversationId[conversationId] = snapshot
+    const nextConversationsById: Record<string, NormalizedConversationRecord> = {}
+    Object.entries(current.conversationsById).forEach(([conversationId, conversation]) => {
+        if (conversation.project_path !== projectPath) {
+            nextConversationsById[conversationId] = conversation
         }
     })
 
     return {
-        snapshotsByConversationId: nextSnapshotsByConversationId,
+        conversationsById: nextConversationsById,
         summariesByProjectPath: nextSummariesByProjectPath,
     }
 }

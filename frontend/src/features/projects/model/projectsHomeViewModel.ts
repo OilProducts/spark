@@ -2,16 +2,19 @@ import type { ProjectSessionState } from '@/store'
 import type { UiDefaults } from '@/state/store-types'
 import type {
     ConversationChatMode,
-    ConversationSnapshotResponse,
     ConversationSummaryResponse,
 } from '@/lib/workspaceClient'
 
 import type { OptimisticSendState } from './conversationState'
-import { buildConversationTimelineEntries } from './conversationTimeline'
 import type { ProjectGitMetadata } from './presentation'
 import {
     EMPTY_PROJECT_GIT_METADATA,
     formatProjectListLabel,
+    getConversationFlowLaunches,
+    getConversationFlowRunRequests,
+    getConversationProposedPlans,
+    getConversationTimelineEntries,
+    type NormalizedConversationRecord,
     type ProjectConversationCacheState,
 } from './projectsHomeState'
 import type {
@@ -23,7 +26,7 @@ import type {
 
 type BuildProjectsHomeViewModelArgs = {
     activeConversationId: string | null
-    activeConversationSnapshot: ConversationSnapshotResponse | null
+    activeConversationRecord: NormalizedConversationRecord | null
     activeProjectPath: string | null
     activeProjectScope: ProjectSessionState | null
     conversationCache: ProjectConversationCacheState
@@ -63,7 +66,7 @@ function getLatestArtifactId<T extends { id: string }>(items: T[]) {
 
 export function buildProjectsHomeViewModel({
     activeConversationId,
-    activeConversationSnapshot,
+    activeConversationRecord,
     activeProjectPath,
     activeProjectScope,
     conversationCache,
@@ -71,13 +74,23 @@ export function buildProjectsHomeViewModel({
     projectGitMetadata,
     uiDefaults,
 }: BuildProjectsHomeViewModelArgs): ProjectsHomeViewModel {
-    const activeConversationHistory = buildConversationTimelineEntries(
-        activeConversationSnapshot,
-        optimisticSend && optimisticSend.conversationId === activeConversationId ? optimisticSend : null,
-    )
-    const activeFlowRunRequests = activeConversationSnapshot?.flow_run_requests || []
-    const activeFlowLaunches = activeConversationSnapshot?.flow_launches || []
-    const activeProposedPlans = activeConversationSnapshot?.proposed_plans || []
+    const normalizedHistory = getConversationTimelineEntries(activeConversationRecord)
+    const activeConversationHistory = optimisticSend && optimisticSend.conversationId === activeConversationId
+        ? [
+            ...normalizedHistory,
+            {
+                id: `${optimisticSend.conversationId}:optimistic:user`,
+                kind: 'message' as const,
+                role: 'user' as const,
+                content: optimisticSend.message,
+                timestamp: optimisticSend.createdAt,
+                status: 'complete' as const,
+            },
+        ]
+        : normalizedHistory
+    const activeFlowRunRequests = getConversationFlowRunRequests(activeConversationRecord)
+    const activeFlowLaunches = getConversationFlowLaunches(activeConversationRecord)
+    const activeProposedPlans = getConversationProposedPlans(activeConversationRecord)
     const hasRenderableConversationHistory = activeConversationHistory.some((entry) => (
         entry.kind === 'mode_change'
         || entry.kind === 'context_compaction'
@@ -88,26 +101,29 @@ export function buildProjectsHomeViewModel({
         || entry.role === 'user'
         || entry.role === 'assistant'
     ))
-    const hasActiveAssistantTurn = (activeConversationSnapshot?.turns || []).some((turn) => (
-        turn.role === 'assistant' && (turn.status === 'pending' || turn.status === 'streaming')
-    ))
+    const hasActiveAssistantTurn = (activeConversationRecord?.orderedTurnIds || []).some((turnId) => {
+        const turn = activeConversationRecord?.turnsById[turnId]
+        return Boolean(
+            turn && turn.role === 'assistant' && (turn.status === 'pending' || turn.status === 'streaming'),
+        )
+    })
 
     return {
         activeChatMode: activeConversationId
-            ? (activeConversationSnapshot?.chat_mode ?? 'chat')
+            ? (activeConversationRecord?.chat_mode ?? 'chat')
             : null,
         activeProjectChatModel: (
-            activeConversationSnapshot?.model
+            activeConversationRecord?.model
             ?? uiDefaults.llm_model
             ?? ''
         ),
         activeProjectChatProvider: (
-            activeConversationSnapshot?.provider
+            activeConversationRecord?.provider
             ?? uiDefaults.llm_provider
             ?? 'codex'
         ),
         activeProjectChatReasoningEffort: (
-            activeConversationSnapshot?.reasoning_effort
+            activeConversationRecord?.reasoning_effort
             ?? uiDefaults.reasoning_effort
             ?? ''
         ),
