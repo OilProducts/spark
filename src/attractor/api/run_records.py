@@ -40,6 +40,8 @@ class RunRecord:
     parent_node_id: Optional[str] = None
     root_run_id: Optional[str] = None
     child_invocation_index: Optional[int] = None
+    execution_mode: str = "native"
+    execution_container_image: Optional[str] = None
     last_error: str = ""
     token_usage: Optional[int] = None
     token_usage_breakdown: Optional[TokenUsageBreakdown] = None
@@ -49,7 +51,7 @@ class RunRecord:
         provider = self.llm_provider or "codex"
         if self.llm_profile and provider == self.llm_profile:
             provider = "codex"
-        return {
+        payload = {
             "run_id": self.run_id,
             "flow_name": self.flow_name,
             "status": normalize_run_status(self.status),
@@ -90,6 +92,11 @@ class RunRecord:
                 else None
             ),
         }
+        if self.execution_mode and self.execution_mode != "native":
+            payload["execution_mode"] = self.execution_mode
+        if self.execution_container_image:
+            payload["execution_container_image"] = self.execution_container_image
+        return payload
 
     @classmethod
     def from_dict(cls, data: Dict[str, object]) -> "RunRecord":
@@ -150,6 +157,12 @@ class RunRecord:
             child_invocation_index=(
                 int(data["child_invocation_index"])
                 if data.get("child_invocation_index") is not None
+                else None
+            ),
+            execution_mode=str(data.get("execution_mode") or "native"),
+            execution_container_image=(
+                str(data.get("execution_container_image"))
+                if data.get("execution_container_image") is not None
                 else None
             ),
             last_error=str(data.get("last_error", "")),

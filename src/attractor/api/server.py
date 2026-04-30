@@ -75,6 +75,13 @@ from attractor.api.pipeline_runtime import (
 )
 from attractor.api.token_usage import TokenUsageBreakdown, estimate_model_cost
 from attractor.handlers import HandlerRunner, build_default_registry
+from attractor.handlers.execution_container import (
+    ContainerExecutionError,
+    ContainerizedHandlerRunner,
+    EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY,
+    resolve_execution_profile,
+    seed_execution_profile_context,
+)
 from attractor.handlers.base import (
     ChildRunRequest,
     ChildRunResult,
@@ -181,6 +188,8 @@ TERMINAL_RUN_STATUSES = {"completed", "failed", "validation_error", "paused", "c
 
 
 RUN_HISTORY_LOCK = threading.Lock()
+SHARED_CONTAINER_TRANSPORTS_LOCK = threading.Lock()
+SHARED_CONTAINER_TRANSPORTS: dict[str, object] = {}
 PIPELINE_LIFECYCLE_PHASES = ("PARSE", "TRANSFORM", "VALIDATE", "INITIALIZE", "EXECUTE", "FINALIZE")
 DEFAULT_RUN_JOURNAL_PAGE_SIZE = 100
 MAX_RUN_JOURNAL_PAGE_SIZE = 250
@@ -276,6 +285,8 @@ def shutdown_attractor_runtime() -> None:
         ACTIVE_RUNS.clear()
     with RUN_EVENT_SEQUENCE_LOCK:
         RUN_EVENT_SEQUENCES.clear()
+    with SHARED_CONTAINER_TRANSPORTS_LOCK:
+        SHARED_CONTAINER_TRANSPORTS.clear()
     RUNS_EVENT_HUB.reset()
 
 
@@ -987,6 +998,8 @@ def _record_run_start(
     parent_node_id: Optional[str] = None,
     root_run_id: Optional[str] = None,
     child_invocation_index: Optional[int] = None,
+    execution_mode: str = "native",
+    execution_container_image: Optional[str] = None,
 ) -> None:
     pipeline_runs.record_run_start(
         get_runtime_paths,
@@ -1009,6 +1022,8 @@ def _record_run_start(
         parent_node_id=parent_node_id,
         root_run_id=root_run_id,
         child_invocation_index=child_invocation_index,
+        execution_mode=execution_mode,
+        execution_container_image=execution_container_image,
     )
 
 
@@ -1389,6 +1404,7 @@ class PipelineStartRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    execution_container_image: Optional[str] = None
     flow_name: Optional[str] = None
     goal: Optional[str] = None
     launch_context: Optional[dict[str, Any]] = None
@@ -2044,6 +2060,48 @@ def _combined_execution_control(
     return poll
 
 
+def _register_shared_container_transport(root_run_id: str, transport: object) -> None:
+    if not root_run_id:
+        return
+    with SHARED_CONTAINER_TRANSPORTS_LOCK:
+        SHARED_CONTAINER_TRANSPORTS[root_run_id] = transport
+
+
+def _shared_container_transport(root_run_id: str) -> object | None:
+    if not root_run_id:
+        return None
+    with SHARED_CONTAINER_TRANSPORTS_LOCK:
+        return SHARED_CONTAINER_TRANSPORTS.get(root_run_id)
+
+
+def _unregister_shared_container_transport(root_run_id: str) -> None:
+    if not root_run_id:
+        return
+    with SHARED_CONTAINER_TRANSPORTS_LOCK:
+        SHARED_CONTAINER_TRANSPORTS.pop(root_run_id, None)
+
+
+def _cancel_shared_container_transport(run_id: str) -> None:
+    record = _read_run_meta(_run_meta_path(run_id))
+    root_run_id = (record.root_run_id if record is not None else None) or run_id
+    transport = _shared_container_transport(root_run_id)
+    cancel = getattr(transport, "cancel", None)
+    if callable(cancel):
+        try:
+            cancel()
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("failed to cancel execution container for run %s", run_id)
+
+
+def _active_run_cancel_requested(run_id: str) -> bool:
+    active = _get_active_run(run_id)
+    if active is None:
+        return False
+    if normalize_run_status(active.status) == "cancel_requested":
+        return True
+    return active.control.cancel_requested()
+
+
 def _run_first_class_child_pipeline(
     request: ChildRunRequest,
     *,
@@ -2063,6 +2121,8 @@ def _run_first_class_child_pipeline(
     selected_reasoning_effort = (
         str(request.parent_context.get(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, "")).strip().lower() or None
     )
+    parent_execution_image = str(request.parent_context.get(EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY, "")).strip() or None
+    execution_profile = resolve_execution_profile(requested_image=parent_execution_image)
     root_run_id = (request.root_run_id or request.parent_run_id or child_run_id).strip() or child_run_id
     child_invocation_index = _next_child_invocation_index(request.parent_run_id, request.parent_node_id)
 
@@ -2098,6 +2158,8 @@ def _run_first_class_child_pipeline(
         parent_node_id=request.parent_node_id,
         root_run_id=root_run_id,
         child_invocation_index=child_invocation_index,
+        execution_mode=execution_profile.mode,
+        execution_container_image=execution_profile.image,
     )
     control = ExecutionControl()
     with ACTIVE_RUNS_LOCK:
@@ -2122,26 +2184,6 @@ def _run_first_class_child_pipeline(
         _set_active_run_usage(child_run_id, token_usage_breakdown)
         _publish_run_list_upsert_sync(loop, child_run_id)
 
-    try:
-        backend = _build_codergen_backend(
-            backend_name,
-            working_dir,
-            emit,
-            model=selected_model,
-            on_usage_update=handle_usage_update,
-        )
-    except ValueError as exc:
-        _set_active_run_status(child_run_id, "failed", last_error=str(exc))
-        _record_run_end(child_run_id, working_dir, "failed", str(exc), outcome=None)
-        _publish_run_list_upsert_sync(loop, child_run_id)
-        _pop_active_run(child_run_id)
-        return ChildRunResult(run_id=child_run_id, status="failed", failure_reason=str(exc))
-    interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, request.child_flow_name, child_run_id)
-    registry = build_default_registry(
-        codergen_backend=backend,
-        interviewer=interviewer,
-    )
-
     def launch_nested_child(nested_request: ChildRunRequest) -> ChildRunResult:
         return _run_first_class_child_pipeline(
             nested_request,
@@ -2149,16 +2191,6 @@ def _run_first_class_child_pipeline(
             model=model,
             loop=loop,
         )
-
-    runner = BroadcastingRunner(
-        HandlerRunner(
-            request.child_graph,
-            registry,
-            child_run_launcher=launch_nested_child,
-            child_status_resolver=_child_run_result_from_record,
-        ),
-        emit,
-    )
     context = request.parent_context.clone()
     _clear_child_runtime_snapshot(context)
     context.apply_updates(_graph_attr_context_seed(request.child_graph))
@@ -2170,6 +2202,7 @@ def _run_first_class_child_pipeline(
     context.set(RUNTIME_LAUNCH_PROVIDER_KEY, selected_provider)
     context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
     context.set(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, selected_reasoning_effort or "")
+    seed_execution_profile_context(context, execution_profile)
     context.set("internal.run_id", child_run_id)
     context.set("internal.parent_run_id", request.parent_run_id)
     context.set("internal.parent_node_id", request.parent_node_id)
@@ -2186,6 +2219,50 @@ def _run_first_class_child_pipeline(
             retry_counts={},
         ),
     )
+
+    try:
+        if execution_profile.is_container:
+            assert execution_profile.image is not None
+            interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, request.child_flow_name, child_run_id)
+            shared_transport = _shared_container_transport(root_run_id)
+            delegate_runner = ContainerizedHandlerRunner(
+                request.child_graph,
+                image=execution_profile.image,
+                run_id=child_run_id,
+                working_dir=working_dir,
+                run_root=run_root,
+                transport=shared_transport,
+                child_run_launcher=launch_nested_child,
+                child_status_resolver=_child_run_result_from_record,
+                interviewer=interviewer,
+            )
+        else:
+            backend = _build_codergen_backend(
+                backend_name,
+                working_dir,
+                emit,
+                model=selected_model,
+                on_usage_update=handle_usage_update,
+            )
+            interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, request.child_flow_name, child_run_id)
+            registry = build_default_registry(
+                codergen_backend=backend,
+                interviewer=interviewer,
+            )
+            delegate_runner = HandlerRunner(
+                request.child_graph,
+                registry,
+                child_run_launcher=launch_nested_child,
+                child_status_resolver=_child_run_result_from_record,
+            )
+    except (ValueError, ContainerExecutionError) as exc:
+        _set_active_run_status(child_run_id, "failed", last_error=str(exc))
+        _record_run_end(child_run_id, working_dir, "failed", str(exc), outcome=None)
+        _publish_run_list_upsert_sync(loop, child_run_id)
+        _pop_active_run(child_run_id)
+        return ChildRunResult(run_id=child_run_id, status="failed", failure_reason=str(exc))
+
+    runner = BroadcastingRunner(delegate_runner, emit)
 
     executor = PipelineExecutor(
         request.child_graph,
@@ -2216,6 +2293,8 @@ def _run_first_class_child_pipeline(
             "parent_node_id": request.parent_node_id,
             "root_run_id": root_run_id,
             "child_invocation_index": child_invocation_index,
+            "execution_mode": execution_profile.mode,
+            "execution_container_image": execution_profile.image,
             "graph_source_path": str(graphviz_export.source_path),
             "graph_dot_path": str(graphviz_export.dot_path),
             "graph_render_path": str(graphviz_export.rendered_path) if graphviz_export.rendered_path else None,
@@ -2289,6 +2368,30 @@ def _run_first_class_child_pipeline(
             }
         )
     except Exception as exc:  # noqa: BLE001
+        if _active_run_cancel_requested(child_run_id):
+            final_status = "canceled"
+            child_result = ChildRunResult(run_id=child_run_id, status="canceled", failure_reason="aborted_by_user")
+            _set_active_run_status(child_run_id, "canceled", last_error="aborted_by_user")
+            _set_active_run_outcome(
+                child_run_id,
+                outcome=None,
+                outcome_reason_code=None,
+                outcome_reason_message=None,
+            )
+            emit(
+                {
+                    "type": "runtime",
+                    "status": "canceled",
+                    "outcome": None,
+                    "outcome_reason_code": None,
+                    "outcome_reason_message": None,
+                    "last_error": "aborted_by_user",
+                }
+            )
+            _record_run_end(child_run_id, working_dir, "canceled", "aborted_by_user", outcome=None)
+            _publish_run_list_upsert_sync(loop, child_run_id)
+            emit({"type": "log", "msg": _terminal_status_summary(status="canceled", last_error="aborted_by_user")})
+            return child_result
         final_status = "failed"
         child_result = ChildRunResult(run_id=child_run_id, status="failed", failure_reason=str(exc))
         _set_active_run_status(child_run_id, "failed", last_error=str(exc))
@@ -2312,6 +2415,9 @@ def _run_first_class_child_pipeline(
         _publish_run_list_upsert_sync(loop, child_run_id)
         emit({"type": "log", "msg": f"Pipeline Failed: {exc}"})
     finally:
+        closer = getattr(runner, "close", None)
+        if callable(closer):
+            closer()
         _publish_run_event_sync(loop, child_run_id, {"type": "lifecycle", "phase": PIPELINE_LIFECYCLE_PHASES[5]})
         _pop_active_run(child_run_id)
         _publish_run_list_upsert_sync(loop, child_run_id)
@@ -2380,11 +2486,13 @@ def _build_pipeline_runner_for_run(
     llm_profile: Optional[str],
     reasoning_effort: Optional[str],
     loop: asyncio.AbstractEventLoop,
+    execution_container_image: Optional[str] = None,
     on_usage_update: Optional[Callable[[TokenUsageBreakdown], None]] = None,
 ) -> tuple[PipelineExecutor, Context, str, Optional[str], Optional[str], Optional[str]]:
     selected_model, display_model = _resolve_launch_model(graph, model)
     selected_provider, selected_profile = _resolve_launch_provider_profile(graph, llm_provider, llm_profile)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
+    execution_profile = resolve_execution_profile(requested_image=execution_container_image)
 
     _validate_graph_provider_configuration(
         graph,
@@ -2398,18 +2506,7 @@ def _build_pipeline_runner_for_run(
     def emit(message: dict):
         _publish_run_event_sync(loop, run_id, message)
 
-    backend = _build_codergen_backend(
-        backend_name,
-        working_dir,
-        emit,
-        model=selected_model,
-        on_usage_update=on_usage_update,
-    )
     interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, run_id)
-    registry = build_default_registry(
-        codergen_backend=backend,
-        interviewer=interviewer,
-    )
 
     def launch_child_run(child_request: ChildRunRequest) -> ChildRunResult:
         return _run_first_class_child_pipeline(
@@ -2419,15 +2516,39 @@ def _build_pipeline_runner_for_run(
             loop=loop,
         )
 
-    runner = BroadcastingRunner(
-        HandlerRunner(
+    if execution_profile.is_container:
+        assert execution_profile.image is not None
+        delegate_runner = ContainerizedHandlerRunner(
+            graph,
+            image=execution_profile.image,
+            run_id=run_id,
+            working_dir=working_dir,
+            run_root=_run_root(run_id),
+            child_run_launcher=launch_child_run,
+            child_status_resolver=_child_run_result_from_record,
+            interviewer=interviewer,
+        )
+        _register_shared_container_transport(run_id, delegate_runner.transport)
+    else:
+        backend = _build_codergen_backend(
+            backend_name,
+            working_dir,
+            emit,
+            model=selected_model,
+            on_usage_update=on_usage_update,
+        )
+        registry = build_default_registry(
+            codergen_backend=backend,
+            interviewer=interviewer,
+        )
+        delegate_runner = HandlerRunner(
             graph,
             registry,
             child_run_launcher=launch_child_run,
             child_status_resolver=_child_run_result_from_record,
-        ),
-        emit,
-    )
+        )
+
+    runner = BroadcastingRunner(delegate_runner, emit)
     control = ExecutionControl()
     executor = PipelineExecutor(
         graph,
@@ -2439,6 +2560,7 @@ def _build_pipeline_runner_for_run(
     )
     context = Context()
     context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
+    seed_execution_profile_context(context, execution_profile)
     with ACTIVE_RUNS_LOCK:
         ACTIVE_RUNS[run_id] = ActiveRun(
             run_id=run_id,
@@ -2519,9 +2641,14 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
             llm_profile=retry_profile,
             reasoning_effort=retry_reasoning_effort,
             loop=loop,
+            execution_container_image=(
+                str(checkpoint.context.get(EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY, "")).strip()
+                or record.execution_container_image
+                or None
+            ),
             on_usage_update=handle_usage_update,
         )
-    except ValueError as exc:
+    except (ValueError, ContainerExecutionError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     checkpoint = _prepare_checkpoint_for_retry(pipeline_id, checkpoint)
@@ -2633,6 +2760,37 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
                 },
             )
         except Exception as exc:  # noqa: BLE001
+            if _active_run_cancel_requested(pipeline_id):
+                final_status = "canceled"
+                _set_active_run_status(pipeline_id, "canceled", last_error="aborted_by_user")
+                _set_active_run_outcome(
+                    pipeline_id,
+                    outcome=None,
+                    outcome_reason_code=None,
+                    outcome_reason_message=None,
+                )
+                await _publish_run_event(
+                    pipeline_id,
+                    {
+                        "type": "runtime",
+                        "status": "canceled",
+                        "outcome": None,
+                        "outcome_reason_code": None,
+                        "outcome_reason_message": None,
+                        "last_error": "aborted_by_user",
+                    },
+                )
+                _record_run_end(pipeline_id, working_dir, "canceled", "aborted_by_user", outcome=None)
+                await _publish_run_list_upsert(pipeline_id)
+                await _publish_run_event(
+                    pipeline_id,
+                    {"type": "PipelineRetryCompleted", "status": "canceled", "last_error": "aborted_by_user"},
+                )
+                await _publish_run_event(
+                    pipeline_id,
+                    {"type": "log", "msg": _terminal_status_summary(status="canceled", last_error="aborted_by_user")},
+                )
+                return
             final_status = "failed"
             _set_active_run_status(pipeline_id, "failed", last_error=str(exc))
             _set_active_run_outcome(
@@ -2660,6 +2818,11 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
             )
             await _publish_run_event(pipeline_id, {"type": "log", "msg": f"Pipeline Failed: {exc}"})
         finally:
+            _unregister_shared_container_transport(pipeline_id)
+            runner = getattr(executor, "runner", None)
+            closer = getattr(runner, "close", None)
+            if callable(closer):
+                closer()
             await _publish_lifecycle_phase(pipeline_id, PIPELINE_LIFECYCLE_PHASES[5])
             _pop_active_run(pipeline_id)
             await _publish_run_list_upsert(pipeline_id)
@@ -2696,6 +2859,7 @@ async def _launch_pipeline_run(
     plan_id: Optional[str] = None,
     flow_source_dir: Path | None = None,
     start_node_id: Optional[str] = None,
+    execution_container_image: Optional[str] = None,
     on_complete: Optional[Callable[[str, str], Any]] = None,
     continued_from_run_id: Optional[str] = None,
     continued_from_node: Optional[str] = None,
@@ -2773,6 +2937,7 @@ async def _launch_pipeline_run(
     working_dir = str(Path(working_directory).resolve())
     selected_model, display_model = _resolve_launch_model(graph, model)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
+    execution_profile = resolve_execution_profile(requested_image=execution_container_image)
 
     try:
         selected_provider, selected_profile = _resolve_launch_provider_profile(graph, llm_provider, llm_profile)
@@ -2815,27 +2980,6 @@ async def _launch_pipeline_run(
         _set_active_run_usage(resolved_run_id, token_usage_breakdown)
         asyncio.run_coroutine_threadsafe(_publish_run_list_upsert(resolved_run_id), loop)
 
-    try:
-        backend = _build_codergen_backend(
-            backend_name,
-            working_dir,
-            emit,
-            model=selected_model,
-            on_usage_update=handle_usage_update,
-        )
-    except ValueError as exc:
-        return {
-            "status": "validation_error",
-            "error": str(exc),
-        }
-
-    interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, resolved_run_id)
-
-    registry = build_default_registry(
-        codergen_backend=backend,
-        interviewer=interviewer,
-    )
-
     def launch_child_run(child_request: ChildRunRequest) -> ChildRunResult:
         return _run_first_class_child_pipeline(
             child_request,
@@ -2843,16 +2987,6 @@ async def _launch_pipeline_run(
             model=model,
             loop=loop,
         )
-
-    runner = BroadcastingRunner(
-        HandlerRunner(
-            graph,
-            registry,
-            child_run_launcher=launch_child_run,
-            child_status_resolver=_child_run_result_from_record,
-        ),
-        emit,
-    )
 
     checkpoint_file = str(run_root / "state.json")
     logs_root = str(run_root / "logs")
@@ -2872,6 +3006,7 @@ async def _launch_pipeline_run(
     context.set(RUNTIME_LAUNCH_PROVIDER_KEY, selected_provider)
     context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
     context.set(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, selected_reasoning_effort or "")
+    seed_execution_profile_context(context, execution_profile)
     context.set("internal.run_id", resolved_run_id)
     context.set("internal.root_run_id", resolved_run_id)
     context.set("internal.run_workdir", working_dir)
@@ -2879,6 +3014,47 @@ async def _launch_pipeline_run(
         context.set("internal.flow_source_dir", str(flow_source_dir))
 
     control = ExecutionControl()
+    try:
+        if execution_profile.is_container:
+            assert execution_profile.image is not None
+            interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, resolved_run_id)
+            delegate_runner = ContainerizedHandlerRunner(
+                graph,
+                image=execution_profile.image,
+                run_id=resolved_run_id,
+                working_dir=working_dir,
+                run_root=run_root,
+                child_run_launcher=launch_child_run,
+                child_status_resolver=_child_run_result_from_record,
+                interviewer=interviewer,
+            )
+            _register_shared_container_transport(resolved_run_id, delegate_runner.transport)
+        else:
+            backend = _build_codergen_backend(
+                backend_name,
+                working_dir,
+                emit,
+                model=selected_model,
+                on_usage_update=handle_usage_update,
+            )
+            interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, resolved_run_id)
+            registry = build_default_registry(
+                codergen_backend=backend,
+                interviewer=interviewer,
+            )
+            delegate_runner = HandlerRunner(
+                graph,
+                registry,
+                child_run_launcher=launch_child_run,
+                child_status_resolver=_child_run_result_from_record,
+            )
+    except (ValueError, ContainerExecutionError) as exc:
+        return {
+            "status": "validation_error",
+            "error": str(exc),
+        }
+
+    runner = BroadcastingRunner(delegate_runner, emit)
     executor = PipelineExecutor(
         graph,
         runner,
@@ -2939,6 +3115,8 @@ async def _launch_pipeline_run(
         continued_from_flow_mode=continued_from_flow_mode,
         continued_from_flow_name=continued_from_flow_name,
         root_run_id=resolved_run_id,
+        execution_mode=execution_profile.mode,
+        execution_container_image=execution_profile.image,
     )
     await _publish_run_list_upsert(resolved_run_id)
 
@@ -2973,6 +3151,8 @@ async def _launch_pipeline_run(
             "continued_from_flow_mode": continued_from_flow_mode,
             "continued_from_flow_name": continued_from_flow_name,
             "root_run_id": resolved_run_id,
+            "execution_mode": execution_profile.mode,
+            "execution_container_image": execution_profile.image,
         },
     )
     if graphviz_export.error:
@@ -3071,6 +3251,41 @@ async def _launch_pipeline_run(
                 },
             )
         except Exception as exc:  # noqa: BLE001
+            if _active_run_cancel_requested(resolved_run_id):
+                final_status = "canceled"
+                _set_active_run_status(resolved_run_id, "canceled", last_error="aborted_by_user")
+                _set_active_run_outcome(
+                    resolved_run_id,
+                    outcome=None,
+                    outcome_reason_code=None,
+                    outcome_reason_message=None,
+                )
+                RUNTIME.status = "canceled"
+                RUNTIME.outcome = None
+                RUNTIME.outcome_reason_code = None
+                RUNTIME.outcome_reason_message = None
+                RUNTIME.last_error = "aborted_by_user"
+                await _publish_run_event(
+                    resolved_run_id,
+                    {
+                        "type": "runtime",
+                        "status": "canceled",
+                        "outcome": None,
+                        "outcome_reason_code": None,
+                        "outcome_reason_message": None,
+                        "last_error": "aborted_by_user",
+                    },
+                )
+                _record_run_end(resolved_run_id, working_dir, "canceled", "aborted_by_user", outcome=None)
+                await _publish_run_list_upsert(resolved_run_id)
+                await _publish_run_event(
+                    resolved_run_id,
+                    {
+                        "type": "log",
+                        "msg": _terminal_status_summary(status="canceled", last_error="aborted_by_user"),
+                    },
+                )
+                return
             import traceback
             traceback.print_exc()
             _set_active_run_status(resolved_run_id, "failed", last_error=str(exc))
@@ -3099,6 +3314,10 @@ async def _launch_pipeline_run(
             await _publish_run_list_upsert(resolved_run_id)
             await _publish_run_event(resolved_run_id, {"type": "log", "msg": f"⚠️ Pipeline Failed: {exc}"})
         finally:
+            _unregister_shared_container_transport(resolved_run_id)
+            closer = getattr(runner, "close", None)
+            if callable(closer):
+                closer()
             await _publish_lifecycle_phase(resolved_run_id, PIPELINE_LIFECYCLE_PHASES[5])
             _pop_active_run(resolved_run_id)
             if on_complete is not None:
@@ -3120,6 +3339,8 @@ async def _launch_pipeline_run(
         "llm_provider": selected_provider,
         "llm_profile": selected_profile,
         "reasoning_effort": selected_reasoning_effort,
+        "execution_mode": execution_profile.mode,
+        "execution_container_image": execution_profile.image,
         "diagnostics": diagnostic_payloads,
         "errors": error_payloads,
         "graph_dot_path": str(graphviz_export.dot_path),
@@ -3185,6 +3406,7 @@ async def _start_pipeline(
         llm_provider=req.llm_provider,
         llm_profile=req.llm_profile,
         reasoning_effort=req.reasoning_effort,
+        execution_container_image=req.execution_container_image,
         launch_context=launch_context,
         spec_id=req.spec_id,
         plan_id=req.plan_id,
@@ -3252,6 +3474,11 @@ async def continue_pipeline(pipeline_id: str, req: PipelineContinueRequest):
         llm_provider=llm_provider,
         llm_profile=llm_profile,
         reasoning_effort=reasoning_effort,
+        execution_container_image=(
+            str(source_context.get(EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY, "")).strip()
+            or source_record.execution_container_image
+            or None
+        ),
         launch_context=source_context,
         spec_id=source_record.spec_id,
         plan_id=source_record.plan_id,
@@ -3443,6 +3670,7 @@ async def cancel_pipeline(pipeline_id: str):
             raise HTTPException(status_code=404, detail="Unknown pipeline")
         return {"status": "ignored", "pipeline_id": pipeline_id}
     active.control.request_cancel()
+    _cancel_shared_container_transport(pipeline_id)
     _set_active_run_status(pipeline_id, "cancel_requested", last_error="cancel_requested_by_user")
     _record_run_status(pipeline_id, "cancel_requested", "cancel_requested_by_user")
     await _publish_run_list_upsert(pipeline_id)

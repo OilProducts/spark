@@ -241,6 +241,25 @@ def test_run_init_allows_explicit_home_env_from_source_checkout(
     assert f"Seeded flows: {(tmp_path / 'dev-home' / 'flows').resolve(strict=False)}" in output
 
 
+def test_run_launch_payload_includes_execution_container_override() -> None:
+    payload = spark_cli._build_flow_payload(
+        flow_name=TEST_AGENT_FLOW,
+        summary="Run in a container",
+        goal_text=None,
+        goal_file=None,
+        launch_context_json=None,
+        launch_context_file=None,
+        model=None,
+        llm_provider=None,
+        reasoning_effort=None,
+        execution_container_image="spark-exec:latest",
+        source_name="spark run launch",
+    )
+
+    assert isinstance(payload, dict)
+    assert payload["execution_container_image"] == "spark-exec:latest"
+
+
 def test_service_install_writes_user_unit_and_starts_service(
     monkeypatch,
     tmp_path: Path,

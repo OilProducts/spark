@@ -2,6 +2,7 @@
 
 from .base import CodergenBackend, Handler, HandlerRuntime
 from .defaults import build_default_registry
+from .execution_container import ContainerizedHandlerRunner, ExecutionProfile, resolve_execution_profile
 from .registry import HandlerRegistry
 from .runner import HandlerRunner
 
@@ -12,4 +13,7 @@ __all__ = [
     "HandlerRegistry",
     "HandlerRunner",
     "HandlerRuntime",
+    "ContainerizedHandlerRunner",
+    "ExecutionProfile",
+    "resolve_execution_profile",
 ]

@@ -485,6 +485,7 @@ class FlowRunRequest:
     llm_provider: Optional[str] = None
     llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    execution_container_image: Optional[str] = None
     run_id: Optional[str] = None
     launch_error: Optional[str] = None
     review_message: Optional[str] = None
@@ -515,6 +516,8 @@ class FlowRunRequest:
             payload["llm_profile"] = self.llm_profile
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
+        if self.execution_container_image:
+            payload["execution_container_image"] = self.execution_container_image
         if self.run_id:
             payload["run_id"] = self.run_id
         if self.launch_error:
@@ -542,6 +545,11 @@ class FlowRunRequest:
             llm_provider=str(payload.get("llm_provider")) if payload.get("llm_provider") is not None else None,
             llm_profile=str(payload.get("llm_profile")) if payload.get("llm_profile") is not None else None,
             reasoning_effort=str(payload.get("reasoning_effort")) if payload.get("reasoning_effort") is not None else None,
+            execution_container_image=(
+                str(payload.get("execution_container_image"))
+                if payload.get("execution_container_image") is not None
+                else None
+            ),
             run_id=str(payload.get("run_id")) if payload.get("run_id") is not None else None,
             launch_error=str(payload.get("launch_error")) if payload.get("launch_error") is not None else None,
             review_message=str(payload.get("review_message")) if payload.get("review_message") is not None else None,
@@ -566,6 +574,7 @@ class FlowLaunch:
     llm_provider: Optional[str] = None
     llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    execution_container_image: Optional[str] = None
     run_id: Optional[str] = None
     launch_error: Optional[str] = None
 
@@ -595,6 +604,8 @@ class FlowLaunch:
             payload["llm_profile"] = self.llm_profile
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
+        if self.execution_container_image:
+            payload["execution_container_image"] = self.execution_container_image
         if self.run_id:
             payload["run_id"] = self.run_id
         if self.launch_error:
@@ -620,6 +631,11 @@ class FlowLaunch:
             llm_provider=str(payload.get("llm_provider")) if payload.get("llm_provider") is not None else None,
             llm_profile=str(payload.get("llm_profile")) if payload.get("llm_profile") is not None else None,
             reasoning_effort=str(payload.get("reasoning_effort")) if payload.get("reasoning_effort") is not None else None,
+            execution_container_image=(
+                str(payload.get("execution_container_image"))
+                if payload.get("execution_container_image") is not None
+                else None
+            ),
             run_id=str(payload.get("run_id")) if payload.get("run_id") is not None else None,
             launch_error=str(payload.get("launch_error")) if payload.get("launch_error") is not None else None,
         )

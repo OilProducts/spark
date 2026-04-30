@@ -1788,6 +1788,7 @@ class ProjectChatService:
         llm_provider: Optional[str] = None,
         llm_profile: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        execution_container_image: Optional[str] = None,
     ) -> tuple[dict[str, Any], "FlowRunRequest"]:
         return self._reviews.review_flow_run_request(
             conversation_id,
@@ -1800,6 +1801,7 @@ class ProjectChatService:
             llm_provider,
             llm_profile,
             reasoning_effort,
+            execution_container_image,
         )
 
     def review_proposed_plan(

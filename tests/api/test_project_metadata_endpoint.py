@@ -266,6 +266,31 @@ def test_project_registry_persists_container_project_path_unchanged(product_api_
     assert f'project_path = "{container_project_path}"' in project_file.read_text(encoding="utf-8")
 
 
+def test_project_registry_persists_execution_container_default(
+    product_api_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_dir = (tmp_path / "container-default").resolve()
+    project_dir.mkdir()
+
+    register_response = product_api_client.post(
+        "/workspace/api/projects/register",
+        json={"project_path": str(project_dir), "execution_container_image": "spark-exec:latest"},
+    )
+    assert register_response.status_code == 200
+    assert register_response.json()["execution_container_image"] == "spark-exec:latest"
+
+    update_response = product_api_client.patch(
+        "/workspace/api/projects/state",
+        json={"project_path": str(project_dir), "execution_container_image": "spark-exec:v2"},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["execution_container_image"] == "spark-exec:v2"
+
+    project_file = product_app.get_settings().projects_dir / update_response.json()["project_id"] / "project.toml"
+    assert 'execution_container_image = "spark-exec:v2"' in project_file.read_text(encoding="utf-8")
+
+
 def test_project_registry_logs_malformed_project_records(
     product_api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

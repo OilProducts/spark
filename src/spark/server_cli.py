@@ -103,6 +103,13 @@ def _build_runtime_parser() -> argparse.ArgumentParser:
         help="Show the current user-level systemd service status",
     )
 
+    worker = subparsers.add_parser(
+        "worker",
+        help=argparse.SUPPRESS,
+    )
+    worker_commands = worker.add_subparsers(dest="worker_command")
+    worker_commands.add_parser("run-node", help=argparse.SUPPRESS)
+
     return parser
 
 
@@ -120,7 +127,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_init(args)
     if args.command == "service":
         return _run_service_command(parser, args)
+    if args.command == "worker":
+        return _run_worker_command(parser, args)
     parser.error(f"Unknown command: {args.command}")
+    return 2
+
+
+def _run_worker_command(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    if args.worker_command == "run-node":
+        from attractor.handlers.execution_container import run_worker_node
+
+        return run_worker_node()
+    parser.error("worker requires a subcommand")
     return 2
 
 

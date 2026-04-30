@@ -47,6 +47,10 @@ class ExecutionControl:
         with self._lock:
             self._cancel_requested = True
 
+    def cancel_requested(self) -> bool:
+        with self._lock:
+            return self._cancel_requested
+
     def poll(self) -> Optional[str]:
         with self._lock:
             if self._cancel_requested:
@@ -308,6 +312,11 @@ class BroadcastingRunner:
         setter = getattr(self.delegate, "set_control", None)
         if callable(setter):
             setter(control)
+
+    def close(self):
+        closer = getattr(self.delegate, "close", None)
+        if callable(closer):
+            closer()
 
     def __call__(self, node_id: str, prompt: str, context: Context, *, emit_event=None):
         return self._run(node_id, prompt, context, emit_event=emit_event)

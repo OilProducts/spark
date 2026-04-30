@@ -21,7 +21,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ATTRACTOR_CODEX_RUNTIME_ROOT=/spark/runtime/codex
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git gnupg graphviz openssh-client ripgrep \
+    && apt-get install -y --no-install-recommends ca-certificates curl git gnupg graphviz openssh-client ripgrep docker.io \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g @openai/codex \

@@ -218,6 +218,8 @@ def record_run_start(
     parent_node_id: Optional[str] = None,
     root_run_id: Optional[str] = None,
     child_invocation_index: Optional[int] = None,
+    execution_mode: str = "native",
+    execution_container_image: Optional[str] = None,
 ) -> None:
     project_path, git_branch, git_commit = resolve_run_project_git_metadata(
         working_directory,
@@ -249,6 +251,8 @@ def record_run_start(
         parent_node_id=parent_node_id,
         root_run_id=root_run_id,
         child_invocation_index=child_invocation_index,
+        execution_mode=execution_mode,
+        execution_container_image=execution_container_image,
     )
     with run_history_lock:
         write_run_meta(get_runtime_paths, record)

@@ -9,6 +9,8 @@ services:
     environment:
       - SPARK_HOME=/spark
       - SPARK_PROJECT_ROOTS=/projects
+      - SPARK_DOCKER_HOME=${SPARK_DOCKER_HOME:-$HOME/.spark-docker}
+      - SPARK_PROJECTS_HOST_DIR=${SPARK_PROJECTS_HOST_DIR:-$HOME/projects}
       - ATTRACTOR_CODEX_RUNTIME_ROOT=/spark/runtime/codex
       - OPENAI_API_KEY
       - OPENAI_BASE_URL
@@ -28,3 +30,4 @@ services:
     volumes:
       - ${SPARK_DOCKER_HOME:-$HOME/.spark-docker}:/spark
       - ${SPARK_PROJECTS_HOST_DIR:-$HOME/projects}:/projects
+      - /var/run/docker.sock:/var/run/docker.sock
