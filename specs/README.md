@@ -24,6 +24,8 @@ Execution artifacts stay outside this folder:
   Canonical operator-facing client specification: presentation boundaries, workflows, UX rules, client-state rules, and story traceability.
 - `spark-flow-extensions.md`
   Canonical Spark-owned flow-surface extension contract layered onto Attractor.
+- `remote-execution-workers.md`
+  Canonical target-state contract for executing Spark workflow runs on prepared remote worker hosts through execution profiles, HTTP/SSE transport, and worker-local containers.
 
 ## Acceptance Workflow Assets
 
