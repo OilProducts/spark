@@ -1,5 +1,5 @@
 digraph parallel_review {
-  graph [goal="Plan, implement, and review a change with a parallel review stage.", label="Parallel Review", ui_default_llm_model="gpt-5.3-codex-spark", ui_default_llm_provider="openai"];
+  graph [goal="Plan, implement, and review a change with a parallel review stage.", label="Parallel Review", ui_default_llm_model="gpt-5.5", ui_default_llm_provider="codex"];
   approval [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="approval", max_parallel=4, prompt="Approve moving to parallel review", reasoning_effort="high", shape="hexagon"];
   branch_docs [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="branch_docs", max_parallel=4, prompt="Review documentation updates", reasoning_effort="high", shape="box"];
   branch_tests [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="branch_tests", max_parallel=4, prompt="Review test updates", reasoning_effort="high", shape="box"];
