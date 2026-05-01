@@ -239,6 +239,22 @@ def test_remote_client_rejects_missing_worker_protocol(
 
 
 @pytest.mark.parametrize("method_name", ["health", "worker_info"])
+def test_remote_client_rejects_worker_metadata_without_capability_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = _health_payload() if request.url.path == "/v1/health" else _info_payload()
+        payload.pop("capabilities")
+        return _json_response(payload)
+
+    client = _client(monkeypatch, httpx.MockTransport(handler))
+
+    with pytest.raises(ExecutionProtocolError, match="capability metadata"):
+        getattr(client, method_name)()
+
+
+@pytest.mark.parametrize("method_name", ["health", "worker_info"])
 def test_remote_client_accepts_explicit_v1_worker_protocol(
     monkeypatch: pytest.MonkeyPatch,
     method_name: str,

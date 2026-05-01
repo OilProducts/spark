@@ -27,11 +27,41 @@ class ExecutionProfileSelectionError(ExecutionProfileError):
 
 
 class ExecutionLaunchError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        retryable: bool | None = None,
+        details: dict[str, Any] | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.retryable = retryable
+        self.details = dict(details or {})
+        self.status_code = status_code
+
+    @classmethod
+    def from_worker_api(cls, message: str, exc: WorkerAPIError) -> "ExecutionLaunchError":
+        return cls(
+            message,
+            code=exc.code,
+            retryable=exc.retryable,
+            details=exc.details,
+            status_code=exc.status_code,
+        )
 
 
 class ExecutionProtocolError(ExecutionLaunchError):
     pass
+
+
+class RemoteActiveRunFailed(ExecutionLaunchError):
+    """Remote execution failed without producing a trustworthy node Outcome."""
+
+    abort_before_node_result = True
 
 
 @dataclass(frozen=True)

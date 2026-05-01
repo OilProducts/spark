@@ -706,6 +706,75 @@ def test_worker_cleanup_failure_remains_visible_in_run_snapshot() -> None:
     assert payload["events"][-1]["event_type"] == "cleanup_failed"
 
 
+def test_worker_orphan_cleanup_policy_closes_run_without_control_plane_delete() -> None:
+    runtime = InProcessWorkerRuntime()
+    client = TestClient(
+        create_worker_app(
+            token="test-token",
+            runtime=runtime,
+            policies={"orphan_cleanup": {"enabled": True, "ttl_seconds": 0}},
+        )
+    )
+    run_request = {
+        "run_id": "run-orphan-cleanup",
+        "execution_profile_id": "remote-dev",
+        "mapped_project_path": "/srv/projects/acme",
+    }
+
+    admitted = client.post("/v1/runs", json=run_request, headers=AUTH)
+    snapshot = client.get("/v1/runs/run-orphan-cleanup", headers=AUTH)
+
+    assert admitted.status_code == 202
+    payload = snapshot.json()
+    assert payload["status"] == "closed"
+    assert payload["active_node"] is None
+    assert payload["last_error"] is None
+    assert payload["orphan_cleanup"]["enabled"] is True
+    assert payload["orphan_cleanup"]["ttl_seconds"] == 0
+    assert payload["orphan_cleanup"]["status"] == "closed"
+    assert payload["orphan_cleanup"]["last_control_plane_seen_at"]
+    assert payload["orphan_cleanup"]["eligible_at"]
+    assert payload["orphan_cleanup"]["last_attempted_at"]
+    assert "runtime-run-orphan-cleanup" in runtime.cleaned
+    assert [event["event_type"] for event in payload["events"]][-2:] == ["worker_log", "run_closed"]
+    assert payload["events"][-2]["payload"]["reason"] == "orphaned_control_plane"
+    assert payload["events"][-1]["payload"] == {"status": "closed", "reason": "orphaned_control_plane"}
+    assert "node_result" not in [event["event_type"] for event in payload["events"]]
+    assert "run_failed" not in [event["event_type"] for event in payload["events"]]
+
+
+def test_worker_orphan_cleanup_failure_remains_visible_without_terminal_rewrite() -> None:
+    client = TestClient(
+        create_worker_app(
+            token="test-token",
+            policies={
+                "orphan_cleanup": {"enabled": True, "ttl_seconds": 0},
+                "cleanup_failure": True,
+            },
+        )
+    )
+    run_request = {
+        "run_id": "run-orphan-cleanup-fails",
+        "execution_profile_id": "remote-dev",
+        "mapped_project_path": "/srv/projects/acme",
+    }
+
+    assert client.post("/v1/runs", json=run_request, headers=AUTH).status_code == 202
+    snapshot = client.get("/v1/runs/run-orphan-cleanup-fails", headers=AUTH).json()
+    repeated_snapshot = client.get("/v1/runs/run-orphan-cleanup-fails", headers=AUTH).json()
+
+    assert snapshot["status"] == "ready"
+    assert snapshot["last_error"]["code"] == "cleanup_failed"
+    assert snapshot["orphan_cleanup"]["status"] == "failed"
+    assert snapshot["orphan_cleanup"]["last_error"]["code"] == "cleanup_failed"
+    assert [event["event_type"] for event in snapshot["events"]][-2:] == ["worker_log", "cleanup_failed"]
+    assert snapshot["events"][-1]["payload"]["reason"] == "orphaned_control_plane"
+    assert snapshot["events"][-1]["payload"]["error"]["code"] == "cleanup_failed"
+    assert repeated_snapshot["last_sequence"] == snapshot["last_sequence"]
+    assert "node_result" not in [event["event_type"] for event in snapshot["events"]]
+    assert "run_failed" not in [event["event_type"] for event in snapshot["events"]]
+
+
 def test_worker_validation_errors_use_structured_json_error_shape() -> None:
     client = TestClient(create_worker_app(token="test-token"))
 

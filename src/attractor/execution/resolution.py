@@ -8,7 +8,7 @@ from .config import (
     load_execution_profile_config,
 )
 from .errors import ExecutionProfileSelectionError
-from .models import ExecutionProfile
+from .models import ExecutionProfile, WorkerProfile
 from .modes import EXECUTION_MODE_NATIVE
 
 
@@ -21,6 +21,7 @@ class ExecutionProfileSelection:
     profile: ExecutionProfile
     selected_profile_id: str | None
     selection_source: str
+    worker: WorkerProfile | None = None
 
 
 def resolve_execution_profile_by_id(
@@ -63,6 +64,7 @@ def resolve_execution_profile_by_id(
         profile=profile,
         selected_profile_id=selected_profile_id,
         selection_source=selection_source,
+        worker=graph.workers.get(profile.worker_id or "") if profile.is_remote_worker else None,
     )
 
 

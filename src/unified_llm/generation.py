@@ -41,6 +41,7 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 _TOOL_CALLS_REASON = FinishReason.TOOL_CALLS.value
+_sleep = asyncio.sleep
 
 
 def _is_int_like(value: Any) -> bool:
@@ -576,7 +577,7 @@ class StreamResult(_PlaceholderRecord):
                                 retry_policy.max_retries,
                             )
                             await await_with_timeout(
-                                asyncio.sleep(delay),
+                                _sleep(delay),
                                 remaining_timeout(config.total_deadline),
                                 scope="stream",
                                 abort_signal=config.abort_signal,

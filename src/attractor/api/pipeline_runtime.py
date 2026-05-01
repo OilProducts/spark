@@ -283,6 +283,7 @@ class ActiveRun:
     token_usage_breakdown: TokenUsageBreakdown | None = None
     estimated_model_cost: EstimatedModelCost | None = None
     control: ExecutionControl = field(default_factory=ExecutionControl)
+    runner: object | None = None
 
 
 @dataclass
@@ -317,6 +318,11 @@ class BroadcastingRunner:
         closer = getattr(self.delegate, "close", None)
         if callable(closer):
             closer()
+
+    def cancel(self):
+        cancel = getattr(self.delegate, "cancel", None)
+        if callable(cancel):
+            cancel()
 
     def __call__(self, node_id: str, prompt: str, context: Context, *, emit_event=None):
         return self._run(node_id, prompt, context, emit_event=emit_event)

@@ -42,8 +42,11 @@ class RemoteWorkerClient:
         self._token = _resolve_worker_token(worker)
         self._owns_client = client is None
         self._client = client or httpx.Client(base_url=worker.base_url, timeout=timeout)
+        self._active_stream_response: httpx.Response | None = None
 
     def close(self) -> None:
+        if self._active_stream_response is not None:
+            self._active_stream_response.close()
         if self._owns_client:
             self._client.close()
 
@@ -116,11 +119,15 @@ class RemoteWorkerClient:
             headers["Last-Event-ID"] = last_event_id
         try:
             with self._client.stream("GET", f"/v1/runs/{run_id}/events", params=params, headers=headers) as response:
+                self._active_stream_response = response
                 self._raise_for_worker_error(response)
                 for event in _iter_worker_events(response.iter_lines(), self.worker.id):
                     yield event
+                self._active_stream_response = None
         except httpx.HTTPError as exc:
             raise ExecutionLaunchError(f"Remote worker {self.worker.id!r} request failed: {exc}") from exc
+        finally:
+            self._active_stream_response = None
 
     def _callback(self, path: str, request: WorkerCallbackRequest) -> WorkerCallbackResponse:
         return self._request_model("POST", path, WorkerCallbackResponse, json=request.model_dump(mode="json"))
@@ -180,6 +187,7 @@ def _response_json(response: httpx.Response, worker_id: str, path: str) -> Any:
 def _validate_compatible_model(model_type: type[Any], payload: Any, worker_id: str, path: str) -> Any:
     if model_type in (WorkerHealthResponse, WorkerInfoResponse):
         _validate_advertised_protocol(payload, worker_id)
+        _validate_worker_capability_metadata(payload, worker_id, path)
     try:
         model = model_type.model_validate(payload)
     except ValidationError as exc:
@@ -194,6 +202,13 @@ def _validate_compatible_model(model_type: type[Any], payload: Any, worker_id: s
 def _validate_advertised_protocol(payload: Any, worker_id: str) -> None:
     if not isinstance(payload, dict) or "protocol_version" not in payload:
         raise ExecutionProtocolError(f"Remote worker {worker_id!r} did not advertise protocol metadata.")
+
+
+def _validate_worker_capability_metadata(payload: Any, worker_id: str, path: str) -> None:
+    if not isinstance(payload, dict) or not isinstance(payload.get("capabilities"), dict):
+        raise ExecutionProtocolError(
+            f"Remote worker {worker_id!r} did not advertise required capability metadata for {path}."
+        )
 
 
 def _validate_worker_compatibility(model: WorkerHealthResponse | WorkerInfoResponse, worker_id: str) -> None:

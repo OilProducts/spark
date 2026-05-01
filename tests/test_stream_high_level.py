@@ -532,7 +532,7 @@ async def test_stream_retries_initial_stream_failures_but_not_after_partial_data
         sleep_calls.append(delay)
 
     monkeypatch.setattr(retry_mod.random, "uniform", lambda a, b: 1.0)
-    monkeypatch.setattr(generation_mod.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(generation_mod, "_sleep", fake_sleep)
 
     adapter = _SequencedStreamAdapter(
         "fake",
@@ -633,7 +633,7 @@ async def test_stream_retry_sleep_is_cut_off_by_total_timeout(
             raise
 
     monkeypatch.setattr(retry_mod.random, "uniform", lambda a, b: 1.0)
-    monkeypatch.setattr(generation_mod.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(generation_mod, "_sleep", fake_sleep)
 
     adapter = _SequencedStreamAdapter(
         "fake",
@@ -694,7 +694,7 @@ async def test_stream_retry_sleep_is_cut_off_by_abort_signal(
             raise
 
     monkeypatch.setattr(retry_mod.random, "uniform", lambda a, b: 1.0)
-    monkeypatch.setattr(generation_mod.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(generation_mod, "_sleep", fake_sleep)
 
     adapter = _SequencedStreamAdapter(
         "fake",

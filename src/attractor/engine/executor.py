@@ -1591,6 +1591,8 @@ class PipelineExecutor:
         except BaseException as exc:
             if isinstance(exc, KeyboardInterrupt):
                 raise
+            if getattr(exc, "abort_before_node_result", False):
+                raise
             failure_reason = str(exc) or exc.__class__.__name__
             category = (
                 _classify_runtime_error(exc)

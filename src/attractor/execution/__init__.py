@@ -7,6 +7,7 @@ from .errors import (
     ExecutionProfileError,
     ExecutionProfileFieldError,
     ExecutionProfileSelectionError,
+    RemoteActiveRunFailed,
     WorkerAPIError,
     worker_error_payload,
 )
@@ -29,6 +30,7 @@ from .models import (
     WorkerProfile,
     build_launch_metadata,
 )
+from .metadata import RemoteLaunchAdmission, admit_remote_launch
 from .modes import (
     EXECUTION_MODE_LOCAL_CONTAINER,
     EXECUTION_MODE_NATIVE,
@@ -39,6 +41,7 @@ from .modes import (
 )
 from .paths import map_remote_project_path
 from .remote_client import RemoteWorkerClient
+from .remote_runner import RemoteHandlerRunner, RemotePreparationFailed
 from .resolution import ExecutionProfileSelection, resolve_execution_profile_by_id
 from .worker_app import create_worker_app
 from .worker_models import (
@@ -90,6 +93,10 @@ __all__ = [
     "EXECUTION_PROFILE_SELECTION_SOURCE_CONTEXT_KEY",
     "IMPLEMENTATION_NATIVE_PROFILE_ID",
     "RemoteWorkerClient",
+    "RemoteLaunchAdmission",
+    "RemoteActiveRunFailed",
+    "RemoteHandlerRunner",
+    "RemotePreparationFailed",
     "WorkerProfile",
     "WORKER_EVENT_TYPES",
     "WORKER_PROTOCOL_VERSION",
@@ -112,6 +119,7 @@ __all__ = [
     "WorkerRuntimePreparationError",
     "WorkerState",
     "build_launch_metadata",
+    "admit_remote_launch",
     "create_worker_app",
     "InProcessWorkerRuntime",
     "LocalProcessWorkerRuntime",

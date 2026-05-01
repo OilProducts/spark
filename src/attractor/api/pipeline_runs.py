@@ -220,7 +220,15 @@ def record_run_start(
     child_invocation_index: Optional[int] = None,
     execution_mode: str = "native",
     execution_profile_id: Optional[str] = None,
+    execution_worker_id: Optional[str] = None,
+    execution_worker_label: Optional[str] = None,
+    execution_worker_base_url: Optional[str] = None,
     execution_container_image: Optional[str] = None,
+    execution_mapped_project_path: Optional[str] = None,
+    execution_worker_runtime_root: Optional[str] = None,
+    execution_worker_version: Optional[str] = None,
+    execution_worker_capabilities: Optional[object] = None,
+    execution_profile_capabilities: Optional[object] = None,
 ) -> None:
     project_path, git_branch, git_commit = resolve_run_project_git_metadata(
         working_directory,
@@ -254,7 +262,15 @@ def record_run_start(
         child_invocation_index=child_invocation_index,
         execution_mode=execution_mode,
         execution_profile_id=execution_profile_id,
+        execution_worker_id=execution_worker_id,
+        execution_worker_label=execution_worker_label,
+        execution_worker_base_url=execution_worker_base_url,
         execution_container_image=execution_container_image,
+        execution_mapped_project_path=execution_mapped_project_path,
+        execution_worker_runtime_root=execution_worker_runtime_root,
+        execution_worker_version=execution_worker_version,
+        execution_worker_capabilities=execution_worker_capabilities,
+        execution_profile_capabilities=execution_profile_capabilities,
     )
     with run_history_lock:
         write_run_meta(get_runtime_paths, record)
@@ -432,6 +448,24 @@ def record_run_usage(
         record.token_usage_breakdown = token_usage_breakdown.copy()
         record.token_usage = token_usage_breakdown.total_tokens
         record.estimated_model_cost = estimate_model_cost(token_usage_breakdown)
+        write_run_meta(get_runtime_paths, record)
+
+
+def record_run_cleanup_error(
+    get_runtime_paths: Callable[[], AttractorRuntimePaths],
+    run_history_lock: threading.Lock,
+    *,
+    run_id: str,
+    cleanup_error: str,
+) -> None:
+    normalized = cleanup_error.strip()
+    if not normalized:
+        return
+    with run_history_lock:
+        record = read_run_meta(run_meta_path(get_runtime_paths, run_id))
+        if not record:
+            return
+        record.cleanup_error = normalized
         write_run_meta(get_runtime_paths, record)
 
 

@@ -175,7 +175,7 @@ def create_worker_app(
         dependencies=[Depends(require_bearer)],
     )
     async def answer_human_gate(run_id: str, gate_id: str, request: WorkerCallbackRequest) -> WorkerCallbackResponse:
-        _record_callback(state.require_run(run_id), f"human_gate:{gate_id}", request.payload)
+        _record_callback(state.observe_control_plane(run_id), f"human_gate:{gate_id}", request.payload)
         return WorkerCallbackResponse(run_id=run_id, request_id=gate_id)
 
     @app.post(
@@ -184,7 +184,7 @@ def create_worker_app(
         dependencies=[Depends(require_bearer)],
     )
     async def child_run_result(run_id: str, request_id: str, request: WorkerCallbackRequest) -> WorkerCallbackResponse:
-        _record_callback(state.require_run(run_id), f"child_run:{request_id}", request.payload)
+        _record_callback(state.observe_control_plane(run_id), f"child_run:{request_id}", request.payload)
         return WorkerCallbackResponse(run_id=run_id, request_id=request_id)
 
     @app.post(
@@ -193,7 +193,7 @@ def create_worker_app(
         dependencies=[Depends(require_bearer)],
     )
     async def child_status_result(run_id: str, request_id: str, request: WorkerCallbackRequest) -> WorkerCallbackResponse:
-        _record_callback(state.require_run(run_id), f"child_status:{request_id}", request.payload)
+        _record_callback(state.observe_control_plane(run_id), f"child_status:{request_id}", request.payload)
         return WorkerCallbackResponse(run_id=run_id, request_id=request_id)
 
     @app.post("/v1/runs/{run_id}/cancel", response_model=WorkerCancelResponse, dependencies=[Depends(require_bearer)])

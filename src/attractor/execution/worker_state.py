@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 import os
 import threading
 from typing import Any, Iterable
@@ -14,6 +15,7 @@ from .worker_models import (
     WorkerErrorBody,
     WorkerEvent,
     WorkerNodeRequest,
+    WorkerOrphanCleanupSnapshot,
     WorkerRunAdmissionRequest,
     WorkerRunSnapshot,
     WorkerRunStatus,
@@ -25,6 +27,12 @@ from .worker_runtime import (
     WorkerRuntimeCleanupError,
     WorkerRuntimePreparationError,
 )
+
+
+@dataclass(frozen=True)
+class WorkerOrphanCleanupPolicy:
+    enabled: bool = False
+    ttl_seconds: float | None = None
 
 
 @dataclass
@@ -42,6 +50,10 @@ class WorkerRunRecord:
     active_node_key: str | None = None
     last_error: WorkerErrorBody | None = None
     cleanup_done: bool = False
+    admitted_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_control_plane_seen_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    orphan_cleanup_last_attempted_at: datetime | None = None
+    orphan_cleanup_failed: bool = False
 
 
 class WorkerEventStore:
@@ -98,29 +110,33 @@ class WorkerState:
         self.policies = dict(policies or {})
         self.capabilities = dict(capabilities or {})
         self.runtime = runtime if runtime is not None else InProcessWorkerRuntime(policies=self.policies)
+        self.orphan_cleanup_policy = _orphan_cleanup_policy(self.policies)
         self.event_store = WorkerEventStore()
         self._lock = threading.RLock()
 
     def admit_run(self, request: WorkerRunAdmissionRequest) -> tuple[WorkerRunRecord, WorkerRunStatus, int]:
-        existing = self.runs.get(request.run_id)
-        if existing is not None:
-            if existing.request == request:
-                return existing, existing.admission_status, existing.admission_last_sequence
-            raise WorkerAPIError(
-                "conflict",
-                "Run id was already admitted with different parameters.",
-                409,
-                details={"run_id": request.run_id},
-            )
-        self._validate_admission(request)
-        record = WorkerRunRecord(request=request)
-        self.runs[request.run_id] = record
-        self.add_event(record, "run_started", {"status": "preparing"})
-        self.add_event(record, "run_preparing", {"status": "preparing"})
-        record.admission_status = record.status
-        record.admission_last_sequence = len(record.events)
-        self.prepare_run(record)
-        return record, record.admission_status, record.admission_last_sequence
+        with self._lock:
+            existing = self.runs.get(request.run_id)
+            if existing is not None:
+                existing.last_control_plane_seen_at = _utcnow()
+                if existing.request == request:
+                    return existing, existing.admission_status, existing.admission_last_sequence
+                raise WorkerAPIError(
+                    "conflict",
+                    "Run id was already admitted with different parameters.",
+                    409,
+                    details={"run_id": request.run_id},
+                )
+            self._validate_admission(request)
+            now = _utcnow()
+            record = WorkerRunRecord(request=request, admitted_at=now, last_control_plane_seen_at=now)
+            self.runs[request.run_id] = record
+            self.add_event(record, "run_started", {"status": "preparing"})
+            self.add_event(record, "run_preparing", {"status": "preparing"})
+            record.admission_status = record.status
+            record.admission_last_sequence = len(record.events)
+            self.prepare_run(record)
+            return record, record.admission_status, record.admission_last_sequence
 
     def prepare_run(self, record: WorkerRunRecord) -> None:
         if record.status != "preparing":
@@ -240,9 +256,16 @@ class WorkerState:
             raise WorkerAPIError("not_found", "Worker run was not found.", 404, details={"run_id": run_id})
         return record
 
+    def observe_control_plane(self, run_id: str) -> WorkerRunRecord:
+        with self._lock:
+            record = self.require_run(run_id)
+            record.last_control_plane_seen_at = _utcnow()
+            return record
+
     def accept_node(self, run_id: str, request: WorkerNodeRequest) -> str:
         with self._lock:
             record = self.require_run(run_id)
+            record.last_control_plane_seen_at = _utcnow()
             if record.status != "ready":
                 raise WorkerAPIError(
                     "run_not_ready",
@@ -335,25 +358,72 @@ class WorkerState:
                     record.active_node_key = None
 
     def cancel_run(self, run_id: str) -> WorkerRunRecord:
-        record = self.require_run(run_id)
-        if record.status in {"canceled", "closed"}:
+        with self._lock:
+            record = self.require_run(run_id)
+            record.last_control_plane_seen_at = _utcnow()
+            if record.status in {"canceled", "closed"}:
+                return record
+            if record.status == "failed":
+                return record
+            record.status = "canceling"
+            self.add_event(record, "run_canceling", {"status": "canceling"})
+            self.runtime.cancel_run(record.runtime)
+            record.status = "canceled"
+            record.active_node_key = None
+            self.add_event(record, "run_canceled", {"status": "canceled"})
             return record
-        if record.status == "failed":
-            return record
-        record.status = "canceling"
-        self.add_event(record, "run_canceling", {"status": "canceling"})
-        self.runtime.cancel_run(record.runtime)
-        record.status = "canceled"
-        record.active_node_key = None
-        self.add_event(record, "run_canceled", {"status": "canceled"})
-        return record
 
     def cleanup_run(self, run_id: str) -> tuple[WorkerRunStatus, bool]:
-        record = self.runs.get(run_id)
-        if record is None:
-            return "closed", False
+        with self._lock:
+            record = self.runs.get(run_id)
+            if record is None:
+                return "closed", False
+            record.last_control_plane_seen_at = _utcnow()
+            return self._cleanup_run(record, reason="control_plane_delete", raise_on_failure=True)
+
+    def sweep_orphaned_runs(self) -> None:
+        if not self.orphan_cleanup_policy.enabled or self.orphan_cleanup_policy.ttl_seconds is None:
+            return
+        with self._lock:
+            for record in list(self.runs.values()):
+                if not self._orphan_cleanup_due(record):
+                    continue
+                self._cleanup_run(record, reason="orphaned_control_plane", raise_on_failure=False)
+
+    def _orphan_cleanup_due(self, record: WorkerRunRecord) -> bool:
+        if record.cleanup_done or record.orphan_cleanup_failed:
+            return False
+        if record.status == "closed":
+            return False
+        eligible_at = self._orphan_cleanup_eligible_at(record)
+        return eligible_at is not None and _utcnow() >= eligible_at
+
+    def _orphan_cleanup_eligible_at(self, record: WorkerRunRecord) -> datetime | None:
+        ttl_seconds = self.orphan_cleanup_policy.ttl_seconds
+        if not self.orphan_cleanup_policy.enabled or ttl_seconds is None:
+            return None
+        return record.last_control_plane_seen_at + timedelta(seconds=ttl_seconds)
+
+    def _cleanup_run(
+        self,
+        record: WorkerRunRecord,
+        *,
+        reason: str,
+        raise_on_failure: bool,
+    ) -> tuple[WorkerRunStatus, bool]:
         if record.cleanup_done:
             return "closed", False
+        if reason == "orphaned_control_plane":
+            record.orphan_cleanup_last_attempted_at = _utcnow()
+            self.add_event(
+                record,
+                "worker_log",
+                {
+                    "message": "Worker orphan cleanup policy is cleaning an admitted run after control-plane silence.",
+                    "reason": reason,
+                    "policy": self._orphan_cleanup_policy_payload(),
+                },
+            )
         try:
             self.runtime.cleanup_run(record.runtime)
         except WorkerRuntimeCleanupError as exc:
@@ -363,12 +433,24 @@ class WorkerState:
                 retryable=exc.retryable,
                 details=dict(exc.details or {}),
             )
-            self.add_event(record, "cleanup_failed", {"error": record.last_error.model_dump(mode="json")})
-            raise WorkerAPIError(exc.code, exc.message, 500, retryable=exc.retryable, details=exc.details) from exc
+            if reason == "orphaned_control_plane":
+                record.orphan_cleanup_failed = True
+            self.add_event(
+                record,
+                "cleanup_failed",
+                {
+                    "reason": reason,
+                    "error": record.last_error.model_dump(mode="json"),
+                    "policy": self._orphan_cleanup_policy_payload() if reason == "orphaned_control_plane" else {},
+                },
+            )
+            if raise_on_failure:
+                raise WorkerAPIError(exc.code, exc.message, 500, retryable=exc.retryable, details=exc.details) from exc
+            return record.status, False
         record.status = "closed"
         record.active_node_key = None
         record.cleanup_done = True
-        self.add_event(record, "run_closed", {"status": "closed"})
+        self.add_event(record, "run_closed", {"status": "closed", "reason": reason})
         return "closed", True
 
     def add_event(
@@ -390,6 +472,7 @@ class WorkerState:
         )
 
     def snapshot(self, record: WorkerRunRecord) -> WorkerRunSnapshot:
+        self.sweep_orphaned_runs()
         active_node = record.nodes.get(record.active_node_key or "")
         events = self.event_store.after(record, 0)
         return WorkerRunSnapshot(
@@ -412,10 +495,38 @@ class WorkerState:
             resources=record.request.resources,
             metadata=record.request.metadata,
             last_error=record.last_error,
+            orphan_cleanup=self._orphan_cleanup_snapshot(record),
             events=events,
             nodes=dict(record.nodes),
             callbacks=dict(record.callbacks),
         )
+
+    def _orphan_cleanup_snapshot(self, record: WorkerRunRecord) -> WorkerOrphanCleanupSnapshot:
+        enabled = self.orphan_cleanup_policy.enabled
+        eligible_at = self._orphan_cleanup_eligible_at(record)
+        if not enabled:
+            status = "disabled"
+        elif record.orphan_cleanup_failed:
+            status = "failed"
+        elif record.cleanup_done or record.status == "closed":
+            status = "closed"
+        else:
+            status = "observing"
+        return WorkerOrphanCleanupSnapshot(
+            enabled=enabled,
+            ttl_seconds=self.orphan_cleanup_policy.ttl_seconds,
+            status=status,
+            last_control_plane_seen_at=record.last_control_plane_seen_at,
+            eligible_at=eligible_at,
+            last_attempted_at=record.orphan_cleanup_last_attempted_at,
+            last_error=record.last_error if status == "failed" else None,
+        )
+
+    def _orphan_cleanup_policy_payload(self) -> dict[str, Any]:
+        return {
+            "enabled": self.orphan_cleanup_policy.enabled,
+            "ttl_seconds": self.orphan_cleanup_policy.ttl_seconds,
+        }
 
 
 def _string_list_policy(value: Any) -> list[str]:
@@ -442,6 +553,39 @@ def _capability_policy(value: Any) -> dict[str, Any]:
 
 def _resource_policy(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _orphan_cleanup_policy(policies: dict[str, Any]) -> WorkerOrphanCleanupPolicy:
+    configured = policies.get("orphan_cleanup")
+    ttl_value: Any = policies.get("orphan_cleanup_ttl_seconds")
+    enabled = False
+    if isinstance(configured, dict):
+        enabled = bool(configured.get("enabled", False))
+        ttl_value = configured.get("ttl_seconds", ttl_value)
+    elif configured is True:
+        enabled = True
+    elif configured is False or configured is None:
+        enabled = False
+    if enabled and ttl_value is None:
+        ttl_value = 3600
+    ttl_seconds = _non_negative_float(ttl_value)
+    if enabled and ttl_seconds is None:
+        enabled = False
+    return WorkerOrphanCleanupPolicy(enabled=enabled, ttl_seconds=ttl_seconds)
+
+
+def _non_negative_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _node_execution_key(request: WorkerNodeRequest) -> str:

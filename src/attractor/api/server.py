@@ -84,6 +84,11 @@ from attractor.execution import (
     EXECUTION_PROFILE_SELECTION_SOURCE_CONTEXT_KEY,
     ExecutionLaunchError,
     ExecutionProfileError,
+    RemoteActiveRunFailed,
+    RemoteHandlerRunner,
+    RemotePreparationFailed,
+    RemoteLaunchAdmission,
+    admit_remote_launch,
     build_launch_metadata,
     resolve_execution_profile_by_id,
     seed_execution_profile_context,
@@ -1006,7 +1011,15 @@ def _record_run_start(
     child_invocation_index: Optional[int] = None,
     execution_mode: str = "native",
     execution_profile_id: Optional[str] = None,
+    execution_worker_id: Optional[str] = None,
+    execution_worker_label: Optional[str] = None,
+    execution_worker_base_url: Optional[str] = None,
     execution_container_image: Optional[str] = None,
+    execution_mapped_project_path: Optional[str] = None,
+    execution_worker_runtime_root: Optional[str] = None,
+    execution_worker_version: Optional[str] = None,
+    execution_worker_capabilities: Optional[object] = None,
+    execution_profile_capabilities: Optional[object] = None,
 ) -> None:
     pipeline_runs.record_run_start(
         get_runtime_paths,
@@ -1031,7 +1044,15 @@ def _record_run_start(
         child_invocation_index=child_invocation_index,
         execution_mode=execution_mode,
         execution_profile_id=execution_profile_id,
+        execution_worker_id=execution_worker_id,
+        execution_worker_label=execution_worker_label,
+        execution_worker_base_url=execution_worker_base_url,
         execution_container_image=execution_container_image,
+        execution_mapped_project_path=execution_mapped_project_path,
+        execution_worker_runtime_root=execution_worker_runtime_root,
+        execution_worker_version=execution_worker_version,
+        execution_worker_capabilities=execution_worker_capabilities,
+        execution_profile_capabilities=execution_profile_capabilities,
     )
 
 
@@ -1115,6 +1136,15 @@ def _append_run_log(run_id: str, message: str) -> None:
     pipeline_runs.append_run_log(get_runtime_paths, run_id, message)
 
 
+def _record_run_cleanup_error(run_id: str, cleanup_error: str) -> None:
+    pipeline_runs.record_run_cleanup_error(
+        get_runtime_paths,
+        RUN_HISTORY_LOCK,
+        run_id=run_id,
+        cleanup_error=cleanup_error,
+    )
+
+
 async def _publish_run_event(run_id: str, message: dict) -> None:
     payload = dict(message)
     payload.setdefault("run_id", run_id)
@@ -1138,6 +1168,44 @@ def _publish_run_event_sync(loop: asyncio.AbstractEventLoop, run_id: str, messag
         future.result(timeout=10)
     except Exception:  # noqa: BLE001
         LOGGER.exception("failed to publish run event for run %s", run_id)
+
+
+def _cleanup_failure_message(exc: BaseException) -> str:
+    detail = str(exc).strip() or exc.__class__.__name__
+    return f"Run cleanup failed: {detail}"
+
+
+def _record_cleanup_failure(run_id: str, exc: BaseException) -> str:
+    message = _cleanup_failure_message(exc)
+    _record_run_cleanup_error(run_id, message)
+    LOGGER.exception("run cleanup failed for run %s", run_id)
+    return message
+
+
+async def _close_runner_after_run(run_id: str, runner: object) -> None:
+    closer = getattr(runner, "close", None)
+    if not callable(closer):
+        return
+    try:
+        closer()
+    except Exception as exc:  # noqa: BLE001
+        message = _record_cleanup_failure(run_id, exc)
+        await _publish_run_event(run_id, {"type": "cleanup_error", "message": message})
+        await _publish_run_event(run_id, {"type": "log", "msg": f"[System] {message}"})
+        await _publish_run_list_upsert(run_id)
+
+
+def _close_runner_after_run_sync(loop: asyncio.AbstractEventLoop, run_id: str, runner: object) -> None:
+    closer = getattr(runner, "close", None)
+    if not callable(closer):
+        return
+    try:
+        closer()
+    except Exception as exc:  # noqa: BLE001
+        message = _record_cleanup_failure(run_id, exc)
+        _publish_run_event_sync(loop, run_id, {"type": "cleanup_error", "message": message})
+        _publish_run_event_sync(loop, run_id, {"type": "log", "msg": f"[System] {message}"})
+        _publish_run_list_upsert_sync(loop, run_id)
 
 
 def _publish_run_list_upsert_sync(loop: asyncio.AbstractEventLoop, run_id: str) -> None:
@@ -2102,6 +2170,17 @@ def _cancel_shared_container_transport(run_id: str) -> None:
             LOGGER.exception("failed to cancel execution container for run %s", run_id)
 
 
+def _cancel_active_runner(run_id: str, active: ActiveRun) -> None:
+    runner = active.runner
+    cancel = getattr(runner, "cancel", None)
+    if not callable(cancel):
+        return
+    try:
+        cancel()
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("failed to cancel execution runner for run %s", run_id)
+
+
 def _active_run_cancel_requested(run_id: str) -> bool:
     active = _get_active_run(run_id)
     if active is None:
@@ -2109,6 +2188,12 @@ def _active_run_cancel_requested(run_id: str) -> bool:
     if normalize_run_status(active.status) == "cancel_requested":
         return True
     return active.control.cancel_requested()
+
+
+def _exception_should_complete_as_canceled_after_cancel(exc: BaseException) -> bool:
+    if not isinstance(exc, (RemoteActiveRunFailed, RemotePreparationFailed)):
+        return str(exc) == "aborted_by_user"
+    return exc.code in {"user_cancel_requested", "remote_worker_run_canceled"}
 
 
 def _selected_execution_profile_id_from_context(
@@ -2135,11 +2220,68 @@ def _launch_execution_metadata_payload(execution_profile, working_dir: str) -> d
     return payload
 
 
+def _seed_launch_execution_metadata_context(context: Context, execution_metadata: dict[str, Any]) -> None:
+    for key, value in execution_metadata.items():
+        context.set(key, value)
+        context.set(f"_attractor.runtime.{key}", value)
+
+
+def _record_run_start_execution_metadata_kwargs(execution_metadata: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "execution_mode",
+        "execution_profile_id",
+        "execution_worker_id",
+        "execution_worker_label",
+        "execution_worker_base_url",
+        "execution_container_image",
+        "execution_mapped_project_path",
+        "execution_worker_runtime_root",
+        "execution_worker_version",
+        "execution_worker_capabilities",
+        "execution_profile_capabilities",
+    )
+    return {key: execution_metadata.get(key) for key in keys}
+
+
 def _ensure_supported_execution_dispatch(execution_profile) -> None:
     if execution_profile.is_remote_worker:
         raise ExecutionLaunchError(
             "remote_worker execution profiles are configured but remote worker dispatch is not available in this foundation milestone"
         )
+
+
+def _admit_remote_execution_launch(
+    execution_profile_selection,
+    *,
+    run_id: str,
+    working_dir: str,
+) -> tuple[RemoteLaunchAdmission, dict[str, Any]]:
+    admission = admit_remote_launch(
+        execution_profile_selection.profile,
+        execution_profile_selection.worker,
+        run_id=run_id,
+        control_project_path=working_dir,
+    )
+    payload = admission.metadata.as_dict()
+    payload.setdefault("execution_profile_id", execution_profile_selection.profile.id)
+    payload.setdefault("execution_container_image", None)
+    payload["execution_worker_id"] = execution_profile_selection.worker.id
+    payload["execution_worker_label"] = execution_profile_selection.worker.label
+    payload["execution_worker_base_url"] = execution_profile_selection.worker.base_url
+    payload["execution_worker_version"] = admission.worker_info.worker_version
+    payload["execution_worker_capabilities"] = dict(admission.worker_info.capabilities)
+    return admission, payload
+
+
+def _execution_launch_error_payload(exc: ExecutionLaunchError) -> dict[str, Any]:
+    payload: dict[str, Any] = {"status": "validation_error", "error": str(exc)}
+    if exc.code is not None:
+        payload["error_code"] = exc.code
+    if exc.retryable is not None:
+        payload["retryable"] = exc.retryable
+    if exc.details:
+        payload["details"] = dict(exc.details)
+    return payload
 
 
 def _run_first_class_child_pipeline(
@@ -2151,7 +2293,6 @@ def _run_first_class_child_pipeline(
 ) -> ChildRunResult:
     child_run_id = request.child_run_id.strip() or uuid.uuid4().hex
     working_dir = str(request.child_workdir.expanduser().resolve())
-    os.makedirs(working_dir, exist_ok=True)
     run_root = _ensure_run_root_for_project(child_run_id, working_dir)
     logs_root = str(run_root / "logs")
     checkpoint_file = str(run_root / "state.json")
@@ -2163,16 +2304,26 @@ def _run_first_class_child_pipeline(
     )
     parent_context_values = dict(request.parent_context.values)
     parent_execution_profile_id = _selected_execution_profile_id_from_context(parent_context_values)
+    remote_launch_admission: RemoteLaunchAdmission | None = None
     execution_profile_selection = resolve_execution_profile_by_id(
         settings=get_runtime_paths(),
         explicit_profile_id=parent_execution_profile_id,
     )
     execution_profile = execution_profile_selection.profile
     try:
-        execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
-        _ensure_supported_execution_dispatch(execution_profile)
+        if execution_profile.is_remote_worker:
+            remote_launch_admission, execution_metadata = _admit_remote_execution_launch(
+                execution_profile_selection,
+                run_id=child_run_id,
+                working_dir=working_dir,
+            )
+        else:
+            execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
+            _ensure_supported_execution_dispatch(execution_profile)
     except ExecutionLaunchError as exc:
         return ChildRunResult(run_id=child_run_id, status="failed", failure_reason=str(exc))
+    if not execution_profile.is_remote_worker:
+        os.makedirs(working_dir, exist_ok=True)
     root_run_id = (request.root_run_id or request.parent_run_id or child_run_id).strip() or child_run_id
     child_invocation_index = _next_child_invocation_index(request.parent_run_id, request.parent_node_id)
 
@@ -2208,9 +2359,7 @@ def _run_first_class_child_pipeline(
         parent_node_id=request.parent_node_id,
         root_run_id=root_run_id,
         child_invocation_index=child_invocation_index,
-        execution_mode=execution_metadata["execution_mode"],
-        execution_profile_id=execution_metadata.get("execution_profile_id"),
-        execution_container_image=execution_metadata.get("execution_container_image"),
+        **_record_run_start_execution_metadata_kwargs(execution_metadata),
     )
     control = ExecutionControl()
     with ACTIVE_RUNS_LOCK:
@@ -2258,6 +2407,7 @@ def _run_first_class_child_pipeline(
         execution_profile,
         selection_source=execution_profile_selection.selection_source,
     )
+    _seed_launch_execution_metadata_context(context, execution_metadata)
     context.set("internal.run_id", child_run_id)
     context.set("internal.parent_run_id", request.parent_run_id)
     context.set("internal.parent_node_id", request.parent_node_id)
@@ -2276,7 +2426,21 @@ def _run_first_class_child_pipeline(
     )
 
     try:
-        if execution_profile.is_container:
+        if execution_profile.is_remote_worker:
+            if remote_launch_admission is None or execution_profile_selection.worker is None:
+                raise ExecutionLaunchError("remote_worker execution profile was not admitted before dispatch")
+            interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, request.child_flow_name, child_run_id)
+            delegate_runner = RemoteHandlerRunner(
+                profile=execution_profile,
+                worker=execution_profile_selection.worker,
+                admission=remote_launch_admission,
+                emit=emit,
+                graph=request.child_graph,
+                interviewer=interviewer,
+                child_run_launcher=launch_nested_child,
+                child_status_resolver=_child_run_result_from_record,
+            )
+        elif execution_profile.is_container:
             assert execution_profile.image is not None
             interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, request.child_flow_name, child_run_id)
             shared_transport = _shared_container_transport(root_run_id)
@@ -2318,6 +2482,10 @@ def _run_first_class_child_pipeline(
         return ChildRunResult(run_id=child_run_id, status="failed", failure_reason=str(exc))
 
     runner = BroadcastingRunner(delegate_runner, emit)
+    with ACTIVE_RUNS_LOCK:
+        active = ACTIVE_RUNS.get(child_run_id)
+        if active is not None:
+            active.runner = runner
 
     executor = PipelineExecutor(
         request.child_graph,
@@ -2422,7 +2590,7 @@ def _run_first_class_child_pipeline(
             }
         )
     except Exception as exc:  # noqa: BLE001
-        if _active_run_cancel_requested(child_run_id):
+        if _active_run_cancel_requested(child_run_id) and _exception_should_complete_as_canceled_after_cancel(exc):
             final_status = "canceled"
             child_result = ChildRunResult(run_id=child_run_id, status="canceled", failure_reason="aborted_by_user")
             _set_active_run_status(child_run_id, "canceled", last_error="aborted_by_user")
@@ -2469,9 +2637,7 @@ def _run_first_class_child_pipeline(
         _publish_run_list_upsert_sync(loop, child_run_id)
         emit({"type": "log", "msg": f"Pipeline Failed: {exc}"})
     finally:
-        closer = getattr(runner, "close", None)
-        if callable(closer):
-            closer()
+        _close_runner_after_run_sync(loop, child_run_id, runner)
         _publish_run_event_sync(loop, child_run_id, {"type": "lifecycle", "phase": PIPELINE_LIFECYCLE_PHASES[5]})
         _pop_active_run(child_run_id)
         _publish_run_list_upsert_sync(loop, child_run_id)
@@ -2636,6 +2802,7 @@ def _build_pipeline_runner_for_run(
             reasoning_effort=selected_reasoning_effort,
             status="running",
             control=control,
+            runner=runner,
         )
     return executor, context, display_model, selected_provider, selected_profile, selected_reasoning_effort
 
@@ -2823,7 +2990,7 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
                 },
             )
         except Exception as exc:  # noqa: BLE001
-            if _active_run_cancel_requested(pipeline_id):
+            if _active_run_cancel_requested(pipeline_id) and _exception_should_complete_as_canceled_after_cancel(exc):
                 final_status = "canceled"
                 _set_active_run_status(pipeline_id, "canceled", last_error="aborted_by_user")
                 _set_active_run_outcome(
@@ -2883,9 +3050,7 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
         finally:
             _unregister_shared_container_transport(pipeline_id)
             runner = getattr(executor, "runner", None)
-            closer = getattr(runner, "close", None)
-            if callable(closer):
-                closer()
+            await _close_runner_after_run(pipeline_id, runner)
             await _publish_lifecycle_phase(pipeline_id, PIPELINE_LIFECYCLE_PHASES[5])
             _pop_active_run(pipeline_id)
             await _publish_run_list_upsert(pipeline_id)
@@ -2997,10 +3162,10 @@ async def _launch_pipeline_run(
 
     await _publish_lifecycle_phase(resolved_run_id, PIPELINE_LIFECYCLE_PHASES[3])
 
-    os.makedirs(working_directory, exist_ok=True)
     working_dir = str(Path(working_directory).resolve())
     selected_model, display_model = _resolve_launch_model(graph, model)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
+    remote_launch_admission: RemoteLaunchAdmission | None = None
     try:
         execution_profile_selection = resolve_execution_profile_by_id(
             get_runtime_paths(),
@@ -3008,15 +3173,27 @@ async def _launch_pipeline_run(
             project_default_profile_id=project_default_execution_profile_id,
         )
         execution_profile = execution_profile_selection.profile
-        execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
-        _ensure_supported_execution_dispatch(execution_profile)
-    except (ExecutionProfileError, ExecutionLaunchError) as exc:
+        if execution_profile.is_remote_worker:
+            remote_launch_admission, execution_metadata = _admit_remote_execution_launch(
+                execution_profile_selection,
+                run_id=resolved_run_id,
+                working_dir=working_dir,
+            )
+        else:
+            execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
+            _ensure_supported_execution_dispatch(execution_profile)
+    except ExecutionProfileError as exc:
         return {
             "status": "validation_error",
             "error": str(exc),
             "diagnostics": diagnostic_payloads,
             "errors": error_payloads,
         }
+    except ExecutionLaunchError as exc:
+        payload = _execution_launch_error_payload(exc)
+        payload["diagnostics"] = diagnostic_payloads
+        payload["errors"] = error_payloads
+        return payload
 
     try:
         selected_provider, selected_profile = _resolve_launch_provider_profile(graph, llm_provider, llm_profile)
@@ -3090,15 +3267,32 @@ async def _launch_pipeline_run(
         execution_profile,
         selection_source=execution_profile_selection.selection_source,
     )
+    _seed_launch_execution_metadata_context(context, execution_metadata)
     context.set("internal.run_id", resolved_run_id)
     context.set("internal.root_run_id", resolved_run_id)
     context.set("internal.run_workdir", working_dir)
     if flow_source_dir is not None:
         context.set("internal.flow_source_dir", str(flow_source_dir))
 
+    if not execution_profile.is_remote_worker:
+        os.makedirs(working_dir, exist_ok=True)
     control = ExecutionControl()
     try:
-        if execution_profile.is_container:
+        if execution_profile.is_remote_worker:
+            if remote_launch_admission is None or execution_profile_selection.worker is None:
+                raise ExecutionLaunchError("remote_worker execution profile was not admitted before dispatch")
+            interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, resolved_run_id)
+            delegate_runner = RemoteHandlerRunner(
+                profile=execution_profile,
+                worker=execution_profile_selection.worker,
+                admission=remote_launch_admission,
+                emit=emit,
+                graph=graph,
+                interviewer=interviewer,
+                child_run_launcher=launch_child_run,
+                child_status_resolver=_child_run_result_from_record,
+            )
+        elif execution_profile.is_container:
             assert execution_profile.image is not None
             interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, resolved_run_id)
             delegate_runner = ContainerizedHandlerRunner(
@@ -3131,7 +3325,7 @@ async def _launch_pipeline_run(
                 child_run_launcher=launch_child_run,
                 child_status_resolver=_child_run_result_from_record,
             )
-    except (ValueError, ContainerExecutionError) as exc:
+    except (ValueError, ContainerExecutionError, ExecutionLaunchError) as exc:
         return {
             "status": "validation_error",
             "error": str(exc),
@@ -3172,6 +3366,7 @@ async def _launch_pipeline_run(
             reasoning_effort=selected_reasoning_effort,
             status="running",
             control=control,
+            runner=runner,
         )
 
     RUNTIME.status = "running"
@@ -3198,9 +3393,7 @@ async def _launch_pipeline_run(
         continued_from_flow_mode=continued_from_flow_mode,
         continued_from_flow_name=continued_from_flow_name,
         root_run_id=resolved_run_id,
-        execution_mode=execution_metadata["execution_mode"],
-        execution_profile_id=execution_metadata.get("execution_profile_id"),
-        execution_container_image=execution_metadata.get("execution_container_image"),
+        **_record_run_start_execution_metadata_kwargs(execution_metadata),
     )
     await _publish_run_list_upsert(resolved_run_id)
 
@@ -3253,6 +3446,9 @@ async def _launch_pipeline_run(
             "msg": f"[System] Launching run {resolved_run_id} in {working_dir} with model: {display_model}",
         },
     )
+    remote_starter = getattr(getattr(runner, "delegate", None), "start", None)
+    if callable(remote_starter):
+        remote_starter()
 
     async def _run():
         final_status = "failed"
@@ -3334,7 +3530,7 @@ async def _launch_pipeline_run(
                 },
             )
         except Exception as exc:  # noqa: BLE001
-            if _active_run_cancel_requested(resolved_run_id):
+            if _active_run_cancel_requested(resolved_run_id) and _exception_should_complete_as_canceled_after_cancel(exc):
                 final_status = "canceled"
                 _set_active_run_status(resolved_run_id, "canceled", last_error="aborted_by_user")
                 _set_active_run_outcome(
@@ -3369,8 +3565,6 @@ async def _launch_pipeline_run(
                     },
                 )
                 return
-            import traceback
-            traceback.print_exc()
             _set_active_run_status(resolved_run_id, "failed", last_error=str(exc))
             _set_active_run_outcome(
                 resolved_run_id,
@@ -3391,6 +3585,7 @@ async def _launch_pipeline_run(
                     "outcome": None,
                     "outcome_reason_code": None,
                     "outcome_reason_message": None,
+                    "last_error": str(exc),
                 },
             )
             _record_run_end(resolved_run_id, working_dir, "failed", str(exc), outcome=None)
@@ -3398,9 +3593,7 @@ async def _launch_pipeline_run(
             await _publish_run_event(resolved_run_id, {"type": "log", "msg": f"⚠️ Pipeline Failed: {exc}"})
         finally:
             _unregister_shared_container_transport(resolved_run_id)
-            closer = getattr(runner, "close", None)
-            if callable(closer):
-                closer()
+            await _close_runner_after_run(resolved_run_id, runner)
             await _publish_lifecycle_phase(resolved_run_id, PIPELINE_LIFECYCLE_PHASES[5])
             _pop_active_run(resolved_run_id)
             if on_complete is not None:
@@ -3753,6 +3946,7 @@ async def cancel_pipeline(pipeline_id: str):
         return {"status": "ignored", "pipeline_id": pipeline_id}
     active.control.request_cancel()
     _cancel_shared_container_transport(pipeline_id)
+    _cancel_active_runner(pipeline_id, active)
     _set_active_run_status(pipeline_id, "cancel_requested", last_error="cancel_requested_by_user")
     _record_run_status(pipeline_id, "cancel_requested", "cancel_requested_by_user")
     await _publish_run_list_upsert(pipeline_id)

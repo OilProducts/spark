@@ -9,6 +9,7 @@ WORKER_PROTOCOL_VERSION = "v1"
 DEFAULT_WORKER_VERSION = "0.1.0"
 
 WorkerRunStatus = Literal["preparing", "ready", "failed", "canceling", "canceled", "closed"]
+WorkerOrphanCleanupStatus = Literal["disabled", "observing", "closed", "failed"]
 
 WORKER_EVENT_TYPES = (
     "run_started",
@@ -28,6 +29,7 @@ WORKER_EVENT_TYPES = (
     "run_canceled",
     "run_failed",
     "run_closed",
+    "cleanup_failed",
     "worker_log",
 )
 
@@ -135,6 +137,16 @@ class WorkerRuntimeHandle(WorkerModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkerOrphanCleanupSnapshot(WorkerModel):
+    enabled: bool
+    ttl_seconds: float | None = None
+    status: WorkerOrphanCleanupStatus
+    last_control_plane_seen_at: datetime
+    eligible_at: datetime | None = None
+    last_attempted_at: datetime | None = None
+    last_error: WorkerErrorBody | None = None
+
+
 class WorkerEvent(WorkerModel):
     run_id: str
     sequence: int
@@ -192,6 +204,7 @@ class WorkerRunSnapshot(WorkerModel):
     resources: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     last_error: WorkerErrorBody | None = None
+    orphan_cleanup: WorkerOrphanCleanupSnapshot | None = None
     events: list[WorkerEvent] = Field(default_factory=list)
     nodes: dict[str, WorkerNodeRequest] = Field(default_factory=dict)
     callbacks: dict[str, dict[str, Any]] = Field(default_factory=dict)
