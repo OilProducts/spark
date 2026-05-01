@@ -57,6 +57,7 @@ def test_worker_api_routes_are_not_mounted_on_control_plane_app() -> None:
     }
 
     assert not any("/workers" in path or "/execution-workers" in path for path in route_paths)
+    assert not any(path.startswith("/v1/") for path in route_paths)
 
 
 def _declaring_module(value: Any) -> Any:

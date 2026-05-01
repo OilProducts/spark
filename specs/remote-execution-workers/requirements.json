@@ -96,7 +96,7 @@
         "src/spark/server_cli.py",
         "tests/execution/"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M2",
       "notes": "Bearer-token auth is sufficient for v1; mutual TLS is out of scope for this requirement."
     },
@@ -122,7 +122,7 @@
         "tests/execution/",
         "tests/test_cli.py"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M2",
       "notes": "The worker service is shipped in the same Python distribution as Spark."
     },
@@ -150,7 +150,7 @@
         "tests/execution/",
         "tests/handlers/test_execution_container.py"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M2",
       "notes": "The current local-container worker process protocol is the compatibility boundary; Docker lifecycle remains worker-owned."
     },
@@ -175,7 +175,7 @@
         "tests/execution/",
         "tests/test_sse.py"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M2",
       "notes": "SSE sequence handling is both a UI continuity and correctness requirement."
     },

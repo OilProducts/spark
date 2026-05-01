@@ -79,6 +79,78 @@ def test_run_serve_preserves_runtime_path_env_for_reload(monkeypatch, tmp_path: 
     assert spark_server_cli.os.environ["SPARK_UI_DIR"] == str(ui_dir.resolve(strict=False))
 
 
+def test_worker_serve_starts_standalone_worker_app(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(app, **kwargs):
+        calls.append({"app": app, **kwargs})
+
+    monkeypatch.setenv("SPARK_WORKER_TOKEN", "test-token")
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    result = spark_server_cli.main(["worker", "serve", "--host", "0.0.0.0", "--port", "8766", "--worker-id", "worker-a"])
+
+    assert result == 0
+    assert len(calls) == 1
+    assert calls[0]["host"] == "0.0.0.0"
+    assert calls[0]["port"] == 8766
+    assert calls[0]["reload"] is False
+    assert calls[0]["app"].title == "Spark Worker API"
+    route_paths = {str(getattr(route, "path", "")) for route in calls[0]["app"].routes}
+    assert "/v1/health" in route_paths
+    assert "/v1/runs/{run_id}/events" in route_paths
+
+
+def test_worker_serve_requires_configured_bearer_token(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("SPARK_WORKER_TOKEN", raising=False)
+
+    result = spark_server_cli.main(["worker", "serve"])
+
+    assert result == 1
+    assert "Worker bearer token environment variable is empty or missing: SPARK_WORKER_TOKEN" in capsys.readouterr().err
+
+
+def test_worker_serve_uses_import_string_when_reload_enabled(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(app, **kwargs):
+        calls.append({"app": app, **kwargs})
+
+    monkeypatch.setenv("CUSTOM_WORKER_TOKEN", "test-token")
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    result = spark_server_cli.main(["worker", "serve", "--reload", "--token-env", "CUSTOM_WORKER_TOKEN"])
+
+    assert result == 0
+    assert calls == [
+        {
+            "app": "attractor.execution.worker_app:create_worker_app_from_env",
+            "host": "127.0.0.1",
+            "port": 8765,
+            "reload": True,
+            "factory": True,
+        }
+    ]
+    assert spark_server_cli.os.environ["SPARK_WORKER_TOKEN_ENV"] == "CUSTOM_WORKER_TOKEN"
+
+
+def test_worker_run_node_dispatches_to_execution_container(monkeypatch) -> None:
+    import attractor.handlers.execution_container as execution_container
+
+    calls: list[str] = []
+
+    def fake_run_worker_node() -> int:
+        calls.append("run-node")
+        return 17
+
+    monkeypatch.setattr(execution_container, "run_worker_node", fake_run_worker_node)
+
+    result = spark_server_cli.main(["worker", "run-node"])
+
+    assert result == 17
+    assert calls == ["run-node"]
+
+
 def test_run_serve_requires_explicit_dev_home_from_source_checkout(
     monkeypatch,
     capsys,

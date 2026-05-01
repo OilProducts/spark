@@ -108,6 +108,13 @@ def _build_runtime_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     worker_commands = worker.add_subparsers(dest="worker_command")
+    worker_serve = worker_commands.add_parser("serve", help="Start the standalone Spark worker API")
+    worker_serve.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    worker_serve.add_argument("--port", type=int, default=8765, help="Bind port (default: 8765)")
+    worker_serve.add_argument("--reload", action="store_true", help="Enable auto-reload (development only)")
+    worker_serve.add_argument("--token-env", default="SPARK_WORKER_TOKEN", help="Bearer token environment variable")
+    worker_serve.add_argument("--worker-id", default="spark-worker", help="Worker id reported by /v1 endpoints")
+    worker_serve.add_argument("--worker-version", default=None, help="Worker version reported by /v1 endpoints")
     worker_commands.add_parser("run-node", help=argparse.SUPPRESS)
 
     return parser
@@ -134,12 +141,52 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_worker_command(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    if args.worker_command == "serve":
+        return _run_worker_serve(args)
     if args.worker_command == "run-node":
         from attractor.handlers.execution_container import run_worker_node
 
         return run_worker_node()
     parser.error("worker requires a subcommand")
     return 2
+
+
+def _run_worker_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    if not os.environ.get(args.token_env):
+        print(f"Worker bearer token environment variable is empty or missing: {args.token_env}", file=sys.stderr)
+        return 1
+
+    os.environ["SPARK_WORKER_TOKEN_ENV"] = args.token_env
+    os.environ["SPARK_WORKER_ID"] = args.worker_id
+    if args.worker_version:
+        os.environ["SPARK_WORKER_VERSION"] = args.worker_version
+
+    if args.reload:
+        uvicorn.run(
+            "attractor.execution.worker_app:create_worker_app_from_env",
+            host=args.host,
+            port=args.port,
+            reload=True,
+            factory=True,
+        )
+    else:
+        from attractor.execution.worker_app import DEFAULT_WORKER_VERSION, create_worker_app
+        from attractor.execution.worker_runtime import LocalProcessWorkerRuntime
+
+        uvicorn.run(
+            create_worker_app(
+                token_env=args.token_env,
+                worker_id=args.worker_id,
+                worker_version=args.worker_version or DEFAULT_WORKER_VERSION,
+                runtime=LocalProcessWorkerRuntime(),
+            ),
+            host=args.host,
+            port=args.port,
+            reload=False,
+        )
+    return 0
 
 
 def _run_service_command(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
