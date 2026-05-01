@@ -38,5 +38,9 @@ def test_project_conversation_retrieval_is_keyed_by_project_identity_item_12_3_0
     assert_frontend_behavior_contract_passed("12.3.03")
 
 
+def test_execution_profile_response_metadata_contract_item_12_3_04() -> None:
+    assert_frontend_behavior_contract_passed("12.3.04")
+
+
 def test_build_invocation_from_approved_plan_contract_and_error_paths_item_12_4_05() -> None:
     assert_frontend_behavior_contract_passed("12.4.05")

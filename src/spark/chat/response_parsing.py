@@ -54,9 +54,9 @@ def normalize_flow_run_request_payload(
     reasoning_effort = as_non_empty_string(arguments.get("reasoning_effort"))
     if reasoning_effort:
         payload["reasoning_effort"] = reasoning_effort.lower()
-    execution_container_image = as_non_empty_string(arguments.get("execution_container_image"))
-    if execution_container_image:
-        payload["execution_container_image"] = execution_container_image
+    execution_profile_id = as_non_empty_string(arguments.get("execution_profile_id"))
+    if execution_profile_id:
+        payload["execution_profile_id"] = execution_profile_id
     return payload
 
 

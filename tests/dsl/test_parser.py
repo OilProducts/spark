@@ -218,6 +218,32 @@ line2"]
         assert [edge.target for edge in graph.edges] == ["plan", "done"]
         assert [edge.attrs["label"].value for edge in graph.edges] == ["next", "next"]
 
+    def test_parses_execution_placement_attrs_as_ordinary_dot_metadata(self):
+        dot = """
+        digraph PlacementAttrs {
+            graph [
+                execution_profile_id="local-dev",
+                execution_mode="local_container",
+                execution_container_image="spark-exec:latest",
+                worker="worker-a",
+                execution_profile_capabilities="gpu"
+            ]
+            start [shape=Mdiamond, execution_profile_id="remote-fast"]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+
+        graph = parse_dot(dot)
+
+        assert graph.graph_attrs["execution_profile_id"].value == "local-dev"
+        assert graph.graph_attrs["execution_mode"].value == "local_container"
+        assert graph.graph_attrs["execution_container_image"].value == "spark-exec:latest"
+        assert graph.graph_attrs["worker"].value == "worker-a"
+        assert graph.graph_attrs["execution_profile_capabilities"].value == "gpu"
+        assert graph.nodes["start"].attrs["execution_profile_id"].value == "remote-fast"
+        assert not hasattr(graph, "execution_profile_id")
+
     def test_accepts_consecutive_semicolons_between_statements(self):
         dot = """
         digraph ConsecutiveSemicolons {

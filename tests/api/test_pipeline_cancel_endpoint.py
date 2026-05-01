@@ -102,7 +102,7 @@ def test_cancel_pipeline_cancels_child_run_shared_root_container(
         parent_run_id=root_run_id,
         parent_node_id="manager",
         root_run_id=root_run_id,
-        execution_mode="container",
+        execution_mode="local_container",
         execution_container_image="spark-exec:test",
     )
     with server.ACTIVE_RUNS_LOCK:
@@ -155,6 +155,17 @@ def test_cancel_active_container_run_records_canceled_after_transport_interrupt(
     tmp_path: Path,
 ) -> None:
     server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    config_dir = server.get_runtime_paths().config_dir
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "execution-profiles.toml").write_text(
+        """
+        [profiles.local-test]
+        mode = "local_container"
+        label = "Local Test"
+        image = "spark-exec:test"
+        """,
+        encoding="utf-8",
+    )
     runners: list[_BlockingContainerRunner] = []
 
     def fake_container_runner(*args, **kwargs):
@@ -176,7 +187,7 @@ def test_cancel_active_container_run_records_canceled_after_transport_interrupt(
             """,
             "working_directory": str(tmp_path / "work"),
             "backend": "codex-app-server",
-            "execution_container_image": "spark-exec:test",
+            "execution_profile_id": "local-test",
         },
     )
     assert response.status_code == 200

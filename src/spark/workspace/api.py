@@ -77,7 +77,7 @@ class ConversationSettingsRequest(BaseModel):
 
 class ProjectRegistrationRequest(BaseModel):
     project_path: str
-    execution_container_image: Optional[str] = None
+    execution_profile_id: Optional[str] = None
 
 
 class ProjectStateUpdateRequest(BaseModel):
@@ -85,7 +85,7 @@ class ProjectStateUpdateRequest(BaseModel):
     is_favorite: Optional[bool] = None
     last_accessed_at: Optional[str] = None
     active_conversation_id: Optional[str] = None
-    execution_container_image: Optional[str] = None
+    execution_profile_id: Optional[str] = None
 
 class FlowRunRequestCreateByHandleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -97,7 +97,7 @@ class FlowRunRequestCreateByHandleRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
-    execution_container_image: Optional[str] = None
+    execution_profile_id: Optional[str] = None
 
 
 class FlowRunRequestReviewRequest(BaseModel):
@@ -109,7 +109,7 @@ class FlowRunRequestReviewRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
-    execution_container_image: Optional[str] = None
+    execution_profile_id: Optional[str] = None
 
 
 class ProposedPlanReviewRequest(BaseModel):
@@ -130,7 +130,7 @@ class RunLaunchRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
-    execution_container_image: Optional[str] = None
+    execution_profile_id: Optional[str] = None
 
 
 class FlowLaunchPolicyUpdateRequest(BaseModel):
@@ -191,7 +191,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             "last_accessed_at": project.last_accessed_at,
             "is_favorite": project.is_favorite,
             "active_conversation_id": project.active_conversation_id,
-            "execution_container_image": project.execution_container_image,
+            "execution_profile_id": project.execution_profile_id,
         }
 
     def _serialize_deleted_project_record(project: Any) -> dict[str, object]:
@@ -286,7 +286,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         llm_provider: Optional[str],
         llm_profile: Optional[str],
         reasoning_effort: Optional[str],
-        execution_container_image: Optional[str],
+        execution_profile_id: Optional[str],
     ) -> str | None:
         project_chat = deps.get_project_chat()
         launch_kwargs: dict[str, Any] = {}
@@ -296,12 +296,13 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             launch_kwargs["llm_profile"] = llm_profile
         if reasoning_effort is not None:
             launch_kwargs["reasoning_effort"] = reasoning_effort
-        effective_execution_container_image = execution_container_image
-        if effective_execution_container_image is None:
+        if execution_profile_id is not None:
+            launch_kwargs["execution_profile_id"] = execution_profile_id
+        else:
             record = await asyncio.to_thread(read_project_record, deps.get_settings().data_dir, project_path)
-            effective_execution_container_image = record.execution_container_image if record is not None else None
-        if effective_execution_container_image is not None:
-            launch_kwargs["execution_container_image"] = effective_execution_container_image
+            project_default_execution_profile_id = record.execution_profile_id if record is not None else None
+            if project_default_execution_profile_id is not None:
+                launch_kwargs["project_default_execution_profile_id"] = project_default_execution_profile_id
         try:
             launch_payload = await deps.get_attractor_client().start_pipeline(
                 run_id=None,
@@ -372,7 +373,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         llm_provider: Optional[str],
         llm_profile: Optional[str],
         reasoning_effort: Optional[str],
-        execution_container_image: Optional[str] = None,
+        execution_profile_id: Optional[str] = None,
     ) -> str:
         launch_kwargs: dict[str, Any] = {}
         if llm_provider is not None:
@@ -381,12 +382,13 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             launch_kwargs["llm_profile"] = llm_profile
         if reasoning_effort is not None:
             launch_kwargs["reasoning_effort"] = reasoning_effort
-        effective_execution_container_image = execution_container_image
-        if effective_execution_container_image is None:
+        if execution_profile_id is not None:
+            launch_kwargs["execution_profile_id"] = execution_profile_id
+        else:
             record = await asyncio.to_thread(read_project_record, deps.get_settings().data_dir, project_path)
-            effective_execution_container_image = record.execution_container_image if record is not None else None
-        if effective_execution_container_image is not None:
-            launch_kwargs["execution_container_image"] = effective_execution_container_image
+            project_default_execution_profile_id = record.execution_profile_id if record is not None else None
+            if project_default_execution_profile_id is not None:
+                launch_kwargs["project_default_execution_profile_id"] = project_default_execution_profile_id
         try:
             launch_payload = await deps.get_attractor_client().start_pipeline(
                 run_id=None,
@@ -567,12 +569,12 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             project = await asyncio.to_thread(read_project_record, deps.get_settings().data_dir, normalized_project_path)
             if project is None:
                 raise ValueError("Unable to register project.")
-            if req.execution_container_image is not None:
+            if req.execution_profile_id is not None:
                 project = await asyncio.to_thread(
                     update_project_record,
                     deps.get_settings().data_dir,
                     normalized_project_path,
-                    execution_container_image=req.execution_container_image,
+                    execution_profile_id=req.execution_profile_id,
                 )
             return _serialize_project_record(project)
         except ValueError as exc:
@@ -589,7 +591,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
                 last_accessed_at=req.last_accessed_at,
                 is_favorite=req.is_favorite,
                 active_conversation_id=req.active_conversation_id,
-                execution_container_image=req.execution_container_image,
+                execution_profile_id=req.execution_profile_id,
             )
             return _serialize_project_record(project)
         except ValueError as exc:
@@ -911,9 +913,9 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
                 llm_provider=normalized_payload.get("llm_provider") if isinstance(normalized_payload.get("llm_provider"), str) else None,
                 llm_profile=normalized_payload.get("llm_profile") if isinstance(normalized_payload.get("llm_profile"), str) else None,
                 reasoning_effort=normalized_payload.get("reasoning_effort") if isinstance(normalized_payload.get("reasoning_effort"), str) else None,
-                execution_container_image=(
-                    normalized_payload.get("execution_container_image")
-                    if isinstance(normalized_payload.get("execution_container_image"), str)
+                execution_profile_id=(
+                    normalized_payload.get("execution_profile_id")
+                    if isinstance(normalized_payload.get("execution_profile_id"), str)
                     else None
                 ),
             )
@@ -997,7 +999,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
                 req.llm_provider,
                 req.llm_profile,
                 req.reasoning_effort,
-                req.execution_container_image,
+                req.execution_profile_id,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1020,10 +1022,10 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
                     if req.reasoning_effort is not None
                     else flow_run_request.reasoning_effort
                 ),
-                execution_container_image=(
-                    req.execution_container_image
-                    if req.execution_container_image is not None
-                    else flow_run_request.execution_container_image
+                execution_profile_id=(
+                    req.execution_profile_id
+                    if req.execution_profile_id is not None
+                    else flow_run_request.execution_profile_id
                 ),
             )
             return await asyncio.to_thread(
@@ -1067,7 +1069,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
                     llm_provider=flow_launch.llm_provider,
                     llm_profile=flow_launch.llm_profile,
                     reasoning_effort=flow_launch.reasoning_effort,
-                    execution_container_image=flow_launch.execution_container_image,
+                    execution_profile_id=flow_launch.execution_profile_id,
                 )
             except HTTPException as exc:
                 await asyncio.to_thread(

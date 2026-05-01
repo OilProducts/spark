@@ -41,6 +41,7 @@ class RunRecord:
     root_run_id: Optional[str] = None
     child_invocation_index: Optional[int] = None
     execution_mode: str = "native"
+    execution_profile_id: Optional[str] = None
     execution_container_image: Optional[str] = None
     last_error: str = ""
     token_usage: Optional[int] = None
@@ -92,8 +93,10 @@ class RunRecord:
                 else None
             ),
         }
-        if self.execution_mode and self.execution_mode != "native":
+        if self.execution_mode:
             payload["execution_mode"] = self.execution_mode
+        if self.execution_profile_id:
+            payload["execution_profile_id"] = self.execution_profile_id
         if self.execution_container_image:
             payload["execution_container_image"] = self.execution_container_image
         return payload
@@ -160,6 +163,11 @@ class RunRecord:
                 else None
             ),
             execution_mode=str(data.get("execution_mode") or "native"),
+            execution_profile_id=(
+                str(data.get("execution_profile_id"))
+                if data.get("execution_profile_id") is not None
+                else None
+            ),
             execution_container_image=(
                 str(data.get("execution_container_image"))
                 if data.get("execution_container_image") is not None

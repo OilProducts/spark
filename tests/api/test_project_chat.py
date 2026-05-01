@@ -39,7 +39,7 @@ from spark.workspace.conversations.models import (
     RequestUserInputRecord,
     ToolCallRecord,
 )
-from spark.workspace.storage import conversation_handles_path, ensure_project_paths
+from spark.workspace.storage import conversation_handles_path, ensure_project_paths, update_project_record
 
 
 TEST_DISPATCH_FLOW = "test-dispatch.dot"
@@ -3959,7 +3959,10 @@ def test_flow_run_request_routes_create_and_approve_launch(
         working_directory: str,
         model: str | None,
         llm_provider: str | None = None,
+        llm_profile: str | None = None,
         reasoning_effort: str | None = None,
+        execution_profile_id: str | None = None,
+        project_default_execution_profile_id: str | None = None,
         goal: str | None = None,
         launch_context: dict[str, object] | None = None,
         spec_id: str | None = None,
@@ -3975,7 +3978,10 @@ def test_flow_run_request_routes_create_and_approve_launch(
                 "working_directory": working_directory,
                 "model": model,
                 "llm_provider": llm_provider,
+                "llm_profile": llm_profile,
                 "reasoning_effort": reasoning_effort,
+                "execution_profile_id": execution_profile_id,
+                "project_default_execution_profile_id": project_default_execution_profile_id,
                 "goal": goal,
                 "launch_context": launch_context,
                 "spec_id": spec_id,
@@ -4001,7 +4007,9 @@ def test_flow_run_request_routes_create_and_approve_launch(
             },
             "model": "gpt-5.4",
             "llm_provider": "openai",
+            "llm_profile": "implementation",
             "reasoning_effort": "high",
+            "execution_profile_id": "local-dev",
         },
     )
 
@@ -4032,7 +4040,9 @@ def test_flow_run_request_routes_create_and_approve_launch(
     assert request_payload["run_id"] == "run-flow-123"
     assert request_payload["review_message"] == "Approved for launch."
     assert request_payload["llm_provider"] == "openai"
+    assert request_payload["llm_profile"] == "implementation"
     assert request_payload["reasoning_effort"] == "high"
+    assert request_payload["execution_profile_id"] == "local-dev"
     assert start_calls == [
         {
             "run_id": None,
@@ -4040,7 +4050,10 @@ def test_flow_run_request_routes_create_and_approve_launch(
             "working_directory": str(project_dir),
             "model": "gpt-5.4",
             "llm_provider": "openai",
+            "llm_profile": "implementation",
             "reasoning_effort": "high",
+            "execution_profile_id": "local-dev",
+            "project_default_execution_profile_id": None,
             "goal": "Implement the approved scope.",
             "launch_context": {
                 "context.request.summary": "Implement the approved scope.",
@@ -4051,6 +4064,119 @@ def test_flow_run_request_routes_create_and_approve_launch(
             },
             "spec_id": None,
             "plan_id": None,
+        }
+    ]
+
+
+def test_flow_run_request_approval_launches_with_project_default_execution_profile(
+    product_api_client,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = tmp_path.resolve()
+    update_project_record(
+        product_app.get_settings().data_dir,
+        str(project_dir),
+        execution_profile_id="remote-build",
+    )
+    conversation_id = "conversation-flow-run-project-default"
+    state = project_chat.ConversationState(
+        conversation_id=conversation_id,
+        project_path=str(project_dir),
+        title="Flow request route",
+        created_at="2026-03-13T10:00:00Z",
+        updated_at="2026-03-13T10:01:00Z",
+        turns=[
+            project_chat.ConversationTurn(
+                id="turn-user-1",
+                role="user",
+                content="Please run the implementation flow.",
+                timestamp="2026-03-13T10:00:00Z",
+            ),
+            project_chat.ConversationTurn(
+                id="turn-assistant-1",
+                role="assistant",
+                content="I can request that launch.",
+                timestamp="2026-03-13T10:01:00Z",
+                status="complete",
+            ),
+        ],
+    )
+    service = _project_chat_service()
+    service._write_state(state)
+    snapshot = service.get_snapshot(conversation_id, str(project_dir))
+
+    _seed_flow(TEST_DISPATCH_FLOW)
+
+    start_calls: list[dict[str, object | None]] = []
+
+    async def fake_start_pipeline(
+        self,
+        *,
+        run_id: str | None,
+        flow_name: str,
+        working_directory: str,
+        model: str | None,
+        execution_profile_id: str | None = None,
+        project_default_execution_profile_id: str | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        assert kwargs["goal"] == "Implement the approved scope."
+        start_calls.append(
+            {
+                "run_id": run_id,
+                "flow_name": flow_name,
+                "working_directory": working_directory,
+                "model": model,
+                "execution_profile_id": execution_profile_id,
+                "project_default_execution_profile_id": project_default_execution_profile_id,
+            }
+        )
+        return {"status": "started", "run_id": "run-flow-default-profile"}
+
+    monkeypatch.setattr(attractor_client.AttractorApiClient, "start_pipeline", fake_start_pipeline)
+
+    create_response = product_api_client.post(
+        f"/workspace/api/conversations/by-handle/{snapshot['conversation_handle']}/flow-run-requests",
+        json={
+            "flow_name": TEST_DISPATCH_FLOW,
+            "summary": "Run implementation for the approved scope.",
+            "goal": "Implement the approved scope.",
+        },
+    )
+
+    assert create_response.status_code == 200
+    request_id = create_response.json()["flow_run_request_id"]
+    created_snapshot = _project_chat_service().get_snapshot(conversation_id, str(project_dir))
+    persisted_request = next(
+        entry for entry in created_snapshot["flow_run_requests"] if entry["id"] == request_id
+    )
+    assert "execution_profile_id" not in persisted_request
+
+    review_response = product_api_client.post(
+        f"/workspace/api/conversations/{conversation_id}/flow-run-requests/{request_id}/review",
+        json={
+            "project_path": str(project_dir),
+            "disposition": "approved",
+            "message": "Approved for launch.",
+        },
+    )
+
+    assert review_response.status_code == 200
+    request_payload = next(
+        entry for entry in review_response.json()["flow_run_requests"] if entry["id"] == request_id
+    )
+    assert request_payload["status"] == "launched"
+    assert request_payload["run_id"] == "run-flow-default-profile"
+    assert "execution_profile_id" not in request_payload
+    assert start_calls == [
+        {
+            "run_id": None,
+            "flow_name": TEST_DISPATCH_FLOW,
+            "working_directory": str(project_dir),
+            "model": None,
+            "execution_profile_id": None,
+            "project_default_execution_profile_id": "remote-build",
         }
     ]
 
@@ -4100,7 +4226,10 @@ def test_direct_flow_launch_routes_create_inline_artifact_and_launch(
         working_directory: str,
         model: str | None,
         llm_provider: str | None = None,
+        llm_profile: str | None = None,
         reasoning_effort: str | None = None,
+        execution_profile_id: str | None = None,
+        project_default_execution_profile_id: str | None = None,
         goal: str | None = None,
         launch_context: dict[str, object] | None = None,
         spec_id: str | None = None,
@@ -4116,7 +4245,10 @@ def test_direct_flow_launch_routes_create_inline_artifact_and_launch(
                 "working_directory": working_directory,
                 "model": model,
                 "llm_provider": llm_provider,
+                "llm_profile": llm_profile,
                 "reasoning_effort": reasoning_effort,
+                "execution_profile_id": execution_profile_id,
+                "project_default_execution_profile_id": project_default_execution_profile_id,
                 "goal": goal,
                 "launch_context": launch_context,
                 "spec_id": spec_id,
@@ -4141,6 +4273,7 @@ def test_direct_flow_launch_routes_create_inline_artifact_and_launch(
             "model": "gpt-5.4",
             "llm_provider": "anthropic",
             "reasoning_effort": "low",
+            "execution_profile_id": "remote-review",
             "backend": "codex-app-server",
         },
     )
@@ -4163,6 +4296,7 @@ def test_direct_flow_launch_routes_create_inline_artifact_and_launch(
     assert flow_launch["goal"] == "Implement the approved scope."
     assert flow_launch["llm_provider"] == "anthropic"
     assert flow_launch["reasoning_effort"] == "low"
+    assert flow_launch["execution_profile_id"] == "remote-review"
     segment = next(
         entry for entry in updated_snapshot["segments"] if entry["artifact_id"] == launch_payload["flow_launch_id"]
     )
@@ -4175,7 +4309,10 @@ def test_direct_flow_launch_routes_create_inline_artifact_and_launch(
             "working_directory": str(project_dir),
             "model": "gpt-5.4",
             "llm_provider": "anthropic",
+            "llm_profile": None,
             "reasoning_effort": "low",
+            "execution_profile_id": "remote-review",
+            "project_default_execution_profile_id": None,
             "goal": "Implement the approved scope.",
             "launch_context": {
                 "context.request.summary": "Implement the approved scope.",

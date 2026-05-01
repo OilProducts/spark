@@ -241,10 +241,10 @@ def test_run_init_allows_explicit_home_env_from_source_checkout(
     assert f"Seeded flows: {(tmp_path / 'dev-home' / 'flows').resolve(strict=False)}" in output
 
 
-def test_run_launch_payload_includes_execution_container_override() -> None:
+def test_run_launch_payload_includes_execution_profile_override() -> None:
     payload = spark_cli._build_flow_payload(
         flow_name=TEST_AGENT_FLOW,
-        summary="Run in a container",
+        summary="Run with a selected profile",
         goal_text=None,
         goal_file=None,
         launch_context_json=None,
@@ -252,12 +252,12 @@ def test_run_launch_payload_includes_execution_container_override() -> None:
         model=None,
         llm_provider=None,
         reasoning_effort=None,
-        execution_container_image="spark-exec:latest",
+        execution_profile_id="local-dev",
         source_name="spark run launch",
     )
 
     assert isinstance(payload, dict)
-    assert payload["execution_container_image"] == "spark-exec:latest"
+    assert payload["execution_profile_id"] == "local-dev"
 
 
 def test_service_install_writes_user_unit_and_starts_service(
@@ -462,6 +462,8 @@ def test_agent_run_request_posts_payload_and_prints_response(monkeypatch, capsys
             '{"context.request.summary":"Implement the approved work items."}',
             "--model",
             "gpt-5",
+            "--execution-profile",
+            "local-dev",
         ]
     )
 
@@ -475,6 +477,7 @@ def test_agent_run_request_posts_payload_and_prints_response(monkeypatch, capsys
                 "goal": "Implement the approved work items.",
                 "launch_context": {"context.request.summary": "Implement the approved work items."},
                 "model": "gpt-5",
+                "execution_profile_id": "local-dev",
             },
         )
     ]
@@ -547,6 +550,8 @@ def test_agent_run_launch_posts_payload_and_prints_response(monkeypatch, capsys)
             "/tmp/project",
             "--goal",
             "Implement the approved work items.",
+            "--execution-profile",
+            "remote-review",
         ]
     )
 
@@ -560,6 +565,7 @@ def test_agent_run_launch_posts_payload_and_prints_response(monkeypatch, capsys)
                 "goal": "Implement the approved work items.",
                 "conversation_handle": "amber-otter",
                 "project_path": "/tmp/project",
+                "execution_profile_id": "remote-review",
             },
         )
     ]

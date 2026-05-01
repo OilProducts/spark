@@ -48,6 +48,7 @@ import {
   parsePipelineStatusResponse,
   parsePreviewResponse,
   parseRuntimeStatusResponse,
+  parsePipelineStartResponse,
 } from '@/lib/apiClient'
 import { buildPipelineStartPayload } from '@/lib/pipelineStartPayload'
 import { useStore } from '@/store'
@@ -1035,6 +1036,38 @@ describe('Frontend contract behavior', () => {
     )
 
     expect(blankWorkingDirectoryPayload.working_directory).toBe('/tmp/project-contract-behavior')
+  })
+
+  it('[CID:12.3.04] treats execution profile selection as response metadata instead of direct image authority', () => {
+    const payload = parsePipelineStartResponse({
+      status: 'started',
+      pipeline_id: 'run-execution-profile',
+      run_id: 'run-execution-profile',
+      working_directory: '/tmp/project-contract-behavior',
+      model: 'gpt-5',
+      provider: 'codex',
+      llm_provider: 'codex',
+      execution_mode: 'local_container',
+      execution_profile_id: 'local-dev',
+      execution_container_image: 'spark-exec:latest',
+    })
+
+    expect(payload.execution_mode).toBe('local_container')
+    expect(payload.execution_profile_id).toBe('local-dev')
+    expect(payload.execution_container_image).toBe('spark-exec:latest')
+
+    const startPayload = buildPipelineStartPayload(
+      {
+        projectPath: '/tmp/project-contract-behavior',
+        flowSource: 'contract-behavior.dot',
+        workingDirectory: '/tmp/project-contract-behavior',
+        model: null,
+      },
+      'digraph G { graph [execution_container_image="ignored", execution_profile_id="ignored"] start -> done }',
+    )
+
+    expect(startPayload).not.toHaveProperty('execution_container_image')
+    expect(startPayload).not.toHaveProperty('execution_profile_id')
   })
 
   it('[CID:12.3.03] retrieves project conversation state by project identity', async () => {

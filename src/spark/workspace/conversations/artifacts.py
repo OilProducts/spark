@@ -93,7 +93,7 @@ class ProjectChatReviewService:
         llm_provider = str(flow_run_request_payload.get("llm_provider", "")).strip().lower() or None
         llm_profile = str(flow_run_request_payload.get("llm_profile", "")).strip() or None
         reasoning_effort = str(flow_run_request_payload.get("reasoning_effort", "")).strip().lower() or None
-        execution_container_image = str(flow_run_request_payload.get("execution_container_image", "")).strip() or None
+        execution_profile_id = str(flow_run_request_payload.get("execution_profile_id", "")).strip() or None
 
         requests_by_id = {request.id: request for request in state.flow_run_requests}
         for segment in state.segments:
@@ -111,7 +111,7 @@ class ProjectChatReviewService:
                 and existing_request.llm_provider == llm_provider
                 and existing_request.llm_profile == llm_profile
                 and existing_request.reasoning_effort == reasoning_effort
-                and existing_request.execution_container_image == execution_container_image
+                and existing_request.execution_profile_id == execution_profile_id
             ):
                 return None
 
@@ -131,7 +131,7 @@ class ProjectChatReviewService:
             llm_provider=llm_provider,
             llm_profile=llm_profile,
             reasoning_effort=reasoning_effort,
-            execution_container_image=execution_container_image,
+            execution_profile_id=execution_profile_id,
         )
         request_segment = ConversationSegment(
             id=f"segment-artifact-{request.id}",
@@ -204,7 +204,7 @@ class ProjectChatReviewService:
         llm_provider = str(flow_launch_payload.get("llm_provider", "")).strip().lower() or None
         llm_profile = str(flow_launch_payload.get("llm_profile", "")).strip() or None
         reasoning_effort = str(flow_launch_payload.get("reasoning_effort", "")).strip().lower() or None
-        execution_container_image = str(flow_launch_payload.get("execution_container_image", "")).strip() or None
+        execution_profile_id = str(flow_launch_payload.get("execution_profile_id", "")).strip() or None
 
         now = iso_now()
         launch = FlowLaunch(
@@ -222,7 +222,7 @@ class ProjectChatReviewService:
             llm_provider=llm_provider,
             llm_profile=llm_profile,
             reasoning_effort=reasoning_effort,
-            execution_container_image=execution_container_image,
+            execution_profile_id=execution_profile_id,
         )
         state.flow_launches.append(launch)
         launch_segment: ConversationSegment | None = None
@@ -335,7 +335,7 @@ class ProjectChatReviewService:
         llm_provider: Optional[str] = None,
         llm_profile: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
-        execution_container_image: Optional[str] = None,
+        execution_profile_id: Optional[str] = None,
     ) -> tuple[dict[str, object], FlowRunRequest]:
         normalized_project_path = normalize_project_path_value(project_path)
         trimmed_message = message.strip()
@@ -365,8 +365,8 @@ class ProjectChatReviewService:
                     request.llm_profile = llm_profile.strip() or None
                 if reasoning_effort is not None:
                     request.reasoning_effort = reasoning_effort.strip().lower() or None
-                if execution_container_image is not None:
-                    request.execution_container_image = execution_container_image.strip() or None
+                if execution_profile_id is not None:
+                    request.execution_profile_id = execution_profile_id.strip() or None
                 self._repository.append_event(state, f"Approved flow run request {request.id}.")
             else:
                 request.status = "rejected"

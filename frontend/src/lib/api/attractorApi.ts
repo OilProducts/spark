@@ -90,6 +90,9 @@ export interface PipelineStartResponse {
     llm_provider?: string | null
     llm_profile?: string | null
     reasoning_effort?: string | null
+    execution_mode?: string
+    execution_profile_id?: string
+    execution_container_image?: string | null
     diagnostics?: import('@/state/store-types').DiagnosticEntry[]
     errors?: import('@/state/store-types').DiagnosticEntry[]
     error?: string
@@ -378,6 +381,9 @@ export function parsePipelineStartResponse(payload: unknown, endpoint = '/attrac
         llm_provider: asOptionalNullableString(record.llm_provider),
         llm_profile: asOptionalNullableString(record.llm_profile),
         reasoning_effort: asOptionalNullableString(record.reasoning_effort),
+        execution_mode: asOptionalString(record.execution_mode),
+        execution_profile_id: asOptionalString(record.execution_profile_id),
+        execution_container_image: asOptionalNullableString(record.execution_container_image),
         diagnostics: parseDiagnosticList(record.diagnostics, endpoint, 'diagnostics'),
         errors: parseDiagnosticList(record.errors, endpoint, 'errors'),
         error: asOptionalString(record.error),

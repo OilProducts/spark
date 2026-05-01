@@ -22,6 +22,10 @@ from attractor.dsl.models import (
 )
 from attractor.engine.context import Context
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
+from attractor.execution import (
+    EXECUTION_MODE_LOCAL_CONTAINER,
+    ExecutionLaunchError,
+)
 from attractor.handlers.base import ChildRunRequest, ChildRunResult
 from attractor.interviewer import Answer, Interviewer, Question, QuestionOption, QuestionType
 from spark_common.codex_runtime import build_codex_runtime_environment
@@ -30,8 +34,6 @@ from .defaults import build_default_registry
 from .runner import HandlerRunner
 
 
-EXECUTION_CONTAINER_MODE_CONTEXT_KEY = "_attractor.runtime.execution_mode"
-EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY = "_attractor.runtime.execution_container_image"
 PROVIDER_ENV_ALLOWLIST = (
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
@@ -53,39 +55,8 @@ PROVIDER_ENV_ALLOWLIST = (
 )
 
 
-class ContainerExecutionError(RuntimeError):
+class ContainerExecutionError(ExecutionLaunchError):
     pass
-
-
-@dataclass(frozen=True)
-class ExecutionProfile:
-    mode: str
-    image: str | None = None
-
-    @property
-    def is_container(self) -> bool:
-        return self.mode == "container"
-
-
-def resolve_execution_profile(
-    *,
-    requested_image: str | None = None,
-    project_default_image: str | None = None,
-) -> ExecutionProfile:
-    image = _normalize_image(requested_image) or _normalize_image(project_default_image)
-    if image:
-        return ExecutionProfile(mode="container", image=image)
-    return ExecutionProfile(mode="native", image=None)
-
-
-def seed_execution_profile_context(context: Context, profile: ExecutionProfile) -> None:
-    context.set(EXECUTION_CONTAINER_MODE_CONTEXT_KEY, profile.mode)
-    context.set(EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY, profile.image or "")
-
-
-def _normalize_image(value: str | None) -> str | None:
-    trimmed = str(value or "").strip()
-    return trimmed or None
 
 
 class ContainerTransport(Protocol):
@@ -291,7 +262,7 @@ class ContainerizedHandlerRunner:
             run_root=self.run_root,
             spark_runtime_root=_spark_runtime_root(),
             labels={
-                "spark.execution_mode": "container",
+                "spark.execution_mode": EXECUTION_MODE_LOCAL_CONTAINER,
                 "spark.project_path": str(self.working_dir),
             },
             env=_container_env(),

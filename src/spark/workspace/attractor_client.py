@@ -31,7 +31,8 @@ class AttractorApiClient:
         llm_provider: Optional[str] = None,
         llm_profile: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
-        execution_container_image: Optional[str] = None,
+        execution_profile_id: Optional[str] = None,
+        project_default_execution_profile_id: Optional[str] = None,
         goal: Optional[str] = None,
         launch_context: dict[str, Any] | None = None,
         spec_id: Optional[str] = None,
@@ -53,8 +54,10 @@ class AttractorApiClient:
             payload["llm_profile"] = llm_profile
         if reasoning_effort is not None:
             payload["reasoning_effort"] = reasoning_effort
-        if execution_container_image is not None:
-            payload["execution_container_image"] = execution_container_image
+        if execution_profile_id is not None:
+            payload["execution_profile_id"] = execution_profile_id
+        if project_default_execution_profile_id is not None:
+            payload["project_default_execution_profile_id"] = project_default_execution_profile_id
         return await self._request_json("POST", "/pipelines", json=payload)
 
     async def preview_flow(self, flow_content: str) -> dict[str, Any]:

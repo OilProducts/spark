@@ -20,11 +20,11 @@ from attractor.handlers.execution_container import (
     WorkerProtocolInterviewer,
     _container_env,
     graph_to_payload,
-    resolve_execution_profile,
     run_worker_node,
     worker_child_run_launcher,
     worker_child_status_resolver,
 )
+from attractor.execution import resolve_execution_profile_by_id
 from attractor.interviewer import Question, QuestionType
 
 
@@ -60,10 +60,12 @@ class FakeTransport:
         self.closed = True
 
 
-def test_resolve_execution_profile_prefers_run_override_then_project_default() -> None:
-    assert resolve_execution_profile(requested_image="run:latest", project_default_image="project:latest").image == "run:latest"
-    assert resolve_execution_profile(requested_image="", project_default_image="project:latest").image == "project:latest"
-    assert resolve_execution_profile(requested_image=None, project_default_image=None).mode == "native"
+def test_execution_profile_resolution_without_configured_selection_preserves_native_default(tmp_path: Path) -> None:
+    profile = resolve_execution_profile_by_id(SimpleNamespace(config_dir=tmp_path / "config")).profile
+
+    assert profile.mode == "native"
+    assert profile.id == "native"
+    assert profile.image is None
 
 
 def test_containerized_handler_runner_delegates_node_and_merges_worker_context(tmp_path: Path) -> None:
@@ -148,7 +150,7 @@ def test_docker_transport_creates_run_container_with_labels_env_mounts_and_clean
         project_path=Path("/projects/acme"),
         run_root=Path("/spark/runs/project/run-123"),
         spark_runtime_root=Path("/spark/runtime/codex"),
-        labels={"spark.project": "acme", "spark.execution_mode": "container"},
+        labels={"spark.project": "acme", "spark.execution_mode": "local_container"},
         env={"OPENAI_API_KEY": "secret", "UNRELATED": "kept-if-explicit"},
     )
 
@@ -164,7 +166,7 @@ def test_docker_transport_creates_run_container_with_labels_env_mounts_and_clean
     assert "--label" in run_command
     assert "spark.run_id=run-123" in run_command
     assert "spark.project=acme" in run_command
-    assert "spark.execution_mode=container" in run_command
+    assert "spark.execution_mode=local_container" in run_command
     assert "-v" in run_command
     assert f"{tmp_path / 'host-projects' / 'acme'}:/projects/acme:rw" in run_command
     assert f"{tmp_path / 'host-spark' / 'runs/project'}:/spark/runs/project:rw" in run_command
@@ -232,7 +234,7 @@ def test_containerized_handler_runner_default_transport_labels_run_and_project_m
 
     run_command = commands[0]
     assert "spark.run_id=run-production-labels" in run_command
-    assert "spark.execution_mode=container" in run_command
+    assert "spark.execution_mode=local_container" in run_command
     assert f"spark.project_path={project_dir.resolve()}" in run_command
 
 

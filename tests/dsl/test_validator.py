@@ -150,6 +150,26 @@ class TestDotValidator:
         assert len(errors) == 1
         assert errors[0].message == "node 'build' resolves to tool and must define a non-empty tool.command"
 
+    def test_execution_placement_attrs_do_not_affect_dsl_validation(self):
+        dot = """
+        digraph G {
+            graph [
+                execution_profile_id="local-dev",
+                execution_mode="local_container",
+                execution_container_image="spark-exec:latest",
+                worker="worker-a",
+                execution_profile_capabilities="gpu"
+            ]
+            start [shape=Mdiamond, execution_profile_id="remote-fast"]
+            done [shape=Msquare]
+            start -> done
+        }
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+
+        assert self._errors(diagnostics) == []
+
     def test_validator_rejects_legacy_tool_attrs(self):
         dot = """
         digraph G {

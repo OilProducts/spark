@@ -1,0 +1,368 @@
+{
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "spec_refs": ["5", "6", "6.1", "6.2", "6.3", "6.4"],
+      "title": "Load and validate execution profile configuration",
+      "summary": "Spark must load $SPARK_HOME/config/execution-profiles.toml into typed worker and profile models, synthesize a built-in native default only when the file is missing, and reject invalid selected profile graphs before launch.",
+      "acceptance_criteria": [
+        "Given no execution-profiles.toml and no selected configured profile, Spark resolves a native-compatible default profile.",
+        "Given valid TOML containing workers and native, local_container, and remote_worker profiles, the loader returns normalized models with defaults applied.",
+        "Given invalid worker or profile fields, validation errors identify the failing worker/profile id and field.",
+        "Given a remote_worker profile, validation requires an existing enabled worker, image, control_project_root, worker_project_root, and worker_runtime_root.",
+        "Given a local_container profile without image, validation fails before launch.",
+        "Given a native profile, image, worker, and root mapping fields are not required.",
+        "Given a selected invalid profile, Spark does not silently fall back to another profile."
+      ],
+      "dependencies": [],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/spark/settings.py",
+        "tests/execution/"
+      ],
+      "status": "completed",
+      "milestone_id": "M1",
+      "notes": "Use the same runtime home resolution path as the existing server settings. Missing config is valid only for synthesized native default behavior."
+    },
+    {
+      "id": "REQ-002",
+      "spec_refs": ["5.2", "6", "6.4", "11", "15", "19"],
+      "title": "Resolve execution profiles by durable profile id",
+      "summary": "Run launch must select by execution_profile_id using explicit override, project default, Spark default, then implementation default, while rejecting disabled or missing selections before execution.",
+      "acceptance_criteria": [
+        "Given an explicit run execution_profile_id, it takes precedence over project and Spark defaults.",
+        "Given no run override and a project default execution_profile_id, the project default is selected.",
+        "Given no run override or project default and a Spark default execution_profile_id, the Spark default is selected.",
+        "Given no configured selection, Spark preserves existing native launch behavior.",
+        "Given a disabled profile or a profile referencing a disabled worker, launch fails before contacting a worker.",
+        "Given a missing selected profile id, launch fails before execution.",
+        "Public launch payloads, CLI commands, workspace API payloads, and chat-generated run requests use execution_profile_id as the durable selection field instead of execution_container_image."
+      ],
+      "dependencies": ["REQ-001"],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/attractor/api/server.py",
+        "src/spark/cli.py",
+        "src/spark/workspace/api.py",
+        "src/spark/workspace/storage.py",
+        "src/spark/chat/",
+        "tests/api/",
+        "tests/handlers/",
+        "tests/test_cli.py"
+      ],
+      "status": "completed",
+      "milestone_id": "M1",
+      "notes": "The old direct image selection path should be removed as a public contract rather than kept as a parallel launch mechanism."
+    },
+    {
+      "id": "REQ-003",
+      "spec_refs": ["4", "6.4", "7", "7.1", "19", "20"],
+      "title": "Map project roots without source preparation",
+      "summary": "Remote-worker launches must translate the control-plane project path to a worker path by path-segment-aware root replacement and must never clone, sync, upload, repair, or mutate project source implicitly.",
+      "acceptance_criteria": [
+        "Given a control project path under control_project_root, Spark computes the worker path by preserving the relative suffix under worker_project_root.",
+        "Given a control project path outside control_project_root, launch fails before contacting a worker.",
+        "Path matching is path-segment aware and does not accept raw string prefix false positives.",
+        "Path translation does not create directories, copy files, infer git metadata, or run setup commands.",
+        "The mapped worker project path and worker runtime root are persisted in launch metadata and passed to the worker.",
+        "The execution container path values exposed to node execution match the worker-side paths persisted in run metadata."
+      ],
+      "dependencies": ["REQ-001", "REQ-002"],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/attractor/api/server.py",
+        "tests/execution/"
+      ],
+      "status": "completed",
+      "milestone_id": "M1",
+      "notes": "Worker-local existence validation is covered by worker admission/preparation requirements."
+    },
+    {
+      "id": "REQ-004",
+      "spec_refs": ["8", "9", "9.1", "9.2", "19", "20"],
+      "title": "Authenticate and validate worker compatibility",
+      "summary": "The control plane must authenticate worker calls with bearer tokens sourced from auth_token_env and must validate worker health/protocol compatibility under the chosen launch policy.",
+      "acceptance_criteria": [
+        "Given a remote worker profile, the control plane reads the bearer token from the worker auth_token_env before authenticated calls.",
+        "Given a missing or empty auth token environment variable, launch fails before contacting authenticated worker endpoints.",
+        "Every control-plane worker request sends Authorization: Bearer <token>.",
+        "The worker rejects missing, malformed, or invalid tokens with 401 or 403.",
+        "The control plane rejects workers that do not advertise a compatible v1 protocol version.",
+        "Worker health and worker-info responses are available for settings/debug validation without becoming profile selection inputs."
+      ],
+      "dependencies": ["REQ-001", "REQ-002"],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/spark/server_cli.py",
+        "tests/execution/"
+      ],
+      "status": "pending",
+      "milestone_id": "M2",
+      "notes": "Bearer-token auth is sufficient for v1; mutual TLS is out of scope for this requirement."
+    },
+    {
+      "id": "REQ-005",
+      "spec_refs": ["9", "9.3", "9.4", "9.10", "9.11", "19", "20"],
+      "title": "Implement worker run lifecycle API",
+      "summary": "A standalone worker FastAPI app must expose v1 run admission, run snapshot, cancellation, and cleanup endpoints with specified idempotency, validation, and structured error behavior.",
+      "acceptance_criteria": [
+        "spark-server worker serve starts a standalone worker FastAPI app rather than mounting the worker API into the Spark control-plane app.",
+        "POST /v1/runs validates request shape, authorization, protocol compatibility, image policy, path policy, capability compatibility, immediate resource admission, and idempotency compatibility.",
+        "POST /v1/runs returns 202 Accepted with run_id, worker_id, status, event_url, and last_sequence for admitted asynchronous preparation.",
+        "Repeated POST /v1/runs with compatible inputs is idempotent; conflicting inputs are rejected.",
+        "GET /v1/runs/{run_id} returns worker-side status, active node, container handle, image, mapped path, last sequence, worker snapshot, and last error when present.",
+        "POST /v1/runs/{run_id}/cancel emits cancellation state, stops accepting new node execution, and signals active execution best-effort.",
+        "DELETE /v1/runs/{run_id} idempotently removes run-scoped container/runtime state or returns a non-error empty state when already removed.",
+        "All JSON error responses use the specified error.code, error.message, error.retryable, and error.details shape."
+      ],
+      "dependencies": ["REQ-004"],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/spark/server_cli.py",
+        "tests/execution/",
+        "tests/test_cli.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M2",
+      "notes": "The worker service is shipped in the same Python distribution as Spark."
+    },
+    {
+      "id": "REQ-006",
+      "spec_refs": ["9.3", "9.5", "12", "13", "19", "20"],
+      "title": "Bridge worker node execution to run-node process protocol",
+      "summary": "For each accepted node execution, the worker must run spark-server worker run-node inside the run-scoped execution container and translate process messages into remote events and final node outcomes.",
+      "acceptance_criteria": [
+        "The worker rejects node execution before run_ready.",
+        "POST /v1/runs/{run_id}/nodes accepts one v1 active node execution per worker-side run unless a future profile explicitly supports parallel execution.",
+        "Repeated node requests with the same node_execution_id and compatible payload are idempotent.",
+        "Repeated node requests with the same node_execution_id and conflicting payload return 409 Conflict.",
+        "The worker writes the node execution request to run-node stdin and reads process stdout messages.",
+        "Process event messages are converted into SSE events with required run and node metadata.",
+        "Process human-gate, child-run, and child-status requests are converted into corresponding SSE request events.",
+        "A valid serialized Outcome, context updates, and runtime metadata are delivered through node_result.",
+        "Process crashes, invalid process messages, or missing final results are converted into node_failed."
+      ],
+      "dependencies": ["REQ-005"],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/attractor/handlers/execution_container.py",
+        "src/spark/server_cli.py",
+        "tests/execution/",
+        "tests/handlers/test_execution_container.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M2",
+      "notes": "The current local-container worker process protocol is the compatibility boundary; Docker lifecycle remains worker-owned."
+    },
+    {
+      "id": "REQ-007",
+      "spec_refs": ["9.6", "10", "19", "20"],
+      "title": "Provide ordered worker SSE event streams",
+      "summary": "Workers must stream required run, node, gate, child-run, cancellation, cleanup, and log events over SSE with monotonic per-run sequence ids and reconnect support.",
+      "acceptance_criteria": [
+        "GET /v1/runs/{run_id}/events requires authentication and never accepts unauthenticated SSE streams.",
+        "Every SSE event uses the sequence number as the SSE id and the worker event type as the SSE event field.",
+        "Every event includes run id, sequence number, event type, timestamp, worker id, execution profile id, and payload.",
+        "Node-related events include node id and node attempt when available.",
+        "The worker emits run_ready before accepting node execution.",
+        "If preparation fails, the worker emits run_failed with a stable code, message, retryable flag, and optional details before any node executes.",
+        "Reconnect supports Last-Event-ID and ?after=<sequence>.",
+        "The required event types listed in the spec can be emitted and serialized."
+      ],
+      "dependencies": ["REQ-005", "REQ-006"],
+      "target_paths": [
+        "src/attractor/execution/",
+        "tests/execution/",
+        "tests/test_sse.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M2",
+      "notes": "SSE sequence handling is both a UI continuity and correctness requirement."
+    },
+    {
+      "id": "REQ-008",
+      "spec_refs": ["9.6", "10", "11", "13", "19", "20"],
+      "title": "Execute remote-worker runs from the control plane",
+      "summary": "For remote_worker profiles, the Spark control plane must use HTTP/SSE transport to admit runs, wait for run_ready, submit nodes, apply node outcomes to canonical run state, and fail unrecoverable event gaps.",
+      "acceptance_criteria": [
+        "Remote-worker run launch resolves and validates the selected profile and worker before worker admission.",
+        "Launch persists launch-time execution metadata before or during run admission so later config edits do not rewrite historical metadata.",
+        "The control plane calls POST /v1/runs and opens or resumes the run event stream.",
+        "The control plane does not submit any node before receiving run_ready.",
+        "If run_failed arrives before run_ready, launch/preparation fails and no node result is applied.",
+        "Each control-plane node execution is submitted with POST /v1/runs/{run_id}/nodes.",
+        "node_result events are applied to canonical Attractor run state using the existing Outcome contract.",
+        "node_failed, worker run_failed, callback delivery exhaustion, and unrecoverable SSE gaps record active run failure.",
+        "Duplicate SSE events are ignored by sequence id.",
+        "Missing/gapped SSE events fail the run unless GET /v1/runs/{run_id} proves no required run, node, gate, child-run, or terminal event was lost.",
+        "Worker events and logs are surfaced into the normal run event history."
+      ],
+      "dependencies": ["REQ-001", "REQ-002", "REQ-003", "REQ-004", "REQ-005", "REQ-006", "REQ-007"],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/attractor/api/server.py",
+        "src/attractor/api/pipeline_runtime.py",
+        "src/attractor/api/run_records.py",
+        "tests/api/",
+        "tests/execution/",
+        "tests/engine/"
+      ],
+      "status": "pending",
+      "milestone_id": "M3",
+      "notes": "The worker never decides graph routing; the control plane remains authoritative after each node result."
+    },
+    {
+      "id": "REQ-009",
+      "spec_refs": ["9.7", "9.8", "9.9", "14", "19", "20"],
+      "title": "Forward human-gate and child-run callbacks",
+      "summary": "Remote execution must keep human-gate, child-run, and child-status authority in Spark while forwarding requested answers and results back to the worker through idempotent callback endpoints.",
+      "acceptance_criteria": [
+        "When the worker emits human_gate_request, the control plane records and surfaces the gate through existing Spark UI/API paths.",
+        "When an operator answers a gate, the control plane calls /v1/runs/{run_id}/human-gates/{gate_id}/answer.",
+        "Human-gate answer delivery is idempotent by gate_id and rejects conflicting repeated answers with 409 Conflict.",
+        "When the worker emits child_run_request, the control plane launches and records the authoritative child run and posts the result to /v1/runs/{run_id}/child-runs/{request_id}/result.",
+        "When the worker emits child_status_request, the control plane reads authoritative child-run state and posts the result to /v1/runs/{run_id}/child-status/{request_id}/result.",
+        "Child-run and child-status result deliveries are idempotent by request_id and reject conflicting repeated results with 409 Conflict.",
+        "Callback delivery failure after configured retries records active run failure."
+      ],
+      "dependencies": ["REQ-008"],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/attractor/api/server.py",
+        "tests/api/test_human_gate_broker.py",
+        "tests/api/",
+        "tests/execution/"
+      ],
+      "status": "pending",
+      "milestone_id": "M3",
+      "notes": "The worker only receives callback data needed to let the run-node process continue."
+    },
+    {
+      "id": "REQ-010",
+      "spec_refs": ["15", "19", "20"],
+      "title": "Persist execution metadata snapshots",
+      "summary": "Run records and seeded run context must capture launch-time execution placement metadata for native, local_container, and remote_worker runs.",
+      "acceptance_criteria": [
+        "Run records persist execution_mode and execution_profile_id for all runs.",
+        "Remote-worker run records persist execution_worker_id, execution container image snapshot, mapped worker project path, worker version snapshot, worker capability snapshot, and profile capability snapshot.",
+        "Local-container and remote-worker records persist the resolved profile image as an execution container image snapshot, not as a selection input.",
+        "Run context includes the same execution metadata keys needed for observability.",
+        "Later edits to execution-profiles.toml do not mutate historical run metadata.",
+        "Run details can expose cleanup failures in logs/details without silently rewriting a terminal workflow outcome unless an explicit runtime policy says otherwise."
+      ],
+      "dependencies": ["REQ-001", "REQ-002", "REQ-008"],
+      "target_paths": [
+        "src/attractor/api/run_records.py",
+        "src/attractor/api/server.py",
+        "src/attractor/execution/",
+        "tests/api/test_pipeline_context_endpoint.py",
+        "tests/api/test_runs_endpoint.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M3",
+      "notes": "Existing execution_container_image metadata can remain as snapshot metadata where compatible, but it must not be the durable selection field."
+    },
+    {
+      "id": "REQ-011",
+      "spec_refs": ["16", "20"],
+      "title": "Expose execution workers and profiles in UI/API surfaces",
+      "summary": "Settings, project settings, flow launch, and run details must surface execution worker/profile observability and selection as execution placement rather than a separate workflow type.",
+      "acceptance_criteria": [
+        "Settings exposes an Execution Workers section containing configured workers, configured profiles, worker health, worker status, capabilities, version, enabled state, and validation errors.",
+        "Project settings exposes a default execution profile selector.",
+        "Flow launch UI exposes the effective project default, optional run override selector, selected mode, selected profile label/id, and validation state before launch.",
+        "Run details expose execution mode, execution profile id, worker id, worker URL label, image, mapped worker path, worker version snapshot, and capabilities snapshot.",
+        "Worker health and worker-info are consumed for Settings visibility without allowing those endpoints to select profiles.",
+        "Remote execution appears as an execution placement choice and not as a different workflow type."
+      ],
+      "dependencies": ["REQ-001", "REQ-002", "REQ-004", "REQ-010"],
+      "target_paths": [
+        "src/spark/app.py",
+        "src/spark/workspace/api.py",
+        "src/spark/workspace/storage.py",
+        "src/attractor/api/server.py",
+        "tests/api/",
+        "tests/contracts/frontend/"
+      ],
+      "status": "pending",
+      "milestone_id": "M4",
+      "notes": "If the visual treatment is not already established when implementing, clarify UI specifics before coding."
+    },
+    {
+      "id": "REQ-012",
+      "spec_refs": ["17"],
+      "title": "Keep Flow DOT non-authoritative for worker selection",
+      "summary": "Flow DOT must not select remote workers or override disabled/unavailable profile constraints in v1; any future DOT capability hints are non-binding hints only.",
+      "acceptance_criteria": [
+        "DOT-authored content cannot select a worker directly.",
+        "DOT-authored hints cannot override a disabled profile.",
+        "DOT-authored hints cannot make an unavailable root mapping valid.",
+        "Spark resolves the actual execution profile only from project and run launch state.",
+        "Existing DOT parsing and validation behavior remains compatible with workflows that do not mention execution placement."
+      ],
+      "dependencies": ["REQ-002", "REQ-003"],
+      "target_paths": [
+        "src/attractor/dsl/",
+        "src/attractor/api/server.py",
+        "tests/dsl/",
+        "tests/contracts/frontend/"
+      ],
+      "status": "pending",
+      "milestone_id": "M4",
+      "notes": "This is mostly a guardrail requirement unless DOT capability hints are introduced during implementation."
+    },
+    {
+      "id": "REQ-013",
+      "spec_refs": ["18"],
+      "title": "Place remote execution under Attractor execution runtime",
+      "summary": "Remote execution implementation must live under the Attractor execution runtime package with thin integration points in server, workspace, app, and CLI modules.",
+      "acceptance_criteria": [
+        "Execution profile models, loading, validation, metadata seeding, transports, request/response/event models, worker app/router, and worker run lifecycle are owned under src/attractor/execution/.",
+        "src/attractor/api/server.py remains a thin dispatcher that resolves selected execution profile and dispatches to native, local_container, or remote_worker execution.",
+        "src/attractor/handlers/execution_container.py may remain compatibility glue but does not become the long-term remote execution package.",
+        "src/spark/workspace/ owns project defaults, launch payloads, and workspace API exposure for execution profile selection.",
+        "src/spark/app.py and src/spark/workspace/api.py own UI-facing routes and settings surfaces.",
+        "src/spark/server_cli.py owns spark-server worker serve and worker run-node entrypoints.",
+        "The worker API is not mounted into the normal Spark control-plane app."
+      ],
+      "dependencies": [],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/attractor/api/server.py",
+        "src/attractor/handlers/execution_container.py",
+        "src/spark/workspace/",
+        "src/spark/app.py",
+        "src/spark/server_cli.py",
+        "tests/repo_hygiene/"
+      ],
+      "status": "completed",
+      "milestone_id": "M1",
+      "notes": "The package ships in the same Python distribution as Spark; no separate installable package is required."
+    },
+    {
+      "id": "REQ-014",
+      "spec_refs": ["19", "20"],
+      "title": "Record failure and cleanup semantics",
+      "summary": "Launch, admission, preparation, active run, cancellation, cleanup, and orphan cleanup failures must be reported at the correct boundary with observable state.",
+      "acceptance_criteria": [
+        "Launch fails before contacting a worker for missing/disabled profiles, disabled/missing workers, unmappable roots, missing auth tokens, and blocking health/info validation.",
+        "Run admission fails before asynchronous preparation for rejected tokens, unsupported protocol, malformed requests, forbidden images, incompatible capabilities, immediate resource unavailability, and conflicting repeated run admission.",
+        "Worker preparation emits run_failed before node execution for missing mapped paths, unavailable mounts/devices/resources, container creation/reuse failure, and image pull/availability failure after admission.",
+        "Active run failure is recorded for unrecoverable SSE gaps, worker run_failed, node_failed, and callback delivery retry exhaustion.",
+        "Cancellation interrupts active worker execution, stops new node submission, emits run_canceling and run_canceled when complete, and leaves cleanup available.",
+        "Cleanup failures are visible in run details/logs without silently rewriting terminal workflow outcome unless explicitly configured.",
+        "Workers provide an orphan cleanup policy for admitted runs whose control plane disappears, and cleanup is visible through worker logs and run snapshots when observable."
+      ],
+      "dependencies": ["REQ-005", "REQ-007", "REQ-008", "REQ-009", "REQ-010"],
+      "target_paths": [
+        "src/attractor/execution/",
+        "src/attractor/api/server.py",
+        "tests/execution/",
+        "tests/api/test_pipeline_cancel_endpoint.py"
+      ],
+      "status": "pending",
+      "milestone_id": "M3",
+      "notes": "Failure boundary tests should assert observable launch/API/run-event behavior rather than source text."
+    }
+  ]
+}

@@ -78,8 +78,14 @@ from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.handlers.execution_container import (
     ContainerExecutionError,
     ContainerizedHandlerRunner,
-    EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY,
-    resolve_execution_profile,
+)
+from attractor.execution import (
+    EXECUTION_PROFILE_ID_CONTEXT_KEY,
+    EXECUTION_PROFILE_SELECTION_SOURCE_CONTEXT_KEY,
+    ExecutionLaunchError,
+    ExecutionProfileError,
+    build_launch_metadata,
+    resolve_execution_profile_by_id,
     seed_execution_profile_context,
 )
 from attractor.handlers.base import (
@@ -999,6 +1005,7 @@ def _record_run_start(
     root_run_id: Optional[str] = None,
     child_invocation_index: Optional[int] = None,
     execution_mode: str = "native",
+    execution_profile_id: Optional[str] = None,
     execution_container_image: Optional[str] = None,
 ) -> None:
     pipeline_runs.record_run_start(
@@ -1023,6 +1030,7 @@ def _record_run_start(
         root_run_id=root_run_id,
         child_invocation_index=child_invocation_index,
         execution_mode=execution_mode,
+        execution_profile_id=execution_profile_id,
         execution_container_image=execution_container_image,
     )
 
@@ -1404,7 +1412,8 @@ class PipelineStartRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_profile: Optional[str] = None
     reasoning_effort: Optional[str] = None
-    execution_container_image: Optional[str] = None
+    execution_profile_id: Optional[str] = None
+    project_default_execution_profile_id: Optional[str] = None
     flow_name: Optional[str] = None
     goal: Optional[str] = None
     launch_context: Optional[dict[str, Any]] = None
@@ -2102,6 +2111,37 @@ def _active_run_cancel_requested(run_id: str) -> bool:
     return active.control.cancel_requested()
 
 
+def _selected_execution_profile_id_from_context(
+    context_values: dict[str, Any],
+    fallback_profile_id: Optional[str] = None,
+) -> Optional[str]:
+    selection_source = str(context_values.get(EXECUTION_PROFILE_SELECTION_SOURCE_CONTEXT_KEY, "")).strip()
+    if selection_source == "implementation_default":
+        return None
+    return (
+        str(context_values.get(EXECUTION_PROFILE_ID_CONTEXT_KEY, "")).strip()
+        or fallback_profile_id
+        or None
+    )
+
+
+def _launch_execution_metadata_payload(execution_profile, working_dir: str) -> dict[str, Any]:
+    payload = build_launch_metadata(
+        execution_profile,
+        control_project_path=working_dir,
+    ).as_dict()
+    payload.setdefault("execution_profile_id", execution_profile.id)
+    payload.setdefault("execution_container_image", None)
+    return payload
+
+
+def _ensure_supported_execution_dispatch(execution_profile) -> None:
+    if execution_profile.is_remote_worker:
+        raise ExecutionLaunchError(
+            "remote_worker execution profiles are configured but remote worker dispatch is not available in this foundation milestone"
+        )
+
+
 def _run_first_class_child_pipeline(
     request: ChildRunRequest,
     *,
@@ -2121,8 +2161,18 @@ def _run_first_class_child_pipeline(
     selected_reasoning_effort = (
         str(request.parent_context.get(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, "")).strip().lower() or None
     )
-    parent_execution_image = str(request.parent_context.get(EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY, "")).strip() or None
-    execution_profile = resolve_execution_profile(requested_image=parent_execution_image)
+    parent_context_values = dict(request.parent_context.values)
+    parent_execution_profile_id = _selected_execution_profile_id_from_context(parent_context_values)
+    execution_profile_selection = resolve_execution_profile_by_id(
+        settings=get_runtime_paths(),
+        explicit_profile_id=parent_execution_profile_id,
+    )
+    execution_profile = execution_profile_selection.profile
+    try:
+        execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
+        _ensure_supported_execution_dispatch(execution_profile)
+    except ExecutionLaunchError as exc:
+        return ChildRunResult(run_id=child_run_id, status="failed", failure_reason=str(exc))
     root_run_id = (request.root_run_id or request.parent_run_id or child_run_id).strip() or child_run_id
     child_invocation_index = _next_child_invocation_index(request.parent_run_id, request.parent_node_id)
 
@@ -2132,7 +2182,7 @@ def _run_first_class_child_pipeline(
         flow_content = f"digraph {request.child_graph.graph_id or 'child'} {{}}"
     graphviz_export = export_graphviz_artifact(flow_content, run_root)
 
-    parent_launch_context = dict(request.parent_context.values)
+    parent_launch_context = parent_context_values
     selected_profile = str(request.parent_context.get(RUNTIME_LAUNCH_PROFILE_KEY, "")).strip() or None
     try:
         _validate_graph_provider_configuration(
@@ -2158,8 +2208,9 @@ def _run_first_class_child_pipeline(
         parent_node_id=request.parent_node_id,
         root_run_id=root_run_id,
         child_invocation_index=child_invocation_index,
-        execution_mode=execution_profile.mode,
-        execution_container_image=execution_profile.image,
+        execution_mode=execution_metadata["execution_mode"],
+        execution_profile_id=execution_metadata.get("execution_profile_id"),
+        execution_container_image=execution_metadata.get("execution_container_image"),
     )
     control = ExecutionControl()
     with ACTIVE_RUNS_LOCK:
@@ -2202,7 +2253,11 @@ def _run_first_class_child_pipeline(
     context.set(RUNTIME_LAUNCH_PROVIDER_KEY, selected_provider)
     context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
     context.set(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, selected_reasoning_effort or "")
-    seed_execution_profile_context(context, execution_profile)
+    seed_execution_profile_context(
+        context,
+        execution_profile,
+        selection_source=execution_profile_selection.selection_source,
+    )
     context.set("internal.run_id", child_run_id)
     context.set("internal.parent_run_id", request.parent_run_id)
     context.set("internal.parent_node_id", request.parent_node_id)
@@ -2293,8 +2348,7 @@ def _run_first_class_child_pipeline(
             "parent_node_id": request.parent_node_id,
             "root_run_id": root_run_id,
             "child_invocation_index": child_invocation_index,
-            "execution_mode": execution_profile.mode,
-            "execution_container_image": execution_profile.image,
+            **execution_metadata,
             "graph_source_path": str(graphviz_export.source_path),
             "graph_dot_path": str(graphviz_export.dot_path),
             "graph_render_path": str(graphviz_export.rendered_path) if graphviz_export.rendered_path else None,
@@ -2486,13 +2540,19 @@ def _build_pipeline_runner_for_run(
     llm_profile: Optional[str],
     reasoning_effort: Optional[str],
     loop: asyncio.AbstractEventLoop,
-    execution_container_image: Optional[str] = None,
+    execution_profile_id: Optional[str] = None,
     on_usage_update: Optional[Callable[[TokenUsageBreakdown], None]] = None,
 ) -> tuple[PipelineExecutor, Context, str, Optional[str], Optional[str], Optional[str]]:
     selected_model, display_model = _resolve_launch_model(graph, model)
     selected_provider, selected_profile = _resolve_launch_provider_profile(graph, llm_provider, llm_profile)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
-    execution_profile = resolve_execution_profile(requested_image=execution_container_image)
+    execution_profile_selection = resolve_execution_profile_by_id(
+        get_runtime_paths(),
+        explicit_profile_id=execution_profile_id,
+    )
+    execution_profile = execution_profile_selection.profile
+    _launch_execution_metadata_payload(execution_profile, working_dir)
+    _ensure_supported_execution_dispatch(execution_profile)
 
     _validate_graph_provider_configuration(
         graph,
@@ -2560,7 +2620,11 @@ def _build_pipeline_runner_for_run(
     )
     context = Context()
     context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
-    seed_execution_profile_context(context, execution_profile)
+    seed_execution_profile_context(
+        context,
+        execution_profile,
+        selection_source=execution_profile_selection.selection_source,
+    )
     with ACTIVE_RUNS_LOCK:
         ACTIVE_RUNS[run_id] = ActiveRun(
             run_id=run_id,
@@ -2641,10 +2705,9 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
             llm_profile=retry_profile,
             reasoning_effort=retry_reasoning_effort,
             loop=loop,
-            execution_container_image=(
-                str(checkpoint.context.get(EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY, "")).strip()
-                or record.execution_container_image
-                or None
+            execution_profile_id=_selected_execution_profile_id_from_context(
+                dict(checkpoint.context),
+                record.execution_profile_id,
             ),
             on_usage_update=handle_usage_update,
         )
@@ -2859,7 +2922,8 @@ async def _launch_pipeline_run(
     plan_id: Optional[str] = None,
     flow_source_dir: Path | None = None,
     start_node_id: Optional[str] = None,
-    execution_container_image: Optional[str] = None,
+    execution_profile_id: Optional[str] = None,
+    project_default_execution_profile_id: Optional[str] = None,
     on_complete: Optional[Callable[[str, str], Any]] = None,
     continued_from_run_id: Optional[str] = None,
     continued_from_node: Optional[str] = None,
@@ -2937,7 +3001,22 @@ async def _launch_pipeline_run(
     working_dir = str(Path(working_directory).resolve())
     selected_model, display_model = _resolve_launch_model(graph, model)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
-    execution_profile = resolve_execution_profile(requested_image=execution_container_image)
+    try:
+        execution_profile_selection = resolve_execution_profile_by_id(
+            get_runtime_paths(),
+            explicit_profile_id=execution_profile_id,
+            project_default_profile_id=project_default_execution_profile_id,
+        )
+        execution_profile = execution_profile_selection.profile
+        execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
+        _ensure_supported_execution_dispatch(execution_profile)
+    except (ExecutionProfileError, ExecutionLaunchError) as exc:
+        return {
+            "status": "validation_error",
+            "error": str(exc),
+            "diagnostics": diagnostic_payloads,
+            "errors": error_payloads,
+        }
 
     try:
         selected_provider, selected_profile = _resolve_launch_provider_profile(graph, llm_provider, llm_profile)
@@ -3006,7 +3085,11 @@ async def _launch_pipeline_run(
     context.set(RUNTIME_LAUNCH_PROVIDER_KEY, selected_provider)
     context.set(RUNTIME_LAUNCH_PROFILE_KEY, selected_profile or "")
     context.set(RUNTIME_LAUNCH_REASONING_EFFORT_KEY, selected_reasoning_effort or "")
-    seed_execution_profile_context(context, execution_profile)
+    seed_execution_profile_context(
+        context,
+        execution_profile,
+        selection_source=execution_profile_selection.selection_source,
+    )
     context.set("internal.run_id", resolved_run_id)
     context.set("internal.root_run_id", resolved_run_id)
     context.set("internal.run_workdir", working_dir)
@@ -3115,8 +3198,9 @@ async def _launch_pipeline_run(
         continued_from_flow_mode=continued_from_flow_mode,
         continued_from_flow_name=continued_from_flow_name,
         root_run_id=resolved_run_id,
-        execution_mode=execution_profile.mode,
-        execution_container_image=execution_profile.image,
+        execution_mode=execution_metadata["execution_mode"],
+        execution_profile_id=execution_metadata.get("execution_profile_id"),
+        execution_container_image=execution_metadata.get("execution_container_image"),
     )
     await _publish_run_list_upsert(resolved_run_id)
 
@@ -3151,8 +3235,7 @@ async def _launch_pipeline_run(
             "continued_from_flow_mode": continued_from_flow_mode,
             "continued_from_flow_name": continued_from_flow_name,
             "root_run_id": resolved_run_id,
-            "execution_mode": execution_profile.mode,
-            "execution_container_image": execution_profile.image,
+            **execution_metadata,
         },
     )
     if graphviz_export.error:
@@ -3339,8 +3422,7 @@ async def _launch_pipeline_run(
         "llm_provider": selected_provider,
         "llm_profile": selected_profile,
         "reasoning_effort": selected_reasoning_effort,
-        "execution_mode": execution_profile.mode,
-        "execution_container_image": execution_profile.image,
+        **execution_metadata,
         "diagnostics": diagnostic_payloads,
         "errors": error_payloads,
         "graph_dot_path": str(graphviz_export.dot_path),
@@ -3406,7 +3488,8 @@ async def _start_pipeline(
         llm_provider=req.llm_provider,
         llm_profile=req.llm_profile,
         reasoning_effort=req.reasoning_effort,
-        execution_container_image=req.execution_container_image,
+        execution_profile_id=req.execution_profile_id,
+        project_default_execution_profile_id=req.project_default_execution_profile_id,
         launch_context=launch_context,
         spec_id=req.spec_id,
         plan_id=req.plan_id,
@@ -3474,10 +3557,9 @@ async def continue_pipeline(pipeline_id: str, req: PipelineContinueRequest):
         llm_provider=llm_provider,
         llm_profile=llm_profile,
         reasoning_effort=reasoning_effort,
-        execution_container_image=(
-            str(source_context.get(EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY, "")).strip()
-            or source_record.execution_container_image
-            or None
+        execution_profile_id=_selected_execution_profile_id_from_context(
+            source_context,
+            source_record.execution_profile_id,
         ),
         launch_context=source_context,
         spec_id=source_record.spec_id,

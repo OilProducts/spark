@@ -219,6 +219,7 @@ def record_run_start(
     root_run_id: Optional[str] = None,
     child_invocation_index: Optional[int] = None,
     execution_mode: str = "native",
+    execution_profile_id: Optional[str] = None,
     execution_container_image: Optional[str] = None,
 ) -> None:
     project_path, git_branch, git_commit = resolve_run_project_git_metadata(
@@ -252,6 +253,7 @@ def record_run_start(
         root_run_id=root_run_id,
         child_invocation_index=child_invocation_index,
         execution_mode=execution_mode,
+        execution_profile_id=execution_profile_id,
         execution_container_image=execution_container_image,
     )
     with run_history_lock:

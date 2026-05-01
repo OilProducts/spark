@@ -77,7 +77,7 @@ class ProjectRecord:
     last_accessed_at: str | None
     is_favorite: bool
     active_conversation_id: str | None
-    execution_container_image: str | None = None
+    execution_profile_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,7 +126,7 @@ def ensure_project_paths(home_dir: Path, project_path: str) -> ProjectPaths:
             "last_accessed_at": _read_optional_string(payload, "last_accessed_at"),
             "is_favorite": _read_optional_bool(payload, "is_favorite", default=False),
             "active_conversation_id": _read_optional_string(payload, "active_conversation_id"),
-            "execution_container_image": _read_optional_string(payload, "execution_container_image"),
+            "execution_profile_id": _read_optional_string(payload, "execution_profile_id"),
         },
     )
 
@@ -201,7 +201,7 @@ def update_project_record(
     last_accessed_at: str | None | object = _UNSET,
     is_favorite: bool | object = _UNSET,
     active_conversation_id: str | None | object = _UNSET,
-    execution_container_image: str | None | object = _UNSET,
+    execution_profile_id: str | None | object = _UNSET,
 ) -> ProjectRecord:
     project_paths = ensure_project_paths(home_dir, project_path)
     payload = _read_project_record(project_paths.project_file)
@@ -214,7 +214,7 @@ def update_project_record(
         "last_accessed_at": _read_optional_string(payload, "last_accessed_at"),
         "is_favorite": _read_optional_bool(payload, "is_favorite", default=False),
         "active_conversation_id": _read_optional_string(payload, "active_conversation_id"),
-        "execution_container_image": _read_optional_string(payload, "execution_container_image"),
+        "execution_profile_id": _read_optional_string(payload, "execution_profile_id"),
     }
     if last_accessed_at is not _UNSET:
         next_payload["last_accessed_at"] = _normalize_optional_string(last_accessed_at)
@@ -222,8 +222,8 @@ def update_project_record(
         next_payload["is_favorite"] = bool(is_favorite)
     if active_conversation_id is not _UNSET:
         next_payload["active_conversation_id"] = _normalize_optional_string(active_conversation_id)
-    if execution_container_image is not _UNSET:
-        next_payload["execution_container_image"] = _normalize_optional_string(execution_container_image)
+    if execution_profile_id is not _UNSET:
+        next_payload["execution_profile_id"] = _normalize_optional_string(execution_profile_id)
     _write_project_record(project_paths.project_file, next_payload)
     return _build_project_record(project_paths)
 
@@ -436,7 +436,7 @@ def _build_project_record(project_paths: ProjectPaths) -> ProjectRecord:
         last_accessed_at=_read_optional_string(payload, "last_accessed_at"),
         is_favorite=_read_optional_bool(payload, "is_favorite", default=False),
         active_conversation_id=_read_optional_string(payload, "active_conversation_id"),
-        execution_container_image=_read_optional_string(payload, "execution_container_image"),
+        execution_profile_id=_read_optional_string(payload, "execution_profile_id"),
     )
 
 
@@ -462,8 +462,8 @@ def _write_project_record(path: Path, payload: dict[str, Any]) -> None:
     lines.append(f"is_favorite = {_toml_bool(bool(payload.get('is_favorite', False)))}")
     if payload.get("active_conversation_id"):
         lines.append(f"active_conversation_id = {_toml_string(str(payload['active_conversation_id']))}")
-    if payload.get("execution_container_image"):
-        lines.append(f"execution_container_image = {_toml_string(str(payload['execution_container_image']))}")
+    if payload.get("execution_profile_id"):
+        lines.append(f"execution_profile_id = {_toml_string(str(payload['execution_profile_id']))}")
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 

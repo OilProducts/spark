@@ -53,7 +53,7 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     run_request.add_argument("--model", help="Optional model override to request if approved.")
     run_request.add_argument("--llm-provider", dest="llm_provider", help="Optional LLM provider override to request if approved.")
     run_request.add_argument("--reasoning-effort", dest="reasoning_effort", help="Optional reasoning effort override to request if approved.")
-    run_request.add_argument("--execution-container", dest="execution_container_image", help="Optional execution container image to request if approved.")
+    run_request.add_argument("--execution-profile", dest="execution_profile_id", help="Optional execution profile id to request if approved.")
     run_request.add_argument("--base-url")
 
     run = domains.add_parser("run", help="Direct execution commands")
@@ -80,7 +80,7 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     launch.add_argument("--model", help="Optional model override.")
     launch.add_argument("--llm-provider", dest="llm_provider", help="Optional LLM provider override.")
     launch.add_argument("--reasoning-effort", dest="reasoning_effort", help="Optional reasoning effort override.")
-    launch.add_argument("--execution-container", dest="execution_container_image", help="Optional execution container image for this run.")
+    launch.add_argument("--execution-profile", dest="execution_profile_id", help="Optional execution profile id for this run.")
     launch.add_argument("--base-url")
 
     flow = domains.add_parser("flow", help="Flow discovery and validation")
@@ -188,7 +188,7 @@ def _run_run_request(args: argparse.Namespace) -> int:
         model=getattr(args, "model", None),
         llm_provider=getattr(args, "llm_provider", None),
         reasoning_effort=getattr(args, "reasoning_effort", None),
-        execution_container_image=getattr(args, "execution_container_image", None),
+        execution_profile_id=getattr(args, "execution_profile_id", None),
         source_name="spark convo run-request",
     )
     if isinstance(normalized, tuple):
@@ -220,7 +220,7 @@ def _run_launch(args: argparse.Namespace) -> int:
         model=getattr(args, "model", None),
         llm_provider=getattr(args, "llm_provider", None),
         reasoning_effort=getattr(args, "reasoning_effort", None),
-        execution_container_image=getattr(args, "execution_container_image", None),
+        execution_profile_id=getattr(args, "execution_profile_id", None),
         source_name="spark run launch",
     )
     if isinstance(normalized, tuple):
@@ -526,7 +526,7 @@ def _build_flow_payload(
     model: str | None,
     llm_provider: str | None,
     reasoning_effort: str | None,
-    execution_container_image: str | None,
+    execution_profile_id: str | None,
     source_name: str,
 ) -> dict[str, Any] | tuple[str, int]:
     try:
@@ -552,7 +552,7 @@ def _build_flow_payload(
                 "model": model,
                 "llm_provider": llm_provider,
                 "reasoning_effort": reasoning_effort,
-                "execution_container_image": execution_container_image,
+                "execution_profile_id": execution_profile_id,
             },
             source_name=source_name,
         )

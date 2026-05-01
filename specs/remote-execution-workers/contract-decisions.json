@@ -1,0 +1,169 @@
+{
+  "decisions": [
+    {
+      "id": "DEC-001",
+      "title": "Remote execution belongs to Attractor execution runtime",
+      "summary": "The durable implementation home for profile loading, selection, transports, worker API models, worker app, worker lifecycle, and metadata helpers is src/attractor/execution/. Existing Spark, server, workspace, chat, and CLI modules stay as thin integration surfaces.",
+      "requirement_ids": ["REQ-013", "REQ-001", "REQ-002", "REQ-005", "REQ-008"],
+      "spec_refs": ["18"],
+      "architecture_refs": ["Canonical Repository Topology", "Implementation Boundaries", "Repository Hygiene"],
+      "behavioral_contract": "Remote execution is an execution placement for Attractor workflow runs, not a separate top-level product or workspace feature. The worker API is not mounted into the normal Spark control-plane app.",
+      "implementation_contract": "Create src/attractor/execution/ as the owner package for execution profiles, config, resolution, path mapping, metadata, worker HTTP/SSE models, remote client/runner, worker FastAPI app, worker lifecycle state, Docker/runtime management, and process bridge. Keep src/attractor/api/server.py, src/spark/workspace/*, src/spark/app.py, src/spark/chat/*, src/spark/cli.py, and src/spark/server_cli.py as integration layers.",
+      "validation_expectations": "Repo-hygiene tests assert the package boundary and that worker routes are served by spark-server worker serve rather than mounted in the control-plane app; API and CLI tests exercise public behavior through the integration layers."
+    },
+    {
+      "id": "DEC-002",
+      "title": "Use execution_profile_id as durable selection",
+      "summary": "Profile id is the only target-state public launch selection field. Resolved images remain run metadata snapshots only.",
+      "requirement_ids": ["REQ-002", "REQ-010", "REQ-011"],
+      "spec_refs": ["5.2", "15", "16", "19", "20"],
+      "architecture_refs": ["Selection And Dispatch", "Runtime Metadata", "Public Interface"],
+      "behavioral_contract": "Projects and run launches select execution by execution_profile_id using the specified precedence. Users do not select workers or images directly. Disabled or missing selections fail before execution and are never silently replaced by another profile.",
+      "implementation_contract": "Replace public execution_container_image launch/project/chat/CLI selection with execution_profile_id. Continue to serialize execution_container_image on run records/context/details only as the resolved profile image snapshot for local_container and remote_worker runs.",
+      "validation_expectations": "API, workspace, chat artifact, and CLI tests assert execution_profile_id in launch payloads and project defaults; run-record/context tests assert resolved image snapshots without treating execution_container_image as launch selection."
+    },
+    {
+      "id": "DEC-003",
+      "title": "Missing execution-profiles.toml only synthesizes native default",
+      "summary": "A missing config file is valid only for native-compatible default behavior when no configured project default or run override references a profile.",
+      "requirement_ids": ["REQ-001", "REQ-002"],
+      "spec_refs": ["6", "6.4", "5.2"],
+      "architecture_refs": ["Execution Profile Configuration", "Selection And Dispatch"],
+      "behavioral_contract": "Existing native launch behavior is preserved when no profile config or selection exists. A selected profile id that cannot be found in the coherent validated graph fails before launch.",
+      "implementation_contract": "Load config from settings.config_dir / execution-profiles.toml. If absent, produce a built-in native default profile for implementation-default selection only. Do not synthesize arbitrary configured ids or fall back from invalid selected ids.",
+      "validation_expectations": "Execution tests cover absent config native default, missing selected profile failure, invalid selected profile failure, and no silent fallback."
+    },
+    {
+      "id": "DEC-004",
+      "title": "Profile modes are native, local_container, and remote_worker",
+      "summary": "The target-state mode names supersede the existing internal container mode label; local container execution is represented publicly as local_container.",
+      "requirement_ids": ["REQ-001", "REQ-002", "REQ-010"],
+      "spec_refs": ["5.1", "6.3", "15"],
+      "architecture_refs": ["Execution Profile Configuration", "Selection And Dispatch", "Runtime Metadata"],
+      "behavioral_contract": "Run records, context, settings, launch surfaces, and worker events expose execution modes as native, local_container, or remote_worker.",
+      "implementation_contract": "Normalize existing container execution code behind a local_container profile mode. Any old internal 'container' naming must be adapted at module boundaries or migrated so persisted/public metadata uses local_container.",
+      "validation_expectations": "Run context, run record, settings/API, and worker event tests assert target mode names and continued native behavior."
+    },
+    {
+      "id": "DEC-005",
+      "title": "Root mappings are pure path translations",
+      "summary": "Remote root mapping preserves a relative suffix by path-segment-aware replacement and never performs source preparation.",
+      "requirement_ids": ["REQ-003", "REQ-014"],
+      "spec_refs": ["4", "7", "7.1", "19", "20"],
+      "architecture_refs": ["Root Mapping", "Failure Semantics", "Repository Hygiene"],
+      "behavioral_contract": "Launch fails before worker contact when the control project path is outside control_project_root. Translation never clones, pulls, uploads, syncs, repairs, creates directories, mutates source, or infers git metadata.",
+      "implementation_contract": "Implement a dedicated path mapper using resolved path segments or pathlib relative checks, not raw string prefix matching. Persist mapped worker project path and worker runtime root in launch metadata and pass them to worker admission. Leave worker-local path existence validation to worker admission/preparation.",
+      "validation_expectations": "Execution tests cover valid mapping, outside-root failure, false string-prefix rejection, no filesystem mutation, and metadata values passed to admission."
+    },
+    {
+      "id": "DEC-006",
+      "title": "Worker auth token is resolved before authenticated contact",
+      "summary": "Bearer-token auth is mandatory for every worker endpoint including SSE, and missing auth_token_env values fail launch before worker contact.",
+      "requirement_ids": ["REQ-004", "REQ-005", "REQ-007", "REQ-014"],
+      "spec_refs": ["8", "9.1", "9.2", "9.6", "19"],
+      "architecture_refs": ["Authentication And Worker Compatibility", "Worker API And Lifecycle", "SSE And Control-Plane Remote Execution"],
+      "behavioral_contract": "The control plane reads the environment variable named by auth_token_env and sends Authorization: Bearer <token> on every worker request. Workers reject missing, malformed, or invalid tokens with 401 or 403.",
+      "implementation_contract": "Remote client construction validates the selected worker token is non-empty before authenticated calls. Worker FastAPI dependencies enforce bearer auth uniformly across REST and SSE endpoints. Health/worker-info may be used for compatibility/debug visibility but not profile selection.",
+      "validation_expectations": "Remote-client tests assert precontact failure for missing tokens and Authorization headers on REST/SSE; worker endpoint tests assert 401/403 for unauthenticated or invalid requests."
+    },
+    {
+      "id": "DEC-007",
+      "title": "Worker API is standalone and idempotent",
+      "summary": "spark-server worker serve starts a separate FastAPI service that owns worker-side admission, lifecycle, cancellation, cleanup, snapshots, and callback endpoints with idempotency semantics.",
+      "requirement_ids": ["REQ-005", "REQ-006", "REQ-009", "REQ-014"],
+      "spec_refs": ["9", "9.3", "9.4", "9.5", "9.7", "9.8", "9.9", "9.10", "9.11", "18", "19"],
+      "architecture_refs": ["Worker API And Lifecycle", "Node Execution Bridge", "Human Gates And Child Runs", "Public Interface"],
+      "behavioral_contract": "Worker run admission and node/callback deliveries are idempotent for compatible repeated requests and reject conflicts with 409. DELETE cleanup is idempotent. The worker owns host-local Docker and runtime cleanup but not workflow routing or checkpoints.",
+      "implementation_contract": "Implement worker app/router, request/response/error models, state store, admission checks, run snapshots, node acceptance, callback records, cancellation, and cleanup under src/attractor/execution/. Add spark-server worker serve in server_cli without changing worker run-node.",
+      "validation_expectations": "Worker API tests exercise every v1 endpoint, structured error shape, 202 admission, compatible repeat behavior, conflict behavior, cancellation state, and idempotent cleanup through the standalone worker app."
+    },
+    {
+      "id": "DEC-008",
+      "title": "SSE sequence ids are correctness state",
+      "summary": "Worker SSE sequence handling is not only UI continuity; duplicate and gap behavior determines whether control-plane state can be trusted.",
+      "requirement_ids": ["REQ-007", "REQ-008", "REQ-014"],
+      "spec_refs": ["9.6", "10", "11", "19", "20"],
+      "architecture_refs": ["SSE And Control-Plane Remote Execution", "Validation Strategy"],
+      "behavioral_contract": "Every worker event has a monotonic per-run sequence used as the SSE id. Duplicate sequences are ignored. Missing or gapped sequences fail the run unless the worker snapshot proves no required event was lost.",
+      "implementation_contract": "Worker event store assigns per-run sequences and supports Last-Event-ID and ?after. Remote runner tracks last applied sequence, ignores duplicates, performs snapshot checks on gaps, and records active run failure when recovery is not provably safe.",
+      "validation_expectations": "SSE tests cover event serialization, Last-Event-ID, after query, duplicate suppression, gap failure, and snapshot-based non-loss proof behavior."
+    },
+    {
+      "id": "DEC-009",
+      "title": "run_ready gates all node execution",
+      "summary": "Remote control-plane orchestration must wait for worker preparation readiness before posting node execution requests.",
+      "requirement_ids": ["REQ-005", "REQ-006", "REQ-007", "REQ-008", "REQ-014"],
+      "spec_refs": ["9.3", "9.5", "10", "11", "19", "20"],
+      "architecture_refs": ["Worker API And Lifecycle", "SSE And Control-Plane Remote Execution", "Failure Semantics"],
+      "behavioral_contract": "The worker rejects node execution before run_ready. The control plane does not submit a node before observing run_ready. If run_failed arrives before run_ready, launch/preparation fails and no node result is applied.",
+      "implementation_contract": "Worker state machine records preparing/ready/failed/canceling/canceled/closed states. Remote runner admission opens the event stream and blocks node submission until run_ready or terminal failure. Node POST handlers check ready state.",
+      "validation_expectations": "Worker API and control-plane execution tests assert pre-ready node rejection, no node POST before run_ready, run_failed-before-ready behavior, and no applied node result after preparation failure."
+    },
+    {
+      "id": "DEC-010",
+      "title": "run-node process protocol remains the bridge boundary",
+      "summary": "Remote workers reuse the current spark-server worker run-node process protocol inside worker-owned containers and translate it to HTTP/SSE.",
+      "requirement_ids": ["REQ-006", "REQ-008", "REQ-009"],
+      "spec_refs": ["12", "13", "14"],
+      "architecture_refs": ["Node Execution Bridge", "Human Gates And Child Runs"],
+      "behavioral_contract": "The worker emits node_result only when it receives a valid serialized Outcome/context/runtime result from run-node. Process crashes, invalid messages, or missing final results become node_failed. Modeled Outcome(status=FAIL) remains node_result.",
+      "implementation_contract": "Factor or wrap existing execution_container worker protocol helpers for remote use. Worker bridge writes node requests and callback answers/results to stdin, reads stdout messages, converts events/requests/results, and isolates Docker/process lifecycle under the worker runtime.",
+      "validation_expectations": "Process bridge tests cover event conversion, human-gate and child-run request conversion, callback resume, valid failure Outcome through node_result, crashes/invalid messages/missing result through node_failed, and compatibility with existing run-node tests."
+    },
+    {
+      "id": "DEC-011",
+      "title": "Spark keeps human-gate and child-run authority",
+      "summary": "Remote workers request decisions and child-run operations, but Spark records, coordinates, and audits the authoritative answers and results.",
+      "requirement_ids": ["REQ-009", "REQ-008", "REQ-014"],
+      "spec_refs": ["9.7", "9.8", "9.9", "11", "14", "19"],
+      "architecture_refs": ["Human Gates And Child Runs", "SSE And Control-Plane Remote Execution"],
+      "behavioral_contract": "Human gates surface through existing Spark UI/API paths. Child-run identity, provenance, status, and final coordination remain in control-plane run records. Worker callbacks receive only the data needed to resume node execution.",
+      "implementation_contract": "Remote runner handles human_gate_request, child_run_request, and child_status_request events by calling existing broker/run coordination APIs and posting answers/results back to worker callback endpoints with retry and conflict handling.",
+      "validation_expectations": "API/execution tests cover gate surfacing and answer forwarding, child-run launch/result forwarding, child-status forwarding, callback idempotency/conflict handling, and active run failure after retry exhaustion."
+    },
+    {
+      "id": "DEC-012",
+      "title": "Launch-time execution metadata is snapshot state",
+      "summary": "Run records and context persist selected execution placement values at launch; later config edits cannot rewrite historical run metadata.",
+      "requirement_ids": ["REQ-010", "REQ-008", "REQ-011"],
+      "spec_refs": ["6", "11", "15", "16"],
+      "architecture_refs": ["Runtime Metadata", "UI/API Fit"],
+      "behavioral_contract": "Run details and context expose the execution mode, selected profile id, worker id/label/base URL where applicable, image snapshot, mapped worker path, runtime root, worker version, worker capabilities, and profile capabilities from launch time.",
+      "implementation_contract": "Extend RunRecord serialization and run context seeding for execution metadata. Remote-worker launches must obtain and persist required worker identity, version, capability, mapped path, runtime root, and resolved image snapshots through the v1 compatibility/worker-info path before node execution. If compatible required worker identity, version, or capability data cannot be obtained under the launch policy, launch fails before worker admission is treated as executable. Historical reads use stored fields rather than current config.",
+      "validation_expectations": "Run-record, context endpoint, runs endpoint, and run-details tests assert required metadata for native, local_container, and remote_worker runs; remote-worker tests assert launch failure when required worker version/capability metadata cannot be obtained; tests demonstrate that editing execution-profiles.toml does not change existing records."
+    },
+    {
+      "id": "DEC-013",
+      "title": "DOT remains non-authoritative for execution placement",
+      "summary": "Flow DOT may eventually express non-binding capability hints, but v1 profile selection comes only from project and run launch state.",
+      "requirement_ids": ["REQ-012", "REQ-002", "REQ-003"],
+      "spec_refs": ["17"],
+      "architecture_refs": ["Selection And Dispatch", "Public Interface", "Repository Hygiene"],
+      "behavioral_contract": "DOT-authored content cannot directly select a worker, override disabled profiles, or make invalid root mapping valid. Existing DOT parsing remains compatible with workflows that do not mention execution placement.",
+      "implementation_contract": "Do not add worker/profile selection authority to DSL parsing. If capability hints are introduced, treat them as advisory metadata after profile resolution and never as a way to bypass validation.",
+      "validation_expectations": "DSL/API/frontend contract tests assert that DOT cannot select workers or bypass disabled/unmappable profile constraints, and that existing workflows parse and launch unchanged."
+    },
+    {
+      "id": "DEC-014",
+      "title": "Failure boundaries follow launch, admission, preparation, active run, and cleanup phases",
+      "summary": "Each failure must be reported at the boundary named by the spec with observable launch/API/run-event/run-detail state.",
+      "requirement_ids": ["REQ-014", "REQ-003", "REQ-004", "REQ-005", "REQ-007", "REQ-008", "REQ-009", "REQ-010"],
+      "spec_refs": ["19", "20"],
+      "architecture_refs": ["Worker API And Lifecycle", "SSE And Control-Plane Remote Execution", "Failure Semantics", "Runtime Metadata", "Validation Strategy"],
+      "behavioral_contract": "Launch validation failures occur before worker contact. Admission failures occur synchronously before asynchronous preparation. Preparation failures emit run_failed before node execution. Active failures record run failure. Cleanup failures are visible in logs/details without silently rewriting terminal workflow outcome unless an explicit runtime policy says otherwise.",
+      "implementation_contract": "Define explicit exception/error types and phase-specific handlers for launch, admission, preparation, active execution, cancellation, cleanup, and orphan cleanup. Persist/surface failure codes/messages/retryable/details through API/CLI responses, worker events, run history, run details, and worker snapshots according to the boundary where the failure is observable.",
+      "validation_expectations": "Execution and API tests assert observable behavior for launch validation, admission rejection, preparation run_failed before node execution, active run failure, cancellation events, cleanup visibility, and orphan cleanup snapshot/log visibility where observable."
+    },
+    {
+      "id": "DEC-015",
+      "title": "Validation uses real public surfaces and uv pytest",
+      "summary": "Milestone validation must exercise observable behavior through repository-supported commands, with the full suite as the completion gate.",
+      "requirement_ids": ["REQ-001", "REQ-002", "REQ-003", "REQ-004", "REQ-005", "REQ-006", "REQ-007", "REQ-008", "REQ-009", "REQ-010", "REQ-011", "REQ-012", "REQ-013", "REQ-014"],
+      "spec_refs": ["20"],
+      "architecture_refs": ["Validation Strategy", "Repository Hygiene"],
+      "behavioral_contract": "Implemented behavior is validated through CLI output, API responses, UI/workspace API shapes, filesystem/run-record effects, state transitions, worker HTTP/SSE behavior, and process protocol behavior, not source text or private helper-only assertions.",
+      "implementation_contract": "Use uv run pytest for all tests and uv run pytest -q before completion. Add targeted suites under tests/execution/, tests/api/, tests/handlers/, tests/test_cli.py, tests/contracts/frontend/, tests/dsl/, and tests/repo_hygiene/ as appropriate to the milestone surface.",
+      "validation_expectations": "Every milestone result records the strongest deterministic validation run. Deprecated execution_container_image selection tests are rewritten or removed unless they assert snapshot metadata compatibility."
+    }
+  ]
+}
