@@ -18,6 +18,17 @@ import spark.server_cli as spark_server_cli
 TEST_AGENT_FLOW = "test-dispatch.dot"
 
 
+def _run_cli_module(module: str, *args: str) -> subprocess.CompletedProcess[str]:
+    repo_root = Path(__file__).resolve().parents[1]
+    return subprocess.run(
+        [sys.executable, "-m", module, *args],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _disable_source_checkout_guard_by_default(monkeypatch) -> None:
     monkeypatch.setattr(spark_cli, "_running_from_source_checkout", lambda _project_root: False)
@@ -330,6 +341,62 @@ def test_run_launch_payload_includes_execution_profile_override() -> None:
 
     assert isinstance(payload, dict)
     assert payload["execution_profile_id"] == "local-dev"
+
+
+@pytest.mark.parametrize(
+    ("domain", "command"),
+    [
+        ("convo", "run-request"),
+        ("run", "launch"),
+    ],
+)
+def test_agent_launch_help_exposes_execution_profile_not_direct_image_or_worker_selection(
+    domain: str,
+    command: str,
+) -> None:
+    result = _run_cli_module("spark.cli", domain, command, "--help")
+
+    assert result.returncode == 0
+    assert "--execution-profile" in result.stdout
+    assert "--execution-container-image" not in result.stdout
+    assert "execution_container_image" not in result.stdout
+    assert "--image" not in result.stdout
+    assert "--worker" not in result.stdout
+
+
+@pytest.mark.parametrize("placement_option", ["--execution-container-image", "--image", "--worker"])
+def test_agent_run_launch_rejects_direct_image_or_worker_selection_options(placement_option: str) -> None:
+    result = _run_cli_module(
+        "spark.cli",
+        "run",
+        "launch",
+        "--flow",
+        TEST_AGENT_FLOW,
+        "--summary",
+        "Launch directly",
+        "--project",
+        "/tmp/project",
+        placement_option,
+        "direct-selection",
+    )
+
+    assert result.returncode == spark_cli.EXIT_USAGE_ERROR
+    assert "unrecognized arguments" in result.stderr
+    assert placement_option in result.stderr
+
+
+def test_worker_entrypoint_help_remains_available_without_public_launch_selection_options() -> None:
+    top_level_help = _run_cli_module("spark.server_cli", "--help")
+    worker_serve_help = _run_cli_module("spark.server_cli", "worker", "serve", "--help")
+    worker_run_node_help = _run_cli_module("spark.server_cli", "worker", "run-node", "--help")
+
+    assert top_level_help.returncode == 0
+    assert "worker" not in top_level_help.stdout
+    assert worker_serve_help.returncode == 0
+    assert "spark-server worker serve" in worker_serve_help.stdout
+    assert "--token-env" in worker_serve_help.stdout
+    assert worker_run_node_help.returncode == 0
+    assert "spark-server worker run-node" in worker_run_node_help.stdout
 
 
 def test_service_install_writes_user_unit_and_starts_service(

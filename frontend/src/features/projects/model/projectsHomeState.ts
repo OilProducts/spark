@@ -120,12 +120,16 @@ export function toHydratedProjectRecord(project: {
     is_favorite: boolean
     last_accessed_at?: string | null
     active_conversation_id?: string | null
+    execution_profile_id?: string | null
 }): HydratedProjectRecord {
     return {
         directoryPath: project.project_path,
         isFavorite: project.is_favorite === true,
         lastAccessedAt: typeof project.last_accessed_at === 'string' ? project.last_accessed_at : null,
         activeConversationId: typeof project.active_conversation_id === 'string' ? project.active_conversation_id : null,
+        ...(typeof project.execution_profile_id === 'string'
+            ? { executionProfileId: project.execution_profile_id }
+            : {}),
     }
 }
 

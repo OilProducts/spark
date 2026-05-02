@@ -63,6 +63,9 @@ class AttractorApiClient:
     async def preview_flow(self, flow_content: str) -> dict[str, Any]:
         return await self._request_json("POST", "/preview", json={"flow_content": flow_content})
 
+    async def get_execution_placement_settings(self) -> dict[str, Any]:
+        return await self._request_json("GET", "/api/execution-placement-settings")
+
     async def get_pipeline(self, run_id: str) -> dict[str, Any]:
         return await self._request_json("GET", f"/pipelines/{run_id}")
 

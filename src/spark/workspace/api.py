@@ -265,6 +265,39 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         if surface == "agent" and flow.effective_launch_policy != LAUNCH_POLICY_AGENT_REQUESTABLE:
             raise HTTPException(status_code=404, detail=f"Unknown flow: {flow.name}")
 
+    async def _validate_project_execution_profile_id(execution_profile_id: Optional[str]) -> str | None:
+        normalized_profile_id = str(execution_profile_id or "").strip()
+        if not normalized_profile_id:
+            return None
+        try:
+            execution_placement = await deps.get_attractor_client().get_execution_placement_settings()
+        except AttractorApiError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+        validation_errors = execution_placement.get("validation_errors")
+        if isinstance(validation_errors, list) and validation_errors:
+            raise HTTPException(
+                status_code=400,
+                detail="Execution profile settings are invalid; fix execution-profiles.toml before selecting a project default.",
+            )
+
+        profiles = execution_placement.get("profiles")
+        if not isinstance(profiles, list):
+            raise HTTPException(status_code=400, detail="Execution profile settings did not return a profile list.")
+        profile = next(
+            (
+                entry
+                for entry in profiles
+                if isinstance(entry, dict) and str(entry.get("id") or "").strip() == normalized_profile_id
+            ),
+            None,
+        )
+        if profile is None:
+            raise HTTPException(status_code=400, detail=f"Unknown execution profile: {normalized_profile_id}")
+        if profile.get("enabled") is not True:
+            raise HTTPException(status_code=400, detail=f"Execution profile is disabled: {normalized_profile_id}")
+        return normalized_profile_id
+
     async def _wait_for_pipeline_terminal_status(run_id: str) -> dict[str, Any]:
         client = deps.get_attractor_client()
         while True:
@@ -486,6 +519,16 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             flows = [flow for flow in flows if flow.effective_launch_policy == LAUNCH_POLICY_AGENT_REQUESTABLE]
         return [_serialize_flow_summary(flow) for flow in flows]
 
+    @router.get("/api/settings")
+    async def get_workspace_settings():
+        try:
+            execution_placement = await deps.get_attractor_client().get_execution_placement_settings()
+        except AttractorApiError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return {
+            "execution_placement": execution_placement,
+        }
+
     @router.get("/api/flows/{flow_name:path}/raw")
     async def get_workspace_flow_raw(flow_name: str, surface: Optional[str] = None):
         normalized_surface = _validate_flow_surface(surface)
@@ -570,11 +613,12 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             if project is None:
                 raise ValueError("Unable to register project.")
             if req.execution_profile_id is not None:
+                execution_profile_id = await _validate_project_execution_profile_id(req.execution_profile_id)
                 project = await asyncio.to_thread(
                     update_project_record,
                     deps.get_settings().data_dir,
                     normalized_project_path,
-                    execution_profile_id=req.execution_profile_id,
+                    execution_profile_id=execution_profile_id,
                 )
             return _serialize_project_record(project)
         except ValueError as exc:
@@ -584,14 +628,23 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
     async def update_project_state(req: ProjectStateUpdateRequest):
         normalized_project_path = _normalize_project_path_or_400(req.project_path)
         try:
+            update_kwargs: dict[str, object] = {}
+            fields_set = req.model_fields_set
+            if "last_accessed_at" in fields_set:
+                update_kwargs["last_accessed_at"] = req.last_accessed_at
+            if "is_favorite" in fields_set:
+                update_kwargs["is_favorite"] = req.is_favorite
+            if "active_conversation_id" in fields_set:
+                update_kwargs["active_conversation_id"] = req.active_conversation_id
+            if "execution_profile_id" in fields_set:
+                update_kwargs["execution_profile_id"] = await _validate_project_execution_profile_id(
+                    req.execution_profile_id
+                )
             project = await asyncio.to_thread(
                 update_project_record,
                 deps.get_settings().data_dir,
                 normalized_project_path,
-                last_accessed_at=req.last_accessed_at,
-                is_favorite=req.is_favorite,
-                active_conversation_id=req.active_conversation_id,
-                execution_profile_id=req.execution_profile_id,
+                **update_kwargs,
             )
             return _serialize_project_record(project)
         except ValueError as exc:

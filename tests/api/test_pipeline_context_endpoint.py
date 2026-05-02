@@ -1193,24 +1193,11 @@ def test_remote_worker_modeled_fail_node_result_applies_through_canonical_run_st
     assert runtime_events[-1]["last_error"] in {"", None}
 
 
-def test_remote_worker_child_node_result_preserves_parent_child_provenance(
+def test_start_pipeline_rejects_dot_authored_execution_profile_context_selection(
     attractor_api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    class ParentBackend:
-        def run(self, node_id: str, prompt: str, context, **kwargs) -> Outcome:
-            del prompt, context, kwargs
-            if node_id == "select_remote":
-                return Outcome(
-                    status=OutcomeStatus.SUCCESS,
-                    context_updates={
-                        EXECUTION_PROFILE_ID_CONTEXT_KEY: "remote-fast",
-                        EXECUTION_PROFILE_SELECTION_SOURCE_CONTEXT_KEY: "explicit",
-                    },
-                )
-            return Outcome(status=OutcomeStatus.SUCCESS)
-
     child_dot_path = tmp_path / "child.dot"
     child_dot_path.write_text(
         """
@@ -1224,21 +1211,7 @@ def test_remote_worker_child_node_result_preserves_parent_child_provenance(
     )
 
     server.configure_runtime_paths(runs_dir=tmp_path / "runs")
-    _write_remote_profile_config(tmp_path)
-    controller = _RemoteController(
-        outcome={
-            "status": "success",
-            "context_updates": {"context.remote.child_answer": 84},
-            "notes": "remote child ok",
-        }
-    )
-
-    monkeypatch.setattr(
-        server,
-        "_build_codergen_backend",
-        lambda *args, **kwargs: ParentBackend(),
-    )
-    monkeypatch.setattr(execution_metadata, "RemoteWorkerClient", controller.factory)
+    monkeypatch.setattr(server.asyncio, "create_task", _close_task_immediately)
 
     response = attractor_api_client.post(
         "/pipelines",
@@ -1261,64 +1234,19 @@ def test_remote_worker_child_node_result_preserves_parent_child_provenance(
             }}
             """,
             "working_directory": str(tmp_path / "control" / "project"),
-            "backend": "codex-app-server",
         },
     )
 
     assert response.status_code == 200, response.text
-    parent_run_id = str(response.json()["run_id"])
-    completion = wait_for_pipeline_completion(attractor_api_client, parent_run_id)
-
-    assert completion["status"] == "completed", completion
-    parent_context = attractor_api_client.get(f"/pipelines/{parent_run_id}/context").json()["context"]
-    child_run_id = parent_context["context.stack.child.run_id"]
-    assert child_run_id
-    assert child_run_id != parent_run_id
-
-    assert len(controller.node_requests) == 1
-    node_request = controller.node_requests[0]
-    assert node_request.node_execution_id == f"{child_run_id}:start:1"
-    assert node_request.payload["runtime_references"]["run_id"] == child_run_id
-
-    child_record = server._read_run_meta(server._run_meta_path(child_run_id))
-    assert child_record is not None
-    assert child_record.status == "completed"
-    assert child_record.parent_run_id == parent_run_id
-    assert child_record.parent_node_id == "manager"
-    assert child_record.root_run_id == parent_run_id
-    assert child_record.child_invocation_index == 1
-    assert child_record.execution_worker_id == "worker-a"
-
-    child_checkpoint = server.load_checkpoint(server._run_root(child_run_id) / "state.json")
-    assert child_checkpoint is not None
-    assert child_checkpoint.completed_nodes == ["start"]
-    assert child_checkpoint.context["context.remote.child_answer"] == 84
-    assert child_checkpoint.context["internal.parent_run_id"] == parent_run_id
-    assert child_checkpoint.context["internal.parent_node_id"] == "manager"
-    assert child_checkpoint.context["internal.root_run_id"] == parent_run_id
-
-    child_events = server._read_persisted_run_events(child_run_id)
-    child_run_meta = next(event for event in child_events if event["type"] == "run_meta")
-    assert child_run_meta["parent_run_id"] == parent_run_id
-    assert child_run_meta["parent_node_id"] == "manager"
-    assert child_run_meta["root_run_id"] == parent_run_id
-    assert child_run_meta["child_invocation_index"] == 1
-    remote_events = [event for event in child_events if event["type"] == "remote_worker_event"]
-    assert [event["event"] for event in remote_events] == ["run_ready", "node_started", "node_result"]
-    result_payload = remote_events[-1]["payload"]
-    assert result_payload["outcome"]["context_updates"] == {"context.remote.child_answer": 84}
-    assert result_payload["context"] == {"context.remote.answer": 42}
-    assert result_payload["runtime_metadata"] == {"runtime_id": "runtime-run"}
-
-    parent_events = server._read_persisted_run_events(parent_run_id)
-    child_started = next(event for event in parent_events if event["type"] == "ChildRunStarted")
-    child_completed = next(event for event in parent_events if event["type"] == "ChildRunCompleted")
-    assert child_started["child_run_id"] == child_run_id
-    assert child_started["parent_run_id"] == parent_run_id
-    assert child_started["parent_node_id"] == "manager"
-    assert child_started["root_run_id"] == parent_run_id
-    assert child_completed["child_run_id"] == child_run_id
-    assert child_completed["status"] == "completed"
+    payload = response.json()
+    assert payload["status"] == "validation_error"
+    errors = payload["errors"]
+    assert len(errors) == 1
+    assert errors[0]["rule_id"] == "execution_placement_context_non_authoritative"
+    assert errors[0]["severity"] == "error"
+    assert errors[0]["node"] == "select_remote"
+    assert "_attractor.runtime.execution_profile_id" in errors[0]["message"]
+    assert "_attractor.runtime.execution_profile_selection_source" in errors[0]["message"]
 
 
 def test_remote_worker_node_failed_records_active_run_failure(

@@ -49,6 +49,8 @@ import {
   parsePreviewResponse,
   parseRuntimeStatusResponse,
   parsePipelineStartResponse,
+  parseRunsListResponse,
+  parseWorkspaceSettingsResponse,
 } from '@/lib/apiClient'
 import { buildPipelineStartPayload } from '@/lib/pipelineStartPayload'
 import { useStore } from '@/store'
@@ -1068,6 +1070,138 @@ describe('Frontend contract behavior', () => {
 
     expect(startPayload).not.toHaveProperty('execution_container_image')
     expect(startPayload).not.toHaveProperty('execution_profile_id')
+
+    const remoteRunSnapshot = {
+      run_id: 'run-remote-snapshot',
+      pipeline_id: 'run-remote-snapshot',
+      flow_name: 'remote.dot',
+      status: 'completed',
+      outcome: 'success',
+      working_directory: '/control/project',
+      project_path: '/control/project',
+      model: 'gpt-5',
+      provider: 'codex',
+      llm_provider: 'codex',
+      started_at: '2026-04-30T12:00:00Z',
+      ended_at: '2026-04-30T12:02:00Z',
+      last_error: '',
+      execution_mode: 'remote_worker',
+      execution_profile_id: 'remote-fast',
+      execution_worker_id: 'worker-a',
+      execution_worker_label: 'Worker A',
+      execution_worker_base_url: 'https://worker.example',
+      execution_container_image: 'spark-worker:launch',
+      execution_mapped_project_path: '/srv/runtime/runs/run-remote-snapshot/project',
+      execution_worker_runtime_root: '/srv/runtime',
+      execution_worker_version: '1.2.3',
+      execution_worker_capabilities: { shell: true },
+      execution_profile_capabilities: ['shell'],
+      cleanup_error: 'Run cleanup failed: container cleanup failed',
+    }
+    const statusSnapshot = parsePipelineStatusResponse({
+      ...remoteRunSnapshot,
+      completed_nodes: ['start', 'done'],
+      progress: { current_node: null, completed_nodes: ['start', 'done'] },
+    })
+    const listSnapshot = parseRunsListResponse({ runs: [remoteRunSnapshot] }).runs[0]
+
+    expect(statusSnapshot).toMatchObject({
+      execution_mode: 'remote_worker',
+      execution_profile_id: 'remote-fast',
+      execution_worker_id: 'worker-a',
+      execution_worker_label: 'Worker A',
+      execution_worker_base_url: 'https://worker.example',
+      execution_container_image: 'spark-worker:launch',
+      execution_mapped_project_path: '/srv/runtime/runs/run-remote-snapshot/project',
+      execution_worker_runtime_root: '/srv/runtime',
+      execution_worker_version: '1.2.3',
+      execution_worker_capabilities: { shell: true },
+      execution_profile_capabilities: ['shell'],
+      cleanup_error: 'Run cleanup failed: container cleanup failed',
+    })
+    expect(listSnapshot).toMatchObject({
+      execution_mode: 'remote_worker',
+      execution_profile_id: 'remote-fast',
+      execution_worker_id: 'worker-a',
+      execution_worker_label: 'Worker A',
+      execution_worker_base_url: 'https://worker.example',
+      execution_container_image: 'spark-worker:launch',
+      execution_mapped_project_path: '/srv/runtime/runs/run-remote-snapshot/project',
+      execution_worker_runtime_root: '/srv/runtime',
+      execution_worker_version: '1.2.3',
+      execution_worker_capabilities: { shell: true },
+      execution_profile_capabilities: ['shell'],
+      cleanup_error: 'Run cleanup failed: container cleanup failed',
+    })
+
+    const settingsPayload = parseWorkspaceSettingsResponse({
+      execution_placement: {
+        execution_modes: ['native', 'local_container', 'remote_worker'],
+        protocol: { expected_worker_protocol_version: 'v1' },
+        config: {
+          filename: 'execution-profiles.toml',
+          path: '/tmp/config/execution-profiles.toml',
+          exists: true,
+          loaded: true,
+          synthesized_native_default: false,
+        },
+        default_execution_profile_id: 'remote-fast',
+        validation_errors: [],
+        profiles: [
+          {
+            id: 'remote-fast',
+            label: 'Remote Fast',
+            mode: 'remote_worker',
+            enabled: true,
+            worker_id: 'worker-a',
+            image: 'spark-worker:latest',
+            capabilities: ['containers'],
+            metadata: {},
+          },
+        ],
+        workers: [
+          {
+            id: 'worker-a',
+            label: 'Worker A',
+            base_url: 'https://worker.example',
+            auth_token_env: 'WORKER_A_TOKEN',
+            enabled: true,
+            capabilities: ['containers'],
+            metadata: {},
+            health: {
+              worker_id: 'worker-a',
+              worker_version: '1.2.3',
+              protocol_version: 'v1',
+              status: 'ready',
+              capabilities: { containers: true },
+            },
+            health_error: null,
+            worker_info: {
+              worker_id: 'worker-a',
+              worker_version: '1.2.3',
+              protocol_version: 'v1',
+              status: 'ready',
+              capabilities: { containers: true },
+              supported_images: ['spark-worker:latest'],
+            },
+            worker_info_error: null,
+            status: 'ready',
+            versions: {
+              worker_version: '1.2.3',
+              protocol_version: 'v1',
+              expected_protocol_version: 'v1',
+            },
+            protocol_compatible: true,
+            compatibility: { compatible: true, signals: [] },
+          },
+        ],
+      },
+    })
+
+    expect(settingsPayload.execution_placement.execution_modes).toEqual(['native', 'local_container', 'remote_worker'])
+    expect(settingsPayload.execution_placement.profiles[0]?.mode).toBe('remote_worker')
+    expect(settingsPayload.execution_placement.workers[0]?.worker_info?.['supported_images']).toEqual(['spark-worker:latest'])
+    expect(settingsPayload.execution_placement.workers[0]?.protocol_compatible).toBe(true)
   })
 
   it('[CID:12.3.03] retrieves project conversation state by project identity', async () => {

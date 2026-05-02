@@ -18,6 +18,12 @@ def _write_flow(name: str, content: str = "digraph G { start [shape=Mdiamond]; d
     (flows_dir / name).write_text(content, encoding="utf-8")
 
 
+def _write_execution_profiles_config(content: str) -> None:
+    config_dir = product_app.get_settings().config_dir
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "execution-profiles.toml").write_text(content.strip(), encoding="utf-8")
+
+
 def test_project_metadata_returns_name_directory_and_branch_for_git_repo(
     product_api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -272,6 +278,18 @@ def test_project_registry_persists_execution_profile_default(
 ) -> None:
     project_dir = (tmp_path / "container-default").resolve()
     project_dir.mkdir()
+    _write_execution_profiles_config(
+        """
+        [profiles.local-dev]
+        label = "Local Dev"
+        mode = "local_container"
+        image = "spark-exec:latest"
+
+        [profiles.remote-fast]
+        label = "Remote Fast"
+        mode = "native"
+        """
+    )
 
     register_response = product_api_client.post(
         "/workspace/api/projects/register",
@@ -289,6 +307,60 @@ def test_project_registry_persists_execution_profile_default(
 
     project_file = product_app.get_settings().projects_dir / update_response.json()["project_id"] / "project.toml"
     assert 'execution_profile_id = "remote-fast"' in project_file.read_text(encoding="utf-8")
+
+
+def test_project_registry_rejects_unknown_execution_profile_default(
+    product_api_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_dir = (tmp_path / "unknown-default").resolve()
+    project_dir.mkdir()
+    _write_execution_profiles_config(
+        """
+        [profiles.local-dev]
+        label = "Local Dev"
+        mode = "native"
+        """
+    )
+
+    response = product_api_client.post(
+        "/workspace/api/projects/register",
+        json={"project_path": str(project_dir), "execution_profile_id": "missing-profile"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown execution profile: missing-profile"
+
+
+def test_project_registry_rejects_disabled_execution_profile_default(
+    product_api_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_dir = (tmp_path / "disabled-default").resolve()
+    project_dir.mkdir()
+    _write_execution_profiles_config(
+        """
+        [profiles.disabled-local]
+        label = "Disabled Local"
+        mode = "local_container"
+        enabled = false
+        image = "spark-exec:latest"
+        """
+    )
+
+    register_response = product_api_client.post(
+        "/workspace/api/projects/register",
+        json={"project_path": str(project_dir)},
+    )
+    assert register_response.status_code == 200
+
+    response = product_api_client.patch(
+        "/workspace/api/projects/state",
+        json={"project_path": str(project_dir), "execution_profile_id": "disabled-local"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Execution profile is disabled: disabled-local"
 
 
 def test_project_registry_logs_malformed_project_records(

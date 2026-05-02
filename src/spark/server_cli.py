@@ -57,7 +57,7 @@ def _build_runtime_parser() -> argparse.ArgumentParser:
         description="Spark operator CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    subparsers = parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(dest="command", metavar="{serve,init,service}")
 
     serve = subparsers.add_parser(
         "serve",
@@ -107,6 +107,9 @@ def _build_runtime_parser() -> argparse.ArgumentParser:
         "worker",
         help=argparse.SUPPRESS,
     )
+    subparsers._choices_actions = [  # noqa: SLF001 - argparse has no public API for hidden subcommands.
+        action for action in subparsers._choices_actions if action.dest != "worker"
+    ]
     worker_commands = worker.add_subparsers(dest="worker_command")
     worker_serve = worker_commands.add_parser("serve", help="Start the standalone Spark worker API")
     worker_serve.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")

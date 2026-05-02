@@ -163,6 +163,17 @@ def _compile_canonical_flow_model_js() -> Path:
     )
 
 
+@lru_cache(maxsize=1)
+def _compile_pipeline_start_payload_js() -> Path:
+    _, frontend_dir = _repo_paths()
+    return _build_direct_probe_artifact(
+        source_path=frontend_dir / "src" / "lib" / "pipelineStartPayload.ts",
+        artifact_path=Path("pipelineStartPayload.js"),
+        temp_prefix=".tmp-pipeline-start-payload-build-",
+        failure_context="pipelineStartPayload.ts probe artifact",
+    )
+
+
 def run_dot_utils_probe(
     probe_script: str,
     *,
@@ -175,6 +186,32 @@ def run_dot_utils_probe(
 
     env = os.environ.copy()
     env["DOT_UTILS_JS_PATH"] = str(dot_utils_js)
+    if env_extra:
+        env.update(env_extra)
+
+    probe_result = subprocess.run(
+        ["node", "--input-type=module", "-e", probe_script],
+        cwd=frontend_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    return probe_result.stdout
+
+
+def run_pipeline_start_payload_probe(
+    probe_script: str,
+    *,
+    temp_prefix: str,
+    error_context: str,
+    env_extra: dict[str, str] | None = None,
+) -> str:
+    _, frontend_dir = _repo_paths()
+    pipeline_start_payload_js = _compile_pipeline_start_payload_js()
+
+    env = os.environ.copy()
+    env["PIPELINE_START_PAYLOAD_JS_PATH"] = str(pipeline_start_payload_js)
     if env_extra:
         env.update(env_extra)
 

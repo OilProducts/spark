@@ -75,6 +75,7 @@ export interface RegisteredProject {
     directoryPath: string
     isFavorite: boolean
     lastAccessedAt: string | null
+    executionProfileId?: string | null
 }
 
 export interface ProjectRegistrationResult {
@@ -168,6 +169,7 @@ export interface HydratedProjectRecord {
     isFavorite: boolean
     lastAccessedAt: string | null
     activeConversationId?: string | null
+    executionProfileId?: string | null
 }
 
 export interface WorkspaceSlice {

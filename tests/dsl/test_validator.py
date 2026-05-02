@@ -170,6 +170,31 @@ class TestDotValidator:
 
         assert self._errors(diagnostics) == []
 
+    def test_execution_runtime_context_keys_cannot_be_declared_as_node_writes(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            select_profile [
+                shape=box,
+                prompt="Select placement",
+                spark.writes_context="[\\"_attractor.runtime.execution_profile_id\\"]"
+            ]
+            done [shape=Msquare]
+            start -> select_profile -> done
+        }
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+        errors = [
+            d
+            for d in self._errors(diagnostics)
+            if d.rule_id == "execution_placement_context_non_authoritative"
+        ]
+
+        assert len(errors) == 1
+        assert errors[0].node_id == "select_profile"
+        assert "_attractor.runtime.execution_profile_id" in errors[0].message
+
     def test_validator_rejects_legacy_tool_attrs(self):
         dot = """
         digraph G {

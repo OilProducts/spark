@@ -55,6 +55,18 @@ export interface RunRecord {
     parent_node_id?: string | null
     root_run_id?: string | null
     child_invocation_index?: number | null
+    execution_mode?: string
+    execution_profile_id?: string
+    execution_worker_id?: string
+    execution_worker_label?: string
+    execution_worker_base_url?: string
+    execution_container_image?: string | null
+    execution_mapped_project_path?: string
+    execution_worker_runtime_root?: string
+    execution_worker_version?: string
+    execution_worker_capabilities?: unknown
+    execution_profile_capabilities?: unknown
+    cleanup_error?: string
 }
 
 export interface CheckpointResponse {

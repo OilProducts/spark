@@ -43,6 +43,7 @@ from .paths import map_remote_project_path
 from .remote_client import RemoteWorkerClient
 from .remote_runner import RemoteHandlerRunner, RemotePreparationFailed
 from .resolution import ExecutionProfileSelection, resolve_execution_profile_by_id
+from .settings_view import public_execution_placement_settings
 from .worker_app import create_worker_app
 from .worker_models import (
     WORKER_EVENT_TYPES,
@@ -126,6 +127,7 @@ __all__ = [
     "load_execution_profile_config",
     "map_remote_project_path",
     "normalize_execution_mode",
+    "public_execution_placement_settings",
     "resolve_execution_profile_by_id",
     "seed_execution_profile_context",
     "worker_error_payload",

@@ -56,6 +56,7 @@ export interface ProjectRecordResponse {
     last_accessed_at?: string | null
     is_favorite: boolean
     active_conversation_id?: string | null
+    execution_profile_id?: string | null
 }
 
 function parseProjectRecordResponse(value: unknown): ProjectRecordResponse | null {
@@ -79,6 +80,7 @@ function parseProjectRecordResponse(value: unknown): ProjectRecordResponse | nul
         last_accessed_at: asOptionalNullableString(record.last_accessed_at),
         is_favorite: record.is_favorite === true,
         active_conversation_id: asOptionalNullableString(record.active_conversation_id),
+        execution_profile_id: asOptionalNullableString(record.execution_profile_id),
     }
 }
 

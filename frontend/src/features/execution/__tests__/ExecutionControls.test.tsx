@@ -108,6 +108,36 @@ const installExecutionFetchMock = (options?: {
     if (url.includes('/workspace/api/projects/metadata')) {
       return jsonResponse(options?.projectMetadataPayload ?? { branch: 'main' })
     }
+    if (url.endsWith('/workspace/api/settings')) {
+      return jsonResponse({
+        execution_placement: {
+          execution_modes: ['native', 'local_container', 'remote_worker'],
+          protocol: { expected_worker_protocol_version: 'v1' },
+          config: {
+            filename: 'execution-profiles.toml',
+            path: '/tmp/config/execution-profiles.toml',
+            exists: false,
+            loaded: true,
+            synthesized_native_default: true,
+          },
+          default_execution_profile_id: null,
+          profiles: [
+            {
+              id: 'native',
+              label: 'Native',
+              mode: 'native',
+              enabled: true,
+              worker_id: null,
+              image: null,
+              capabilities: {},
+              metadata: {},
+            },
+          ],
+          workers: [],
+          validation_errors: [],
+        },
+      })
+    }
     if (url.endsWith('/attractor/api/flows')) {
       return jsonResponse(flowList)
     }
@@ -220,6 +250,35 @@ describe('Execution controls behavior', () => {
       reasoning_effort: 'high',
       flow_name: TEST_SPEC_FLOW,
     })
+  })
+
+  it('sends execution_profile_id override before project default selector in start payloads', () => {
+    const defaultPayload = buildPipelineStartPayload(
+      {
+        projectPath: '/tmp/project',
+        flowSource: TEST_SPEC_FLOW,
+        workingDirectory: '/tmp/project',
+        model: null,
+        projectDefaultExecutionProfileId: 'remote-build',
+      },
+      'digraph G { start -> done }',
+    )
+    expect(defaultPayload.project_default_execution_profile_id).toBe('remote-build')
+    expect(defaultPayload).not.toHaveProperty('execution_profile_id')
+
+    const overridePayload = buildPipelineStartPayload(
+      {
+        projectPath: '/tmp/project',
+        flowSource: TEST_SPEC_FLOW,
+        workingDirectory: '/tmp/project',
+        model: null,
+        executionProfileId: 'local-dev',
+        projectDefaultExecutionProfileId: 'remote-build',
+      },
+      'digraph G { start -> done }',
+    )
+    expect(overridePayload.execution_profile_id).toBe('local-dev')
+    expect(overridePayload).not.toHaveProperty('project_default_execution_profile_id')
   })
 
   it('builds continue payload with explicit provider and reasoning selections', () => {

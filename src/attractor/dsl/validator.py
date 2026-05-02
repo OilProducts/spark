@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Dict, Iterable, List, Protocol, Set
 
@@ -39,6 +40,7 @@ _LEGACY_TOOL_ATTR_MESSAGES = {
     "tool_hooks.pre": "legacy tool attr 'tool_hooks.pre' is not supported; use 'tool.hooks.pre'",
     "tool_hooks.post": "legacy tool attr 'tool_hooks.post' is not supported; use 'tool.hooks.post'",
 }
+_PROTECTED_EXECUTION_CONTEXT_PREFIX = "_attractor.runtime.execution_"
 _SHAPE_TO_HANDLER_TYPE = {
     "Mdiamond": "start",
     "Msquare": "exit",
@@ -240,6 +242,7 @@ def validate_graph(graph: DotGraph) -> List[Diagnostic]:
     diagnostics.extend(_validate_prompt_on_llm_nodes(graph))
     diagnostics.extend(_validate_stylesheet(graph))
     diagnostics.extend(_validate_tool_handler_attrs(graph))
+    diagnostics.extend(_validate_execution_context_write_authority(graph))
 
     return diagnostics
 
@@ -714,6 +717,45 @@ def _validate_tool_handler_attrs(graph: DotGraph) -> List[Diagnostic]:
                 severity=DiagnosticSeverity.ERROR,
                 message=f"node '{node.node_id}' resolves to tool and must define a non-empty tool.command",
                 line=node.line,
+                node_id=node.node_id,
+            )
+        )
+
+    return diagnostics
+
+
+def _validate_execution_context_write_authority(graph: DotGraph) -> List[Diagnostic]:
+    diagnostics: List[Diagnostic] = []
+
+    for node in graph.nodes.values():
+        attr = node.attrs.get("spark.writes_context")
+        if not attr or not isinstance(attr.value, str):
+            continue
+        try:
+            declared = json.loads(attr.value)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(declared, list):
+            continue
+        protected_keys = sorted(
+            {
+                str(item).strip()
+                for item in declared
+                if isinstance(item, str)
+                and str(item).strip().startswith(_PROTECTED_EXECUTION_CONTEXT_PREFIX)
+            }
+        )
+        if not protected_keys:
+            continue
+        diagnostics.append(
+            Diagnostic(
+                rule_id="execution_placement_context_non_authoritative",
+                severity=DiagnosticSeverity.ERROR,
+                message=(
+                    f"node '{node.node_id}' cannot declare execution placement runtime keys in "
+                    f"spark.writes_context: {', '.join(protected_keys)}"
+                ),
+                line=attr.line,
                 node_id=node.node_id,
             )
         )

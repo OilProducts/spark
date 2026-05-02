@@ -387,9 +387,9 @@
         "tests/api/",
         "tests/contracts/frontend/"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M4",
-      "notes": "If the visual treatment is not already established when implementing, clarify UI specifics before coding."
+      "notes": "Completed in M4 with observable Settings, workspace/project defaults, launch, run-detail, CLI, chat, and frontend contract coverage."
     },
     {
       "id": "REQ-012",
@@ -415,9 +415,9 @@
         "tests/dsl/",
         "tests/contracts/frontend/"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M4",
-      "notes": "This is mostly a guardrail requirement unless DOT capability hints are introduced during implementation."
+      "notes": "Completed in M4 with DOT non-authority guardrails validated through DSL and API/frontend contract coverage."
     },
     {
       "id": "REQ-013",

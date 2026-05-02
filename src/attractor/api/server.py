@@ -90,6 +90,7 @@ from attractor.execution import (
     RemoteLaunchAdmission,
     admit_remote_launch,
     build_launch_metadata,
+    public_execution_placement_settings,
     resolve_execution_profile_by_id,
     seed_execution_profile_context,
 )
@@ -4074,6 +4075,11 @@ async def list_llm_profiles():
         return {"profiles": public_llm_profiles(get_runtime_paths().config_dir)}
     except LlmProfileConfigurationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@attractor_router.get("/api/execution-placement-settings")
+async def list_execution_placement_settings():
+    return public_execution_placement_settings(get_runtime_paths())
 
 
 def _flows_dir() -> Path:

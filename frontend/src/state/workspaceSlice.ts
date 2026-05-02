@@ -78,6 +78,7 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                     directoryPath: normalizedPath,
                     isFavorite: project.isFavorite === true,
                     lastAccessedAt: typeof project.lastAccessedAt === 'string' ? project.lastAccessedAt : null,
+                    ...(typeof project.executionProfileId === 'string' ? { executionProfileId: project.executionProfileId } : {}),
                 },
             }
             const nextProjectSessionStates = {

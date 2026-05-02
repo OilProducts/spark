@@ -90,6 +90,18 @@ function toRunRecord(status: PipelineStatusResponse): RunRecord {
         parent_node_id: status.parent_node_id ?? null,
         root_run_id: status.root_run_id ?? null,
         child_invocation_index: status.child_invocation_index ?? null,
+        execution_mode: status.execution_mode,
+        execution_profile_id: status.execution_profile_id,
+        execution_worker_id: status.execution_worker_id,
+        execution_worker_label: status.execution_worker_label,
+        execution_worker_base_url: status.execution_worker_base_url,
+        execution_container_image: status.execution_container_image,
+        execution_mapped_project_path: status.execution_mapped_project_path,
+        execution_worker_runtime_root: status.execution_worker_runtime_root,
+        execution_worker_version: status.execution_worker_version,
+        execution_worker_capabilities: status.execution_worker_capabilities,
+        execution_profile_capabilities: status.execution_profile_capabilities,
+        cleanup_error: status.cleanup_error,
     }
 }
 

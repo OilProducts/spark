@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import {
     buildLaunchContextFromValues,
@@ -13,6 +13,7 @@ import {
 import { formatProjectListLabel } from '@/features/projects/model/projectsHomeState'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useStore } from '@/store'
+import { fetchWorkspaceSettingsValidated, type WorkspaceSettingsResponse } from '@/lib/workspaceClient'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -20,6 +21,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { ExecutionGraphCard } from './components/ExecutionGraphCard'
 import { ExecutionLaunchInputsSurface } from './components/ExecutionLaunchInputsSurface'
@@ -43,6 +45,7 @@ const logUnexpectedExecutionError = (error: unknown) => {
 export function ExecutionControls() {
     const { confirm } = useDialogController()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
+    const projectRegistry = useStore((state) => state.projectRegistry)
     const executionFlow = useStore((state) => state.executionFlow)
     const executionContinuation = useStore((state) => state.executionContinuation)
     const clearExecutionContinuation = useStore((state) => state.clearExecutionContinuation)
@@ -71,6 +74,9 @@ export function ExecutionControls() {
     const expandChildFlows = useStore((state) => state.executionExpandChildFlows)
     const updateExecutionSession = useStore((state) => state.updateExecutionSession)
     const isNarrowViewport = useNarrowViewport()
+    const [selectedExecutionProfileId, setSelectedExecutionProfileId] = useState('')
+    const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettingsResponse | null>(null)
+    const [workspaceSettingsError, setWorkspaceSettingsError] = useState<string | null>(null)
 
     const executionFlowName = executionFlow
     const isContinuationMode = Boolean(executionContinuation)
@@ -94,6 +100,24 @@ export function ExecutionControls() {
         : activeProjectPath
             ? `Run in ${formatProjectListLabel(activeProjectPath)}`
             : 'Run'
+    const executionPlacement = workspaceSettings?.execution_placement ?? null
+    const activeProjectExecutionProfileId = activeProjectPath
+        ? projectRegistry[activeProjectPath]?.executionProfileId || null
+        : null
+    const effectiveExecutionProfileId = selectedExecutionProfileId
+        || activeProjectExecutionProfileId
+        || executionPlacement?.default_execution_profile_id
+        || 'native'
+    const effectiveExecutionProfile = executionPlacement?.profiles.find((profile) => profile.id === effectiveExecutionProfileId) ?? null
+    const enabledExecutionProfiles = executionPlacement?.profiles.filter((profile) => profile.enabled && profile.id) ?? []
+    const executionProfileValidationMessage = (executionPlacement?.validation_errors.length ? 'Execution profile settings are invalid.' : null)
+        || (effectiveExecutionProfileId && executionPlacement && !effectiveExecutionProfile
+            ? `Execution profile ${effectiveExecutionProfileId} is not available.`
+            : null)
+        || (effectiveExecutionProfile && !effectiveExecutionProfile.enabled
+            ? `Execution profile ${effectiveExecutionProfileId} is disabled.`
+            : null)
+    const executionProfileStatusMessage = workspaceSettingsError || executionProfileValidationMessage
     const executeDisabledReason = isContinuationMode
         ? isLoadingPreview
             ? 'Loading graph preview for continuation.'
@@ -112,9 +136,11 @@ export function ExecutionControls() {
                     ? 'Loading flow preview for launch inputs.'
                     : hasValidationErrors
                         ? 'Fix validation errors before running.'
-                        : parsedLaunchInputs.error
-                            ? 'Fix launch-input schema errors before running.'
-                            : undefined
+                        : executionProfileValidationMessage
+                            ? executionProfileValidationMessage
+                            : parsedLaunchInputs.error
+                                ? 'Fix launch-input schema errors before running.'
+                                : undefined
     const canRun = !executeDisabledReason
     const canRetryLaunch = isContinuationMode
         ? Boolean(executionContinuation?.startNodeId) && !hasValidationErrors
@@ -138,6 +164,8 @@ export function ExecutionControls() {
         llmProfile: selectedLlmProfile,
         reasoningEffort: selectedReasoningEffort,
         launchContext: null,
+        executionProfileId: selectedExecutionProfileId || null,
+        projectDefaultExecutionProfileId: activeProjectExecutionProfileId,
     }
 
     useEffect(() => {
@@ -158,6 +186,33 @@ export function ExecutionControls() {
             executionLaunchSuccessRunId: null,
         })
     }, [executionFlowName, executionContinuation, updateExecutionSession])
+
+    useEffect(() => {
+        if (!executionFlowName || isContinuationMode) {
+            setWorkspaceSettings(null)
+            setWorkspaceSettingsError(null)
+            return
+        }
+        let cancelled = false
+        fetchWorkspaceSettingsValidated()
+            .then((payload) => {
+                if (cancelled) {
+                    return
+                }
+                setWorkspaceSettings(payload)
+                setWorkspaceSettingsError(null)
+            })
+            .catch((error: unknown) => {
+                if (cancelled) {
+                    return
+                }
+                setWorkspaceSettings(null)
+                setWorkspaceSettingsError(error instanceof Error ? error.message : 'Unable to load execution profiles.')
+            })
+        return () => {
+            cancelled = true
+        }
+    }, [executionFlowName, isContinuationMode])
 
     const confirmGitPolicyGate = async () => {
         const projectPathForGitCheck = activeProjectPath || executionContinuation?.sourceWorkingDirectory || ''
@@ -390,6 +445,71 @@ export function ExecutionControls() {
                                     </div>
                                 </div>
                             </div>
+
+                            {!isContinuationMode ? (
+                                <div
+                                    data-testid="execution-profile-launch-settings"
+                                    className="grid gap-3 rounded-lg border border-border/80 bg-muted/10 p-4 md:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)] md:items-end"
+                                >
+                                    <div className="min-w-0 space-y-1">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                            Execution profile
+                                        </p>
+                                        <p
+                                            data-testid="execution-profile-effective-selection"
+                                            className="truncate text-sm text-foreground"
+                                            title={effectiveExecutionProfileId}
+                                        >
+                                            {effectiveExecutionProfile
+                                                ? `${effectiveExecutionProfile.label || effectiveExecutionProfile.id} (${effectiveExecutionProfile.mode})`
+                                                : effectiveExecutionProfileId}
+                                        </p>
+                                        <p
+                                            data-testid="execution-profile-effective-id"
+                                            className="font-mono text-xs text-muted-foreground"
+                                        >
+                                            {effectiveExecutionProfileId}
+                                        </p>
+                                        {executionProfileStatusMessage ? (
+                                            <p
+                                                data-testid="execution-profile-prelaunch-validation"
+                                                className={`text-xs ${executionProfileValidationMessage ? 'text-destructive' : 'text-muted-foreground'}`}
+                                            >
+                                                {executionProfileStatusMessage}
+                                            </p>
+                                        ) : (
+                                            <p
+                                                data-testid="execution-profile-prelaunch-validation"
+                                                className="text-xs text-muted-foreground"
+                                            >
+                                                Ready
+                                            </p>
+                                        )}
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="execution-profile-override" className="text-xs">
+                                            Run override
+                                        </Label>
+                                        <NativeSelect
+                                            id="execution-profile-override"
+                                            data-testid="execution-profile-override-select"
+                                            value={selectedExecutionProfileId}
+                                            onChange={(event) => setSelectedExecutionProfileId(event.target.value)}
+                                            size="sm"
+                                            className="w-full text-xs"
+                                        >
+                                            <NativeSelectOption value="">
+                                                Project/runtime default
+                                            </NativeSelectOption>
+                                            {enabledExecutionProfiles.map((profile) => (
+                                                <NativeSelectOption key={profile.id} value={profile.id || ''}>
+                                                    {profile.label || profile.id}
+                                                </NativeSelectOption>
+                                            ))}
+                                        </NativeSelect>
+                                    </div>
+                                </div>
+                            ) : null}
 
                             {isLoadingPreview ? (
                                 <Alert
