@@ -193,7 +193,7 @@ class WorkerState:
             )
         allowed_path_prefixes = _string_list_policy(self.policies.get("mapped_project_path_prefixes"))
         if allowed_path_prefixes and not any(
-            request.mapped_project_path == prefix or request.mapped_project_path.startswith(f"{prefix.rstrip('/')}/")
+            _path_is_within_prefix(request.mapped_project_path, prefix)
             for prefix in allowed_path_prefixes
         ):
             raise WorkerAPIError(
@@ -539,6 +539,15 @@ def _string_list_policy(value: Any) -> list[str]:
     else:
         return []
     return [str(item).rstrip("/") for item in values if str(item).strip()]
+
+
+def _path_is_within_prefix(path: str, prefix: str) -> bool:
+    normalized_path = os.path.abspath(os.path.normpath(os.path.expanduser(path)))
+    normalized_prefix = os.path.abspath(os.path.normpath(os.path.expanduser(prefix)))
+    try:
+        return os.path.commonpath([normalized_path, normalized_prefix]) == normalized_prefix
+    except ValueError:
+        return False
 
 
 def _capability_policy(value: Any) -> dict[str, Any]:

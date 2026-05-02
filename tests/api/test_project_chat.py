@@ -3914,6 +3914,53 @@ def test_create_flow_run_request_places_artifact_on_latest_assistant_turn(tmp_pa
     }
 
 
+def test_create_flow_run_request_drops_direct_execution_container_image(tmp_path: Path) -> None:
+    project_dir = tmp_path.resolve()
+    conversation_id = "conversation-flow-run-image-selection"
+    state = project_chat.ConversationState(
+        conversation_id=conversation_id,
+        project_path=str(project_dir),
+        title="Flow request route",
+        created_at="2026-03-13T10:00:00Z",
+        updated_at="2026-03-13T10:01:00Z",
+        turns=[
+            project_chat.ConversationTurn(
+                id="turn-user-1",
+                role="user",
+                content="Please run the implementation flow.",
+                timestamp="2026-03-13T10:00:00Z",
+            ),
+            project_chat.ConversationTurn(
+                id="turn-assistant-1",
+                role="assistant",
+                content="I can request that launch.",
+                timestamp="2026-03-13T10:01:00Z",
+                status="complete",
+            ),
+        ],
+    )
+    service = _project_chat_service()
+    service._write_state(state)
+
+    result = service.create_flow_run_request(
+        conversation_id,
+        str(project_dir),
+        {
+            "flow_name": TEST_DISPATCH_FLOW,
+            "summary": "Run implementation for the approved scope.",
+            "execution_container_image": "spark-exec:legacy",
+            "execution_profile_id": "local-dev",
+        },
+    )
+
+    snapshot = service.get_snapshot(conversation_id, str(project_dir))
+    request_payload = next(
+        entry for entry in snapshot["flow_run_requests"] if entry["id"] == result["flow_run_request_id"]
+    )
+    assert request_payload["execution_profile_id"] == "local-dev"
+    assert "execution_container_image" not in request_payload
+
+
 def test_flow_run_request_routes_create_and_approve_launch(
     product_api_client,
     tmp_path: Path,
@@ -4273,6 +4320,7 @@ def test_direct_flow_launch_routes_create_inline_artifact_and_launch(
             "model": "gpt-5.4",
             "llm_provider": "anthropic",
             "reasoning_effort": "low",
+            "execution_container_image": "spark-exec:legacy",
             "execution_profile_id": "remote-review",
             "backend": "codex-app-server",
         },
@@ -4297,6 +4345,7 @@ def test_direct_flow_launch_routes_create_inline_artifact_and_launch(
     assert flow_launch["llm_provider"] == "anthropic"
     assert flow_launch["reasoning_effort"] == "low"
     assert flow_launch["execution_profile_id"] == "remote-review"
+    assert "execution_container_image" not in flow_launch
     segment = next(
         entry for entry in updated_snapshot["segments"] if entry["artifact_id"] == launch_payload["flow_launch_id"]
     )

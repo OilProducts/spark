@@ -309,6 +309,24 @@ def test_worker_run_admission_validates_configured_policy_compatibility(tmp_path
         json={**base_request, "run_id": "bad-path", "mapped_project_path": str(tmp_path / "other")},
         headers=AUTH,
     )
+    traversal_path = client.post(
+        "/v1/runs",
+        json={
+            **base_request,
+            "run_id": "traversal-path",
+            "mapped_project_path": str(mapped_root / ".." / "other"),
+        },
+        headers=AUTH,
+    )
+    false_prefix_path = client.post(
+        "/v1/runs",
+        json={
+            **base_request,
+            "run_id": "false-prefix-path",
+            "mapped_project_path": f"{mapped_root}-other",
+        },
+        headers=AUTH,
+    )
     unavailable_path = client.post(
         "/v1/runs",
         json={**base_request, "run_id": "unavailable-path", "mapped_project_path": str(mapped_root / "missing")},
@@ -340,6 +358,10 @@ def test_worker_run_admission_validates_configured_policy_compatibility(tmp_path
     assert bad_image.json()["error"]["code"] == "unsupported_image"
     assert bad_path.status_code == 400
     assert bad_path.json()["error"]["code"] == "mapped_path_denied"
+    assert traversal_path.status_code == 400
+    assert traversal_path.json()["error"]["code"] == "mapped_path_denied"
+    assert false_prefix_path.status_code == 400
+    assert false_prefix_path.json()["error"]["code"] == "mapped_path_denied"
     assert unavailable_path.status_code == 400
     assert unavailable_path.json()["error"]["code"] == "mapped_path_unavailable"
     assert unavailable_path.json()["error"]["retryable"] is True

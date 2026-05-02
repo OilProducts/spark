@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from attractor.execution import (
+    ExecutionLaunchError,
     ExecutionProfile,
     ExecutionProtocolError,
     WorkerHealthResponse,
@@ -182,3 +183,28 @@ def test_remote_launch_rejects_missing_required_capability_before_admission(tmp_
         )
 
     assert client.admission_requests == []
+
+
+def test_remote_launch_rejects_outside_project_path_before_worker_contact(tmp_path: Path) -> None:
+    contacted = False
+
+    class ContactRecordingClient(_Client):
+        def health(self) -> WorkerHealthResponse:
+            nonlocal contacted
+            contacted = True
+            return super().health()
+
+    client = ContactRecordingClient()
+
+    with pytest.raises(ExecutionLaunchError, match="outside remote control_project_root"):
+        admit_remote_launch(
+            _profile(tmp_path),
+            _worker(),
+            run_id="run-outside-root",
+            control_project_path=tmp_path / "control-other" / "project",
+            client_factory=lambda worker: client,
+        )
+
+    assert contacted is False
+    assert client.admission_requests == []
+    assert not (tmp_path / "control-other").exists()

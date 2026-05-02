@@ -1,0 +1,322 @@
+{
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_execution_profile_config.py::test_execution_profiles_toml_normalizes_workers_and_profiles",
+          "surface": "filesystem configuration loading",
+          "validates": "execution profile config loads typed native, local_container, and remote_worker profiles from execution-profiles.toml"
+        },
+        {
+          "selector": "tests/api/test_execution_placement_settings.py::test_attractor_execution_placement_settings_exposes_profiles_workers_and_worker_metadata",
+          "surface": "settings API response",
+          "validates": "settings exposes configured execution profiles and workers through the public API"
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "evidence": [
+        {
+          "selector": "tests/test_cli.py::test_run_launch_payload_includes_execution_profile_override",
+          "surface": "CLI launch payload",
+          "validates": "run launch selection is expressed as execution_profile_id"
+        },
+        {
+          "selector": "tests/api/test_pipeline_context_endpoint.py::test_start_pipeline_ignores_execution_container_image_as_selection_field",
+          "surface": "pipeline launch API",
+          "validates": "execution_container_image is not accepted as public selection input"
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_remote_project_paths.py::test_remote_project_mapping_preserves_relative_suffix",
+          "surface": "path mapping behavior",
+          "validates": "remote root mapping preserves the project-relative suffix"
+        },
+        {
+          "selector": "tests/execution/test_remote_project_paths.py::test_remote_mapping_and_metadata_helpers_do_not_mutate_filesystem",
+          "surface": "filesystem effects",
+          "validates": "remote mapping and launch metadata helpers do not create, repair, or mutate source paths"
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_remote_client.py::test_remote_client_fails_before_network_contact_when_auth_token_env_is_missing",
+          "surface": "remote client launch validation",
+          "validates": "missing worker token environment variables fail before authenticated worker contact"
+        },
+        {
+          "selector": "tests/execution/test_worker_app.py::test_worker_v1_endpoints_require_bearer_auth",
+          "surface": "worker HTTP API",
+          "validates": "worker endpoints reject missing, malformed, and invalid bearer credentials"
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_worker_app.py::test_worker_run_lifecycle_endpoints_are_idempotent_and_conflict_on_different_repeats",
+          "surface": "worker HTTP API",
+          "validates": "run admission is idempotent for matching repeats and rejects conflicting repeats"
+        },
+        {
+          "selector": "tests/test_cli.py::test_worker_serve_starts_standalone_worker_app",
+          "surface": "spark-server CLI",
+          "validates": "worker serve starts the standalone worker app"
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_worker_bridge.py::test_worker_bridge_writes_request_reads_messages_and_replies_to_process_requests",
+          "surface": "run-node process protocol",
+          "validates": "worker bridge exchanges node requests, events, callback requests, and results over the process protocol"
+        },
+        {
+          "selector": "tests/execution/test_worker_app.py::test_worker_bridge_converts_process_errors_to_node_failed_events",
+          "surface": "worker HTTP API and event state",
+          "validates": "worker-side process failures become observable node_failed events"
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_worker_app.py::test_worker_events_replay_after_last_event_id_and_after_query_deterministically",
+          "surface": "worker SSE API",
+          "validates": "worker event streams replay from Last-Event-ID and after query state"
+        },
+        {
+          "selector": "tests/execution/test_remote_runner.py::test_remote_runner_fails_active_run_when_sequence_gap_cannot_be_proven_by_snapshot",
+          "surface": "control-plane remote runner state",
+          "validates": "unrecoverable worker SSE sequence gaps fail the active run"
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_remote_runner.py::test_remote_runner_opens_event_stream_and_does_not_post_node_before_run_ready",
+          "surface": "control-plane remote runner state",
+          "validates": "remote execution waits for run_ready before posting node execution"
+        },
+        {
+          "selector": "tests/api/test_pipeline_context_endpoint.py::test_remote_worker_run_failed_before_ready_records_preparation_failure_without_node_result",
+          "surface": "pipeline API and run record state",
+          "validates": "pre-ready run_failed events become preparation failures without applying node results"
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_remote_runner.py::test_remote_runner_answers_worker_human_gate_request_through_interviewer_callback",
+          "surface": "control-plane callback behavior",
+          "validates": "human gate authority remains in Spark while answers are forwarded to the worker"
+        },
+        {
+          "selector": "tests/execution/test_remote_runner.py::test_remote_runner_delivers_worker_child_run_and_status_callbacks",
+          "surface": "control-plane child-run behavior",
+          "validates": "child-run and child-status callbacks are coordinated by Spark and delivered to the worker"
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_remote_launch_metadata.py::test_remote_launch_admission_maps_paths_and_sends_worker_metadata",
+          "surface": "remote admission request and launch metadata",
+          "validates": "remote launches snapshot worker identity, version, capabilities, mapped path, runtime root, and image metadata"
+        },
+        {
+          "selector": "tests/api/test_pipeline_context_endpoint.py::test_start_pipeline_admits_valid_remote_worker_profile_without_native_execution",
+          "surface": "pipeline context API",
+          "validates": "run context exposes launch-time execution placement metadata"
+        }
+      ]
+    },
+    {
+      "id": "REQ-011",
+      "evidence": [
+        {
+          "selector": "tests/api/test_execution_placement_settings.py::test_workspace_settings_wraps_execution_placement_payload",
+          "surface": "project metadata API",
+          "validates": "project settings expose the default execution profile selection"
+        },
+        {
+          "selector": "tests/contracts/frontend/test_api_integration_contracts.py::test_execution_profile_response_metadata_contract_item_12_3_04",
+          "surface": "frontend API contract",
+          "validates": "frontend-facing metadata carries execution profile and worker placement fields"
+        }
+      ]
+    },
+    {
+      "id": "REQ-012",
+      "evidence": [
+        {
+          "selector": "tests/api/test_pipeline_context_endpoint.py::test_start_pipeline_ignores_dot_authored_execution_profile_selection",
+          "surface": "pipeline launch API",
+          "validates": "DOT-authored execution placement does not select a profile"
+        },
+        {
+          "selector": "tests/dsl/test_validator.py::TestDotValidator::test_execution_placement_attrs_do_not_affect_dsl_validation",
+          "surface": "DSL validation",
+          "validates": "execution placement attributes remain ordinary DOT metadata for validation"
+        }
+      ]
+    },
+    {
+      "id": "REQ-013",
+      "evidence": [
+        {
+          "selector": "tests/repo_hygiene/test_execution_runtime_boundaries.py::test_execution_runtime_package_owns_profile_and_error_models",
+          "surface": "package boundary",
+          "validates": "execution runtime models and errors are owned by attractor.execution"
+        },
+        {
+          "selector": "tests/repo_hygiene/test_execution_runtime_boundaries.py::test_worker_api_routes_are_not_mounted_on_control_plane_app",
+          "surface": "control-plane API routes",
+          "validates": "worker HTTP API routes are not mounted into the control-plane app"
+        }
+      ]
+    },
+    {
+      "id": "REQ-014",
+      "evidence": [
+        {
+          "selector": "tests/execution/test_remote_runner.py::test_remote_runner_close_deletes_remote_run_and_surfaces_cleanup_failure",
+          "surface": "control-plane cleanup behavior",
+          "validates": "cleanup failures remain observable instead of silently disappearing"
+        },
+        {
+          "selector": "tests/execution/test_worker_app.py::test_worker_orphan_cleanup_failure_remains_visible_without_terminal_rewrite",
+          "surface": "worker snapshot state",
+          "validates": "orphan cleanup failure remains visible without rewriting terminal outcome"
+        }
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "DEC-001",
+      "evidence": [
+        "tests/repo_hygiene/test_execution_runtime_boundaries.py::test_execution_runtime_package_owns_profile_and_error_models",
+        "tests/repo_hygiene/test_execution_runtime_boundaries.py::test_worker_api_routes_are_not_mounted_on_control_plane_app"
+      ]
+    },
+    {
+      "id": "DEC-002",
+      "evidence": [
+        "tests/test_cli.py::test_agent_launch_help_exposes_execution_profile_not_direct_image_or_worker_selection",
+        "tests/api/test_pipeline_context_endpoint.py::test_start_pipeline_ignores_execution_container_image_as_selection_field"
+      ]
+    },
+    {
+      "id": "DEC-003",
+      "evidence": [
+        "tests/execution/test_execution_profile_config.py::test_missing_execution_profiles_config_synthesizes_native_default_without_selected_profile",
+        "tests/execution/test_execution_profile_config.py::test_missing_execution_profiles_config_does_not_fallback_when_profile_selected"
+      ]
+    },
+    {
+      "id": "DEC-004",
+      "evidence": [
+        "tests/execution/test_runtime_foundation.py::test_execution_modes_are_public_contract_values",
+        "tests/api/test_pipeline_context_endpoint.py::test_start_pipeline_admits_valid_remote_worker_profile_without_native_execution"
+      ]
+    },
+    {
+      "id": "DEC-005",
+      "evidence": [
+        "tests/execution/test_remote_project_paths.py::test_remote_project_mapping_rejects_outside_control_root",
+        "tests/execution/test_remote_project_paths.py::test_remote_mapping_and_metadata_helpers_do_not_mutate_filesystem"
+      ]
+    },
+    {
+      "id": "DEC-006",
+      "evidence": [
+        "tests/execution/test_remote_client.py::test_remote_client_sends_bearer_auth_on_every_rest_request",
+        "tests/test_sse.py::test_worker_sse_streams_require_bearer_auth_before_opening_body"
+      ]
+    },
+    {
+      "id": "DEC-007",
+      "evidence": [
+        "tests/execution/test_worker_app.py::test_worker_run_lifecycle_endpoints_are_idempotent_and_conflict_on_different_repeats",
+        "tests/execution/test_worker_app.py::test_worker_callback_deliveries_are_idempotent_and_conflict_by_request_id"
+      ]
+    },
+    {
+      "id": "DEC-008",
+      "evidence": [
+        "tests/execution/test_remote_runner.py::test_remote_runner_ignores_duplicate_worker_events_before_emitting_or_applying",
+        "tests/execution/test_remote_runner.py::test_remote_runner_recovers_sequence_gap_when_snapshot_provides_missing_required_events"
+      ]
+    },
+    {
+      "id": "DEC-009",
+      "evidence": [
+        "tests/execution/test_remote_runner.py::test_remote_runner_opens_event_stream_and_does_not_post_node_before_run_ready",
+        "tests/execution/test_worker_app.py::test_worker_node_request_accepts_without_waiting_for_later_runtime_completion"
+      ]
+    },
+    {
+      "id": "DEC-010",
+      "evidence": [
+        "tests/execution/test_worker_bridge.py::test_worker_bridge_writes_request_reads_messages_and_replies_to_process_requests",
+        "tests/handlers/test_execution_container.py::test_worker_run_node_streams_events_and_serializes_outcome"
+      ]
+    },
+    {
+      "id": "DEC-011",
+      "evidence": [
+        "tests/execution/test_remote_runner.py::test_remote_runner_answers_worker_human_gate_request_through_interviewer_callback",
+        "tests/execution/test_remote_runner.py::test_remote_runner_delivers_worker_child_run_and_status_callbacks"
+      ]
+    },
+    {
+      "id": "DEC-012",
+      "evidence": [
+        "tests/execution/test_remote_launch_metadata.py::test_remote_launch_admission_maps_paths_and_sends_worker_metadata",
+        "tests/api/test_pipeline_context_endpoint.py::test_start_pipeline_admits_valid_remote_worker_profile_without_native_execution"
+      ]
+    },
+    {
+      "id": "DEC-013",
+      "evidence": [
+        "tests/api/test_pipeline_context_endpoint.py::test_start_pipeline_ignores_dot_authored_execution_profile_selection",
+        "tests/contracts/frontend/test_api_integration_contracts.py::test_execution_profile_launch_payload_ignores_dot_authored_placement_item_m4_i5"
+      ]
+    },
+    {
+      "id": "DEC-014",
+      "evidence": [
+        "tests/execution/test_remote_runner.py::test_remote_runner_treats_run_failed_before_ready_as_preparation_failure_without_node_post",
+        "tests/execution/test_worker_app.py::test_worker_orphan_cleanup_failure_remains_visible_without_terminal_rewrite"
+      ]
+    },
+    {
+      "id": "DEC-015",
+      "evidence": [
+        "tests/repo_hygiene/test_remote_execution_conformance_coverage.py::test_remote_execution_conformance_baseline_covers_every_requirement_and_decision",
+        "tests/repo_hygiene/test_spec_implementation_flow_contracts.py::test_spec_implementation_milestone_worker_uses_validation_as_a_real_gate"
+      ]
+    }
+  ],
+  "gaps": []
+}
