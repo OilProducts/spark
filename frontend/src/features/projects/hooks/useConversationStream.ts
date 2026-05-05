@@ -50,6 +50,14 @@ export function useConversationStream({
         if (segmentKind !== 'plan' && segmentKind !== 'flow_run_request' && segmentKind !== 'flow_launch') {
             return
         }
+        const hasMatchingSidecar = segmentKind === 'plan'
+            ? event.proposed_plans?.some((plan) => plan.id === event.segment.artifact_id)
+            : segmentKind === 'flow_run_request'
+                ? event.flow_run_requests?.some((request) => request.id === event.segment.artifact_id)
+                : event.flow_launches?.some((launch) => launch.id === event.segment.artifact_id)
+        if (hasMatchingSidecar) {
+            return
+        }
         void refreshSnapshot()
     }
 

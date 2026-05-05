@@ -237,6 +237,25 @@ function indexById<T extends { id: string }>(items: T[]): Record<string, T> {
     return Object.fromEntries(items.map((item) => [item.id, item]))
 }
 
+function mergeArtifactList<T extends { id: string }>(
+    currentIds: string[],
+    currentById: Record<string, T>,
+    incoming: T[] | undefined,
+): { ids: string[]; byId: Record<string, T> } {
+    if (!incoming || incoming.length === 0) {
+        return { ids: currentIds, byId: currentById }
+    }
+    const nextIds = [...currentIds]
+    const nextById = { ...currentById }
+    incoming.forEach((item) => {
+        if (!nextById[item.id]) {
+            nextIds.push(item.id)
+        }
+        nextById[item.id] = item
+    })
+    return { ids: nextIds, byId: nextById }
+}
+
 function buildConversationSummaryFromRecord(record: NormalizedConversationRecord): ConversationSummaryResponse {
     const lastMessageTurn = record.orderedTurnIds
         .map((turnId) => record.turnsById[turnId])
@@ -503,6 +522,21 @@ export function applyConversationStreamEventToCache(
         mergedRecord = rebuildTurnTimelineEntries(mergedRecord, turn.id)
     } else if (event.type === 'segment_upsert') {
         const segment = event.segment
+        const flowRunRequests = mergeArtifactList(
+            existingRecord.flowRunRequestIds,
+            existingRecord.flowRunRequestsById,
+            event.flow_run_requests,
+        )
+        const flowLaunches = mergeArtifactList(
+            existingRecord.flowLaunchIds,
+            existingRecord.flowLaunchesById,
+            event.flow_launches,
+        )
+        const proposedPlans = mergeArtifactList(
+            existingRecord.proposedPlanIds,
+            existingRecord.proposedPlansById,
+            event.proposed_plans,
+        )
         const turnSegmentIds = existingRecord.orderedSegmentIdsByTurnId[segment.turn_id] || []
         const nextTurnSegmentIds = turnSegmentIds.includes(segment.id)
             ? turnSegmentIds
@@ -530,6 +564,12 @@ export function applyConversationStreamEventToCache(
                 ...existingRecord.orderedSegmentIdsByTurnId,
                 [segment.turn_id]: nextTurnSegmentIds,
             },
+            flowRunRequestIds: flowRunRequests.ids,
+            flowRunRequestsById: flowRunRequests.byId,
+            flowLaunchIds: flowLaunches.ids,
+            flowLaunchesById: flowLaunches.byId,
+            proposedPlanIds: proposedPlans.ids,
+            proposedPlansById: proposedPlans.byId,
         }
         mergedRecord = rebuildTurnTimelineEntries(mergedRecord, segment.turn_id)
     }

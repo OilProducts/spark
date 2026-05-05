@@ -10,6 +10,7 @@ import type {
   ConversationSegmentResponse,
   ConversationSnapshotResponse,
   ConversationTurnResponse,
+  FlowLaunchResponse,
   FlowRunRequestResponse,
   ProposedPlanArtifactResponse,
 } from '@/lib/workspaceClient'
@@ -63,6 +64,28 @@ const buildFlowRunRequest = (overrides: Partial<FlowRunRequestResponse> = {}): F
   run_id: null,
   launch_error: null,
   review_message: null,
+  ...overrides,
+})
+
+const buildFlowLaunch = (overrides: Partial<FlowLaunchResponse> = {}): FlowLaunchResponse => ({
+  id: 'launch-1',
+  created_at: '2026-03-06T15:00:25Z',
+  updated_at: '2026-03-06T15:00:25Z',
+  flow_name: 'implementation.dot',
+  summary: 'Launch the implementation flow.',
+  project_path: '/tmp/project-contract-behavior',
+  conversation_id: 'conversation-1',
+  source_turn_id: 'turn-assistant',
+  source_segment_id: 'segment-launch-1',
+  status: 'pending',
+  goal: 'Implement the approved request.',
+  launch_context: null,
+  model: null,
+  llm_provider: null,
+  llm_profile: null,
+  reasoning_effort: null,
+  run_id: null,
+  launch_error: null,
   ...overrides,
 })
 
@@ -411,6 +434,52 @@ describe('applyConversationSnapshotToCache', () => {
       content: 'Hello from streaming.',
     }))
     expect(result.record.orderedTurnIds).toEqual(['turn-user', 'turn-assistant'])
+  })
+
+  it('merges artifact sidecars from streamed segment events before rebuilding the timeline row', () => {
+    const initialSnapshot = buildSnapshot({
+      turns: [
+        buildSnapshot().turns[0],
+        buildTurn({ content: '' }),
+      ],
+      segments: [],
+    })
+    const cacheWithInitialSnapshot = applyConversationSnapshotToCache(
+      EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      initialSnapshot.project_path,
+      initialSnapshot,
+    ).cache
+
+    const result = applyConversationStreamEventToCache(
+      cacheWithInitialSnapshot,
+      initialSnapshot.project_path,
+      {
+        type: 'segment_upsert',
+        revision: 1,
+        conversation_id: initialSnapshot.conversation_id,
+        project_path: initialSnapshot.project_path,
+        title: initialSnapshot.title,
+        updated_at: '2026-03-06T15:01:45Z',
+        segment: buildSegment({
+          id: 'segment-plan-1',
+          kind: 'plan',
+          content: 'Do the work incrementally.',
+          artifact_id: 'plan-1',
+        }),
+        proposed_plans: [buildProposedPlan()],
+        flow_run_requests: [buildFlowRunRequest()],
+        flow_launches: [buildFlowLaunch()],
+      },
+    )
+
+    expect(result.record.proposedPlansById['plan-1']?.title).toBe('Implementation plan')
+    expect(result.record.flowRunRequestsById['request-1']?.summary).toBe('Launch the implementation flow.')
+    expect(result.record.flowLaunchesById['launch-1']?.status).toBe('pending')
+    expect(getConversationTimelineEntries(result.record)).toContainEqual(expect.objectContaining({
+      id: 'segment-plan-1',
+      kind: 'plan',
+      artifactId: 'plan-1',
+    }))
   })
 
   it('reports stream events for unknown conversations as missing records', () => {

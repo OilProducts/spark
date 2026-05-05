@@ -623,7 +623,7 @@ class ProjectChatRepository:
         state: ConversationState,
         segment: ConversationSegment,
     ) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "type": "segment_upsert",
             "revision": state.revision,
             "conversation_id": state.conversation_id,
@@ -632,3 +632,18 @@ class ProjectChatRepository:
             "updated_at": state.updated_at,
             "segment": self.serialize_segment_for_ui(segment),
         }
+        if not segment.artifact_id:
+            return payload
+        if segment.kind == "plan":
+            proposed_plan = next((entry for entry in state.proposed_plans if entry.id == segment.artifact_id), None)
+            if proposed_plan is not None:
+                payload["proposed_plans"] = [proposed_plan.to_dict()]
+        elif segment.kind == "flow_run_request":
+            request = next((entry for entry in state.flow_run_requests if entry.id == segment.artifact_id), None)
+            if request is not None:
+                payload["flow_run_requests"] = [request.to_dict()]
+        elif segment.kind == "flow_launch":
+            launch = next((entry for entry in state.flow_launches if entry.id == segment.artifact_id), None)
+            if launch is not None:
+                payload["flow_launches"] = [launch.to_dict()]
+        return payload

@@ -1295,80 +1295,6 @@ describe('ProjectsPanel', () => {
       flow_launches: [],
       proposed_plans: [],
     })
-    const refreshedSnapshot = withSnapshotSchema({
-      ...initialSnapshot,
-      updated_at: '2026-03-07T15:30:04Z',
-      revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
-      turns: [
-        ...initialSnapshot.turns,
-        {
-          id: 'turn-assistant-live',
-          role: 'assistant',
-          content: 'Working on the streamed update.\n\n## Proposed steps',
-          timestamp: '2026-03-07T15:30:04Z',
-          status: 'complete',
-          kind: 'message',
-          artifact_id: null,
-        },
-      ],
-      segments: [
-        {
-          id: 'segment-assistant-pre-snapshot',
-          turn_id: 'turn-assistant-live',
-          order: 1,
-          kind: 'assistant_message',
-          role: 'assistant',
-          status: 'complete',
-          timestamp: '2026-03-07T15:30:02Z',
-          updated_at: '2026-03-07T15:30:02Z',
-          revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
-          completed_at: '2026-03-07T15:30:02Z',
-          content: 'Working on the streamed update.',
-          artifact_id: null,
-          error: null,
-          tool_call: null,
-          source: null,
-        },
-        {
-          id: 'segment-plan-pre-snapshot',
-          turn_id: 'turn-assistant-live',
-          order: 2,
-          kind: 'plan',
-          role: 'assistant',
-          status: 'complete',
-          timestamp: '2026-03-07T15:30:03Z',
-          updated_at: '2026-03-07T15:30:03Z',
-          revision: testRevisionFromTimestamp('2026-03-07T15:30:03Z'),
-          completed_at: '2026-03-07T15:30:03Z',
-          content: '## Proposed steps',
-          artifact_id: 'proposed-plan-pre-snapshot',
-          error: null,
-          tool_call: null,
-          source: null,
-        },
-      ],
-      proposed_plans: [
-        {
-          id: 'proposed-plan-pre-snapshot',
-          created_at: '2026-03-07T15:30:03Z',
-          updated_at: '2026-03-07T15:30:03Z',
-          revision: testRevisionFromTimestamp('2026-03-07T15:30:03Z'),
-          title: 'Proposed steps',
-          content: '## Proposed steps',
-          project_path: '/tmp/chat-project',
-          conversation_id: 'conversation-pre-snapshot-replay',
-          source_turn_id: 'turn-assistant-live',
-          source_segment_id: 'segment-plan-pre-snapshot',
-          status: 'pending_review',
-          review_note: null,
-          written_change_request_path: null,
-          flow_launch_id: null,
-          run_id: null,
-          launch_error: null,
-        },
-      ],
-    })
-
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
     vi.stubGlobal(
       'fetch',
@@ -1398,12 +1324,6 @@ describe('ProjectsPanel', () => {
         }
         if (url.includes('/workspace/api/conversations/conversation-pre-snapshot-replay') && !url.includes('/events')) {
           snapshotFetchCount += 1
-          if (snapshotFetchCount > 1) {
-            return new Response(JSON.stringify(refreshedSnapshot), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            })
-          }
           return await new Promise<Response>((resolve) => {
             resolveSnapshot = resolve
           })
@@ -1465,40 +1385,6 @@ describe('ProjectsPanel', () => {
           },
         })),
       } as MessageEvent)
-      MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
-          conversation_id: 'conversation-pre-snapshot-replay',
-          project_path: '/tmp/chat-project',
-          title: 'Pre-snapshot replay',
-          updated_at: '2026-03-07T15:30:03Z',
-          revision: testRevisionFromTimestamp('2026-03-07T15:30:03Z'),
-          event: {
-            id: 'event-plan-pre-snapshot',
-            turn_id: 'turn-assistant-live',
-            sequence: 2,
-            timestamp: '2026-03-07T15:30:03Z',
-            kind: 'content_completed',
-            channel: 'plan',
-            segment: {
-              id: 'segment-plan-pre-snapshot',
-              turn_id: 'turn-assistant-live',
-              order: 2,
-              kind: 'plan',
-              role: 'assistant',
-              status: 'complete',
-              timestamp: '2026-03-07T15:30:03Z',
-              updated_at: '2026-03-07T15:30:03Z',
-              revision: testRevisionFromTimestamp('2026-03-07T15:30:03Z'),
-              completed_at: '2026-03-07T15:30:03Z',
-              content: '## Proposed steps',
-              artifact_id: 'proposed-plan-pre-snapshot',
-              error: null,
-              tool_call: null,
-              source: null,
-            },
-          },
-        })),
-      } as MessageEvent)
     })
 
     expect(screen.queryByText('Working on the streamed update.')).not.toBeInTheDocument()
@@ -1518,10 +1404,7 @@ describe('ProjectsPanel', () => {
       expect(history).toHaveTextContent('Start from the real snapshot.')
       expect(history).toHaveTextContent('Working on the streamed update.')
     })
-    await waitFor(() => {
-      expect(snapshotFetchCount).toBe(2)
-      expect(screen.getByTestId('project-proposed-plan-approve-button-proposed-plan-pre-snapshot')).toBeVisible()
-    })
+    expect(snapshotFetchCount).toBe(1)
     expect(within(history).getAllByText('Working on the streamed update.')).toHaveLength(1)
   })
 
@@ -2119,7 +2002,7 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it('refreshes the conversation snapshot when a streamed plan segment creates a proposed-plan artifact', async () => {
+  it('shows proposed-plan review controls from a streamed plan segment artifact sidecar', async () => {
     class MockEventSource {
       static instances: MockEventSource[] = []
 
@@ -2170,60 +2053,24 @@ describe('ProjectsPanel', () => {
       proposed_plans: [],
     })
 
-    const snapshotWithArtifact = withSnapshotSchema({
-      ...snapshotWithoutArtifact,
-      updated_at: '2026-03-09T21:00:03Z',
-      revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
-      turns: [
-        {
-          ...snapshotWithoutArtifact.turns[0],
-        },
-        {
-          ...snapshotWithoutArtifact.turns[1],
-          status: 'complete',
-          content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
-        },
-      ],
-      segments: [
-        {
-          id: 'segment-plan-inline',
-          turn_id: 'turn-assistant-plan',
-          order: 1,
-          kind: 'plan',
-          role: 'assistant',
-          status: 'complete',
-          timestamp: '2026-03-09T21:00:02Z',
-          updated_at: '2026-03-09T21:00:02Z',
-          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
-          completed_at: '2026-03-09T21:00:02Z',
-          content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
-          artifact_id: 'proposed-plan-inline',
-          error: null,
-          tool_call: null,
-          source: null,
-        },
-      ],
-      proposed_plans: [
-        {
-          id: 'proposed-plan-inline',
-          created_at: '2026-03-09T21:00:02Z',
-          updated_at: '2026-03-09T21:00:02Z',
-          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
-          title: 'Proposed steps',
-          content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
-          project_path: '/tmp/chat-project',
-          conversation_id: 'conversation-streamed-plan',
-          source_turn_id: 'turn-assistant-plan',
-          source_segment_id: 'segment-plan-inline',
-          status: 'pending_review',
-          review_note: null,
-          written_change_request_path: null,
-          flow_launch_id: null,
-          run_id: null,
-          launch_error: null,
-        },
-      ],
-    })
+    const proposedPlan = {
+      id: 'proposed-plan-inline',
+      created_at: '2026-03-09T21:00:02Z',
+      updated_at: '2026-03-09T21:00:02Z',
+      revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
+      title: 'Proposed steps',
+      content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
+      project_path: '/tmp/chat-project',
+      conversation_id: 'conversation-streamed-plan',
+      source_turn_id: 'turn-assistant-plan',
+      source_segment_id: 'segment-plan-inline',
+      status: 'pending_review',
+      review_note: null,
+      written_change_request_path: null,
+      flow_launch_id: null,
+      run_id: null,
+      launch_error: null,
+    }
 
     let snapshotFetchCount = 0
     vi.stubGlobal(
@@ -2255,8 +2102,7 @@ describe('ProjectsPanel', () => {
         }
         if (url.includes('/workspace/api/conversations/conversation-streamed-plan') && !url.includes('/events')) {
           snapshotFetchCount += 1
-          const payload = snapshotFetchCount === 1 ? snapshotWithoutArtifact : snapshotWithArtifact
-          return new Response(JSON.stringify(payload), {
+          return new Response(JSON.stringify(snapshotWithoutArtifact), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -2281,44 +2127,48 @@ describe('ProjectsPanel', () => {
 
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
-          conversation_id: 'conversation-streamed-plan',
-          project_path: '/tmp/chat-project',
-          title: 'Plan review',
-          updated_at: '2026-03-09T21:00:02Z',
-          revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
-          event: {
-            turn_id: 'turn-assistant-plan',
-            sequence: 1,
-            timestamp: '2026-03-09T21:00:02Z',
-            kind: 'content_completed',
-              channel: 'assistant',
-            segment: {
-              id: 'segment-plan-inline',
+        data: JSON.stringify({
+          ...asSegmentUpsertEvent({
+            conversation_id: 'conversation-streamed-plan',
+            project_path: '/tmp/chat-project',
+            title: 'Plan review',
+            updated_at: '2026-03-09T21:00:02Z',
+            revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
+            event: {
               turn_id: 'turn-assistant-plan',
-              order: 1,
-              kind: 'plan',
-              role: 'assistant',
-              status: 'complete',
+              sequence: 1,
               timestamp: '2026-03-09T21:00:02Z',
-              updated_at: '2026-03-09T21:00:02Z',
-              revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
-              completed_at: '2026-03-09T21:00:02Z',
-              content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
-              artifact_id: 'proposed-plan-inline',
-              error: null,
-              tool_call: null,
-              source: null,
+              kind: 'content_completed',
+              channel: 'assistant',
+              segment: {
+                id: 'segment-plan-inline',
+                turn_id: 'turn-assistant-plan',
+                order: 1,
+                kind: 'plan',
+                role: 'assistant',
+                status: 'complete',
+                timestamp: '2026-03-09T21:00:02Z',
+                updated_at: '2026-03-09T21:00:02Z',
+                revision: testRevisionFromTimestamp('2026-03-09T21:00:02Z'),
+                completed_at: '2026-03-09T21:00:02Z',
+                content: '## Proposed steps\n\n1. Add the backend artifact.\n2. Wire the review UI.',
+                artifact_id: 'proposed-plan-inline',
+                error: null,
+                tool_call: null,
+                source: null,
+              },
             },
-          },
-        })),
+          }),
+          proposed_plans: [proposedPlan],
+        }),
       } as MessageEvent<string>)
     })
 
     await waitFor(() => {
       expect(screen.getByTestId('project-proposed-plan-approve-button-proposed-plan-inline')).toBeVisible()
     })
-    expect(snapshotFetchCount).toBeGreaterThanOrEqual(2)
+    expect(screen.getByTestId('project-proposed-plan-reject-button-proposed-plan-inline')).toBeVisible()
+    expect(snapshotFetchCount).toBe(1)
   })
 
   it('returns the send button to Send once the assistant turn completes even if the original POST is still pending', async () => {

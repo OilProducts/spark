@@ -482,4 +482,71 @@ describe('conversationsApi parsing', () => {
 
         expect(event).toBeNull()
     })
+
+    it('parses optional artifact sidecars from segment_upsert stream events', () => {
+        const event = parseConversationStreamEventResponse({
+            type: 'segment_upsert',
+            revision: 1,
+            conversation_id: 'conversation-plan',
+            project_path: '/tmp/project-plan',
+            title: 'Planning thread',
+            updated_at: '2026-04-16T18:00:10Z',
+            segment: {
+                id: 'segment-plan-1',
+                turn_id: 'turn-assistant-1',
+                order: 1,
+                kind: 'plan',
+                role: 'assistant',
+                status: 'complete',
+                timestamp: '2026-04-16T18:00:08Z',
+                updated_at: '2026-04-16T18:00:08Z',
+                content: 'Plan content.',
+                artifact_id: 'plan-1',
+            },
+            proposed_plans: [{
+                id: 'plan-1',
+                created_at: '2026-04-16T18:00:08Z',
+                updated_at: '2026-04-16T18:00:08Z',
+                title: 'Plan',
+                content: 'Plan content.',
+                project_path: '/tmp/project-plan',
+                conversation_id: 'conversation-plan',
+                source_turn_id: 'turn-assistant-1',
+                source_segment_id: 'segment-plan-1',
+                status: 'pending_review',
+            }],
+            flow_run_requests: [{
+                id: 'request-1',
+                created_at: '2026-04-16T18:00:08Z',
+                updated_at: '2026-04-16T18:00:08Z',
+                flow_name: 'implementation.dot',
+                summary: 'Run implementation.',
+                project_path: '/tmp/project-plan',
+                conversation_id: 'conversation-plan',
+                source_turn_id: 'turn-assistant-1',
+                source_segment_id: 'segment-request-1',
+                status: 'pending',
+            }],
+            flow_launches: [{
+                id: 'launch-1',
+                created_at: '2026-04-16T18:00:08Z',
+                updated_at: '2026-04-16T18:00:08Z',
+                flow_name: 'implementation.dot',
+                summary: 'Launch implementation.',
+                project_path: '/tmp/project-plan',
+                conversation_id: 'conversation-plan',
+                source_turn_id: 'turn-assistant-1',
+                source_segment_id: 'segment-launch-1',
+                status: 'pending',
+            }],
+        })
+
+        expect(event?.type).toBe('segment_upsert')
+        if (event?.type !== 'segment_upsert') {
+            return
+        }
+        expect(event.proposed_plans?.[0]?.id).toBe('plan-1')
+        expect(event.flow_run_requests?.[0]?.id).toBe('request-1')
+        expect(event.flow_launches?.[0]?.id).toBe('launch-1')
+    })
 })

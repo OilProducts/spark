@@ -205,6 +205,9 @@ export interface ConversationSegmentUpsertEventResponse {
     title: string
     updated_at: string
     segment: ConversationSegmentResponse
+    flow_run_requests?: FlowRunRequestResponse[]
+    flow_launches?: FlowLaunchResponse[]
+    proposed_plans?: ProposedPlanArtifactResponse[]
 }
 
 export function conversationEventsUrl(conversationId: string, projectPath: string): string {
@@ -664,6 +667,21 @@ export function parseConversationStreamEventResponse(
     }
     if (type === 'segment_upsert') {
         const segment = parseConversationSegmentResponse(record.segment)
+        const flow_run_requests = Array.isArray(record.flow_run_requests)
+            ? record.flow_run_requests
+                .map((entry) => parseFlowRunRequestResponse(entry))
+                .filter((entry): entry is FlowRunRequestResponse => entry !== null)
+            : undefined
+        const flow_launches = Array.isArray(record.flow_launches)
+            ? record.flow_launches
+                .map((entry) => parseFlowLaunchResponse(entry))
+                .filter((entry): entry is FlowLaunchResponse => entry !== null)
+            : undefined
+        const proposed_plans = Array.isArray(record.proposed_plans)
+            ? record.proposed_plans
+                .map((entry) => parseProposedPlanArtifactResponse(entry))
+                .filter((entry): entry is ProposedPlanArtifactResponse => entry !== null)
+            : undefined
         if (
             !segment
             || typeof record.conversation_id !== 'string'
@@ -682,6 +700,9 @@ export function parseConversationStreamEventResponse(
             title: record.title,
             updated_at: record.updated_at,
             segment,
+            ...(flow_run_requests ? { flow_run_requests } : {}),
+            ...(flow_launches ? { flow_launches } : {}),
+            ...(proposed_plans ? { proposed_plans } : {}),
         }
     }
     return null

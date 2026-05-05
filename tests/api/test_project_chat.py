@@ -1146,6 +1146,116 @@ def test_build_segment_upsert_payload_serializes_segment(tmp_path: Path) -> None
     assert payload["segment"]["tool_call"]["output"] == "AGENTS.md\n"
 
 
+def test_build_segment_upsert_payload_includes_matching_artifact_sidecar(tmp_path: Path) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    state = project_chat.ConversationState(
+        conversation_id="conversation-test",
+        project_path="/tmp/project",
+        flow_run_requests=[
+            project_chat.FlowRunRequest(
+                id="request-1",
+                created_at="2026-03-06T23:00:02Z",
+                updated_at="2026-03-06T23:00:03Z",
+                flow_name="implementation.dot",
+                summary="Run implementation.",
+                project_path="/tmp/project",
+                conversation_id="conversation-test",
+                source_turn_id="turn-assistant-1",
+                source_segment_id="segment-request-1",
+            ),
+        ],
+        flow_launches=[
+            project_chat.FlowLaunch(
+                id="launch-1",
+                created_at="2026-03-06T23:00:02Z",
+                updated_at="2026-03-06T23:00:03Z",
+                flow_name="implementation.dot",
+                summary="Launch implementation.",
+                project_path="/tmp/project",
+                conversation_id="conversation-test",
+                source_turn_id="turn-assistant-1",
+                source_segment_id="segment-launch-1",
+            ),
+        ],
+        proposed_plans=[
+            project_chat.ProposedPlanArtifact(
+                id="plan-1",
+                created_at="2026-03-06T23:00:02Z",
+                updated_at="2026-03-06T23:00:03Z",
+                title="Implementation plan",
+                content="Do the work.",
+                project_path="/tmp/project",
+                conversation_id="conversation-test",
+                source_turn_id="turn-assistant-1",
+                source_segment_id="segment-plan-1",
+            ),
+            project_chat.ProposedPlanArtifact(
+                id="plan-other",
+                created_at="2026-03-06T23:00:02Z",
+                updated_at="2026-03-06T23:00:03Z",
+                title="Other plan",
+                content="Ignore this plan.",
+                project_path="/tmp/project",
+                conversation_id="conversation-test",
+                source_turn_id="turn-assistant-1",
+                source_segment_id="segment-plan-other",
+            ),
+        ],
+    )
+    segment = project_chat.ConversationSegment(
+        id="segment-plan-1",
+        turn_id="turn-assistant-1",
+        order=1,
+        kind="plan",
+        role="assistant",
+        status="complete",
+        timestamp="2026-03-06T23:00:02Z",
+        updated_at="2026-03-06T23:00:03Z",
+        completed_at="2026-03-06T23:00:03Z",
+        content="Do the work.",
+        artifact_id="plan-1",
+    )
+
+    payload = service._build_segment_upsert_payload(state, segment)
+
+    assert [entry["id"] for entry in payload["proposed_plans"]] == ["plan-1"]
+    assert "flow_run_requests" not in payload
+    assert "flow_launches" not in payload
+
+    request_payload = service._build_segment_upsert_payload(
+        state,
+        project_chat.ConversationSegment(
+            id="segment-request-1",
+            turn_id="turn-assistant-1",
+            order=2,
+            kind="flow_run_request",
+            role="system",
+            status="complete",
+            timestamp="2026-03-06T23:00:02Z",
+            updated_at="2026-03-06T23:00:03Z",
+            content="Run implementation.",
+            artifact_id="request-1",
+        ),
+    )
+    launch_payload = service._build_segment_upsert_payload(
+        state,
+        project_chat.ConversationSegment(
+            id="segment-launch-1",
+            turn_id="turn-assistant-1",
+            order=3,
+            kind="flow_launch",
+            role="system",
+            status="complete",
+            timestamp="2026-03-06T23:00:02Z",
+            updated_at="2026-03-06T23:00:03Z",
+            content="Launch implementation.",
+            artifact_id="launch-1",
+        ),
+    )
+    assert [entry["id"] for entry in request_payload["flow_run_requests"]] == ["request-1"]
+    assert [entry["id"] for entry in launch_payload["flow_launches"]] == ["launch-1"]
+
+
 def test_conversation_state_rejects_unsupported_snapshot_shape() -> None:
     with pytest.raises(ValueError, match="Unsupported conversation state schema"):
         project_chat.ConversationState.from_dict(
