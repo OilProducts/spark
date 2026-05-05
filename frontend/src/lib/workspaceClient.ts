@@ -21,6 +21,7 @@ export {
     type TriggerResponse,
     type TriggerSourceType,
     type FlowLaunchPolicy,
+    type ExecutionPlacementProfile,
     type WorkspaceFlowLaunchPolicyResponse,
     type WorkspaceFlowResponse,
     type WorkspaceSettingsResponse,

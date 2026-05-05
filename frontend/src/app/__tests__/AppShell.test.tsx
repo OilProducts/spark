@@ -175,6 +175,56 @@ const jsonResponse = (payload: unknown, init?: ResponseInit) =>
     ...init,
   })
 
+const buildWorkspaceSettingsPayload = (overrides: Record<string, unknown> = {}) => ({
+  execution_placement: {
+    execution_modes: ['native', 'local_container', 'remote_worker'],
+    protocol: { expected_worker_protocol_version: 'v1' },
+    config: {
+      filename: 'execution-profiles.toml',
+      path: '/tmp/spark/execution-profiles.toml',
+      exists: true,
+      loaded: true,
+      synthesized_native_default: false,
+    },
+    default_execution_profile_id: 'native',
+    profiles: [
+      {
+        id: 'native',
+        label: 'Native',
+        mode: 'native',
+        enabled: true,
+        worker_id: null,
+        image: null,
+        capabilities: {},
+        metadata: {},
+      },
+      {
+        id: 'remote-fast',
+        label: 'Remote Fast',
+        mode: 'remote_worker',
+        enabled: true,
+        worker_id: 'worker-a',
+        image: 'spark-worker:latest',
+        capabilities: {},
+        metadata: {},
+      },
+      {
+        id: 'disabled-local',
+        label: 'Disabled Local',
+        mode: 'local_container',
+        enabled: false,
+        worker_id: null,
+        image: 'spark-local:latest',
+        capabilities: {},
+        metadata: {},
+      },
+    ],
+    workers: [],
+    validation_errors: [],
+    ...overrides,
+  },
+})
+
 const createDeferred = <T,>() => {
   let resolve!: (value: T | PromiseLike<T>) => void
   let reject!: (reason?: unknown) => void
@@ -540,6 +590,172 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-projects'))
     expect(useStore.getState().viewMode).toBe('home')
     expect(screen.getByTestId('projects-panel')).toBeVisible()
+  })
+
+  it('opens project settings from the navbar and saves a project execution profile default', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-shell')
+      useStore.getState().setActiveProjectPath('/tmp/project-shell')
+    })
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      if (url.endsWith('/workspace/api/settings')) {
+        return jsonResponse(buildWorkspaceSettingsPayload())
+      }
+      if (url.includes('/workspace/api/projects/state')) {
+        const payload = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
+        return jsonResponse({
+          ...buildProjectRecord(String(payload.project_path)),
+          execution_profile_id: payload.execution_profile_id,
+        })
+      }
+      if (url.includes('/workspace/api/projects/conversations')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/workspace/api/projects')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/attractor/status')) {
+        return jsonResponse({ status: 'idle' })
+      }
+      if (url.includes('/attractor/api/flows')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/attractor/runs')) {
+        return jsonResponse({ runs: [] })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    await user.click(screen.getByTestId('top-nav-project-settings-button'))
+    expect(await screen.findByTestId('project-settings-dialog')).toBeVisible()
+    expect(screen.getByRole('heading', { name: '/tmp/project-shell' })).toBeVisible()
+    expect(screen.getByTestId('project-settings-title')).toHaveTextContent('/tmp/project-shell')
+    await user.click(screen.getByTestId('project-default-execution-profile'))
+    expect((await screen.findAllByText('Use workspace default')).length).toBeGreaterThan(0)
+    expect(screen.getByText('Remote Fast (remote-fast)')).toBeVisible()
+    expect(screen.queryByText('Disabled Local (disabled-local)')).not.toBeInTheDocument()
+
+    await user.click(screen.getByText('Remote Fast (remote-fast)'))
+    await user.click(screen.getByTestId('project-settings-save-button'))
+
+    await waitFor(() => {
+      const stateRequest = fetchMock.mock.calls.find(([input]) => resolveRequestUrl(input).includes('/workspace/api/projects/state'))
+      expect(stateRequest).toBeDefined()
+      expect(JSON.parse(String(stateRequest?.[1]?.body))).toEqual({
+        project_path: '/tmp/project-shell',
+        execution_profile_id: 'remote-fast',
+      })
+      expect(useStore.getState().projectRegistry['/tmp/project-shell']?.executionProfileId).toBe('remote-fast')
+    })
+  })
+
+  it('saves workspace default from project settings as a null execution profile default', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-shell')
+      useStore.getState().upsertProjectRegistryEntry({
+        directoryPath: '/tmp/project-shell',
+        lastAccessedAt: null,
+        isFavorite: false,
+        activeConversationId: null,
+        executionProfileId: 'remote-fast',
+      })
+      useStore.getState().setActiveProjectPath('/tmp/project-shell')
+    })
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      if (url.endsWith('/workspace/api/settings')) {
+        return jsonResponse(buildWorkspaceSettingsPayload())
+      }
+      if (url.includes('/workspace/api/projects/state')) {
+        const payload = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
+        return jsonResponse({
+          ...buildProjectRecord(String(payload.project_path)),
+          execution_profile_id: payload.execution_profile_id,
+        })
+      }
+      if (url.includes('/workspace/api/projects/conversations')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/workspace/api/projects')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/attractor/status')) {
+        return jsonResponse({ status: 'idle' })
+      }
+      if (url.includes('/attractor/api/flows')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/attractor/runs')) {
+        return jsonResponse({ runs: [] })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    await user.click(screen.getByTestId('top-nav-project-settings-button'))
+    await user.click(await screen.findByTestId('project-default-execution-profile'))
+    await user.click(await screen.findByText('Use workspace default'))
+    await user.click(screen.getByTestId('project-settings-save-button'))
+
+    await waitFor(() => {
+      const stateRequest = fetchMock.mock.calls.find(([input]) => resolveRequestUrl(input).includes('/workspace/api/projects/state'))
+      expect(JSON.parse(String(stateRequest?.[1]?.body))).toEqual({
+        project_path: '/tmp/project-shell',
+        execution_profile_id: null,
+      })
+      expect(useStore.getState().projectRegistry['/tmp/project-shell']?.executionProfileId).toBeUndefined()
+    })
+  })
+
+  it('surfaces invalid workspace execution settings in project settings and blocks saving', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-shell')
+      useStore.getState().setActiveProjectPath('/tmp/project-shell')
+    })
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = resolveRequestUrl(input)
+      if (url.endsWith('/workspace/api/settings')) {
+        return jsonResponse(buildWorkspaceSettingsPayload({
+          validation_errors: [
+            { field: 'profiles.remote-fast.worker_id', message: 'Worker worker-a is not configured.', profile_id: 'remote-fast', worker_id: 'worker-a' },
+          ],
+        }))
+      }
+      if (url.includes('/workspace/api/projects/conversations')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/workspace/api/projects')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/attractor/status')) {
+        return jsonResponse({ status: 'idle' })
+      }
+      if (url.includes('/attractor/api/flows')) {
+        return jsonResponse([])
+      }
+      if (url.includes('/attractor/runs')) {
+        return jsonResponse({ runs: [] })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    await user.click(screen.getByTestId('top-nav-project-settings-button'))
+
+    expect(await screen.findByTestId('project-settings-error')).toHaveTextContent('Worker worker-a is not configured.')
+    expect(screen.getByTestId('project-settings-save-button')).toBeDisabled()
+    expect(fetchMock.mock.calls.some(([input]) => resolveRequestUrl(input).includes('/workspace/api/projects/state'))).toBe(false)
   })
 
   it('allows editor navigation without an active project and keeps the empty state visible', async () => {

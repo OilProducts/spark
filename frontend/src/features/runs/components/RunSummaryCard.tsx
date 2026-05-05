@@ -108,6 +108,18 @@ function formatOutcomeReason(run: RunRecord): string | null {
     return run.last_error?.trim() || null
 }
 
+function hasExecutionMetadata(run: RunRecord): boolean {
+    return Boolean(
+        run.execution_profile_id
+        || run.execution_mode
+        || run.execution_container_image
+        || run.execution_worker_label
+        || run.execution_worker_id
+        || run.execution_mapped_project_path
+        || run.execution_worker_runtime_root,
+    )
+}
+
 function SummarySection({
     children,
     testId,
@@ -184,6 +196,7 @@ export function RunSummaryCard({
     const outcomeReason = formatOutcomeReason(run)
     const costNote = formatEstimatedModelCostNote(run)
     const showWorkingDirectoryDifference = shouldShowWorkingDirectoryDifference(run, activeProjectPath)
+    const showExecutionSection = hasExecutionMetadata(run)
     return (
         <Card data-testid="run-summary-panel" className="gap-4 py-4">
             <CardHeader className="gap-1 px-4">
@@ -332,6 +345,44 @@ export function RunSummaryCard({
                                 ) : null}
                             </div>
                         </SummarySection>
+                        {showExecutionSection ? (
+                            <SummarySection testId="run-summary-section-execution" title="Execution">
+                                <div className="grid gap-x-4 gap-y-2 md:grid-cols-2">
+                                    {run.execution_profile_id ? (
+                                        <SummaryRow testId="run-summary-execution-profile" label="Profile">
+                                            {run.execution_profile_id}
+                                        </SummaryRow>
+                                    ) : null}
+                                    {run.execution_mode ? (
+                                        <SummaryRow testId="run-summary-execution-mode" label="Mode">
+                                            {run.execution_mode}
+                                        </SummaryRow>
+                                    ) : null}
+                                    {run.execution_container_image ? (
+                                        <SummaryRow testId="run-summary-execution-container-image" label="Container image" className="break-all">
+                                            {run.execution_container_image}
+                                        </SummaryRow>
+                                    ) : null}
+                                    {run.execution_worker_label || run.execution_worker_id ? (
+                                        <SummaryRow testId="run-summary-execution-worker" label="Worker" className="break-all">
+                                            {run.execution_worker_label && run.execution_worker_id
+                                                ? `${run.execution_worker_label} (${run.execution_worker_id})`
+                                                : run.execution_worker_label || run.execution_worker_id}
+                                        </SummaryRow>
+                                    ) : null}
+                                    {run.execution_mapped_project_path ? (
+                                        <SummaryRow testId="run-summary-execution-mapped-project-path" label="Mapped project" className="break-all md:col-span-2">
+                                            {run.execution_mapped_project_path}
+                                        </SummaryRow>
+                                    ) : null}
+                                    {run.execution_worker_runtime_root ? (
+                                        <SummaryRow testId="run-summary-execution-worker-runtime-root" label="Worker runtime root" className="break-all md:col-span-2">
+                                            {run.execution_worker_runtime_root}
+                                        </SummaryRow>
+                                    ) : null}
+                                </div>
+                            </SummarySection>
+                        ) : null}
                         <SummarySection testId="run-summary-section-usage" title="Usage">
                             <div className="grid gap-x-4 gap-y-2 md:grid-cols-2">
                                 <SummaryRow testId="run-summary-token-usage" label="Total tokens">

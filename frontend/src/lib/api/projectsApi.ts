@@ -244,6 +244,7 @@ export async function updateProjectStateValidated(payload: {
     is_favorite?: boolean | null
     last_accessed_at?: string | null
     active_conversation_id?: string | null
+    execution_profile_id?: string | null
 }): Promise<ProjectRecordResponse> {
     return fetchWorkspaceJsonValidated(
         '/projects/state',

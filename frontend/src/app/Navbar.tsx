@@ -1,10 +1,11 @@
-import { type KeyboardEvent } from "react"
+import { type KeyboardEvent, useState } from "react"
 import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
-import { Plus, Settings2, Trash2, X } from "lucide-react"
+import { Plus, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ProjectBrowserDialog } from './ProjectBrowserDialog'
+import { ProjectSettingsDialog } from './ProjectSettingsDialog'
 import { useProjectSwitcherControls } from './useProjectSwitcherControls'
 import { formatProjectListLabel } from '@/features/projects/model/projectsHomeState'
 
@@ -54,6 +55,7 @@ export function Navbar() {
     const viewMode = useStore((state) => state.viewMode)
     const setViewMode = useStore((state) => state.setViewMode)
     const isNarrowViewport = useNarrowViewport()
+    const [projectSettingsOpen, setProjectSettingsOpen] = useState(false)
     const {
         activeProjectPath,
         isProjectBrowserLoading,
@@ -225,6 +227,18 @@ export function Navbar() {
                         <X className="h-3.5 w-3.5" />
                         Clear
                     </Button>
+                    <Button
+                        data-testid="top-nav-project-settings-button"
+                        type="button"
+                        onClick={() => setProjectSettingsOpen(true)}
+                        variant="outline"
+                        size="xs"
+                        disabled={!activeProjectPath}
+                        aria-label="Project settings"
+                        title="Project settings"
+                    >
+                        <SlidersHorizontal className="h-3.5 w-3.5" />
+                    </Button>
                     {activeProjectPath ? (
                         <Button
                             data-testid="top-nav-project-remove-button"
@@ -258,6 +272,11 @@ export function Navbar() {
                 onBrowse={onBrowseProjectDirectory}
                 onOpenChange={onSetProjectBrowserOpen}
                 onSelectCurrentFolder={onSelectProjectBrowserDirectory}
+            />
+            <ProjectSettingsDialog
+                open={projectSettingsOpen}
+                projectPath={activeProjectPath}
+                onOpenChange={setProjectSettingsOpen}
             />
         </header>
     )
