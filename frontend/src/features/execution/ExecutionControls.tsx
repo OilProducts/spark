@@ -13,7 +13,12 @@ import {
 import { formatProjectListLabel } from '@/features/projects/model/projectsHomeState'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useStore } from '@/store'
-import { fetchWorkspaceSettingsValidated, type WorkspaceSettingsResponse } from '@/lib/workspaceClient'
+import {
+    fetchWorkspaceFlowValidated,
+    fetchWorkspaceSettingsValidated,
+    type WorkspaceFlowResponse,
+    type WorkspaceSettingsResponse,
+} from '@/lib/workspaceClient'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -77,6 +82,7 @@ export function ExecutionControls() {
     const [selectedExecutionProfileId, setSelectedExecutionProfileId] = useState('')
     const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettingsResponse | null>(null)
     const [workspaceSettingsError, setWorkspaceSettingsError] = useState<string | null>(null)
+    const [workspaceFlowMetadata, setWorkspaceFlowMetadata] = useState<WorkspaceFlowResponse | null>(null)
 
     const executionFlowName = executionFlow
     const isContinuationMode = Boolean(executionContinuation)
@@ -191,6 +197,7 @@ export function ExecutionControls() {
         if (!executionFlowName || isContinuationMode) {
             setWorkspaceSettings(null)
             setWorkspaceSettingsError(null)
+            setWorkspaceFlowMetadata(null)
             return
         }
         let cancelled = false
@@ -208,6 +215,30 @@ export function ExecutionControls() {
                 }
                 setWorkspaceSettings(null)
                 setWorkspaceSettingsError(error instanceof Error ? error.message : 'Unable to load execution profiles.')
+            })
+        return () => {
+            cancelled = true
+        }
+    }, [executionFlowName, isContinuationMode])
+
+    useEffect(() => {
+        if (!executionFlowName || isContinuationMode) {
+            setWorkspaceFlowMetadata(null)
+            return
+        }
+        let cancelled = false
+        fetchWorkspaceFlowValidated(executionFlowName)
+            .then((payload) => {
+                if (cancelled) {
+                    return
+                }
+                setWorkspaceFlowMetadata(payload)
+            })
+            .catch(() => {
+                if (cancelled) {
+                    return
+                }
+                setWorkspaceFlowMetadata(null)
             })
         return () => {
             cancelled = true
@@ -308,12 +339,13 @@ export function ExecutionControls() {
                 runData = await startExecutionRun(startPayload as PipelineStartPayload)
             }
 
-            if (runData?.status !== 'started') {
+            if (runData?.status !== 'started' && runData?.status !== 'queued') {
                 const reason = runData?.error || runData?.status || 'Unknown run error'
                 throw new Error(`Run not started: ${reason}`)
             }
 
             const nextRunId = typeof runData?.pipeline_id === 'string' ? runData.pipeline_id : null
+            const queuedRun = runData?.status === 'queued'
             if (nextRunId) {
                 setRunsSelectedRunIdForScope(
                     buildRunsScopeKey(runsScopeMode, activeProjectPath),
@@ -322,7 +354,9 @@ export function ExecutionControls() {
                 setSelectedRunId(nextRunId)
                 updateExecutionSession({ executionLaunchSuccessRunId: nextRunId })
             }
-            setRuntimeStatus('running')
+            if (!queuedRun) {
+                setRuntimeStatus('running')
+            }
             setRuntimeOutcome(null)
             updateExecutionSession({ executionLastLaunchFailure: null })
 
@@ -330,7 +364,7 @@ export function ExecutionControls() {
                 clearExecutionContinuation()
                 updateExecutionSession({ executionLaunchSuccessRunId: null })
                 setViewMode('runs')
-            } else if (openRunsAfterLaunch && nextRunId) {
+            } else if ((openRunsAfterLaunch || queuedRun) && nextRunId) {
                 setViewMode('runs')
             }
         } catch (error) {
@@ -527,6 +561,16 @@ export function ExecutionControls() {
                                     className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
                                 >
                                     <AlertDescription className="text-inherit">{previewLoadError}</AlertDescription>
+                                </Alert>
+                            ) : null}
+                            {workspaceFlowMetadata?.execution_lock && !isContinuationMode ? (
+                                <Alert
+                                    data-testid="execution-launch-lock-notice"
+                                    className="border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800"
+                                >
+                                    <AlertDescription className="text-inherit">
+                                        Execution lock: {workspaceFlowMetadata.execution_lock.scope} / {workspaceFlowMetadata.execution_lock.key} / {workspaceFlowMetadata.execution_lock.conflict_policy}. This launch policy is stored in the workspace flow catalog, not in DOT.
+                                    </AlertDescription>
                                 </Alert>
                             ) : null}
                             {launchSuccessRunId && !openRunsAfterLaunch && !isContinuationMode ? (

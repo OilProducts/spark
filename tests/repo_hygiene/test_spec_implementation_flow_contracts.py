@@ -247,12 +247,12 @@ def test_spec_implementation_flow_uses_expected_models_for_judgment_nodes() -> N
     parent_graph = _load_graph("implement-spec.dot")
     child_graph = _load_graph("implement-milestone.dot")
 
-    assert parent_graph.graph_attrs["ui_default_llm_model"].value == "gpt-5.4-mini"
+    assert parent_graph.graph_attrs["ui_default_llm_model"].value == "gpt-5.5"
     assert parent_graph.graph_attrs["ui_default_reasoning_effort"].value == "high"
-    assert child_graph.graph_attrs["ui_default_llm_model"].value == "gpt-5.4-mini"
+    assert child_graph.graph_attrs["ui_default_llm_model"].value == "gpt-5.5"
     assert child_graph.graph_attrs["ui_default_reasoning_effort"].value == "high"
 
-    parent_gpt_54_nodes = {
+    parent_gpt_55_nodes = {
         "extract_requirements",
         "design_architecture",
         "evaluate_architecture",
@@ -263,11 +263,15 @@ def test_spec_implementation_flow_uses_expected_models_for_judgment_nodes() -> N
         "final_conformance_audit",
         "repository_integrity_audit",
         "plan_cleanup_milestone",
+        "blocked_exit",
+        "next_milestone",
+        "prepare_workspace",
+        "rewrite_milestones",
     }
-    for node_id in parent_gpt_54_nodes:
+    for node_id in parent_gpt_55_nodes:
         assert parent_graph.nodes[node_id].attrs["llm_model"].value == "gpt-5.5"
 
-    child_gpt_54_nodes = {
+    child_gpt_55_nodes = {
         "extract_items",
         "plan_current",
         "prepare_validation",
@@ -277,12 +281,17 @@ def test_spec_implementation_flow_uses_expected_models_for_judgment_nodes() -> N
         "validate_active_item_state",
         "final_milestone_audit",
         "validate_item_plan",
+        "blocked_exit",
+        "implement_current",
+        "mark_current_blocked",
+        "mark_current_done",
+        "next_item",
+        "prepare_milestone_state",
+        "record_milestone_success",
+        "rewrite_current",
     }
-    for node_id in child_gpt_54_nodes:
+    for node_id in child_gpt_55_nodes:
         assert child_graph.nodes[node_id].attrs["llm_model"].value == "gpt-5.5"
-
-    assert "llm_model" not in parent_graph.nodes["next_milestone"].attrs
-    assert "llm_model" not in child_graph.nodes["implement_current"].attrs
 
 
 def test_spec_implementation_child_flow_preserves_live_item_context_contracts() -> None:

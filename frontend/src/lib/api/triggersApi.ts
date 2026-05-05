@@ -25,7 +25,6 @@ export interface TriggerStateResponse {
         status: string
         message: string
         run_id?: string | null
-        dedupe_key?: string | null
     }>
 }
 
@@ -55,7 +54,6 @@ function parseTriggerStateResponse(value: unknown, endpoint: string): TriggerSta
                 status: String(entry.status),
                 message: String(entry.message),
                 run_id: asOptionalNullableString(entry.run_id),
-                dedupe_key: asOptionalNullableString(entry.dedupe_key),
             }))
         : []
     return {

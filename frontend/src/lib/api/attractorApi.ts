@@ -93,6 +93,14 @@ export interface PipelineStartResponse {
     execution_mode?: string
     execution_profile_id?: string
     execution_container_image?: string | null
+    execution_lock?: {
+        scope: string
+        key: string
+        conflict_policy: string
+        identity: string
+        state: string
+        queue_position?: number | null
+    } | null
     diagnostics?: import('@/state/store-types').DiagnosticEntry[]
     errors?: import('@/state/store-types').DiagnosticEntry[]
     error?: string
@@ -173,6 +181,14 @@ export interface PipelineStatusResponse {
     execution_worker_version?: string
     execution_worker_capabilities?: unknown
     execution_profile_capabilities?: unknown
+    execution_lock?: {
+        scope: string
+        key: string
+        conflict_policy: string
+        identity: string
+        state: string
+        queue_position?: number | null
+    } | null
     cleanup_error?: string
 }
 
@@ -273,6 +289,14 @@ export interface RunRecordResponse {
     execution_worker_version?: string
     execution_worker_capabilities?: unknown
     execution_profile_capabilities?: unknown
+    execution_lock?: {
+        scope: string
+        key: string
+        conflict_policy: string
+        identity: string
+        state: string
+        queue_position?: number | null
+    } | null
     cleanup_error?: string
 }
 
@@ -395,6 +419,7 @@ export function parsePreviewResponse(payload: unknown, endpoint = '/attractor/pr
 
 export function parsePipelineStartResponse(payload: unknown, endpoint = '/attractor/pipelines'): PipelineStartResponse {
     const record = expectObjectRecord(payload, endpoint)
+    const executionLockRecord = asUnknownRecord(record.execution_lock)
     return {
         status: expectString(record.status, endpoint, 'status'),
         pipeline_id: asOptionalString(record.pipeline_id),
@@ -408,6 +433,20 @@ export function parsePipelineStartResponse(payload: unknown, endpoint = '/attrac
         execution_mode: asOptionalString(record.execution_mode),
         execution_profile_id: asOptionalString(record.execution_profile_id),
         execution_container_image: asOptionalNullableString(record.execution_container_image),
+        execution_lock: executionLockRecord
+            ? {
+                scope: expectString(executionLockRecord.scope, endpoint, 'execution_lock.scope'),
+                key: expectString(executionLockRecord.key, endpoint, 'execution_lock.key'),
+                conflict_policy: expectString(executionLockRecord.conflict_policy, endpoint, 'execution_lock.conflict_policy'),
+                identity: expectString(executionLockRecord.identity, endpoint, 'execution_lock.identity'),
+                state: expectString(executionLockRecord.state, endpoint, 'execution_lock.state'),
+                queue_position: typeof executionLockRecord.queue_position === 'number'
+                    ? executionLockRecord.queue_position
+                    : executionLockRecord.queue_position === null
+                        ? null
+                        : undefined,
+            }
+            : null,
         diagnostics: parseDiagnosticList(record.diagnostics, endpoint, 'diagnostics'),
         errors: parseDiagnosticList(record.errors, endpoint, 'errors'),
         error: asOptionalString(record.error),
@@ -706,6 +745,20 @@ function parseRunRecord(payload: unknown): RunRecordResponse | null {
         execution_worker_version: asOptionalString(record.execution_worker_version),
         execution_worker_capabilities: record.execution_worker_capabilities,
         execution_profile_capabilities: record.execution_profile_capabilities,
+        execution_lock: asUnknownRecord(record.execution_lock)
+            ? {
+                scope: asOptionalString(asUnknownRecord(record.execution_lock)?.scope) || '',
+                key: asOptionalString(asUnknownRecord(record.execution_lock)?.key) || '',
+                conflict_policy: asOptionalString(asUnknownRecord(record.execution_lock)?.conflict_policy) || '',
+                identity: asOptionalString(asUnknownRecord(record.execution_lock)?.identity) || '',
+                state: asOptionalString(asUnknownRecord(record.execution_lock)?.state) || '',
+                queue_position: typeof asUnknownRecord(record.execution_lock)?.queue_position === 'number'
+                    ? asUnknownRecord(record.execution_lock)?.queue_position as number
+                    : asUnknownRecord(record.execution_lock)?.queue_position === null
+                        ? null
+                        : undefined,
+            }
+            : null,
         cleanup_error: asOptionalString(record.cleanup_error),
     }
 }

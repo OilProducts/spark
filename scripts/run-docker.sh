@@ -1,6 +1,11 @@
 set -euo pipefail
 
-real_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+real_home=""
+if command -v getent >/dev/null 2>&1; then
+  real_home="$(getent passwd "$(id -u)" | cut -d: -f6 || true)"
+elif command -v dscl >/dev/null 2>&1; then
+  real_home="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+fi
 real_home="${real_home:-$HOME}"
 
 spark_home="${SPARK_DOCKER_HOME:-$real_home/.spark-docker}"

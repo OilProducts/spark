@@ -13,6 +13,49 @@ from attractor.api.token_usage import (
 
 
 @dataclass
+class RunExecutionLock:
+    scope: str
+    key: str
+    conflict_policy: str
+    identity: str
+    state: str
+    queue_position: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, object]:
+        payload: Dict[str, object] = {
+            "scope": self.scope,
+            "key": self.key,
+            "conflict_policy": self.conflict_policy,
+            "identity": self.identity,
+            "state": self.state,
+        }
+        if self.queue_position is not None:
+            payload["queue_position"] = self.queue_position
+        return payload
+
+    @classmethod
+    def from_dict(cls, value: object) -> Optional["RunExecutionLock"]:
+        if not isinstance(value, dict):
+            return None
+        scope = value.get("scope")
+        key = value.get("key")
+        conflict_policy = value.get("conflict_policy")
+        identity = value.get("identity")
+        state = value.get("state")
+        if not all(isinstance(entry, str) and entry.strip() for entry in (scope, key, conflict_policy, identity, state)):
+            return None
+        queue_position = value.get("queue_position")
+        return cls(
+            scope=str(scope).strip(),
+            key=str(key).strip(),
+            conflict_policy=str(conflict_policy).strip(),
+            identity=str(identity).strip(),
+            state=str(state).strip(),
+            queue_position=int(queue_position) if isinstance(queue_position, int) else None,
+        )
+
+
+@dataclass
 class RunRecord:
     run_id: str
     flow_name: str
@@ -51,6 +94,7 @@ class RunRecord:
     execution_worker_version: Optional[str] = None
     execution_worker_capabilities: Optional[object] = None
     execution_profile_capabilities: Optional[object] = None
+    execution_lock: Optional[RunExecutionLock] = None
     cleanup_error: Optional[str] = None
     last_error: str = ""
     token_usage: Optional[int] = None
@@ -124,6 +168,8 @@ class RunRecord:
             payload["execution_worker_capabilities"] = _copy_jsonish(self.execution_worker_capabilities)
         if self.execution_profile_capabilities is not None:
             payload["execution_profile_capabilities"] = _copy_jsonish(self.execution_profile_capabilities)
+        if self.execution_lock is not None:
+            payload["execution_lock"] = self.execution_lock.to_dict()
         if self.cleanup_error:
             payload["cleanup_error"] = self.cleanup_error
         return payload
@@ -136,6 +182,7 @@ class RunRecord:
         estimated_model_cost = EstimatedModelCost.from_dict(
             data.get("estimated_model_cost") if isinstance(data.get("estimated_model_cost"), dict) else None
         )
+        execution_lock = RunExecutionLock.from_dict(data.get("execution_lock"))
         if estimated_model_cost is None and token_usage_breakdown is not None:
             estimated_model_cost = estimate_model_cost(token_usage_breakdown)
         return cls(
@@ -240,6 +287,7 @@ class RunRecord:
                 if data.get("execution_profile_capabilities") is not None
                 else None
             ),
+            execution_lock=execution_lock,
             cleanup_error=(
                 str(data.get("cleanup_error"))
                 if data.get("cleanup_error") is not None

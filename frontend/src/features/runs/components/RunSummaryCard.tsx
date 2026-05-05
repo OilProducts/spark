@@ -120,6 +120,10 @@ function hasExecutionMetadata(run: RunRecord): boolean {
     )
 }
 
+function hasExecutionLockMetadata(run: RunRecord): boolean {
+    return Boolean(run.execution_lock?.identity)
+}
+
 function SummarySection({
     children,
     testId,
@@ -197,6 +201,7 @@ export function RunSummaryCard({
     const costNote = formatEstimatedModelCostNote(run)
     const showWorkingDirectoryDifference = shouldShowWorkingDirectoryDifference(run, activeProjectPath)
     const showExecutionSection = hasExecutionMetadata(run)
+    const showExecutionLockSection = hasExecutionLockMetadata(run)
     return (
         <Card data-testid="run-summary-panel" className="gap-4 py-4">
             <CardHeader className="gap-1 px-4">
@@ -378,6 +383,33 @@ export function RunSummaryCard({
                                     {run.execution_worker_runtime_root ? (
                                         <SummaryRow testId="run-summary-execution-worker-runtime-root" label="Worker runtime root" className="break-all md:col-span-2">
                                             {run.execution_worker_runtime_root}
+                                        </SummaryRow>
+                                    ) : null}
+                                </div>
+                            </SummarySection>
+                        ) : null}
+                        {showExecutionLockSection ? (
+                            <SummarySection testId="run-summary-section-execution-lock" title="Execution Lock">
+                                <div className="grid gap-x-4 gap-y-2 md:grid-cols-2">
+                                    <SummaryRow testId="run-summary-execution-lock-state" label="State">
+                                        {run.execution_lock?.state === 'holding'
+                                            ? 'Holding execution lock'
+                                            : run.execution_lock?.state === 'queued'
+                                                ? 'Queued for execution lock'
+                                                : run.execution_lock?.state || '—'}
+                                    </SummaryRow>
+                                    <SummaryRow testId="run-summary-execution-lock-key" label="Key">
+                                        {run.execution_lock?.key || '—'}
+                                    </SummaryRow>
+                                    <SummaryRow testId="run-summary-execution-lock-scope" label="Scope">
+                                        {run.execution_lock?.scope || '—'}
+                                    </SummaryRow>
+                                    <SummaryRow testId="run-summary-execution-lock-conflict-policy" label="Conflict policy">
+                                        {run.execution_lock?.conflict_policy || '—'}
+                                    </SummaryRow>
+                                    {typeof run.execution_lock?.queue_position === 'number' ? (
+                                        <SummaryRow testId="run-summary-execution-lock-queue-position" label="Queue position">
+                                            {run.execution_lock.queue_position}
                                         </SummaryRow>
                                     ) : null}
                                 </div>

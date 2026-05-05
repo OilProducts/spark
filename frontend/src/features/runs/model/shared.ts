@@ -66,6 +66,14 @@ export interface RunRecord {
     execution_worker_version?: string
     execution_worker_capabilities?: unknown
     execution_profile_capabilities?: unknown
+    execution_lock?: {
+        scope: string
+        key: string
+        conflict_policy: string
+        identity: string
+        state: string
+        queue_position?: number | null
+    } | null
     cleanup_error?: string
 }
 
@@ -248,6 +256,7 @@ export const TIMELINE_SEVERITY_STYLES: Record<TimelineSeverity, string> = {
 export const RUN_JOURNAL_WINDOW_SIZE = 80
 
 export const STATUS_STYLES: Record<string, string> = {
+    queued: 'bg-amber-500/15 text-amber-800',
     running: 'bg-sky-500/15 text-sky-700',
     completed: 'bg-green-500/15 text-green-800',
     success: 'bg-green-500/15 text-green-800',
@@ -263,6 +272,7 @@ export const STATUS_STYLES: Record<string, string> = {
 }
 
 export const STATUS_LABELS: Record<string, string> = {
+    queued: 'Queued',
     completed: 'Completed',
     failed: 'Failed',
     pause_requested: 'Pausing',
@@ -274,7 +284,7 @@ export const STATUS_LABELS: Record<string, string> = {
 
 export const canCancelRun = (status: string) => status === 'running'
 
-export const canContinueRun = (status: string) => !['running', 'cancel_requested', 'abort_requested', 'pause_requested'].includes(status)
+export const canContinueRun = (status: string) => !['queued', 'running', 'cancel_requested', 'abort_requested', 'pause_requested'].includes(status)
 export const canRetryRun = (status: string) => status === 'failed'
 
 export const cancelRunActionLabel = (status: string) => {

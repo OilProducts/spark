@@ -77,6 +77,8 @@ const installExecutionFetchMock = (options?: {
   continuationGraphNodes?: Array<{ id: string; label: string; shape: string }>
   continuationGraphEdges?: Array<Record<string, unknown>>
   projectMetadataPayload?: Record<string, unknown>
+  workspaceFlowPayload?: Record<string, unknown>
+  startStatus?: 'started' | 'queued'
 }) => {
   const flowName = options?.flowName ?? TEST_LINEAR_FLOW
   const flowContent = options?.flowContent ?? 'digraph simple_linear { start -> done }'
@@ -84,6 +86,7 @@ const installExecutionFetchMock = (options?: {
   const pipelineId = options?.pipelineId ?? 'run-123'
   const continueSourceRunId = options?.continueSourceRunId ?? 'run-source'
   const continuePipelineId = options?.continuePipelineId ?? 'run-continued'
+  const startStatus = options?.startStatus ?? 'started'
   const flowPayloads = {
     [flowName]: flowContent,
     ...(options?.flowPayloads ?? {}),
@@ -138,6 +141,16 @@ const installExecutionFetchMock = (options?: {
         },
       })
     }
+    if (url.includes('/workspace/api/flows/')) {
+      return jsonResponse(options?.workspaceFlowPayload ?? {
+        name: flowName,
+        title: flowName,
+        description: '',
+        launch_policy: null,
+        effective_launch_policy: 'disabled',
+        execution_lock: null,
+      })
+    }
     if (url.endsWith('/attractor/api/flows')) {
       return jsonResponse(flowList)
     }
@@ -170,7 +183,7 @@ const installExecutionFetchMock = (options?: {
       })
     }
     if (url.endsWith('/attractor/pipelines') && init?.method === 'POST') {
-      return jsonResponse({ status: 'started', pipeline_id: pipelineId }, { status: 202 })
+      return jsonResponse({ status: startStatus, pipeline_id: pipelineId }, { status: 202 })
     }
     if (url.endsWith(`/attractor/pipelines/${continueSourceRunId}/continue`) && init?.method === 'POST') {
       return jsonResponse({ status: 'started', pipeline_id: continuePipelineId }, { status: 202 })
@@ -609,6 +622,37 @@ describe('Execution controls behavior', () => {
       llm_provider: 'openai',
       reasoning_effort: 'high',
     })
+  })
+
+  it('shows execution lock metadata for the selected launch flow', async () => {
+    installExecutionFetchMock({
+      flowName: TEST_LINEAR_FLOW,
+      workspaceFlowPayload: {
+        name: TEST_LINEAR_FLOW,
+        title: TEST_LINEAR_FLOW,
+        description: '',
+        launch_policy: null,
+        effective_launch_policy: 'disabled',
+        execution_lock: {
+          scope: 'project',
+          key: 'main-worktree-integration',
+          conflict_policy: 'queue',
+        },
+      },
+    })
+
+    useStore.setState((state) => ({
+      ...state,
+      viewMode: 'execution',
+      activeProjectPath: '/tmp/project',
+      executionFlow: TEST_LINEAR_FLOW,
+    }))
+
+    renderExecutionControls()
+
+    expect(await screen.findByTestId('execution-launch-lock-notice')).toHaveTextContent(
+      'Execution lock: project / main-worktree-integration / queue.',
+    )
   })
 
   it('launches without a Git warning dialog when project metadata has no branch or commit', async () => {

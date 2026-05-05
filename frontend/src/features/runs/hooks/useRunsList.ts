@@ -224,7 +224,8 @@ export function useRunsList({
         const running = runsListSession.runs.filter(
             (run) => run.status === 'running' || run.status === 'cancel_requested' || run.status === 'abort_requested',
         ).length
-        return { total, running }
+        const queued = runsListSession.runs.filter((run) => run.status === 'queued').length
+        return { total, running, queued }
     }, [runsListSession.runs])
 
     const selectedRunSummary = useMemo(() => {

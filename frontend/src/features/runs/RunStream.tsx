@@ -101,6 +101,7 @@ function toRunRecord(status: PipelineStatusResponse): RunRecord {
         execution_worker_version: status.execution_worker_version,
         execution_worker_capabilities: status.execution_worker_capabilities,
         execution_profile_capabilities: status.execution_profile_capabilities,
+        execution_lock: status.execution_lock ?? undefined,
         cleanup_error: status.cleanup_error,
     }
 }

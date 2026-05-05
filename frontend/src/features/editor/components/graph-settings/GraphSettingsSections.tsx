@@ -8,6 +8,7 @@ import type { ModelStylesheetPreview, ModelValueSource } from '@/lib/modelStyles
 import type { DiagnosticEntry, GraphAttrErrors, GraphAttrs, UiDefaults } from '@/store'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
     Field,
     FieldDescription,
@@ -15,13 +16,14 @@ import {
     FieldLabel,
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { AdvancedKeyValueEditor } from '../AdvancedKeyValueEditor'
 import { LaunchInputsEditor } from '../LaunchInputsEditor'
 import { StylesheetEditor } from '../StylesheetEditor'
-import type { FlowLaunchPolicy } from '../../services/graphLaunchPolicy'
+import type { FlowExecutionLockResponse, FlowLaunchPolicy } from '../../services/graphLaunchPolicy'
 
 export const GRAPH_ATTR_HELP: Record<string, string> = {
     'spark.title': 'Human-friendly flow title stored in the DOT metadata.',
@@ -372,20 +374,31 @@ export function GraphExecutionDefaultsSection({
 interface GraphLaunchPolicySectionProps {
     activeFlow: string | null
     launchPolicy: FlowLaunchPolicy
+    executionLock: FlowExecutionLockResponse | null
+    executionLockEnabled: boolean
     launchPolicyLoadState: 'idle' | 'loading' | 'ready' | 'error'
     launchPolicySaveState: 'idle' | 'saving' | 'saved' | 'error'
     launchPolicyStatusMessage: string
     onLaunchPolicyChange: (policy: FlowLaunchPolicy) => void | Promise<void>
+    onExecutionLockEnabledChange: (enabled: boolean) => void
+    onExecutionLockKeyChange: (value: string) => void
+    onExecutionLockKeyCommit: () => void | Promise<void>
 }
 
 export function GraphLaunchPolicySection({
     activeFlow,
     launchPolicy,
+    executionLock,
+    executionLockEnabled,
     launchPolicyLoadState,
     launchPolicySaveState,
     launchPolicyStatusMessage,
     onLaunchPolicyChange,
+    onExecutionLockEnabledChange,
+    onExecutionLockKeyChange,
+    onExecutionLockKeyCommit,
 }: GraphLaunchPolicySectionProps) {
+    const controlsDisabled = !activeFlow || launchPolicyLoadState !== 'ready' || launchPolicySaveState === 'saving'
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
@@ -397,7 +410,7 @@ export function GraphLaunchPolicySection({
                     id="graph-launch-policy"
                     value={launchPolicy}
                     onChange={(event) => void onLaunchPolicyChange(event.target.value as FlowLaunchPolicy)}
-                    disabled={!activeFlow || launchPolicyLoadState !== 'ready' || launchPolicySaveState === 'saving'}
+                    disabled={controlsDisabled}
                     className="h-8 text-xs"
                 >
                     {Object.entries(FLOW_LAUNCH_POLICY_LABELS).map(([value, label]) => (
@@ -407,6 +420,51 @@ export function GraphLaunchPolicySection({
                     ))}
                 </NativeSelect>
             </GraphSettingsField>
+            <div className="space-y-3 rounded-md border border-border/70 bg-muted/10 p-3">
+                <Label htmlFor="graph-execution-lock-enabled" className="flex items-end gap-2 text-sm">
+                    <Checkbox
+                        id="graph-execution-lock-enabled"
+                        checked={executionLockEnabled}
+                        onCheckedChange={(checked) => onExecutionLockEnabledChange(checked === true)}
+                        disabled={controlsDisabled}
+                    />
+                    <span className="text-xs font-medium text-foreground">Enable execution lock</span>
+                </Label>
+                <GraphSettingsField
+                    label="Lock Scope"
+                    htmlFor="graph-execution-lock-scope"
+                    helper="Workspace launch admission policy, not DOT flow semantics."
+                >
+                    <NativeSelect
+                        id="graph-execution-lock-scope"
+                        value={executionLock?.scope ?? 'project'}
+                        disabled
+                        className="h-8 text-xs"
+                    >
+                        <option value="project">Project</option>
+                    </NativeSelect>
+                </GraphSettingsField>
+                <GraphSettingsField label="Lock Key" htmlFor="graph-execution-lock-key">
+                    <Input
+                        id="graph-execution-lock-key"
+                        value={executionLock?.key ?? ''}
+                        onChange={(event) => onExecutionLockKeyChange(event.target.value)}
+                        onBlur={() => void onExecutionLockKeyCommit()}
+                        disabled={controlsDisabled || !executionLockEnabled}
+                        className="h-8 text-xs"
+                    />
+                </GraphSettingsField>
+                <GraphSettingsField label="Conflict Policy" htmlFor="graph-execution-lock-conflict-policy">
+                    <NativeSelect
+                        id="graph-execution-lock-conflict-policy"
+                        value={executionLock?.conflict_policy ?? 'queue'}
+                        disabled
+                        className="h-8 text-xs"
+                    >
+                        <option value="queue">Queue</option>
+                    </NativeSelect>
+                </GraphSettingsField>
+            </div>
             <GraphSettingsNotice
                 data-testid="graph-launch-policy-status"
                 className="text-[11px]"

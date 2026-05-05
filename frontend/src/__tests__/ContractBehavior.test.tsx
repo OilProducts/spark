@@ -644,7 +644,10 @@ describe('Frontend contract behavior', () => {
       effective_launch_policy: 'agent_requestable',
     })
     await expect(fetchWorkspaceFlowRawValidated('alpha flow.dot')).resolves.toBe('digraph G {}')
-    await expect(updateWorkspaceFlowLaunchPolicyValidated('alpha flow.dot', 'agent_requestable')).resolves.toMatchObject({
+    await expect(updateWorkspaceFlowLaunchPolicyValidated('alpha flow.dot', {
+      launch_policy: 'agent_requestable',
+      execution_lock: null,
+    })).resolves.toMatchObject({
       name: 'alpha flow.dot',
       launch_policy: 'agent_requestable',
     })

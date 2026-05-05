@@ -57,6 +57,7 @@ from attractor.api.flow_sources import (
 )
 from attractor.api.run_records import (
     RunRecord,
+    RunExecutionLock,
     hydrate_run_record_from_log,
     normalize_run_status,
     run_matches_project_scope,
@@ -118,6 +119,13 @@ from attractor.api.runtime_paths import (
     resolve_runtime_paths as resolve_attractor_runtime_paths,
     validate_runtime_paths as validate_attractor_runtime_paths,
 )
+from spark.workspace.flow_catalog import (
+    EXECUTION_LOCK_CONFLICT_POLICY_QUEUE,
+    EXECUTION_LOCK_SCOPE_PROJECT,
+    FlowExecutionLockConfig,
+    read_flow_launch_policy,
+)
+from spark_common.project_identity import build_project_id
 from spark_common.runtime_path import resolve_runtime_workspace_path
 from spark_common.codex_runtime import build_codex_runtime_environment
 from spark.llm_profiles import LlmProfileConfigurationError, get_llm_profile, public_llm_profiles
@@ -131,6 +139,10 @@ RUNTIME_PATHS: AttractorRuntimePaths | None = None
 REGISTERED_TRANSFORMS: List[object] = []
 _REGISTERED_TRANSFORMS_LOCK = threading.Lock()
 _UNSET = object()
+EXECUTION_LOCKS_STATE_LOCK = threading.Lock()
+EXECUTION_LOCKS_FILE_NAME = "execution-locks.json"
+EXECUTION_LOCK_STATE_HOLDING = "holding"
+EXECUTION_LOCK_STATE_QUEUED = "queued"
 
 
 def get_runtime_paths() -> AttractorRuntimePaths:
@@ -167,6 +179,75 @@ def configure_runtime_paths(
 
 def validate_runtime_paths() -> None:
     validate_attractor_runtime_paths(get_runtime_paths())
+
+
+def _execution_locks_state_path() -> Path:
+    return get_runtime_paths().runtime_dir / EXECUTION_LOCKS_FILE_NAME
+
+
+def _load_execution_locks_state() -> dict[str, Any]:
+    path = _execution_locks_state_path()
+    if not path.exists():
+        return {"locks": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"locks": {}}
+    if not isinstance(payload, dict):
+        return {"locks": {}}
+    locks = payload.get("locks")
+    return {"locks": locks if isinstance(locks, dict) else {}}
+
+
+def _save_execution_locks_state(payload: dict[str, Any]) -> None:
+    path = _execution_locks_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _read_execution_lock_config(flow_name: str) -> FlowExecutionLockConfig | None:
+    normalized_flow_name = (flow_name or "").strip()
+    if not normalized_flow_name:
+        return None
+    try:
+        return read_flow_launch_policy(get_runtime_paths().config_dir, normalized_flow_name).execution_lock
+    except ValueError:
+        return None
+
+
+def _resolve_execution_lock_project_path(working_directory: str) -> str:
+    project_path, _, _ = pipeline_runs.resolve_run_project_git_metadata(
+        working_directory,
+        resolve_runtime_workspace_path=resolve_runtime_workspace_path,
+    )
+    return project_path
+
+
+def _build_execution_lock_identity(
+    execution_lock: FlowExecutionLockConfig,
+    working_directory: str,
+) -> tuple[str, str]:
+    project_path = _resolve_execution_lock_project_path(working_directory)
+    if execution_lock.scope != EXECUTION_LOCK_SCOPE_PROJECT:
+        raise ValueError(f"Unsupported execution lock scope: {execution_lock.scope}")
+    return f"{execution_lock.scope}:{build_project_id(project_path)}:{execution_lock.key}", project_path
+
+
+def _execution_lock_runtime_metadata(
+    execution_lock: FlowExecutionLockConfig,
+    *,
+    identity: str,
+    state: str,
+    queue_position: int | None = None,
+) -> RunExecutionLock:
+    return RunExecutionLock(
+        scope=execution_lock.scope,
+        key=execution_lock.key,
+        conflict_policy=execution_lock.conflict_policy,
+        identity=identity,
+        state=state,
+        queue_position=queue_position,
+    )
 
 
 def register_transform(transform: object) -> None:
@@ -1021,6 +1102,7 @@ def _record_run_start(
     execution_worker_version: Optional[str] = None,
     execution_worker_capabilities: Optional[object] = None,
     execution_profile_capabilities: Optional[object] = None,
+    execution_lock: Optional[RunExecutionLock] = None,
 ) -> None:
     pipeline_runs.record_run_start(
         get_runtime_paths,
@@ -1054,6 +1136,7 @@ def _record_run_start(
         execution_worker_version=execution_worker_version,
         execution_worker_capabilities=execution_worker_capabilities,
         execution_profile_capabilities=execution_profile_capabilities,
+        execution_lock=execution_lock,
     )
 
 
@@ -1119,6 +1202,64 @@ def _record_run_status(
         outcome_reason_code=outcome_reason_code,
         outcome_reason_message=outcome_reason_message,
     )
+
+
+def _write_queued_run_meta(
+    *,
+    run_id: str,
+    flow_name: str,
+    working_directory: str,
+    model: str | None,
+    llm_provider: str | None,
+    llm_profile: str | None,
+    reasoning_effort: str | None,
+    spec_id: str | None,
+    plan_id: str | None,
+    execution_profile_id: str | None,
+    execution_lock: RunExecutionLock,
+) -> None:
+    project_path = _resolve_execution_lock_project_path(working_directory)
+    _ensure_run_root_for_project(run_id, project_path)
+    _write_run_meta(
+        RunRecord(
+            run_id=run_id,
+            flow_name=flow_name,
+            status=EXECUTION_LOCK_STATE_QUEUED,
+            outcome=None,
+            outcome_reason_code=None,
+            outcome_reason_message=None,
+            working_directory=working_directory,
+            model=model or "",
+            llm_provider=llm_provider or "codex",
+            llm_profile=llm_profile,
+            reasoning_effort=reasoning_effort,
+            started_at=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            project_path=project_path,
+            spec_id=spec_id,
+            plan_id=plan_id,
+            execution_profile_id=execution_profile_id,
+            execution_lock=execution_lock,
+        )
+    )
+
+
+def _refresh_execution_lock_queue_positions(lock_identity: str, queue_entries: list[dict[str, Any]]) -> None:
+    for index, entry in enumerate(queue_entries, start=1):
+        run_id = str(entry.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        record = _read_run_meta(_run_meta_path(run_id))
+        if record is None or record.execution_lock is None:
+            continue
+        record.execution_lock = RunExecutionLock(
+            scope=record.execution_lock.scope,
+            key=record.execution_lock.key,
+            conflict_policy=record.execution_lock.conflict_policy,
+            identity=lock_identity,
+            state=EXECUTION_LOCK_STATE_QUEUED,
+            queue_position=index,
+        )
+        _write_run_meta(record)
 
 
 def _record_run_usage(
@@ -3090,6 +3231,7 @@ async def _launch_pipeline_run(
     start_node_id: Optional[str] = None,
     execution_profile_id: Optional[str] = None,
     project_default_execution_profile_id: Optional[str] = None,
+    execution_lock: Optional[RunExecutionLock] = None,
     on_complete: Optional[Callable[[str, str], Any]] = None,
     continued_from_run_id: Optional[str] = None,
     continued_from_node: Optional[str] = None,
@@ -3099,10 +3241,17 @@ async def _launch_pipeline_run(
     resolved_run_id = (run_id or uuid.uuid4().hex).strip()
     if not resolved_run_id:
         resolved_run_id = uuid.uuid4().hex
+    existing_record = _read_run_meta(_run_meta_path(resolved_run_id))
     if (
         _get_active_run(resolved_run_id) is not None
-        or _read_run_meta(_run_meta_path(resolved_run_id)) is not None
-        or _run_root_exists(resolved_run_id)
+        or (
+            existing_record is not None
+            and normalize_run_status(existing_record.status) != EXECUTION_LOCK_STATE_QUEUED
+        )
+        or (
+            _run_root_exists(resolved_run_id)
+            and existing_record is None
+        )
     ):
         return {
             "status": "validation_error",
@@ -3394,6 +3543,7 @@ async def _launch_pipeline_run(
         continued_from_flow_mode=continued_from_flow_mode,
         continued_from_flow_name=continued_from_flow_name,
         root_run_id=resolved_run_id,
+        execution_lock=execution_lock,
         **_record_run_start_execution_metadata_kwargs(execution_metadata),
     )
     await _publish_run_list_upsert(resolved_run_id)
@@ -3616,6 +3766,7 @@ async def _launch_pipeline_run(
         "llm_provider": selected_provider,
         "llm_profile": selected_profile,
         "reasoning_effort": selected_reasoning_effort,
+        "execution_lock": execution_lock.to_dict() if execution_lock is not None else None,
         **execution_metadata,
         "diagnostics": diagnostic_payloads,
         "errors": error_payloads,
@@ -3624,10 +3775,11 @@ async def _launch_pipeline_run(
     }
 
 
-async def _start_pipeline(
+async def _start_pipeline_unlocked(
     req: PipelineStartRequest,
     *,
     run_id: Optional[str] = None,
+    execution_lock: Optional[RunExecutionLock] = None,
     on_complete: Optional[Callable[[str, str], Any]] = None,
 ) -> dict:
     flow_name = (req.flow_name or "").strip()
@@ -3688,8 +3840,244 @@ async def _start_pipeline(
         spec_id=req.spec_id,
         plan_id=req.plan_id,
         flow_source_dir=flow_source_dir,
+        execution_lock=execution_lock,
         on_complete=on_complete,
     )
+
+
+def _execution_locked_run_id_conflicts(run_id: str) -> bool:
+    existing_record = _read_run_meta(_run_meta_path(run_id))
+    return (
+        _get_active_run(run_id) is not None
+        or (
+            existing_record is not None
+            and normalize_run_status(existing_record.status) != EXECUTION_LOCK_STATE_QUEUED
+        )
+        or (
+            _run_root_exists(run_id)
+            and existing_record is None
+        )
+    )
+
+
+async def _start_next_execution_locked_run(
+    lock_identity: str,
+    queued_entry: dict[str, Any],
+    *,
+    on_complete: Optional[Callable[[str, str], Any]] = None,
+) -> None:
+    request_payload = queued_entry.get("request")
+    if not isinstance(request_payload, dict):
+        return
+    queued_run_id = str(queued_entry.get("run_id") or "").strip()
+    if not queued_run_id:
+        return
+    request_payload = dict(request_payload)
+    request_payload["run_id"] = queued_run_id
+    request = PipelineStartRequest(**request_payload)
+    raw_execution_lock = queued_entry.get("execution_lock")
+    if isinstance(raw_execution_lock, dict):
+        execution_lock_config = FlowExecutionLockConfig(
+            scope=str(raw_execution_lock.get("scope") or ""),
+            key=str(raw_execution_lock.get("key") or ""),
+            conflict_policy=str(raw_execution_lock.get("conflict_policy") or ""),
+        )
+    else:
+        execution_lock_config = _read_execution_lock_config(request.flow_name or "")
+    if execution_lock_config is None:
+        _record_run_end(
+            queued_run_id,
+            request.working_directory,
+            "failed",
+            "Execution lock configuration was removed before the queued launch could start.",
+            outcome=None,
+        )
+        await _publish_run_list_upsert(queued_run_id)
+        await _release_execution_lock(queued_run_id, lock_identity=lock_identity)
+        return
+
+    execution_lock = _execution_lock_runtime_metadata(
+        execution_lock_config,
+        identity=lock_identity,
+        state=EXECUTION_LOCK_STATE_HOLDING,
+    )
+
+    async def _completion_callback(completed_run_id: str, final_status: str) -> None:
+        if on_complete is not None:
+            completion_result = on_complete(completed_run_id, final_status)
+            if asyncio.iscoroutine(completion_result):
+                await completion_result
+        await _release_execution_lock(completed_run_id, lock_identity=lock_identity)
+
+    result = await _start_pipeline_unlocked(
+        request,
+        run_id=queued_run_id,
+        execution_lock=execution_lock,
+        on_complete=_completion_callback,
+    )
+    if result.get("status") == "started":
+        return
+    _record_run_end(
+        queued_run_id,
+        request.working_directory,
+        str(result.get("status") or "failed"),
+        str(result.get("error") or "Execution-locked launch failed."),
+        outcome=None,
+    )
+    await _publish_run_list_upsert(queued_run_id)
+    await _release_execution_lock(queued_run_id, lock_identity=lock_identity)
+
+
+async def _release_execution_lock(completed_run_id: str, *, lock_identity: str | None = None) -> None:
+    next_entry: dict[str, Any] | None = None
+    next_lock_identity = lock_identity
+    with EXECUTION_LOCKS_STATE_LOCK:
+        state = _load_execution_locks_state()
+        locks = state.setdefault("locks", {})
+        if next_lock_identity is None:
+            for identity, lock_state in locks.items():
+                if not isinstance(lock_state, dict):
+                    continue
+                if str(lock_state.get("holder_run_id") or "").strip() == completed_run_id:
+                    next_lock_identity = identity
+                    break
+        if next_lock_identity is None:
+            return
+        raw_lock_state = locks.get(next_lock_identity)
+        if not isinstance(raw_lock_state, dict):
+            return
+        if str(raw_lock_state.get("holder_run_id") or "").strip() != completed_run_id:
+            return
+        queue_entries = [entry for entry in raw_lock_state.get("queue", []) if isinstance(entry, dict)]
+        if queue_entries:
+            next_entry = queue_entries.pop(0)
+            raw_lock_state["holder_run_id"] = str(next_entry.get("run_id") or "").strip()
+            raw_lock_state["queue"] = queue_entries
+            _refresh_execution_lock_queue_positions(next_lock_identity, queue_entries)
+        else:
+            locks.pop(next_lock_identity, None)
+        _save_execution_locks_state(state)
+    if next_entry is not None and next_lock_identity is not None:
+        await _start_next_execution_locked_run(next_lock_identity, next_entry)
+
+
+async def _start_pipeline(
+    req: PipelineStartRequest,
+    *,
+    run_id: Optional[str] = None,
+    on_complete: Optional[Callable[[str, str], Any]] = None,
+) -> dict:
+    flow_name = (req.flow_name or "").strip()
+    execution_lock_config = _read_execution_lock_config(flow_name)
+    if execution_lock_config is None:
+        return await _start_pipeline_unlocked(req, run_id=run_id, on_complete=on_complete)
+
+    reserved_run_id = (run_id or req.run_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
+    if _execution_locked_run_id_conflicts(reserved_run_id):
+        return {
+            "status": "validation_error",
+            "error": f"Run id already exists: {reserved_run_id}",
+        }
+    if execution_lock_config.conflict_policy != EXECUTION_LOCK_CONFLICT_POLICY_QUEUE:
+        return {
+            "status": "validation_error",
+            "error": f"Unsupported execution lock conflict policy: {execution_lock_config.conflict_policy}",
+        }
+
+    lock_identity, _ = _build_execution_lock_identity(execution_lock_config, req.working_directory)
+    request_payload = req.model_dump()
+    request_payload["run_id"] = reserved_run_id
+    next_request = PipelineStartRequest(**request_payload)
+
+    queue_position: int | None = None
+    with EXECUTION_LOCKS_STATE_LOCK:
+        state = _load_execution_locks_state()
+        locks = state.setdefault("locks", {})
+        raw_lock_state = locks.setdefault(
+            lock_identity,
+            {
+                "scope": execution_lock_config.scope,
+                "key": execution_lock_config.key,
+                "conflict_policy": execution_lock_config.conflict_policy,
+                "holder_run_id": "",
+                "queue": [],
+            },
+        )
+        holder_run_id = str(raw_lock_state.get("holder_run_id") or "").strip()
+        if holder_run_id and holder_run_id != reserved_run_id:
+            queue_entries = raw_lock_state.setdefault("queue", [])
+            if not isinstance(queue_entries, list):
+                queue_entries = []
+                raw_lock_state["queue"] = queue_entries
+            queue_entries.append(
+                {
+                    "run_id": reserved_run_id,
+                    "request": request_payload,
+                    "execution_lock": {
+                        "scope": execution_lock_config.scope,
+                        "key": execution_lock_config.key,
+                        "conflict_policy": execution_lock_config.conflict_policy,
+                    },
+                    "enqueued_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                }
+            )
+            queue_position = len(queue_entries)
+        else:
+            raw_lock_state["holder_run_id"] = reserved_run_id
+        _save_execution_locks_state(state)
+
+    execution_lock = _execution_lock_runtime_metadata(
+        execution_lock_config,
+        identity=lock_identity,
+        state=EXECUTION_LOCK_STATE_QUEUED if queue_position is not None else EXECUTION_LOCK_STATE_HOLDING,
+        queue_position=queue_position,
+    )
+    if queue_position is not None:
+        _write_queued_run_meta(
+            run_id=reserved_run_id,
+            flow_name=flow_name,
+            working_directory=req.working_directory,
+            model=req.model,
+            llm_provider=req.llm_provider,
+            llm_profile=req.llm_profile,
+            reasoning_effort=req.reasoning_effort,
+            spec_id=req.spec_id,
+            plan_id=req.plan_id,
+            execution_profile_id=req.execution_profile_id or req.project_default_execution_profile_id,
+            execution_lock=execution_lock,
+        )
+        await _publish_run_list_upsert(reserved_run_id)
+        return {
+            "status": EXECUTION_LOCK_STATE_QUEUED,
+            "pipeline_id": reserved_run_id,
+            "run_id": reserved_run_id,
+            "working_directory": req.working_directory,
+            "model": req.model,
+            "provider": req.llm_provider or "codex",
+            "llm_provider": req.llm_provider or "codex",
+            "llm_profile": req.llm_profile,
+            "reasoning_effort": req.reasoning_effort,
+            "execution_profile_id": req.execution_profile_id or req.project_default_execution_profile_id,
+            "execution_lock": execution_lock.to_dict(),
+        }
+
+    async def _completion_callback(completed_run_id: str, final_status: str) -> None:
+        if on_complete is not None:
+            completion_result = on_complete(completed_run_id, final_status)
+            if asyncio.iscoroutine(completion_result):
+                await completion_result
+        await _release_execution_lock(completed_run_id, lock_identity=lock_identity)
+
+    result = await _start_pipeline_unlocked(
+        next_request,
+        run_id=reserved_run_id,
+        execution_lock=execution_lock,
+        on_complete=_completion_callback,
+    )
+    if result.get("status") == "started":
+        return result
+    await _release_execution_lock(reserved_run_id, lock_identity=lock_identity)
+    return result
 
 
 @attractor_router.post("/pipelines")

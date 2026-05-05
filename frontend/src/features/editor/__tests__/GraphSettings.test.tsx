@@ -84,12 +84,16 @@ describe('Graph and settings behavior', () => {
             : input.url
         const method = init?.method ?? 'GET'
         if (url.includes('/workspace/api/flows/') && url.includes('/launch-policy') && method === 'PUT') {
+          const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
           return new Response(
             JSON.stringify({
               name: TEST_GRAPH_FLOW,
-              launch_policy: 'agent_requestable',
-              effective_launch_policy: 'agent_requestable',
+              launch_policy: body.launch_policy ?? 'agent_requestable',
+              effective_launch_policy: body.launch_policy ?? 'agent_requestable',
+              execution_lock: body.execution_lock ?? null,
               allowed_launch_policies: ['agent_requestable', 'trigger_only', 'disabled'],
+              allowed_execution_lock_scopes: ['project'],
+              allowed_execution_lock_conflict_policies: ['queue'],
             }),
             {
               status: 200,
@@ -105,6 +109,7 @@ describe('Graph and settings behavior', () => {
               description: 'Snapshot a plan file, implement it, and iterate until complete.',
               launch_policy: null,
               effective_launch_policy: 'disabled',
+              execution_lock: null,
             }),
             {
               status: 200,
@@ -326,12 +331,37 @@ describe('Graph and settings behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
-        'Workspace launch policy saved as Agent Requestable.',
+        'Workspace flow catalog settings saved.',
       )
     })
 
     expect(useStore.getState().saveState).toBe('idle')
     expect(screen.getByLabelText('Launch Policy')).toHaveValue('agent_requestable')
+  })
+
+  it('loads and saves execution lock config from the workspace flow catalog', async () => {
+    const user = userEvent.setup()
+    wrapWithFlowProvider(<GraphSettings inline />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
+        'No catalog entry yet. Effective policy is Disabled.',
+      )
+    })
+
+    await user.click(screen.getByLabelText('Enable execution lock'))
+    await user.type(screen.getByLabelText('Lock Key'), 'main-worktree-integration')
+    fireEvent.blur(screen.getByLabelText('Lock Key'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
+        'Workspace flow catalog settings saved.',
+      )
+    })
+
+    expect(screen.getByLabelText('Lock Scope')).toHaveValue('project')
+    expect(screen.getByLabelText('Lock Key')).toHaveValue('main-worktree-integration')
+    expect(screen.getByLabelText('Conflict Policy')).toHaveValue('queue')
   })
 
   it('does not autosave when graph attrs are replaced from hydrated state', async () => {

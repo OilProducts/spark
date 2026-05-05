@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from attractor.api.run_records import (
     RunRecord,
+    RunExecutionLock,
     extract_token_usage,
     normalize_run_status,
 )
@@ -229,6 +230,7 @@ def record_run_start(
     execution_worker_version: Optional[str] = None,
     execution_worker_capabilities: Optional[object] = None,
     execution_profile_capabilities: Optional[object] = None,
+    execution_lock: Optional[RunExecutionLock] = None,
 ) -> None:
     project_path, git_branch, git_commit = resolve_run_project_git_metadata(
         working_directory,
@@ -271,6 +273,7 @@ def record_run_start(
         execution_worker_version=execution_worker_version,
         execution_worker_capabilities=execution_worker_capabilities,
         execution_profile_capabilities=execution_profile_capabilities,
+        execution_lock=execution_lock,
     )
     with run_history_lock:
         write_run_meta(get_runtime_paths, record)

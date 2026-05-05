@@ -3,14 +3,20 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+import attractor.api.server as server
 import spark.app as product_app
 from spark.workspace.attractor_client import AttractorApiClient
 from spark.workspace.flow_catalog import (
+    EXECUTION_LOCK_CONFLICT_POLICY_QUEUE,
+    EXECUTION_LOCK_SCOPE_PROJECT,
+    FlowExecutionLockConfig,
     LAUNCH_POLICY_AGENT_REQUESTABLE,
     LAUNCH_POLICY_DISABLED,
     read_flow_launch_policy,
+    set_flow_catalog_entry,
     set_flow_launch_policy,
 )
 
@@ -36,6 +42,7 @@ def test_flow_catalog_round_trip_defaults_uncataloged_to_disabled() -> None:
     reloaded = read_flow_launch_policy(config_dir, "agent-visible.dot")
     assert reloaded.launch_policy == LAUNCH_POLICY_AGENT_REQUESTABLE
     assert reloaded.effective_launch_policy == LAUNCH_POLICY_AGENT_REQUESTABLE
+    assert reloaded.execution_lock is None
 
     catalog_path = product_app.get_settings().config_dir / "flow-catalog.toml"
     assert catalog_path.read_text(encoding="utf-8") == (
@@ -146,6 +153,7 @@ digraph fallback {
             "description": "Fallback goal",
             "launch_policy": None,
             "effective_launch_policy": "disabled",
+            "execution_lock": None,
             "graph_label": "Fallback Label",
             "graph_goal": "Fallback goal",
         },
@@ -155,6 +163,7 @@ digraph fallback {
             "description": "Workspace description",
             "launch_policy": None,
             "effective_launch_policy": "disabled",
+            "execution_lock": None,
             "graph_label": "Graph Label",
             "graph_goal": "Graph goal",
         },
@@ -188,6 +197,7 @@ digraph nested {
             "description": "",
             "launch_policy": None,
             "effective_launch_policy": "disabled",
+            "execution_lock": None,
             "graph_label": "",
             "graph_goal": "",
         },
@@ -197,6 +207,7 @@ digraph nested {
             "description": "Nested flow description",
             "launch_policy": None,
             "effective_launch_policy": "disabled",
+            "execution_lock": None,
             "graph_label": "",
             "graph_goal": "",
         },
@@ -223,6 +234,7 @@ def test_list_workspace_flows_agent_surface_filters_non_requestable_flows(
             "description": "",
             "launch_policy": "agent_requestable",
             "effective_launch_policy": "agent_requestable",
+            "execution_lock": None,
             "graph_label": "",
             "graph_goal": "",
         }
@@ -259,6 +271,7 @@ digraph inspectable {
         "description": "Inspect graph behavior",
         "launch_policy": "agent_requestable",
         "effective_launch_policy": "agent_requestable",
+        "execution_lock": None,
         "graph_label": "Inspectable Graph",
         "graph_goal": "Inspect graph behavior",
         "node_count": 4,
@@ -393,11 +406,280 @@ def test_workspace_flow_launch_policy_update_persists_catalog_entry(
         "name": "editable.dot",
         "launch_policy": "trigger_only",
         "effective_launch_policy": "trigger_only",
+        "execution_lock": None,
         "allowed_launch_policies": [
             "agent_requestable",
             "disabled",
             "trigger_only",
         ],
+        "allowed_execution_lock_scopes": [
+            "project",
+        ],
+        "allowed_execution_lock_conflict_policies": [
+            "queue",
+        ],
     }
     catalog_state = read_flow_launch_policy(product_app.get_settings().config_dir, "editable.dot")
     assert catalog_state.launch_policy == "trigger_only"
+
+
+def test_flow_catalog_round_trip_persists_execution_lock_config() -> None:
+    config_dir = product_app.get_settings().config_dir
+
+    saved = set_flow_catalog_entry(
+        config_dir,
+        "locked.dot",
+        launch_policy=LAUNCH_POLICY_DISABLED,
+        execution_lock=FlowExecutionLockConfig(
+            scope=EXECUTION_LOCK_SCOPE_PROJECT,
+            key="main-worktree-integration",
+            conflict_policy=EXECUTION_LOCK_CONFLICT_POLICY_QUEUE,
+        ),
+    )
+
+    assert saved.launch_policy == LAUNCH_POLICY_DISABLED
+    assert saved.execution_lock == FlowExecutionLockConfig(
+        scope="project",
+        key="main-worktree-integration",
+        conflict_policy="queue",
+    )
+
+    reloaded = read_flow_launch_policy(config_dir, "locked.dot")
+    assert reloaded.execution_lock == FlowExecutionLockConfig(
+        scope="project",
+        key="main-worktree-integration",
+        conflict_policy="queue",
+    )
+
+
+@pytest.mark.asyncio
+async def test_execution_lock_launches_immediately_when_unheld(product_api_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_dir = (tmp_path / "project").resolve()
+    project_dir.mkdir()
+    set_flow_catalog_entry(
+        product_app.get_settings().config_dir,
+        "locked.dot",
+        launch_policy=LAUNCH_POLICY_DISABLED,
+        execution_lock=FlowExecutionLockConfig(
+            scope="project",
+            key="main-worktree-integration",
+            conflict_policy="queue",
+        ),
+    )
+
+    start_calls: list[dict[str, object]] = []
+
+    async def fake_start_pipeline_unlocked(req, *, run_id=None, execution_lock=None, on_complete=None):
+        resolved_run_id = str(run_id or req.run_id or "run-1")
+        start_calls.append(
+            {
+                "run_id": resolved_run_id,
+                "working_directory": req.working_directory,
+                "execution_lock": execution_lock.to_dict() if execution_lock is not None else None,
+                "on_complete": on_complete,
+            }
+        )
+        return {"status": "started", "run_id": resolved_run_id, "pipeline_id": resolved_run_id}
+
+    monkeypatch.setattr(server, "_start_pipeline_unlocked", fake_start_pipeline_unlocked)
+
+    result = await server._start_pipeline(
+        server.PipelineStartRequest(
+            flow_name="locked.dot",
+            flow_content="digraph locked { start -> done; }",
+            working_directory=str(project_dir),
+        )
+    )
+
+    assert result["status"] == "started"
+    assert len(start_calls) == 1
+    assert start_calls[0]["run_id"] == result["run_id"]
+    assert start_calls[0]["working_directory"] == str(project_dir)
+    assert start_calls[0]["execution_lock"] == {
+        "scope": "project",
+        "key": "main-worktree-integration",
+        "conflict_policy": "queue",
+        "identity": start_calls[0]["execution_lock"]["identity"] if isinstance(start_calls[0]["execution_lock"], dict) else "",
+        "state": "holding",
+    }
+    assert start_calls[0]["on_complete"] is not None
+
+
+@pytest.mark.asyncio
+async def test_execution_lock_queues_same_project_and_starts_fifo_on_completion(
+    product_api_client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = (tmp_path / "project").resolve()
+    project_dir.mkdir()
+    set_flow_catalog_entry(
+        product_app.get_settings().config_dir,
+        "locked.dot",
+        launch_policy=LAUNCH_POLICY_DISABLED,
+        execution_lock=FlowExecutionLockConfig(
+            scope="project",
+            key="main-worktree-integration",
+            conflict_policy="queue",
+        ),
+    )
+
+    start_calls: list[dict[str, object]] = []
+    completion_callbacks: dict[str, object] = {}
+
+    async def fake_start_pipeline_unlocked(req, *, run_id=None, execution_lock=None, on_complete=None):
+        resolved_run_id = str(run_id or req.run_id or f"run-{len(start_calls) + 1}")
+        start_calls.append(
+            {
+                "run_id": resolved_run_id,
+                "flow_name": req.flow_name,
+                "execution_lock": execution_lock.to_dict() if execution_lock is not None else None,
+            }
+        )
+        if on_complete is not None:
+            completion_callbacks[resolved_run_id] = on_complete
+        return {"status": "started", "run_id": resolved_run_id, "pipeline_id": resolved_run_id}
+
+    monkeypatch.setattr(server, "_start_pipeline_unlocked", fake_start_pipeline_unlocked)
+
+    first = await server._start_pipeline(
+        server.PipelineStartRequest(
+            flow_name="locked.dot",
+            flow_content="digraph locked { start -> done; }",
+            working_directory=str(project_dir),
+        )
+    )
+    second = await server._start_pipeline(
+        server.PipelineStartRequest(
+            flow_name="locked.dot",
+            flow_content="digraph locked { start -> done; }",
+            working_directory=str(project_dir),
+        )
+    )
+    third = await server._start_pipeline(
+        server.PipelineStartRequest(
+            flow_name="locked.dot",
+            flow_content="digraph locked { start -> done; }",
+            working_directory=str(project_dir),
+        )
+    )
+
+    assert first["status"] == "started"
+    assert second["status"] == "queued"
+    assert third["status"] == "queued"
+    assert len(start_calls) == 1
+
+    first_complete = completion_callbacks[first["run_id"]]
+    completion_result = first_complete(first["run_id"], "completed")
+    if asyncio.iscoroutine(completion_result):
+        await completion_result
+    await asyncio.sleep(0)
+
+    assert [call["run_id"] for call in start_calls] == [first["run_id"], second["run_id"]]
+
+    second_complete = completion_callbacks[second["run_id"]]
+    completion_result = second_complete(second["run_id"], "completed")
+    if asyncio.iscoroutine(completion_result):
+        await completion_result
+    await asyncio.sleep(0)
+
+    assert [call["run_id"] for call in start_calls] == [first["run_id"], second["run_id"], third["run_id"]]
+
+
+@pytest.mark.asyncio
+async def test_execution_lock_serializes_different_flows_sharing_same_key(
+    product_api_client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = (tmp_path / "project").resolve()
+    project_dir.mkdir()
+    for flow_name in ("first.dot", "second.dot"):
+        set_flow_catalog_entry(
+            product_app.get_settings().config_dir,
+            flow_name,
+            launch_policy=LAUNCH_POLICY_DISABLED,
+            execution_lock=FlowExecutionLockConfig(
+                scope="project",
+                key="shared-resource",
+                conflict_policy="queue",
+            ),
+        )
+
+    start_calls: list[str] = []
+
+    async def fake_start_pipeline_unlocked(req, *, run_id=None, execution_lock=None, on_complete=None):
+        resolved_run_id = str(run_id or req.run_id or f"run-{len(start_calls) + 1}")
+        start_calls.append(str(req.flow_name))
+        return {"status": "started", "run_id": resolved_run_id, "pipeline_id": resolved_run_id}
+
+    monkeypatch.setattr(server, "_start_pipeline_unlocked", fake_start_pipeline_unlocked)
+
+    first = await server._start_pipeline(
+        server.PipelineStartRequest(
+            flow_name="first.dot",
+            flow_content="digraph first { start -> done; }",
+            working_directory=str(project_dir),
+        )
+    )
+    second = await server._start_pipeline(
+        server.PipelineStartRequest(
+            flow_name="second.dot",
+            flow_content="digraph second { start -> done; }",
+            working_directory=str(project_dir),
+        )
+    )
+
+    assert first["status"] == "started"
+    assert second["status"] == "queued"
+    assert start_calls == ["first.dot"]
+
+
+@pytest.mark.asyncio
+async def test_execution_lock_does_not_block_different_projects_with_same_key(
+    product_api_client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_a = (tmp_path / "project-a").resolve()
+    project_b = (tmp_path / "project-b").resolve()
+    project_a.mkdir()
+    project_b.mkdir()
+    set_flow_catalog_entry(
+        product_app.get_settings().config_dir,
+        "locked.dot",
+        launch_policy=LAUNCH_POLICY_DISABLED,
+        execution_lock=FlowExecutionLockConfig(
+            scope="project",
+            key="main-worktree-integration",
+            conflict_policy="queue",
+        ),
+    )
+
+    start_calls: list[str] = []
+
+    async def fake_start_pipeline_unlocked(req, *, run_id=None, execution_lock=None, on_complete=None):
+        resolved_run_id = str(run_id or req.run_id or f"run-{len(start_calls) + 1}")
+        start_calls.append(req.working_directory)
+        return {"status": "started", "run_id": resolved_run_id, "pipeline_id": resolved_run_id}
+
+    monkeypatch.setattr(server, "_start_pipeline_unlocked", fake_start_pipeline_unlocked)
+
+    first = await server._start_pipeline(
+        server.PipelineStartRequest(
+            flow_name="locked.dot",
+            flow_content="digraph locked { start -> done; }",
+            working_directory=str(project_a),
+        )
+    )
+    second = await server._start_pipeline(
+        server.PipelineStartRequest(
+            flow_name="locked.dot",
+            flow_content="digraph locked { start -> done; }",
+            working_directory=str(project_b),
+        )
+    )
+
+    assert first["status"] == "started"
+    assert second["status"] == "started"
+    assert start_calls == [str(project_a), str(project_b)]

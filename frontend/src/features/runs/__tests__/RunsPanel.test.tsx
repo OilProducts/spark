@@ -100,6 +100,7 @@ const makeRun = (overrides: Partial<Record<string, unknown>> = {}) => ({
   parent_node_id: (overrides.parent_node_id as string | null | undefined) ?? null,
   root_run_id: (overrides.root_run_id as string | null | undefined) ?? null,
   child_invocation_index: (overrides.child_invocation_index as number | null | undefined) ?? null,
+  execution_lock: (overrides.execution_lock as Record<string, unknown> | null | undefined) ?? null,
 })
 
 const makeJournalEntry = (
@@ -319,6 +320,75 @@ describe('RunsPanel', () => {
       }),
     ).toBe(true)
     expect(screen.getByText('Run history across all projects.')).toBeVisible()
+  })
+
+  it('renders execution lock holders and groups queued attempts by lock identity', async () => {
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({
+          runs: [
+            makeRun({
+              run_id: 'run-holder',
+              flow_name: 'holder.dot',
+              status: 'running',
+              execution_lock: {
+                scope: 'project',
+                key: 'main-worktree-integration',
+                conflict_policy: 'queue',
+                identity: 'project:one:main-worktree-integration',
+                state: 'holding',
+              },
+            }),
+            makeRun({
+              run_id: 'run-queued-a',
+              flow_name: 'queued-a.dot',
+              status: 'queued',
+              execution_lock: {
+                scope: 'project',
+                key: 'main-worktree-integration',
+                conflict_policy: 'queue',
+                identity: 'project:one:main-worktree-integration',
+                state: 'queued',
+                queue_position: 1,
+              },
+            }),
+            makeRun({
+              run_id: 'run-queued-b',
+              flow_name: 'queued-b.dot',
+              status: 'queued',
+              execution_lock: {
+                scope: 'project',
+                key: 'main-worktree-integration',
+                conflict_policy: 'queue',
+                identity: 'project:one:main-worktree-integration',
+                state: 'queued',
+                queue_position: 2,
+              },
+            }),
+          ],
+        })
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    renderRunsWorkspace()
+
+    expect(await screen.findByText('Holding execution lock')).toBeVisible()
+    expect(screen.getByText('Queued execution lock · project lock · main-worktree-integration')).toBeVisible()
+    expect(screen.getByText('queued-a.dot')).toBeVisible()
+    expect(screen.getByText('queued-b.dot')).toBeVisible()
+    expect(screen.getByText('Queued for execution lock · position 1')).toBeVisible()
   })
 
   it('switches between active and all scopes by replacing the scoped runs stream', async () => {

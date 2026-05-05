@@ -18,15 +18,19 @@ from spark.workspace.attractor_client import AttractorApiClient, AttractorApiErr
 from spark.workspace.conversations.artifacts import IMPLEMENT_CHANGE_REQUEST_FLOW
 from spark.workspace.flow_catalog import (
     ALLOWED_LAUNCH_POLICIES,
+    ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES,
+    ALLOWED_EXECUTION_LOCK_SCOPES,
+    FlowExecutionLockConfig,
     LAUNCH_POLICY_AGENT_REQUESTABLE,
     FlowDescription,
     FlowSummary,
     list_flow_summaries,
+    normalize_execution_lock_config,
     normalize_launch_policy,
     read_flow_description,
     read_flow_launch_policy,
     read_flow_raw,
-    set_flow_launch_policy,
+    set_flow_catalog_entry,
 )
 from spark.workspace.storage import (
     delete_project_record,
@@ -134,7 +138,9 @@ class RunLaunchRequest(BaseModel):
 
 
 class FlowLaunchPolicyUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     launch_policy: str
+    execution_lock: Optional[dict[str, Any]] = None
 
 class TriggerCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -239,6 +245,15 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         if not flow_path.exists():
             raise HTTPException(status_code=404, detail=f"Unknown flow: {flow_name}")
 
+    def _serialize_execution_lock(execution_lock: FlowExecutionLockConfig | None) -> dict[str, object] | None:
+        if execution_lock is None:
+            return None
+        return {
+            "scope": execution_lock.scope,
+            "key": execution_lock.key,
+            "conflict_policy": execution_lock.conflict_policy,
+        }
+
     def _serialize_flow_summary(flow: FlowSummary) -> dict[str, object]:
         return {
             "name": flow.name,
@@ -246,6 +261,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             "description": flow.description,
             "launch_policy": flow.launch_policy,
             "effective_launch_policy": flow.effective_launch_policy,
+            "execution_lock": _serialize_execution_lock(flow.execution_lock),
             "graph_label": flow.graph_label,
             "graph_goal": flow.graph_goal,
         }
@@ -357,7 +373,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             await project_chat.publish_snapshot(conversation_id)
             return None
 
-        if launch_payload.get("status") != "started":
+        if launch_payload.get("status") not in {"started", "queued"}:
             error = str(launch_payload.get("error") or "Flow run could not be started.")
             await asyncio.to_thread(
                 project_chat.fail_flow_run_request_launch,
@@ -407,7 +423,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         llm_profile: Optional[str],
         reasoning_effort: Optional[str],
         execution_profile_id: Optional[str] = None,
-    ) -> str:
+    ) -> tuple[str, str]:
         launch_kwargs: dict[str, Any] = {}
         if llm_provider is not None:
             launch_kwargs["llm_provider"] = llm_provider
@@ -435,7 +451,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         except AttractorApiError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-        if launch_payload.get("status") != "started":
+        if launch_payload.get("status") not in {"started", "queued"}:
             error = str(launch_payload.get("error") or "Flow launch could not be started.")
             raise HTTPException(status_code=500, detail=error)
 
@@ -448,7 +464,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             flow_name=flow_name,
             project_path=project_path,
         )
-        return run_id
+        return run_id, str(launch_payload.get("status") or "started")
 
     @router.get("/api/conversations/{conversation_id}")
     async def get_project_conversation(conversation_id: str, project_path: Optional[str] = None):
@@ -574,18 +590,26 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             normalized_launch_policy = normalize_launch_policy(req.launch_policy)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            normalized_execution_lock = normalize_execution_lock_config(req.execution_lock) if req.execution_lock is not None else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         await _ensure_flow_exists(flow_name)
         policy_state = await asyncio.to_thread(
-            set_flow_launch_policy,
+            set_flow_catalog_entry,
             deps.get_settings().config_dir,
             flow_name,
-            normalized_launch_policy,
+            launch_policy=normalized_launch_policy,
+            execution_lock=normalized_execution_lock,
         )
         return {
             "name": policy_state.name,
             "launch_policy": policy_state.launch_policy,
             "effective_launch_policy": policy_state.effective_launch_policy,
+            "execution_lock": _serialize_execution_lock(policy_state.execution_lock),
             "allowed_launch_policies": sorted(ALLOWED_LAUNCH_POLICIES),
+            "allowed_execution_lock_scopes": sorted(ALLOWED_EXECUTION_LOCK_SCOPES),
+            "allowed_execution_lock_conflict_policies": sorted(ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES),
         }
 
     @router.get("/api/flows/{flow_name:path}")
@@ -957,7 +981,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             normalized_project_path = _normalize_project_path_or_400(explicit_project_path)
 
         try:
-            run_id = await _launch_direct_flow(
+            run_id, launch_status = await _launch_direct_flow(
                 flow_name=str(normalized_payload["flow_name"]),
                 project_path=normalized_project_path,
                 goal=normalized_payload.get("goal") if isinstance(normalized_payload.get("goal"), str) else None,
@@ -996,7 +1020,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
 
         response_payload: dict[str, object] = {
             "ok": True,
-            "status": "started",
+            "status": launch_status,
             "run_id": run_id,
             "flow_name": str(normalized_payload["flow_name"]),
             "project_path": normalized_project_path,
@@ -1113,7 +1137,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         await deps.get_project_chat().publish_snapshot(conversation_id)
         if req.disposition == "approved" and flow_launch is not None:
             try:
-                run_id = await _launch_direct_flow(
+                run_id, _launch_status = await _launch_direct_flow(
                     flow_name=flow_launch.flow_name,
                     project_path=normalized_project_path,
                     goal=flow_launch.goal,

@@ -20,6 +20,7 @@ export {
     type ProjectRecordResponse,
     type TriggerResponse,
     type TriggerSourceType,
+    type FlowExecutionLockResponse,
     type FlowLaunchPolicy,
     type ExecutionPlacementProfile,
     type WorkspaceFlowLaunchPolicyResponse,

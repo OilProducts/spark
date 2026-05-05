@@ -32,8 +32,6 @@ TERMINAL_PIPELINE_STATUSES = {
 }
 WEEKDAY_ORDER = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 MAX_RECENT_HISTORY = 20
-MAX_DEDUPE_KEYS = 200
-MAX_POLL_ITEM_IDS = 500
 WEBHOOK_KEY_BYTES = 12
 WEBHOOK_SECRET_BYTES = 24
 
@@ -74,8 +72,6 @@ class TriggerState:
     last_error: str | None = None
     next_run_at: str | None = None
     recent_history: list[dict[str, Any]] = field(default_factory=list)
-    dedupe_keys: list[str] = field(default_factory=list)
-    seen_item_ids: list[str] = field(default_factory=list)
 
 
 def trigger_config_dir(config_dir: Path) -> Path:
@@ -171,16 +167,12 @@ def load_trigger_state(data_dir: Path, trigger_id: str) -> TriggerState:
     if not isinstance(payload, dict):
         return TriggerState()
     recent_history = payload.get("recent_history")
-    dedupe_keys = payload.get("dedupe_keys")
-    seen_item_ids = payload.get("seen_item_ids")
     return TriggerState(
         last_fired_at=_normalize_optional_string(payload.get("last_fired_at")),
         last_result=_normalize_optional_string(payload.get("last_result")),
         last_error=_normalize_optional_string(payload.get("last_error")),
         next_run_at=_normalize_optional_string(payload.get("next_run_at")),
         recent_history=[entry for entry in recent_history if isinstance(entry, dict)] if isinstance(recent_history, list) else [],
-        dedupe_keys=[str(entry) for entry in dedupe_keys if isinstance(entry, str)] if isinstance(dedupe_keys, list) else [],
-        seen_item_ids=[str(entry) for entry in seen_item_ids if isinstance(entry, str)] if isinstance(seen_item_ids, list) else [],
     )
 
 
@@ -384,7 +376,6 @@ class TriggerRuntime:
         self._get_attractor_client = get_attractor_client
         self._definitions: dict[str, TriggerDefinition] = {}
         self._states: dict[str, TriggerState] = {}
-        self._running_trigger_ids: set[str] = set()
         self._monitored_run_ids: set[str] = set()
         self._loop_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
@@ -404,7 +395,6 @@ class TriggerRuntime:
                 except asyncio.CancelledError:
                     pass
                 self._loop_task = None
-            self._running_trigger_ids.clear()
             self._monitored_run_ids.clear()
 
     async def reload(self) -> None:
@@ -434,7 +424,7 @@ class TriggerRuntime:
             return None
         return serialize_trigger(definition, self._states.get(trigger_id, TriggerState()))
 
-    async def emit_flow_event(self, payload: Mapping[str, Any], *, dedupe_key: str) -> None:
+    async def emit_flow_event(self, payload: Mapping[str, Any]) -> None:
         await self.reload()
         flow_name = str(payload.get("flow_name") or "").strip()
         status = str(payload.get("status") or "").strip().lower()
@@ -448,7 +438,7 @@ class TriggerRuntime:
             statuses = configured_statuses if isinstance(configured_statuses, list) else []
             if statuses and status not in statuses:
                 continue
-            await self._schedule_trigger_fire(definition, dict(payload), dedupe_key=dedupe_key)
+            await self._schedule_trigger_fire(definition, dict(payload))
 
     async def handle_webhook(
         self,
@@ -468,22 +458,7 @@ class TriggerRuntime:
             raise TriggerError("Webhook trigger is disabled.")
         if not verify_webhook_secret(definition, webhook_secret):
             raise TriggerError("Webhook secret is invalid.")
-        state = self._states.setdefault(definition.id, TriggerState())
-        if request_id and request_id in state.dedupe_keys:
-            return {"ok": True, "trigger_id": definition.id}
-        if definition.id in self._running_trigger_ids:
-            self._record_history(
-                definition.id,
-                status="skipped",
-                message="Trigger is already running.",
-                dedupe_key=request_id,
-            )
-            return {"ok": True, "trigger_id": definition.id}
-        self._running_trigger_ids.add(definition.id)
-        try:
-            await self._execute_trigger(definition, dict(payload), dedupe_key=request_id)
-        finally:
-            self._running_trigger_ids.discard(definition.id)
+        await self._execute_trigger(definition, dict(payload))
         return {"ok": True, "trigger_id": definition.id}
 
     async def observe_run(self, *, run_id: str, flow_name: str, project_path: str | None) -> None:
@@ -524,7 +499,6 @@ class TriggerRuntime:
         await self._schedule_trigger_fire(
             definition,
             {"scheduled_at": _datetime_to_iso(due_at)},
-            dedupe_key=_datetime_to_iso(due_at),
         )
 
     async def _process_poll_trigger(self, definition: TriggerDefinition, now: datetime) -> None:
@@ -551,10 +525,7 @@ class TriggerRuntime:
                 item_id = _extract_json_path(item, str(definition.source["item_id_path"]))
                 if item_id is None:
                     continue
-                dedupe_key = f"poll:{item_id}"
-                if dedupe_key in state.dedupe_keys:
-                    continue
-                await self._schedule_trigger_fire(definition, {"poll_item": item}, dedupe_key=dedupe_key)
+                await self._schedule_trigger_fire(definition, {"poll_item": item})
         except Exception as exc:  # noqa: BLE001
             self._record_failure(definition.id, f"Polling failed: {exc}")
 
@@ -562,41 +533,20 @@ class TriggerRuntime:
         self,
         definition: TriggerDefinition,
         payload: dict[str, Any],
-        *,
-        dedupe_key: str | None,
     ) -> None:
-        if definition.id in self._running_trigger_ids:
-            self._record_history(
-                definition.id,
-                status="skipped",
-                message="Trigger is already running.",
-                dedupe_key=dedupe_key,
-            )
-            return
-        state = self._states.setdefault(definition.id, TriggerState())
-        if dedupe_key and dedupe_key in state.dedupe_keys:
-            return
-        self._running_trigger_ids.add(definition.id)
-        asyncio.create_task(self._run_scheduled_trigger(definition, payload, dedupe_key=dedupe_key))
+        asyncio.create_task(self._run_scheduled_trigger(definition, payload))
 
     async def _run_scheduled_trigger(
         self,
         definition: TriggerDefinition,
         payload: dict[str, Any],
-        *,
-        dedupe_key: str | None,
     ) -> None:
-        try:
-            await self._execute_trigger(definition, payload, dedupe_key=dedupe_key)
-        finally:
-            self._running_trigger_ids.discard(definition.id)
+        await self._execute_trigger(definition, payload)
 
     async def _execute_trigger(
         self,
         definition: TriggerDefinition,
         payload: dict[str, Any],
-        *,
-        dedupe_key: str | None,
     ) -> None:
         try:
             run_id = await self._launch_trigger_flow(definition, payload)
@@ -604,11 +554,6 @@ class TriggerRuntime:
             state.last_fired_at = _iso_now()
             state.last_result = "success"
             state.last_error = None
-            if dedupe_key:
-                state.dedupe_keys = _append_bounded(state.dedupe_keys, dedupe_key, limit=MAX_DEDUPE_KEYS)
-                if dedupe_key.startswith("poll:"):
-                    item_id = dedupe_key.split(":", 1)[1]
-                    state.seen_item_ids = _append_bounded(state.seen_item_ids, item_id, limit=MAX_POLL_ITEM_IDS)
             state.next_run_at = compute_next_run_at(definition, state)
             save_trigger_state(self._get_settings().data_dir, definition.id, state)
             self._record_history(
@@ -616,10 +561,9 @@ class TriggerRuntime:
                 status="success",
                 message="Trigger fired successfully.",
                 run_id=run_id,
-                dedupe_key=dedupe_key,
             )
         except Exception as exc:  # noqa: BLE001
-            self._record_failure(definition.id, str(exc), dedupe_key=dedupe_key)
+            self._record_failure(definition.id, str(exc))
 
     async def _launch_trigger_flow(self, definition: TriggerDefinition, payload: dict[str, Any]) -> str:
         action = definition.action
@@ -643,7 +587,7 @@ class TriggerRuntime:
             )
         except AttractorApiError as exc:
             raise TriggerError(str(exc)) from exc
-        if launch_payload.get("status") != "started":
+        if launch_payload.get("status") not in {"started", "queued"}:
             error = str(launch_payload.get("error") or "Trigger launch failed.")
             raise TriggerError(error)
         run_id = str(launch_payload.get("run_id") or "").strip()
@@ -662,8 +606,7 @@ class TriggerRuntime:
                     "flow_name": flow_name,
                     "project_path": project_path,
                     "status": status,
-                },
-                dedupe_key=f"flow:{run_id}",
+                }
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("Failed to monitor trigger-observed run %s: %s", run_id, exc)
@@ -679,15 +622,13 @@ class TriggerRuntime:
                 return payload
             await asyncio.sleep(1.0)
 
-    def _record_failure(self, trigger_id: str, message: str, *, dedupe_key: str | None = None) -> None:
+    def _record_failure(self, trigger_id: str, message: str) -> None:
         state = self._states.setdefault(trigger_id, TriggerState())
         state.last_fired_at = _iso_now()
         state.last_result = "failed"
         state.last_error = message
-        if dedupe_key:
-            state.dedupe_keys = _append_bounded(state.dedupe_keys, dedupe_key, limit=MAX_DEDUPE_KEYS)
         save_trigger_state(self._get_settings().data_dir, trigger_id, state)
-        self._record_history(trigger_id, status="failed", message=message, dedupe_key=dedupe_key)
+        self._record_history(trigger_id, status="failed", message=message)
 
     def _record_history(
         self,
@@ -696,7 +637,6 @@ class TriggerRuntime:
         status: str,
         message: str,
         run_id: str | None = None,
-        dedupe_key: str | None = None,
     ) -> None:
         state = self._states.setdefault(trigger_id, TriggerState())
         state.recent_history = [
@@ -705,7 +645,6 @@ class TriggerRuntime:
                 "status": status,
                 "message": message,
                 "run_id": run_id,
-                "dedupe_key": dedupe_key,
             },
             *state.recent_history,
         ][:MAX_RECENT_HISTORY]
@@ -846,10 +785,8 @@ def _schedule_due_at(source: Mapping[str, Any], state: TriggerState, now: dateti
             return now
         next_due = last_fired_at + timedelta(seconds=interval_seconds)
         return next_due if now >= next_due else None
-    scheduled = _weekly_scheduled_time(source, now)
-    last_history_key = state.dedupe_keys[0] if state.dedupe_keys else None
-    schedule_key = f"weekly:{_datetime_to_iso(scheduled)}"
-    if scheduled <= now and last_history_key != schedule_key:
+    scheduled = _weekly_most_recent_scheduled_time(source, now)
+    if scheduled <= now and (last_fired_at is None or last_fired_at < scheduled):
         return scheduled
     return None
 
@@ -888,6 +825,21 @@ def _weekly_scheduled_time(source: Mapping[str, Any], now: datetime) -> datetime
     return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
+def _weekly_most_recent_scheduled_time(source: Mapping[str, Any], now: datetime) -> datetime:
+    weekdays = list(source.get("weekdays") or [])
+    hour = int(source.get("hour") or 0)
+    minute = int(source.get("minute") or 0)
+    for offset in range(0, 8):
+        candidate = now - timedelta(days=offset)
+        weekday = WEEKDAY_ORDER[candidate.weekday()]
+        if weekday not in weekdays:
+            continue
+        scheduled = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if scheduled <= now:
+            return scheduled
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
 def _extract_json_path(value: Any, path: str) -> Any:
     current: Any = value
     for part in [segment.strip() for segment in path.split(".") if segment.strip()]:
@@ -896,12 +848,6 @@ def _extract_json_path(value: Any, path: str) -> Any:
             continue
         return None
     return current
-
-
-def _append_bounded(values: list[str], value: str, *, limit: int) -> list[str]:
-    deduped = [value, *[entry for entry in values if entry != value]]
-    return deduped[:limit]
-
 
 def _toml_source_line(key: str, value: Any) -> list[str]:
     if isinstance(value, bool):

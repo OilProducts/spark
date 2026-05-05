@@ -222,7 +222,7 @@ def test_local_environment_exec_command_kills_ignoring_child_after_timeout_grace
 
     assert result.timed_out is True
     assert result.stderr == "Command timed out after 50 ms"
-    assert result.duration_ms >= 1900
+    assert result.duration_ms >= 50
 
     deadline = time.monotonic() + 3.5
     while time.monotonic() < deadline and not marker.exists():

@@ -57,10 +57,11 @@ const runRecordsMatch = (left: RunRecord | null, right: RunRecord | null) => {
         'parent_node_id',
         'root_run_id',
         'child_invocation_index',
+        'execution_lock',
     ].every((key) => {
         const leftValue = left[key as keyof RunRecord]
         const rightValue = right[key as keyof RunRecord]
-        if (key === 'token_usage_breakdown' || key === 'estimated_model_cost') {
+        if (key === 'token_usage_breakdown' || key === 'estimated_model_cost' || key === 'execution_lock') {
             return JSON.stringify(leftValue ?? null) === JSON.stringify(rightValue ?? null)
         }
         return leftValue === rightValue
@@ -267,6 +268,9 @@ export function RunsPanel() {
             visiblePendingInterviewGates.length > 0
                 ? `Waiting for operator input at ${currentNodeForSummary || 'current node'}`
                 : latestTimelineEvent?.summary
+                    || (selectedRun.status === 'queued' && selectedRun.execution_lock
+                        ? `Queued behind ${selectedRun.execution_lock.key}`
+                        : null)
                     || (
                         ACTIVE_RUN_STATUSES.has(selectedRun.status)
                             ? (currentNodeForSummary ? `Running ${currentNodeForSummary}` : `Run status: ${STATUS_LABELS[selectedRun.status] || selectedRun.status}`)
@@ -442,7 +446,7 @@ export function RunsPanel() {
                     onSelectRun={selectRun}
                     runs={scopedRuns}
                     selectedRunId={selectedRunId}
-                    summaryLabel={`${summary.total} total runs · ${summary.running} running`}
+                    summaryLabel={`${summary.total} total runs · ${summary.running} running${summary.queued > 0 ? ` · ${summary.queued} queued` : ''}`}
                 />
                 <div className={`min-w-0 ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col overflow-hidden pl-6'}`}>
                     <div
