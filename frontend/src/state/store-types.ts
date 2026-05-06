@@ -52,6 +52,9 @@ export interface GraphAttrs {
     'spark.title'?: string
     'spark.description'?: string
     'spark.launch_inputs'?: string
+    'spark.result_node'?: string
+    'spark.result_summary_enabled'?: string
+    'spark.result_summary_prompt'?: string
     goal?: string
     label?: string
     model_stylesheet?: string

@@ -207,6 +207,20 @@ export interface PipelineContextResponse {
     context: Record<string, unknown>
 }
 
+export interface PipelineResultResponse {
+    run_id: string
+    status: string
+    state: 'pending' | 'ready' | 'unavailable' | 'error'
+    source_node_id?: string | null
+    source_artifact_path?: string | null
+    display_mode?: 'raw' | 'summary' | null
+    body_markdown: string
+    summary_enabled: boolean
+    summary_prompt?: string | null
+    summary_error?: string | null
+    error?: string | null
+}
+
 export interface PipelineQuestionsResponse {
     questions: Array<Record<string, unknown>>
 }
@@ -510,6 +524,34 @@ export function parsePipelineContextResponse(payload: unknown, endpoint = '/attr
     return {
         pipeline_id: expectString(record.pipeline_id, endpoint, 'pipeline_id'),
         context: expectObjectRecord(record.context, endpoint),
+    }
+}
+
+export function parsePipelineResultResponse(
+    payload: unknown,
+    endpoint = '/attractor/pipelines/{id}/result',
+): PipelineResultResponse {
+    const record = expectObjectRecord(payload, endpoint)
+    const rawState = expectString(record.state, endpoint, 'state')
+    const state: PipelineResultResponse['state'] =
+        rawState === 'pending' || rawState === 'ready' || rawState === 'unavailable' || rawState === 'error'
+            ? rawState
+            : 'error'
+    const rawDisplayMode = asOptionalNullableString(record.display_mode)
+    const displayMode: PipelineResultResponse['display_mode'] =
+        rawDisplayMode === 'raw' || rawDisplayMode === 'summary' ? rawDisplayMode : null
+    return {
+        run_id: expectString(record.run_id, endpoint, 'run_id'),
+        status: expectString(record.status, endpoint, 'status'),
+        state,
+        source_node_id: asOptionalNullableString(record.source_node_id),
+        source_artifact_path: asOptionalNullableString(record.source_artifact_path),
+        display_mode: displayMode,
+        body_markdown: typeof record.body_markdown === 'string' ? record.body_markdown : '',
+        summary_enabled: record.summary_enabled === true,
+        summary_prompt: asOptionalNullableString(record.summary_prompt),
+        summary_error: asOptionalNullableString(record.summary_error),
+        error: asOptionalNullableString(record.error),
     }
 }
 
@@ -927,6 +969,11 @@ export async function fetchPipelineCheckpointValidated(pipelineId: string): Prom
 export async function fetchPipelineContextValidated(pipelineId: string): Promise<PipelineContextResponse> {
     const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/context`)
     return fetchJsonWithValidation(url, undefined, '/attractor/pipelines/{id}/context', parsePipelineContextResponse)
+}
+
+export async function fetchPipelineResultValidated(pipelineId: string): Promise<PipelineResultResponse> {
+    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/result`)
+    return fetchJsonWithValidation(url, undefined, '/attractor/pipelines/{id}/result', parsePipelineResultResponse)
 }
 
 export async function fetchPipelineQuestionsValidated(pipelineId: string): Promise<PipelineQuestionsResponse> {

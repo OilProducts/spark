@@ -62,6 +62,12 @@ from attractor.api.run_records import (
     normalize_run_status,
     run_matches_project_scope,
 )
+from attractor.api.run_results import (
+    materialize_run_result,
+    pending_run_result,
+    read_materialized_run_result,
+    unavailable_run_result,
+)
 from attractor.api import pipeline_runs
 from attractor.api.pipeline_runtime import (
     ActiveRun,
@@ -1204,6 +1210,96 @@ def _record_run_status(
     )
 
 
+def _summarize_run_result_with_backend(
+    *,
+    run_id: str,
+    backend_name: str,
+    working_dir: str,
+    model: str | None,
+    provider: str | None,
+    llm_profile: str | None,
+    reasoning_effort: str | None,
+    prompt: str,
+    source_text: str,
+) -> str:
+    def emit(message: dict):
+        payload = dict(message)
+        payload.setdefault("run_id", run_id)
+        payload.setdefault("source_scope", "root")
+        payload["sequence"] = _next_run_event_sequence(run_id)
+        payload["emitted_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        if payload.get("type") == "log":
+            _append_run_log(run_id, str(payload.get("msg", "")))
+        _persist_run_event(run_id, payload)
+
+    def handle_usage_update(token_usage_breakdown: TokenUsageBreakdown) -> None:
+        _record_run_usage(run_id, token_usage_breakdown)
+
+    backend = _build_codergen_backend(
+        backend_name,
+        working_dir,
+        emit,
+        model=model,
+        on_usage_update=handle_usage_update,
+    )
+    summary_prompt = f"{prompt.strip()}\n\nSource result:\n\n{source_text}"
+    result = backend.run(
+        "result_summary",
+        summary_prompt,
+        Context(),
+        provider=provider,
+        llm_profile=llm_profile,
+        reasoning_effort=reasoning_effort,
+    )
+    if isinstance(result, Outcome):
+        if result.status not in {OutcomeStatus.SUCCESS, OutcomeStatus.PARTIAL_SUCCESS}:
+            raise RuntimeError(result.failure_reason or "Result summary generation failed.")
+        return result.raw_response_text or result.notes
+    return str(result)
+
+
+def _materialize_pipeline_result(
+    *,
+    run_id: str,
+    status: str,
+    graph,
+    backend_name: str,
+    working_dir: str,
+    model: str | None,
+    provider: str | None,
+    llm_profile: str | None,
+    reasoning_effort: str | None,
+) -> None:
+    checkpoint = load_checkpoint(_run_root(run_id) / "state.json")
+    if checkpoint is None:
+        return
+
+    def summarize(prompt: str, source_text: str) -> str:
+        return _summarize_run_result_with_backend(
+            run_id=run_id,
+            backend_name=backend_name,
+            working_dir=working_dir,
+            model=model,
+            provider=provider,
+            llm_profile=llm_profile,
+            reasoning_effort=reasoning_effort,
+            prompt=prompt,
+            source_text=source_text,
+        )
+
+    try:
+        materialize_run_result(
+            run_id=run_id,
+            status=status,
+            run_root=_run_root(run_id),
+            graph=graph,
+            checkpoint=checkpoint,
+            summarize=summarize,
+        )
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("failed to materialize result for run %s", run_id)
+
+
 def _write_queued_run_meta(
     *,
     run_id: str,
@@ -1551,6 +1647,45 @@ def _pipeline_status_payload(run_id: str) -> Dict[str, object]:
     payload["completed_nodes"] = completed_nodes
     payload["progress"] = _pipeline_progress_payload(checkpoint_current_node, completed_nodes)
     return payload
+
+
+def _load_run_result_graph(pipeline_id: str):
+    graph_source_path = _resolve_run_graph_source_path(pipeline_id)
+    try:
+        return parse_dot(graph_source_path.read_text(encoding="utf-8"))
+    except DotParseError as exc:
+        raise HTTPException(status_code=409, detail=f"Stored graph snapshot is invalid: {exc}") from exc
+
+
+def _pipeline_result_payload(pipeline_id: str) -> dict[str, object]:
+    _ensure_known_pipeline(pipeline_id)
+    active = _get_active_run(pipeline_id)
+    record = _read_hydrated_run_record(pipeline_id)
+    status = normalize_run_status(active.status if active is not None else (record.status if record else "unknown"))
+    if active is not None or status in {"queued", "running", "pause_requested", "cancel_requested"}:
+        return pending_run_result(run_id=pipeline_id, status=status).to_dict()
+
+    run_root = _run_root(pipeline_id)
+    materialized = read_materialized_run_result(run_root)
+    if materialized is not None:
+        return materialized.to_dict()
+
+    if status not in TERMINAL_RUN_STATUSES:
+        return pending_run_result(run_id=pipeline_id, status=status).to_dict()
+
+    checkpoint = load_checkpoint(run_root / "state.json")
+    if checkpoint is None:
+        return unavailable_run_result(run_id=pipeline_id, status=status).to_dict()
+    graph = _load_run_result_graph(pipeline_id)
+    result = materialize_run_result(
+        run_id=pipeline_id,
+        status=status,
+        run_root=run_root,
+        graph=graph,
+        checkpoint=checkpoint,
+        summarize=None,
+    )
+    return result.to_dict()
 
 
 def _list_run_records(project_path: Optional[str] = None) -> List[RunRecord]:
@@ -2718,6 +2853,17 @@ def _run_first_class_child_pipeline(
             outcome_reason_code=child_result.outcome_reason_code,
             outcome_reason_message=child_result.outcome_reason_message,
         )
+        _materialize_pipeline_result(
+            run_id=child_run_id,
+            status=final_status,
+            graph=request.child_graph,
+            backend_name=backend_name,
+            working_dir=working_dir,
+            model=selected_model,
+            provider=selected_provider,
+            llm_profile=selected_profile,
+            reasoning_effort=selected_reasoning_effort,
+        )
         _publish_run_list_upsert_sync(loop, child_run_id)
         emit(
             {
@@ -3105,6 +3251,18 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
                 outcome=final_outcome,
                 outcome_reason_code=final_outcome_reason_code,
                 outcome_reason_message=final_outcome_reason_message,
+            )
+            await asyncio.to_thread(
+                _materialize_pipeline_result,
+                run_id=pipeline_id,
+                status=final_status,
+                graph=graph,
+                backend_name="provider-router",
+                working_dir=working_dir,
+                model=record.model,
+                provider=selected_provider,
+                llm_profile=selected_profile,
+                reasoning_effort=selected_reasoning_effort,
             )
             await _publish_run_list_upsert(pipeline_id)
             await _publish_run_event(
@@ -3666,6 +3824,18 @@ async def _launch_pipeline_run(
                 outcome_reason_code=final_outcome_reason_code,
                 outcome_reason_message=final_outcome_reason_message,
             )
+            await asyncio.to_thread(
+                _materialize_pipeline_result,
+                run_id=resolved_run_id,
+                status=final_status,
+                graph=graph,
+                backend_name=backend_name,
+                working_dir=working_dir,
+                model=selected_model,
+                provider=selected_provider,
+                llm_profile=selected_profile,
+                reasoning_effort=selected_reasoning_effort,
+            )
             await _publish_run_list_upsert(resolved_run_id)
             await _publish_run_event(
                 resolved_run_id,
@@ -4191,6 +4361,11 @@ async def get_pipeline_context(pipeline_id: str):
         "pipeline_id": pipeline_id,
         "context": dict(checkpoint.context),
     }
+
+
+@attractor_router.get("/pipelines/{pipeline_id}/result")
+async def get_pipeline_result(pipeline_id: str):
+    return _pipeline_result_payload(pipeline_id)
 
 
 @attractor_router.patch("/pipelines/{pipeline_id}/metadata")

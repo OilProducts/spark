@@ -1,8 +1,11 @@
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
+import { fetchPipelineResultValidated, type PipelineResultResponse } from "@/lib/attractorClient"
 import type {
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
 } from "../model/types"
+import { ProjectConversationMarkdown } from "./ProjectConversationMarkdown"
 
 type SurfaceTone = "neutral" | "info" | "success" | "warning" | "danger"
 
@@ -15,6 +18,58 @@ type ProjectFlowRunRequestEntryProps = {
     formatConversationTimestamp: (value: string) => string
     getFlowRunRequestStatusPresentation: (status: ProjectFlowRunRequest["status"]) => { label: string; tone: SurfaceTone }
     getSurfaceToneClassName: (tone: SurfaceTone) => string
+}
+
+function ProjectFlowResultPreview({ runId }: { runId: string }) {
+    const [result, setResult] = useState<PipelineResultResponse | null>(null)
+    const [isLoading, setIsLoading] = useState(false)
+    const [error, setError] = useState<string | null>(null)
+
+    const viewResult = async () => {
+        setIsLoading(true)
+        setError(null)
+        try {
+            setResult(await fetchPipelineResultValidated(runId))
+        } catch (err) {
+            console.error(err)
+            setResult(null)
+            setError("Unable to load result.")
+        } finally {
+            setIsLoading(false)
+        }
+    }
+
+    return (
+        <div className="space-y-2">
+            <Button
+                type="button"
+                data-testid="project-flow-launch-view-result-button"
+                onClick={() => {
+                    void viewResult()
+                }}
+                variant="outline"
+                size="xs"
+                className="px-2 text-xs"
+            >
+                {isLoading ? "Loading result..." : "View result"}
+            </Button>
+            {error ? <p className="text-destructive">{error}</p> : null}
+            {result?.state === "pending" ? (
+                <p className="text-muted-foreground">Result pending.</p>
+            ) : null}
+            {result?.state === "unavailable" ? (
+                <p className="text-muted-foreground">Result unavailable.</p>
+            ) : null}
+            {result?.state === "error" ? (
+                <p className="text-destructive">{result.error || "Result resolution failed."}</p>
+            ) : null}
+            {result?.state === "ready" ? (
+                <div data-testid="project-flow-launch-result-body" className="rounded border border-border/60 bg-background/80 px-2 py-2">
+                    <ProjectConversationMarkdown content={result.body_markdown} />
+                </div>
+            ) : null}
+        </div>
+    )
 }
 
 export function ProjectFlowRunRequestEntry({
@@ -122,6 +177,7 @@ export function ProjectFlowRunRequestEntry({
                         >
                             Open run
                         </Button>
+                        <ProjectFlowResultPreview runId={flowRunRequest.run_id} />
                     </div>
                 ) : null}
             </div>
@@ -263,6 +319,7 @@ export function ProjectFlowLaunchEntry({
                         >
                             Open run
                         </Button>
+                        <ProjectFlowResultPreview runId={flowLaunch.run_id} />
                     </div>
                 ) : null}
             </div>

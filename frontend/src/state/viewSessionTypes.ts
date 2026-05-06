@@ -4,6 +4,7 @@ import type {
     ConversationSummaryResponse,
     TriggerResponse,
 } from '@/lib/workspaceClient'
+import type { PipelineResultResponse } from '@/lib/attractorClient'
 import type { OptimisticSendState } from '@/features/projects/model/conversationState'
 import type { NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
 import type { ProjectGitMetadata } from '@/features/projects/model/presentation'
@@ -67,6 +68,9 @@ export interface RunDetailSessionState {
     checkpointData: CheckpointResponse | null
     checkpointStatus: ResourceStatus
     checkpointError: CheckpointErrorState | null
+    resultData: PipelineResultResponse | null
+    resultStatus: ResourceStatus
+    resultError: string | null
     isSummaryCollapsed: boolean
     isProgressCollapsed: boolean
     progressNodeFilter: RunProgressNodeFilter

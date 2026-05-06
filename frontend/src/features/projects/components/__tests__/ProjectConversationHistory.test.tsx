@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ProjectConversationHistory } from '@/features/projects/components/ProjectConversationHistory'
 import type {
@@ -46,6 +46,10 @@ type FlowRunRequestTimelineEntry = Extract<
     ConversationTimelineEntry,
     { kind: 'flow_run_request' | 'flow_launch' }
 > & { kind: 'flow_run_request' }
+type FlowLaunchTimelineEntry = Extract<
+    ConversationTimelineEntry,
+    { kind: 'flow_run_request' | 'flow_launch' }
+> & { kind: 'flow_launch' }
 
 const makeHistoryElement = (
     activeConversationHistory: ConversationTimelineEntry[],
@@ -54,6 +58,7 @@ const makeHistoryElement = (
         activeFlowLaunchesById?: Map<string, ProjectFlowLaunch>
         activeProposedPlansById?: Map<string, ProjectProposedPlan>
         latestFlowRunRequestId?: string | null
+        latestFlowLaunchId?: string | null
         onOpenFlowRun?: (request: { run_id?: string | null; flow_name: string }) => void
         onReviewFlowRunRequest?: (flowRunRequest: ProjectFlowRunRequest, disposition: 'approved' | 'rejected') => void | Promise<void>
         onSubmitRequestUserInput?: (requestId: string, answers: Record<string, string>) => void | Promise<void>
@@ -74,7 +79,7 @@ const makeHistoryElement = (
         activeFlowLaunchesById={overrides.activeFlowLaunchesById ?? new Map()}
         activeProposedPlansById={overrides.activeProposedPlansById ?? new Map()}
         latestFlowRunRequestId={overrides.latestFlowRunRequestId ?? null}
-        latestFlowLaunchId={null}
+        latestFlowLaunchId={overrides.latestFlowLaunchId ?? null}
         expandedToolCalls={{}}
         expandedThinkingEntries={{}}
         pendingFlowRunRequestId={overrides.pendingFlowRunRequestId ?? null}
@@ -94,6 +99,10 @@ const renderHistory = (
     activeConversationHistory: ConversationTimelineEntry[],
     overrides: Parameters<typeof makeHistoryElement>[1] = {},
 ) => render(makeHistoryElement(activeConversationHistory, overrides))
+
+afterEach(() => {
+    vi.unstubAllGlobals()
+})
 
 const InteractiveHistory = ({
     activeConversationHistory,
@@ -263,6 +272,16 @@ const makeFlowRunRequestEntry = (
     timestamp: overrides.timestamp ?? '2026-04-16T15:28:00Z',
 })
 
+const makeFlowLaunchEntry = (
+    overrides: Partial<FlowLaunchTimelineEntry> = {},
+): FlowLaunchTimelineEntry => ({
+    id: overrides.id ?? 'flow-launch-entry-1',
+    kind: 'flow_launch',
+    role: 'system',
+    artifactId: overrides.artifactId ?? 'flow-launch-1',
+    timestamp: overrides.timestamp ?? '2026-04-16T15:28:00Z',
+})
+
 const makeFlowRunRequest = (
     overrides: Partial<ProjectFlowRunRequest> = {},
 ): ProjectFlowRunRequest => ({
@@ -284,6 +303,28 @@ const makeFlowRunRequest = (
     run_id: overrides.run_id ?? null,
     launch_error: overrides.launch_error ?? null,
     review_message: overrides.review_message ?? null,
+})
+
+const makeFlowLaunch = (
+    overrides: Partial<ProjectFlowLaunch> = {},
+): ProjectFlowLaunch => ({
+    id: overrides.id ?? 'flow-launch-1',
+    created_at: overrides.created_at ?? '2026-04-16T15:27:47Z',
+    updated_at: overrides.updated_at ?? '2026-04-16T15:28:00Z',
+    flow_name: overrides.flow_name ?? 'software-development/implement-change-request.dot',
+    summary: overrides.summary ?? 'Implement approved change request',
+    project_path: overrides.project_path ?? '/tmp/project',
+    conversation_id: overrides.conversation_id ?? 'conversation-1',
+    source_turn_id: overrides.source_turn_id ?? 'turn-assistant-1',
+    status: overrides.status ?? 'launched',
+    source_segment_id: overrides.source_segment_id ?? 'segment-flow-launch-1',
+    goal: overrides.goal ?? null,
+    launch_context: overrides.launch_context ?? null,
+    model: overrides.model ?? null,
+    llm_provider: overrides.llm_provider ?? null,
+    reasoning_effort: overrides.reasoning_effort ?? null,
+    run_id: overrides.run_id ?? null,
+    launch_error: overrides.launch_error ?? null,
 })
 
 const makeProposedPlan = (
@@ -419,6 +460,93 @@ describe('ProjectConversationHistory', () => {
         expect(markdownRenderSpy).toHaveBeenCalledWith('Streaming **second** chunk.')
         expect(markdownRenderSpy).not.toHaveBeenCalledWith('## Stable plan\n\nKeep **this plan** parsed once.')
         expect(flowRunRequestEntryRenderSpy).not.toHaveBeenCalled()
+    })
+
+    it('loads a launched flow-run request result from the shared pipeline result endpoint', async () => {
+        const user = userEvent.setup()
+        const fetchSpy = vi.fn(async () => new Response(
+            JSON.stringify({
+                run_id: 'run-request-123',
+                status: 'completed',
+                state: 'ready',
+                source_node_id: 'summarize',
+                source_artifact_path: 'summarize/response.md',
+                display_mode: 'summary',
+                body_markdown: '## Shared request result\n\nFetched from the pipeline endpoint.',
+                summary_enabled: true,
+                summary_prompt: null,
+                summary_error: null,
+                error: null,
+            }),
+            {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            },
+        ))
+        vi.stubGlobal('fetch', fetchSpy)
+
+        renderHistory([
+            makeFlowRunRequestEntry(),
+        ], {
+            activeFlowRunRequestsById: new Map([
+                ['flow-run-request-1', makeFlowRunRequest({
+                    status: 'launched',
+                    run_id: 'run-request-123',
+                })],
+            ]),
+            latestFlowRunRequestId: 'flow-run-request-1',
+        })
+
+        await user.click(screen.getByRole('button', { name: 'View result' }))
+
+        await waitFor(() => {
+            expect(screen.getByRole('heading', { level: 2, name: 'Shared request result' })).toBeVisible()
+        })
+        expect(screen.getByText('Fetched from the pipeline endpoint.')).toBeVisible()
+        expect(fetchSpy).toHaveBeenCalledWith('/attractor/pipelines/run-request-123/result', undefined)
+    })
+
+    it('loads a flow-launch result from the shared pipeline result endpoint', async () => {
+        const user = userEvent.setup()
+        const fetchSpy = vi.fn(async () => new Response(
+            JSON.stringify({
+                run_id: 'run-launch-456',
+                status: 'completed',
+                state: 'ready',
+                source_node_id: 'finish',
+                source_artifact_path: 'finish/response.md',
+                display_mode: 'raw',
+                body_markdown: '## Shared launch result\n\nRendered from endpoint data.',
+                summary_enabled: false,
+                summary_prompt: null,
+                summary_error: null,
+                error: null,
+            }),
+            {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            },
+        ))
+        vi.stubGlobal('fetch', fetchSpy)
+
+        renderHistory([
+            makeFlowLaunchEntry(),
+        ], {
+            activeFlowLaunchesById: new Map([
+                ['flow-launch-1', makeFlowLaunch({
+                    run_id: 'run-launch-456',
+                })],
+            ]),
+            latestFlowLaunchId: 'flow-launch-1',
+        })
+
+        await user.click(screen.getByRole('button', { name: 'View result' }))
+
+        await waitFor(() => {
+            expect(screen.getByRole('heading', { level: 2, name: 'Shared launch result' })).toBeVisible()
+        })
+        expect(screen.getByText('Rendered from endpoint data.')).toBeVisible()
+        expect(fetchSpy).toHaveBeenCalledWith('/attractor/pipelines/run-launch-456/result', undefined)
     })
 
     it('keeps rendering markdown semantics for the latest streaming assistant row as it updates', () => {

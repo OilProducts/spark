@@ -61,6 +61,9 @@ The following graph attributes are persisted Spark metadata:
 | `spark.title` | String | `Persisted but non-semantic flow metadata` | `""` | Spark display title for flow discovery and authoring surfaces. Falls back to graph `label` when unset. |
 | `spark.description` | String | `Persisted but non-semantic flow metadata` | `""` | Spark short description for flow discovery and authoring surfaces. Falls back to graph `goal` when unset. |
 | `spark.launch_inputs` | JSON-encoded array string | `Runtime-interpreted product extension` | `""` | Spark launch-form schema. The product may render a launch form from it and map the submitted values into Attractor `launch_context` under `context.*`. |
+| `spark.result_node` | String | `Runtime-interpreted product extension` | `""` | Optional node id whose response artifact is treated as the completed run result. |
+| `spark.result_summary_enabled` | Boolean string | `Runtime-interpreted product extension` | `"false"` | Enables summary generation for the selected run result. |
+| `spark.result_summary_prompt` | String | `Runtime-interpreted product extension` | `""` | Optional custom prompt used when result summaries are enabled. |
 | `ui_default_llm_model` | String | `Product launch metadata` | `""` | Flow-level default model id shown or seeded by Spark authoring tools, and used as the launch-time model default when a run is started without an explicit model override. |
 | `ui_default_llm_provider` | String | `Persisted but non-semantic flow metadata` | `""` | Flow-level default provider key shown or seeded by Spark authoring tools. |
 | `ui_default_reasoning_effort` | String | `Persisted but non-semantic flow metadata` | `""` | Flow-level default reasoning-effort value shown or seeded by Spark authoring tools. |
@@ -70,6 +73,8 @@ These attributes live in the DOT `graph [ ... ]` block.
 `spark.title` and `spark.description` are persisted but non-semantic metadata. `ui_default_llm_model` is launch metadata: Spark/Attractor may use it to choose the run model when the caller does not explicitly provide one. The remaining `ui_default_*` fields stay non-semantic unless a product surface chooses to interpret them.
 
 `spark.launch_inputs` is product-interpreted metadata. It does not change Attractor execution semantics by itself, but Spark may use it to gather launch-time values and construct `launch_context` for a run.
+
+The `spark.result_*` attributes are product-interpreted run-output metadata. They do not alter node routing. Spark uses them after a run reaches a terminal state to write `result/result.json` and `result/result.md` under the run root.
 
 ### 5.1 `spark.launch_inputs` Shape
 

@@ -396,11 +396,16 @@ Spark stores additional graph-level authoring metadata in DOT:
 | `spark.title` | string | Catalog/display title. |
 | `spark.description` | string | Catalog/display description. |
 | `spark.launch_inputs` | JSON-encoded array string | Launch-form schema used by Spark to build `launch_context`. |
+| `spark.result_node` | string | Optional node id whose `response.md` is surfaced as the run result. |
+| `spark.result_summary_enabled` | boolean string | Opt-in result summarization flag. Defaults to `false`. |
+| `spark.result_summary_prompt` | string | Optional custom result summarization prompt. |
 | `ui_default_llm_model` | string | Flow-level UI default model. |
 | `ui_default_llm_provider` | string | Flow-level UI default provider. |
 | `ui_default_reasoning_effort` | string | Flow-level UI default reasoning effort. |
 
 These are Spark-owned metadata, not Attractor core semantics.
+
+When `spark.result_node` is omitted, Spark infers the result source from the last successful work node before an `Msquare` exit node. `Mdiamond` start nodes and `Msquare` exit nodes are never selected as result sources. Completed runs write `result/result.json` and `result/result.md` under the run root; summaries preserve the raw source artifact path in result metadata.
 
 ### `spark.launch_inputs`
 

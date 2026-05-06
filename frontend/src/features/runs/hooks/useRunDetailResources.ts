@@ -7,6 +7,7 @@ import {
     fetchPipelineCheckpointValidated,
     fetchPipelineContextValidated,
     fetchPipelineQuestionsValidated,
+    fetchPipelineResultValidated,
     pipelineArtifactHref,
 } from '@/lib/attractorClient'
 import { useStore } from '@/store'
@@ -43,6 +44,9 @@ const DEFAULT_RUN_DETAIL_SESSION = {
     contextError: null as ContextErrorState | null,
     contextSearchQuery: '',
     contextCopyStatus: '',
+    resultData: null as import('@/lib/attractorClient').PipelineResultResponse | null,
+    resultStatus: 'idle' as const,
+    resultError: null as string | null,
     artifactData: null as ArtifactListResponse | null,
     artifactStatus: 'idle' as const,
     artifactError: null as ArtifactErrorState | null,
@@ -160,6 +164,33 @@ export function useRunDetailResources({
         }
     }, [selectedRunId, updateRunDetailSession])
 
+    const fetchResult = useCallback(async () => {
+        if (!selectedRunId) {
+            return
+        }
+        updateRunDetailSession(selectedRunId, {
+            resultStatus: 'loading',
+            resultError: null,
+        })
+        try {
+            const payload = await fetchPipelineResultValidated(selectedRunId)
+            updateRunDetailSession(selectedRunId, {
+                resultData: payload,
+                resultStatus: 'ready',
+                resultError: null,
+            })
+        } catch (err) {
+            logUnexpectedRunError(err)
+            updateRunDetailSession(selectedRunId, {
+                resultData: null,
+                resultStatus: 'error',
+                resultError: err instanceof ApiHttpError
+                    ? String(err.detail || 'Unable to load result.')
+                    : 'Unable to load result. Check your network/backend connection and retry.',
+            })
+        }
+    }, [selectedRunId, updateRunDetailSession])
+
     const fetchPendingQuestions = useCallback(async () => {
         if (!selectedRunId) {
             return
@@ -194,9 +225,10 @@ export function useRunDetailResources({
         }
         void fetchCheckpoint()
         void fetchContext()
+        void fetchResult()
         void fetchArtifacts()
         void fetchPendingQuestions()
-    }, [fetchArtifacts, fetchCheckpoint, fetchContext, fetchPendingQuestions, manageSync, selectedRunId])
+    }, [fetchArtifacts, fetchCheckpoint, fetchContext, fetchPendingQuestions, fetchResult, manageSync, selectedRunId])
 
     const viewArtifact = useCallback(async (entry: { path: string; viewable: boolean }) => {
         if (!selectedRunId) {
@@ -260,11 +292,13 @@ export function useRunDetailResources({
         fetchArtifacts,
         fetchCheckpoint,
         fetchContext,
+        fetchResult,
         artifactStatus: session.artifactStatus,
         isArtifactLoading: session.artifactStatus === 'loading',
         isArtifactViewerLoading: session.artifactViewerStatus === 'loading',
         isCheckpointLoading: session.checkpointStatus === 'loading',
         isContextLoading: session.contextStatus === 'loading',
+        isResultLoading: session.resultStatus === 'loading',
         pendingQuestionSnapshots: session.pendingQuestionSnapshots,
         questionsStatus: session.questionsStatus,
         selectedArtifactPath: session.selectedArtifactPath,
@@ -280,6 +314,9 @@ export function useRunDetailResources({
             }
             updateRunDetailSession(selectedRunId, { contextSearchQuery: value })
         },
+        resultData: session.resultData,
+        resultError: session.resultError,
+        resultStatus: session.resultStatus,
         viewArtifact,
     }
 }

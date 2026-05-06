@@ -334,6 +334,8 @@ def list_run_output_artifacts(run_root: Path) -> List[Dict[str, object]]:
     add_file(run_root / "manifest.json")
     add_file(run_root / "checkpoint.json")
     add_file(run_root / "run.log")
+    add_file(run_root / "result" / "result.json")
+    add_file(run_root / "result" / "result.md")
 
     logs_root = run_root / "logs"
     if logs_root.exists():

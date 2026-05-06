@@ -29,6 +29,9 @@ export const GRAPH_ATTR_HELP: Record<string, string> = {
     'spark.title': 'Human-friendly flow title stored in the DOT metadata.',
     'spark.description': 'Short flow description stored in the DOT metadata.',
     'spark.launch_inputs': 'Structured launch-time context fields Spark should collect before starting a run.',
+    'spark.result_node': 'Optional node whose response becomes the run result.',
+    'spark.result_summary_enabled': 'When true, summarize the selected run result before display.',
+    'spark.result_summary_prompt': 'Optional prompt used when result summarization is enabled.',
     goal: 'Primary stated goal for the flow. Handlers can read it as shared run context.',
     label: 'Display label for graph metadata; does not override node labels.',
     default_max_retries: 'Used only when a node omits max_retries. Node max_retries takes precedence.',
@@ -53,6 +56,9 @@ export const CORE_GRAPH_ATTR_KEYS = new Set<string>([
     'spark.title',
     'spark.description',
     'spark.launch_inputs',
+    'spark.result_node',
+    'spark.result_summary_enabled',
+    'spark.result_summary_prompt',
     'goal',
     'label',
     'model_stylesheet',
@@ -264,6 +270,86 @@ export function GraphLaunchInputsSection({
                 error={launchInputDraftError}
                 onChange={onLaunchInputDefinitionsChange}
             />
+        </section>
+    )
+}
+
+interface GraphResultSectionProps {
+    graphAttrs: GraphAttrs
+    nodes: Array<{ id: string; data?: { label?: unknown; shape?: unknown } }>
+    updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
+}
+
+export function GraphResultSection({
+    graphAttrs,
+    nodes,
+    updateGraphAttr,
+}: GraphResultSectionProps) {
+    const summaryEnabled = String(graphAttrs['spark.result_summary_enabled'] || '').toLowerCase() === 'true'
+    const selectableNodes = nodes.filter((node) => {
+        const shape = typeof node.data?.shape === 'string' ? node.data.shape : ''
+        return shape !== 'Mdiamond' && shape !== 'Msquare'
+    })
+    return (
+        <section className="space-y-3">
+            <GraphSettingsSectionIntro
+                title="Run Result"
+                description="Choose the node response Spark should surface after a run completes."
+            />
+            <div className="space-y-3">
+                <GraphSettingsField
+                    label="Result Node"
+                    htmlFor="graph-attr-spark-result-node"
+                    helper={GRAPH_ATTR_HELP['spark.result_node']}
+                >
+                    <NativeSelect
+                        id="graph-attr-spark-result-node"
+                        value={graphAttrs['spark.result_node'] || ''}
+                        onChange={(event) => updateGraphAttr('spark.result_node', event.target.value)}
+                        className="h-8 text-xs"
+                    >
+                        <option value="">Infer from final node</option>
+                        {selectableNodes.map((node) => {
+                            const label = typeof node.data?.label === 'string' && node.data.label.trim()
+                                ? node.data.label.trim()
+                                : node.id
+                            return (
+                                <option key={node.id} value={node.id}>
+                                    {label}
+                                </option>
+                            )
+                        })}
+                    </NativeSelect>
+                </GraphSettingsField>
+                <div className="flex items-center gap-2">
+                    <Checkbox
+                        id="graph-attr-spark-result-summary-enabled"
+                        checked={summaryEnabled}
+                        onCheckedChange={(checked) => {
+                            updateGraphAttr('spark.result_summary_enabled', checked ? 'true' : '')
+                        }}
+                    />
+                    <Label htmlFor="graph-attr-spark-result-summary-enabled" className="text-xs">
+                        Summarize result
+                    </Label>
+                </div>
+                {summaryEnabled ? (
+                    <GraphSettingsField
+                        label="Summary Prompt"
+                        htmlFor="graph-attr-spark-result-summary-prompt"
+                        helper={GRAPH_ATTR_HELP['spark.result_summary_prompt']}
+                    >
+                        <Textarea
+                            id="graph-attr-spark-result-summary-prompt"
+                            value={graphAttrs['spark.result_summary_prompt'] || ''}
+                            onChange={(event) => updateGraphAttr('spark.result_summary_prompt', event.target.value)}
+                            rows={4}
+                            className="min-h-24 px-2 py-1 text-xs"
+                            placeholder="Use Spark's default prompt"
+                        />
+                    </GraphSettingsField>
+                ) : null}
+            </div>
         </section>
     )
 }

@@ -3,6 +3,9 @@ import type { GraphAttrs } from '../store'
 const GRAPH_ATTR_STRING_KEYS: (keyof GraphAttrs)[] = [
     'spark.title',
     'spark.description',
+    'spark.result_node',
+    'spark.result_summary_enabled',
+    'spark.result_summary_prompt',
     'goal',
     'label',
     'retry_target',

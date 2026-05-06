@@ -27,6 +27,7 @@ import {
     GraphLaunchInputsSection,
     GraphLlmDefaultsSection,
     GraphMetadataSection,
+    GraphResultSection,
     GraphRunConfigurationSection,
 } from './components/graph-settings/GraphSettingsSections'
 import {
@@ -510,6 +511,11 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     launchInputDrafts={launchInputDrafts}
                     launchInputDraftError={launchInputDraftError}
                     onLaunchInputDefinitionsChange={handleLaunchInputDefinitionsChange}
+                />
+                <GraphResultSection
+                    graphAttrs={graphAttrs}
+                    nodes={flowNodes}
+                    updateGraphAttr={updateGraphAttr}
                 />
                 <GraphExecutionDefaultsSection
                     graphAttrs={graphAttrs}

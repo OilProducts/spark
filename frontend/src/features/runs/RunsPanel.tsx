@@ -15,6 +15,7 @@ import { RunList } from './components/RunList'
 import { RunProgressCard } from './components/RunProgressCard'
 import { RunSummaryCard } from './components/RunSummaryCard'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
+import { RunResultCard } from './components/RunResultCard'
 import { STATUS_LABELS, type RunRecord } from './model/shared'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
@@ -173,13 +174,18 @@ export function RunsPanel() {
         fetchArtifacts,
         fetchCheckpoint,
         fetchContext,
+        fetchResult,
         filteredContextRows,
         isArtifactLoading,
         isArtifactViewerLoading,
         isCheckpointLoading,
         isContextLoading,
+        isResultLoading,
         missingCoreArtifacts,
         pendingQuestionSnapshots,
+        resultData,
+        resultError,
+        resultStatus,
         selectedArtifactEntry,
         setContextCopyStatus,
         setContextSearchQuery,
@@ -521,6 +527,19 @@ export function RunsPanel() {
                                 }}
                                 pendingGateActionError={pendingGateActionError}
                                 submittingGateIds={submittingGateIds}
+                            />
+                        )}
+                        {selectedRun && (
+                            <RunResultCard
+                                result={resultData}
+                                resultError={resultError}
+                                isLoading={isResultLoading || resultStatus === 'idle'}
+                                onRefresh={() => {
+                                    void fetchResult()
+                                }}
+                                onViewSource={(artifactPath) => {
+                                    void viewArtifact({ path: artifactPath, viewable: true })
+                                }}
                             />
                         )}
                         {selectedRun && (

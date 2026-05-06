@@ -28,6 +28,9 @@ def test_graph_attr_edit_round_trip_serializes_and_rehydrates_item_6_1_04() -> N
         "spark.title": "Implement From Plan File",
         "spark.description": "Snapshot a plan file, implement it, and iterate until complete.",
         "spark.launch_inputs": '[{"key":"context.request.summary","label":"Request Summary","type":"string","description":"Brief request summary.","required":true}]',
+        "spark.result_node": "final_answer",
+        "spark.result_summary_enabled": "true",
+        "spark.result_summary_prompt": "Summarize final answer",
         "goal": "Ship release",
         "label": "Release Graph",
         "model_stylesheet": ".fast { llm_model: fast-model; }",
@@ -47,6 +50,9 @@ def test_graph_attr_edit_round_trip_serializes_and_rehydrates_item_6_1_04() -> N
     assert graph_attrs["spark.title"] == "Implement From Plan File"
     assert graph_attrs["spark.description"] == "Snapshot a plan file, implement it, and iterate until complete."
     assert graph_attrs["spark.launch_inputs"] == '[{"key":"context.request.summary","label":"Request Summary","type":"string","description":"Brief request summary.","required":true}]'
+    assert graph_attrs["spark.result_node"] == "final_answer"
+    assert graph_attrs["spark.result_summary_enabled"] is True
+    assert graph_attrs["spark.result_summary_prompt"] == "Summarize final answer"
     assert graph_attrs["goal"] == "Ship release"
     assert graph_attrs["label"] == "Release Graph"
     assert graph_attrs["model_stylesheet"] == ".fast { llm_model: fast-model; }"
