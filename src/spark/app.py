@@ -157,12 +157,12 @@ async def get_frontend_asset(asset_path: str):
     return FileResponse(file_path)
 
 
-@app.get("/vite.svg")
-async def get_frontend_vite_icon():
-    file_path = resolve_ui_asset_path(get_settings(), "vite.svg")
+@app.get("/favicon.ico")
+async def get_frontend_favicon():
+    file_path = resolve_ui_asset_path(get_settings(), "assets/spark-app-icon.png")
     if not file_path:
         raise HTTPException(status_code=404, detail="Asset not found")
-    return FileResponse(file_path)
+    return FileResponse(file_path, media_type="image/png")
 
 
 _apply_settings(_SETTINGS)

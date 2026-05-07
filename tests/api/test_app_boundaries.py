@@ -51,11 +51,14 @@ def test_product_app_injects_attractor_runtime_paths() -> None:
 
 def test_root_app_serves_ui_index_and_static_assets(product_api_client: TestClient) -> None:
     index_response = product_api_client.get("/")
-    vite_icon_response = product_api_client.get("/vite.svg")
+    favicon_response = product_api_client.get("/favicon.ico")
+    spark_icon_response = product_api_client.get("/assets/spark-app-icon.png")
 
     assert index_response.status_code == 200
     assert index_response.headers["content-type"].startswith("text/html")
-    assert vite_icon_response.status_code == 200
+    assert favicon_response.status_code == 200
+    assert favicon_response.headers["content-type"].startswith("image/png")
+    assert spark_icon_response.status_code == 200
 
 
 def test_root_app_does_not_expose_legacy_api_aliases(product_api_client: TestClient) -> None:
