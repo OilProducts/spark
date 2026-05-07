@@ -373,6 +373,9 @@ def _initialize_runtime(
         force=force,
         project_root=settings.project_root,
     )
+    from spark.workspace.flow_catalog import seed_default_flow_catalog
+
+    seed_default_flow_catalog(settings.config_dir)
     return settings, result
 
 

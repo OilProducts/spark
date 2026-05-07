@@ -261,6 +261,9 @@ def _run_list_flows(args: argparse.Namespace) -> int:
         return exit_code
     if args.text:
         rows = response_payload if isinstance(response_payload, list) else []
+        if not rows:
+            print("No agent-requestable flows found.")
+            return 0
         for row in rows:
             if not isinstance(row, dict):
                 continue

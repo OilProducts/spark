@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 import spark.app as product_app
+import spark.starter_assets as starter_assets
 from spark.workspace.attractor_client import AttractorApiClient
 from spark.workspace.flow_catalog import (
     EXECUTION_LOCK_CONFLICT_POLICY_QUEUE,
@@ -17,6 +18,7 @@ from spark.workspace.flow_catalog import (
     LAUNCH_POLICY_DISABLED,
     read_flow_launch_policy,
     set_flow_catalog_entry,
+    seed_default_flow_catalog,
     set_flow_launch_policy,
 )
 
@@ -239,6 +241,23 @@ def test_list_workspace_flows_agent_surface_filters_non_requestable_flows(
             "graph_goal": "",
         }
     ]
+
+
+def test_list_workspace_flows_agent_surface_includes_seeded_core_flows(
+    product_api_client: TestClient,
+) -> None:
+    settings = product_app.get_settings()
+    starter_assets.seed_starter_flows(settings.flows_dir)
+    seed_default_flow_catalog(settings.config_dir)
+
+    response = product_api_client.get("/workspace/api/flows", params={"surface": "agent"})
+
+    assert response.status_code == 200
+    flow_names = {flow["name"] for flow in response.json()}
+    assert flow_names == {
+        "software-development/implement-change-request.dot",
+        "software-development/spec-implementation/implement-spec.dot",
+    }
 
 
 def test_workspace_flow_describe_returns_derived_graph_features(

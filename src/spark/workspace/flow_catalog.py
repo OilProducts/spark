@@ -29,6 +29,10 @@ EXECUTION_LOCK_SCOPE_PROJECT = "project"
 EXECUTION_LOCK_CONFLICT_POLICY_QUEUE = "queue"
 ALLOWED_EXECUTION_LOCK_SCOPES = {EXECUTION_LOCK_SCOPE_PROJECT}
 ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES = {EXECUTION_LOCK_CONFLICT_POLICY_QUEUE}
+DEFAULT_AGENT_REQUESTABLE_FLOWS = (
+    "software-development/implement-change-request.dot",
+    "software-development/spec-implementation/implement-spec.dot",
+)
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,21 @@ def write_flow_catalog(config_dir: Path, catalog: dict[str, FlowCatalogEntry]) -
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+def seed_default_flow_catalog(config_dir: Path) -> tuple[str, ...]:
+    catalog = load_flow_catalog(config_dir)
+    missing_entries: list[str] = []
+    for flow_name in DEFAULT_AGENT_REQUESTABLE_FLOWS:
+        normalized_flow_name = normalize_flow_name(flow_name)
+        if normalized_flow_name in catalog:
+            continue
+        catalog[normalized_flow_name] = FlowCatalogEntry(launch_policy=LAUNCH_POLICY_AGENT_REQUESTABLE)
+        missing_entries.append(normalized_flow_name)
+
+    if missing_entries:
+        write_flow_catalog(config_dir, catalog)
+    return tuple(missing_entries)
 
 
 def read_flow_launch_policy(config_dir: Path, flow_name: str) -> FlowLaunchPolicyState:

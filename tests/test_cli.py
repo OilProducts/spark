@@ -13,6 +13,12 @@ import spark.cli as spark_cli
 import spark.starter_assets as starter_assets
 from spark.ui import resolve_default_ui_dir
 import spark.server_cli as spark_server_cli
+from spark.workspace.flow_catalog import (
+    LAUNCH_POLICY_AGENT_REQUESTABLE,
+    LAUNCH_POLICY_DISABLED,
+    read_flow_launch_policy,
+    set_flow_launch_policy,
+)
 
 
 TEST_AGENT_FLOW = "test-dispatch.dot"
@@ -282,6 +288,95 @@ def test_run_init_creates_nested_starter_flow_directories(
     assert (flows_dir / "examples" / "supervision" / "supervised-implementation.dot").read_text(encoding="utf-8") == "parent\n"
     output = capsys.readouterr().out
     assert "created=2 updated=0 skipped=0" in output
+
+
+def test_run_init_seeds_default_agent_requestable_flow_catalog_entries(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    data_dir = tmp_path / "data"
+    flows_dir = tmp_path / "flows"
+
+    monkeypatch.setattr(
+        starter_assets,
+        "load_starter_flow_assets",
+        lambda *, project_root=None: (
+            starter_assets.StarterFlowAsset("software-development/implement-change-request.dot", "change-request\n"),
+            starter_assets.StarterFlowAsset(
+                "software-development/spec-implementation/implement-spec.dot",
+                "implement-spec\n",
+            ),
+            starter_assets.StarterFlowAsset(
+                "software-development/spec-implementation/implement-milestone.dot",
+                "implement-milestone\n",
+            ),
+            starter_assets.StarterFlowAsset("examples/simple-linear.dot", "example\n"),
+        ),
+    )
+
+    result = spark_server_cli.main(["init", "--data-dir", str(data_dir), "--flows-dir", str(flows_dir)])
+
+    assert result == 0
+    config_dir = data_dir.resolve(strict=False) / "config"
+    assert read_flow_launch_policy(
+        config_dir,
+        "software-development/implement-change-request.dot",
+    ).effective_launch_policy == LAUNCH_POLICY_AGENT_REQUESTABLE
+    assert read_flow_launch_policy(
+        config_dir,
+        "software-development/spec-implementation/implement-spec.dot",
+    ).effective_launch_policy == LAUNCH_POLICY_AGENT_REQUESTABLE
+    assert read_flow_launch_policy(
+        config_dir,
+        "software-development/spec-implementation/implement-milestone.dot",
+    ).effective_launch_policy == LAUNCH_POLICY_DISABLED
+    assert (
+        read_flow_launch_policy(config_dir, "examples/simple-linear.dot").effective_launch_policy
+        == LAUNCH_POLICY_DISABLED
+    )
+    assert (config_dir / "flow-catalog.toml").exists()
+    assert "created=4 updated=0 skipped=0" in capsys.readouterr().out
+
+
+def test_run_init_preserves_existing_default_flow_catalog_policy(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    flows_dir = tmp_path / "flows"
+    config_dir = data_dir / "config"
+    set_flow_launch_policy(config_dir, "software-development/implement-change-request.dot", LAUNCH_POLICY_DISABLED)
+
+    monkeypatch.setattr(
+        starter_assets,
+        "load_starter_flow_assets",
+        lambda *, project_root=None: (
+            starter_assets.StarterFlowAsset("software-development/implement-change-request.dot", "change-request\n"),
+            starter_assets.StarterFlowAsset(
+                "software-development/spec-implementation/implement-spec.dot",
+                "implement-spec\n",
+            ),
+        ),
+    )
+
+    result = spark_server_cli.main(["init", "--data-dir", str(data_dir), "--flows-dir", str(flows_dir)])
+
+    assert result == 0
+    assert (
+        read_flow_launch_policy(
+            config_dir.resolve(strict=False),
+            "software-development/implement-change-request.dot",
+        ).effective_launch_policy
+        == LAUNCH_POLICY_DISABLED
+    )
+    assert (
+        read_flow_launch_policy(
+            config_dir.resolve(strict=False),
+            "software-development/spec-implementation/implement-spec.dot",
+        ).effective_launch_policy
+        == LAUNCH_POLICY_AGENT_REQUESTABLE
+    )
 
 
 def test_run_init_requires_explicit_dev_home_from_source_checkout(
@@ -750,6 +845,38 @@ def test_agent_flow_list_defaults_to_json(monkeypatch, capsys) -> None:
     assert result == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["name"] == TEST_AGENT_FLOW
+
+
+def test_agent_flow_list_text_mode_reports_empty_agent_surface(monkeypatch, capsys) -> None:
+    class FakeResponse:
+        status_code = 200
+        is_error = False
+
+        def json(self) -> object:
+            return []
+
+    class FakeClient:
+        def __init__(self, timeout: float) -> None:
+            assert timeout == 30.0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def request(self, method: str, url: str, json: dict[str, object] | None = None):
+            assert method == "GET"
+            assert json is None
+            assert url == "http://127.0.0.1:8000/workspace/api/flows?surface=agent"
+            return FakeResponse()
+
+    monkeypatch.setattr(spark_cli.httpx, "Client", FakeClient)
+
+    result = spark_cli.main(["flow", "list", "--text"])
+
+    assert result == 0
+    assert capsys.readouterr().out == "No agent-requestable flows found.\n"
 
 
 def test_agent_describe_flow_text_mode_formats_human_readable_output(monkeypatch, capsys) -> None:
