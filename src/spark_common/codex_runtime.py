@@ -37,6 +37,36 @@ def _ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _copy_file_if_changed(source: Path, destination: Path, *, preserve_metadata: bool = True) -> None:
+    if destination.exists():
+        try:
+            if source.read_bytes() == destination.read_bytes():
+                return
+        except OSError:
+            pass
+    if preserve_metadata:
+        shutil.copy2(source, destination)
+    else:
+        shutil.copyfile(source, destination)
+
+
+def _copy_tree_contents(source: Path, destination: Path) -> None:
+    if not source.exists() or not source.is_dir():
+        return
+    _ensure_directory(destination)
+    for entry in source.iterdir():
+        target = destination / entry.name
+        if entry.is_dir():
+            shutil.copytree(
+                entry,
+                target,
+                dirs_exist_ok=True,
+                copy_function=lambda src, dst: shutil.copyfile(src, dst),
+            )
+        elif entry.is_file():
+            _copy_file_if_changed(entry, target, preserve_metadata=False)
+
+
 def _default_spark_home(env: dict[str, str]) -> Path:
     configured_spark_home = str(env.get("SPARK_HOME", "")).strip()
     if configured_spark_home:
@@ -81,13 +111,9 @@ def build_codex_runtime_environment() -> dict[str, str]:
         if source is None:
             continue
         destination = codex_home / file_name
-        if destination.exists():
-            try:
-                if source.read_bytes() == destination.read_bytes():
-                    continue
-            except OSError:
-                pass
-        shutil.copy2(source, destination)
+        _copy_file_if_changed(source, destination)
+    for candidate in seed_candidates:
+        _copy_tree_contents(candidate / "plugins" / "cache", codex_home / "plugins" / "cache")
 
     env.update(
         {

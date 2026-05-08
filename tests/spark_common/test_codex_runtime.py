@@ -17,6 +17,9 @@ def test_build_codex_runtime_environment_isolates_home_and_seeds_runtime_state(
     seed_dir.mkdir()
     (seed_dir / "auth.json").write_text('{"token":"seed"}', encoding="utf-8")
     (seed_dir / "config.toml").write_text("model = 'gpt-test'\n", encoding="utf-8")
+    seed_plugin = seed_dir / "plugins" / "cache" / "openai-bundled" / "computer-use" / "1.0.0"
+    seed_plugin.mkdir(parents=True)
+    (seed_plugin / ".mcp.json").write_text('{"command":"computer-use"}\n', encoding="utf-8")
     monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(runtime_root))
     monkeypatch.setenv("ATTRACTOR_CODEX_SEED_DIR", str(seed_dir))
     monkeypatch.delenv("CODEX_HOME", raising=False)
@@ -31,6 +34,16 @@ def test_build_codex_runtime_environment_isolates_home_and_seeds_runtime_state(
     assert env["XDG_DATA_HOME"] == str(runtime_root / ".local/share")
     assert (runtime_root / ".codex" / "auth.json").read_text(encoding="utf-8") == '{"token":"seed"}'
     assert (runtime_root / ".codex" / "config.toml").read_text(encoding="utf-8") == "model = 'gpt-test'\n"
+    assert (
+        runtime_root
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "openai-bundled"
+        / "computer-use"
+        / "1.0.0"
+        / ".mcp.json"
+    ).read_text(encoding="utf-8") == '{"command":"computer-use"}\n'
 
 
 def test_build_codex_runtime_environment_defaults_to_spark_home_runtime_root(
@@ -114,6 +127,9 @@ def test_build_codex_runtime_environment_falls_back_to_host_codex_home_when_seed
     host_codex_home.mkdir(parents=True)
     (host_codex_home / "auth.json").write_text('{"token":"host-seed"}', encoding="utf-8")
     (host_codex_home / "config.toml").write_text("model = 'host-model'\n", encoding="utf-8")
+    host_plugin = host_codex_home / "plugins" / "cache" / "openai-bundled" / "browser-use" / "0.1.0"
+    host_plugin.mkdir(parents=True)
+    (host_plugin / "plugin.txt").write_text("browser plugin\n", encoding="utf-8")
 
     monkeypatch.setenv("HOME", str(host_home))
     monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(runtime_root))
@@ -127,6 +143,16 @@ def test_build_codex_runtime_environment_falls_back_to_host_codex_home_when_seed
     assert env["CODEX_HOME"] == str(runtime_root / ".codex")
     assert (runtime_root / ".codex" / "auth.json").read_text(encoding="utf-8") == '{"token":"host-seed"}'
     assert (runtime_root / ".codex" / "config.toml").read_text(encoding="utf-8") == "model = 'host-model'\n"
+    assert (
+        runtime_root
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "openai-bundled"
+        / "browser-use"
+        / "0.1.0"
+        / "plugin.txt"
+    ).read_text(encoding="utf-8") == "browser plugin\n"
 
 
 def test_build_codex_runtime_environment_falls_back_to_temp_runtime_root_when_persistent_root_creation_fails(
