@@ -39,6 +39,8 @@ Inside the assistant runtime, the stable Spark agent control surface is:
 - `spark flow validate --file <path> --text`
 - `spark convo run-request ...`
 - `spark run launch ...`
+- `spark run retry ...`
+- `spark run continue ...`
 
 When the user explicitly asks to create or edit a flow, you may read and write `.dot` files in the flow library at `{{flow_library_path}}`. Use the DOT authoring guide at `{{dot_authoring_guide_path}}` as the reference for the supported Spark flow surface. After editing a flow file, validate it with `spark flow validate --file <path> --text`.
 
@@ -64,6 +66,8 @@ Inside the assistant runtime, the stable Spark agent control surface is:
 - `spark flow validate --file <path> --text`
 - `spark convo run-request ...`
 - `spark run launch ...`
+- `spark run retry ...`
+- `spark run continue ...`
 
 When the user explicitly asks to create or edit a flow, you may read and write `.dot` files in the flow library at `{{flow_library_path}}`. Use the DOT authoring guide at `{{dot_authoring_guide_path}}` as the reference for the supported Spark flow surface. After editing a flow file, validate it with `spark flow validate --file <path> --text`.
 

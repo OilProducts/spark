@@ -83,6 +83,24 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     launch.add_argument("--execution-profile", dest="execution_profile_id", help="Optional execution profile id for this run.")
     launch.add_argument("--base-url")
 
+    retry = run_commands.add_parser("retry", help="Retry an existing run")
+    retry.add_argument("--run", dest="run_id", required=True, help="Source run id.")
+    retry.add_argument("--conversation", help="Conversation handle in adjective-noun form.")
+    retry.add_argument("--base-url")
+
+    continue_run = run_commands.add_parser("continue", help="Continue an existing run from a node")
+    continue_run.add_argument("--run", dest="run_id", required=True, help="Source run id.")
+    continue_run.add_argument("--start-node", required=True, help="Node id to continue from.")
+    continue_run.add_argument("--flow-source-mode", required=True, choices=["snapshot", "flow_name"])
+    continue_run.add_argument("--flow", dest="flow_name", help="Flow name when --flow-source-mode=flow_name.")
+    continue_run.add_argument("--project", dest="project_path", help="Override the source run working directory.")
+    continue_run.add_argument("--conversation", help="Conversation handle in adjective-noun form.")
+    continue_run.add_argument("--model", help="Optional model override.")
+    continue_run.add_argument("--llm-provider", dest="llm_provider", help="Optional LLM provider override.")
+    continue_run.add_argument("--llm-profile", dest="llm_profile", help="Optional LLM profile override.")
+    continue_run.add_argument("--reasoning-effort", dest="reasoning_effort", help="Optional reasoning effort override.")
+    continue_run.add_argument("--base-url")
+
     flow = domains.add_parser("flow", help="Flow discovery and validation")
     flow_commands = flow.add_subparsers(dest="command")
 
@@ -149,6 +167,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.domain == "run":
         if args.command == "launch":
             return _run_launch(args)
+        if args.command == "retry":
+            return _run_retry(args)
+        if args.command == "continue":
+            return _run_continue(args)
     if args.domain == "flow":
         if args.command == "list":
             return _run_list_flows(args)
@@ -246,6 +268,80 @@ def _run_launch(args: argparse.Namespace) -> int:
 
     request_url = _workspace_url(base_url, "/workspace/api/runs/launch")
     response_payload, exit_code = _request_json("POST", request_url, payload=payload)
+    if response_payload is None:
+        return exit_code
+    _print_success_payload(response_payload)
+    return 0
+
+
+def _run_retry(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark run retry")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
+    run_id = str(args.run_id or "").strip()
+    if not run_id:
+        _print_error_payload({"ok": False, "error": "Missing required --run id."})
+        return EXIT_GENERAL_FAILURE
+    payload: dict[str, object] = {}
+    conversation = str(args.conversation or "").strip()
+    if conversation:
+        payload["conversation_handle"] = conversation
+    response_payload, exit_code = _request_json(
+        "POST",
+        _workspace_url(base_url, f"/workspace/api/runs/{quote(run_id, safe='')}/retry"),
+        payload=payload,
+    )
+    if response_payload is None:
+        return exit_code
+    _print_success_payload(response_payload)
+    return 0
+
+
+def _run_continue(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark run continue")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
+    run_id = str(args.run_id or "").strip()
+    start_node = str(args.start_node or "").strip()
+    flow_source_mode = str(args.flow_source_mode or "").strip()
+    if not run_id:
+        _print_error_payload({"ok": False, "error": "Missing required --run id."})
+        return EXIT_GENERAL_FAILURE
+    if not start_node:
+        _print_error_payload({"ok": False, "error": "Missing required --start-node."})
+        return EXIT_GENERAL_FAILURE
+    if not flow_source_mode:
+        _print_error_payload({"ok": False, "error": "Missing required --flow-source-mode."})
+        return EXIT_GENERAL_FAILURE
+
+    payload: dict[str, object] = {
+        "start_node": start_node,
+        "flow_source_mode": flow_source_mode,
+    }
+    flow_name = str(args.flow_name or "").strip()
+    if flow_source_mode == "flow_name" and flow_name:
+        payload["flow_name"] = flow_name
+    project_path = str(args.project_path or "").strip()
+    if project_path:
+        payload["project_path"] = project_path
+    conversation = str(args.conversation or "").strip()
+    if conversation:
+        payload["conversation_handle"] = conversation
+    for attr, key in (
+        ("model", "model"),
+        ("llm_provider", "llm_provider"),
+        ("llm_profile", "llm_profile"),
+        ("reasoning_effort", "reasoning_effort"),
+    ):
+        value = str(getattr(args, attr, "") or "").strip()
+        if value:
+            payload[key] = value
+
+    response_payload, exit_code = _request_json(
+        "POST",
+        _workspace_url(base_url, f"/workspace/api/runs/{quote(run_id, safe='')}/continue"),
+        payload=payload,
+    )
     if response_payload is None:
         return exit_code
     _print_success_payload(response_payload)

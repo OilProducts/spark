@@ -85,7 +85,7 @@ spark flow validate --flow examples/simple-linear.dot --text
 curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear.dot/validate
 ```
 
-## Launch Runs And Create Run Requests
+## Launch Runs, Recover Runs, And Create Run Requests
 
 Assistant-runtime default:
 
@@ -166,6 +166,93 @@ Notes:
 - `--goal-file` and `--launch-context-file` are available when inline text is inconvenient.
 - Use `model` only when you need a launch-time override; otherwise let the flow defaults apply.
 - A launch created without `--conversation` is project-scoped only, so no flow-launch card appears in chat.
+
+## Recover Runs
+
+Use the workspace recovery commands instead of calling Attractor recovery endpoints directly. They preserve conversation and project scoping and return stable JSON payloads for agents.
+
+Retry a run inside the active conversation:
+
+```bash
+spark run retry \
+  --run <run_id> \
+  --conversation amber-otter
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/workspace/api/runs/<run_id>/retry \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "conversation_handle": "amber-otter"
+  }'
+```
+
+Continue a run from a checkpoint using the source run snapshot:
+
+```bash
+spark run continue \
+  --run <run_id> \
+  --start-node run_milestone \
+  --flow-source-mode snapshot \
+  --conversation amber-otter
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/workspace/api/runs/<run_id>/continue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "conversation_handle": "amber-otter",
+    "start_node": "run_milestone",
+    "flow_source_mode": "snapshot"
+  }'
+```
+
+Continue a run against a named flow definition:
+
+```bash
+spark run continue \
+  --run <run_id> \
+  --start-node run_milestone \
+  --flow-source-mode flow_name \
+  --flow examples/simple-linear.dot \
+  --conversation amber-otter
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/workspace/api/runs/<run_id>/continue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "conversation_handle": "amber-otter",
+    "start_node": "run_milestone",
+    "flow_source_mode": "flow_name",
+    "flow_name": "examples/simple-linear.dot"
+  }'
+```
+
+Continue with launch-time model overrides:
+
+```bash
+spark run continue \
+  --run <run_id> \
+  --start-node run_milestone \
+  --flow-source-mode snapshot \
+  --conversation amber-otter \
+  --model gpt-5.4 \
+  --llm-provider openai \
+  --llm-profile default \
+  --reasoning-effort high
+```
+
+Notes:
+
+- `spark run retry` posts to `POST /workspace/api/runs/{run_id}/retry`.
+- `spark run continue` posts to `POST /workspace/api/runs/{run_id}/continue`.
+- When `--conversation` is supplied, Spark resolves the handle, validates that any explicit `--project` matches the conversation project, creates a conversation-visible `run_recovery` artifact, and publishes the updated conversation snapshot.
+- The recovery artifact records the operation, source run, result run, status, project path, conversation context, continuation node and flow source, optional model/provider/profile/reasoning overrides, and any recovery error.
+- Retry records the same source and result run id. Continue records the original run as `source_run_id` and the newly created run as `result_run_id`.
+- For detached continue, omit `--project` to let Attractor inherit the source run working directory. Include `--project /absolute/path/to/project` only when intentionally overriding that working directory.
+- For conversation-scoped continue, omit `--project` unless validating an explicit project path against the conversation.
+- `--flow` is only sent when `--flow-source-mode flow_name`; snapshot continuations ignore it.
 
 ## Inspect Runs
 

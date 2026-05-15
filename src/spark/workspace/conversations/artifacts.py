@@ -15,6 +15,7 @@ from spark.workspace.conversations.models import (
     FlowLaunch,
     FlowRunRequest,
     ProposedPlanArtifact,
+    RunRecovery,
 )
 from spark.workspace.conversations.repository import ProjectChatRepository
 from spark.workspace.conversations.utils import (
@@ -322,6 +323,108 @@ class ProjectChatReviewService:
                 "flow_launch_id": launch.id,
                 "segment_id": launch_segment.id,
             }
+
+    def create_run_recovery(
+        self,
+        conversation_id: str,
+        project_path: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        normalized_project_path = normalize_project_path_value(project_path)
+        operation = str(payload.get("operation", "")).strip()
+        source_run_id = str(payload.get("source_run_id", "")).strip()
+        if operation not in {"retry", "continue"}:
+            raise ValueError("Run recovery operation must be retry or continue.")
+        if not source_run_id:
+            raise ValueError("Run recovery requires a source_run_id.")
+        with self._repository._lock:
+            state = self._repository.read_state(conversation_id, normalized_project_path)
+            if state is None or state.project_path != normalized_project_path:
+                raise FileNotFoundError(conversation_id)
+            parent_turn = next(
+                (
+                    turn
+                    for turn in reversed(state.turns)
+                    if turn.role == "assistant" and turn.kind == "message"
+                ),
+                None,
+            )
+            if parent_turn is None:
+                raise ValueError("Conversation has no assistant turn that can own a run recovery.")
+            now = iso_now()
+            recovery = RunRecovery(
+                id=f"run-recovery-{uuid.uuid4().hex[:12]}",
+                created_at=now,
+                updated_at=now,
+                operation=operation,
+                source_run_id=source_run_id,
+                result_run_id=str(payload.get("result_run_id", "") or source_run_id).strip(),
+                status=str(payload.get("status", "pending") or "pending"),
+                project_path=normalized_project_path,
+                conversation_id=conversation_id,
+                source_turn_id=parent_turn.id,
+                start_node=str(payload.get("start_node", "")).strip() or None,
+                flow_source_mode=str(payload.get("flow_source_mode", "")).strip() or None,
+                flow_name=str(payload.get("flow_name", "")).strip() or None,
+                model=str(payload.get("model", "")).strip() or None,
+                llm_provider=str(payload.get("llm_provider", "")).strip().lower() or None,
+                llm_profile=str(payload.get("llm_profile", "")).strip() or None,
+                reasoning_effort=str(payload.get("reasoning_effort", "")).strip().lower() or None,
+                recovery_error=str(payload.get("recovery_error", "")).strip() or None,
+            )
+            segment = ConversationSegment(
+                id=f"segment-artifact-{recovery.id}",
+                turn_id=parent_turn.id,
+                order=self._repository.next_turn_segment_order(state, parent_turn.id),
+                kind="run_recovery",
+                role="system",
+                status="complete",
+                timestamp=now,
+                updated_at=now,
+                artifact_id=recovery.id,
+                source=ConversationSegmentSource(),
+            )
+            recovery.source_segment_id = segment.id
+            state.run_recoveries.append(recovery)
+            self._repository.upsert_segment(state, segment)
+            self._repository.append_event(state, f"Created run recovery {recovery.id} for {source_run_id}.")
+            self._repository.touch_conversation_state(state)
+            self._repository.write_state(state)
+            return {
+                "conversation_id": conversation_id,
+                "project_path": normalized_project_path,
+                "turn_id": parent_turn.id,
+                "run_recovery_id": recovery.id,
+                "segment_id": segment.id,
+            }
+
+    def note_run_recovery_result(
+        self,
+        conversation_id: str,
+        recovery_id: str,
+        *,
+        result_run_id: str,
+        status: str,
+        recovery_error: Optional[str] = None,
+    ) -> dict[str, object]:
+        with self._repository._lock:
+            state = self._repository.read_state(conversation_id)
+            if state is None:
+                raise ValueError("Conversation not found.")
+            recovery = next((entry for entry in state.run_recoveries if entry.id == recovery_id), None)
+            if recovery is None:
+                raise ValueError("Unknown run recovery.")
+            recovery.result_run_id = result_run_id
+            recovery.status = status
+            recovery.recovery_error = recovery_error.strip() if isinstance(recovery_error, str) and recovery_error.strip() else None
+            recovery.updated_at = iso_now()
+            self._repository.append_event(
+                state,
+                f"Run recovery {recovery.id} finished with status {status}.",
+            )
+            self._repository.touch_conversation_state(state)
+            self._repository.write_state(state)
+            return self._repository.serialize_conversation_state_for_ui(state)
 
     def review_flow_run_request(
         self,

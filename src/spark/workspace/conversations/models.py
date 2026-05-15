@@ -642,6 +642,86 @@ class FlowLaunch:
 
 
 @dataclass
+class RunRecovery:
+    id: str
+    created_at: str
+    updated_at: str
+    operation: str
+    source_run_id: str
+    result_run_id: str
+    status: str
+    project_path: str
+    conversation_id: str
+    source_turn_id: str
+    source_segment_id: Optional[str] = None
+    start_node: Optional[str] = None
+    flow_source_mode: Optional[str] = None
+    flow_name: Optional[str] = None
+    model: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_profile: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+    recovery_error: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "id": self.id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "operation": self.operation,
+            "source_run_id": self.source_run_id,
+            "result_run_id": self.result_run_id,
+            "status": self.status,
+            "project_path": self.project_path,
+            "conversation_id": self.conversation_id,
+            "source_turn_id": self.source_turn_id,
+        }
+        if self.source_segment_id:
+            payload["source_segment_id"] = self.source_segment_id
+        if self.start_node:
+            payload["start_node"] = self.start_node
+        if self.flow_source_mode:
+            payload["flow_source_mode"] = self.flow_source_mode
+        if self.flow_name:
+            payload["flow_name"] = self.flow_name
+        if self.model:
+            payload["model"] = self.model
+        if self.llm_provider:
+            payload["llm_provider"] = self.llm_provider
+        if self.llm_profile:
+            payload["llm_profile"] = self.llm_profile
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+        if self.recovery_error:
+            payload["recovery_error"] = self.recovery_error
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "RunRecovery":
+        return cls(
+            id=str(payload.get("id", "")),
+            created_at=str(payload.get("created_at", "")),
+            updated_at=str(payload.get("updated_at", payload.get("created_at", "")) or ""),
+            operation=str(payload.get("operation", "")),
+            source_run_id=str(payload.get("source_run_id", "")),
+            result_run_id=str(payload.get("result_run_id", "")),
+            status=str(payload.get("status", "pending") or "pending"),
+            project_path=_normalize_project_path(str(payload.get("project_path", ""))),
+            conversation_id=str(payload.get("conversation_id", "")),
+            source_turn_id=str(payload.get("source_turn_id", "")),
+            source_segment_id=str(payload.get("source_segment_id")) if payload.get("source_segment_id") is not None else None,
+            start_node=str(payload.get("start_node")) if payload.get("start_node") is not None else None,
+            flow_source_mode=str(payload.get("flow_source_mode")) if payload.get("flow_source_mode") is not None else None,
+            flow_name=str(payload.get("flow_name")) if payload.get("flow_name") is not None else None,
+            model=str(payload.get("model")) if payload.get("model") is not None else None,
+            llm_provider=str(payload.get("llm_provider")) if payload.get("llm_provider") is not None else None,
+            llm_profile=str(payload.get("llm_profile")) if payload.get("llm_profile") is not None else None,
+            reasoning_effort=str(payload.get("reasoning_effort")) if payload.get("reasoning_effort") is not None else None,
+            recovery_error=str(payload.get("recovery_error")) if payload.get("recovery_error") is not None else None,
+        )
+
+
+@dataclass
 class ProposedPlanArtifact:
     id: str
     created_at: str
@@ -730,6 +810,7 @@ class ConversationState:
     event_log: list[WorkflowEvent] = field(default_factory=list)
     flow_run_requests: list[FlowRunRequest] = field(default_factory=list)
     flow_launches: list[FlowLaunch] = field(default_factory=list)
+    run_recoveries: list[RunRecovery] = field(default_factory=list)
     proposed_plans: list[ProposedPlanArtifact] = field(default_factory=list)
 
     def normalize_request_user_input_state(self) -> bool:
@@ -783,6 +864,7 @@ class ConversationState:
             "event_log": [entry.to_dict() for entry in self.event_log],
             "flow_run_requests": [request.to_dict() for request in self.flow_run_requests],
             "flow_launches": [launch.to_dict() for launch in self.flow_launches],
+            "run_recoveries": [recovery.to_dict() for recovery in self.run_recoveries],
             "proposed_plans": [artifact.to_dict() for artifact in self.proposed_plans],
         }
 
@@ -793,6 +875,7 @@ class ConversationState:
         raw_events = payload.get("event_log")
         raw_flow_run_requests = payload.get("flow_run_requests")
         raw_flow_launches = payload.get("flow_launches")
+        raw_run_recoveries = payload.get("run_recoveries")
         raw_proposed_plans = payload.get("proposed_plans")
         schema_version = payload.get("schema_version")
         if not isinstance(schema_version, int) or schema_version != CONVERSATION_STATE_SCHEMA_VERSION:
@@ -854,6 +937,11 @@ class ConversationState:
                 for entry in raw_flow_launches
                 if isinstance(entry, dict)
             ] if isinstance(raw_flow_launches, list) else [],
+            run_recoveries=[
+                RunRecovery.from_dict(entry)
+                for entry in raw_run_recoveries
+                if isinstance(entry, dict)
+            ] if isinstance(raw_run_recoveries, list) else [],
             proposed_plans=[
                 ProposedPlanArtifact.from_dict(entry)
                 for entry in raw_proposed_plans

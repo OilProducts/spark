@@ -116,6 +116,52 @@ def test_attractor_workspace_start_payload_includes_provider_and_reasoning_when_
     assert payload["reasoning_effort"] == "high"
 
 
+def test_attractor_workspace_recovery_helpers_delegate_to_internal_endpoints() -> None:
+    captured: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class RecordingAttractorApiClient(AttractorApiClient):
+        async def _request_json(self, method: str, path: str, **kwargs):
+            captured.append((method, path, kwargs.get("json")))
+            return {"status": "started", "run_id": "run-2"}
+
+    client = RecordingAttractorApiClient(base_url="http://attractor.test")
+
+    retry_result = asyncio.run(client.retry_pipeline("run-1"))
+    continue_result = asyncio.run(
+        client.continue_pipeline(
+            "run-1",
+            start_node="run_milestone",
+            flow_source_mode="flow_name",
+            flow_name="override.dot",
+            working_directory="/repo",
+            model="gpt-5.4",
+            llm_provider="openai",
+            llm_profile="default",
+            reasoning_effort="high",
+        )
+    )
+
+    assert retry_result == {"status": "started", "run_id": "run-2"}
+    assert continue_result == {"status": "started", "run_id": "run-2"}
+    assert captured == [
+        ("POST", "/pipelines/run-1/retry", None),
+        (
+            "POST",
+            "/pipelines/run-1/continue",
+            {
+                "start_node": "run_milestone",
+                "flow_source_mode": "flow_name",
+                "flow_name": "override.dot",
+                "working_directory": "/repo",
+                "model": "gpt-5.4",
+                "llm_provider": "openai",
+                "llm_profile": "default",
+                "reasoning_effort": "high",
+            },
+        ),
+    ]
+
+
 def test_list_workspace_flows_human_surface_returns_all_flows_with_metadata_fallbacks(
     product_api_client: TestClient,
 ) -> None:

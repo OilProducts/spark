@@ -377,7 +377,7 @@ Current API groups include:
 - Workspace project management: `GET /workspace/api/projects`, `POST /workspace/api/projects/register`, `PATCH /workspace/api/projects/state`, `DELETE /workspace/api/projects`
 - Workspace triggers and project metadata: `GET /workspace/api/triggers`, `POST /workspace/api/triggers`, `GET /workspace/api/triggers/{trigger_id}`, `PATCH /workspace/api/triggers/{trigger_id}`, `DELETE /workspace/api/triggers/{trigger_id}`, `POST /workspace/api/webhooks`, `GET /workspace/api/projects/metadata`, `GET /workspace/api/projects/browse`
 - Workspace conversations: `GET /workspace/api/projects/conversations`, `GET /workspace/api/conversations/{conversation_id}`, `GET /workspace/api/conversations/{conversation_id}/events`, `POST /workspace/api/conversations/{conversation_id}/turns`, `DELETE /workspace/api/conversations/{conversation_id}`
-- Workspace run-launch workflows: `POST /workspace/api/conversations/by-handle/{conversation_handle}/flow-run-requests`, `POST /workspace/api/conversations/{conversation_id}/flow-run-requests/{request_id}/review`, `POST /workspace/api/runs/launch`
+- Workspace run-launch workflows: `POST /workspace/api/conversations/by-handle/{conversation_handle}/flow-run-requests`, `POST /workspace/api/conversations/{conversation_id}/flow-run-requests/{request_id}/review`, `POST /workspace/api/runs/launch`, `POST /workspace/api/runs/{run_id}/retry`, `POST /workspace/api/runs/{run_id}/continue`
 
 ## Repository Commands
 
@@ -435,7 +435,7 @@ spark-server service install
 
 - Flow files are stored as canonical DOT and validated before save.
 - Spark flow self-description lives in DOT via `spark.title` and `spark.description`, while workspace launch policy is stored separately in `~/.spark/config/flow-catalog.toml`.
-- Inside the assistant runtime, the Spark agent control surface uses bare `spark` commands such as `spark flow list`, `spark flow describe --flow <name>`, `spark flow get --flow <name>`, `spark flow validate --file <path> --text`, `spark convo run-request ...`, and `spark run launch ...`. In a human source-checkout shell, use `uv run spark ...` instead.
+- Inside the assistant runtime, the Spark agent control surface uses bare `spark` commands such as `spark flow list`, `spark flow describe --flow <name>`, `spark flow get --flow <name>`, `spark flow validate --file <path> --text`, `spark convo run-request ...`, `spark run launch ...`, `spark run retry ...`, and `spark run continue ...`. In a human source-checkout shell, use `uv run spark ...` instead.
 - The editor supports both structured editing and raw DOT editing, including semantic-equivalence safety checks during handoff.
 - The Runs view is intended for historical inspection, diagnostics, artifact browsing, and replaying execution context.
 - Packaged example flows live in [src/spark/flows/examples/simple-linear.dot](src/spark/flows/examples/simple-linear.dot), [src/spark/flows/examples/implement-review-loop.dot](src/spark/flows/examples/implement-review-loop.dot), [src/spark/flows/examples/human-review-loop.dot](src/spark/flows/examples/human-review-loop.dot), [src/spark/flows/examples/parallel-review.dot](src/spark/flows/examples/parallel-review.dot), [src/spark/flows/examples/supervision/implementation-worker.dot](src/spark/flows/examples/supervision/implementation-worker.dot), and [src/spark/flows/examples/supervision/supervised-implementation.dot](src/spark/flows/examples/supervision/supervised-implementation.dot).

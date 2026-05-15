@@ -137,6 +137,24 @@ class RunLaunchRequest(BaseModel):
     execution_profile_id: Optional[str] = None
 
 
+class RunRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    conversation_handle: Optional[str] = None
+
+
+class RunContinueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_node: str
+    flow_source_mode: str
+    flow_name: Optional[str] = None
+    project_path: Optional[str] = None
+    conversation_handle: Optional[str] = None
+    model: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_profile: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+
+
 class FlowLaunchPolicyUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     launch_policy: str
@@ -465,6 +483,81 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             project_path=project_path,
         )
         return run_id, str(launch_payload.get("status") or "started")
+
+    async def _resolve_recovery_conversation(
+        *,
+        conversation_handle: str | None,
+        explicit_project_path: str | None,
+    ) -> tuple[str | None, str | None, str | None]:
+        normalized_handle = str(conversation_handle or "").strip() or None
+        normalized_explicit_project_path = (
+            _normalize_project_path_or_400(explicit_project_path)
+            if explicit_project_path and str(explicit_project_path).strip()
+            else None
+        )
+        if not normalized_handle:
+            return None, normalized_explicit_project_path, None
+        try:
+            conversation_id, resolved_project_path = await asyncio.to_thread(
+                deps.get_project_chat().resolve_conversation_handle,
+                normalized_handle,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Unknown conversation handle: {normalized_handle}. "
+                    "Verify the handle shown in the thread UI and try again."
+                ),
+            ) from exc
+        if normalized_explicit_project_path and normalized_explicit_project_path != resolved_project_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Explicit --project path does not match the project bound to the conversation handle.",
+            )
+        return conversation_id, resolved_project_path, normalized_handle
+
+    async def _create_recovery_artifact(
+        *,
+        conversation_id: str | None,
+        project_path: str | None,
+        payload: dict[str, object],
+    ) -> dict[str, object] | None:
+        if not conversation_id or not project_path:
+            return None
+        try:
+            artifact = await asyncio.to_thread(
+                deps.get_project_chat().create_run_recovery,
+                conversation_id,
+                project_path,
+                payload,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown conversation: {conversation_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await deps.get_project_chat().publish_snapshot(conversation_id)
+        return artifact
+
+    async def _note_recovery_result(
+        *,
+        conversation_id: str | None,
+        artifact: dict[str, object] | None,
+        result_run_id: str,
+        status: str,
+        recovery_error: str | None = None,
+    ) -> None:
+        if not conversation_id or not artifact or not isinstance(artifact.get("run_recovery_id"), str):
+            return
+        await asyncio.to_thread(
+            deps.get_project_chat().note_run_recovery_result,
+            conversation_id,
+            str(artifact["run_recovery_id"]),
+            result_run_id=result_run_id,
+            status=status,
+            recovery_error=recovery_error,
+        )
+        await deps.get_project_chat().publish_snapshot(conversation_id)
 
     @router.get("/api/conversations/{conversation_id}")
     async def get_project_conversation(conversation_id: str, project_path: Optional[str] = None):
@@ -1031,6 +1124,154 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             response_payload["conversation_id"] = conversation_id
         if artifact_result:
             response_payload.update(artifact_result)
+        return response_payload
+
+    @router.post("/api/runs/{run_id}/retry")
+    async def retry_workspace_run(run_id: str, req: RunRetryRequest):
+        conversation_id, project_path, conversation_handle = await _resolve_recovery_conversation(
+            conversation_handle=req.conversation_handle,
+            explicit_project_path=None,
+        )
+        artifact_result = await _create_recovery_artifact(
+            conversation_id=conversation_id,
+            project_path=project_path,
+            payload={
+                "operation": "retry",
+                "source_run_id": run_id,
+                "result_run_id": run_id,
+                "status": "pending",
+            },
+        )
+        try:
+            retry_payload = await deps.get_attractor_client().retry_pipeline(run_id)
+        except AttractorApiError as exc:
+            await _note_recovery_result(
+                conversation_id=conversation_id,
+                artifact=artifact_result,
+                result_run_id=run_id,
+                status="failed",
+                recovery_error=str(exc),
+            )
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+        status = str(retry_payload.get("status") or "").strip() or "started"
+        result_run_id = str(retry_payload.get("run_id") or run_id)
+        recovery_error = str(retry_payload.get("error") or "").strip() or None
+        await _note_recovery_result(
+            conversation_id=conversation_id,
+            artifact=artifact_result,
+            result_run_id=result_run_id,
+            status="failed" if status == "validation_error" else status,
+            recovery_error=recovery_error,
+        )
+        response_payload: dict[str, object] = {
+            "ok": status != "validation_error" and not recovery_error,
+            "operation": "retry",
+            "source_run_id": run_id,
+            "run_id": result_run_id,
+            "status": status,
+        }
+        if conversation_handle:
+            response_payload["conversation_handle"] = conversation_handle
+        if conversation_id:
+            response_payload["conversation_id"] = conversation_id
+        if artifact_result:
+            response_payload.update(artifact_result)
+        if recovery_error:
+            response_payload["error"] = recovery_error
+        return response_payload
+
+    @router.post("/api/runs/{run_id}/continue")
+    async def continue_workspace_run(run_id: str, req: RunContinueRequest):
+        normalized_mode = str(req.flow_source_mode or "").strip().lower()
+        if normalized_mode not in {"snapshot", "flow_name"}:
+            raise HTTPException(status_code=400, detail="flow_source_mode must be either snapshot or flow_name.")
+        flow_name = str(req.flow_name or "").strip() or None
+        if normalized_mode == "flow_name" and not flow_name:
+            raise HTTPException(status_code=400, detail="flow_name is required when flow_source_mode is flow_name.")
+        if normalized_mode != "flow_name":
+            flow_name = None
+        start_node = str(req.start_node or "").strip()
+        if not start_node:
+            raise HTTPException(status_code=400, detail="start_node is required.")
+
+        conversation_id, project_path, conversation_handle = await _resolve_recovery_conversation(
+            conversation_handle=req.conversation_handle,
+            explicit_project_path=req.project_path,
+        )
+        artifact_result = await _create_recovery_artifact(
+            conversation_id=conversation_id,
+            project_path=project_path,
+            payload={
+                "operation": "continue",
+                "source_run_id": run_id,
+                "result_run_id": "",
+                "status": "pending",
+                "start_node": start_node,
+                "flow_source_mode": normalized_mode,
+                "flow_name": flow_name,
+                "model": req.model,
+                "llm_provider": req.llm_provider,
+                "llm_profile": req.llm_profile,
+                "reasoning_effort": req.reasoning_effort,
+            },
+        )
+        try:
+            continue_payload = await deps.get_attractor_client().continue_pipeline(
+                run_id,
+                start_node=start_node,
+                flow_source_mode=normalized_mode,
+                flow_name=flow_name,
+                working_directory=(
+                    _normalize_project_path_or_400(req.project_path)
+                    if req.project_path and str(req.project_path).strip()
+                    else None
+                ),
+                model=req.model,
+                llm_provider=req.llm_provider,
+                llm_profile=req.llm_profile,
+                reasoning_effort=req.reasoning_effort,
+            )
+        except AttractorApiError as exc:
+            await _note_recovery_result(
+                conversation_id=conversation_id,
+                artifact=artifact_result,
+                result_run_id=run_id,
+                status="failed",
+                recovery_error=str(exc),
+            )
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+        status = str(continue_payload.get("status") or "").strip() or "started"
+        result_run_id = str(continue_payload.get("run_id") or "")
+        recovery_error = str(continue_payload.get("error") or "").strip() or None
+        await _note_recovery_result(
+            conversation_id=conversation_id,
+            artifact=artifact_result,
+            result_run_id=result_run_id or run_id,
+            status="failed" if status == "validation_error" else status,
+            recovery_error=recovery_error,
+        )
+        response_payload = {
+            "ok": status != "validation_error" and not recovery_error,
+            "operation": "continue",
+            "source_run_id": run_id,
+            "run_id": result_run_id,
+            "status": status,
+            "start_node": start_node,
+            "flow_source_mode": normalized_mode,
+            "continued_from_run_id": run_id,
+        }
+        if flow_name:
+            response_payload["flow_name"] = flow_name
+        if conversation_handle:
+            response_payload["conversation_handle"] = conversation_handle
+        if conversation_id:
+            response_payload["conversation_id"] = conversation_id
+        if artifact_result:
+            response_payload.update(artifact_result)
+        if recovery_error:
+            response_payload["error"] = recovery_error
         return response_payload
 
     @router.post("/api/conversations/{conversation_id}/flow-run-requests/{request_id}/review")

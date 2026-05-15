@@ -1776,6 +1776,38 @@ class ProjectChatService:
             "conversation_handle": conversation_handle,
         }
 
+    def create_run_recovery(
+        self,
+        conversation_id: str,
+        project_path: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        normalized_project_path = _normalize_project_path(project_path)
+        if not normalized_project_path:
+            raise ValueError("Project path is required.")
+        return self._reviews.create_run_recovery(
+            conversation_id,
+            normalized_project_path,
+            payload,
+        )
+
+    def note_run_recovery_result(
+        self,
+        conversation_id: str,
+        recovery_id: str,
+        *,
+        result_run_id: str,
+        status: str,
+        recovery_error: Optional[str] = None,
+    ) -> dict[str, object]:
+        return self._reviews.note_run_recovery_result(
+            conversation_id,
+            recovery_id,
+            result_run_id=result_run_id,
+            status=status,
+            recovery_error=recovery_error,
+        )
+
     def review_flow_run_request(
         self,
         conversation_id: str,

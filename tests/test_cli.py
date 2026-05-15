@@ -806,6 +806,173 @@ def test_agent_run_launch_posts_payload_and_prints_response(monkeypatch, capsys)
     assert json.loads(capsys.readouterr().out)["flow_launch_id"] == "flow-launch-123"
 
 
+def test_agent_run_retry_posts_workspace_payload(monkeypatch, capsys) -> None:
+    class FakeResponse:
+        status_code = 200
+        is_error = False
+
+        def json(self) -> dict[str, object]:
+            return {
+                "ok": True,
+                "operation": "retry",
+                "source_run_id": "run-1",
+                "run_id": "run-1",
+                "status": "started",
+            }
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeClient:
+        def __init__(self, timeout: float) -> None:
+            assert timeout == 30.0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def request(self, method: str, url: str, json: dict[str, object] | None = None):
+            calls.append((f"{method} {url}", json or {}))
+            return FakeResponse()
+
+    monkeypatch.setattr(spark_cli.httpx, "Client", FakeClient)
+
+    result = spark_cli.main(["run", "retry", "--run", "run-1", "--conversation", "amber-otter"])
+
+    assert result == 0
+    assert calls == [
+        (
+            "POST http://127.0.0.1:8000/workspace/api/runs/run-1/retry",
+            {"conversation_handle": "amber-otter"},
+        )
+    ]
+    assert json.loads(capsys.readouterr().out)["operation"] == "retry"
+
+
+def test_agent_run_continue_posts_workspace_payload_and_omits_snapshot_flow(monkeypatch, capsys) -> None:
+    class FakeResponse:
+        status_code = 200
+        is_error = False
+
+        def json(self) -> dict[str, object]:
+            return {
+                "ok": True,
+                "operation": "continue",
+                "source_run_id": "run-1",
+                "run_id": "run-2",
+                "status": "started",
+            }
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeClient:
+        def __init__(self, timeout: float) -> None:
+            assert timeout == 30.0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def request(self, method: str, url: str, json: dict[str, object] | None = None):
+            calls.append((f"{method} {url}", json or {}))
+            return FakeResponse()
+
+    monkeypatch.setattr(spark_cli.httpx, "Client", FakeClient)
+
+    result = spark_cli.main(
+        [
+            "run",
+            "continue",
+            "--run",
+            "run-1",
+            "--start-node",
+            "run_milestone",
+            "--flow-source-mode",
+            "snapshot",
+            "--flow",
+            "ignored.dot",
+            "--conversation",
+            "amber-otter",
+            "--project",
+            "/repo",
+            "--model",
+            "gpt-5.4",
+            "--llm-provider",
+            "openai",
+            "--llm-profile",
+            "default",
+            "--reasoning-effort",
+            "high",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        (
+            "POST http://127.0.0.1:8000/workspace/api/runs/run-1/continue",
+            {
+                "start_node": "run_milestone",
+                "flow_source_mode": "snapshot",
+                "conversation_handle": "amber-otter",
+                "project_path": "/repo",
+                "model": "gpt-5.4",
+                "llm_provider": "openai",
+                "llm_profile": "default",
+                "reasoning_effort": "high",
+            },
+        )
+    ]
+    assert json.loads(capsys.readouterr().out)["operation"] == "continue"
+
+
+def test_agent_run_continue_sends_flow_only_for_flow_name_mode(monkeypatch) -> None:
+    class FakeResponse:
+        status_code = 200
+        is_error = False
+
+        def json(self) -> dict[str, object]:
+            return {"ok": True}
+
+    calls: list[dict[str, object]] = []
+
+    class FakeClient:
+        def __init__(self, timeout: float) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def request(self, method: str, url: str, json: dict[str, object] | None = None):
+            calls.append(json or {})
+            return FakeResponse()
+
+    monkeypatch.setattr(spark_cli.httpx, "Client", FakeClient)
+
+    result = spark_cli.main(
+        [
+            "run",
+            "continue",
+            "--run",
+            "run-1",
+            "--start-node",
+            "next",
+            "--flow-source-mode",
+            "flow_name",
+            "--flow",
+            "override.dot",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [{"start_node": "next", "flow_source_mode": "flow_name", "flow_name": "override.dot"}]
+
+
 def test_agent_flow_list_defaults_to_json(monkeypatch, capsys) -> None:
     class FakeResponse:
         status_code = 200

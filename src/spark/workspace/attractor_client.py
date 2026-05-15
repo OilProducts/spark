@@ -85,6 +85,40 @@ class AttractorApiClient:
             },
         )
 
+    async def retry_pipeline(self, run_id: str) -> dict[str, Any]:
+        return await self._request_json("POST", f"/pipelines/{run_id}/retry")
+
+    async def continue_pipeline(
+        self,
+        run_id: str,
+        *,
+        start_node: str,
+        flow_source_mode: str,
+        flow_name: Optional[str] = None,
+        working_directory: Optional[str] = None,
+        model: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        llm_profile: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "start_node": start_node,
+            "flow_source_mode": flow_source_mode,
+        }
+        if flow_name is not None:
+            payload["flow_name"] = flow_name
+        if working_directory is not None:
+            payload["working_directory"] = working_directory
+        if model is not None:
+            payload["model"] = model
+        if llm_provider is not None:
+            payload["llm_provider"] = llm_provider
+        if llm_profile is not None:
+            payload["llm_profile"] = llm_profile
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
+        return await self._request_json("POST", f"/pipelines/{run_id}/continue", json=payload)
+
     async def get_artifact_text(self, run_id: str, artifact_path: str) -> str:
         response = await self._request("GET", f"/pipelines/{run_id}/artifacts/{artifact_path}")
         if response.status_code >= 400:

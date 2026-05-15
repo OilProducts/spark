@@ -768,6 +768,8 @@ def test_project_chat_prompt_includes_flow_authoring_boundary(tmp_path: Path) ->
     assert "`spark flow validate --file <path> --text`" in prompt
     assert "`spark convo run-request ...`" in prompt
     assert "`spark run launch ...`" in prompt
+    assert "`spark run retry ...`" in prompt
+    assert "`spark run continue ...`" in prompt
     assert f"flow library at `{(tmp_path / 'flows').resolve(strict=False)}`" in prompt
     assert f"`{dot_authoring_guide_path()}`" in prompt
     assert f"`{spark_operations_guide_path()}`" in prompt
@@ -4480,6 +4482,251 @@ def test_direct_flow_launch_routes_create_inline_artifact_and_launch(
             "plan_id": None,
         }
     ]
+
+
+def test_run_retry_route_delegates_and_creates_run_recovery_artifact(
+    product_api_client,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = tmp_path.resolve()
+    conversation_id = "conversation-run-retry"
+    state = project_chat.ConversationState(
+        conversation_id=conversation_id,
+        project_path=str(project_dir),
+        title="Run retry route",
+        created_at="2026-03-13T10:00:00Z",
+        updated_at="2026-03-13T10:01:00Z",
+        turns=[
+            project_chat.ConversationTurn(id="turn-user-1", role="user", content="Retry the run.", timestamp="2026-03-13T10:00:00Z"),
+            project_chat.ConversationTurn(id="turn-assistant-1", role="assistant", content="Retrying it.", timestamp="2026-03-13T10:01:00Z", status="complete"),
+        ],
+    )
+    service = _project_chat_service()
+    service._write_state(state)
+    snapshot = service.get_snapshot(conversation_id, str(project_dir))
+    calls: list[str] = []
+
+    async def fake_retry_pipeline(self, run_id: str) -> dict[str, object]:
+        calls.append(run_id)
+        return {"status": "started", "run_id": run_id}
+
+    monkeypatch.setattr(attractor_client.AttractorApiClient, "retry_pipeline", fake_retry_pipeline)
+
+    response = product_api_client.post(
+        "/workspace/api/runs/run-1/retry",
+        json={"conversation_handle": snapshot["conversation_handle"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["operation"] == "retry"
+    assert payload["source_run_id"] == "run-1"
+    assert payload["run_id"] == "run-1"
+    assert payload["run_recovery_id"].startswith("run-recovery-")
+    assert calls == ["run-1"]
+
+    updated_snapshot = service.get_snapshot(conversation_id, str(project_dir))
+    recovery = next(entry for entry in updated_snapshot["run_recoveries"] if entry["id"] == payload["run_recovery_id"])
+    assert recovery["operation"] == "retry"
+    assert recovery["source_run_id"] == "run-1"
+    assert recovery["result_run_id"] == "run-1"
+    assert recovery["status"] == "started"
+    segment = next(entry for entry in updated_snapshot["segments"] if entry["artifact_id"] == payload["run_recovery_id"])
+    assert segment["kind"] == "run_recovery"
+    assert segment["turn_id"] == "turn-assistant-1"
+
+
+def test_run_continue_route_delegates_and_records_lineage(
+    product_api_client,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = tmp_path.resolve()
+    conversation_id = "conversation-run-continue"
+    state = project_chat.ConversationState(
+        conversation_id=conversation_id,
+        project_path=str(project_dir),
+        title="Run continue route",
+        created_at="2026-03-13T10:00:00Z",
+        updated_at="2026-03-13T10:01:00Z",
+        turns=[
+            project_chat.ConversationTurn(id="turn-user-1", role="user", content="Continue the run.", timestamp="2026-03-13T10:00:00Z"),
+            project_chat.ConversationTurn(id="turn-assistant-1", role="assistant", content="Continuing it.", timestamp="2026-03-13T10:01:00Z", status="complete"),
+        ],
+    )
+    service = _project_chat_service()
+    service._write_state(state)
+    snapshot = service.get_snapshot(conversation_id, str(project_dir))
+    calls: list[dict[str, object | None]] = []
+
+    async def fake_continue_pipeline(
+        self,
+        run_id: str,
+        *,
+        start_node: str,
+        flow_source_mode: str,
+        flow_name: str | None = None,
+        working_directory: str | None = None,
+        model: str | None = None,
+        llm_provider: str | None = None,
+        llm_profile: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> dict[str, object]:
+        calls.append(
+            {
+                "run_id": run_id,
+                "start_node": start_node,
+                "flow_source_mode": flow_source_mode,
+                "flow_name": flow_name,
+                "working_directory": working_directory,
+                "model": model,
+                "llm_provider": llm_provider,
+                "llm_profile": llm_profile,
+                "reasoning_effort": reasoning_effort,
+            }
+        )
+        return {"status": "started", "run_id": "run-2"}
+
+    monkeypatch.setattr(attractor_client.AttractorApiClient, "continue_pipeline", fake_continue_pipeline)
+
+    response = product_api_client.post(
+        "/workspace/api/runs/run-1/continue",
+        json={
+            "start_node": "run_milestone",
+            "flow_source_mode": "snapshot",
+            "conversation_handle": snapshot["conversation_handle"],
+            "project_path": str(project_dir),
+            "model": "gpt-5.4",
+            "llm_provider": "openai",
+            "llm_profile": "default",
+            "reasoning_effort": "high",
+            "flow_name": "ignored.dot",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["operation"] == "continue"
+    assert payload["source_run_id"] == "run-1"
+    assert payload["continued_from_run_id"] == "run-1"
+    assert payload["run_id"] == "run-2"
+    assert "flow_name" not in payload
+    assert calls == [
+        {
+            "run_id": "run-1",
+            "start_node": "run_milestone",
+            "flow_source_mode": "snapshot",
+            "flow_name": None,
+            "working_directory": str(project_dir),
+            "model": "gpt-5.4",
+            "llm_provider": "openai",
+            "llm_profile": "default",
+            "reasoning_effort": "high",
+        }
+    ]
+    recovery = next(
+        entry
+        for entry in service.get_snapshot(conversation_id, str(project_dir))["run_recoveries"]
+        if entry["id"] == payload["run_recovery_id"]
+    )
+    assert recovery["operation"] == "continue"
+    assert recovery["source_run_id"] == "run-1"
+    assert recovery["result_run_id"] == "run-2"
+    assert recovery["status"] == "started"
+    assert recovery["start_node"] == "run_milestone"
+    assert recovery["flow_source_mode"] == "snapshot"
+    assert recovery["model"] == "gpt-5.4"
+    assert recovery["llm_provider"] == "openai"
+    assert recovery["llm_profile"] == "default"
+    assert recovery["reasoning_effort"] == "high"
+
+
+def test_run_continue_conversation_project_mismatch_returns_400(
+    product_api_client,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    other_dir = tmp_path / "other"
+    project_dir.mkdir()
+    other_dir.mkdir()
+    conversation_id = "conversation-run-mismatch"
+    state = project_chat.ConversationState(
+        conversation_id=conversation_id,
+        project_path=str(project_dir),
+        title="Run mismatch route",
+        created_at="2026-03-13T10:00:00Z",
+        updated_at="2026-03-13T10:01:00Z",
+        turns=[
+            project_chat.ConversationTurn(id="turn-assistant-1", role="assistant", content="Ready.", timestamp="2026-03-13T10:01:00Z", status="complete"),
+        ],
+    )
+    service = _project_chat_service()
+    service._write_state(state)
+    snapshot = service.get_snapshot(conversation_id, str(project_dir))
+
+    response = product_api_client.post(
+        "/workspace/api/runs/run-1/continue",
+        json={
+            "start_node": "run_milestone",
+            "flow_source_mode": "snapshot",
+            "conversation_handle": snapshot["conversation_handle"],
+            "project_path": str(other_dir),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "does not match" in response.json()["detail"]
+
+
+def test_run_continue_validation_error_marks_recovery_failed(
+    product_api_client,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = tmp_path.resolve()
+    conversation_id = "conversation-run-continue-failed"
+    state = project_chat.ConversationState(
+        conversation_id=conversation_id,
+        project_path=str(project_dir),
+        title="Run continue failed route",
+        created_at="2026-03-13T10:00:00Z",
+        updated_at="2026-03-13T10:01:00Z",
+        turns=[
+            project_chat.ConversationTurn(id="turn-assistant-1", role="assistant", content="Continuing it.", timestamp="2026-03-13T10:01:00Z", status="complete"),
+        ],
+    )
+    service = _project_chat_service()
+    service._write_state(state)
+    snapshot = service.get_snapshot(conversation_id, str(project_dir))
+
+    async def fake_continue_pipeline(self, run_id: str, **kwargs) -> dict[str, object]:
+        return {"status": "validation_error", "error": "Unknown start node: missing-node"}
+
+    monkeypatch.setattr(attractor_client.AttractorApiClient, "continue_pipeline", fake_continue_pipeline)
+
+    response = product_api_client.post(
+        "/workspace/api/runs/run-1/continue",
+        json={
+            "start_node": "missing-node",
+            "flow_source_mode": "snapshot",
+            "conversation_handle": snapshot["conversation_handle"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["status"] == "validation_error"
+    recovery = next(
+        entry
+        for entry in service.get_snapshot(conversation_id, str(project_dir))["run_recoveries"]
+        if entry["id"] == payload["run_recovery_id"]
+    )
+    assert recovery["status"] == "failed"
+    assert recovery["recovery_error"] == "Unknown start node: missing-node"
 
 
 def test_review_proposed_plan_writes_change_request_and_creates_launch_artifact(

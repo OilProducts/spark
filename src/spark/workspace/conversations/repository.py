@@ -185,6 +185,7 @@ class ProjectChatRepository:
             payload["flow_run_requests"] = flow_run_requests_payload.get("flow_run_requests", [])
         if flow_launches_payload:
             payload["flow_launches"] = flow_launches_payload.get("flow_launches", [])
+            payload["run_recoveries"] = flow_launches_payload.get("run_recoveries", [])
         if proposed_plans_payload:
             payload["proposed_plans"] = proposed_plans_payload.get("proposed_plans", [])
         state = ConversationState.from_dict(payload)
@@ -232,6 +233,7 @@ class ProjectChatRepository:
                 "project_id": project_paths.project_id,
                 "project_path": state.project_path,
                 "flow_launches": [launch.to_dict() for launch in state.flow_launches],
+                "run_recoveries": [recovery.to_dict() for recovery in state.run_recoveries],
             },
         )
         self.write_json(
@@ -646,4 +648,8 @@ class ProjectChatRepository:
             launch = next((entry for entry in state.flow_launches if entry.id == segment.artifact_id), None)
             if launch is not None:
                 payload["flow_launches"] = [launch.to_dict()]
+        elif segment.kind == "run_recovery":
+            recovery = next((entry for entry in state.run_recoveries if entry.id == segment.artifact_id), None)
+            if recovery is not None:
+                payload["run_recoveries"] = [recovery.to_dict()]
         return payload
