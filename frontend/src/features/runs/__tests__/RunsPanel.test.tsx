@@ -2614,6 +2614,7 @@ describe('RunsPanel', () => {
   })
 
   it('bounds rendered journal rows when a single retry correlation group contains long history', async () => {
+    localStorage.setItem('spark.debug.performance', '1')
     const selectedRun = makeRun({
       run_id: 'run-history-large-retry-group',
       flow_name: 'selected.dot',

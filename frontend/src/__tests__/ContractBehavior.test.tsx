@@ -1816,13 +1816,44 @@ describe('Frontend contract behavior', () => {
 
     renderWithFlowProvider(<Editor />)
 
+    await screen.findByRole('button', { name: 'Add Node' })
+    expect(screen.queryByTestId('canvas-interaction-performance-budget')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('canvas-performance-profile')).not.toBeInTheDocument()
+
+    cleanup()
+    localStorage.setItem('spark.debug.performance', '1')
+    renderWithFlowProvider(<Editor />)
+
     const canvasBudget = await screen.findByTestId('canvas-interaction-performance-budget')
     expect(canvasBudget).toHaveAttribute('data-budget-ms', '16')
     expect(canvasBudget).toHaveTextContent('16ms')
 
     cleanup()
+    localStorage.removeItem('spark.debug.performance')
 
     act(() => {
+      resetContractState()
+      useStore.setState((state) => ({
+        ...state,
+        viewMode: 'runs',
+        selectedRunId: runId,
+      }))
+    })
+
+    renderRunsPanelWithController()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+    })
+    expect(screen.queryByTestId('timeline-update-performance-budget')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-event-timeline-throughput')).not.toBeInTheDocument()
+    expect(screen.getAllByText(/Live|Idle/).some((element) => element.textContent === 'Live' || element.textContent === 'Idle')).toBe(true)
+
+    cleanup()
+    localStorage.setItem('spark.debug.performance', '1')
+
+    act(() => {
+      resetContractState()
       useStore.setState((state) => ({
         ...state,
         viewMode: 'runs',
@@ -1886,11 +1917,12 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
+    localStorage.setItem('spark.debug.performance', '1')
     renderWithFlowProvider(<Editor />)
 
     const profile = await screen.findByTestId('canvas-performance-profile')
     await waitFor(() => {
-    expect(profile).toHaveAttribute('data-profile', 'medium')
+      expect(profile).toHaveAttribute('data-profile', 'medium')
     })
     expect(profile).toHaveAttribute('data-node-count', String(nodeCount))
     expect(profile).toHaveAttribute('data-only-render-visible-elements', 'true')
@@ -2003,6 +2035,7 @@ describe('Frontend contract behavior', () => {
     }
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
+    localStorage.setItem('spark.debug.performance', '1')
     act(() => {
       resetContractState()
       useStore.setState((state) => ({

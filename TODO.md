@@ -1,6 +1,5 @@
 # TODO
 
-- [ ] Item 13.3-02 follow-up: keep medium-graph optimization behavior in production, but gate/hide profiling-debug UI readouts in normal production UX (expose via a developer/debug flag).
 - [ ] Audit Spark against the original Attractor spec/API to identify true runtime/editor contract drift versus product-layer extensions.
 - [ ] Align failure routing with the Attractor spec’s documented failure order so `FAIL` does not fall through ordinary unconditional edges before checking fail-specific routing.
 - [ ] Normalize checkpoint semantics so `current_node` has one stable meaning in both persistence and resume logic, and update the Attractor spec accordingly.

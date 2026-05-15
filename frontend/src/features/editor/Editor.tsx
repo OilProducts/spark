@@ -62,6 +62,7 @@ import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowN
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { isAbortError } from '@/lib/api/shared';
+import { isPerformanceDebugEnabled } from '@/lib/performanceDebug';
 import {
     loadEditorFlowPayload,
     loadEditorPreview,
@@ -244,6 +245,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const previewDebounceMs = isMediumGraph ? MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS : DEFAULT_PREVIEW_DEBOUNCE_MS;
     const onlyRenderVisibleElements = isMediumGraph;
     const performanceProfile = isMediumGraph ? 'medium' : 'default';
+    const showPerformanceDebug = isPerformanceDebugEnabled();
     const activeOptimizations = [
         ...(onlyRenderVisibleElements ? ['visible-only'] : []),
         ...(previewDebounceMs > DEFAULT_PREVIEW_DEBOUNCE_MS ? ['debounced-preview'] : []),
@@ -1507,27 +1509,31 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             Add Node
                         </Button>
                     )}
-                    <div
-                        data-testid="canvas-interaction-performance-budget"
-                        data-budget-ms={CANVAS_INTERACTION_BUDGET_MS}
-                        className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
-                    >
-                        Canvas interaction budget: {CANVAS_INTERACTION_BUDGET_MS}ms max per interaction frame.
-                    </div>
-                    <div
-                        data-testid="canvas-performance-profile"
-                        data-profile={performanceProfile}
-                        data-node-count={nodeCount}
-                        data-only-render-visible-elements={String(onlyRenderVisibleElements)}
-                        data-preview-debounce-ms={previewDebounceMs}
-                        data-optimizations={optimizationLabel}
-                        data-preview-ms={Math.round(lastPreviewMs)}
-                        data-layout-ms={Math.round(lastLayoutMs)}
-                        className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
-                    >
-                        Canvas profile: {performanceProfile} ({nodeCount} nodes). Preview debounce: {previewDebounceMs}ms.
-                        {' '}Optimizations: {optimizationLabel}.
-                    </div>
+                    {showPerformanceDebug ? (
+                        <>
+                            <div
+                                data-testid="canvas-interaction-performance-budget"
+                                data-budget-ms={CANVAS_INTERACTION_BUDGET_MS}
+                                className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+                            >
+                                Canvas interaction budget: {CANVAS_INTERACTION_BUDGET_MS}ms max per interaction frame.
+                            </div>
+                            <div
+                                data-testid="canvas-performance-profile"
+                                data-profile={performanceProfile}
+                                data-node-count={nodeCount}
+                                data-only-render-visible-elements={String(onlyRenderVisibleElements)}
+                                data-preview-debounce-ms={previewDebounceMs}
+                                data-optimizations={optimizationLabel}
+                                data-preview-ms={Math.round(lastPreviewMs)}
+                                data-layout-ms={Math.round(lastLayoutMs)}
+                                className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+                            >
+                                Canvas profile: {performanceProfile} ({nodeCount} nodes). Preview debounce: {previewDebounceMs}ms.
+                                {' '}Optimizations: {optimizationLabel}.
+                            </div>
+                        </>
+                    ) : null}
                     {isExpandedReadOnlyPreview ? (
                         <div className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
                             Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.

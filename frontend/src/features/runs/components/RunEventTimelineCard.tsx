@@ -25,6 +25,7 @@ import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
 import { cn } from '@/lib/utils'
+import { isPerformanceDebugEnabled } from '@/lib/performanceDebug'
 import { RunSectionToggleButton } from './RunSectionToggleButton'
 
 interface RunEventTimelineCardProps {
@@ -85,6 +86,7 @@ export function RunEventTimelineCard({
     const listRef = useRef<HTMLDivElement | null>(null)
     const [scrollTop, setScrollTop] = useState(0)
     const [viewportHeight, setViewportHeight] = useState(448)
+    const showPerformanceDebug = isPerformanceDebugEnabled()
 
     useEffect(() => {
         if (!collapsed && listRef.current) {
@@ -189,22 +191,26 @@ export function RunEventTimelineCard({
             </CardHeader>
             {!collapsed ? (
                 <CardContent className="space-y-3 px-4">
-                    <div
-                        data-testid="timeline-update-performance-budget"
-                        data-budget-ms={TIMELINE_UPDATE_BUDGET_MS}
-                        className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
-                    >
-                        Journal update budget: {TIMELINE_UPDATE_BUDGET_MS}ms max per live update batch.
-                    </div>
-                    <div
-                        data-testid="run-event-timeline-throughput"
-                        data-loaded-count={timelineEventCount}
-                        data-rendered-count={windowState.renderedRowCount}
-                        data-window-size={RUN_JOURNAL_WINDOW_SIZE}
-                        className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
-                    >
-                        Loaded {timelineEventCount} journal entries. Rendering {windowState.renderedRowCount} rows in a bounded window.
-                    </div>
+                    {showPerformanceDebug ? (
+                        <>
+                            <div
+                                data-testid="timeline-update-performance-budget"
+                                data-budget-ms={TIMELINE_UPDATE_BUDGET_MS}
+                                className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+                            >
+                                Journal update budget: {TIMELINE_UPDATE_BUDGET_MS}ms max per live update batch.
+                            </div>
+                            <div
+                                data-testid="run-event-timeline-throughput"
+                                data-loaded-count={timelineEventCount}
+                                data-rendered-count={windowState.renderedRowCount}
+                                data-window-size={RUN_JOURNAL_WINDOW_SIZE}
+                                className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+                            >
+                                Loaded {timelineEventCount} journal entries. Rendering {windowState.renderedRowCount} rows in a bounded window.
+                            </div>
+                        </>
+                    ) : null}
                     {timelineError && (
                         <Alert
                             data-testid="run-event-timeline-error"

@@ -128,6 +128,7 @@ const renderEditor = () => render(
 describe('Editor flow loading behavior', () => {
   beforeEach(() => {
     resetEditorState('flow-a.dot')
+    localStorage.setItem('spark.debug.performance', '1')
     vi.mocked(loadEditorFlowPayload).mockImplementation(async (flowName: string) => ({
       name: flowName,
       content: flowName,
