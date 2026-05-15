@@ -395,6 +395,90 @@ class TestRetryAndGoalGate:
         assert result.status == "completed"
         assert result.route_trace == ["start", "task", "done"]
 
+    def test_failure_routing_uses_matching_condition_before_retry_target(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, max_retries=0, retry_target="retry"]
+                rewrite [shape=box]
+                retry [shape=box]
+                done [shape=Msquare]
+                start -> task
+                task -> rewrite [condition="outcome=fail && preferred_label=Rewrite"]
+                rewrite -> done
+                retry -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, ctx: Context, *, emit_event=None) -> Outcome:
+            if node_id == "task":
+                return Outcome(
+                    status=OutcomeStatus.FAIL,
+                    preferred_label="Rewrite",
+                    failure_reason="needs rewrite",
+                )
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+        assert result.status == "completed"
+        assert result.route_trace == ["start", "task", "rewrite", "done"]
+
+    def test_failure_routing_uses_retry_target_when_condition_does_not_match(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, max_retries=0, retry_target="retry"]
+                rewrite [shape=box]
+                retry [shape=box]
+                done [shape=Msquare]
+                start -> task
+                task -> rewrite [condition="outcome=fail && preferred_label=Rewrite"]
+                rewrite -> done
+                retry -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, ctx: Context, *, emit_event=None) -> Outcome:
+            if node_id == "task":
+                return Outcome(
+                    status=OutcomeStatus.FAIL,
+                    preferred_label="Fix",
+                    failure_reason="needs fix",
+                )
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+        assert result.status == "completed"
+        assert result.route_trace == ["start", "task", "retry", "done"]
+
+    def test_failure_routing_fails_without_conditioned_route_or_retry_target(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                task [shape=box, max_retries=0]
+                done [shape=Msquare]
+                start -> task
+                task -> done
+            }
+            """
+        )
+
+        def runner(node_id: str, prompt: str, ctx: Context, *, emit_event=None) -> Outcome:
+            if node_id == "task":
+                return Outcome(status=OutcomeStatus.FAIL, failure_reason="stage exploded")
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+        assert result.status == "failed"
+        assert result.current_node == "task"
+        assert result.failure_reason == "stage exploded"
+        assert result.route_trace == ["start", "task"]
+
     def test_goal_gate_enforced_at_exit(self):
         graph = parse_dot(
             """

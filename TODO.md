@@ -1,6 +1,5 @@
 # TODO
 
-- [ ] Align failure routing with the Attractor spec’s documented failure order so `FAIL` does not fall through ordinary unconditional edges before checking fail-specific routing.
 - [ ] Normalize checkpoint semantics so `current_node` has one stable meaning in both persistence and resume logic, and update the Attractor spec accordingly.
 - [ ] Mirror the documented `graph.*` context namespace in the engine itself instead of only seeding it through the API bootstrap path.
 - [ ] Either wire the existing `ArtifactStore` into normal pipeline execution/runtime surfaces or narrow the Attractor spec so it does not promise a first-class artifact store that the engine does not use.

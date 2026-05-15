@@ -2009,13 +2009,14 @@ class PipelineExecutor:
             if prioritized:
                 return prioritized
 
+        if _edge_attr_text(next_edge, "condition"):
+            return next_edge
+
         route = self._resolve_failure_retry_target(node_id)
         if route:
             return _SyntheticEdge(route)
 
         if not self._continue_after_failure(node_id):
-            if _edge_attr_text(next_edge, "condition"):
-                return next_edge
             target_node_id = _edge_endpoint_text(next_edge, "target")
             if target_node_id and self._is_conditional_node(target_node_id):
                 return next_edge
