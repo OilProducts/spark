@@ -4726,6 +4726,7 @@ def test_run_continue_validation_error_marks_recovery_failed(
         if entry["id"] == payload["run_recovery_id"]
     )
     assert recovery["status"] == "failed"
+    assert recovery["result_run_id"] == ""
     assert recovery["recovery_error"] == "Unknown start node: missing-node"
 
 

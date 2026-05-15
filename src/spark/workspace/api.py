@@ -1236,7 +1236,7 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             await _note_recovery_result(
                 conversation_id=conversation_id,
                 artifact=artifact_result,
-                result_run_id=run_id,
+                result_run_id="",
                 status="failed",
                 recovery_error=str(exc),
             )
@@ -1245,11 +1245,12 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         status = str(continue_payload.get("status") or "").strip() or "started"
         result_run_id = str(continue_payload.get("run_id") or "")
         recovery_error = str(continue_payload.get("error") or "").strip() or None
+        recovery_status = "failed" if status == "validation_error" or recovery_error else status
         await _note_recovery_result(
             conversation_id=conversation_id,
             artifact=artifact_result,
-            result_run_id=result_run_id or run_id,
-            status="failed" if status == "validation_error" else status,
+            result_run_id=result_run_id,
+            status=recovery_status,
             recovery_error=recovery_error,
         )
         response_payload = {

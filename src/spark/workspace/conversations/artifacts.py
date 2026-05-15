@@ -352,13 +352,18 @@ class ProjectChatReviewService:
             if parent_turn is None:
                 raise ValueError("Conversation has no assistant turn that can own a run recovery.")
             now = iso_now()
+            raw_result_run_id = payload.get("result_run_id")
+            if raw_result_run_id is None:
+                result_run_id = source_run_id if operation == "retry" else ""
+            else:
+                result_run_id = str(raw_result_run_id).strip()
             recovery = RunRecovery(
                 id=f"run-recovery-{uuid.uuid4().hex[:12]}",
                 created_at=now,
                 updated_at=now,
                 operation=operation,
                 source_run_id=source_run_id,
-                result_run_id=str(payload.get("result_run_id", "") or source_run_id).strip(),
+                result_run_id=result_run_id,
                 status=str(payload.get("status", "pending") or "pending"),
                 project_path=normalized_project_path,
                 conversation_id=conversation_id,
