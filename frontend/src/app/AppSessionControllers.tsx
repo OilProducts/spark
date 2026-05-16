@@ -67,6 +67,7 @@ const runRecordsMatch = (
 type HomeConversationSyncControllerProps = {
     projectPath: string
     conversationId: string | null
+    isForegroundProject: boolean
     applyConversationSnapshot: (
         projectPath: string,
         snapshot: ConversationSnapshotResponse,
@@ -84,6 +85,7 @@ type HomeConversationSyncControllerProps = {
 function HomeConversationSyncController({
     projectPath,
     conversationId,
+    isForegroundProject,
     applyConversationSnapshot,
     applyConversationStreamEvent,
     appendProjectEvent,
@@ -98,8 +100,8 @@ function HomeConversationSyncController({
     }, [projectPath, setProjectPanelError])
 
     useConversationStream({
-        activeConversationId: conversationId,
-        activeProjectPath: projectPath,
+        activeConversationId: isForegroundProject ? conversationId : null,
+        activeProjectPath: isForegroundProject ? projectPath : null,
         appendLocalProjectEvent,
         applyConversationSnapshot,
         applyConversationStreamEvent,
@@ -310,6 +312,7 @@ export function HomeSessionController() {
                     key={`${projectPath}:${projectSessionsByPath[projectPath]?.conversationId ?? 'none'}`}
                     projectPath={projectPath}
                     conversationId={projectSessionsByPath[projectPath]?.conversationId ?? null}
+                    isForegroundProject={isHomeVisible && activeProjectPath === projectPath}
                     applyConversationSnapshot={applyConversationSnapshot}
                     applyConversationStreamEvent={applyConversationStreamEvent}
                     appendProjectEvent={appendProjectEvent}

@@ -1351,7 +1351,7 @@ describe('App shell behavior', () => {
     expect(scrollTop).toBe(120)
   })
 
-  it('keeps Home conversation sync live while Home is hidden', async () => {
+  it('closes Home conversation sync while Home is hidden and refreshes when visible again', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/project-home-live')
@@ -1430,6 +1430,7 @@ describe('App shell behavior', () => {
     expect(conversationEventSource).not.toBeNull()
 
     await user.click(screen.getByTestId('nav-mode-runs'))
+    expect(conversationEventSource?.readyState).toBe(MockEventSource.CLOSED)
 
     act(() => {
       conversationEventSource?.emitMessage({
@@ -1462,13 +1463,18 @@ describe('App shell behavior', () => {
 
     await waitFor(() => {
       expect(
-        within(screen.getByTestId('project-ai-conversation-history')).getByText('Finished while hidden'),
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking...'),
       ).toBeVisible()
     })
+    expect(screen.queryByText('Finished while hidden')).not.toBeInTheDocument()
+    const liveConversationSources = MockEventSource.instances.filter((eventSource) => (
+      eventSource.url.includes('/workspace/api/conversations/conversation-home-live/events')
+    ))
+    expect(liveConversationSources.at(-1)?.readyState).toBe(MockEventSource.OPEN)
     expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
   })
 
-  it('keeps Home project sessions live across active-project changes', async () => {
+  it('keeps only the foreground Home project conversation stream connected across active-project changes', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/project-home-one')
@@ -1594,7 +1600,10 @@ describe('App shell behavior', () => {
         within(screen.getByTestId('project-ai-conversation-history')).getByText('Project two ready'),
       ).toBeVisible()
     })
-    expect(projectOneEventSource?.readyState).toBe(MockEventSource.OPEN)
+    expect(projectOneEventSource?.readyState).toBe(MockEventSource.CLOSED)
+    const projectTwoEventSource = findEventSource('/workspace/api/conversations/conversation-home-two/events')
+    expect(projectTwoEventSource).not.toBeNull()
+    expect(projectTwoEventSource?.readyState).toBe(MockEventSource.OPEN)
 
     act(() => {
       projectOneEventSource?.emitMessage({
@@ -1631,9 +1640,10 @@ describe('App shell behavior', () => {
     })
     await waitFor(() => {
       expect(
-        within(screen.getByTestId('project-ai-conversation-history')).getByText('Finished while hidden on other project'),
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking...'),
       ).toBeVisible()
     })
+    expect(screen.queryByText('Finished while hidden on other project')).not.toBeInTheDocument()
     expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
   })
 
