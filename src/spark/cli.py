@@ -101,6 +101,15 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     continue_run.add_argument("--reasoning-effort", dest="reasoning_effort", help="Optional reasoning effort override.")
     continue_run.add_argument("--base-url")
 
+    run_events = run_commands.add_parser(
+        "events",
+        help="Live-tail one run through the workspace live stream",
+    )
+    run_events.add_argument("run_id")
+    run_events.add_argument("--after", type=int, dest="after_sequence", help="Replay run journal entries after this sequence.")
+    run_events.add_argument("--json", action="store_true", help="Print live event envelopes as JSON lines.")
+    run_events.add_argument("--base-url")
+
     flow = domains.add_parser("flow", help="Flow discovery and validation")
     flow_commands = flow.add_subparsers(dest="command")
 
@@ -171,6 +180,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_retry(args)
         if args.command == "continue":
             return _run_continue(args)
+        if args.command == "events":
+            return _run_events(args)
     if args.domain == "flow":
         if args.command == "list":
             return _run_list_flows(args)
@@ -346,6 +357,78 @@ def _run_continue(args: argparse.Namespace) -> int:
         return exit_code
     _print_success_payload(response_payload)
     return 0
+
+
+def _run_events(args: argparse.Namespace) -> int:
+    base_url = _resolve_base_url_or_print_error(args.base_url, command="spark run events")
+    if base_url is None:
+        return EXIT_GENERAL_FAILURE
+    run_id = str(args.run_id or "").strip()
+    if not run_id:
+        _print_error_payload({"ok": False, "error": "Missing required run_id."})
+        return EXIT_GENERAL_FAILURE
+    if args.after_sequence is not None and args.after_sequence < 0:
+        _print_error_payload({"ok": False, "error": "--after must be a non-negative integer."})
+        return EXIT_USAGE_ERROR
+
+    params = {"run_id": run_id}
+    if args.after_sequence is not None:
+        params["run_sequence"] = str(args.after_sequence)
+    url = _workspace_url(base_url, "/workspace/api/live/events")
+    try:
+        with httpx.Client(timeout=None) as client:
+            with client.stream("GET", url, params=params) as response:
+                if response.is_error:
+                    _print_error_payload(_build_error_payload(response))
+                    return _response_error_exit_code(response.status_code)
+                for payload in _iter_sse_payloads(response.iter_lines()):
+                    if args.json:
+                        print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+                    else:
+                        _print_run_event_text(payload)
+    except httpx.HTTPError as exc:
+        _print_error_payload({"ok": False, "error": f"Request failed: {exc}"})
+        return EXIT_GENERAL_FAILURE
+    return 0
+
+
+def _iter_sse_payloads(lines: object):
+    data_lines: list[str] = []
+    for raw_line in lines:
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else str(raw_line)
+        if not line:
+            if data_lines:
+                raw_data = "\n".join(data_lines)
+                data_lines = []
+                try:
+                    payload = json.loads(raw_data)
+                except ValueError:
+                    continue
+                if isinstance(payload, dict):
+                    yield payload
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if data_lines:
+        try:
+            payload = json.loads("\n".join(data_lines))
+        except ValueError:
+            return
+        if isinstance(payload, dict):
+            yield payload
+
+
+def _print_run_event_text(envelope: dict[str, object]) -> None:
+    payload = envelope.get("payload")
+    event = payload if isinstance(payload, dict) else envelope
+    sequence = event.get("sequence")
+    event_type = event.get("type") or envelope.get("type") or "event"
+    message = event.get("summary") or event.get("message") or event.get("msg") or ""
+    prefix = f"{sequence} " if isinstance(sequence, int) else ""
+    suffix = f": {message}" if message else ""
+    print(f"{prefix}{event_type}{suffix}")
 
 
 def _run_list_flows(args: argparse.Namespace) -> int:

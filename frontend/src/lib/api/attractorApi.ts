@@ -21,10 +21,6 @@ function attractorUrl(path: string): string {
     return `${ATTRACTOR_BASE}${path}`
 }
 
-export function pipelineEventsUrl(pipelineId: string): string {
-    return attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/events`)
-}
-
 export function pipelineJournalUrl(
     pipelineId: string,
     options?: {
@@ -41,24 +37,6 @@ export function pipelineJournalUrl(
     }
     const query = params.toString()
     return `${attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/journal`)}${query ? `?${query}` : ''}`
-}
-
-export function pipelineEventsUrlWithAfterSequence(
-    pipelineId: string,
-    afterSequence?: number | null,
-): string {
-    const baseUrl = pipelineEventsUrl(pipelineId)
-    if (typeof afterSequence !== 'number' || !Number.isFinite(afterSequence)) {
-        return baseUrl
-    }
-    const params = new URLSearchParams({ after_sequence: String(afterSequence) })
-    return `${baseUrl}?${params.toString()}`
-}
-
-export function runsEventsUrl(projectPath?: string | null): string {
-    return projectPath
-        ? `${attractorUrl('/runs/events')}?project_path=${encodeURIComponent(projectPath)}`
-        : attractorUrl('/runs/events')
 }
 
 export interface FlowPayloadResponse {

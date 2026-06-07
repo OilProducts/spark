@@ -825,7 +825,6 @@ def test_agent_run_retry_posts_workspace_payload(monkeypatch, capsys) -> None:
     class FakeClient:
         def __init__(self, timeout: float) -> None:
             assert timeout == 30.0
-
         def __enter__(self):
             return self
 
@@ -971,6 +970,56 @@ def test_agent_run_continue_sends_flow_only_for_flow_name_mode(monkeypatch) -> N
 
     assert result == 0
     assert calls == [{"start_node": "next", "flow_source_mode": "flow_name", "flow_name": "override.dot"}]
+
+
+def test_agent_run_events_streams_workspace_live_events_with_run_cursor(monkeypatch, capsys) -> None:
+    calls: list[tuple[str, str, dict[str, str]]] = []
+
+    class FakeStreamResponse:
+        status_code = 200
+        is_error = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def iter_lines(self):
+            return iter(
+                [
+                    'data: {"type":"run.journal_entry","payload":{"sequence":8,"type":"log","msg":"hello"}}',
+                    "",
+                ]
+            )
+
+    class FakeClient:
+        def __init__(self, timeout: float | None) -> None:
+            assert timeout is None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def stream(self, method: str, url: str, params: dict[str, str]):
+            calls.append((method, url, params))
+            return FakeStreamResponse()
+
+    monkeypatch.setattr(spark_cli.httpx, "Client", FakeClient)
+
+    result = spark_cli.main(["run", "events", "run-123", "--after", "7", "--json"])
+
+    assert result == 0
+    assert calls == [
+        (
+            "GET",
+            "http://127.0.0.1:8000/workspace/api/live/events",
+            {"run_id": "run-123", "run_sequence": "7"},
+        )
+    ]
+    assert json.loads(capsys.readouterr().out)["payload"]["sequence"] == 8
 
 
 def test_agent_flow_list_defaults_to_json(monkeypatch, capsys) -> None:

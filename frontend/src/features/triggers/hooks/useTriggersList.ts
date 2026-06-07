@@ -68,6 +68,56 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
         void refreshTriggers()
     }, [hasTriggersSession, manageSync, triggersSession.status])
 
+    useEffect(() => {
+        if (!manageSync || !hasTriggersSession) {
+            return
+        }
+        const handleTriggerLiveEvent = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            const payload = detail?.payload
+            if (detail?.type === 'trigger.snapshot' && Array.isArray(payload?.triggers)) {
+                updateTriggersSession({
+                    triggers: payload.triggers,
+                    error: null,
+                    status: 'ready',
+                })
+                return
+            }
+            if (detail?.type === 'trigger.upsert' && payload?.trigger) {
+                const trigger = payload.trigger
+                const current = useStore.getState().triggersSession.triggers
+                const existingIndex = current.findIndex((entry) => entry.id === trigger.id)
+                const nextTriggers = existingIndex === -1
+                    ? [...current, trigger]
+                    : current.map((entry, index) => index === existingIndex ? trigger : entry)
+                updateTriggersSession({
+                    triggers: nextTriggers,
+                    error: null,
+                    status: 'ready',
+                })
+                return
+            }
+            if (detail?.type === 'trigger.delete' && payload?.trigger?.id) {
+                const triggerId = payload.trigger.id
+                const nextTriggers = useStore.getState().triggersSession.triggers.filter((entry) => entry.id !== triggerId)
+                updateTriggersSession({
+                    triggers: nextTriggers,
+                    selectedTriggerId: useStore.getState().triggersSession.selectedTriggerId === triggerId
+                        ? nextTriggers[0]?.id ?? null
+                        : useStore.getState().triggersSession.selectedTriggerId,
+                    error: null,
+                    status: 'ready',
+                })
+            }
+        }
+        window.addEventListener('spark:trigger-live-event', handleTriggerLiveEvent)
+        window.addEventListener('spark:triggers-resync-required', refreshTriggers)
+        return () => {
+            window.removeEventListener('spark:trigger-live-event', handleTriggerLiveEvent)
+            window.removeEventListener('spark:triggers-resync-required', refreshTriggers)
+        }
+    }, [hasTriggersSession, manageSync, updateTriggersSession])
+
     return {
         customTriggers,
         error: triggersSession.error,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, type SetStateAction } from 'react'
 
-import { fetchRunsListValidated, runsEventsUrl } from '@/lib/attractorClient'
+import { fetchRunsListValidated } from '@/lib/attractorClient'
 import { useStore } from '@/store'
 
 import type { RunRecord } from '../model/shared'
@@ -112,11 +112,23 @@ export function useRunsList({
         }
 
         let closed = false
-        let eventSource: EventSource | null = null
 
-        const closeStream = () => {
-            eventSource?.close()
-            eventSource = null
+        const handleLiveRunUpsert = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            const nextRun = asRunRecord(detail?.run)
+            if (!nextRun) {
+                return
+            }
+            if (usesActiveProjectScope && activeProjectPath && nextRun.project_path !== activeProjectPath) {
+                return
+            }
+            updateRunsListSession({
+                runs: mergeRunUpsert(useStore.getState().runsListSession.runs, nextRun),
+                status: 'ready',
+                error: null,
+                streamStatus: 'ready',
+                streamError: null,
+            })
         }
 
         const startScopedSync = async () => {
@@ -135,61 +147,9 @@ export function useRunsList({
                     runs: data.runs,
                     status: 'ready',
                     error: null,
+                    streamStatus: 'ready',
+                    streamError: null,
                 })
-
-                const nextSource = new EventSource(runsEventsUrl(usesActiveProjectScope ? activeProjectPath : null))
-                nextSource.onopen = () => {
-                    updateRunsListSession({
-                        streamStatus: 'ready',
-                        streamError: null,
-                    })
-                }
-                nextSource.onmessage = (event) => {
-                    try {
-                        const payload = JSON.parse(event.data) as {
-                            type?: string
-                            runs?: unknown[]
-                            run?: unknown
-                        }
-                        if (payload.type === 'snapshot' && Array.isArray(payload.runs)) {
-                            const nextRuns = payload.runs
-                                .map((run) => asRunRecord(run))
-                                .filter((run): run is RunRecord => run !== null)
-                            updateRunsListSession({
-                                runs: sortRuns(nextRuns),
-                                status: 'ready',
-                                error: null,
-                                streamError: null,
-                            })
-                            return
-                        }
-                        if (payload.type === 'run_upsert') {
-                            const nextRun = asRunRecord(payload.run)
-                            if (!nextRun) {
-                                return
-                            }
-                            updateRunsListSession({
-                                runs: mergeRunUpsert(useStore.getState().runsListSession.runs, nextRun),
-                                status: 'ready',
-                                error: null,
-                                streamError: null,
-                            })
-                        }
-                    } catch {
-                        // Ignore malformed stream events.
-                    }
-                }
-                nextSource.onerror = () => {
-                    if (closed) {
-                        return
-                    }
-                    closeStream()
-                    updateRunsListSession({
-                        streamStatus: 'degraded',
-                        streamError: 'Run history live updates are unavailable. Reconnect to restore them.',
-                    })
-                }
-                eventSource = nextSource
             } catch (err) {
                 if (closed) {
                     return
@@ -205,10 +165,13 @@ export function useRunsList({
         }
 
         void startScopedSync()
+        window.addEventListener('spark:run-upsert', handleLiveRunUpsert)
+        window.addEventListener('spark:runs-overview-resync-required', fetchRuns)
 
         return () => {
             closed = true
-            closeStream()
+            window.removeEventListener('spark:run-upsert', handleLiveRunUpsert)
+            window.removeEventListener('spark:runs-overview-resync-required', fetchRuns)
         }
     }, [
         activeProjectPath,

@@ -7,6 +7,11 @@ export function workspaceUrl(path: string): string {
     return `${WORKSPACE_API_PREFIX}${path}`
 }
 
+export function workspaceLiveEventsUrl(params: URLSearchParams): string {
+    const query = params.toString()
+    return `${WORKSPACE_API_PREFIX}/live/events${query ? `?${query}` : ''}`
+}
+
 export async function fetchWorkspaceJsonValidated<T>(
     path: string,
     init: RequestInit | undefined,

@@ -256,7 +256,7 @@ Notes:
 
 ## Inspect Runs
 
-Spark does not currently ship a dedicated agent CLI for run inspection. Use the UI or the HTTP API.
+Use the CLI for live run tailing and the Attractor HTTP API for authoritative durable queries.
 
 Authoritative selected-run detail:
 
@@ -279,14 +279,16 @@ curl 'http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/journal?limit=50&b
 Live-tail events after an already loaded sequence:
 
 ```bash
-curl -N 'http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/events?after_sequence=1200'
+spark run events <pipeline_id> --after 1200
+spark run events <pipeline_id> --after 1200 --json
 ```
 
 Operational rules:
 
 - `GET /attractor/pipelines/{id}` is the authoritative run-detail surface.
 - `GET /attractor/pipelines/{id}/journal` is the primary durable history-read surface.
-- `GET /attractor/pipelines/{id}/events` is live tail plus optional gap fill, not the primary history model.
+- `GET /workspace/api/live/events` is the browser/operator live delivery stream. It multiplexes observed resources: conversations use `conversation_id` with required `conversation_project_path`, runs overview uses optional active-project `runs_project_path` and omits it for all-project runs, triggers use `triggers_project_path`, and selected-run tailing uses `run_id` only after selected-run detail plus durable journal hydration establish a cursor. `run_sequence` and `conversation_revision` are reconnect/catch-up cursors, not steady-state stream identity.
+- `GET /attractor/pipelines/{id}/events` is deprecated for Spark UI/operator clients. Prefer `spark run events` or `GET /workspace/api/live/events?run_id=<pipeline_id>&run_sequence=1200`.
 
 Other selected-run inspection surfaces:
 

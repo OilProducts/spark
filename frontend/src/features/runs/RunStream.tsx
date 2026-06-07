@@ -7,7 +7,7 @@ import { useStore, type NodeStatus, type RuntimeStatus } from '@/store'
 import { Button } from '@/components/ui/button'
 import type { RunRecord } from './model/shared'
 import { toTimelineEvent } from './model/timelineModel'
-import { ApiHttpError, buildRunEventsUrl, loadSelectedRunJournal, loadSelectedRunStatus } from './services/runStreamTransport'
+import { ApiHttpError, loadSelectedRunJournal, loadSelectedRunStatus } from './services/runStreamTransport'
 import { useRunsTransportReconnectSignal } from './services/runsTransportReconnect'
 import {
     useRunJournalStore,
@@ -236,13 +236,8 @@ export function RunStream() {
             return
         }
 
-        let eventSource: EventSource | null = null
         let closed = false
 
-        const closeStream = () => {
-            eventSource?.close()
-            eventSource = null
-        }
         const patchRunJournal = (patch: Partial<RunJournalStateEntry>) => {
             useRunJournalStore.getState().patchRun(selectedRunId, patch)
         }
@@ -360,7 +355,6 @@ export function RunStream() {
                         liveStatus: 'idle',
                         liveError: null,
                     })
-                    closeStream()
                     return {
                         payload: null,
                         shouldOpenStream: false,
@@ -406,7 +400,7 @@ export function RunStream() {
             })
         }
 
-        const handleMessage = (event: MessageEvent) => {
+        const handleMessage = (event: { data: string }) => {
             try {
                 const data = JSON.parse(event.data)
                 const rawRecord = (
@@ -565,39 +559,43 @@ export function RunStream() {
             if (closed || !shouldOpenStream) {
                 return
             }
-            const newestSequence = await refreshSelectedRunJournal()
+            await refreshSelectedRunJournal()
             if (closed) {
                 return
             }
 
-            const nextSource = new EventSource(buildRunEventsUrl(selectedRunId, newestSequence))
-            nextSource.onopen = () => {
-                setSelectedRunStatusSync('ready', null)
-                patchRunJournal({
-                    liveStatus: 'live',
-                    liveError: null,
-                })
+            setSelectedRunStatusSync('ready', null)
+            patchRunJournal({
+                liveStatus: 'live',
+                liveError: null,
+            })
+        }
+
+        const handleLiveRunJournalEntry = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            if (detail?.runId !== selectedRunId || !detail.entry) {
+                return
             }
-            nextSource.onmessage = handleMessage
-            nextSource.onerror = () => {
-                if (closed) {
-                    return
-                }
-                closeStream()
-                setSelectedRunStatusSync('degraded', SELECTED_RUN_STATUS_DEGRADED_MESSAGE)
-                patchRunJournal({
-                    liveStatus: 'degraded',
-                    liveError: SELECTED_RUN_STATUS_DEGRADED_MESSAGE,
-                })
+            handleMessage({ data: JSON.stringify(detail.entry) })
+        }
+
+        const handleRunResyncRequired = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            if (detail?.runId !== selectedRunId) {
+                return
             }
-            eventSource = nextSource
+            void refreshSelectedRunStatus()
+            void refreshSelectedRunJournal()
         }
 
         void startScopedStream()
+        window.addEventListener('spark:run-journal-entry', handleLiveRunJournalEntry)
+        window.addEventListener('spark:run-resync-required', handleRunResyncRequired)
 
         return () => {
             closed = true
-            closeStream()
+            window.removeEventListener('spark:run-journal-entry', handleLiveRunJournalEntry)
+            window.removeEventListener('spark:run-resync-required', handleRunResyncRequired)
             patchRunJournal({
                 liveStatus: 'idle',
             })

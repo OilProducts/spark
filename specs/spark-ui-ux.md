@@ -44,9 +44,11 @@ The frontend does not execute pipelines.
 It consumes Attractor through API surfaces for:
 - run submission
 - status
-- event streams
+- durable journals
 - questions
 - checkpoint, context, graph, and artifacts
+
+Live browser/operator updates are delivered through the Spark Workspace app-shell stream, not through Attractor-owned feature streams.
 
 ### 4.2 The Frontend Is Not the Workspace Source of Truth
 
@@ -86,7 +88,7 @@ The frontend consumes Attractor data for:
 - flows
 - run list
 - run status
-- run events
+- run journals
 - checkpoint
 - context
 - graph render
@@ -189,8 +191,8 @@ Runtime human gates are operated only from the Runs pinned pending-questions pan
 
 For selected-run inspection, Runs treats backend run-detail state as authoritative.
 The selected run summary, lifecycle badge, and detail surfaces must reconcile against `GET /pipelines/{id}` rather than relying on the runs list row or event-stream-local status.
-The runs list hydrates from `GET /runs` and then updates from `GET /runs/events`; it remains an overview/navigation surface rather than a second authority for the selected run.
-Selected-run inspection hydrates authoritative run detail from `GET /pipelines/{id}`, durable history from `GET /pipelines/{id}/journal`, and then live tail updates from `GET /pipelines/{id}/events`.
+The runs list hydrates from `GET /runs` and then receives live `run.upsert` deltas through the app-shell `GET /workspace/api/live/events` stream with `include_runs_overview=true`; it remains an overview/navigation surface rather than a second authority for the selected run.
+Selected-run inspection hydrates authoritative run detail from `GET /pipelines/{id}` and durable history from `GET /pipelines/{id}/journal` before app-shell live tailing includes the selected `run_id`. Once the initial journal cursor is known, the shared `GET /workspace/api/live/events` stream includes `run_id` and a reconnect/catch-up `run_sequence` equal to the latest loaded sequence, or `0` for a loaded empty journal.
 The run summary should fold in current monitoring facts rather than relying on a separate `Run Activity` card.
 The selected-run summary should prioritize the operator questions `what is happening now?`, `did it work?`, `what work is this?`, and `what did it cost?` over launch-time or diagnostic metadata.
 The selected-run monitoring hierarchy is Summary, pinned questions, Progress, Run Journal, and Advanced.
@@ -202,11 +204,12 @@ It should render those answers as four ordered sections: `Now`, `Outcome`, `Scop
 Working directory is diagnostic evidence rather than normal summary content; hide it unless it meaningfully differs from the project path, and then show only a compact difference note.
 The `Advanced` disclosure must be collapsed by default.
 Run Journal must use durable selected-run history from the journal endpoint, not only events observed while the tab was open.
-`GET /pipelines/{id}/events` is a live-tail SSE channel with optional `after_sequence` gap-fill; it is not the primary full-history API.
+`GET /workspace/api/live/events` is the browser/operator live SSE channel for selected-run updates. Its `run_sequence` filter requests resource-scoped catch-up from the per-run journal; it is a reconnect/catch-up cursor, not steady-state stream identity, and it is not the primary full-history API.
+Conversation streams include `conversation_id` with required `conversation_project_path`; `conversation_revision` is a reconnect/catch-up cursor. Runs-overview streams use optional `runs_project_path` for active-project scope and omit it for all-project runs. Trigger streams use `triggers_project_path` as their trigger scope.
 Steady-state polling is not part of the Runs contract.
 The runs list must not show polling-era stale-data warnings or background-refresh affordances.
-Runs must own exactly one per-run SSE transport for the selected run; summary monitoring facts, journal live tail, node status, and pending human-gate state all share that transport.
-The read-only Runs Progress surface reuses this selected-run journal and SSE ownership rather than opening a separate progress stream.
+The app shell must own exactly one browser-facing SSE transport for all currently observed live resources. Runs contributes the observed run overview and selected-run filters to that stream; summary monitoring facts, journal live tail, node status, and pending human-gate state all apply events from the shared transport.
+The read-only Runs Progress surface reuses the selected-run journal state fed by that shared live controller rather than opening a separate progress stream.
 Progress is derived from loaded selected-run journal/SSE `LLMContent` data, prioritizes assistant output for the selected run's current node, and lets operators switch between the current node, recent loaded streams, and loaded node ids.
 When the current node has no loaded LLM output, Progress says so and falls back to recent loaded streams.
 Progress must render persisted assistant output with the same markdown semantics as Home assistant output.
@@ -435,11 +438,11 @@ The frontend treats backend-provided state as authoritative for:
 For run inspection specifically:
 - the selected run detail surface is authoritative on backend run-detail state from `GET /pipelines/{id}`
 - the runs list is an overview cache and must not outrank selected-run detail state
-- event streams are additive live-update channels for logs, node status, human gates, and journal live-tail enrichment
-- event streams must reconcile with authoritative per-run detail state so missed terminal events do not leave the UI stale
-- run-list live updates come from `/runs/events`, not from steady-state timer refreshes
-- selected-run live updates come from `/pipelines/{id}/events` after initial `GET /pipelines/{id}` hydration
-- the selected run may have only one live per-run stream subscription at a time
+- the app-shell live stream is an additive live-update channel for logs, node status, human gates, run-overview upserts, conversation updates, trigger updates, and journal live-tail enrichment
+- live events must reconcile with authoritative per-resource state so missed terminal events do not leave the UI stale
+- run-list live updates come from `/workspace/api/live/events` with `include_runs_overview=true`, not from steady-state timer refreshes or Attractor per-feature SSE routes
+- selected-run live updates come from `/workspace/api/live/events` with `run_id` and `run_sequence` only after initial selected-run detail and durable journal hydration establish the journal cursor
+- the app may have only one browser-facing live stream subscription at a time
 - selected-run journal history must survive reselecting the run later; the UI must not depend on the run having been open live
 - selected-run journal history may include child-run linkage entries and child-source metadata when the backend links parent and child timelines
 
@@ -472,9 +475,9 @@ When a backend surface is unavailable or incompatible:
 - unaffected surfaces should remain usable where feasible
 - the client must not fabricate missing authority from stale local state
 - save and launch paths should remain non-destructive
-- Runs transport degradation must surface as one Runs-tab reconnect notice summarizing whether the run-list stream, the selected-run stream, or both are degraded
-- Runs reconnect must rehydrate `GET /runs` and, when a run is selected, `GET /pipelines/{id}` before reopening the corresponding SSE streams
-- selected-run stream degradation belongs to Runs, not to the app-wide save indicator
+- Runs transport degradation must surface as one Runs-tab reconnect notice summarizing whether runs overview, selected-run live updates, or both are degraded on the shared app-shell stream
+- Runs reconnect must rehydrate `GET /runs` and, when a run is selected, `GET /pipelines/{id}` and `GET /pipelines/{id}/journal` before resubscribing the shared live stream with the corresponding resource filters
+- selected-run live degradation belongs to Runs, not to the app-wide save indicator
 
 Degraded behavior is part of the operator contract, not an implementation accident.
 

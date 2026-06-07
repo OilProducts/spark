@@ -546,3 +546,10 @@ export function getRunJournalState(runId: string | null): RunJournalStateEntry {
     }
     return resolveRunJournalState(useRunJournalStore.getState().byRunId, runId)
 }
+
+export function resolveRunJournalLiveCursor(state: RunJournalStateEntry | undefined): number | null {
+    if (!state || state.status !== 'ready') {
+        return null
+    }
+    return state.newestSequence ?? 0
+}

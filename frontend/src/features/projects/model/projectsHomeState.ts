@@ -24,6 +24,11 @@ import {
 import { buildConversationTimelineEntriesForTurn } from './conversationTimeline'
 import type { ConversationTimelineEntry } from './types'
 
+export type {
+    ConversationSnapshotResponse,
+    ConversationSummaryResponse,
+} from '@/lib/workspaceClient'
+
 export type ConversationStreamEvent = ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse
 
 export type NormalizedConversationRecord = {

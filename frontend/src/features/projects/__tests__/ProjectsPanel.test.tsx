@@ -3,6 +3,7 @@ import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { useStore } from '@/store'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
@@ -133,6 +134,49 @@ const asSegmentUpsertEvent = (payload: {
   }
 }
 
+const dispatchConversationLivePayload = (payload: Record<string, unknown>) => {
+  const conversationId = typeof payload.conversation_id === 'string'
+    ? payload.conversation_id
+    : null
+  const projectPath = typeof payload.project_path === 'string'
+    ? payload.project_path
+    : null
+  if (!conversationId || !projectPath) {
+    return
+  }
+
+  window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
+    detail: {
+      type: payload.type,
+      conversationId,
+      projectPath,
+      payload,
+    },
+  }))
+}
+
+function TestConversationLiveBridge() {
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') {
+      return
+    }
+    const eventSource = new EventSource('/workspace/api/live/events')
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as Record<string, unknown>
+        dispatchConversationLivePayload(payload)
+      } catch {
+        // Tests intentionally ignore malformed stream payloads.
+      }
+    }
+    return () => {
+      eventSource.close()
+    }
+  }, [])
+
+  return null
+}
+
 const buildPendingSendSnapshot = ({
   conversationId,
   title,
@@ -219,6 +263,7 @@ const resetProjectScopeState = () => {
 const renderProjectsPanel = () =>
   render(
     <>
+      <TestConversationLiveBridge />
       <HomeSessionController />
       <ProjectsPanel />
     </>,

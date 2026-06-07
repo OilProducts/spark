@@ -197,6 +197,7 @@ class WorkspaceApiDependencies:
 
 def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
     router = APIRouter()
+    trigger_live_subscribers: list[asyncio.Queue[dict[str, Any]]] = []
     terminal_pipeline_statuses = {
         "completed",
         "failed",
@@ -225,6 +226,17 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             "project_path": project.project_path,
             "display_name": project.display_name,
         }
+
+    async def _publish_trigger_live_event(payload: dict[str, Any]) -> None:
+        stale: list[asyncio.Queue[dict[str, Any]]] = []
+        for queue in list(trigger_live_subscribers):
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                stale.append(queue)
+        for queue in stale:
+            if queue in trigger_live_subscribers:
+                trigger_live_subscribers.remove(queue)
 
     def _normalize_project_path_or_400(project_path: str) -> str:
         normalized_project_path = normalize_project_path(project_path)
@@ -805,7 +817,9 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         await deps.get_trigger_runtime().reload()
         state = load_trigger_state(deps.get_settings().data_dir, definition.id)
-        return serialize_trigger(definition, state, webhook_secret=webhook_secret)
+        payload = serialize_trigger(definition, state, webhook_secret=webhook_secret)
+        await _publish_trigger_live_event({"type": "trigger_upsert", "trigger": payload})
+        return payload
 
     @router.get("/api/triggers/{trigger_id}")
     async def get_trigger(trigger_id: str):
@@ -837,7 +851,9 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         await deps.get_trigger_runtime().reload()
         state = load_trigger_state(deps.get_settings().data_dir, definition.id)
-        return serialize_trigger(definition, state, webhook_secret=webhook_secret)
+        payload = serialize_trigger(definition, state, webhook_secret=webhook_secret)
+        await _publish_trigger_live_event({"type": "trigger_upsert", "trigger": payload})
+        return payload
 
     @router.delete("/api/triggers/{trigger_id}")
     async def remove_trigger(trigger_id: str):
@@ -849,7 +865,9 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         await asyncio.to_thread(delete_trigger_definition, deps.get_settings().config_dir, trigger_id)
         await asyncio.to_thread(delete_trigger_state, deps.get_settings().data_dir, trigger_id)
         await deps.get_trigger_runtime().reload()
-        return {"status": "deleted", "id": trigger_id}
+        payload = {"status": "deleted", "id": trigger_id}
+        await _publish_trigger_live_event({"type": "trigger_deleted", "trigger": payload})
+        return payload
 
     @router.post("/api/webhooks")
     async def post_trigger_webhook(request: Request):
@@ -893,30 +911,397 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @router.get("/api/conversations/{conversation_id}/events")
-    async def project_conversation_events(conversation_id: str, request: Request, project_path: Optional[str] = None):
-        project_chat = deps.get_project_chat()
-        try:
-            await asyncio.to_thread(project_chat.get_snapshot, conversation_id, project_path)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"Unknown conversation: {conversation_id}") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    def _normalize_live_cursor(value: int | None, name: str) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or value < 0:
+            raise HTTPException(status_code=400, detail=f"{name} must be a non-negative integer.")
+        return value
 
-        queue = project_chat.events().subscribe(conversation_id)
+    def _live_envelope(
+        event_type: str,
+        *,
+        project_path: str | None,
+        resource_kind: str,
+        resource_id: str | None,
+        cursor_kind: str | None,
+        cursor_value: int | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "type": event_type,
+            "project_path": project_path,
+            "resource": {
+                "kind": resource_kind,
+                "id": resource_id,
+            },
+            "cursor": None if cursor_kind is None or cursor_value is None else {
+                "kind": cursor_kind,
+                "value": cursor_value,
+            },
+            "payload": payload,
+        }
+
+    def _resync_required_envelope(
+        *,
+        project_path: str | None,
+        resource_kind: str,
+        resource_id: str | None,
+        reason: str,
+    ) -> dict[str, Any]:
+        envelope = _live_envelope(
+            "resync_required",
+            project_path=project_path,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
+            cursor_kind=None,
+            cursor_value=None,
+            payload={"reason": reason},
+        )
+        envelope["reason"] = reason
+        return envelope
+
+    def _conversation_event_revision(event: dict[str, Any]) -> int | None:
+        revision = event.get("revision")
+        if isinstance(revision, int) and not isinstance(revision, bool):
+            return revision
+        state = event.get("state")
+        if isinstance(state, dict):
+            revision = state.get("revision")
+            if isinstance(revision, int) and not isinstance(revision, bool):
+                return revision
+        return None
+
+    def _conversation_live_event_type(event: dict[str, Any]) -> str:
+        raw_type = str(event.get("type") or "")
+        return {
+            "turn_upsert": "conversation.turn_upsert",
+            "segment_upsert": "conversation.segment_upsert",
+            "conversation_snapshot": "conversation.snapshot",
+        }.get(raw_type, f"conversation.{raw_type}" if raw_type else "conversation.event")
+
+    def _run_journal_live_event_type(entry: dict[str, Any]) -> str:
+        raw_type = str(entry.get("raw_type") or "")
+        if raw_type == "human_gate":
+            return "run.question_pending"
+        if raw_type == "InterviewCompleted":
+            return "run.question_answered"
+        return "run.journal_entry"
+
+    @router.get("/api/live/events")
+    async def workspace_live_events(
+        request: Request,
+        project_path: Optional[str] = None,
+        conversation_project_path: Optional[str] = None,
+        runs_project_path: Optional[str] = None,
+        triggers_project_path: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        conversation_revision: int | None = None,
+        run_id: Optional[str] = None,
+        run_sequence: int | None = None,
+        include_runs_overview: bool = False,
+        include_triggers: bool = False,
+    ):
+        normalized_conversation_revision = _normalize_live_cursor(conversation_revision, "conversation_revision")
+        normalized_run_sequence = _normalize_live_cursor(run_sequence, "run_sequence")
+        effective_conversation_project_path = conversation_project_path
+        if conversation_id and effective_conversation_project_path is None and project_path is not None:
+            effective_conversation_project_path = project_path
+        if conversation_id and not effective_conversation_project_path:
+            raise HTTPException(
+                status_code=400,
+                detail="conversation_project_path is required when conversation_id is provided.",
+            )
+        effective_runs_project_path = runs_project_path
+        if include_runs_overview and effective_runs_project_path is None and project_path is not None and not conversation_id:
+            effective_runs_project_path = project_path
+        effective_triggers_project_path = triggers_project_path
+        if include_triggers and effective_triggers_project_path is None and project_path is not None and not conversation_id:
+            effective_triggers_project_path = project_path
+
+        from attractor.api import server as attractor_server
+
+        project_chat = deps.get_project_chat()
+
+        if run_id:
+            active = attractor_server._get_active_run(run_id)
+            existing = attractor_server._read_run_meta(attractor_server._run_meta_path(run_id))
+            persisted_history = attractor_server._read_persisted_run_events(run_id)
+            live_history = attractor_server.EVENT_HUB.history(run_id)
+            if not active and not existing and not persisted_history and not live_history:
+                raise HTTPException(status_code=404, detail="Unknown pipeline")
 
         async def stream():
+            outbound: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=512)
+            tasks: list[asyncio.Task[None]] = []
+            run_queue: asyncio.Queue[dict[str, Any]] | None = None
+            runs_queue: asyncio.Queue[dict[str, Any]] | None = None
+            conversation_queue: asyncio.Queue[dict[str, Any]] | None = None
+            trigger_queue: asyncio.Queue[dict[str, Any]] | None = None
+
+            async def send(payload: dict[str, Any]) -> None:
+                try:
+                    outbound.put_nowait(payload)
+                except asyncio.QueueFull:
+                    try:
+                        outbound.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    outbound.put_nowait(payload)
+
+            async def pump_runs_overview() -> None:
+                if include_runs_overview:
+                    for record in attractor_server._list_run_records(effective_runs_project_path):
+                        await send(_live_envelope(
+                            "run.upsert",
+                            project_path=record.project_path,
+                            resource_kind="runs_overview",
+                            resource_id=None,
+                            cursor_kind=None,
+                            cursor_value=None,
+                            payload={"run": record.to_dict()},
+                        ))
+                if runs_queue is None:
+                    return
+                while True:
+                    event = await runs_queue.get()
+                    if event.get("type") != "run_upsert":
+                        continue
+                    run_payload = event.get("run")
+                    record = attractor_server.RunRecord.from_dict(run_payload) if isinstance(run_payload, dict) else None
+                    if record is None:
+                        continue
+                    if (
+                        effective_runs_project_path
+                        and not attractor_server.run_matches_project_scope(record, effective_runs_project_path)
+                    ):
+                        continue
+                    await send(_live_envelope(
+                        "run.upsert",
+                        project_path=record.project_path,
+                        resource_kind="runs_overview",
+                        resource_id=None,
+                        cursor_kind=None,
+                        cursor_value=None,
+                        payload={"run": record.to_dict()},
+                    ))
+
+            async def pump_run() -> None:
+                assert run_id is not None
+                highest_sequence = normalized_run_sequence or 0
+                persisted = attractor_server._read_persisted_run_events(run_id)
+                live = attractor_server.EVENT_HUB.history(run_id)
+                gap_fill_entries: list[dict[str, Any]] = []
+                seen_sequences: set[int] = set()
+                for event in persisted + live:
+                    entry = attractor_server._run_journal_entry_from_event(event)
+                    if entry is None:
+                        continue
+                    sequence = entry["sequence"]
+                    if sequence <= highest_sequence or sequence in seen_sequences:
+                        continue
+                    seen_sequences.add(sequence)
+                    gap_fill_entries.append(entry)
+                gap_fill_entries.sort(key=lambda item: item["sequence"])
+                resync_required = False
+                for entry in gap_fill_entries:
+                    if entry["sequence"] != highest_sequence + 1:
+                        resync_required = True
+                        highest_sequence = max(highest_sequence, entry["sequence"])
+                        break
+                    highest_sequence = max(highest_sequence, entry["sequence"])
+                    await send(_live_envelope(
+                        _run_journal_live_event_type(entry),
+                        project_path=None,
+                        resource_kind="run",
+                        resource_id=run_id,
+                        cursor_kind="run_sequence",
+                        cursor_value=entry["sequence"],
+                        payload=entry,
+                    ))
+                if resync_required:
+                    await send(_resync_required_envelope(
+                        project_path=None,
+                        resource_kind="run",
+                        resource_id=run_id,
+                        reason="run journal no longer contains a contiguous replay from the requested cursor",
+                    ))
+                if run_queue is None:
+                    return
+                while True:
+                    event = await run_queue.get()
+                    entry = attractor_server._run_journal_entry_from_event(event)
+                    if entry is None:
+                        continue
+                    sequence = entry["sequence"]
+                    if sequence <= highest_sequence:
+                        continue
+                    highest_sequence = sequence
+                    await send(_live_envelope(
+                        _run_journal_live_event_type(entry),
+                        project_path=None,
+                        resource_kind="run",
+                        resource_id=run_id,
+                        cursor_kind="run_sequence",
+                        cursor_value=sequence,
+                        payload=entry,
+                    ))
+
+            async def pump_conversation() -> None:
+                assert conversation_id is not None
+                assert effective_conversation_project_path is not None
+                highest_revision = normalized_conversation_revision or 0
+                try:
+                    conversation_snapshot = await asyncio.to_thread(
+                        project_chat.get_snapshot,
+                        conversation_id,
+                        effective_conversation_project_path,
+                    )
+                except (FileNotFoundError, ValueError):
+                    await send(_resync_required_envelope(
+                        project_path=effective_conversation_project_path,
+                        resource_kind="conversation",
+                        resource_id=conversation_id,
+                        reason="conversation snapshot is unavailable",
+                    ))
+                    return
+                if conversation_snapshot is not None:
+                    snapshot_revision = int(conversation_snapshot.get("revision") or 0)
+                    if normalized_conversation_revision is None:
+                        await send(_live_envelope(
+                            "conversation.snapshot",
+                            project_path=conversation_snapshot.get("project_path") if isinstance(conversation_snapshot.get("project_path"), str) else effective_conversation_project_path,
+                            resource_kind="conversation",
+                            resource_id=conversation_id,
+                            cursor_kind="conversation_revision",
+                            cursor_value=snapshot_revision,
+                            payload={"state": conversation_snapshot},
+                        ))
+                        highest_revision = max(highest_revision, snapshot_revision)
+                    elif snapshot_revision > normalized_conversation_revision:
+                        replay_events = await asyncio.to_thread(
+                            project_chat.read_events_after,
+                            conversation_id,
+                            effective_conversation_project_path,
+                            normalized_conversation_revision,
+                        )
+                        if not replay_events:
+                            await send(_resync_required_envelope(
+                                project_path=effective_conversation_project_path,
+                                resource_kind="conversation",
+                                resource_id=conversation_id,
+                                reason="conversation journal cannot replay from the requested revision",
+                            ))
+                            highest_revision = snapshot_revision
+                        else:
+                            resync_required = False
+                            for event in replay_events:
+                                revision = _conversation_event_revision(event)
+                                if revision is None:
+                                    continue
+                                if revision != highest_revision + 1:
+                                    resync_required = True
+                                    highest_revision = snapshot_revision
+                                    break
+                                highest_revision = revision
+                                await send(_live_envelope(
+                                    _conversation_live_event_type(event),
+                                    project_path=event.get("project_path") if isinstance(event.get("project_path"), str) else effective_conversation_project_path,
+                                    resource_kind="conversation",
+                                    resource_id=conversation_id,
+                                    cursor_kind="conversation_revision",
+                                    cursor_value=revision,
+                                    payload=event,
+                                ))
+                            if resync_required:
+                                await send(_resync_required_envelope(
+                                    project_path=effective_conversation_project_path,
+                                    resource_kind="conversation",
+                                    resource_id=conversation_id,
+                                    reason="conversation journal has a revision gap from the requested cursor",
+                                ))
+                if conversation_queue is None:
+                    return
+                while True:
+                    event = await conversation_queue.get()
+                    revision = _conversation_event_revision(event)
+                    if isinstance(revision, int) and revision <= highest_revision:
+                        continue
+                    if revision is not None:
+                        highest_revision = revision
+                    await send(_live_envelope(
+                        _conversation_live_event_type(event),
+                        project_path=event.get("project_path") if isinstance(event.get("project_path"), str) else effective_conversation_project_path,
+                        resource_kind="conversation",
+                        resource_id=conversation_id,
+                        cursor_kind="conversation_revision" if isinstance(revision, int) else None,
+                        cursor_value=revision if isinstance(revision, int) else None,
+                        payload=event,
+                    ))
+
+            async def pump_triggers() -> None:
+                if include_triggers:
+                    await send(_live_envelope(
+                        "trigger.snapshot",
+                        project_path=effective_triggers_project_path,
+                        resource_kind="trigger",
+                        resource_id=None,
+                        cursor_kind=None,
+                        cursor_value=None,
+                        payload={"triggers": await deps.get_trigger_runtime().list_triggers()},
+                    ))
+                if trigger_queue is None:
+                    return
+                while True:
+                    event = await trigger_queue.get()
+                    trigger = event.get("trigger")
+                    trigger_id = trigger.get("id") if isinstance(trigger, dict) else None
+                    await send(_live_envelope(
+                        "trigger.delete" if event.get("type") == "trigger_deleted" else "trigger.upsert",
+                        project_path=effective_triggers_project_path,
+                        resource_kind="trigger",
+                        resource_id=trigger_id if isinstance(trigger_id, str) else None,
+                        cursor_kind=None,
+                        cursor_value=None,
+                        payload=event,
+                    ))
+
             try:
+                if include_runs_overview:
+                    runs_queue = attractor_server.RUNS_EVENT_HUB.subscribe()
+                    tasks.append(asyncio.create_task(pump_runs_overview()))
+                if run_id:
+                    run_queue = attractor_server.EVENT_HUB.subscribe(run_id)
+                    tasks.append(asyncio.create_task(pump_run()))
+                if conversation_id:
+                    conversation_queue = project_chat.events().subscribe(conversation_id)
+                    tasks.append(asyncio.create_task(pump_conversation()))
+                if include_triggers:
+                    trigger_queue = asyncio.Queue(maxsize=128)
+                    trigger_live_subscribers.append(trigger_queue)
+                    tasks.append(asyncio.create_task(pump_triggers()))
+
                 while True:
                     if await request.is_disconnected():
                         break
                     try:
-                        event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        event = await asyncio.wait_for(outbound.get(), timeout=15.0)
                         yield f"data: {json.dumps(event)}\n\n"
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
             finally:
-                project_chat.events().unsubscribe(conversation_id, queue)
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                if runs_queue is not None:
+                    attractor_server.RUNS_EVENT_HUB.unsubscribe(runs_queue)
+                if run_queue is not None and run_id:
+                    attractor_server.EVENT_HUB.unsubscribe(run_id, run_queue)
+                if conversation_queue is not None and conversation_id:
+                    project_chat.events().unsubscribe(conversation_id, conversation_queue)
+                if trigger_queue is not None and trigger_queue in trigger_live_subscribers:
+                    trigger_live_subscribers.remove(trigger_queue)
 
         return StreamingResponse(
             stream(),
@@ -925,6 +1310,13 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
             },
+        )
+
+    @router.get("/api/conversations/{conversation_id}/events")
+    async def project_conversation_events(conversation_id: str, request: Request, project_path: Optional[str] = None):
+        return PlainTextResponse(
+            "Deprecated. Use /workspace/api/live/events with conversation_id and conversation_revision.",
+            status_code=410,
         )
 
     @router.post("/api/conversations/{conversation_id}/turns")

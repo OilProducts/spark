@@ -101,38 +101,21 @@ describe('RunStream save indicator', () => {
           headers: { 'Content-Type': 'application/json' },
         })
       }
+      if (url.includes('/attractor/pipelines/run-reconcile/journal')) {
+        return new Response(JSON.stringify({
+          pipeline_id: 'run-reconcile',
+          entries: [],
+          oldest_sequence: null,
+          newest_sequence: null,
+          has_older: false,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
       throw new Error(`Unhandled request: ${url}`)
     })
     vi.stubGlobal('fetch', fetchMock)
-
-    const eventSources: MockEventSource[] = []
-    class MockEventSource {
-      static readonly OPEN = 1
-      static readonly CLOSED = 2
-      readonly url: string
-      readyState = MockEventSource.OPEN
-      onopen: ((event: Event) => void) | null = null
-      onmessage: ((event: MessageEvent<string>) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-
-      constructor(url: string | URL) {
-        this.url = String(url)
-        eventSources.push(this)
-      }
-
-      emit(payload: unknown) {
-        this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(payload) }))
-      }
-
-      open() {
-        this.onopen?.(new Event('open'))
-      }
-
-      close() {
-        this.readyState = MockEventSource.CLOSED
-      }
-    }
-    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
       useStore.getState().setSelectedRunId('run-reconcile')
@@ -174,17 +157,20 @@ describe('RunStream save indicator', () => {
     })
 
     expect(useStore.getState().runtimeStatus).toBe('running')
-    expect(eventSources).toHaveLength(1)
 
     await act(async () => {
-      eventSources[0]?.open()
-      eventSources[0]?.emit({
-        type: 'runtime',
-        status: 'completed',
-        outcome: 'success',
-        outcome_reason_code: null,
-        outcome_reason_message: null,
-      })
+      window.dispatchEvent(new CustomEvent('spark:run-journal-entry', {
+        detail: {
+          runId: 'run-reconcile',
+          entry: {
+            type: 'runtime',
+            status: 'completed',
+            outcome: 'success',
+            outcome_reason_code: null,
+            outcome_reason_message: null,
+          },
+        },
+      }))
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -203,34 +189,21 @@ describe('RunStream save indicator', () => {
           headers: { 'Content-Type': 'application/json' },
         })
       }
+      if (url.includes('/attractor/pipelines/run-cached-fallback/journal')) {
+        return new Response(JSON.stringify({
+          pipeline_id: 'run-cached-fallback',
+          entries: [],
+          oldest_sequence: null,
+          newest_sequence: null,
+          has_older: false,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
       throw new Error(`Unhandled request: ${url}`)
     })
     vi.stubGlobal('fetch', fetchMock)
-
-    const eventSources: MockEventSource[] = []
-    class MockEventSource {
-      static readonly OPEN = 1
-      static readonly CLOSED = 2
-      readonly url: string
-      readyState = MockEventSource.OPEN
-      onopen: ((event: Event) => void) | null = null
-      onmessage: ((event: MessageEvent<string>) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-
-      constructor(url: string | URL) {
-        this.url = String(url)
-        eventSources.push(this)
-      }
-
-      emit(payload: unknown) {
-        this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(payload) }))
-      }
-
-      close() {
-        this.readyState = MockEventSource.CLOSED
-      }
-    }
-    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
       useStore.getState().setSelectedRunId('run-cached-fallback')
@@ -269,18 +242,21 @@ describe('RunStream save indicator', () => {
       await Promise.resolve()
     })
 
-    expect(eventSources).toHaveLength(1)
-    expect(eventSources[0]?.url).toContain('/attractor/pipelines/run-cached-fallback/events')
-    expect(eventSources[0]?.url).not.toContain('after_sequence=0')
+    expect(useRunJournalStore.getState().byRunId['run-cached-fallback']?.liveStatus).toBe('live')
 
     await act(async () => {
-      eventSources[0]?.emit({
-        type: 'StageStarted',
-        sequence: 1,
-        emitted_at: '2026-03-22T00:02:00Z',
-        node_id: 'review',
-        index: 2,
-      })
+      window.dispatchEvent(new CustomEvent('spark:run-journal-entry', {
+        detail: {
+          runId: 'run-cached-fallback',
+          entry: {
+            type: 'StageStarted',
+            sequence: 1,
+            emitted_at: '2026-03-22T00:02:00Z',
+            node_id: 'review',
+            index: 2,
+          },
+        },
+      }))
       await Promise.resolve()
       await Promise.resolve()
     })

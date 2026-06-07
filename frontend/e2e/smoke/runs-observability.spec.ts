@@ -385,15 +385,15 @@ test('run journal inspector hydrates durable history, pages older entries, and a
 
   await expect
     .poll(async () => {
-      return page.evaluate((runId) => {
+      return page.evaluate(() => {
         return (globalThis as typeof globalThis & {
           __runEventSourceController?: {
             latestUrl(pattern: string): string | null
           }
-        }).__runEventSourceController?.latestUrl(`/attractor/pipelines/${runId}/events`) ?? ''
-      }, run.run_id)
+        }).__runEventSourceController?.latestUrl('/workspace/api/live/events') ?? ''
+      })
     })
-    .toContain(`after_sequence=${latestEntries[0]!.sequence}`)
+    .toContain(`run_sequence=${latestEntries[0]!.sequence}`)
 
   await expect(page.getByTestId('run-journal-load-older')).toBeVisible()
   await page.getByTestId('run-journal-load-older').click()
@@ -408,13 +408,17 @@ test('run journal inspector hydrates durable history, pages older entries, and a
       __runEventSourceController?: {
         emitLatest(pattern: string, payload: unknown): void
       }
-    }).__runEventSourceController?.emitLatest(`/attractor/pipelines/${runId}/events`, {
-      type: 'StageCompleted',
-      sequence: 6,
-      emitted_at: '2026-03-03T12:00:06Z',
-      node_id: 'deploy',
-      index: 4,
-      outcome: 'success',
+    }).__runEventSourceController?.emitLatest('/workspace/api/live/events', {
+      type: 'run.journal_entry',
+      resource: { kind: 'run', id: runId },
+      payload: {
+        type: 'StageCompleted',
+        sequence: 6,
+        emitted_at: '2026-03-03T12:00:06Z',
+        node_id: 'deploy',
+        index: 4,
+        outcome: 'success',
+      },
     })
   }, { runId: run.run_id })
 

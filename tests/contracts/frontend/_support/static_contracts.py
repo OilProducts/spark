@@ -108,8 +108,8 @@ REQUIRED_UI_ENDPOINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("/workspace/api/conversations/{id} (DELETE)", re.compile(r"deleteConversationValidated\(")),
     ("/workspace/api/projects/browse", re.compile(r"fetchProjectBrowseValidated\(")),
     (
-        "/workspace/api/conversations/{id}/events",
-        re.compile(r"new EventSource\(\s*eventStreamUrl\s*\)|/workspace/api/conversations/\$\{encodeURIComponent\([^)]+\)\}/events\?project_path="),
+        "/workspace/api/live/events",
+        re.compile(r"workspaceLiveEventsUrl\(|new EventSource\(\s*liveEventsUrl\s*\)"),
     ),
     ("/workspace/api/conversations/{id}/turns", re.compile(r"sendConversationTurnValidated\(")),
     ("/attractor/preview", re.compile(r"fetch\(\s*['\"]/attractor/preview['\"]|fetchPreviewValidated\(")),
@@ -123,16 +123,8 @@ REQUIRED_UI_ENDPOINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(r"fetch\(\s*`/attractor/pipelines/\$\{encodeURIComponent\([^)]+\)\}`\s*(?:,|\))|fetchPipelineStatusValidated\("),
     ),
     (
-        "/attractor/pipelines/{id}/events",
-        re.compile(r"pipelineEventsUrl(?:WithAfterSequence)?\(|new EventSource\(\s*`/attractor/pipelines/\$\{encodeURIComponent\([^)]+\)\}/events`"),
-    ),
-    (
         "/attractor/pipelines/{id}/journal",
         re.compile(r"pipelineJournalUrl\(|fetchPipelineJournalValidated\("),
-    ),
-    (
-        "/attractor/runs/events",
-        re.compile(r"runsEventsUrl\(|new EventSource\(\s*`?/attractor/runs/events"),
     ),
     (
         "/attractor/pipelines/{id}/cancel",

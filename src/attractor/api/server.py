@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from attractor.dsl import (
@@ -1862,42 +1862,9 @@ async def list_runs(project_path: Optional[str] = None):
 
 @attractor_router.get("/runs/events")
 async def runs_events(request: Request, project_path: Optional[str] = None):
-    queue = RUNS_EVENT_HUB.subscribe()
-    try:
-        snapshot_payload = {
-            "type": "snapshot",
-            "runs": [record.to_dict() for record in _list_run_records(project_path)],
-        }
-    except Exception:
-        RUNS_EVENT_HUB.unsubscribe(queue)
-        raise
-
-    async def stream():
-        try:
-            yield f"data: {json.dumps(snapshot_payload)}\n\n"
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    if event.get("type") == "run_upsert" and project_path:
-                        run_payload = event.get("run")
-                        record = RunRecord.from_dict(run_payload) if isinstance(run_payload, dict) else None
-                        if record is None or not run_matches_project_scope(record, project_path):
-                            continue
-                    yield f"data: {json.dumps(event)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-        finally:
-            RUNS_EVENT_HUB.unsubscribe(queue)
-
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
+    return PlainTextResponse(
+        "Deprecated. Use /workspace/api/live/events with include_runs_overview=true.",
+        status_code=410,
     )
 
 
@@ -4434,7 +4401,7 @@ async def pipeline_journal(
     }
 
 
-@attractor_router.get("/pipelines/{pipeline_id}/events")
+@attractor_router.get("/pipelines/{pipeline_id}/events", deprecated=True)
 async def pipeline_events(
     pipeline_id: str,
     request: Request,
@@ -4578,9 +4545,29 @@ async def submit_pipeline_answer(pipeline_id: str, question_id: str, req: HumanA
     active = _get_active_run(pipeline_id)
     if not active and not _read_run_meta(_run_meta_path(pipeline_id)):
         raise HTTPException(status_code=404, detail="Unknown pipeline")
+    question = next(
+        (
+            item
+            for item in HUMAN_BROKER.list_for_run(pipeline_id)
+            if item.get("question_id") == question_id
+        ),
+        None,
+    )
     ok = HUMAN_BROKER.answer(pipeline_id, question_id, req.selected_value)
     if not ok:
         raise HTTPException(status_code=404, detail="Unknown question for pipeline")
+    await _publish_run_event(
+        pipeline_id,
+        {
+            "type": "InterviewCompleted",
+            "question_id": question_id,
+            "node_id": question.get("node_id") if question else None,
+            "flow_name": question.get("flow_name") if question else None,
+            "stage": question.get("node_id") if question else None,
+            "answer": req.selected_value,
+            "outcome_provenance": "accepted",
+        },
+    )
     return {"status": "accepted", "pipeline_id": pipeline_id, "question_id": question_id}
 
 

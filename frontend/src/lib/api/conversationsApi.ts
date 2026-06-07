@@ -6,7 +6,7 @@ import {
     expectObjectRecord,
     expectString,
 } from './shared'
-import { fetchWorkspaceJsonValidated, workspaceUrl } from './apiClient'
+import { fetchWorkspaceJsonValidated } from './apiClient'
 
 export interface ConversationTurnResponse {
     id: string
@@ -208,12 +208,6 @@ export interface ConversationSegmentUpsertEventResponse {
     flow_run_requests?: FlowRunRequestResponse[]
     flow_launches?: FlowLaunchResponse[]
     proposed_plans?: ProposedPlanArtifactResponse[]
-}
-
-export function conversationEventsUrl(conversationId: string, projectPath: string): string {
-    return workspaceUrl(
-        `/conversations/${encodeURIComponent(conversationId)}/events?project_path=${encodeURIComponent(projectPath)}`,
-    )
 }
 
 function parseConversationTurnResponse(value: unknown): ConversationTurnResponse | null {
@@ -636,7 +630,7 @@ export function parseConversationSnapshotResponse(
 
 export function parseConversationStreamEventResponse(
     payload: unknown,
-    endpoint = '/workspace/api/conversations/{id}/events',
+    endpoint = '/workspace/api/live/events',
 ): ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse | null {
     const record = expectObjectRecord(payload, endpoint)
     const type = typeof record.type === 'string' ? record.type : ''

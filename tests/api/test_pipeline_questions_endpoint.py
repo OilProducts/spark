@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,51 @@ def test_submit_pipeline_answer_accepts_pending_question_for_pipeline(
     assert payload == {"status": "accepted", "pipeline_id": run_id, "question_id": "q-1"}
     assert broker._pending["q-1"]["answer"] == "approve"
     assert broker._pending["q-1"]["event"].is_set() is True
+
+
+def test_submit_pipeline_answer_publishes_targeted_live_answer_update(
+    attractor_api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    run_id = "run-answer-live-update"
+    server._record_run_start(
+        run_id,
+        flow_name="Flow",
+        working_directory=str(tmp_path / "work"),
+        model="test-model",
+    )
+    broker = server.HumanGateBroker()
+    with broker._lock:
+        broker._pending["q-1"] = {
+            "event": server.threading.Event(),
+            "answer": None,
+            "run_id": run_id,
+            "node_id": "gate",
+            "flow_name": "Flow",
+            "prompt": "Approve plan?",
+            "options": [{"label": "Approve", "value": "approve"}],
+        }
+    hub = server.PipelineEventHub()
+    queue = hub.subscribe(run_id)
+    monkeypatch.setattr(server, "HUMAN_BROKER", broker)
+    monkeypatch.setattr(server, "EVENT_HUB", hub)
+
+    response = attractor_api_client.post(
+        f"/pipelines/{run_id}/questions/q-1/answer",
+        json={"selected_value": "approve"},
+    )
+
+    assert response.status_code == 200
+    event = asyncio.run(asyncio.wait_for(queue.get(), timeout=1.0))
+    assert event["type"] == "InterviewCompleted"
+    assert event["run_id"] == run_id
+    assert event["question_id"] == "q-1"
+    assert event["node_id"] == "gate"
+    assert event["answer"] == "approve"
+    assert event["outcome_provenance"] == "accepted"
+    assert event["sequence"] == 1
 
 
 def test_submit_pipeline_answer_rejects_question_owned_by_other_pipeline(

@@ -39,8 +39,8 @@ class MockEventSource {
   }
 }
 
-const findEventSource = (pattern: string) =>
-  MockEventSource.instances.find((eventSource) => eventSource.url.includes(pattern)) ?? null
+const findLatestEventSource = (pattern: string) =>
+  MockEventSource.instances.filter((eventSource) => eventSource.url.includes(pattern)).at(-1) ?? null
 
 const resetMockEventSources = () => {
   MockEventSource.instances.length = 0
@@ -62,7 +62,7 @@ const setViewportWidth = (width: number) => {
 }
 
 const mockSidebarStackRect = (node: HTMLDivElement, initialHeight: number) => {
-  let height = initialHeight
+  const height = initialHeight
   vi.spyOn(node, 'getBoundingClientRect').mockImplementation(() => ({
     x: 0,
     y: 0,
@@ -779,7 +779,7 @@ describe('App shell behavior', () => {
     const user = userEvent.setup()
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      vi.fn(async (input: RequestInfo | URL) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/browse')) {
           return new Response(JSON.stringify({
@@ -1426,36 +1426,42 @@ describe('App shell behavior', () => {
       ).toBeVisible()
     })
 
-    const conversationEventSource = findEventSource('/workspace/api/conversations/conversation-home-live/events')
+    const conversationEventSource = findLatestEventSource('/workspace/api/live/events')
     expect(conversationEventSource).not.toBeNull()
+    expect(conversationEventSource?.url).toContain('conversation_id=conversation-home-live')
+    expect(conversationEventSource?.url).toContain('conversation_project_path=%2Ftmp%2Fproject-home-live')
 
     await user.click(screen.getByTestId('nav-mode-runs'))
     expect(conversationEventSource?.readyState).toBe(MockEventSource.CLOSED)
 
     act(() => {
       conversationEventSource?.emitMessage({
-        type: 'conversation_snapshot',
-        state: buildConversationSnapshot({
-          conversationId: 'conversation-home-live',
-          projectPath: '/tmp/project-home-live',
-          title: 'Thread live',
-          turns: [
-            {
-              id: 'turn-user-1',
-              role: 'user',
-              status: 'complete',
-              content: 'Initial request',
-              timestamp: '2026-03-25T12:00:00Z',
-            },
-            {
-              id: 'turn-assistant-1',
-              role: 'assistant',
-              status: 'complete',
-              content: 'Finished while hidden',
-              timestamp: '2026-03-25T12:01:30Z',
-            },
-          ],
-        }),
+        type: 'conversation.snapshot',
+        project_path: '/tmp/project-home-live',
+        resource: { kind: 'conversation', id: 'conversation-home-live' },
+        payload: {
+          state: buildConversationSnapshot({
+            conversationId: 'conversation-home-live',
+            projectPath: '/tmp/project-home-live',
+            title: 'Thread live',
+            turns: [
+              {
+                id: 'turn-user-1',
+                role: 'user',
+                status: 'complete',
+                content: 'Initial request',
+                timestamp: '2026-03-25T12:00:00Z',
+              },
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                status: 'complete',
+                content: 'Finished while hidden',
+                timestamp: '2026-03-25T12:01:30Z',
+              },
+            ],
+          }),
+        },
       })
     })
 
@@ -1468,7 +1474,8 @@ describe('App shell behavior', () => {
     })
     expect(screen.queryByText('Finished while hidden')).not.toBeInTheDocument()
     const liveConversationSources = MockEventSource.instances.filter((eventSource) => (
-      eventSource.url.includes('/workspace/api/conversations/conversation-home-live/events')
+      eventSource.url.includes('/workspace/api/live/events')
+        && eventSource.url.includes('conversation_id=conversation-home-live')
     ))
     expect(liveConversationSources.at(-1)?.readyState).toBe(MockEventSource.OPEN)
     expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
@@ -1586,8 +1593,9 @@ describe('App shell behavior', () => {
       ).toBeVisible()
     })
 
-    const projectOneEventSource = findEventSource('/workspace/api/conversations/conversation-home-one/events')
+    const projectOneEventSource = findLatestEventSource('/workspace/api/live/events')
     expect(projectOneEventSource).not.toBeNull()
+    expect(projectOneEventSource?.url).toContain('conversation_id=conversation-home-one')
 
     await user.click(screen.getByTestId('top-nav-project-switcher'))
     await user.click(await screen.findByText('project-home-two'))
@@ -1601,34 +1609,39 @@ describe('App shell behavior', () => {
       ).toBeVisible()
     })
     expect(projectOneEventSource?.readyState).toBe(MockEventSource.CLOSED)
-    const projectTwoEventSource = findEventSource('/workspace/api/conversations/conversation-home-two/events')
+    const projectTwoEventSource = findLatestEventSource('/workspace/api/live/events')
     expect(projectTwoEventSource).not.toBeNull()
+    expect(projectTwoEventSource?.url).toContain('conversation_id=conversation-home-two')
     expect(projectTwoEventSource?.readyState).toBe(MockEventSource.OPEN)
 
     act(() => {
       projectOneEventSource?.emitMessage({
-        type: 'conversation_snapshot',
-        state: buildConversationSnapshot({
-          conversationId: 'conversation-home-one',
-          projectPath: '/tmp/project-home-one',
-          title: 'Thread one',
-          turns: [
-            {
-              id: 'turn-user-one',
-              role: 'user',
-              status: 'complete',
-              content: 'Project one request',
-              timestamp: '2026-03-25T12:00:00Z',
-            },
-            {
-              id: 'turn-assistant-one',
-              role: 'assistant',
-              status: 'complete',
-              content: 'Finished while hidden on other project',
-              timestamp: '2026-03-25T12:04:00Z',
-            },
-          ],
-        }),
+        type: 'conversation.snapshot',
+        project_path: '/tmp/project-home-one',
+        resource: { kind: 'conversation', id: 'conversation-home-one' },
+        payload: {
+          state: buildConversationSnapshot({
+            conversationId: 'conversation-home-one',
+            projectPath: '/tmp/project-home-one',
+            title: 'Thread one',
+            turns: [
+              {
+                id: 'turn-user-one',
+                role: 'user',
+                status: 'complete',
+                content: 'Project one request',
+                timestamp: '2026-03-25T12:00:00Z',
+              },
+              {
+                id: 'turn-assistant-one',
+                role: 'assistant',
+                status: 'complete',
+                content: 'Finished while hidden on other project',
+                timestamp: '2026-03-25T12:04:00Z',
+              },
+            ],
+          }),
+        },
       })
     })
 
@@ -2195,17 +2208,27 @@ describe('App shell behavior', () => {
 
     await waitFor(() => {
       expect(
-        MockEventSource.instances.some((source) => source.url.includes('/attractor/pipelines/run-session/events')),
+        MockEventSource.instances.some((source) => (
+          source.url.includes('/workspace/api/live/events')
+            && source.url.includes('run_id=run-session')
+        )),
       ).toBe(true)
     })
     act(() => {
       MockEventSource.instances
-        .filter((source) => source.url.includes('/attractor/pipelines/run-session/events'))
-        .forEach((source) => source.emitMessage(stableTimelineEvent(1, {
-          type: 'StageStarted',
-          node_id: 'review',
-          index: 2,
-        })))
+        .filter((source) => (
+          source.url.includes('/workspace/api/live/events')
+            && source.url.includes('run_id=run-session')
+        ))
+        .forEach((source) => source.emitMessage({
+          type: 'run.journal_entry',
+          resource: { kind: 'run', id: 'run-session' },
+          payload: stableTimelineEvent(1, {
+            type: 'StageStarted',
+            node_id: 'review',
+            index: 2,
+          }),
+        }))
     })
 
     await waitFor(() => {
@@ -2336,6 +2359,15 @@ describe('App shell behavior', () => {
           questions: [],
         })
       }
+      if (url.includes('/attractor/pipelines/run-hidden/journal')) {
+        return jsonResponse({
+          pipeline_id: 'run-hidden',
+          entries: [],
+          oldest_sequence: null,
+          newest_sequence: null,
+          has_older: false,
+        })
+      }
       return jsonResponse({})
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -2359,7 +2391,10 @@ describe('App shell behavior', () => {
     await user.click(selectedRunRow!)
 
     const runEventSource = await waitFor(() => {
-      const source = findEventSource('/attractor/pipelines/run-hidden/events')
+      const source = MockEventSource.instances.find((eventSource) => (
+        eventSource.url.includes('/workspace/api/live/events')
+          && eventSource.url.includes('run_id=run-hidden')
+      )) ?? null
       expect(source).not.toBeNull()
       return source
     })
@@ -2367,11 +2402,15 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-projects'))
 
     act(() => {
-      runEventSource?.emitMessage(stableTimelineEvent(1, {
-        type: 'StageStarted',
-        node_id: 'review',
-        index: 2,
-      }))
+      runEventSource?.emitMessage({
+        type: 'run.journal_entry',
+        resource: { kind: 'run', id: 'run-hidden' },
+        payload: stableTimelineEvent(1, {
+          type: 'StageStarted',
+          node_id: 'review',
+          index: 2,
+        }),
+      })
     })
 
     await user.click(screen.getByTestId('nav-mode-runs'))

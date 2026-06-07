@@ -1,4 +1,4 @@
-import { RunsSessionController } from '@/app/AppSessionControllers'
+import { RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { RunsPanel } from '@/features/runs/RunsPanel'
 import { RunStream } from '@/features/runs/RunStream'
 import {
@@ -65,6 +65,7 @@ const renderRunsPanel = () =>
 const renderRunsWorkspace = () =>
   render(
     <DialogProvider>
+      <WorkspaceLiveEventsController />
       <RunsSessionController />
       <RunStream />
       <RunsPanel />
@@ -441,24 +442,28 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByText('project-one.dot')).toBeVisible()
-      expect(latestSourceMatching('/attractor/runs/events')).toBeTruthy()
+      expect(latestSourceMatching('/workspace/api/live/events')).toBeTruthy()
     })
 
-    const activeScopeSource = latestSourceMatching('/attractor/runs/events')
-    expect(activeScopeSource?.url).toContain('/attractor/runs/events?project_path=%2Ftmp%2Fproject-one')
+    const activeScopeSource = latestSourceMatching('/workspace/api/live/events')
+    expect(activeScopeSource?.url).toContain('runs_project_path=%2Ftmp%2Fproject-one')
+    expect(activeScopeSource?.url).toContain('include_runs_overview=true')
 
     act(() => {
       activeScopeSource?.emit({
-        type: 'run_upsert',
-        run: makeRun({
-          run_id: 'run-streamed-active',
-          flow_name: 'streamed-active.dot',
-          project_path: '/tmp/project-one',
-          status: 'running',
-          outcome: null,
-          ended_at: null,
-          started_at: '2026-03-22T00:06:00Z',
-        }),
+        type: 'run.upsert',
+        resource: { kind: 'runs_overview', id: null },
+        payload: {
+          run: makeRun({
+            run_id: 'run-streamed-active',
+            flow_name: 'streamed-active.dot',
+            project_path: '/tmp/project-one',
+            status: 'running',
+            outcome: null,
+            ended_at: null,
+            started_at: '2026-03-22T00:06:00Z',
+          }),
+        },
       })
     })
 
@@ -472,29 +477,36 @@ describe('RunsPanel', () => {
       expect(screen.getByText('project-two.dot')).toBeVisible()
     })
 
-    const allProjectsSource = latestSourceMatching('/attractor/runs/events')
+    const allProjectsSource = latestSourceMatching('/workspace/api/live/events')
     expect(allProjectsSource).not.toBe(activeScopeSource)
     expect(activeScopeSource?.readyState).toBe(CLOSED)
-    expect(allProjectsSource?.url).toMatch(/\/attractor\/runs\/events$/)
+    expect(allProjectsSource?.url).toContain('/workspace/api/live/events')
+    expect(allProjectsSource?.url).toContain('include_runs_overview=true')
     expect(allProjectsSource?.url).not.toContain('project_path=')
 
     act(() => {
       activeScopeSource?.emit({
-        type: 'run_upsert',
-        run: makeRun({
-          run_id: 'run-closed-source',
-          flow_name: 'closed-source-update.dot',
-          project_path: '/tmp/project-one',
-        }),
+        type: 'run.upsert',
+        resource: { kind: 'runs_overview', id: null },
+        payload: {
+          run: makeRun({
+            run_id: 'run-closed-source',
+            flow_name: 'closed-source-update.dot',
+            project_path: '/tmp/project-one',
+          }),
+        },
       })
       allProjectsSource?.emit({
-        type: 'run_upsert',
-        run: makeRun({
-          run_id: 'run-streamed-all',
-          flow_name: 'streamed-all.dot',
-          project_path: '/tmp/project-three',
-          started_at: '2026-03-22T00:07:00Z',
-        }),
+        type: 'run.upsert',
+        resource: { kind: 'runs_overview', id: null },
+        payload: {
+          run: makeRun({
+            run_id: 'run-streamed-all',
+            flow_name: 'streamed-all.dot',
+            project_path: '/tmp/project-three',
+            started_at: '2026-03-22T00:07:00Z',
+          }),
+        },
       })
     })
 
@@ -510,10 +522,10 @@ describe('RunsPanel', () => {
       expect(screen.queryByText('project-two.dot')).not.toBeInTheDocument()
     })
 
-    const restoredActiveScopeSource = latestSourceMatching('/attractor/runs/events')
+    const restoredActiveScopeSource = latestSourceMatching('/workspace/api/live/events')
     expect(restoredActiveScopeSource).not.toBe(allProjectsSource)
     expect(allProjectsSource?.readyState).toBe(CLOSED)
-    expect(restoredActiveScopeSource?.url).toContain('/attractor/runs/events?project_path=%2Ftmp%2Fproject-one')
+    expect(restoredActiveScopeSource?.url).toContain('runs_project_path=%2Ftmp%2Fproject-one')
   })
 
   it('shows an explicit no-project notice before fetching all-project runs', async () => {
@@ -1348,7 +1360,7 @@ describe('RunsPanel', () => {
     }
     const eventSources: ConvergingEventSource[] = []
     const runsListSource = () => (
-      eventSources.find((source) => source.url.includes('/attractor/runs/events')) ?? null
+      eventSources.find((source) => source.url.includes('/workspace/api/live/events')) ?? null
     )
     vi.stubGlobal('EventSource', ConvergingEventSource as unknown as typeof EventSource)
 
@@ -1375,12 +1387,15 @@ describe('RunsPanel', () => {
 
     act(() => {
       runsListSource()?.emit({
-        type: 'run_upsert',
-        run: {
-          ...staleRun,
-          status: 'completed',
-          outcome: 'success',
-          ended_at: '2026-03-22T00:05:00Z',
+        type: 'run.upsert',
+        resource: { kind: 'runs_overview', id: null },
+        payload: {
+          run: {
+            ...staleRun,
+            status: 'completed',
+            outcome: 'success',
+            ended_at: '2026-03-22T00:05:00Z',
+          },
         },
       })
     })
@@ -1454,6 +1469,9 @@ describe('RunsPanel', () => {
           pipeline_id: 'run-stream-count',
           questions: [],
         })
+      }
+      if (url.includes('/attractor/pipelines/run-stream-count/journal')) {
+        return jsonResponse(makeJournalPage('run-stream-count', []))
       }
       if (url.endsWith('/attractor/pipelines/run-stream-count')) {
         return jsonResponse({
@@ -1530,8 +1548,9 @@ describe('RunsPanel', () => {
       expect(screen.getByTestId('run-activity-panel')).toBeVisible()
     })
 
-    expect(openedUrls.filter((url) => url.includes('/attractor/runs/events'))).toHaveLength(1)
-    expect(openedUrls.filter((url) => url.includes('/attractor/pipelines/run-stream-count/events'))).toHaveLength(1)
+    expect(openedUrls.filter((url) => url.includes('/workspace/api/live/events')).length).toBeGreaterThanOrEqual(2)
+    expect(openedUrls.at(-1)).toContain('run_id=run-stream-count')
+    expect(openedUrls.at(-1)).toContain('run_sequence=0')
   })
 
   it('applies live token telemetry from runs-list upserts to the selected run summary', async () => {
@@ -1639,14 +1658,16 @@ describe('RunsPanel', () => {
     })
 
     act(() => {
-      latestSourceMatching('/attractor/runs/events')?.emit({
-        type: 'run_upsert',
-        run: {
-          ...selectedRun,
-          token_usage: 36,
-          token_usage_breakdown: {
-            input_tokens: 23,
-            cached_input_tokens: 3,
+      latestSourceMatching('/workspace/api/live/events')?.emit({
+        type: 'run.upsert',
+        resource: { kind: 'runs_overview', id: null },
+        payload: {
+          run: {
+            ...selectedRun,
+            token_usage: 36,
+            token_usage_breakdown: {
+              input_tokens: 23,
+              cached_input_tokens: 3,
             output_tokens: 13,
             total_tokens: 36,
             by_model: {
@@ -1681,6 +1702,7 @@ describe('RunsPanel', () => {
                 status: 'unpriced',
               },
             },
+          },
           },
         },
       })
@@ -1821,6 +1843,9 @@ describe('RunsPanel', () => {
             questions: [],
           })
         }
+        if (resource === 'journal') {
+          return jsonResponse(makeJournalPage(runId, []))
+        }
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -1852,35 +1877,47 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('run-activity-panel')).toBeVisible()
-      expect(sourcesMatching(`/attractor/pipelines/${selectedRun.run_id}/events`)).toHaveLength(1)
+      expect(latestSourceMatching('/workspace/api/live/events')?.url).toContain(`run_id=${selectedRun.run_id}`)
+      expect(latestSourceMatching('/workspace/api/live/events')?.url).toContain('run_sequence=0')
     })
 
     detailResources.forEach((resource) => {
       expect(countDetailFetches(selectedRun.run_id, resource)).toBe(1)
     })
 
-    const selectedRunSource = latestSourceMatching(`/attractor/pipelines/${selectedRun.run_id}/events`)
+    const selectedRunSource = latestSourceMatching('/workspace/api/live/events')
     expect(selectedRunSource).toBeTruthy()
 
     act(() => {
       selectedRunSource?.open()
       selectedRunSource?.emit({
-        type: 'StageStarted',
-        sequence: 1,
-        emitted_at: '2026-03-22T00:02:00Z',
-        node_id: 'work',
-        index: 2,
+        type: 'run.journal_entry',
+        resource: { kind: 'run', id: selectedRun.run_id },
+        cursor: { kind: 'run_sequence', value: 1 },
+        payload: {
+          type: 'StageStarted',
+          sequence: 1,
+          emitted_at: '2026-03-22T00:02:00Z',
+          node_id: 'work',
+          index: 2,
+        },
       })
       selectedRunSource?.emit({
-        type: 'state',
-        node: 'done',
-        status: 'running',
+        type: 'run.journal_entry',
+        resource: { kind: 'run', id: selectedRun.run_id },
+        payload: {
+          type: 'state',
+          node: 'done',
+          status: 'running',
+        },
       })
     })
 
     await waitFor(() => {
       expect(useStore.getState().selectedRunRecord?.current_node).toBe('done')
     })
+
+    expect(latestSourceMatching('/workspace/api/live/events')).toBe(selectedRunSource)
 
     detailResources.forEach((resource) => {
       expect(countDetailFetches(selectedRun.run_id, resource)).toBe(1)
@@ -1891,7 +1928,7 @@ describe('RunsPanel', () => {
     await user.click(otherRunCard!)
 
     await waitFor(() => {
-      expect(sourcesMatching(`/attractor/pipelines/${otherRun.run_id}/events`)).toHaveLength(1)
+      expect(latestSourceMatching('/workspace/api/live/events')?.url).toContain(`run_id=${otherRun.run_id}`)
       expect(useStore.getState().selectedRunId).toBe(otherRun.run_id)
     })
 
@@ -1910,9 +1947,8 @@ describe('RunsPanel', () => {
       project_path: '/tmp/project-one',
     })
     const pipelineStatusUrl = '/attractor/pipelines/run-reconnect'
-    const pipelineEventsUrl = '/attractor/pipelines/run-reconnect/events'
     const scopedRunsUrl = '/attractor/runs?project_path=%2Ftmp%2Fproject-one'
-    const scopedRunsEventsUrl = '/attractor/runs/events?project_path=%2Ftmp%2Fproject-one'
+    const liveEventsUrl = '/workspace/api/live/events'
 
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1970,6 +2006,9 @@ describe('RunsPanel', () => {
           questions: [],
         })
       }
+      if (url.includes('/attractor/pipelines/run-reconnect/journal')) {
+        return jsonResponse(makeJournalPage('run-reconnect', []))
+      }
       if (url.endsWith(pipelineStatusUrl)) {
         return jsonResponse({
           pipeline_id: 'run-reconnect',
@@ -2024,24 +2063,27 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByText('selected.dot')).toBeVisible()
-      expect(sourcesMatching('/attractor/runs/events')).toHaveLength(1)
+      expect(sourcesMatching(liveEventsUrl)).toHaveLength(1)
     })
 
     await user.click(screen.getByTestId('run-history-row'))
 
     await waitFor(() => {
       expect(screen.getByTestId('run-activity-panel')).toBeVisible()
-      expect(sourcesMatching(pipelineEventsUrl)).toHaveLength(1)
+      expect(latestSourceMatching(liveEventsUrl)?.url).toContain('run_id=run-reconnect')
+      expect(latestSourceMatching(liveEventsUrl)?.url).toContain('run_sequence=0')
     })
 
     const initialRunsFetchCount = countGetRequests((url) => url.includes(scopedRunsUrl))
     const initialPipelineFetchCount = countGetRequests((url) => url.endsWith(pipelineStatusUrl))
-    const initialRunsSource = latestSourceMatching(scopedRunsEventsUrl)
-    const initialPipelineSource = latestSourceMatching(pipelineEventsUrl)
+    const initialLiveSourceCount = sourcesMatching(liveEventsUrl).length
+    const initialPipelineSource = latestSourceMatching(liveEventsUrl)
 
     act(() => {
-      initialRunsSource?.fail()
-      initialPipelineSource?.fail()
+      useStore.getState().updateRunsListSession({
+        streamStatus: 'degraded',
+        streamError: 'Run history transport is unavailable. Reconnect to retry.',
+      })
     })
 
     await waitFor(() => {
@@ -2053,17 +2095,16 @@ describe('RunsPanel', () => {
     await waitFor(() => {
       expect(countGetRequests((url) => url.includes(scopedRunsUrl))).toBe(initialRunsFetchCount + 1)
       expect(countGetRequests((url) => url.endsWith(pipelineStatusUrl))).toBe(initialPipelineFetchCount + 1)
-      expect(sourcesMatching(scopedRunsEventsUrl)).toHaveLength(2)
-      expect(sourcesMatching(pipelineEventsUrl)).toHaveLength(2)
+      expect(sourcesMatching(liveEventsUrl).length).toBeGreaterThan(initialLiveSourceCount)
+      expect(latestSourceMatching(liveEventsUrl)).not.toBe(initialPipelineSource)
+      expect(latestSourceMatching(liveEventsUrl)?.url).toContain('run_id=run-reconnect')
+      expect(latestSourceMatching(liveEventsUrl)?.url).toContain('run_sequence=0')
     })
 
-    const reconnectedRunsSource = latestSourceMatching(scopedRunsEventsUrl)
-    const reconnectedPipelineSource = latestSourceMatching(pipelineEventsUrl)
-    expect(reconnectedRunsSource).not.toBe(initialRunsSource)
+    const reconnectedPipelineSource = latestSourceMatching(liveEventsUrl)
     expect(reconnectedPipelineSource).not.toBe(initialPipelineSource)
 
     act(() => {
-      reconnectedRunsSource?.open()
       reconnectedPipelineSource?.open()
     })
 
@@ -2144,6 +2185,10 @@ describe('RunsPanel', () => {
         },
       ),
     ]
+    let resolveSelectedRunJournal: ((response: Response) => void) | null = null
+    const selectedRunJournalResponse = new Promise<Response>((resolve) => {
+      resolveSelectedRunJournal = resolve
+    })
 
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -2239,9 +2284,12 @@ describe('RunsPanel', () => {
           })
         }
         if (resource === 'journal') {
+          if (runId === selectedRun.run_id) {
+            return selectedRunJournalResponse
+          }
           return jsonResponse(makeJournalPage(
             runId,
-            runId === selectedRun.run_id ? selectedRunJournalEntries : [],
+            [],
           ))
         }
       }
@@ -2277,11 +2325,11 @@ describe('RunsPanel', () => {
     }
     const eventSources: ReplayEventSource[] = []
     const runEventSources = () => (
-      eventSources.filter((source) => source.url.includes('/attractor/pipelines/'))
+      eventSources.filter((source) => source.url.includes('/workspace/api/live/events') && source.url.includes('run_id='))
     )
     const latestEventSourceForRun = (runId: string) => (
       runEventSources()
-        .filter((source) => source.url.includes(`/attractor/pipelines/${encodeURIComponent(runId)}/events`))
+        .filter((source) => source.url.includes(`run_id=${encodeURIComponent(runId)}`))
         .at(-1) ?? null
     )
     vi.stubGlobal('EventSource', ReplayEventSource as unknown as typeof EventSource)
@@ -2304,12 +2352,20 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
-      expect(runEventSources()).toHaveLength(1)
+    })
+
+    expect(latestEventSourceForRun(selectedRun.run_id)).toBeNull()
+    act(() => {
+      resolveSelectedRunJournal?.(jsonResponse(makeJournalPage(selectedRun.run_id, selectedRunJournalEntries)))
+    })
+
+    await waitFor(() => {
+      expect(latestEventSourceForRun(selectedRun.run_id)?.url).toContain(`run_id=${selectedRun.run_id}`)
     })
 
     const initialReplaySource = latestEventSourceForRun(selectedRun.run_id)
     expect(initialReplaySource).toBeTruthy()
-    expect(initialReplaySource?.url).toContain('after_sequence=3')
+    expect(initialReplaySource?.url).toContain('run_sequence=3')
 
     await waitFor(() => {
       expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(3)
@@ -2325,7 +2381,7 @@ describe('RunsPanel', () => {
     await user.click(otherRunCard!)
 
     await waitFor(() => {
-      expect(runEventSources()).toHaveLength(2)
+      expect(latestEventSourceForRun(otherRun.run_id)).toBeTruthy()
       expect(initialReplaySource?.readyState).toBe(ReplayEventSource.CLOSED)
     })
 
@@ -2334,33 +2390,41 @@ describe('RunsPanel', () => {
     await user.click(reselectedRunCard!)
 
     await waitFor(() => {
-      expect(runEventSources()).toHaveLength(3)
+      expect(latestEventSourceForRun(selectedRun.run_id)).not.toBe(initialReplaySource)
       expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
     })
 
     const replayAfterReselect = latestEventSourceForRun(selectedRun.run_id)
     expect(replayAfterReselect).toBeTruthy()
     expect(replayAfterReselect).not.toBe(initialReplaySource)
-    expect(replayAfterReselect?.url).toContain('after_sequence=3')
+    expect(replayAfterReselect?.url).toContain('run_sequence=3')
 
     act(() => {
       replayAfterReselect!.open()
       replayAfterReselect!.emit({
-        type: 'StageCompleted',
-        sequence: 3,
-        emitted_at: '2026-03-22T00:04:00Z',
-        node_id: 'plan_current',
-        index: 2,
-        source_scope: 'child',
-        source_parent_node_id: 'run_milestone',
-        source_flow_name: 'implement-milestone.dot',
+        type: 'run.journal_entry',
+        resource: { kind: 'run', id: selectedRun.run_id },
+        payload: {
+          type: 'StageCompleted',
+          sequence: 3,
+          emitted_at: '2026-03-22T00:04:00Z',
+          node_id: 'plan_current',
+          index: 2,
+          source_scope: 'child',
+          source_parent_node_id: 'run_milestone',
+          source_flow_name: 'implement-milestone.dot',
+        },
       })
       replayAfterReselect!.emit({
-        type: 'StageCompleted',
-        sequence: 4,
-        emitted_at: '2026-03-22T00:05:00Z',
-        node_id: 'done',
-        index: 3,
+        type: 'run.journal_entry',
+        resource: { kind: 'run', id: selectedRun.run_id },
+        payload: {
+          type: 'StageCompleted',
+          sequence: 4,
+          emitted_at: '2026-03-22T00:05:00Z',
+          node_id: 'done',
+          index: 3,
+        },
       })
     })
 

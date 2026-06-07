@@ -122,6 +122,9 @@ class ProjectChatRepository:
     def conversation_raw_log_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
         return self.conversation_root(conversation_id, project_path) / "raw-log.jsonl"
 
+    def conversation_events_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
+        return self.conversation_root(conversation_id, project_path) / "events.jsonl"
+
     def flow_run_requests_state_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
         project_paths = self.project_paths_for_conversation(conversation_id, project_path)
         return project_paths.flow_run_requests_dir / f"{conversation_id}.json"
@@ -256,6 +259,52 @@ class ProjectChatRepository:
     def write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    def append_conversation_event(self, conversation_id: str, project_path: str, payload: dict[str, Any]) -> None:
+        revision = payload.get("revision")
+        if not isinstance(revision, int) or isinstance(revision, bool):
+            state = payload.get("state")
+            if isinstance(state, dict):
+                revision = state.get("revision")
+        if not isinstance(revision, int) or isinstance(revision, bool):
+            return
+        event_type = payload.get("type")
+        if not isinstance(event_type, str) or not event_type:
+            return
+        path = self.conversation_events_path(conversation_id, project_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.open("a", encoding="utf-8").write(json.dumps(payload, sort_keys=True) + "\n")
+
+    def read_conversation_events_after(
+        self,
+        conversation_id: str,
+        project_path: str,
+        revision: int,
+    ) -> list[dict[str, Any]]:
+        path = self.conversation_events_path(conversation_id, project_path)
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        events: list[dict[str, Any]] = []
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            event_revision = payload.get("revision")
+            if not isinstance(event_revision, int) or isinstance(event_revision, bool):
+                state = payload.get("state")
+                if isinstance(state, dict):
+                    event_revision = state.get("revision")
+            if not isinstance(event_revision, int) or isinstance(event_revision, bool):
+                continue
+            if event_revision > revision:
+                events.append(payload)
+        events.sort(key=lambda event: int(event.get("revision") or event.get("state", {}).get("revision") or 0))
+        return events
 
     def append_raw_rpc_log(
         self,

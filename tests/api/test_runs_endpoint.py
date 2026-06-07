@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 
 import attractor.api.server as server
 import spark.app as product_app
+import spark.workspace.api as workspace_api
 from attractor.api.token_usage import TokenUsageBreakdown, TokenUsageBucket, estimate_model_cost
+from spark.workspace.conversations.models import ConversationState
 from tests.api._support import (
     close_task_immediately as _close_task_immediately,
     start_pipeline as _start_pipeline,
@@ -56,6 +58,30 @@ class _QueueOnlyRunListEventHub:
         pass
 
 
+class _QueueOnlyPipelineEventHub:
+    def __init__(self, run_id: str, queued_events: list[dict] | None = None) -> None:
+        self._run_id = run_id
+        self._queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=8)
+        for event in queued_events or []:
+            self._queue.put_nowait(dict(event))
+
+    async def publish(self, run_id: str, event: dict) -> None:
+        assert run_id == self._run_id
+        await self._queue.put(dict(event))
+
+    def history(self, run_id: str) -> list[dict]:
+        assert run_id == self._run_id
+        return []
+
+    def subscribe(self, run_id: str) -> asyncio.Queue[dict]:
+        assert run_id == self._run_id
+        return self._queue
+
+    def unsubscribe(self, run_id: str, queue: asyncio.Queue[dict]) -> None:
+        assert run_id == self._run_id
+        assert queue is self._queue
+
+
 def _decode_sse_event(chunk: str | bytes) -> dict:
     text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
     lines = [line for line in text.splitlines() if line.startswith("data: ")]
@@ -70,6 +96,69 @@ async def _collect_runs_stream_events(
     project_path: str | None = None,
 ) -> tuple[dict[str, str], list[dict]]:
     response = await server.runs_events(request, project_path=project_path)
+    iterator = response.body_iterator
+    chunks: list[str | bytes] = []
+    try:
+        for _ in range(count):
+            chunks.append(await anext(iterator))
+    finally:
+        await iterator.aclose()
+    return dict(response.headers), [_decode_sse_event(chunk) for chunk in chunks]
+
+
+def _workspace_live_events_endpoint():
+    for route in product_app.app.routes:
+        if getattr(route, "path", None) != "/workspace":
+            continue
+        for child_route in route.routes:
+            if getattr(child_route, "path", None) == "/api/live/events":
+                return child_route.endpoint
+    raise AssertionError("workspace live endpoint not registered")
+
+
+async def _collect_workspace_runs_overview_events(
+    *,
+    request,
+    count: int,
+    project_path: str | None = None,
+    conversation_id: str | None = None,
+    conversation_project_path: str | None = None,
+    conversation_revision: int | None = None,
+    runs_project_path: str | None = None,
+) -> tuple[dict[str, str], list[dict]]:
+    endpoint = _workspace_live_events_endpoint()
+    response = await endpoint(
+        request,
+        project_path=project_path,
+        conversation_id=conversation_id,
+        conversation_project_path=conversation_project_path,
+        conversation_revision=conversation_revision,
+        runs_project_path=runs_project_path,
+        include_runs_overview=True,
+    )
+    iterator = response.body_iterator
+    chunks: list[str | bytes] = []
+    try:
+        for _ in range(count):
+            chunks.append(await anext(iterator))
+    finally:
+        await iterator.aclose()
+    return dict(response.headers), [_decode_sse_event(chunk) for chunk in chunks]
+
+
+async def _collect_workspace_run_events(
+    *,
+    request,
+    run_id: str,
+    count: int,
+    run_sequence: int | None = None,
+) -> tuple[dict[str, str], list[dict]]:
+    endpoint = _workspace_live_events_endpoint()
+    response = await endpoint(
+        request,
+        run_id=run_id,
+        run_sequence=run_sequence,
+    )
     iterator = response.body_iterator
     chunks: list[str | bytes] = []
     try:
@@ -97,6 +186,78 @@ def test_runs_overview_endpoints_are_registered() -> None:
 
     assert ("GET", "/runs") in seen
     assert ("GET", "/runs/events") in seen
+
+
+def test_runs_events_endpoint_is_deprecated() -> None:
+    response = asyncio.run(server.runs_events(_DisconnectAfterEventChecksRequest(checks=1)))
+
+    assert response.status_code == 410
+    assert "/workspace/api/live/events" in response.body.decode("utf-8")
+
+
+def test_pipeline_events_route_is_marked_deprecated_at_api_surface() -> None:
+    route = next(
+        route
+        for route in server.attractor_router.routes
+        if getattr(route, "path", None) == "/pipelines/{pipeline_id}/events"
+    )
+
+    assert getattr(route, "deprecated", False) is True
+
+
+def test_workspace_live_events_rejects_malformed_run_cursor(product_api_client: TestClient) -> None:
+    invalid_type_response = product_api_client.get(
+        "/workspace/api/live/events",
+        params={"run_id": "run-1", "run_sequence": "nope"},
+    )
+    invalid_value_response = product_api_client.get(
+        "/workspace/api/live/events",
+        params={"run_id": "run-1", "run_sequence": -1},
+    )
+
+    assert invalid_type_response.status_code == 422
+    assert invalid_value_response.status_code == 400
+    assert invalid_value_response.json()["detail"] == "run_sequence must be a non-negative integer."
+
+
+def test_workspace_live_events_requires_conversation_project_scope(product_api_client: TestClient) -> None:
+    response = product_api_client.get(
+        "/workspace/api/live/events",
+        params={"conversation_id": "conversation-without-project-scope"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "conversation_project_path is required when conversation_id is provided."
+
+
+def test_workspace_live_events_returns_sse_headers_and_keepalive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _immediate_timeout(awaitable, timeout):  # noqa: ANN001
+        close = getattr(awaitable, "close", None)
+        if close is not None:
+            close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(workspace_api.asyncio, "wait_for", _immediate_timeout)
+
+    async def _read_keepalive() -> tuple[dict[str, str], str | bytes]:
+        endpoint = _workspace_live_events_endpoint()
+        response = await endpoint(_DisconnectAfterEventChecksRequest(checks=2))
+        iterator = response.body_iterator
+        try:
+            chunk = await anext(iterator)
+        finally:
+            await iterator.aclose()
+        return dict(response.headers), chunk
+
+    headers, chunk = asyncio.run(_read_keepalive())
+
+    text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+    assert headers["content-type"].startswith("text/event-stream")
+    assert headers["cache-control"] == "no-cache"
+    assert headers["connection"] == "keep-alive"
+    assert text == ": keepalive\n\n"
 
 
 def test_list_runs_includes_project_and_git_metadata_fields(
@@ -457,9 +618,9 @@ def test_runs_events_snapshot_filters_durable_history_by_project_and_returns_run
     )
 
     headers, events = asyncio.run(
-        _collect_runs_stream_events(
-            request=_DisconnectImmediatelyRequest(),
-            count=1,
+        _collect_workspace_runs_overview_events(
+            request=_DisconnectAfterEventChecksRequest(checks=4),
+            count=2,
             project_path=project_alpha,
         )
     )
@@ -467,80 +628,80 @@ def test_runs_events_snapshot_filters_durable_history_by_project_and_returns_run
     assert headers["content-type"].startswith("text/event-stream")
     assert headers["cache-control"] == "no-cache"
     assert headers["connection"] == "keep-alive"
-    assert events == [
+    assert [event["type"] for event in events] == ["run.upsert", "run.upsert"]
+    assert [event["resource"] for event in events] == [
+        {"kind": "runs_overview", "id": None},
+        {"kind": "runs_overview", "id": None},
+    ]
+    assert [event["payload"]["run"] for event in events] == [
         {
-            "type": "snapshot",
-            "runs": [
-                {
-                    "run_id": "run-in-project-child",
-                    "flow_name": "Flow B",
-                    "status": "completed",
-                    "outcome": "success",
-                    "outcome_reason_code": None,
-                    "outcome_reason_message": None,
-                    "working_directory": str(tmp_path / "project-alpha" / "nested"),
-                    "model": "test-model",
-                    "provider": "codex",
-                    "llm_provider": "codex",
-                    "llm_profile": None,
-                    "reasoning_effort": None,
-                    "started_at": "2026-01-01T00:02:00Z",
-                    "ended_at": "2026-01-01T00:03:00Z",
-                    "project_path": "",
-                    "git_branch": None,
-                    "git_commit": None,
-                    "spec_id": None,
-                    "plan_id": None,
-                    "continued_from_run_id": None,
-                    "continued_from_node": None,
-                    "continued_from_flow_mode": None,
-                    "continued_from_flow_name": None,
-                    "parent_run_id": None,
-                    "parent_node_id": None,
-                    "root_run_id": None,
-                    "child_invocation_index": None,
-                    "execution_mode": "native",
-                    "last_error": "",
-                    "token_usage": None,
-                    "token_usage_breakdown": None,
-                    "estimated_model_cost": None,
-                },
-                {
-                    "run_id": "run-in-project-root",
-                    "flow_name": "Flow A",
-                    "status": "completed",
-                    "outcome": "success",
-                    "outcome_reason_code": None,
-                    "outcome_reason_message": None,
-                    "working_directory": project_alpha,
-                    "model": "test-model",
-                    "provider": "codex",
-                    "llm_provider": "codex",
-                    "llm_profile": None,
-                    "reasoning_effort": None,
-                    "started_at": "2026-01-01T00:00:00Z",
-                    "ended_at": "2026-01-01T00:01:00Z",
-                    "project_path": project_alpha,
-                    "git_branch": "main",
-                    "git_commit": "abc123",
-                    "spec_id": None,
-                    "plan_id": None,
-                    "continued_from_run_id": None,
-                    "continued_from_node": None,
-                    "continued_from_flow_mode": None,
-                    "continued_from_flow_name": None,
-                    "parent_run_id": None,
-                    "parent_node_id": None,
-                    "root_run_id": None,
-                    "child_invocation_index": None,
-                    "execution_mode": "native",
-                    "last_error": "",
-                    "token_usage": None,
-                    "token_usage_breakdown": None,
-                    "estimated_model_cost": None,
-                },
-            ],
-        }
+            "run_id": "run-in-project-child",
+            "flow_name": "Flow B",
+            "status": "completed",
+            "outcome": "success",
+            "outcome_reason_code": None,
+            "outcome_reason_message": None,
+            "working_directory": str(tmp_path / "project-alpha" / "nested"),
+            "model": "test-model",
+            "provider": "codex",
+            "llm_provider": "codex",
+            "llm_profile": None,
+            "reasoning_effort": None,
+            "started_at": "2026-01-01T00:02:00Z",
+            "ended_at": "2026-01-01T00:03:00Z",
+            "project_path": "",
+            "git_branch": None,
+            "git_commit": None,
+            "spec_id": None,
+            "plan_id": None,
+            "continued_from_run_id": None,
+            "continued_from_node": None,
+            "continued_from_flow_mode": None,
+            "continued_from_flow_name": None,
+            "parent_run_id": None,
+            "parent_node_id": None,
+            "root_run_id": None,
+            "child_invocation_index": None,
+            "execution_mode": "native",
+            "last_error": "",
+            "token_usage": None,
+            "token_usage_breakdown": None,
+            "estimated_model_cost": None,
+        },
+        {
+            "run_id": "run-in-project-root",
+            "flow_name": "Flow A",
+            "status": "completed",
+            "outcome": "success",
+            "outcome_reason_code": None,
+            "outcome_reason_message": None,
+            "working_directory": project_alpha,
+            "model": "test-model",
+            "provider": "codex",
+            "llm_provider": "codex",
+            "llm_profile": None,
+            "reasoning_effort": None,
+            "started_at": "2026-01-01T00:00:00Z",
+            "ended_at": "2026-01-01T00:01:00Z",
+            "project_path": project_alpha,
+            "git_branch": "main",
+            "git_commit": "abc123",
+            "spec_id": None,
+            "plan_id": None,
+            "continued_from_run_id": None,
+            "continued_from_node": None,
+            "continued_from_flow_mode": None,
+            "continued_from_flow_name": None,
+            "parent_run_id": None,
+            "parent_node_id": None,
+            "root_run_id": None,
+            "child_invocation_index": None,
+            "execution_mode": "native",
+            "last_error": "",
+            "token_usage": None,
+            "token_usage_breakdown": None,
+            "estimated_model_cost": None,
+        },
     ]
 
 
@@ -593,19 +754,308 @@ def test_runs_events_filters_live_run_upserts_by_project_path(
     )
 
     _, events = asyncio.run(
-        _collect_runs_stream_events(
+        _collect_workspace_runs_overview_events(
             request=_DisconnectAfterEventChecksRequest(checks=2),
             count=2,
             project_path=project_alpha,
         )
     )
 
-    assert events[0]["type"] == "snapshot"
-    assert [run["run_id"] for run in events[0]["runs"]] == ["run-alpha"]
-    assert events[1] == {
-        "type": "run_upsert",
-        "run": selected_record.to_dict(),
+    assert [event["type"] for event in events] == ["run.upsert", "run.upsert"]
+    assert [event["resource"] for event in events] == [
+        {"kind": "runs_overview", "id": None},
+        {"kind": "runs_overview", "id": None},
+    ]
+    assert events[0]["payload"]["run"]["run_id"] == "run-alpha"
+    assert events[1]["payload"]["run"] == selected_record.to_dict()
+
+
+def test_workspace_live_events_runs_overview_scope_is_independent_from_conversation_scope(
+    tmp_path: Path,
+) -> None:
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    project_alpha = str(tmp_path / "project-alpha")
+    project_beta = str(tmp_path / "project-beta")
+    product_app.get_project_chat()._write_state(
+        ConversationState(
+            conversation_id="conversation-alpha",
+            project_path=project_alpha,
+            title="Alpha conversation",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+        )
+    )
+    for record in [
+        server.RunRecord(
+            run_id="run-alpha",
+            flow_name="alpha.dot",
+            status="running",
+            outcome=None,
+            outcome_reason_code=None,
+            outcome_reason_message=None,
+            working_directory=project_alpha,
+            model="test-model",
+            started_at="2026-01-01T00:00:00Z",
+            project_path=project_alpha,
+        ),
+        server.RunRecord(
+            run_id="run-beta",
+            flow_name="beta.dot",
+            status="running",
+            outcome=None,
+            outcome_reason_code=None,
+            outcome_reason_message=None,
+            working_directory=project_beta,
+            model="test-model",
+            started_at="2026-01-01T00:01:00Z",
+            project_path=project_beta,
+        ),
+    ]:
+        server._write_run_meta(record)
+
+    _, all_project_events = asyncio.run(
+        _collect_workspace_runs_overview_events(
+            request=_DisconnectAfterEventChecksRequest(checks=3),
+            conversation_id="conversation-alpha",
+            conversation_project_path=project_alpha,
+            conversation_revision=0,
+            count=2,
+        )
+    )
+    _, alpha_events = asyncio.run(
+        _collect_workspace_runs_overview_events(
+            request=_DisconnectAfterEventChecksRequest(checks=2),
+            conversation_id="conversation-alpha",
+            conversation_project_path=project_alpha,
+            conversation_revision=0,
+            runs_project_path=project_alpha,
+            count=1,
+        )
+    )
+
+    assert {event["payload"]["run"]["run_id"] for event in all_project_events} == {"run-alpha", "run-beta"}
+    assert [event["payload"]["run"]["run_id"] for event in alpha_events] == ["run-alpha"]
+
+
+def test_workspace_live_events_replays_run_journal_after_run_sequence(tmp_path: Path) -> None:
+    run_id = "run-live-replay"
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    server._record_run_start(
+        run_id,
+        flow_name="Flow",
+        working_directory=str(tmp_path / "work"),
+        model="test-model",
+    )
+    asyncio.run(server._publish_run_event(run_id, {"type": "runtime", "status": "running"}))
+    asyncio.run(server._publish_run_event(run_id, {"type": "log", "msg": "after cursor"}))
+
+    _, events = asyncio.run(
+        _collect_workspace_run_events(
+            request=_DisconnectAfterEventChecksRequest(checks=2),
+            run_id=run_id,
+            run_sequence=1,
+            count=1,
+        )
+    )
+
+    assert events[0]["type"] == "run.journal_entry"
+    assert events[0]["resource"] == {"kind": "run", "id": run_id}
+    assert events[0]["cursor"] == {"kind": "run_sequence", "value": 2}
+    assert events[0]["payload"]["sequence"] == 2
+    assert events[0]["payload"]["summary"] == "after cursor"
+
+
+def test_workspace_live_events_emits_targeted_resync_for_run_replay_gap(tmp_path: Path) -> None:
+    run_id = "run-live-gap"
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    run_root = server._ensure_run_root_for_project(run_id, str(tmp_path / "work"))
+    server._write_run_meta(
+        server.RunRecord(
+            run_id=run_id,
+            flow_name="Flow",
+            status="running",
+            outcome=None,
+            outcome_reason_code=None,
+            outcome_reason_message=None,
+            working_directory=str(tmp_path / "work"),
+            model="test-model",
+            started_at="2026-01-01T00:00:00Z",
+        )
+    )
+    with (run_root / "events.jsonl").open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "type": "runtime",
+            "status": "running",
+            "run_id": run_id,
+            "sequence": 3,
+            "emitted_at": "2026-01-01T00:00:01Z",
+            "source_scope": "root",
+        }) + "\n")
+
+    _, events = asyncio.run(
+        _collect_workspace_run_events(
+            request=_DisconnectAfterEventChecksRequest(checks=2),
+            run_id=run_id,
+            run_sequence=1,
+            count=1,
+        )
+    )
+
+    assert events[0]["type"] == "resync_required"
+    assert events[0]["resource"] == {"kind": "run", "id": run_id}
+    assert events[0]["reason"] == "run journal no longer contains a contiguous replay from the requested cursor"
+    assert events[0]["payload"]["reason"] == events[0]["reason"]
+
+
+def test_workspace_live_events_stops_run_replay_at_internal_gap(tmp_path: Path) -> None:
+    run_id = "run-live-internal-gap"
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    run_root = server._ensure_run_root_for_project(run_id, str(tmp_path / "work"))
+    server._write_run_meta(
+        server.RunRecord(
+            run_id=run_id,
+            flow_name="Flow",
+            status="running",
+            outcome=None,
+            outcome_reason_code=None,
+            outcome_reason_message=None,
+            working_directory=str(tmp_path / "work"),
+            model="test-model",
+            started_at="2026-01-01T00:00:00Z",
+        )
+    )
+    with (run_root / "events.jsonl").open("w", encoding="utf-8") as handle:
+        for sequence in (2, 4):
+            handle.write(json.dumps({
+                "type": "log",
+                "msg": f"sequence {sequence}",
+                "run_id": run_id,
+                "sequence": sequence,
+                "emitted_at": f"2026-01-01T00:00:0{sequence}Z",
+                "source_scope": "root",
+            }) + "\n")
+
+    _, events = asyncio.run(
+        _collect_workspace_run_events(
+            request=_DisconnectAfterEventChecksRequest(checks=3),
+            run_id=run_id,
+            run_sequence=1,
+            count=2,
+        )
+    )
+
+    assert events[0]["type"] == "run.journal_entry"
+    assert events[0]["cursor"] == {"kind": "run_sequence", "value": 2}
+    assert events[0]["payload"]["summary"] == "sequence 2"
+    assert events[1]["type"] == "resync_required"
+    assert events[1]["resource"] == {"kind": "run", "id": run_id}
+    assert events[1]["reason"] == "run journal no longer contains a contiguous replay from the requested cursor"
+
+
+def test_workspace_live_events_delivers_selected_run_live_journal_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_id = "run-live-selected"
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    server._record_run_start(
+        run_id,
+        flow_name="Flow",
+        working_directory=str(tmp_path / "work"),
+        model="test-model",
+    )
+    monkeypatch.setattr(
+        server,
+        "EVENT_HUB",
+        _QueueOnlyPipelineEventHub(
+            run_id,
+            queued_events=[
+                {
+                    "type": "human_gate",
+                    "question_id": "question-1",
+                    "node_id": "review_gate",
+                    "flow_name": "Flow",
+                    "prompt": "Approve?",
+                    "options": [{"label": "Approve", "value": "approve"}],
+                    "run_id": run_id,
+                    "sequence": 1,
+                    "emitted_at": "2026-01-01T00:00:01Z",
+                    "source_scope": "root",
+                },
+            ],
+        ),
+    )
+
+    _, events = asyncio.run(
+        _collect_workspace_run_events(
+            request=_DisconnectAfterEventChecksRequest(checks=2),
+            run_id=run_id,
+            count=1,
+        )
+    )
+
+    assert events[0]["type"] == "run.question_pending"
+    assert events[0]["resource"] == {"kind": "run", "id": run_id}
+    assert events[0]["cursor"] == {"kind": "run_sequence", "value": 1}
+    assert events[0]["payload"]["question_id"] == "question-1"
+
+
+def test_workspace_live_events_drops_duplicate_run_sequence_after_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_id = "run-live-duplicate"
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    server._record_run_start(
+        run_id,
+        flow_name="Flow",
+        working_directory=str(tmp_path / "work"),
+        model="test-model",
+    )
+    replay_event = {
+        "type": "log",
+        "msg": "replayed once",
+        "run_id": run_id,
+        "sequence": 1,
+        "emitted_at": "2026-01-01T00:00:01Z",
+        "source_scope": "root",
     }
+
+    class _HistoryAndQueuePipelineEventHub(_QueueOnlyPipelineEventHub):
+        def history(self, requested_run_id: str) -> list[dict]:
+            assert requested_run_id == run_id
+            return [dict(replay_event)]
+
+    monkeypatch.setattr(
+        server,
+        "EVENT_HUB",
+        _HistoryAndQueuePipelineEventHub(
+            run_id,
+            queued_events=[
+                dict(replay_event),
+                {
+                    "type": "log",
+                    "msg": "live after replay",
+                    "run_id": run_id,
+                    "sequence": 2,
+                    "emitted_at": "2026-01-01T00:00:02Z",
+                    "source_scope": "root",
+                },
+            ],
+        ),
+    )
+
+    _, events = asyncio.run(
+        _collect_workspace_run_events(
+            request=_DisconnectAfterEventChecksRequest(checks=3),
+            run_id=run_id,
+            run_sequence=0,
+            count=2,
+        )
+    )
+
+    assert [event["cursor"]["value"] for event in events] == [1, 2]
+    assert [event["payload"]["summary"] for event in events] == ["replayed once", "live after replay"]
 
 
 def test_run_list_upsert_publishes_on_pipeline_start_metadata_patch_and_cancel_transition(

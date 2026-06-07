@@ -1749,10 +1749,8 @@ Implementations may expose the pipeline engine as an HTTP service for web-based 
 | `POST` | `/pipelines`                            | Submit a DOT source and start execution. Returns pipeline ID. |
 | `POST` | `/pipelines/{id}/continue`              | Create a derived run from an existing run, starting at a chosen node. |
 | `GET`  | `/runs`                                 | Authoritative snapshot run overview, optionally scoped by `project_path`. |
-| `GET`  | `/runs/events`                          | SSE stream of scoped run-overview updates: initial snapshot, then live run upserts. |
 | `GET`  | `/pipelines/{id}`                       | Get authoritative per-run lifecycle/detail state for inspection, including progress and persisted run metadata. |
 | `GET`  | `/pipelines/{id}/journal`               | Get durable run history as normalized journal entries, newest-first, with explicit paging via `limit` and `before_sequence`. |
-| `GET`  | `/pipelines/{id}/events`                | SSE live-tail stream for normalized run-journal entries, with optional `after_sequence` gap-fill. |
 | `POST` | `/pipelines/{id}/cancel`                | Cancel a running pipeline. |
 | `GET`  | `/pipelines/{id}/graph`                 | Get rendered graph visualization (SVG). |
 | `GET`  | `/pipelines/{id}/graph-preview`         | Get structured graph preview JSON from the stored run DOT snapshot. |
@@ -1761,7 +1759,7 @@ Implementations may expose the pipeline engine as an HTTP service for web-based 
 | `GET`  | `/pipelines/{id}/checkpoint`            | Get current checkpoint state. |
 | `GET`  | `/pipelines/{id}/context`               | Get current context key-value store. |
 
-Human gates must be operable via web controls in addition to CLI. The server maintains SSE connections for real-time event streaming.
+Human gates must be operable via web controls in addition to CLI. Attractor remains the command/query authority for run start, run detail, durable journals, human-gate questions and answers, artifacts, graph, context, and checkpoint. Browser/operator live delivery is owned by the Spark Workspace API `GET /workspace/api/live/events` stream, which multiplexes currently observed resources and uses Attractor's durable per-run journal for selected-run catch-up.
 Implementations that expose both `/graph` and `/graph-preview` should preserve the original run DOT source as a stable artifact so run inspection can render a snapshot-accurate graph even if the named flow changes later.
 Preview endpoints may additively accept an `expand_children` flag for derived canvas rendering. When enabled, the response `graph` payload may include a `child_previews` object keyed by manager-loop node id. Each entry should include the resolved child flow identity/path, a read-only provenance marker, and a nested preview graph payload for one-level inline expansion. Omitting or failing to resolve a child preview must not invalidate the parent graph payload.
 
@@ -1789,13 +1787,7 @@ For active runs, implementations should read persisted run metadata first and th
 In run-detail and run-list payloads, the run-level `model` field refers to the launch/default model selected for the run. It does not imply that every LLM-backed node executed with that model.
 Implementations must not report an active lifecycle status for an orphaned run after restart; stale persisted `running` or `cancel_requested` records must be reconciled to terminal truth during startup/runtime initialization.
 `GET /runs` is the authoritative snapshot-inspection endpoint for run overview lists.
-`GET /runs/events` is the live run-overview channel.
-It must:
-- optionally scope by `project_path`
-- emit a `snapshot` event first with payload `{ "type": "snapshot", "runs": [RunRecord] }`
-- then emit `run_upsert` events with payload `{ "type": "run_upsert", "run": RunRecord }`
-- publish `run_upsert` whenever run-list truth changes because of run start, runtime status transition, metadata update, terminal completion, or orphaned-run reconciliation
-- keep no durable list-history contract beyond the initial current snapshot on connect
+Run overview browser live delivery is not an Attractor SSE contract. Clients hydrate run overview state from `GET /runs` and subscribe to the Workspace live stream with `include_runs_overview=true` for resource-scoped `run.upsert` deltas. Attractor implementations should still publish internal run-overview updates whenever run-list truth changes because of run start, runtime status transition, metadata update, terminal completion, or orphaned-run reconciliation, so the Workspace multiplexer can deliver them. There is no durable run-list history contract beyond the authoritative current snapshot.
 `GET /pipelines/{id}/journal` is the primary durable history-read endpoint for selected-run inspection.
 It must:
 - return normalized `RunJournalEntry` items, newest-first
@@ -1804,15 +1796,9 @@ It must:
 - preserve stable journal fields including `id`, `sequence`, `emitted_at`, `kind`, `raw_type`, `severity`, `summary`, `node_id`, `stage_index`, `source_scope`, `source_parent_node_id`, `source_flow_name`, `question_id`, and `payload`
 - include child-flow linkage metadata on parent entries that reference child timelines
 
-`GET /pipelines/{id}/events` is the live-tail channel for run inspection.
-It must:
-- default to live updates only
-- optionally accept `after_sequence` and, when provided, gap-fill normalized entries with `sequence > after_sequence` before yielding live updates
-- use stable per-run event identity via monotonically increasing `sequence`
-- include a server-assigned `emitted_at` timestamp on every event
-- allow parent runs to include child-run lifecycle/linkage events, and allow entries that reference child timelines to be labeled with `source_scope="child"` plus `source_parent_node_id` and `source_flow_name`
+Selected-run browser live delivery is not an Attractor SSE contract. Clients hydrate run detail from `GET /pipelines/{id}`, browse durable history through `GET /pipelines/{id}/journal`, and subscribe to the Workspace live stream with `run_id` only after the initial journal cursor is known. The stream includes `run_sequence` as a resource-scoped reconnect/catch-up cursor equal to the latest loaded sequence, or `0` for a loaded empty journal; it is not steady-state stream identity. Live delivery covers additive `run.journal_entry`, `run.question_pending`, and `run.question_answered` hints. Catch-up uses stable per-run event identity via monotonically increasing `sequence`; events include server-assigned `emitted_at` timestamps. Parent runs may include child-run lifecycle/linkage journal entries, and entries that reference child timelines may be labeled with `source_scope="child"` plus `source_parent_node_id` and `source_flow_name`.
 
-Clients should reconcile selected-run state against `GET /pipelines/{id}`, browse durable history through `GET /pipelines/{id}/journal`, and treat `GET /pipelines/{id}/events` as a live-tail bridge rather than the sole source of terminal lifecycle truth or full history.
+Clients should reconcile selected-run state against `GET /pipelines/{id}`, browse durable history through `GET /pipelines/{id}/journal`, and treat Workspace live events as delivery hints rather than the sole source of terminal lifecycle truth or full history.
 
 `POST /pipelines/{id}/continue` is a derived-continuation endpoint, not a same-run resume endpoint.
 It must:
@@ -1873,11 +1859,9 @@ FOR EACH event IN pipeline.events():
 
 For HTTP/SSE inspection, implementations should persist emitted run events durably per run so selected-run history survives server restarts and late inspection.
 Child runs launched by `stack.manager_loop` own their logs, checkpoints, status, and event stream. Parent runs may record child lifecycle/linkage events and link to child timelines; they do not depend on embedded child execution or forwarded child events as the only parent/child model.
-Run-overview payloads exposed through `/runs/events` should include:
-- `snapshot` events with a `runs` array of full `RunRecord` payloads
-- `run_upsert` events with one full `RunRecord` in `run`
+Run-overview payloads delivered through the Workspace live stream should use resource-scoped envelopes and include `run.upsert` events with one full `RunRecord` in `payload.run`.
 `RunRecord` remains additive and should preserve the coarse `token_usage` total for compatibility while also exposing the richer structured usage and estimated-cost fields.
-Normalized journal payloads exposed through `/pipelines/{id}/journal` and `/pipelines/{id}/events` should include:
+Normalized journal payloads exposed through `/pipelines/{id}/journal` and delivered as Workspace live `run.journal_entry` payloads should include:
 - `id`
 - `sequence`
 - `emitted_at`

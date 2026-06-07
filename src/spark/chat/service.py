@@ -262,6 +262,9 @@ class ProjectChatService:
     def _conversation_raw_log_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
         return self._repository.conversation_raw_log_path(conversation_id, project_path)
 
+    def read_events_after(self, conversation_id: str, project_path: str, revision: int) -> list[dict[str, Any]]:
+        return self._repository.read_conversation_events_after(conversation_id, project_path, revision)
+
     def _flow_run_requests_state_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
         return self._repository.flow_run_requests_state_path(conversation_id, project_path)
 
@@ -349,7 +352,9 @@ class ProjectChatService:
 
     async def publish_snapshot(self, conversation_id: str) -> None:
         snapshot = self.get_snapshot(conversation_id)
-        await self._event_hub.publish(conversation_id, {"type": "conversation_snapshot", "state": snapshot})
+        payload = {"type": "conversation_snapshot", "revision": snapshot["revision"], "state": snapshot}
+        self._repository.append_conversation_event(conversation_id, snapshot["project_path"], payload)
+        await self._event_hub.publish(conversation_id, payload)
 
     def list_conversations(self, project_path: str) -> list[dict[str, Any]]:
         return self._repository.list_conversations(project_path)
@@ -846,6 +851,10 @@ class ProjectChatService:
         progress_callback: Optional[Callable[[dict[str, Any]], None]],
         payload: dict[str, Any],
     ) -> None:
+        conversation_id = payload.get("conversation_id")
+        project_path = payload.get("project_path")
+        if isinstance(conversation_id, str) and isinstance(project_path, str):
+            self._repository.append_conversation_event(conversation_id, project_path, payload)
         if progress_callback is None:
             return
         progress_callback(payload)
@@ -855,9 +864,12 @@ class ProjectChatService:
         state: ConversationState,
         payloads: list[dict[str, Any]],
     ) -> None:
-        for payload in payloads:
-            payload["revision"] = state.revision
+        base_revision = state.revision
+        for index, payload in enumerate(payloads):
+            payload["revision"] = base_revision + index
             payload["updated_at"] = state.updated_at
+        if payloads:
+            state.revision = base_revision + len(payloads) - 1
 
     def _build_turn_upsert_payload(
         self,
@@ -1026,6 +1038,12 @@ class ProjectChatService:
             state.turns.append(assistant_turn)
             self._touch_conversation_state(state, title_hint=trimmed_message)
             prompt = self._build_prompt(state, trimmed_message, effective_chat_mode)
+            emitted_payloads: list[dict[str, Any]] = []
+            if mode_change_turn is not None:
+                emitted_payloads.append(self._build_turn_upsert_payload(state, mode_change_turn))
+            emitted_payloads.append(self._build_turn_upsert_payload(state, user_turn))
+            emitted_payloads.append(self._build_turn_upsert_payload(state, assistant_turn))
+            self._stamp_progress_payloads_with_state_revision(state, emitted_payloads)
             self._write_state(state)
             snapshot = self._serialize_conversation_state_for_ui(state)
             _log_project_chat_debug(
@@ -1034,10 +1052,8 @@ class ProjectChatService:
                 project_path=normalized_project_path,
                 turns=_summarize_turns_for_debug(state.turns),
             )
-            if mode_change_turn is not None:
-                self._publish_progress_payload(progress_callback, self._build_turn_upsert_payload(state, mode_change_turn))
-            self._publish_progress_payload(progress_callback, self._build_turn_upsert_payload(state, user_turn))
-            self._publish_progress_payload(progress_callback, self._build_turn_upsert_payload(state, assistant_turn))
+            for payload in emitted_payloads:
+                self._publish_progress_payload(progress_callback, payload)
         return (
             PreparedChatTurn(
                 conversation_id=conversation_id,
@@ -1087,12 +1103,11 @@ class ProjectChatService:
                 self._upsert_segment(current_state, segment)
                 emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
             self._touch_conversation_state(current_state)
+            emitted_payloads.append(self._build_turn_upsert_payload(current_state, current_assistant_turn))
             self._stamp_progress_payloads_with_state_revision(current_state, emitted_payloads)
             self._write_state(current_state)
-            assistant_upsert_payload = self._build_turn_upsert_payload(current_state, current_assistant_turn)
         for payload in emitted_payloads:
             self._publish_progress_payload(progress_callback, payload)
-        self._publish_progress_payload(progress_callback, assistant_upsert_payload)
 
     def _persist_assistant_turn_failure(
         self,
@@ -1702,8 +1717,8 @@ class ProjectChatService:
                         emitted_payloads.append(self._build_turn_upsert_payload(state, expired_turn))
                     segment = expired_segment
                 self._touch_conversation_state(state)
-                self._stamp_progress_payloads_with_state_revision(state, emitted_payloads)
                 emitted_payloads.append(self._build_segment_upsert_payload(state, segment))
+                self._stamp_progress_payloads_with_state_revision(state, emitted_payloads)
                 self._write_state(state)
                 snapshot = self._serialize_conversation_state_for_ui(state)
 

@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 import {
     ApiHttpError,
-    conversationEventsUrl,
     fetchConversationSnapshotValidated,
     parseConversationSnapshotResponse,
     parseConversationStreamEventResponse,
@@ -87,7 +86,6 @@ export function useConversationStream({
         }
 
         let isCancelled = false
-        let eventSource: EventSource | null = null
         let snapshotFetchInFlight: Promise<void> | null = null
         let snapshotFetchMarker: object | null = null
         let pendingPreSnapshotEvents: ConversationStreamEvent[] = []
@@ -142,47 +140,66 @@ export function useConversationStream({
 
         void loadSnapshot()
 
-        if (typeof EventSource !== 'undefined') {
-            const eventStreamUrl = conversationEventsUrl(activeConversationId, activeProjectPath)
-            eventSource = new EventSource(eventStreamUrl)
-            eventSource.onmessage = (event) => {
-                if (isCancelled) {
+        const handleLiveEvent = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            if (
+                !detail
+                || detail.conversationId !== activeConversationId
+                || detail.projectPath !== activeProjectPath
+            ) {
+                return
+            }
+            if (isCancelled) {
+                return
+            }
+            try {
+                const payload = detail.payload as { type?: string; state?: unknown }
+                if (detail.type === 'resync_required') {
+                    void loadSnapshot()
                     return
                 }
-                try {
-                    const payload = JSON.parse(event.data) as { type?: string; state?: unknown }
-                    if (payload.type === 'conversation_snapshot') {
-                        const snapshot = parseConversationSnapshotResponse(
-                            payload.state,
-                            '/workspace/api/conversations/{id}/events',
-                        )
-                        snapshotHandlerRef.current(activeProjectPath, snapshot, 'event-stream-snapshot')
-                        replayPendingEventsAfterSnapshot(snapshot)
-                        return
-                    }
-                    const parsedEvent = parseConversationStreamEventResponse(
-                        payload,
-                        '/workspace/api/conversations/{id}/events',
+                if (payload.type === 'conversation_snapshot') {
+                    const snapshot = parseConversationSnapshotResponse(
+                        payload.state,
+                        '/workspace/api/live/events',
                     )
-                    if (!parsedEvent) {
-                        return
-                    }
-                    const result = eventHandlerRef.current(activeProjectPath, parsedEvent, 'event-stream')
-                    if (result?.status === 'missing_record') {
-                        pendingPreSnapshotEvents.push(parsedEvent)
-                        void loadSnapshot()
-                        return
-                    }
-                    maybeRefreshSnapshotForArtifactSegment(parsedEvent, loadSnapshot)
-                } catch {
-                    // Ignore malformed stream events.
+                    snapshotHandlerRef.current(activeProjectPath, snapshot, 'event-stream-snapshot')
+                    replayPendingEventsAfterSnapshot(snapshot)
+                    return
                 }
+                if (detail.type === 'conversation.snapshot' && payload.state) {
+                    const snapshot = parseConversationSnapshotResponse(
+                        payload.state,
+                        '/workspace/api/live/events',
+                    )
+                    snapshotHandlerRef.current(activeProjectPath, snapshot, 'event-stream-snapshot')
+                    replayPendingEventsAfterSnapshot(snapshot)
+                    return
+                }
+                const parsedEvent = parseConversationStreamEventResponse(
+                    payload,
+                    '/workspace/api/live/events',
+                )
+                if (!parsedEvent) {
+                    return
+                }
+                const result = eventHandlerRef.current(activeProjectPath, parsedEvent, 'event-stream')
+                if (result?.status === 'missing_record') {
+                    pendingPreSnapshotEvents.push(parsedEvent)
+                    void loadSnapshot()
+                    return
+                }
+                maybeRefreshSnapshotForArtifactSegment(parsedEvent, loadSnapshot)
+            } catch {
+                // Ignore malformed stream events.
             }
         }
 
+        window.addEventListener('spark:conversation-live-event', handleLiveEvent)
+
         return () => {
             isCancelled = true
-            eventSource?.close()
+            window.removeEventListener('spark:conversation-live-event', handleLiveEvent)
         }
     }, [activeConversationId, activeProjectPath])
 }

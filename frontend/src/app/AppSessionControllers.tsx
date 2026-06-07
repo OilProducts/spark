@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { usePersistProjectState } from '@/features/projects/hooks/usePersistProjectState'
 import { useConversationStream } from '@/features/projects/hooks/useConversationStream'
@@ -9,16 +9,17 @@ import { useRunDetailResources } from '@/features/runs/hooks/useRunDetailResourc
 import { useRunsList } from '@/features/runs/hooks/useRunsList'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
-import type {
-    ConversationSnapshotResponse,
-    ConversationSummaryResponse,
-} from '@/lib/workspaceClient'
+import { buildWorkspaceLiveEventsUrl } from '@/features/workspace/services/liveEvents'
 import type {
     ApplyConversationStreamEventResult,
+    ConversationSnapshotResponse,
     ConversationStreamEvent,
+    ConversationSummaryResponse,
 } from '@/features/projects/model/projectsHomeState'
 import { useStore } from '@/store'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
+import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
+import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 
 const completedNodesMatch = (left: string[], right: string[]) => (
     left.length === right.length && left.every((value, index) => value === right[index])
@@ -478,9 +479,266 @@ export function TriggersSessionController() {
     return null
 }
 
+export function WorkspaceLiveEventsController() {
+    const reconnectSignal = useRunsTransportReconnectSignal(true)
+    const viewMode = useStore((state) => state.viewMode)
+    const activeProjectPath = useStore((state) => state.activeProjectPath)
+    const projectSessionsByPath = useStore((state) => state.projectSessionsByPath)
+    const homeConversationCache = useStore((state) => state.homeConversationCache)
+    const runsListSession = useStore((state) => state.runsListSession)
+    const selectedRunId = useStore((state) => state.selectedRunId)
+    const selectedRunLiveCursor = useRunJournalStore((state) => (
+        selectedRunId ? resolveRunJournalLiveCursor(state.byRunId[selectedRunId]) : null
+    ))
+    const selectedRunLiveReady = selectedRunLiveCursor !== null
+    const activeConversationId = activeProjectPath
+        ? projectSessionsByPath[activeProjectPath]?.conversationId ?? null
+        : null
+    const activeConversationRevision = activeConversationId
+        ? homeConversationCache.conversationsById[activeConversationId]?.revision ?? null
+        : null
+    const latestConversationRevisionById = useRef<Record<string, number>>({})
+    const latestRunSequenceById = useRef<Record<string, number>>({})
+    const includeRunsOverview =
+        viewMode === 'runs'
+        || selectedRunId !== null
+        || runsListSession.status !== 'idle'
+        || runsListSession.runs.length > 0
+        || runsListSession.scopeMode !== 'active'
+    const includeTriggers = viewMode === 'triggers'
+    const conversationProjectPath = activeConversationId ? activeProjectPath : null
+    const runsProjectPath = includeRunsOverview && runsListSession.scopeMode === 'active'
+        ? activeProjectPath
+        : null
+    const triggersProjectPath = includeTriggers ? activeProjectPath : null
+
+    useEffect(() => {
+        if (
+            activeConversationId
+            && typeof activeConversationRevision === 'number'
+            && Number.isFinite(activeConversationRevision)
+        ) {
+            latestConversationRevisionById.current[activeConversationId] = activeConversationRevision
+        }
+    }, [activeConversationId, activeConversationRevision])
+
+    useEffect(() => {
+        if (
+            selectedRunId
+            && typeof selectedRunLiveCursor === 'number'
+            && Number.isFinite(selectedRunLiveCursor)
+        ) {
+            latestRunSequenceById.current[selectedRunId] = selectedRunLiveCursor
+        }
+    }, [selectedRunId, selectedRunLiveCursor])
+
+    const liveEventsUrl = useMemo(() => {
+        const params = new URLSearchParams()
+        if (activeConversationId) {
+            params.set('conversation_id', activeConversationId)
+            if (conversationProjectPath) {
+                params.set('conversation_project_path', conversationProjectPath)
+            }
+        }
+        if (selectedRunId && selectedRunLiveReady) {
+            params.set('run_id', selectedRunId)
+        }
+        if (includeRunsOverview) {
+            params.set('include_runs_overview', 'true')
+            if (runsProjectPath) {
+                params.set('runs_project_path', runsProjectPath)
+            }
+        }
+        if (includeTriggers) {
+            params.set('include_triggers', 'true')
+            if (triggersProjectPath) {
+                params.set('triggers_project_path', triggersProjectPath)
+            }
+        }
+        return buildWorkspaceLiveEventsUrl(params)
+    }, [
+        activeConversationId,
+        conversationProjectPath,
+        includeRunsOverview,
+        includeTriggers,
+        runsProjectPath,
+        selectedRunLiveReady,
+        selectedRunId,
+        triggersProjectPath,
+    ])
+
+    useEffect(() => {
+        if (typeof EventSource === 'undefined') {
+            return
+        }
+        let eventSource: EventSource | null = null
+        let reconnectTimer: ReturnType<typeof window.setTimeout> | null = null
+        let closed = false
+
+        const buildUrlWithCursors = () => {
+            const url = new URL(liveEventsUrl, window.location.href)
+            if (activeConversationId) {
+                const revision = latestConversationRevisionById.current[activeConversationId]
+                if (typeof revision === 'number' && Number.isFinite(revision)) {
+                    url.searchParams.set('conversation_revision', String(revision))
+                }
+            }
+            if (selectedRunId) {
+                const sequence = latestRunSequenceById.current[selectedRunId]
+                if (typeof sequence === 'number' && Number.isFinite(sequence)) {
+                    url.searchParams.set('run_sequence', String(sequence))
+                }
+            }
+            return `${url.pathname}${url.search}`
+        }
+
+        const handleMessage = (event: MessageEvent<string>) => {
+            try {
+                const envelope = JSON.parse(event.data) as {
+                    type?: string
+                    project_path?: string | null
+                    resource?: { kind?: string; id?: string | null }
+                    cursor?: { kind?: string; value?: number } | null
+                    payload?: unknown
+                    sequence?: number
+                }
+                if (
+                    envelope.resource?.kind === 'conversation'
+                    && envelope.resource.id
+                    && envelope.cursor?.kind === 'conversation_revision'
+                    && typeof envelope.cursor.value === 'number'
+                    && Number.isFinite(envelope.cursor.value)
+                ) {
+                    latestConversationRevisionById.current[envelope.resource.id] = envelope.cursor.value
+                }
+                if (
+                    envelope.resource?.kind === 'run'
+                    && envelope.resource.id
+                    && envelope.cursor?.kind === 'run_sequence'
+                    && typeof envelope.cursor.value === 'number'
+                    && Number.isFinite(envelope.cursor.value)
+                ) {
+                    latestRunSequenceById.current[envelope.resource.id] = envelope.cursor.value
+                }
+                if (typeof envelope.sequence === 'number' && selectedRunId) {
+                    window.dispatchEvent(new CustomEvent('spark:run-journal-entry', {
+                        detail: { runId: selectedRunId, entry: envelope },
+                    }))
+                    return
+                }
+                const payload = (
+                    envelope.payload
+                    && typeof envelope.payload === 'object'
+                    && !Array.isArray(envelope.payload)
+                ) ? envelope.payload as Record<string, unknown> : {}
+                if (envelope.type === 'resync_required') {
+                    if (envelope.resource?.kind === 'conversation' && envelope.resource.id) {
+                        window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
+                            detail: {
+                                type: envelope.type,
+                                conversationId: envelope.resource.id,
+                                projectPath: envelope.project_path ?? activeProjectPath,
+                                payload,
+                            },
+                        }))
+                    } else if (envelope.resource?.kind === 'run' && envelope.resource.id) {
+                        window.dispatchEvent(new CustomEvent('spark:run-resync-required', {
+                            detail: { runId: envelope.resource.id, reason: payload.reason },
+                        }))
+                    } else if (envelope.resource?.kind === 'runs_overview') {
+                        window.dispatchEvent(new CustomEvent('spark:runs-overview-resync-required', {
+                            detail: { projectPath: envelope.project_path ?? activeProjectPath, reason: payload.reason },
+                        }))
+                    } else if (envelope.resource?.kind === 'trigger') {
+                        window.dispatchEvent(new CustomEvent('spark:triggers-resync-required', {
+                            detail: { projectPath: envelope.project_path ?? activeProjectPath, reason: payload.reason },
+                        }))
+                    }
+                    return
+                }
+                if (envelope.type === 'run.upsert') {
+                    window.dispatchEvent(new CustomEvent('spark:run-upsert', {
+                        detail: { run: payload.run },
+                    }))
+                    return
+                }
+                if (
+                    (envelope.type === 'run.journal_entry'
+                        || envelope.type === 'run.question_pending'
+                        || envelope.type === 'run.question_answered')
+                    && envelope.resource?.id
+                ) {
+                    window.dispatchEvent(new CustomEvent('spark:run-journal-entry', {
+                        detail: { runId: envelope.resource.id, entry: payload },
+                    }))
+                    return
+                }
+                if (envelope.resource?.kind === 'conversation' && envelope.resource.id) {
+                    window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
+                        detail: {
+                            type: envelope.type,
+                            conversationId: envelope.resource.id,
+                            projectPath: envelope.project_path ?? activeProjectPath,
+                            payload,
+                        },
+                    }))
+                    return
+                }
+                if (
+                    (envelope.type === 'trigger.snapshot'
+                        || envelope.type === 'trigger.upsert'
+                        || envelope.type === 'trigger.delete')
+                    && envelope.resource?.kind === 'trigger'
+                ) {
+                    window.dispatchEvent(new CustomEvent('spark:trigger-live-event', {
+                        detail: {
+                            type: envelope.type,
+                            projectPath: envelope.project_path ?? activeProjectPath,
+                            payload,
+                        },
+                    }))
+                }
+            } catch {
+                // Ignore malformed stream events.
+            }
+        }
+
+        const open = () => {
+            if (closed) {
+                return
+            }
+            eventSource?.close()
+            eventSource = new EventSource(buildUrlWithCursors())
+            eventSource.onmessage = handleMessage
+            eventSource.onerror = () => {
+                if (closed) {
+                    return
+                }
+                eventSource?.close()
+                if (reconnectTimer !== null) {
+                    window.clearTimeout(reconnectTimer)
+                }
+                reconnectTimer = window.setTimeout(open, 500)
+            }
+        }
+
+        open()
+        return () => {
+            closed = true
+            if (reconnectTimer !== null) {
+                window.clearTimeout(reconnectTimer)
+            }
+            eventSource?.close()
+        }
+    }, [activeConversationId, activeProjectPath, liveEventsUrl, reconnectSignal, selectedRunId])
+
+    return null
+}
+
 export function AppSessionControllers() {
     return (
         <>
+            <WorkspaceLiveEventsController />
             <HomeSessionController />
             <RunsSessionController />
             <TriggersSessionController />

@@ -1,5 +1,5 @@
 import App from '@/App'
-import { HomeSessionController, RunsSessionController } from '@/app/AppSessionControllers'
+import { HomeSessionController, RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { ExecutionControls } from '@/features/execution/ExecutionControls'
 import { ExecutionWorkspace } from '@/features/execution/ExecutionWorkspace'
 import { Editor } from '@/features/editor/Editor'
@@ -222,6 +222,7 @@ const renderProjectsPanelWithController = () =>
 const renderRunsPanelWithController = () =>
   render(
     <>
+      <WorkspaceLiveEventsController />
       <RunsSessionController />
       <RunStream />
       <RunsPanel />
@@ -2011,7 +2012,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         // eslint-disable-next-line @typescript-eslint/no-this-alias
@@ -2751,7 +2752,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -2901,7 +2902,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -3046,7 +3047,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -3192,7 +3193,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -3347,7 +3348,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -3498,7 +3499,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -3702,7 +3703,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -3869,7 +3870,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -4016,7 +4017,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -4203,7 +4204,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {
@@ -4357,7 +4358,7 @@ describe('Frontend contract behavior', () => {
 
       constructor(url: string) {
         this.url = url
-        if (!url.includes(`${runApiPath}/events`)) {
+        if (!url.includes('/workspace/api/live/events')) {
           return
         }
         setTimeout(() => {

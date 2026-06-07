@@ -543,37 +543,247 @@ def test_review_proposed_plan_return_truncates_historical_tool_output(tmp_path: 
     _assert_ui_tool_output_preview(snapshot, large_output)
 
 
-def test_conversation_events_stream_does_not_emit_initial_snapshot(product_api_client, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_conversation_events_endpoint_is_deprecated(product_api_client) -> None:
     state = _seed_tool_output_conversation(output="small output")
+    response = product_api_client.get(
+        f"/workspace/api/conversations/{state.conversation_id}/events",
+        params={"project_path": state.project_path},
+    )
+    assert response.status_code == 410
+    assert "/workspace/api/live/events" in response.text
 
-    async def timeout_immediately(awaitable, timeout):
-        awaitable.close()
-        raise asyncio.TimeoutError
 
-    monkeypatch.setattr(workspace_api.asyncio, "wait_for", timeout_immediately)
+def _workspace_live_events_endpoint() -> Callable[..., Any]:
+    for route in product_app.app.routes:
+        if getattr(route, "path", None) != "/workspace":
+            continue
+        for child_route in route.routes:
+            if getattr(child_route, "path", None) == "/api/live/events":
+                return child_route.endpoint
+    raise AssertionError("workspace live endpoint not registered")
 
-    class ConnectedRequest:
-        async def is_disconnected(self) -> bool:
-            return False
 
-    async def read_first_stream_chunk() -> str:
-        endpoint = None
-        for route in product_app.app.routes:
-            if getattr(route, "path", None) != "/workspace":
-                continue
-            for child_route in route.routes:
-                if getattr(child_route, "path", None) == "/api/conversations/{conversation_id}/events":
-                    endpoint = child_route.endpoint
-                    break
-        assert endpoint is not None
-        response = await endpoint(state.conversation_id, ConnectedRequest(), state.project_path)
-        iterator = response.body_iterator
-        try:
-            return await anext(iterator)
-        finally:
-            await iterator.aclose()
+class _ConnectedRequest:
+    async def is_disconnected(self) -> bool:
+        return False
 
-    assert asyncio.run(read_first_stream_chunk()) == ": keepalive\n\n"
+
+async def _read_first_workspace_live_event(**kwargs: Any) -> dict[str, Any]:
+    endpoint = _workspace_live_events_endpoint()
+    response = await endpoint(_ConnectedRequest(), **kwargs)
+    iterator = response.body_iterator
+    try:
+        chunk = await anext(iterator)
+    finally:
+        await iterator.aclose()
+    text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+    assert text.startswith("data: ")
+    return json.loads(text.removeprefix("data: ").strip())
+
+
+async def _read_workspace_live_events(count: int, **kwargs: Any) -> list[dict[str, Any]]:
+    endpoint = _workspace_live_events_endpoint()
+    response = await endpoint(_ConnectedRequest(), **kwargs)
+    iterator = response.body_iterator
+    chunks: list[str | bytes] = []
+    try:
+        for _ in range(count):
+            chunks.append(await anext(iterator))
+    finally:
+        await iterator.aclose()
+    events: list[dict[str, Any]] = []
+    for chunk in chunks:
+        text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+        assert text.startswith("data: ")
+        events.append(json.loads(text.removeprefix("data: ").strip()))
+    return events
+
+
+def test_workspace_live_events_replays_conversation_journal_after_revision() -> None:
+    service = _project_chat_service()
+    state = ConversationState(
+        conversation_id="conversation-live-replay",
+        project_path="/tmp/project-live-replay",
+        title="Replay",
+        created_at=TEST_TIMESTAMP,
+        updated_at=TEST_TIMESTAMP,
+        revision=1,
+        turns=[
+            ConversationTurn(
+                id="turn-user-live-replay",
+                role="user",
+                content="Replay this",
+                timestamp=TEST_TIMESTAMP,
+            )
+        ],
+    )
+    service._write_state(state)
+    service._publish_progress_payload(
+        None,
+        service._build_turn_upsert_payload(state, state.turns[0]),
+    )
+
+    event = asyncio.run(_read_first_workspace_live_event(
+        project_path=state.project_path,
+        conversation_id=state.conversation_id,
+        conversation_revision=0,
+        run_id=None,
+        run_sequence=None,
+        include_runs_overview=False,
+        include_triggers=False,
+    ))
+
+    assert event["type"] == "conversation.turn_upsert"
+    assert event["resource"] == {"kind": "conversation", "id": state.conversation_id}
+    assert event["cursor"] == {"kind": "conversation_revision", "value": 1}
+    assert event["payload"]["turn"]["id"] == "turn-user-live-replay"
+
+
+def test_workspace_live_events_replays_same_mutation_conversation_events_after_first_cursor() -> None:
+    service = _project_chat_service()
+    state = ConversationState(
+        conversation_id="conversation-live-replay-same-mutation",
+        project_path="/tmp/project-live-replay-same-mutation",
+        title="Replay same mutation",
+        created_at=TEST_TIMESTAMP,
+        updated_at=TEST_TIMESTAMP,
+        revision=0,
+        turns=[
+            ConversationTurn(
+                id="turn-assistant-live-replay-same-mutation",
+                role="assistant",
+                content="Streaming",
+                timestamp=TEST_TIMESTAMP,
+                status="streaming",
+            )
+        ],
+        segments=[
+            ConversationSegment(
+                id="segment-live-replay-same-mutation",
+                turn_id="turn-assistant-live-replay-same-mutation",
+                order=1,
+                kind="assistant_message",
+                role="assistant",
+                status="streaming",
+                timestamp=TEST_TIMESTAMP,
+                updated_at=TEST_TIMESTAMP,
+                content="Streaming",
+            )
+        ],
+    )
+    service._touch_conversation_state(state)
+    payloads = [
+        service._build_turn_upsert_payload(state, state.turns[0]),
+        service._build_segment_upsert_payload(state, state.segments[0]),
+    ]
+    service._stamp_progress_payloads_with_state_revision(state, payloads)
+    service._write_state(state)
+    for payload in payloads:
+        service._publish_progress_payload(None, payload)
+
+    first_event = asyncio.run(_read_first_workspace_live_event(
+        project_path=state.project_path,
+        conversation_id=state.conversation_id,
+        conversation_revision=0,
+        run_id=None,
+        run_sequence=None,
+        include_runs_overview=False,
+        include_triggers=False,
+    ))
+
+    assert first_event["type"] == "conversation.turn_upsert"
+    assert first_event["cursor"] == {"kind": "conversation_revision", "value": 1}
+
+    replayed_after_disconnect = asyncio.run(_read_first_workspace_live_event(
+        project_path=state.project_path,
+        conversation_id=state.conversation_id,
+        conversation_revision=first_event["cursor"]["value"],
+        run_id=None,
+        run_sequence=None,
+        include_runs_overview=False,
+        include_triggers=False,
+    ))
+
+    assert replayed_after_disconnect["type"] == "conversation.segment_upsert"
+    assert replayed_after_disconnect["cursor"] == {"kind": "conversation_revision", "value": 2}
+    assert replayed_after_disconnect["payload"]["segment"]["id"] == "segment-live-replay-same-mutation"
+
+
+def test_workspace_live_events_emits_targeted_resync_when_conversation_journal_cannot_replay() -> None:
+    service = _project_chat_service()
+    state = ConversationState(
+        conversation_id="conversation-live-resync",
+        project_path="/tmp/project-live-resync",
+        title="Resync",
+        created_at=TEST_TIMESTAMP,
+        updated_at=TEST_TIMESTAMP,
+        revision=3,
+    )
+    service._write_state(state)
+
+    event = asyncio.run(_read_first_workspace_live_event(
+        project_path=state.project_path,
+        conversation_id=state.conversation_id,
+        conversation_revision=1,
+        run_id=None,
+        run_sequence=None,
+        include_runs_overview=False,
+        include_triggers=False,
+    ))
+
+    assert event["type"] == "resync_required"
+    assert event["resource"] == {"kind": "conversation", "id": state.conversation_id}
+    assert event["reason"] == "conversation journal cannot replay from the requested revision"
+    assert event["payload"]["reason"] == "conversation journal cannot replay from the requested revision"
+
+
+def test_workspace_live_events_stops_conversation_replay_at_internal_gap() -> None:
+    service = _project_chat_service()
+    state = ConversationState(
+        conversation_id="conversation-live-internal-gap",
+        project_path="/tmp/project-live-internal-gap",
+        title="Internal gap",
+        created_at=TEST_TIMESTAMP,
+        updated_at=TEST_TIMESTAMP,
+        revision=4,
+        turns=[
+            ConversationTurn(
+                id="turn-internal-gap",
+                role="user",
+                content="Replay this",
+                timestamp=TEST_TIMESTAMP,
+            )
+        ],
+    )
+    service._write_state(state)
+    for revision in (2, 4):
+        service._publish_progress_payload(
+            None,
+            {
+                "type": "turn_upsert",
+                "conversation_id": state.conversation_id,
+                "project_path": state.project_path,
+                "revision": revision,
+                "turn": state.turns[0].to_dict(),
+            },
+        )
+
+    events = asyncio.run(_read_workspace_live_events(
+        2,
+        project_path=state.project_path,
+        conversation_id=state.conversation_id,
+        conversation_revision=1,
+        run_id=None,
+        run_sequence=None,
+        include_runs_overview=False,
+        include_triggers=False,
+    ))
+
+    assert events[0]["type"] == "conversation.turn_upsert"
+    assert events[0]["cursor"] == {"kind": "conversation_revision", "value": 2}
+    assert events[1]["type"] == "resync_required"
+    assert events[1]["resource"] == {"kind": "conversation", "id": state.conversation_id}
+    assert events[1]["reason"] == "conversation journal has a revision gap from the requested cursor"
 
 
 def test_codex_app_server_chat_session_resumes_request_user_input_after_answer_submission() -> None:
@@ -2098,8 +2308,9 @@ def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch
     )
 
     assert snapshot["schema_version"] == 5
-    assert snapshot["revision"] == 3
-    assert {payload["revision"] for payload in progress_updates} == {1, 2, 3}
+    progress_revisions = [payload["revision"] for payload in progress_updates]
+    assert snapshot["revision"] == max(progress_revisions)
+    assert progress_revisions == list(range(1, snapshot["revision"] + 1))
     assert snapshot["turns"][-1]["role"] == "assistant"
     assert snapshot["turns"][-1]["status"] == "complete"
     assert snapshot["turns"][-1]["content"] == "This looks like a Collatz implementation project."

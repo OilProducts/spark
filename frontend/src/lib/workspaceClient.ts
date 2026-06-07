@@ -27,7 +27,6 @@ export {
     type WorkspaceFlowResponse,
     type WorkspaceSettingsResponse,
     createTriggerValidated,
-    conversationEventsUrl,
     deleteConversationValidated,
     deleteTriggerValidated,
     deleteProjectValidated,
