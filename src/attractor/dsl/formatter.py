@@ -8,6 +8,10 @@ def canonicalize_dot(source: str) -> str:
     return format_dot(parse_dot(source))
 
 
+def canonicalize_readable_dot(source: str) -> str:
+    return format_readable_dot(parse_dot(source))
+
+
 def format_dot(graph: DotGraph) -> str:
     lines: list[str] = [f"digraph {graph.graph_id} {{"]
 
@@ -29,6 +33,80 @@ def format_dot(graph: DotGraph) -> str:
 
     lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+def format_readable_dot(graph: DotGraph) -> str:
+    lines: list[str] = [f"digraph {graph.graph_id} {{"]
+
+    if graph.graph_attrs:
+        lines.append(f"  graph [{_format_attrs(graph.graph_attrs)}];")
+    if graph.defaults.node:
+        lines.append(f"  node [{_format_attrs(graph.defaults.node)}];")
+    if graph.defaults.edge:
+        lines.append(f"  edge [{_format_attrs(graph.defaults.edge)}];")
+
+    outgoing_edges: dict[str, list[DotEdge]] = {}
+    edge_ids_by_source: dict[str, list[int]] = {}
+    emitted_edge_ids: set[int] = set()
+    for edge_index, edge in enumerate(graph.edges):
+        outgoing_edges.setdefault(edge.source, []).append(edge)
+        edge_ids_by_source.setdefault(edge.source, []).append(edge_index)
+
+    emitted_nodes: set[str] = set()
+
+    def emit_node(node_id: str) -> None:
+        if node_id in emitted_nodes or node_id not in graph.nodes:
+            return
+        emitted_nodes.add(node_id)
+        lines.append("")
+        node = graph.nodes[node_id]
+        lines.append(_format_node(node_id, node.attrs))
+        for edge, edge_index in zip(outgoing_edges.get(node_id, []), edge_ids_by_source.get(node_id, [])):
+            lines.append(_format_edge(edge))
+            emitted_edge_ids.add(edge_index)
+        for edge in outgoing_edges.get(node_id, []):
+            if edge.target not in emitted_nodes:
+                emit_node(edge.target)
+
+    start_node_id = _resolve_readable_start_node(graph)
+    if start_node_id is not None:
+        emit_node(start_node_id)
+
+    for node_id in graph.nodes:
+        emit_node(node_id)
+
+    for edge_index, edge in enumerate(graph.edges):
+        if edge_index not in emitted_edge_ids:
+            lines.append(_format_edge(edge))
+
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def _resolve_readable_start_node(graph: DotGraph) -> str | None:
+    shape_starts: list[str] = []
+    for node_id, node in graph.nodes.items():
+        shape = node.attrs.get("shape")
+        if shape is not None and str(shape.value) == "Mdiamond":
+            shape_starts.append(node_id)
+    if len(shape_starts) == 1:
+        return shape_starts[0]
+    for candidate in ("start", "Start"):
+        if candidate in graph.nodes:
+            return candidate
+    return None
+
+
+def _format_node(node_id: str, attrs: dict[str, DotAttribute]) -> str:
+    if attrs:
+        return f"  {node_id} [{_format_attrs(attrs)}];"
+    return f"  {node_id};"
+
+
+def _format_edge(edge: DotEdge) -> str:
+    if edge.attrs:
+        return f"  {edge.source} -> {edge.target} [{_format_attrs(edge.attrs)}];"
+    return f"  {edge.source} -> {edge.target};"
 
 
 def _edge_sort_key(edge: DotEdge) -> tuple[str, str, str]:

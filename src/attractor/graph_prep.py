@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Iterable, List, Mapping
 
 from attractor.dsl import Diagnostic, parse_dot, validate_graph
-from attractor.dsl.formatter import format_dot
+from attractor.dsl.formatter import format_readable_dot
 from attractor.dsl.models import DotAttribute, DotGraph
 
 
@@ -12,7 +12,7 @@ DEFAULT_MAX_RETRIES_KEY = "default_max_retries"
 
 def canonicalize_graph_source(source: str) -> str:
     graph = parse_dot(source)
-    return format_dot(graph)
+    return format_readable_dot(graph)
 
 
 def build_transform_pipeline(extra_transforms: Iterable[object] = ()) -> object:

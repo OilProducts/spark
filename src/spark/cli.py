@@ -10,6 +10,8 @@ from urllib.parse import quote
 
 import httpx
 
+from attractor.dsl import DotParseError, format_readable_dot, parse_dot
+from attractor.graph_prep import prepare_graph
 from attractor.validation_preview import preview_dot_source
 from spark.chat.response_parsing import (
     normalize_flow_run_request_payload,
@@ -134,6 +136,11 @@ def _build_agent_parser() -> argparse.ArgumentParser:
     flow_validate.add_argument("--text", action="store_true")
     flow_validate.add_argument("--base-url")
 
+    flow_format = flow_commands.add_parser("format", help="Format a DOT flow file")
+    flow_format.add_argument("--file", required=True)
+    flow_format.add_argument("--text", action="store_true")
+    flow_format.add_argument("--write", action="store_true")
+
     trigger = domains.add_parser("trigger", help="Workspace trigger management")
     trigger_commands = trigger.add_subparsers(dest="command")
 
@@ -191,6 +198,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_get_flow(args)
         if args.command == "validate":
             return _run_validate_flow(args)
+        if args.command == "format":
+            return _run_format_flow(args)
     if args.domain == "trigger":
         if args.command == "list":
             return _run_list_triggers(args)
@@ -537,6 +546,71 @@ def _run_validate_flow(args: argparse.Namespace) -> int:
         _print_validate_flow_text(response_payload)
         return 0
     _print_success_payload(response_payload)
+    return 0
+
+
+def _run_format_flow(args: argparse.Namespace) -> int:
+    flow_file = str(getattr(args, "file", "") or "").strip()
+    try:
+        flow_path = Path(flow_file).expanduser()
+        raw_content = flow_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        _print_error_payload({"ok": False, "error": f"Flow file not found: {flow_file}"})
+        return EXIT_GENERAL_FAILURE
+    except OSError as exc:
+        _print_error_payload({"ok": False, "error": f"Unable to read flow file {flow_file}: {exc}"})
+        return EXIT_GENERAL_FAILURE
+
+    try:
+        graph = parse_dot(raw_content)
+    except DotParseError as exc:
+        _print_error_payload({"ok": False, "error": f"invalid DOT: {exc}"})
+        return EXIT_GENERAL_FAILURE
+
+    _transformed_graph, diagnostics = prepare_graph(graph)
+    errors = [diagnostic for diagnostic in diagnostics if diagnostic.severity.value == "error"]
+    if errors:
+        _print_error_payload(
+            {
+                "ok": False,
+                "error": "validation errors prevent formatting this flow",
+                "diagnostics": [
+                    {
+                        "rule": diagnostic.rule_id,
+                        "rule_id": diagnostic.rule_id,
+                        "severity": diagnostic.severity.value,
+                        "message": diagnostic.message,
+                        "line": diagnostic.line,
+                        "node": diagnostic.node_id,
+                        "node_id": diagnostic.node_id,
+                    }
+                    for diagnostic in diagnostics
+                ],
+                "errors": [
+                    {
+                        "rule": diagnostic.rule_id,
+                        "rule_id": diagnostic.rule_id,
+                        "severity": diagnostic.severity.value,
+                        "message": diagnostic.message,
+                        "line": diagnostic.line,
+                        "node": diagnostic.node_id,
+                        "node_id": diagnostic.node_id,
+                    }
+                    for diagnostic in errors
+                ],
+            }
+        )
+        return EXIT_GENERAL_FAILURE
+
+    formatted = format_readable_dot(graph)
+    if args.write:
+        try:
+            flow_path.write_text(formatted, encoding="utf-8")
+        except OSError as exc:
+            _print_error_payload({"ok": False, "error": f"Unable to write flow file {flow_file}: {exc}"})
+            return EXIT_GENERAL_FAILURE
+    else:
+        print(formatted, end="" if formatted.endswith("\n") else "\n")
     return 0
 
 

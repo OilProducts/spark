@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from attractor.dsl import canonicalize_dot
+from attractor.dsl import canonicalize_dot, parse_dot, validate_graph
 from tests.contracts.frontend._support.dot_probe import run_canonical_flow_model_probe
 from tests.contracts.frontend._support.preview_api import preview_pipeline
 
@@ -33,6 +33,17 @@ digraph G {
     start -> missing
 }
 """
+
+
+def _assert_saved_dot_is_readable_equivalent(saved_content: str, source_content: str) -> None:
+    saved_graph = parse_dot(saved_content)
+    assert [diagnostic for diagnostic in validate_graph(saved_graph) if diagnostic.severity.value == "error"] == []
+    assert canonicalize_dot(saved_content) == canonicalize_dot(source_content)
+
+    lines = saved_content.splitlines()
+    assert lines.index('  start [shape="Mdiamond"];') < lines.index('  done [shape="Msquare"];')
+    assert lines[lines.index('  start [shape="Mdiamond"];') - 1] == ""
+    assert lines[lines.index('  start [shape="Mdiamond"];') + 1] == "  start -> done;"
 
 SPEC_VALID_NO_OP_SAVE_FIXTURES: tuple[str, ...] = (
     "tests/fixtures/flows/reference-1.1-03-graph-attrs.dot",
@@ -254,8 +265,9 @@ def test_save_flow_persists_valid_dot(attractor_api_client: TestClient, tmp_path
     payload = response.json()
     assert payload["status"] == "saved"
     assert payload["name"] == "good.dot"
-    assert (tmp_path / "flows" / "good.dot").read_text(encoding="utf-8") == canonicalize_dot(
-        VALID_FLOW
+    _assert_saved_dot_is_readable_equivalent(
+        (tmp_path / "flows" / "good.dot").read_text(encoding="utf-8"),
+        VALID_FLOW,
     )
 
 
@@ -272,8 +284,9 @@ def test_save_flow_persists_valid_dot_in_nested_directory(attractor_api_client: 
     payload = response.json()
     assert payload["status"] == "saved"
     assert payload["name"] == "nested/review/good.dot"
-    assert (tmp_path / "flows" / "nested" / "review" / "good.dot").read_text(encoding="utf-8") == canonicalize_dot(
-        VALID_FLOW
+    _assert_saved_dot_is_readable_equivalent(
+        (tmp_path / "flows" / "nested" / "review" / "good.dot").read_text(encoding="utf-8"),
+        VALID_FLOW,
     )
 
 

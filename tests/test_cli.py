@@ -480,6 +480,57 @@ def test_agent_run_launch_rejects_direct_image_or_worker_selection_options(place
     assert placement_option in result.stderr
 
 
+def test_flow_format_file_prints_readable_dot_by_default(tmp_path: Path, capsys) -> None:
+    flow_path = tmp_path / "workflow.dot"
+    flow_path.write_text(
+        """
+digraph Workflow {
+  done [shape=Msquare];
+  task [shape=box, prompt="Do work"];
+  start [shape=Mdiamond];
+  task -> done;
+  start -> task;
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = spark_cli.main(["flow", "format", "--file", str(flow_path)])
+
+    assert result == 0
+    output = capsys.readouterr().out
+    lines = output.splitlines()
+    assert lines.index('  start [shape="Mdiamond"];') < lines.index('  task [prompt="Do work", shape="box"];')
+    assert lines[lines.index('  start [shape="Mdiamond"];') - 1] == ""
+    assert lines[lines.index('  start [shape="Mdiamond"];') + 1] == "  start -> task;"
+    assert flow_path.read_text(encoding="utf-8").lstrip().startswith("digraph Workflow {\n  done")
+
+
+def test_flow_format_file_write_rewrites_readable_dot(tmp_path: Path, capsys) -> None:
+    flow_path = tmp_path / "workflow.dot"
+    flow_path.write_text(
+        """
+digraph Workflow {
+  done [shape=Msquare];
+  task [shape=box, prompt="Do work"];
+  start [shape=Mdiamond];
+  task -> done;
+  start -> task;
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = spark_cli.main(["flow", "format", "--file", str(flow_path), "--write"])
+
+    assert result == 0
+    assert capsys.readouterr().out == ""
+    saved = flow_path.read_text(encoding="utf-8")
+    lines = saved.splitlines()
+    assert lines.index('  start [shape="Mdiamond"];') < lines.index('  task [prompt="Do work", shape="box"];')
+    assert lines[lines.index('  task [prompt="Do work", shape="box"];') + 1] == "  task -> done;"
+
+
 def test_worker_entrypoint_help_remains_available_without_public_launch_selection_options() -> None:
     top_level_help = _run_cli_module("spark.server_cli", "--help")
     worker_serve_help = _run_cli_module("spark.server_cli", "worker", "serve", "--help")

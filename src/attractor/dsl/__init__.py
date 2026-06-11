@@ -1,7 +1,7 @@
 """DOT DSL parsing and validation."""
 
 from .models import Diagnostic, DiagnosticSeverity, DotGraph
-from .formatter import canonicalize_dot, format_dot
+from .formatter import canonicalize_dot, canonicalize_readable_dot, format_dot, format_readable_dot
 from .parser import DotParseError, normalize_graph, parse_dot
 from .validator import (
     ValidationError,
@@ -18,7 +18,9 @@ __all__ = [
     "DotGraph",
     "DotParseError",
     "canonicalize_dot",
+    "canonicalize_readable_dot",
     "format_dot",
+    "format_readable_dot",
     "normalize_graph",
     "parse_dot",
     "ValidationError",
