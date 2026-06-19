@@ -54,11 +54,17 @@ describe('attractorApi parsing', () => {
             ...run,
             pipeline_id: 'run-provider',
             completed_nodes: [],
-            progress: { current_node: 'start', completed_nodes: [] },
+            progress: { active_node: 'start', last_completed_node: null, completed_count: 0 },
         })).toMatchObject({
             provider: 'openai',
             llm_provider: 'openai',
             reasoning_effort: 'high',
+            current_node: 'start',
+            progress: {
+                active_node: 'start',
+                last_completed_node: null,
+                completed_count: 0,
+            },
         })
 
         expect(parseRunsListResponse({ runs: [run] }).runs[0]).toMatchObject({

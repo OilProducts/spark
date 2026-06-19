@@ -102,12 +102,14 @@ const buildPipelineStatusPayload = (
   runRecord: Record<string, unknown>,
   options?: {
     currentNode?: string | null
+    lastCompletedNode?: string | null
     completedNodes?: string[]
     overrides?: Record<string, unknown>
   },
 ) => {
   const currentNode = options?.currentNode ?? null
   const completedNodes = options?.completedNodes ?? []
+  const lastCompletedNode = options?.lastCompletedNode ?? completedNodes.at(-1) ?? null
   return {
     pipeline_id: String(runRecord.run_id ?? ''),
     run_id: String(runRecord.run_id ?? ''),
@@ -127,11 +129,11 @@ const buildPipelineStatusPayload = (
     ended_at: (runRecord.ended_at as string | null | undefined) ?? null,
     last_error: (runRecord.last_error as string | null | undefined) ?? '',
     token_usage: (runRecord.token_usage as number | null | undefined) ?? 0,
-    current_node: currentNode,
     completed_nodes: completedNodes,
     progress: {
-      current_node: currentNode,
-      completed_nodes: completedNodes,
+      active_node: currentNode,
+      last_completed_node: lastCompletedNode,
+      completed_count: completedNodes.length,
     },
     continued_from_run_id: null,
     continued_from_node: null,
@@ -719,7 +721,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({ runtime: 'idle' })
         }
         if (url.endsWith(`/attractor/pipelines/${encodeURIComponent(runId)}/checkpoint`)) {
-          return jsonResponse({ pipeline_id: runId, checkpoint: { current_node: null, completed_nodes: [] } })
+          return jsonResponse({ pipeline_id: runId, checkpoint: { active_node: null, last_completed_node: null, completed_nodes: [] } })
         }
         if (url.endsWith(`/attractor/pipelines/${encodeURIComponent(runId)}/context`)) {
           return jsonResponse({ pipeline_id: runId, context: {} })
@@ -1075,10 +1077,10 @@ describe('Frontend contract behavior', () => {
     expect(startPayload).not.toHaveProperty('execution_container_image')
     expect(startPayload).not.toHaveProperty('execution_profile_id')
 
-    const remoteRunSnapshot = {
-      run_id: 'run-remote-snapshot',
-      pipeline_id: 'run-remote-snapshot',
-      flow_name: 'remote.dot',
+    const localRunSnapshot = {
+      run_id: 'run-local-snapshot',
+      pipeline_id: 'run-local-snapshot',
+      flow_name: 'local.dot',
       status: 'completed',
       outcome: 'success',
       working_directory: '/control/project',
@@ -1089,59 +1091,37 @@ describe('Frontend contract behavior', () => {
       started_at: '2026-04-30T12:00:00Z',
       ended_at: '2026-04-30T12:02:00Z',
       last_error: '',
-      execution_mode: 'remote_worker',
-      execution_profile_id: 'remote-fast',
-      execution_worker_id: 'worker-a',
-      execution_worker_label: 'Worker A',
-      execution_worker_base_url: 'https://worker.example',
-      execution_container_image: 'spark-worker:launch',
-      execution_mapped_project_path: '/srv/runtime/runs/run-remote-snapshot/project',
-      execution_worker_runtime_root: '/srv/runtime',
-      execution_worker_version: '1.2.3',
-      execution_worker_capabilities: { shell: true },
+      execution_mode: 'local_container',
+      execution_profile_id: 'local-dev',
+      execution_container_image: 'spark-exec:launch',
       execution_profile_capabilities: ['shell'],
       cleanup_error: 'Run cleanup failed: container cleanup failed',
     }
     const statusSnapshot = parsePipelineStatusResponse({
-      ...remoteRunSnapshot,
+      ...localRunSnapshot,
       completed_nodes: ['start', 'done'],
-      progress: { current_node: null, completed_nodes: ['start', 'done'] },
+      progress: { active_node: null, last_completed_node: 'done', completed_count: 2 },
     })
-    const listSnapshot = parseRunsListResponse({ runs: [remoteRunSnapshot] }).runs[0]
+    const listSnapshot = parseRunsListResponse({ runs: [localRunSnapshot] }).runs[0]
 
     expect(statusSnapshot).toMatchObject({
-      execution_mode: 'remote_worker',
-      execution_profile_id: 'remote-fast',
-      execution_worker_id: 'worker-a',
-      execution_worker_label: 'Worker A',
-      execution_worker_base_url: 'https://worker.example',
-      execution_container_image: 'spark-worker:launch',
-      execution_mapped_project_path: '/srv/runtime/runs/run-remote-snapshot/project',
-      execution_worker_runtime_root: '/srv/runtime',
-      execution_worker_version: '1.2.3',
-      execution_worker_capabilities: { shell: true },
+      execution_mode: 'local_container',
+      execution_profile_id: 'local-dev',
+      execution_container_image: 'spark-exec:launch',
       execution_profile_capabilities: ['shell'],
       cleanup_error: 'Run cleanup failed: container cleanup failed',
     })
     expect(listSnapshot).toMatchObject({
-      execution_mode: 'remote_worker',
-      execution_profile_id: 'remote-fast',
-      execution_worker_id: 'worker-a',
-      execution_worker_label: 'Worker A',
-      execution_worker_base_url: 'https://worker.example',
-      execution_container_image: 'spark-worker:launch',
-      execution_mapped_project_path: '/srv/runtime/runs/run-remote-snapshot/project',
-      execution_worker_runtime_root: '/srv/runtime',
-      execution_worker_version: '1.2.3',
-      execution_worker_capabilities: { shell: true },
+      execution_mode: 'local_container',
+      execution_profile_id: 'local-dev',
+      execution_container_image: 'spark-exec:launch',
       execution_profile_capabilities: ['shell'],
       cleanup_error: 'Run cleanup failed: container cleanup failed',
     })
 
     const settingsPayload = parseWorkspaceSettingsResponse({
       execution_placement: {
-        execution_modes: ['native', 'local_container', 'remote_worker'],
-        protocol: { expected_worker_protocol_version: 'v1' },
+        execution_modes: ['native', 'local_container'],
         config: {
           filename: 'execution-profiles.toml',
           path: '/tmp/config/execution-profiles.toml',
@@ -1149,63 +1129,25 @@ describe('Frontend contract behavior', () => {
           loaded: true,
           synthesized_native_default: false,
         },
-        default_execution_profile_id: 'remote-fast',
+        default_execution_profile_id: 'local-dev',
         validation_errors: [],
         profiles: [
           {
-            id: 'remote-fast',
-            label: 'Remote Fast',
-            mode: 'remote_worker',
+            id: 'local-dev',
+            label: 'Local Dev',
+            mode: 'local_container',
             enabled: true,
-            worker_id: 'worker-a',
-            image: 'spark-worker:latest',
+            image: 'spark-exec:latest',
             capabilities: ['containers'],
             metadata: {},
-          },
-        ],
-        workers: [
-          {
-            id: 'worker-a',
-            label: 'Worker A',
-            base_url: 'https://worker.example',
-            auth_token_env: 'WORKER_A_TOKEN',
-            enabled: true,
-            capabilities: ['containers'],
-            metadata: {},
-            health: {
-              worker_id: 'worker-a',
-              worker_version: '1.2.3',
-              protocol_version: 'v1',
-              status: 'ready',
-              capabilities: { containers: true },
-            },
-            health_error: null,
-            worker_info: {
-              worker_id: 'worker-a',
-              worker_version: '1.2.3',
-              protocol_version: 'v1',
-              status: 'ready',
-              capabilities: { containers: true },
-              supported_images: ['spark-worker:latest'],
-            },
-            worker_info_error: null,
-            status: 'ready',
-            versions: {
-              worker_version: '1.2.3',
-              protocol_version: 'v1',
-              expected_protocol_version: 'v1',
-            },
-            protocol_compatible: true,
-            compatibility: { compatible: true, signals: [] },
           },
         ],
       },
     })
 
-    expect(settingsPayload.execution_placement.execution_modes).toEqual(['native', 'local_container', 'remote_worker'])
-    expect(settingsPayload.execution_placement.profiles[0]?.mode).toBe('remote_worker')
-    expect(settingsPayload.execution_placement.workers[0]?.worker_info?.['supported_images']).toEqual(['spark-worker:latest'])
-    expect(settingsPayload.execution_placement.workers[0]?.protocol_compatible).toBe(true)
+    expect(settingsPayload.execution_placement.execution_modes).toEqual(['native', 'local_container'])
+    expect(settingsPayload.execution_placement.profiles[0]?.mode).toBe('local_container')
+    expect(settingsPayload.execution_placement.profiles[0]?.image).toBe('spark-exec:latest')
   })
 
   it('[CID:12.3.03] retrieves project conversation state by project identity', async () => {
@@ -2714,7 +2656,8 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              current_node: 'review_gate',
+              active_node: 'review_gate',
+              last_completed_node: 'start',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -2861,7 +2804,8 @@ describe('Frontend contract behavior', () => {
         return jsonResponse({
           pipeline_id: runId,
           checkpoint: {
-            current_node: 'review_gate',
+            active_node: 'review_gate',
+            last_completed_node: 'start',
             completed_nodes: ['start'],
             retry_counts: {},
           },
@@ -3009,7 +2953,8 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              current_node: 'review_gate',
+              active_node: 'review_gate',
+              last_completed_node: 'start',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3155,7 +3100,8 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              current_node: 'review_gate',
+              active_node: 'review_gate',
+              last_completed_node: 'start',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3307,7 +3253,8 @@ describe('Frontend contract behavior', () => {
         return jsonResponse({
           pipeline_id: runId,
           checkpoint: {
-            current_node: 'review_gate',
+            active_node: 'review_gate',
+            last_completed_node: 'start',
             completed_nodes: ['start'],
             retry_counts: {},
           },
@@ -3461,7 +3408,8 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              current_node: 'review_gate',
+              active_node: 'review_gate',
+              last_completed_node: 'start',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3665,7 +3613,8 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              current_node: 'review_gate',
+              active_node: 'review_gate',
+              last_completed_node: 'start',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3832,7 +3781,8 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              current_node: 'review_gate',
+              active_node: 'review_gate',
+              last_completed_node: 'start',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3979,7 +3929,8 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              current_node: 'review_gate',
+              active_node: 'review_gate',
+              last_completed_node: 'start',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -4166,7 +4117,8 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              current_node: 'review_gate',
+              active_node: 'review_gate',
+              last_completed_node: 'start',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -4320,7 +4272,8 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              current_node: 'review_gate',
+              active_node: 'review_gate',
+              last_completed_node: 'start',
               completed_nodes: ['start'],
               retry_counts: {},
             },

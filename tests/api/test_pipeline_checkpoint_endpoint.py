@@ -41,7 +41,8 @@ def test_get_pipeline_checkpoint_returns_current_state_for_known_pipeline(
 
     checkpoint = Checkpoint(
         timestamp="2026-01-01T00:00:00Z",
-        current_node="implement",
+        active_node="implement",
+        last_completed_node="plan",
         completed_nodes=["start", "plan"],
         context={"graph.goal": "Ship feature", "outcome": "success"},
         retry_counts={"implement": 1},

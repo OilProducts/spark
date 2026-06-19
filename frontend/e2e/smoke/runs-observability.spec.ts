@@ -151,8 +151,9 @@ async function stubRunSummary(page: Page, run: SmokeRunRecord) {
         ...run,
         completed_nodes: run.current_node ? [run.current_node] : [],
         progress: {
-          current_node: run.current_node ?? null,
-          completed_nodes: run.current_node ? [run.current_node] : [],
+          active_node: run.current_node ?? null,
+          last_completed_node: run.current_node ?? null,
+          completed_count: run.current_node ? 1 : 0,
         },
       }),
     })
@@ -445,7 +446,8 @@ test('run checkpoint viewer fetches checkpoint payload for item 9.2-01', async (
       body: JSON.stringify({
         pipeline_id: run.run_id,
         checkpoint: {
-          current_node: 'implement',
+          active_node: 'implement',
+          last_completed_node: 'plan',
           completed_nodes: ['start', 'plan'],
           retry_counts: { implement: 1 },
           timestamp: '2026-03-03T12:01:30Z',
@@ -458,7 +460,7 @@ test('run checkpoint viewer fetches checkpoint payload for item 9.2-01', async (
   await openRunsAdvancedEvidence(page)
 
   await expect(page.getByTestId('run-checkpoint-panel')).toBeVisible()
-  await expect(page.getByTestId('run-checkpoint-payload')).toContainText('"current_node": "implement"')
+  await expect(page.getByTestId('run-checkpoint-payload')).toContainText('"active_node": "implement"')
   await expect(page.getByTestId('run-checkpoint-payload')).toContainText('"retry_counts":')
   await expect.poll(() => checkpointFetchCount).toBeGreaterThanOrEqual(1)
 

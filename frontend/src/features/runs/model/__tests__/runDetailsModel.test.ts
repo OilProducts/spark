@@ -59,7 +59,8 @@ describe('runDetailsModel', () => {
     const summary = buildCheckpointSummary({
       pipeline_id: 'run-1',
       checkpoint: {
-        current_node: 'apply',
+        active_node: 'apply',
+        last_completed_node: 'review',
         completed_nodes: ['plan', 'review'],
         retry_counts: { apply: 2 },
       },
@@ -69,6 +70,23 @@ describe('runDetailsModel', () => {
       checkpointCompletedNodes: 'plan, review',
       checkpointCurrentNode: 'apply',
       checkpointRetryCounters: 'apply: 2',
+    })
+  })
+
+  it('does not use a terminal checkpoint last completed node as the resume node', () => {
+    const summary = buildCheckpointSummary({
+      pipeline_id: 'run-1',
+      checkpoint: {
+        active_node: null,
+        last_completed_node: 'done',
+        completed_nodes: ['plan', 'review', 'done'],
+        retry_counts: {},
+      },
+    })
+
+    expect(summary).toMatchObject({
+      checkpointCompletedNodes: 'plan, review, done',
+      checkpointCurrentNode: '—',
     })
   })
 })

@@ -135,8 +135,9 @@ export interface PipelineStatusResponse {
     current_node?: string | null
     completed_nodes?: string[]
     progress?: {
-        current_node?: string | null
-        completed_nodes?: string[]
+        active_node?: string | null
+        last_completed_node?: string | null
+        completed_count?: number
     }
     started_at?: string
     ended_at?: string | null
@@ -150,14 +151,7 @@ export interface PipelineStatusResponse {
     child_invocation_index?: number | null
     execution_mode?: string
     execution_profile_id?: string
-    execution_worker_id?: string
-    execution_worker_label?: string
-    execution_worker_base_url?: string
     execution_container_image?: string | null
-    execution_mapped_project_path?: string
-    execution_worker_runtime_root?: string
-    execution_worker_version?: string
-    execution_worker_capabilities?: unknown
     execution_profile_capabilities?: unknown
     execution_lock?: {
         scope: string
@@ -272,14 +266,7 @@ export interface RunRecordResponse {
     child_invocation_index?: number | null
     execution_mode?: string
     execution_profile_id?: string
-    execution_worker_id?: string
-    execution_worker_label?: string
-    execution_worker_base_url?: string
     execution_container_image?: string | null
-    execution_mapped_project_path?: string
-    execution_worker_runtime_root?: string
-    execution_worker_version?: string
-    execution_worker_capabilities?: unknown
     execution_profile_capabilities?: unknown
     execution_lock?: {
         scope: string
@@ -449,30 +436,30 @@ export function parsePipelineStatusResponse(payload: unknown, endpoint = '/attra
     const record = expectObjectRecord(payload, endpoint)
     const pipelineId = expectString(record.pipeline_id, endpoint, 'pipeline_id')
     const progressRecord = asUnknownRecord(record.progress)
-    const progressCurrentNode = typeof progressRecord?.current_node === 'string'
-        ? progressRecord.current_node
-        : progressRecord?.current_node === null
-            ? null
-            : null
-    const progressCompletedNodes = asOptionalStringArray(progressRecord?.completed_nodes) ?? undefined
+    const progressActiveNode = asOptionalNullableString(progressRecord?.active_node) ?? null
+    const progressLastCompletedNode = asOptionalNullableString(progressRecord?.last_completed_node) ?? null
+    const rawProgressCompletedCount = progressRecord?.completed_count
+    const progressCompletedCount = typeof rawProgressCompletedCount === 'number' && Number.isFinite(rawProgressCompletedCount)
+        ? rawProgressCompletedCount
+        : undefined
     const runRecord = parseRunRecord({
         ...record,
         run_id: typeof record.run_id === 'string' ? record.run_id : pipelineId,
-        current_node: progressCurrentNode,
-    })
+    }, { currentNode: progressActiveNode })
     if (!runRecord) {
         throw new ApiSchemaError(endpoint, 'Expected a valid run detail payload.')
     }
-    const completedNodes = asOptionalStringArray(record.completed_nodes) ?? progressCompletedNodes
+    const completedNodes = asOptionalStringArray(record.completed_nodes)
     return {
         pipeline_id: pipelineId,
         ...runRecord,
-        current_node: progressCurrentNode,
+        current_node: progressActiveNode,
         completed_nodes: completedNodes,
         progress: progressRecord
             ? {
-                current_node: progressCurrentNode,
-                completed_nodes: progressCompletedNodes,
+                active_node: progressActiveNode,
+                last_completed_node: progressLastCompletedNode,
+                completed_count: progressCompletedCount,
             }
             : undefined,
     }
@@ -705,7 +692,10 @@ function parseEstimatedModelCost(value: unknown): EstimatedModelCostResponse | n
     }
 }
 
-function parseRunRecord(payload: unknown): RunRecordResponse | null {
+function parseRunRecord(
+    payload: unknown,
+    options: { currentNode?: string | null } = {},
+): RunRecordResponse | null {
     const record = asUnknownRecord(payload)
     if (!record) {
         return null
@@ -741,7 +731,7 @@ function parseRunRecord(payload: unknown): RunRecordResponse | null {
                 : undefined,
         token_usage_breakdown: parseTokenUsageBreakdown(record.token_usage_breakdown),
         estimated_model_cost: parseEstimatedModelCost(record.estimated_model_cost),
-        current_node: asOptionalNullableString(record.current_node),
+        current_node: options.currentNode,
         continued_from_run_id: asOptionalNullableString(record.continued_from_run_id),
         continued_from_node: asOptionalNullableString(record.continued_from_node),
         continued_from_flow_mode: asOptionalNullableString(record.continued_from_flow_mode),
@@ -756,14 +746,7 @@ function parseRunRecord(payload: unknown): RunRecordResponse | null {
                 : undefined,
         execution_mode: asOptionalString(record.execution_mode),
         execution_profile_id: asOptionalString(record.execution_profile_id),
-        execution_worker_id: asOptionalString(record.execution_worker_id),
-        execution_worker_label: asOptionalString(record.execution_worker_label),
-        execution_worker_base_url: asOptionalString(record.execution_worker_base_url),
         execution_container_image: asOptionalNullableString(record.execution_container_image),
-        execution_mapped_project_path: asOptionalString(record.execution_mapped_project_path),
-        execution_worker_runtime_root: asOptionalString(record.execution_worker_runtime_root),
-        execution_worker_version: asOptionalString(record.execution_worker_version),
-        execution_worker_capabilities: record.execution_worker_capabilities,
         execution_profile_capabilities: record.execution_profile_capabilities,
         execution_lock: asUnknownRecord(record.execution_lock)
             ? {

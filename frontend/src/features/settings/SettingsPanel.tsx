@@ -107,7 +107,7 @@ export function SettingsPanel() {
 
                 <Card className="gap-4 py-4 shadow-sm">
                     <CardHeader className="gap-1 px-4">
-                        <CardTitle className="text-sm">Execution Workers</CardTitle>
+                        <CardTitle className="text-sm">Execution Profiles</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4 px-4 pt-0">
                         {settingsError ? (
@@ -117,7 +117,7 @@ export function SettingsPanel() {
                         ) : null}
                         {executionPlacement ? (
                             <>
-                                <div className="grid gap-3 text-xs sm:grid-cols-3">
+                                <div className="grid gap-3 text-xs sm:grid-cols-2">
                                     <div>
                                         <div className="text-muted-foreground">Modes</div>
                                         <div className="mt-1 font-medium text-foreground">
@@ -128,12 +128,6 @@ export function SettingsPanel() {
                                         <div className="text-muted-foreground">Default Profile</div>
                                         <div className="mt-1 font-medium text-foreground">
                                             {executionPlacement.default_execution_profile_id || 'runtime default'}
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <div className="text-muted-foreground">Protocol</div>
-                                        <div className="mt-1 font-medium text-foreground">
-                                            {executionPlacement.protocol.expected_worker_protocol_version}
                                         </div>
                                     </div>
                                 </div>
@@ -160,39 +154,9 @@ export function SettingsPanel() {
                                                         {profile.enabled ? 'enabled' : 'disabled'}
                                                     </span>
                                                 </div>
-                                                {profile.worker_id || profile.image ? (
+                                                {profile.image ? (
                                                     <div className="mt-1 text-muted-foreground">
-                                                        {[profile.worker_id ? `worker ${profile.worker_id}` : null, profile.image].filter(Boolean).join(' / ')}
-                                                    </div>
-                                                ) : null}
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <div className="text-xs font-medium text-muted-foreground">Workers</div>
-                                    <div className="grid gap-2">
-                                        {executionPlacement.workers.length === 0 ? (
-                                            <div className="rounded border border-border px-3 py-2 text-xs text-muted-foreground">
-                                                No remote workers configured.
-                                            </div>
-                                        ) : executionPlacement.workers.map((worker) => (
-                                            <div key={worker.id} className="rounded border border-border px-3 py-2 text-xs">
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    <span className="font-medium text-foreground">{worker.label}</span>
-                                                    <span className="text-muted-foreground">{worker.status || 'unknown'}</span>
-                                                    <span className={worker.protocol_compatible ? 'text-emerald-700' : 'text-muted-foreground'}>
-                                                        {worker.protocol_compatible ? 'compatible' : 'not verified'}
-                                                    </span>
-                                                </div>
-                                                <div className="mt-1 break-all text-muted-foreground">{worker.base_url}</div>
-                                                <div className="mt-1 text-muted-foreground">
-                                                    worker {worker.versions.worker_version || 'unknown'} / protocol {worker.versions.protocol_version || worker.versions.expected_protocol_version}
-                                                </div>
-                                                {worker.health_error || worker.worker_info_error ? (
-                                                    <div className="mt-1 text-destructive">
-                                                        {(worker.health_error?.message as string | undefined) || (worker.worker_info_error?.message as string | undefined)}
+                                                        {profile.image}
                                                     </div>
                                                 ) : null}
                                             </div>

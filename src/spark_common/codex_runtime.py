@@ -111,9 +111,15 @@ def build_codex_runtime_environment() -> dict[str, str]:
         if source is None:
             continue
         destination = codex_home / file_name
-        _copy_file_if_changed(source, destination)
+        try:
+            _copy_file_if_changed(source, destination)
+        except OSError:
+            pass
     for candidate in seed_candidates:
-        _copy_tree_contents(candidate / "plugins" / "cache", codex_home / "plugins" / "cache")
+        try:
+            _copy_tree_contents(candidate / "plugins" / "cache", codex_home / "plugins" / "cache")
+        except (OSError, shutil.Error):
+            pass
 
     env.update(
         {

@@ -478,7 +478,8 @@ def test_initialize_creates_run_dir_and_seed_checkpoint_with_transformed_graph(
 
     checkpoint = load_checkpoint(run_root / "state.json")
     assert checkpoint is not None
-    assert checkpoint.current_node == "start"
+    assert checkpoint.active_node == "start"
+    assert checkpoint.last_completed_node is None
     assert checkpoint.completed_nodes == []
     assert checkpoint.context["graph.goal"] == "Ship API"
     assert checkpoint.context["graph.default_max_retries"] == 7

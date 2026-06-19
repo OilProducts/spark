@@ -216,6 +216,13 @@ class DockerContainerTransport:
         for key, value in {"spark.run_id": self.run_id, **self.labels}.items():
             if str(value).strip():
                 args.extend(["--label", f"{key}={value}"])
+        container_user = _container_user(
+            project_path=self.project_path,
+            run_root=self.run_root,
+            spark_runtime_root=self.spark_runtime_root,
+        )
+        if container_user:
+            args.extend(["--user", container_user])
         for mount in _dedupe(mounts):
             args.extend(["-v", mount])
         for key, value in self.env.items():
@@ -455,6 +462,63 @@ def _spark_runtime_root() -> Path | None:
     if spark_home:
         return Path(spark_home).expanduser() / "runtime" / "codex"
     return None
+
+
+def _container_user(
+    *,
+    project_path: Path,
+    run_root: Path,
+    spark_runtime_root: Path | None,
+) -> str | None:
+    for uid_key, gid_key in (
+        ("SPARK_CONTAINER_UID", "SPARK_CONTAINER_GID"),
+        ("SPARK_DOCKER_HOST_UID", "SPARK_DOCKER_HOST_GID"),
+        ("HOST_UID", "HOST_GID"),
+    ):
+        user = _uid_gid_from_env(uid_key, gid_key)
+        if user is not None:
+            return user
+
+    for path in (spark_runtime_root, run_root.parent, project_path):
+        owner = _uid_gid_from_path(path) if path is not None else None
+        if owner is not None and owner[0] != 0:
+            return f"{owner[0]}:{owner[1]}"
+
+    uid = os.getuid()
+    gid = os.getgid()
+    if uid == 0:
+        return None
+    return f"{uid}:{gid}"
+
+
+def _uid_gid_from_env(uid_key: str, gid_key: str) -> str | None:
+    raw_uid = str(os.environ.get(uid_key, "")).strip()
+    raw_gid = str(os.environ.get(gid_key, "")).strip()
+    if not raw_uid and not raw_gid:
+        return None
+    if not raw_uid or not raw_gid:
+        raise ContainerExecutionError(f"{uid_key} and {gid_key} must be provided together.")
+    try:
+        uid = int(raw_uid)
+        gid = int(raw_gid)
+    except ValueError as exc:
+        raise ContainerExecutionError(f"{uid_key} and {gid_key} must be integer values.") from exc
+    if uid < 0 or gid < 0:
+        raise ContainerExecutionError(f"{uid_key} and {gid_key} must be non-negative integer values.")
+    return f"{uid}:{gid}"
+
+
+def _uid_gid_from_path(path: Path) -> tuple[int, int] | None:
+    candidate = path.expanduser()
+    while True:
+        try:
+            stat_result = candidate.stat()
+            return stat_result.st_uid, stat_result.st_gid
+        except OSError:
+            parent = candidate.parent
+            if parent == candidate:
+                return None
+            candidate = parent
 
 
 def _mount_arg(source: Path, target: Path) -> str:

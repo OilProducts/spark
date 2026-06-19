@@ -302,6 +302,7 @@ just run-docker
 
 That stack keeps the container's internal Spark home at `/spark`, but bind-mounts it from `${SPARK_DOCKER_HOME:-$HOME/.spark-docker}` on the host.
 Packaged Docker state therefore lives under `~/.spark-docker` by default, seeded packaged flows appear at `~/.spark-docker/flows`, and provider secrets for that runtime belong in `~/.spark-docker/config/provider.env`.
+The packaged container runs as the launching user's UID/GID so files written under the host-mounted Spark home remain editable by that user.
 On first launch through `just run-docker`, Codex auth and config are seeded from `${CODEX_HOME:-$HOME/.codex}` into `~/.spark-docker/runtime/codex/.codex/` when `auth.json` or `config.toml` exist on the host and are not already present in the packaged Docker home.
 Existing packaged Docker Codex auth and config files are preserved, so that runtime can keep separate credentials after initialization.
 Use a different host location with:
@@ -356,6 +357,44 @@ Important path overrides:
 Spark-managed Codex runtime state defaults to `~/.spark/runtime/codex`, or `<SPARK_HOME>/runtime/codex` when `SPARK_HOME` is set. Set `ATTRACTOR_CODEX_RUNTIME_ROOT` only when you need to force a different runtime root.
 
 `~/.spark/config/prompts.toml` stores user-configurable prompt templates and is created on first startup.
+
+### Execution Profiles
+
+Spark selects where runs execute through profiles in `~/.spark/config/execution-profiles.toml`. Supported profile modes are:
+
+- `native`: run directly in the Spark server environment.
+- `local_container`: run each node through the local container runner. These profiles must set `image`.
+
+When `execution-profiles.toml` is absent and no profile is explicitly selected, Spark synthesizes a native profile named `native`. If a project, workspace default, chat approval, CLI call, or launch API selects a profile, that profile must exist in the config file and be enabled.
+
+Example:
+
+```toml
+[defaults]
+execution_profile_id = "local-dev"
+
+[profiles.native-dev]
+mode = "native"
+label = "Native Dev"
+
+[profiles.local-dev]
+mode = "local_container"
+label = "Local Container Dev"
+image = "spark-exec:latest"
+enabled = true
+capabilities = ["network"]
+metadata = { owner = "platform" }
+```
+
+Profile fields:
+
+- `mode` and `label` are required for every configured profile.
+- `image` is required for `local_container` profiles and ignored for `native` profiles.
+- `enabled` is optional and defaults to `true`; disabled profiles remain visible but cannot be selected.
+- `capabilities` is an optional array of non-empty strings.
+- `metadata` is an optional table passed through with the profile.
+
+The config shape is `[defaults]` plus `[profiles.<profile-id>]` tables. Worker tables such as `[workers.*]` are not part of the supported execution profile contract.
 
 ## API Overview
 

@@ -54,22 +54,15 @@ const renderSummary = (run: RunRecord) => render(
 describe('RunSummaryCard', () => {
     it('displays execution placement metadata when a run has execution fields', () => {
         renderSummary(makeRun({
-            execution_profile_id: 'remote-fast',
-            execution_mode: 'remote_worker',
-            execution_worker_id: 'worker-a',
-            execution_worker_label: 'Worker A',
-            execution_container_image: 'spark-worker:latest',
-            execution_mapped_project_path: '/srv/runtime/runs/run-1/project',
-            execution_worker_runtime_root: '/srv/runtime',
+            execution_profile_id: 'local-dev',
+            execution_mode: 'local_container',
+            execution_container_image: 'spark-exec:latest',
         }))
 
         expect(screen.getByTestId('run-summary-section-execution')).toHaveTextContent('Execution')
-        expect(screen.getByTestId('run-summary-execution-profile')).toHaveTextContent('remote-fast')
-        expect(screen.getByTestId('run-summary-execution-mode')).toHaveTextContent('remote_worker')
-        expect(screen.getByTestId('run-summary-execution-container-image')).toHaveTextContent('spark-worker:latest')
-        expect(screen.getByTestId('run-summary-execution-worker')).toHaveTextContent('Worker A (worker-a)')
-        expect(screen.getByTestId('run-summary-execution-mapped-project-path')).toHaveTextContent('/srv/runtime/runs/run-1/project')
-        expect(screen.getByTestId('run-summary-execution-worker-runtime-root')).toHaveTextContent('/srv/runtime')
+        expect(screen.getByTestId('run-summary-execution-profile')).toHaveTextContent('local-dev')
+        expect(screen.getByTestId('run-summary-execution-mode')).toHaveTextContent('local_container')
+        expect(screen.getByTestId('run-summary-execution-container-image')).toHaveTextContent('spark-exec:latest')
     })
 
     it('omits the execution section for legacy runs without execution metadata', () => {

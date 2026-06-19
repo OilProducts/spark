@@ -50,10 +50,9 @@ const mod = await import(pathToFileURL(process.env.PIPELINE_START_PAYLOAD_JS_PAT
 const flowContent = `
 digraph G {
   graph [
-    execution_profile_id="dot-remote",
-    execution_mode="remote_worker",
+    execution_profile_id="dot-local",
+    execution_mode="local_container",
     execution_container_image="dot-image",
-    worker="dot-worker"
   ]
   start [shape=Mdiamond]
   done [shape=Msquare]
@@ -74,7 +73,7 @@ if (payload.execution_profile_id !== 'launch-profile') {
 if ('project_default_execution_profile_id' in payload) {
   throw new Error('explicit launch profile must take precedence over project default')
 }
-for (const key of ['execution_mode', 'execution_container_image', 'execution_worker_id', 'worker']) {
+for (const key of ['execution_mode', 'execution_container_image']) {
   if (key in payload) {
     throw new Error(`DOT-authored placement key leaked into launch payload: ${key}`)
   }

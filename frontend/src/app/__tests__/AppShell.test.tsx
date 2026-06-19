@@ -177,8 +177,7 @@ const jsonResponse = (payload: unknown, init?: ResponseInit) =>
 
 const buildWorkspaceSettingsPayload = (overrides: Record<string, unknown> = {}) => ({
   execution_placement: {
-    execution_modes: ['native', 'local_container', 'remote_worker'],
-    protocol: { expected_worker_protocol_version: 'v1' },
+    execution_modes: ['native', 'local_container'],
     config: {
       filename: 'execution-profiles.toml',
       path: '/tmp/spark/execution-profiles.toml',
@@ -193,18 +192,16 @@ const buildWorkspaceSettingsPayload = (overrides: Record<string, unknown> = {}) 
         label: 'Native',
         mode: 'native',
         enabled: true,
-        worker_id: null,
         image: null,
         capabilities: {},
         metadata: {},
       },
       {
-        id: 'remote-fast',
-        label: 'Remote Fast',
-        mode: 'remote_worker',
+        id: 'local-dev',
+        label: 'Local Dev',
+        mode: 'local_container',
         enabled: true,
-        worker_id: 'worker-a',
-        image: 'spark-worker:latest',
+        image: 'spark-local:latest',
         capabilities: {},
         metadata: {},
       },
@@ -213,13 +210,11 @@ const buildWorkspaceSettingsPayload = (overrides: Record<string, unknown> = {}) 
         label: 'Disabled Local',
         mode: 'local_container',
         enabled: false,
-        worker_id: null,
         image: 'spark-local:latest',
         capabilities: {},
         metadata: {},
       },
     ],
-    workers: [],
     validation_errors: [],
     ...overrides,
   },
@@ -637,10 +632,10 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('project-settings-title')).toHaveTextContent('/tmp/project-shell')
     await user.click(screen.getByTestId('project-default-execution-profile'))
     expect((await screen.findAllByText('Use workspace default')).length).toBeGreaterThan(0)
-    expect(screen.getByText('Remote Fast (remote-fast)')).toBeVisible()
+    expect(screen.getByText('Local Dev (local-dev)')).toBeVisible()
     expect(screen.queryByText('Disabled Local (disabled-local)')).not.toBeInTheDocument()
 
-    await user.click(screen.getByText('Remote Fast (remote-fast)'))
+    await user.click(screen.getByText('Local Dev (local-dev)'))
     await user.click(screen.getByTestId('project-settings-save-button'))
 
     await waitFor(() => {
@@ -648,9 +643,9 @@ describe('App shell behavior', () => {
       expect(stateRequest).toBeDefined()
       expect(JSON.parse(String(stateRequest?.[1]?.body))).toEqual({
         project_path: '/tmp/project-shell',
-        execution_profile_id: 'remote-fast',
+        execution_profile_id: 'local-dev',
       })
-      expect(useStore.getState().projectRegistry['/tmp/project-shell']?.executionProfileId).toBe('remote-fast')
+      expect(useStore.getState().projectRegistry['/tmp/project-shell']?.executionProfileId).toBe('local-dev')
     })
   })
 
@@ -663,7 +658,7 @@ describe('App shell behavior', () => {
         lastAccessedAt: null,
         isFavorite: false,
         activeConversationId: null,
-        executionProfileId: 'remote-fast',
+        executionProfileId: 'local-dev',
       })
       useStore.getState().setActiveProjectPath('/tmp/project-shell')
     })
@@ -726,7 +721,7 @@ describe('App shell behavior', () => {
       if (url.endsWith('/workspace/api/settings')) {
         return jsonResponse(buildWorkspaceSettingsPayload({
           validation_errors: [
-            { field: 'profiles.remote-fast.worker_id', message: 'Worker worker-a is not configured.', profile_id: 'remote-fast', worker_id: 'worker-a' },
+            { field: 'profiles.bad.mode', message: 'execution mode must be one of: native, local_container', profile_id: 'bad' },
           ],
         }))
       }
@@ -753,7 +748,7 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('top-nav-project-settings-button'))
 
-    expect(await screen.findByTestId('project-settings-error')).toHaveTextContent('Worker worker-a is not configured.')
+    expect(await screen.findByTestId('project-settings-error')).toHaveTextContent('execution mode must be one of: native, local_container')
     expect(screen.getByTestId('project-settings-save-button')).toBeDisabled()
     expect(fetchMock.mock.calls.some(([input]) => resolveRequestUrl(input).includes('/workspace/api/projects/state'))).toBe(false)
   })
@@ -1958,7 +1953,8 @@ describe('App shell behavior', () => {
           pipeline_id: 'run-two',
           checkpoint: {
             completed_nodes: ['prepare'],
-            current_node: 'review',
+            active_node: 'review',
+            last_completed_node: 'prepare',
           },
         })
       }
@@ -2081,11 +2077,11 @@ describe('App shell behavior', () => {
             ended_at: '2026-03-25T12:05:00Z',
             last_error: '',
             token_usage: 1234,
-            current_node: 'review',
             completed_nodes: ['prepare', 'review'],
             progress: {
-              current_node: 'review',
-              completed_nodes: ['prepare', 'review'],
+              active_node: 'review',
+              last_completed_node: 'review',
+              completed_count: 2,
             },
             continued_from_run_id: null,
             continued_from_node: null,
@@ -2095,12 +2091,13 @@ describe('App shell behavior', () => {
         }
         if (url.includes('/attractor/pipelines/run-session/checkpoint')) {
           return jsonResponse({
-            pipeline_id: 'run-session',
-            checkpoint: {
-              completed_nodes: ['prepare'],
-              current_node: 'review',
-            },
-          })
+          pipeline_id: 'run-session',
+          checkpoint: {
+            completed_nodes: ['prepare'],
+            active_node: 'review',
+            last_completed_node: 'prepare',
+          },
+        })
         }
         if (url.includes('/attractor/pipelines/run-session/context')) {
           return jsonResponse({
@@ -2320,7 +2317,8 @@ describe('App shell behavior', () => {
           pipeline_id: 'run-hidden',
           checkpoint: {
             completed_nodes: ['prepare'],
-            current_node: 'review',
+            active_node: 'review',
+            last_completed_node: 'prepare',
           },
         })
       }

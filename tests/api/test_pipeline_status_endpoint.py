@@ -20,7 +20,8 @@ def _write_checkpoint(run_root: Path, current_node: str, completed_nodes: list[s
     save_checkpoint(
         run_root / "state.json",
         Checkpoint(
-            current_node=current_node,
+            active_node=current_node,
+            last_completed_node=completed_nodes[-1] if completed_nodes else None,
             completed_nodes=completed_nodes,
             context={},
             retry_counts={},
@@ -66,7 +67,8 @@ def test_get_pipeline_returns_progress_for_active_run(
     assert payload["estimated_model_cost"] is None
     assert payload["completed_nodes"] == ["start"]
     assert payload["progress"] == {
-        "current_node": "plan",
+        "active_node": "plan",
+        "last_completed_node": "start",
         "completed_count": 1,
     }
 
@@ -157,7 +159,8 @@ def test_get_pipeline_uses_checkpoint_progress_for_persisted_run(
     assert payload["estimated_model_cost"] is None
     assert payload["completed_nodes"] == ["start", "plan"]
     assert payload["progress"] == {
-        "current_node": "done",
+        "active_node": "done",
+        "last_completed_node": "plan",
         "completed_count": 2,
     }
 
@@ -227,7 +230,8 @@ def test_get_pipeline_preserves_persisted_metadata_while_overlaying_active_state
     assert payload["token_usage_breakdown"] is None
     assert payload["estimated_model_cost"] is None
     assert payload["progress"] == {
-        "current_node": "review",
+        "active_node": "review",
+        "last_completed_node": "start",
         "completed_count": 2,
     }
     server.ACTIVE_RUNS.pop(run_id, None)
@@ -296,7 +300,8 @@ def test_get_pipeline_returns_full_persisted_detail_for_completed_run(
     assert payload["started_at"]
     assert payload["ended_at"]
     assert payload["progress"] == {
-        "current_node": "done",
+        "active_node": "done",
+        "last_completed_node": "review",
         "completed_count": 3,
     }
 

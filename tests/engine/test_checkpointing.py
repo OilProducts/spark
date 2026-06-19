@@ -97,7 +97,9 @@ class TestCheckpointAndArtifacts:
             assert (logs_root / "plan").is_dir()
 
             checkpoint_payload = json.loads((logs_root / "checkpoint.json").read_text(encoding="utf-8"))
-            assert checkpoint_payload["current_node"] == "done"
+            assert checkpoint_payload["active_node"] is None
+            assert checkpoint_payload["last_completed_node"] == "done"
+            assert "current_node" not in checkpoint_payload
             assert checkpoint_payload["completed_nodes"] == ["start", "plan"]
 
             manifest_payload = json.loads((logs_root / "manifest.json").read_text(encoding="utf-8"))
@@ -501,7 +503,8 @@ class TestCheckpointAndArtifacts:
 
             checkpoint = load_checkpoint(checkpoint_file)
             assert checkpoint is not None
-            assert checkpoint.current_node == "done"
+            assert checkpoint.active_node is None
+            assert checkpoint.last_completed_node == "done"
             assert checkpoint.completed_nodes == ["start", "plan"]
 
     def test_checkpoint_json_persists_timestamp_retry_context_and_logs(self):
@@ -532,7 +535,9 @@ class TestCheckpointAndArtifacts:
 
             assert result.status == "completed"
             raw_checkpoint = json.loads(checkpoint_file.read_text(encoding="utf-8"))
-            assert raw_checkpoint["current_node"] == "done"
+            assert raw_checkpoint["active_node"] is None
+            assert raw_checkpoint["last_completed_node"] == "done"
+            assert "current_node" not in raw_checkpoint
             assert raw_checkpoint["completed_nodes"] == ["start"]
             assert raw_checkpoint["retry_counts"] == {}
             assert isinstance(raw_checkpoint["context"], dict)
@@ -610,12 +615,133 @@ class TestCheckpointAndArtifacts:
             assert paused.current_node == "plan"
             assert paused.completed_nodes == ["start"]
 
+            checkpoint = load_checkpoint(checkpoint_file)
+            assert checkpoint is not None
+            assert checkpoint.active_node == "plan"
+            assert checkpoint.last_completed_node == "start"
+            assert checkpoint.completed_nodes == ["start"]
+
             resumed = executor.run(Context(), resume=True)
             assert resumed.status == "completed"
             assert resumed.current_node == "done"
 
             # start executes once; resume continues at plan.
             assert calls == ["start", "plan", "review"]
+
+    def test_control_pause_checkpoint_preserves_active_and_last_completed_for_run(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                done [shape=Msquare]
+                start -> plan
+                plan -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+            control_actions = iter([None, None, "pause"])
+
+            def control() -> str | None:
+                return next(control_actions, None)
+
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
+                return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
+
+            paused = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+                control=control,
+            ).run(Context())
+
+            assert paused.status == "paused"
+            assert paused.current_node == "plan"
+            assert paused.completed_nodes == ["start"]
+
+            checkpoint = load_checkpoint(checkpoint_file)
+            assert checkpoint is not None
+            assert checkpoint.active_node == "plan"
+            assert checkpoint.last_completed_node == "start"
+            assert checkpoint.completed_nodes == ["start"]
+
+    def test_max_steps_pause_checkpoint_preserves_active_and_last_completed_for_run_from(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                done [shape=Msquare]
+                start -> plan
+                plan -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
+                return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
+
+            paused = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+            ).run_from("start", Context(), max_steps=1)
+
+            assert paused.status == "paused"
+            assert paused.current_node == "plan"
+            assert paused.completed_nodes == ["start"]
+
+            checkpoint = load_checkpoint(checkpoint_file)
+            assert checkpoint is not None
+            assert checkpoint.active_node == "plan"
+            assert checkpoint.last_completed_node == "start"
+            assert checkpoint.completed_nodes == ["start"]
+
+    def test_control_pause_checkpoint_preserves_active_and_last_completed_for_run_from(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                done [shape=Msquare]
+                start -> plan
+                plan -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+            control_actions = iter([None, None, "pause"])
+
+            def control() -> str | None:
+                return next(control_actions, None)
+
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
+                return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
+
+            paused = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+                control=control,
+            ).run_from("start", Context())
+
+            assert paused.status == "paused"
+            assert paused.current_node == "plan"
+            assert paused.completed_nodes == ["start"]
+
+            checkpoint = load_checkpoint(checkpoint_file)
+            assert checkpoint is not None
+            assert checkpoint.active_node == "plan"
+            assert checkpoint.last_completed_node == "start"
+            assert checkpoint.completed_nodes == ["start"]
 
     def test_resume_from_checkpoint_continues_from_next_node_after_last_completed(self):
         graph = parse_dot(
@@ -644,7 +770,8 @@ class TestCheckpointAndArtifacts:
             save_checkpoint(
                 checkpoint_file,
                 Checkpoint(
-                    current_node="plan",
+                    active_node="review",
+                    last_completed_node="plan",
                     completed_nodes=["start", "plan"],
                     context={"outcome": "success"},
                 ),
@@ -661,6 +788,131 @@ class TestCheckpointAndArtifacts:
             assert resumed.current_node == "done"
             assert resumed.completed_nodes == ["start", "plan", "review"]
             assert calls == ["review"]
+
+    def test_resume_from_terminal_checkpoint_does_not_restart_at_graph_start(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                work [shape=box, prompt="work"]
+                done [shape=Msquare]
+
+                start -> work
+                work -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+            calls: list[str] = []
+
+            save_checkpoint(
+                checkpoint_file,
+                Checkpoint(
+                    active_node=None,
+                    last_completed_node="done",
+                    completed_nodes=["start", "work"],
+                    context={"outcome": "success", "context.marker": "terminal"},
+                ),
+            )
+
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
+                calls.append(node_id)
+                return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
+
+            result = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+            ).run(Context(), resume=True)
+
+            assert result.status == "completed"
+            assert result.current_node == "done"
+            assert result.completed_nodes == ["start", "work"]
+            assert result.context["context.marker"] == "terminal"
+            assert calls == []
+
+    def test_resume_from_checkpoint_without_active_node_is_non_resumable(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                work [shape=box, prompt="work"]
+                done [shape=Msquare]
+
+                start -> work
+                work -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+            checkpoint_file.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-16T00:00:00+00:00",
+                        "last_completed_node": "work",
+                        "completed_nodes": ["start", "work"],
+                        "context": {"outcome": "success"},
+                        "retry_counts": {},
+                        "logs": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls: list[str] = []
+
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
+                calls.append(node_id)
+                return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
+
+            result = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+            ).run(Context(), resume=True)
+
+            assert result.status == "completed"
+            assert result.current_node == "work"
+            assert result.completed_nodes == ["start", "work"]
+            assert calls == []
+
+    def test_run_writes_initial_checkpoint_before_first_stage_execution(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                work [shape=box]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "attractor.state.json"
+            observed_initial_checkpoint: list[tuple[str | None, str | None, list[str]]] = []
+
+            def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
+                if node_id == "start":
+                    checkpoint = load_checkpoint(checkpoint_file)
+                    assert checkpoint is not None
+                    observed_initial_checkpoint.append(
+                        (checkpoint.active_node, checkpoint.last_completed_node, list(checkpoint.completed_nodes))
+                    )
+                return Outcome(status=OutcomeStatus.SUCCESS, notes=node_id)
+
+            result = PipelineExecutor(
+                graph,
+                runner,
+                checkpoint_file=str(checkpoint_file),
+            ).run(Context())
+
+            assert result.status == "completed"
+            assert observed_initial_checkpoint == [("start", None, [])]
 
     def test_resume_degrades_first_stage_fidelity_after_full_checkpoint_hop(self):
         graph = parse_dot(
@@ -722,7 +974,8 @@ class TestCheckpointAndArtifacts:
             save_checkpoint(
                 checkpoint_file,
                 Checkpoint(
-                    current_node="work",
+                    active_node="work",
+                    last_completed_node="start",
                     completed_nodes=["start"],
                     context={
                         "outcome": "retry",
@@ -790,7 +1043,8 @@ class TestCheckpointAndArtifacts:
 
             checkpoint = load_checkpoint(checkpoint_file)
             assert checkpoint is not None
-            assert checkpoint.current_node == "plan"
+            assert checkpoint.active_node is None
+            assert checkpoint.last_completed_node == "plan"
             assert checkpoint.completed_nodes == ["start", "plan"]
 
     def test_finalize_persists_checkpoint_and_failure_event_when_runner_exception_becomes_fail_outcome(self):
@@ -826,7 +1080,8 @@ class TestCheckpointAndArtifacts:
 
             checkpoint = load_checkpoint(checkpoint_file)
             assert checkpoint is not None
-            assert checkpoint.current_node == "start"
+            assert checkpoint.active_node is None
+            assert checkpoint.last_completed_node == "start"
             assert checkpoint.completed_nodes == ["start"]
             assert checkpoint.context["outcome"] == "fail"
 
@@ -910,7 +1165,7 @@ class TestCheckpointAndArtifacts:
             terminal_status = json.loads(terminal_status_path.read_text(encoding="utf-8"))
             assert terminal_status["outcome"] == "success"
 
-    def test_run_from_saves_checkpoint_after_each_stage_with_current_node_and_completed_list(self, monkeypatch):
+    def test_run_from_saves_initial_and_stage_checkpoints_with_active_and_completed_nodes(self, monkeypatch):
         graph = parse_dot(
             """
             digraph G {
@@ -925,11 +1180,13 @@ class TestCheckpointAndArtifacts:
 
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint_file = Path(tmp) / "attractor.state.json"
-            snapshots: list[tuple[str, list[str]]] = []
+            snapshots: list[tuple[str | None, str | None, list[str]]] = []
             original_save_checkpoint = executor_module.save_checkpoint
 
             def capture_checkpoint(path: Path, checkpoint):
-                snapshots.append((checkpoint.current_node, list(checkpoint.completed_nodes)))
+                snapshots.append(
+                    (checkpoint.active_node, checkpoint.last_completed_node, list(checkpoint.completed_nodes))
+                )
                 original_save_checkpoint(path, checkpoint)
 
             monkeypatch.setattr(executor_module, "save_checkpoint", capture_checkpoint)
@@ -944,8 +1201,9 @@ class TestCheckpointAndArtifacts:
             ).run_from("start", Context())
 
             assert result.status == "completed"
-            assert ("start", ["start"]) in snapshots
-            assert ("plan", ["start", "plan"]) in snapshots
+            assert snapshots[0] == ("start", None, [])
+            assert ("plan", "start", ["start"]) in snapshots
+            assert (None, "done", ["start", "plan"]) in snapshots
 
     def test_run_from_persists_retry_checkpoint_with_retry_counts_and_context(self, monkeypatch):
         graph = parse_dot(
@@ -1002,7 +1260,7 @@ class TestCheckpointAndArtifacts:
             ).run_from("start", Context(values={"context.seed": "ready"}))
 
             assert result.status == "completed"
-            retry_snapshots = [snap for snap in snapshots if snap.current_node == "work" and snap.retry_counts]
+            retry_snapshots = [snap for snap in snapshots if snap.active_node == "work" and snap.retry_counts]
             assert retry_snapshots, "expected checkpoint persistence for work retry attempt"
             retry_snapshot = retry_snapshots[0]
             assert retry_snapshot.retry_counts == {"work": 1}

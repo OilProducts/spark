@@ -155,6 +155,38 @@ def test_build_codex_runtime_environment_falls_back_to_host_codex_home_when_seed
     ).read_text(encoding="utf-8") == "browser plugin\n"
 
 
+def test_build_codex_runtime_environment_tolerates_unwritable_seed_destinations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "codex-runtime"
+    seed_dir = tmp_path / "codex-seed"
+    seed_dir.mkdir()
+    (seed_dir / "auth.json").write_text('{"token":"seed"}', encoding="utf-8")
+    seed_plugin = seed_dir / "plugins" / "cache" / "openai-bundled" / "blocked" / "1.0.0"
+    seed_plugin.mkdir(parents=True)
+    (seed_plugin / "plugin.txt").write_text("blocked\n", encoding="utf-8")
+
+    def copy_file_fails(source: Path, destination: Path, *, preserve_metadata: bool = True) -> None:
+        raise PermissionError("permission denied")
+
+    def copy_tree_fails(source: Path, destination: Path) -> None:
+        raise codex_runtime_module.shutil.Error([(str(source), str(destination), "permission denied")])
+
+    monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("ATTRACTOR_CODEX_SEED_DIR", str(seed_dir))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(codex_runtime_module, "_copy_file_if_changed", copy_file_fails)
+    monkeypatch.setattr(codex_runtime_module, "_copy_tree_contents", copy_tree_fails)
+
+    env = build_codex_runtime_environment()
+
+    assert env["CODEX_HOME"] == str(runtime_root / ".codex")
+    assert (runtime_root / ".codex").is_dir()
+
+
 def test_build_codex_runtime_environment_falls_back_to_temp_runtime_root_when_persistent_root_creation_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

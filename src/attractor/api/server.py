@@ -91,11 +91,6 @@ from attractor.execution import (
     EXECUTION_PROFILE_SELECTION_SOURCE_CONTEXT_KEY,
     ExecutionLaunchError,
     ExecutionProfileError,
-    RemoteActiveRunFailed,
-    RemoteHandlerRunner,
-    RemotePreparationFailed,
-    RemoteLaunchAdmission,
-    admit_remote_launch,
     build_launch_metadata,
     public_execution_placement_settings,
     resolve_execution_profile_by_id,
@@ -734,7 +729,14 @@ def _journal_source_prefix(
     return f"Child flow via {parent_label}: "
 
 
-def _journal_node_id(payload: dict[str, Any]) -> Optional[str]:
+def _journal_node_id(payload: dict[str, Any], *, raw_type: str | None = None) -> Optional[str]:
+    if raw_type == "CheckpointSaved":
+        for candidate in (payload.get("active_node"), payload.get("last_completed_node")):
+            node_id = _as_trimmed_string(candidate)
+            if node_id:
+                return node_id
+        return None
+
     for candidate in (
         payload.get("node_id"),
         payload.get("node"),
@@ -1015,7 +1017,13 @@ def _journal_summary(
             else f"{source_prefix}Human gate pending for {node_id or 'unknown'}"
         )
     if raw_type == "CheckpointSaved":
-        return f"{source_prefix}Checkpoint saved at {node_id or 'current node'}"
+        active_node = _as_trimmed_string(payload.get("active_node"))
+        last_completed_node = _as_trimmed_string(payload.get("last_completed_node"))
+        if active_node:
+            return f"{source_prefix}Checkpoint saved before {active_node}"
+        if last_completed_node:
+            return f"{source_prefix}Terminal checkpoint saved after {last_completed_node}"
+        return f"{source_prefix}Terminal checkpoint saved"
     if raw_type == "LLMContent":
         channel = _as_trimmed_string(payload.get("channel")) or "assistant"
         status = _as_trimmed_string(payload.get("status")) or "streaming"
@@ -1030,7 +1038,7 @@ def _run_journal_entry_from_event(payload: dict[str, Any]) -> Optional[dict[str,
     if not isinstance(sequence, int) or not isinstance(emitted_at, str) or raw_type is None:
         return None
 
-    node_id = _journal_node_id(payload)
+    node_id = _journal_node_id(payload, raw_type=raw_type)
     stage_index = _journal_stage_index(payload)
     source_scope = _journal_source_scope(payload)
     source_parent_node_id = _journal_source_parent_node_id(payload)
@@ -1099,14 +1107,7 @@ def _record_run_start(
     child_invocation_index: Optional[int] = None,
     execution_mode: str = "native",
     execution_profile_id: Optional[str] = None,
-    execution_worker_id: Optional[str] = None,
-    execution_worker_label: Optional[str] = None,
-    execution_worker_base_url: Optional[str] = None,
     execution_container_image: Optional[str] = None,
-    execution_mapped_project_path: Optional[str] = None,
-    execution_worker_runtime_root: Optional[str] = None,
-    execution_worker_version: Optional[str] = None,
-    execution_worker_capabilities: Optional[object] = None,
     execution_profile_capabilities: Optional[object] = None,
     execution_lock: Optional[RunExecutionLock] = None,
 ) -> None:
@@ -1133,14 +1134,7 @@ def _record_run_start(
         child_invocation_index=child_invocation_index,
         execution_mode=execution_mode,
         execution_profile_id=execution_profile_id,
-        execution_worker_id=execution_worker_id,
-        execution_worker_label=execution_worker_label,
-        execution_worker_base_url=execution_worker_base_url,
         execution_container_image=execution_container_image,
-        execution_mapped_project_path=execution_mapped_project_path,
-        execution_worker_runtime_root=execution_worker_runtime_root,
-        execution_worker_version=execution_worker_version,
-        execution_worker_capabilities=execution_worker_capabilities,
         execution_profile_capabilities=execution_profile_capabilities,
         execution_lock=execution_lock,
     )
@@ -1530,12 +1524,16 @@ def _get_active_run(run_id: str) -> Optional[ActiveRun]:
         return ACTIVE_RUNS.get(run_id)
 
 
-def _read_checkpoint_progress(run_id: str) -> tuple[str, List[str]]:
+def _read_checkpoint_progress(run_id: str) -> tuple[str | None, str | None, List[str]]:
     return pipeline_runs.read_checkpoint_progress(get_runtime_paths, run_id)
 
 
-def _pipeline_progress_payload(current_node: str, completed_nodes: List[str]) -> Dict[str, object]:
-    return pipeline_runs.pipeline_progress_payload(current_node, completed_nodes)
+def _pipeline_progress_payload(
+    active_node: str | None,
+    last_completed_node: str | None,
+    completed_nodes: List[str],
+) -> Dict[str, object]:
+    return pipeline_runs.pipeline_progress_payload(active_node, last_completed_node, completed_nodes)
 
 
 def _read_hydrated_run_record(run_id: str) -> Optional[RunRecord]:
@@ -1584,7 +1582,7 @@ def _apply_active_run_to_record(record: RunRecord, active: Optional[ActiveRun]) 
 
 
 def _pipeline_status_payload(run_id: str) -> Dict[str, object]:
-    checkpoint_current_node, checkpoint_completed_nodes = _read_checkpoint_progress(run_id)
+    checkpoint_active_node, checkpoint_last_completed_node, checkpoint_completed_nodes = _read_checkpoint_progress(run_id)
     active = _get_active_run(run_id)
     record = _read_hydrated_run_record(run_id)
 
@@ -1645,7 +1643,11 @@ def _pipeline_status_payload(run_id: str) -> Dict[str, object]:
     payload["pipeline_id"] = run_id
     payload["run_id"] = str(payload.get("run_id") or run_id)
     payload["completed_nodes"] = completed_nodes
-    payload["progress"] = _pipeline_progress_payload(checkpoint_current_node, completed_nodes)
+    payload["progress"] = _pipeline_progress_payload(
+        checkpoint_active_node,
+        checkpoint_last_completed_node,
+        completed_nodes,
+    )
     return payload
 
 
@@ -2313,7 +2315,11 @@ def _child_run_result_from_record(run_id: str) -> ChildRunResult | None:
     if active is None and record is None:
         return None
     checkpoint = load_checkpoint(_run_root(run_id) / "state.json")
-    current_node = checkpoint.current_node if checkpoint is not None else ""
+    current_node = (
+        checkpoint.active_node or checkpoint.last_completed_node
+        if checkpoint is not None
+        else ""
+    )
     completed_nodes = list(checkpoint.completed_nodes) if checkpoint is not None else []
     checkpoint_context = checkpoint.context if checkpoint is not None else {}
     route_trace = checkpoint_context.get("context.stack.child.route_trace", [])
@@ -2435,9 +2441,7 @@ def _active_run_cancel_requested(run_id: str) -> bool:
 
 
 def _exception_should_complete_as_canceled_after_cancel(exc: BaseException) -> bool:
-    if not isinstance(exc, (RemoteActiveRunFailed, RemotePreparationFailed)):
-        return str(exc) == "aborted_by_user"
-    return exc.code in {"user_cancel_requested", "remote_worker_run_canceled"}
+    return str(exc) == "aborted_by_user"
 
 
 def _selected_execution_profile_id_from_context(
@@ -2474,47 +2478,10 @@ def _record_run_start_execution_metadata_kwargs(execution_metadata: dict[str, An
     keys = (
         "execution_mode",
         "execution_profile_id",
-        "execution_worker_id",
-        "execution_worker_label",
-        "execution_worker_base_url",
         "execution_container_image",
-        "execution_mapped_project_path",
-        "execution_worker_runtime_root",
-        "execution_worker_version",
-        "execution_worker_capabilities",
         "execution_profile_capabilities",
     )
     return {key: execution_metadata.get(key) for key in keys}
-
-
-def _ensure_supported_execution_dispatch(execution_profile) -> None:
-    if execution_profile.is_remote_worker:
-        raise ExecutionLaunchError(
-            "remote_worker execution profiles are configured but remote worker dispatch is not available in this foundation milestone"
-        )
-
-
-def _admit_remote_execution_launch(
-    execution_profile_selection,
-    *,
-    run_id: str,
-    working_dir: str,
-) -> tuple[RemoteLaunchAdmission, dict[str, Any]]:
-    admission = admit_remote_launch(
-        execution_profile_selection.profile,
-        execution_profile_selection.worker,
-        run_id=run_id,
-        control_project_path=working_dir,
-    )
-    payload = admission.metadata.as_dict()
-    payload.setdefault("execution_profile_id", execution_profile_selection.profile.id)
-    payload.setdefault("execution_container_image", None)
-    payload["execution_worker_id"] = execution_profile_selection.worker.id
-    payload["execution_worker_label"] = execution_profile_selection.worker.label
-    payload["execution_worker_base_url"] = execution_profile_selection.worker.base_url
-    payload["execution_worker_version"] = admission.worker_info.worker_version
-    payload["execution_worker_capabilities"] = dict(admission.worker_info.capabilities)
-    return admission, payload
 
 
 def _execution_launch_error_payload(exc: ExecutionLaunchError) -> dict[str, Any]:
@@ -2548,26 +2515,16 @@ def _run_first_class_child_pipeline(
     )
     parent_context_values = dict(request.parent_context.values)
     parent_execution_profile_id = _selected_execution_profile_id_from_context(parent_context_values)
-    remote_launch_admission: RemoteLaunchAdmission | None = None
     execution_profile_selection = resolve_execution_profile_by_id(
         settings=get_runtime_paths(),
         explicit_profile_id=parent_execution_profile_id,
     )
     execution_profile = execution_profile_selection.profile
     try:
-        if execution_profile.is_remote_worker:
-            remote_launch_admission, execution_metadata = _admit_remote_execution_launch(
-                execution_profile_selection,
-                run_id=child_run_id,
-                working_dir=working_dir,
-            )
-        else:
-            execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
-            _ensure_supported_execution_dispatch(execution_profile)
+        execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
     except ExecutionLaunchError as exc:
         return ChildRunResult(run_id=child_run_id, status="failed", failure_reason=str(exc))
-    if not execution_profile.is_remote_worker:
-        os.makedirs(working_dir, exist_ok=True)
+    os.makedirs(working_dir, exist_ok=True)
     root_run_id = (request.root_run_id or request.parent_run_id or child_run_id).strip() or child_run_id
     child_invocation_index = _next_child_invocation_index(request.parent_run_id, request.parent_node_id)
 
@@ -2662,7 +2619,8 @@ def _run_first_class_child_pipeline(
     save_checkpoint(
         Path(checkpoint_file),
         Checkpoint(
-            current_node=start_node,
+            active_node=start_node,
+            last_completed_node=None,
             completed_nodes=[],
             context=dict(context.values),
             retry_counts={},
@@ -2670,21 +2628,7 @@ def _run_first_class_child_pipeline(
     )
 
     try:
-        if execution_profile.is_remote_worker:
-            if remote_launch_admission is None or execution_profile_selection.worker is None:
-                raise ExecutionLaunchError("remote_worker execution profile was not admitted before dispatch")
-            interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, request.child_flow_name, child_run_id)
-            delegate_runner = RemoteHandlerRunner(
-                profile=execution_profile,
-                worker=execution_profile_selection.worker,
-                admission=remote_launch_admission,
-                emit=emit,
-                graph=request.child_graph,
-                interviewer=interviewer,
-                child_run_launcher=launch_nested_child,
-                child_status_resolver=_child_run_result_from_record,
-            )
-        elif execution_profile.is_container:
+        if execution_profile.is_container:
             assert execution_profile.image is not None
             interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, request.child_flow_name, child_run_id)
             shared_transport = _shared_container_transport(root_run_id)
@@ -2923,7 +2867,7 @@ def _record_run_retry_start(
 
 
 def _prepare_checkpoint_for_retry(run_id: str, checkpoint: Checkpoint) -> Checkpoint:
-    current_node = checkpoint.current_node
+    current_node = checkpoint.active_node or checkpoint.last_completed_node
     completed_nodes = list(checkpoint.completed_nodes)
     checkpoint_context = dict(checkpoint.context)
     checkpoint_context[PIPELINE_RETRY_RUN_ID_CONTEXT_KEY] = run_id
@@ -2932,7 +2876,12 @@ def _prepare_checkpoint_for_retry(run_id: str, checkpoint: Checkpoint) -> Checkp
     if current_node and current_outcome == "fail" and current_node in completed_nodes:
         completed_nodes = [node_id for node_id in completed_nodes if node_id != current_node]
     prepared = Checkpoint(
-        current_node=current_node,
+        active_node=current_node,
+        last_completed_node=(
+            completed_nodes[-1]
+            if completed_nodes
+            else None
+        ),
         completed_nodes=completed_nodes,
         context=checkpoint_context,
         retry_counts=dict(checkpoint.retry_counts),
@@ -2973,7 +2922,6 @@ def _build_pipeline_runner_for_run(
     )
     execution_profile = execution_profile_selection.profile
     _launch_execution_metadata_payload(execution_profile, working_dir)
-    _ensure_supported_execution_dispatch(execution_profile)
 
     _validate_graph_provider_configuration(
         graph,
@@ -3149,7 +3097,8 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
         pipeline_id,
         {
             "type": "PipelineRetryStarted",
-            "current_node": checkpoint.current_node,
+            "active_node": checkpoint.active_node,
+            "last_completed_node": checkpoint.last_completed_node,
             "completed_nodes": list(checkpoint.completed_nodes),
         },
     )
@@ -3440,7 +3389,6 @@ async def _launch_pipeline_run(
     working_dir = str(Path(working_directory).resolve())
     selected_model, display_model = _resolve_launch_model(graph, model)
     selected_reasoning_effort = _resolve_launch_reasoning_effort(graph, reasoning_effort)
-    remote_launch_admission: RemoteLaunchAdmission | None = None
     try:
         execution_profile_selection = resolve_execution_profile_by_id(
             get_runtime_paths(),
@@ -3448,15 +3396,7 @@ async def _launch_pipeline_run(
             project_default_profile_id=project_default_execution_profile_id,
         )
         execution_profile = execution_profile_selection.profile
-        if execution_profile.is_remote_worker:
-            remote_launch_admission, execution_metadata = _admit_remote_execution_launch(
-                execution_profile_selection,
-                run_id=resolved_run_id,
-                working_dir=working_dir,
-            )
-        else:
-            execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
-            _ensure_supported_execution_dispatch(execution_profile)
+        execution_metadata = _launch_execution_metadata_payload(execution_profile, working_dir)
     except ExecutionProfileError as exc:
         return {
             "status": "validation_error",
@@ -3549,25 +3489,10 @@ async def _launch_pipeline_run(
     if flow_source_dir is not None:
         context.set("internal.flow_source_dir", str(flow_source_dir))
 
-    if not execution_profile.is_remote_worker:
-        os.makedirs(working_dir, exist_ok=True)
+    os.makedirs(working_dir, exist_ok=True)
     control = ExecutionControl()
     try:
-        if execution_profile.is_remote_worker:
-            if remote_launch_admission is None or execution_profile_selection.worker is None:
-                raise ExecutionLaunchError("remote_worker execution profile was not admitted before dispatch")
-            interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, resolved_run_id)
-            delegate_runner = RemoteHandlerRunner(
-                profile=execution_profile,
-                worker=execution_profile_selection.worker,
-                admission=remote_launch_admission,
-                emit=emit,
-                graph=graph,
-                interviewer=interviewer,
-                child_run_launcher=launch_child_run,
-                child_status_resolver=_child_run_result_from_record,
-            )
-        elif execution_profile.is_container:
+        if execution_profile.is_container:
             assert execution_profile.image is not None
             interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, resolved_run_id)
             delegate_runner = ContainerizedHandlerRunner(
@@ -3623,7 +3548,8 @@ async def _launch_pipeline_run(
     save_checkpoint(
         Path(checkpoint_file),
         Checkpoint(
-            current_node=resolved_start_node,
+            active_node=resolved_start_node,
+            last_completed_node=None,
             completed_nodes=[],
             context=dict(context.values),
             retry_counts={},

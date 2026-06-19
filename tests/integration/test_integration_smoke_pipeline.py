@@ -95,7 +95,8 @@ def test_spec_smoke_pipeline_parse_validate_execute_and_artifacts(tmp_path: Path
 
     checkpoint = load_checkpoint(logs_root / "checkpoint.json")
     assert checkpoint is not None
-    assert checkpoint.current_node == "done"
+    assert checkpoint.active_node is None
+    assert checkpoint.last_completed_node == "done"
     assert "plan" in checkpoint.completed_nodes
     assert "implement" in checkpoint.completed_nodes
     assert "review" in checkpoint.completed_nodes

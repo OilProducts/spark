@@ -15,6 +15,8 @@ def _write_fake_docker(bin_dir: Path, log_path: Path) -> None:
                 "set -euo pipefail",
                 'printf "args=%s\\n" "$*" > "$FAKE_DOCKER_LOG"',
                 'printf "spark_docker_home=%s\\n" "${SPARK_DOCKER_HOME:-}" >> "$FAKE_DOCKER_LOG"',
+                'printf "spark_docker_host_uid=%s\\n" "${SPARK_DOCKER_HOST_UID:-}" >> "$FAKE_DOCKER_LOG"',
+                'printf "spark_docker_host_gid=%s\\n" "${SPARK_DOCKER_HOST_GID:-}" >> "$FAKE_DOCKER_LOG"',
                 'printf "provider=%s\\n" "${SPARK_TEST_PROVIDER_VALUE:-}" >> "$FAKE_DOCKER_LOG"',
             ]
         )
@@ -105,6 +107,8 @@ def test_run_docker_seeds_codex_auth_config_and_sources_provider_env(tmp_path: P
     assert log_path.read_text() == (
         "args=compose -f compose.package.yaml up --build\n"
         f"spark_docker_home={spark_home}\n"
+        f"spark_docker_host_uid={os.getuid()}\n"
+        f"spark_docker_host_gid={os.getgid()}\n"
         "provider=from-provider-env\n"
     )
 
@@ -179,5 +183,7 @@ def test_run_docker_defaults_to_account_home_when_runtime_rewrites_home(tmp_path
     assert log_path.read_text() == (
         "args=compose -f compose.package.yaml up --build\n"
         f"spark_docker_home={spark_home}\n"
+        f"spark_docker_host_uid={os.getuid()}\n"
+        f"spark_docker_host_gid={os.getgid()}\n"
         "provider=\n"
     )

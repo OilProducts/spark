@@ -112,11 +112,7 @@ function hasExecutionMetadata(run: RunRecord): boolean {
     return Boolean(
         run.execution_profile_id
         || run.execution_mode
-        || run.execution_container_image
-        || run.execution_worker_label
-        || run.execution_worker_id
-        || run.execution_mapped_project_path
-        || run.execution_worker_runtime_root,
+        || run.execution_container_image,
     )
 }
 
@@ -366,23 +362,6 @@ export function RunSummaryCard({
                                     {run.execution_container_image ? (
                                         <SummaryRow testId="run-summary-execution-container-image" label="Container image" className="break-all">
                                             {run.execution_container_image}
-                                        </SummaryRow>
-                                    ) : null}
-                                    {run.execution_worker_label || run.execution_worker_id ? (
-                                        <SummaryRow testId="run-summary-execution-worker" label="Worker" className="break-all">
-                                            {run.execution_worker_label && run.execution_worker_id
-                                                ? `${run.execution_worker_label} (${run.execution_worker_id})`
-                                                : run.execution_worker_label || run.execution_worker_id}
-                                        </SummaryRow>
-                                    ) : null}
-                                    {run.execution_mapped_project_path ? (
-                                        <SummaryRow testId="run-summary-execution-mapped-project-path" label="Mapped project" className="break-all md:col-span-2">
-                                            {run.execution_mapped_project_path}
-                                        </SummaryRow>
-                                    ) : null}
-                                    {run.execution_worker_runtime_root ? (
-                                        <SummaryRow testId="run-summary-execution-worker-runtime-root" label="Worker runtime root" className="break-all md:col-span-2">
-                                            {run.execution_worker_runtime_root}
                                         </SummaryRow>
                                     ) : null}
                                 </div>

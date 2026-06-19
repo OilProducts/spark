@@ -10,6 +10,8 @@ services:
       - SPARK_HOME=/spark
       - SPARK_PROJECT_ROOTS=/projects
       - SPARK_DOCKER_HOME=${SPARK_DOCKER_HOME:-$HOME/.spark-docker}
+      - SPARK_DOCKER_HOST_UID=${SPARK_DOCKER_HOST_UID:-1000}
+      - SPARK_DOCKER_HOST_GID=${SPARK_DOCKER_HOST_GID:-1000}
       - SPARK_PROJECTS_HOST_DIR=${SPARK_PROJECTS_HOST_DIR:-$HOME/projects}
       - ATTRACTOR_CODEX_RUNTIME_ROOT=/spark/runtime/codex
       - OPENAI_API_KEY
@@ -31,3 +33,4 @@ services:
       - ${SPARK_DOCKER_HOME:-$HOME/.spark-docker}:/spark
       - ${SPARK_PROJECTS_HOST_DIR:-$HOME/projects}:/projects
       - /var/run/docker.sock:/var/run/docker.sock
+    user: "${SPARK_DOCKER_HOST_UID:-1000}:${SPARK_DOCKER_HOST_GID:-1000}"

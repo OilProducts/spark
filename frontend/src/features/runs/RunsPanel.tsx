@@ -196,6 +196,7 @@ export function RunsPanel() {
         selectedRunSummary: selectedRun,
         manageSync: false,
     })
+    const checkpointResumeNode = checkpointCurrentNode !== '—' ? checkpointCurrentNode : null
     const {
         filteredTimelineEventCount,
         freeformAnswersByGateId,
@@ -226,7 +227,7 @@ export function RunsPanel() {
         visiblePendingInterviewGates,
     } = useRunTimeline({
         pendingQuestionSnapshots,
-        selectedRunCurrentNode: selectedRun?.current_node ?? null,
+        selectedRunCurrentNode: selectedRun?.current_node ?? checkpointResumeNode,
         selectedRunTimelineId,
     })
     const selectedRunSessionState = useStore((state) => (
@@ -267,7 +268,7 @@ export function RunsPanel() {
     const showRunsTransportReconnectNotice = degradedTransportLabels.length > 0
     const runsTransportError = [streamError, selectedRunStatusError].filter(Boolean).join(' ')
     const now = Date.now()
-    const currentNodeForSummary = selectedRun?.current_node || (checkpointCurrentNode !== '—' ? checkpointCurrentNode : null)
+    const currentNodeForSummary = selectedRun?.current_node || checkpointResumeNode
     const retryState = latestRetryTimelineEvent
     const monitoringHeadline = selectedRun
         ? (
@@ -545,7 +546,7 @@ export function RunsPanel() {
                         {selectedRun && (
                             <RunProgressCard
                                 collapsed={isProgressCollapsed}
-                                currentNodeId={selectedRun.current_node}
+                                currentNodeId={currentNodeForSummary}
                                 isLive={isTimelineLive}
                                 progressNodeFilter={progressNodeFilter}
                                 progressProjection={progressProjection}

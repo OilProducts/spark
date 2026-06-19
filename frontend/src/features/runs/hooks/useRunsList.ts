@@ -31,13 +31,6 @@ const mergeRunUpsert = (currentRuns: RunRecord[], nextRun: RunRecord) => {
     return sortRuns(nextRuns)
 }
 
-const asRunRecord = (value: unknown): RunRecord | null => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return null
-    }
-    return value as RunRecord
-}
-
 export function useRunsList({
     activeProjectPath,
     scopeMode,

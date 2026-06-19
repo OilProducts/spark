@@ -114,8 +114,7 @@ const installExecutionFetchMock = (options?: {
     if (url.endsWith('/workspace/api/settings')) {
       return jsonResponse({
         execution_placement: {
-          execution_modes: ['native', 'local_container', 'remote_worker'],
-          protocol: { expected_worker_protocol_version: 'v1' },
+          execution_modes: ['native', 'local_container'],
           config: {
             filename: 'execution-profiles.toml',
             path: '/tmp/config/execution-profiles.toml',
@@ -130,13 +129,11 @@ const installExecutionFetchMock = (options?: {
               label: 'Native',
               mode: 'native',
               enabled: true,
-              worker_id: null,
               image: null,
               capabilities: {},
               metadata: {},
             },
           ],
-          workers: [],
           validation_errors: [],
         },
       })
@@ -272,11 +269,11 @@ describe('Execution controls behavior', () => {
         flowSource: TEST_SPEC_FLOW,
         workingDirectory: '/tmp/project',
         model: null,
-        projectDefaultExecutionProfileId: 'remote-build',
+        projectDefaultExecutionProfileId: 'local-build',
       },
       'digraph G { start -> done }',
     )
-    expect(defaultPayload.project_default_execution_profile_id).toBe('remote-build')
+    expect(defaultPayload.project_default_execution_profile_id).toBe('local-build')
     expect(defaultPayload).not.toHaveProperty('execution_profile_id')
 
     const overridePayload = buildPipelineStartPayload(
@@ -286,7 +283,7 @@ describe('Execution controls behavior', () => {
         workingDirectory: '/tmp/project',
         model: null,
         executionProfileId: 'local-dev',
-        projectDefaultExecutionProfileId: 'remote-build',
+        projectDefaultExecutionProfileId: 'local-build',
       },
       'digraph G { start -> done }',
     )

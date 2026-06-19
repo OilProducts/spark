@@ -1,6 +1,6 @@
 # TODO
 
-- [ ] Normalize checkpoint semantics so `current_node` has one stable meaning in both persistence and resume logic, and update the Attractor spec accordingly.
+- [x] Normalize checkpoint semantics so `current_node` has one stable meaning in both persistence and resume logic, and update the Attractor spec accordingly.
 - [ ] Mirror the documented `graph.*` context namespace in the engine itself instead of only seeding it through the API bootstrap path.
 - [ ] Either wire the existing `ArtifactStore` into normal pipeline execution/runtime surfaces or narrow the Attractor spec so it does not promise a first-class artifact store that the engine does not use.
 - [ ] Complete `wait.human` timeout/default wiring by setting `Question.default` / `Question.timeout_seconds` where the interviewer contract expects them, or narrow the Attractor spec to the implemented behavior.
@@ -15,3 +15,8 @@
 - [ ] Build the harness for agent-driven acceptance workflows under `tests/acceptance/agent-workflows`.
 - [ ] Add first-class structured UI authoring for subgraphs and scoped `node[...]` / `edge[...]` defaults so these no longer require raw DOT editing.
 - [ ] Audit Spark against the original Attractor spec/API to identify any remaining runtime/editor contract drift versus intentional product-layer extensions after the known drift candidates above are handled.
+
+## Feature candidates
+
+- [ ] Add an artifact viewer UI suitable for workspace-generated files, including safe inline preview and download behavior for run outputs and project artifacts.
+- [ ] Add configurable workspace navigation so specialized project views can be enabled without crowding the default Spark tools.

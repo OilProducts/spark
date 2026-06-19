@@ -85,14 +85,7 @@ class RunRecord:
     child_invocation_index: Optional[int] = None
     execution_mode: str = "native"
     execution_profile_id: Optional[str] = None
-    execution_worker_id: Optional[str] = None
-    execution_worker_label: Optional[str] = None
-    execution_worker_base_url: Optional[str] = None
     execution_container_image: Optional[str] = None
-    execution_mapped_project_path: Optional[str] = None
-    execution_worker_runtime_root: Optional[str] = None
-    execution_worker_version: Optional[str] = None
-    execution_worker_capabilities: Optional[object] = None
     execution_profile_capabilities: Optional[object] = None
     execution_lock: Optional[RunExecutionLock] = None
     cleanup_error: Optional[str] = None
@@ -150,22 +143,8 @@ class RunRecord:
             payload["execution_mode"] = self.execution_mode
         if self.execution_profile_id:
             payload["execution_profile_id"] = self.execution_profile_id
-        if self.execution_worker_id:
-            payload["execution_worker_id"] = self.execution_worker_id
-        if self.execution_worker_label:
-            payload["execution_worker_label"] = self.execution_worker_label
-        if self.execution_worker_base_url:
-            payload["execution_worker_base_url"] = self.execution_worker_base_url
         if self.execution_container_image:
             payload["execution_container_image"] = self.execution_container_image
-        if self.execution_mapped_project_path:
-            payload["execution_mapped_project_path"] = self.execution_mapped_project_path
-        if self.execution_worker_runtime_root:
-            payload["execution_worker_runtime_root"] = self.execution_worker_runtime_root
-        if self.execution_worker_version:
-            payload["execution_worker_version"] = self.execution_worker_version
-        if self.execution_worker_capabilities is not None:
-            payload["execution_worker_capabilities"] = _copy_jsonish(self.execution_worker_capabilities)
         if self.execution_profile_capabilities is not None:
             payload["execution_profile_capabilities"] = _copy_jsonish(self.execution_profile_capabilities)
         if self.execution_lock is not None:
@@ -242,44 +221,9 @@ class RunRecord:
                 if data.get("execution_profile_id") is not None
                 else None
             ),
-            execution_worker_id=(
-                str(data.get("execution_worker_id"))
-                if data.get("execution_worker_id") is not None
-                else None
-            ),
-            execution_worker_label=(
-                str(data.get("execution_worker_label"))
-                if data.get("execution_worker_label") is not None
-                else None
-            ),
-            execution_worker_base_url=(
-                str(data.get("execution_worker_base_url"))
-                if data.get("execution_worker_base_url") is not None
-                else None
-            ),
             execution_container_image=(
                 str(data.get("execution_container_image"))
                 if data.get("execution_container_image") is not None
-                else None
-            ),
-            execution_mapped_project_path=(
-                str(data.get("execution_mapped_project_path"))
-                if data.get("execution_mapped_project_path") is not None
-                else None
-            ),
-            execution_worker_runtime_root=(
-                str(data.get("execution_worker_runtime_root"))
-                if data.get("execution_worker_runtime_root") is not None
-                else None
-            ),
-            execution_worker_version=(
-                str(data.get("execution_worker_version"))
-                if data.get("execution_worker_version") is not None
-                else None
-            ),
-            execution_worker_capabilities=(
-                _copy_jsonish(data.get("execution_worker_capabilities"))
-                if data.get("execution_worker_capabilities") is not None
                 else None
             ),
             execution_profile_capabilities=(

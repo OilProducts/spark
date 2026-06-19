@@ -416,12 +416,19 @@ FUNCTION run(graph, config):
         IF outcome.preferred_label is not empty:
             context.set("preferred_label", outcome.preferred_label)
 
-        -- Step 5: Save checkpoint
-        checkpoint = create_checkpoint(context, current_node.id, completed_nodes)
+        -- Step 5: Select next edge
+        next_edge = select_edge(node, outcome, context, graph)
+
+        -- Step 6: Save checkpoint
+        active_node = next_edge.to_node IF next_edge is not NONE ELSE NONE
+        checkpoint = create_checkpoint(
+            context,
+            active_node=active_node,
+            last_completed_node=current_node.id,
+            completed_nodes=completed_nodes
+        )
         save_checkpoint(checkpoint, logs_root)
 
-        -- Step 6: Select next edge
-        next_edge = select_edge(node, outcome, context, graph)
         IF next_edge is NONE:
             IF outcome.status == FAIL:
                 RETURN PipelineResult(status=FAILED, failure_reason=outcome.failure_reason)
@@ -1261,18 +1268,20 @@ A serializable snapshot of execution state, saved after each node completes. Ena
 
 ```
 Checkpoint:
-    timestamp       : Timestamp              -- when this checkpoint was created
-    current_node    : String                  -- ID of the last completed node
-    completed_nodes : List<String>            -- IDs of all completed nodes in order
-    node_retries    : Map<String, Integer>    -- retry counters per node
-    context_values  : Map<String, Any>        -- serialized snapshot of the context
-    logs            : List<String>            -- run log entries
+    timestamp           : Timestamp              -- when this checkpoint was created
+    active_node         : String?                 -- node to execute when this checkpoint resumes; null when terminal
+    last_completed_node : String?                 -- most recent completed or final processed node
+    completed_nodes     : List<String>            -- IDs of all completed nodes in order
+    node_retries        : Map<String, Integer>    -- retry counters per node
+    context_values      : Map<String, Any>        -- serialized snapshot of the context
+    logs                : List<String>            -- run log entries
 
     FUNCTION save(path):
         -- Serialize to JSON and write to filesystem
         data = {
             "timestamp": timestamp,
-            "current_node": current_node,
+            "active_node": active_node,
+            "last_completed_node": last_completed_node,
             "completed_nodes": completed_nodes,
             "node_retries": node_retries,
             "context": serialize_to_json(context_values),
@@ -1292,7 +1301,7 @@ Checkpoint:
 2. Restore context state from `context_values`.
 3. Restore `completed_nodes` to skip already-finished work.
 4. Restore retry counters from `node_retries`.
-5. Determine the next node to execute (the one after `current_node` in the traversal).
+5. Execute `active_node` directly; if it is `null` or absent, the checkpoint is terminal/non-resumable.
 6. If the previous node used `full` fidelity, degrade to `summary:high` for the first resumed node, because in-memory LLM sessions cannot be serialized. After this one degraded hop, subsequent nodes may use `full` fidelity again.
 
 ### 5.4 Context Fidelity
@@ -1843,7 +1852,7 @@ The engine emits typed events during execution for UI, logging, and metrics inte
 - `InterviewTimeout(question, stage, duration)` -- timeout reached
 
 **Checkpoint events:**
-- `CheckpointSaved(node_id)` -- checkpoint written
+- `CheckpointSaved(active_node, last_completed_node)` -- checkpoint written; `active_node` is the node that will execute when resumed, and `last_completed_node` is the most recent completed or final processed node
 
 Events can be consumed via an observer/callback pattern or an asynchronous stream:
 
@@ -2084,8 +2093,8 @@ This section defines how to validate that an implementation of this spec is comp
 - [ ] Context is a key-value store accessible to all handlers
 - [ ] Handlers can read context and return `context_updates` in the Outcome
 - [ ] Context updates are merged after each node execution
-- [ ] Checkpoint is saved after each node completion (current_node, completed_nodes, context, retry counts)
-- [ ] Resume from checkpoint: load checkpoint -> restore state -> continue from current_node
+- [ ] Checkpoint is saved after routing with `active_node`, `last_completed_node`, `completed_nodes`, context, and retry counts
+- [ ] Resume from checkpoint: load checkpoint -> restore state -> continue from `active_node`
 - [ ] Derived continuation: create a new run from a stored checkpoint context and explicit start node without mutating the source run
 - [ ] Stage trace is written to `{run_root}/logs/{node_id}/` (prompt.md, response.md, status.json)
 - [ ] Extra run artifacts are written under `{run_root}/artifacts/`
@@ -2207,7 +2216,8 @@ ASSERT goal_gate_satisfied(graph, outcome, "implement")
 
 -- 6. Verify checkpoint
 checkpoint = load_checkpoint(logs_root)
-ASSERT checkpoint.current_node == "done"
+ASSERT checkpoint.active_node == NONE
+ASSERT checkpoint.last_completed_node == "done"
 ASSERT "plan" IN checkpoint.completed_nodes
 ASSERT "implement" IN checkpoint.completed_nodes
 ASSERT "review" IN checkpoint.completed_nodes

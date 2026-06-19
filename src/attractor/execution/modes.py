@@ -5,13 +5,11 @@ from typing import Literal
 
 EXECUTION_MODE_NATIVE = "native"
 EXECUTION_MODE_LOCAL_CONTAINER = "local_container"
-EXECUTION_MODE_REMOTE_WORKER = "remote_worker"
 
-ExecutionMode = Literal["native", "local_container", "remote_worker"]
+ExecutionMode = Literal["native", "local_container"]
 EXECUTION_MODES: tuple[ExecutionMode, ...] = (
     EXECUTION_MODE_NATIVE,
     EXECUTION_MODE_LOCAL_CONTAINER,
-    EXECUTION_MODE_REMOTE_WORKER,
 )
 
 

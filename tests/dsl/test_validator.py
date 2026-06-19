@@ -160,7 +160,7 @@ class TestDotValidator:
                 worker="worker-a",
                 execution_profile_capabilities="gpu"
             ]
-            start [shape=Mdiamond, execution_profile_id="remote-fast"]
+            start [shape=Mdiamond, execution_profile_id="local-fast"]
             done [shape=Msquare]
             start -> done
         }

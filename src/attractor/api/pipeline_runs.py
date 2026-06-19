@@ -221,14 +221,7 @@ def record_run_start(
     child_invocation_index: Optional[int] = None,
     execution_mode: str = "native",
     execution_profile_id: Optional[str] = None,
-    execution_worker_id: Optional[str] = None,
-    execution_worker_label: Optional[str] = None,
-    execution_worker_base_url: Optional[str] = None,
     execution_container_image: Optional[str] = None,
-    execution_mapped_project_path: Optional[str] = None,
-    execution_worker_runtime_root: Optional[str] = None,
-    execution_worker_version: Optional[str] = None,
-    execution_worker_capabilities: Optional[object] = None,
     execution_profile_capabilities: Optional[object] = None,
     execution_lock: Optional[RunExecutionLock] = None,
 ) -> None:
@@ -264,14 +257,7 @@ def record_run_start(
         child_invocation_index=child_invocation_index,
         execution_mode=execution_mode,
         execution_profile_id=execution_profile_id,
-        execution_worker_id=execution_worker_id,
-        execution_worker_label=execution_worker_label,
-        execution_worker_base_url=execution_worker_base_url,
         execution_container_image=execution_container_image,
-        execution_mapped_project_path=execution_mapped_project_path,
-        execution_worker_runtime_root=execution_worker_runtime_root,
-        execution_worker_version=execution_worker_version,
-        execution_worker_capabilities=execution_worker_capabilities,
         execution_profile_capabilities=execution_profile_capabilities,
         execution_lock=execution_lock,
     )
@@ -488,16 +474,21 @@ def append_run_log(get_runtime_paths: Callable[[], AttractorRuntimePaths], run_i
 def read_checkpoint_progress(
     get_runtime_paths: Callable[[], AttractorRuntimePaths],
     run_id: str,
-) -> tuple[str, List[str]]:
+) -> tuple[str | None, str | None, List[str]]:
     checkpoint = load_checkpoint(run_root(get_runtime_paths, run_id) / "state.json")
     if checkpoint is None:
-        return "", []
-    return checkpoint.current_node, list(checkpoint.completed_nodes)
+        return None, None, []
+    return checkpoint.active_node, checkpoint.last_completed_node, list(checkpoint.completed_nodes)
 
 
-def pipeline_progress_payload(current_node: str, completed_nodes: List[str]) -> Dict[str, object]:
+def pipeline_progress_payload(
+    active_node: str | None,
+    last_completed_node: str | None,
+    completed_nodes: List[str],
+) -> Dict[str, object]:
     return {
-        "current_node": current_node,
+        "active_node": active_node,
+        "last_completed_node": last_completed_node,
         "completed_count": len(completed_nodes),
     }
 

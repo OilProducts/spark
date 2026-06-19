@@ -285,8 +285,8 @@ def test_project_registry_persists_execution_profile_default(
         mode = "local_container"
         image = "spark-exec:latest"
 
-        [profiles.remote-fast]
-        label = "Remote Fast"
+        [profiles.native-review]
+        label = "Native Review"
         mode = "native"
         """
     )
@@ -300,13 +300,13 @@ def test_project_registry_persists_execution_profile_default(
 
     update_response = product_api_client.patch(
         "/workspace/api/projects/state",
-        json={"project_path": str(project_dir), "execution_profile_id": "remote-fast"},
+        json={"project_path": str(project_dir), "execution_profile_id": "native-review"},
     )
     assert update_response.status_code == 200
-    assert update_response.json()["execution_profile_id"] == "remote-fast"
+    assert update_response.json()["execution_profile_id"] == "native-review"
 
     project_file = product_app.get_settings().projects_dir / update_response.json()["project_id"] / "project.toml"
-    assert 'execution_profile_id = "remote-fast"' in project_file.read_text(encoding="utf-8")
+    assert 'execution_profile_id = "native-review"' in project_file.read_text(encoding="utf-8")
 
 
 def test_project_registry_rejects_unknown_execution_profile_default(

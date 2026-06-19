@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
@@ -167,6 +168,8 @@ def test_docker_transport_creates_run_container_with_labels_env_mounts_and_clean
     assert "spark.run_id=run-123" in run_command
     assert "spark.project=acme" in run_command
     assert "spark.execution_mode=local_container" in run_command
+    assert "--user" in run_command
+    assert f"{os.getuid()}:{os.getgid()}" in run_command
     assert "-v" in run_command
     assert f"{tmp_path / 'host-projects' / 'acme'}:/projects/acme:rw" in run_command
     assert f"{tmp_path / 'host-spark' / 'runs/project'}:/spark/runs/project:rw" in run_command
@@ -236,6 +239,34 @@ def test_containerized_handler_runner_default_transport_labels_run_and_project_m
     assert "spark.run_id=run-production-labels" in run_command
     assert "spark.execution_mode=local_container" in run_command
     assert f"spark.project_path={project_dir.resolve()}" in run_command
+
+
+def test_docker_transport_prefers_configured_container_user(tmp_path: Path, monkeypatch) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setenv("SPARK_CONTAINER_UID", "1234")
+    monkeypatch.setenv("SPARK_CONTAINER_GID", "5678")
+    monkeypatch.setattr("attractor.handlers.execution_container.shutil.which", lambda _: "/usr/bin/docker")
+
+    def fake_run(args, **kwargs):
+        commands.append(list(args))
+        if args[:2] == ["docker", "run"]:
+            return SimpleNamespace(returncode=0, stdout="container-user\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("attractor.handlers.execution_container.subprocess.run", fake_run)
+    transport = DockerContainerTransport(
+        image="spark-exec:test",
+        run_id="run-user",
+        project_path=tmp_path / "project",
+        run_root=tmp_path / "runs" / "run-user",
+    )
+
+    transport._ensure_started()
+    transport.close()
+
+    run_command = commands[0]
+    assert "--user" in run_command
+    assert "1234:5678" in run_command
 
 
 def test_docker_transport_fails_without_native_fallback_when_docker_missing(monkeypatch, tmp_path: Path) -> None:

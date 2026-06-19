@@ -20,7 +20,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 OWNED_RUNTIME_CLASS_NAMES = {
     "ExecutionProfile",
-    "WorkerProfile",
     "ExecutionLaunchMetadata",
     "ExecutionProfileGraph",
     "ExecutionProfileSelection",
@@ -29,60 +28,25 @@ OWNED_RUNTIME_CLASS_NAMES = {
     "ExecutionProfileSelectionError",
     "ExecutionLaunchError",
     "ExecutionProtocolError",
-    "RemoteLaunchAdmission",
-    "RemoteWorkerClient",
-    "RemoteHandlerRunner",
-    "RemotePreparationFailed",
-    "WorkerAPIError",
-    "WorkerCallbackRequest",
-    "WorkerCallbackResponse",
-    "WorkerCancelResponse",
-    "WorkerCleanupResponse",
-    "WorkerErrorResponse",
-    "WorkerEvent",
-    "WorkerHealthResponse",
-    "WorkerInfoResponse",
-    "WorkerNodeAcceptedResponse",
-    "WorkerNodeRequest",
-    "WorkerRunAdmissionRequest",
-    "WorkerRunAdmissionResponse",
-    "WorkerRunSnapshot",
-    "WorkerRuntimeCleanupError",
-    "WorkerRuntimeHandle",
-    "WorkerRuntimePreparationError",
-    "WorkerState",
 }
 
 OWNED_RUNTIME_FUNCTION_NAMES = {
-    "admit_remote_launch",
     "build_launch_metadata",
-    "create_worker_app",
     "load_execution_profile_config",
-    "map_remote_project_path",
     "normalize_execution_mode",
     "public_execution_placement_settings",
     "resolve_execution_profile_by_id",
     "seed_execution_profile_context",
-    "worker_error_payload",
 }
 
 OWNED_RUNTIME_MODULES = (
     "attractor.execution.config",
     "attractor.execution.context",
     "attractor.execution.errors",
-    "attractor.execution.metadata",
     "attractor.execution.models",
     "attractor.execution.modes",
-    "attractor.execution.paths",
-    "attractor.execution.remote_client",
-    "attractor.execution.remote_runner",
     "attractor.execution.resolution",
     "attractor.execution.settings_view",
-    "attractor.execution.worker_app",
-    "attractor.execution.worker_bridge",
-    "attractor.execution.worker_models",
-    "attractor.execution.worker_runtime",
-    "attractor.execution.worker_state",
 )
 
 INTEGRATION_MODULES = (
@@ -96,7 +60,17 @@ INTEGRATION_MODULES = (
     spark.server_cli,
 )
 
-WORKER_HTTP_ROUTE_PREFIXES = ("/v1/health", "/v1/worker-info", "/v1/runs")
+REMOTE_EXECUTION_MODULES = (
+    "attractor.execution.metadata",
+    "attractor.execution.paths",
+    "attractor.execution.remote_client",
+    "attractor.execution.remote_runner",
+    "attractor.execution.worker_app",
+    "attractor.execution.worker_bridge",
+    "attractor.execution.worker_models",
+    "attractor.execution.worker_runtime",
+    "attractor.execution.worker_state",
+)
 
 
 def test_execution_runtime_package_owns_profile_and_error_models() -> None:
@@ -127,29 +101,22 @@ def test_integration_surfaces_import_without_owning_runtime_contracts() -> None:
 
 
 def test_module_boundary_execution_modes_are_foundation_values() -> None:
-    assert execution.EXECUTION_MODES == ("native", "local_container", "remote_worker")
+    assert execution.EXECUTION_MODES == ("native", "local_container")
 
 
-def test_worker_api_routes_are_not_mounted_on_control_plane_app() -> None:
+def test_remote_worker_api_routes_are_not_mounted_on_control_plane_app() -> None:
     route_paths = {
         str(getattr(route, "path", ""))
         for route in server.attractor_app.routes
     }
 
-    for worker_route_prefix in WORKER_HTTP_ROUTE_PREFIXES:
+    for worker_route_prefix in ("/v1/health", "/v1/worker-info", "/v1/runs"):
         assert not any(path == worker_route_prefix or path.startswith(f"{worker_route_prefix}/") for path in route_paths)
 
 
-def test_worker_serve_app_is_standalone_worker_api() -> None:
-    app = execution.create_worker_app(token="boundary-token")
-    route_paths = {
-        str(getattr(route, "path", ""))
-        for route in app.routes
-    }
-
-    for worker_route_prefix in WORKER_HTTP_ROUTE_PREFIXES:
-        assert any(path == worker_route_prefix or path.startswith(f"{worker_route_prefix}/") for path in route_paths)
-    assert app is not server.attractor_app
+def test_remote_worker_runtime_modules_are_removed() -> None:
+    for module_name in REMOTE_EXECUTION_MODULES:
+        assert importlib.util.find_spec(module_name) is None
 
 
 def test_execution_container_module_remains_run_node_compatibility_glue() -> None:

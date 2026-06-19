@@ -228,7 +228,7 @@ line2"]
                 worker="worker-a",
                 execution_profile_capabilities="gpu"
             ]
-            start [shape=Mdiamond, execution_profile_id="remote-fast"]
+            start [shape=Mdiamond, execution_profile_id="local-fast"]
             done [shape=Msquare]
             start -> done
         }
@@ -241,7 +241,7 @@ line2"]
         assert graph.graph_attrs["execution_container_image"].value == "spark-exec:latest"
         assert graph.graph_attrs["worker"].value == "worker-a"
         assert graph.graph_attrs["execution_profile_capabilities"].value == "gpu"
-        assert graph.nodes["start"].attrs["execution_profile_id"].value == "remote-fast"
+        assert graph.nodes["start"].attrs["execution_profile_id"].value == "local-fast"
         assert not hasattr(graph, "execution_profile_id")
 
     def test_accepts_consecutive_semicolons_between_statements(self):

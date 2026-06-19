@@ -308,6 +308,51 @@ def test_pipeline_journal_returns_newest_first_durable_history_for_completed_run
     assert page["entries"][0]["source_flow_name"] == "implement-milestone.dot"
 
 
+def test_pipeline_journal_uses_checkpoint_active_node_semantics(tmp_path: Path) -> None:
+    run_id = "run-journal-checkpoint"
+    working_directory = tmp_path / "work"
+    working_directory.mkdir()
+    server.configure_runtime_paths(runs_dir=tmp_path / "runs")
+    _register_known_run(run_id, working_directory)
+    _write_persisted_events(
+        run_id,
+        working_directory,
+        [
+            {
+                "type": "CheckpointSaved",
+                "run_id": run_id,
+                "sequence": 1,
+                "emitted_at": "2026-04-06T12:00:00Z",
+                "active_node": "review",
+                "last_completed_node": "implement",
+                "persisted": True,
+            },
+            {
+                "type": "CheckpointSaved",
+                "run_id": run_id,
+                "sequence": 2,
+                "emitted_at": "2026-04-06T12:00:05Z",
+                "active_node": None,
+                "last_completed_node": "done",
+                "persisted": True,
+            },
+        ],
+    )
+
+    page = asyncio.run(server.pipeline_journal(run_id))
+
+    assert [entry["sequence"] for entry in page["entries"]] == [2, 1]
+    terminal_entry, active_entry = page["entries"]
+    assert active_entry["node_id"] == "review"
+    assert active_entry["summary"] == "Checkpoint saved before review"
+    assert active_entry["payload"]["active_node"] == "review"
+    assert active_entry["payload"]["last_completed_node"] == "implement"
+    assert terminal_entry["node_id"] == "done"
+    assert terminal_entry["summary"] == "Terminal checkpoint saved after done"
+    assert terminal_entry["payload"]["active_node"] is None
+    assert terminal_entry["payload"]["last_completed_node"] == "done"
+
+
 def test_pipeline_journal_paginates_older_entries_and_preserves_log_and_interview_provenance(
     tmp_path: Path,
 ) -> None:

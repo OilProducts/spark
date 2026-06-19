@@ -185,7 +185,7 @@ def test_get_pipeline_graph_preview_expand_children_uses_run_flow_source_context
     server.save_checkpoint(
         server._run_root(run_id) / "state.json",
         server.Checkpoint(
-            current_node="manager",
+            active_node="manager",
             context={
                 "internal.flow_source_dir": str(source_root),
                 "internal.run_workdir": str(tmp_path / "work"),

@@ -9,11 +9,10 @@ from .errors import (
     ExecutionProfileFieldError,
     ExecutionProfileSelectionError,
 )
-from .models import ExecutionProfile, ExecutionProfileGraph, WorkerProfile
+from .models import ExecutionProfile, ExecutionProfileGraph
 from .modes import (
     EXECUTION_MODE_LOCAL_CONTAINER,
     EXECUTION_MODE_NATIVE,
-    EXECUTION_MODE_REMOTE_WORKER,
     normalize_execution_mode,
 )
 
@@ -77,8 +76,7 @@ def _normalize_graph(raw: Mapping[str, Any]) -> ExecutionProfileGraph:
         _table(raw, "defaults", field_errors),
         field_errors,
     )
-    workers = _load_workers(_table(raw, "workers", field_errors), field_errors)
-    profiles = _load_profiles(_table(raw, "profiles", field_errors), workers, field_errors)
+    profiles = _load_profiles(_table(raw, "profiles", field_errors), field_errors)
 
     if field_errors:
         message = "invalid execution profile config: " + "; ".join(
@@ -87,7 +85,6 @@ def _normalize_graph(raw: Mapping[str, Any]) -> ExecutionProfileGraph:
         raise ExecutionProfileConfigError(message, field_errors=tuple(field_errors))
 
     return ExecutionProfileGraph(
-        workers=workers,
         profiles=profiles,
         default_execution_profile_id=default_execution_profile_id,
     )
@@ -111,85 +108,8 @@ def _load_default_execution_profile_id(
     return None
 
 
-def _load_workers(
-    raw_workers: Mapping[str, Any],
-    field_errors: list[ExecutionProfileFieldError],
-) -> dict[str, WorkerProfile]:
-    workers: dict[str, WorkerProfile] = {}
-    for worker_id, raw_worker in raw_workers.items():
-        normalized_id = _normalize_text(worker_id)
-        if not normalized_id:
-            field_errors.append(
-                ExecutionProfileFieldError(
-                    field="workers.<id>",
-                    message="worker id must be non-empty",
-                )
-            )
-            continue
-        if not isinstance(raw_worker, Mapping):
-            field_errors.append(
-                ExecutionProfileFieldError(
-                    field=f"workers.{normalized_id}",
-                    message="worker must be a table",
-                    worker_id=normalized_id,
-                )
-            )
-            continue
-
-        label = _required_worker_text(
-            raw_worker,
-            "label",
-            f"workers.{normalized_id}.label",
-            field_errors,
-            worker_id=normalized_id,
-        )
-        enabled = _required_bool(raw_worker, f"workers.{normalized_id}.enabled", field_errors, worker_id=normalized_id)
-        base_url = _required_worker_text(raw_worker, "base_url", f"workers.{normalized_id}.base_url", field_errors, worker_id=normalized_id)
-        auth_token_env = _required_text(
-            raw_worker,
-            "auth_token_env",
-            f"workers.{normalized_id}.auth_token_env",
-            field_errors,
-            worker_id=normalized_id,
-        )
-        capabilities = _optional_capabilities(
-            raw_worker,
-            f"workers.{normalized_id}.capabilities",
-            field_errors,
-            worker_id=normalized_id,
-        )
-        if (
-            label is None
-            or enabled is None
-            or base_url is None
-            or auth_token_env is None
-            or capabilities is None
-        ):
-            continue
-        try:
-            workers[normalized_id] = WorkerProfile(
-                id=normalized_id,
-                label=label,
-                base_url=base_url,
-                auth_token_env=auth_token_env,
-                enabled=enabled,
-                capabilities=capabilities,
-                metadata=_optional_mapping(raw_worker.get("metadata")),
-            )
-        except ValueError as exc:
-            field_errors.append(
-                ExecutionProfileFieldError(
-                    field=f"workers.{normalized_id}",
-                    message=str(exc),
-                    worker_id=normalized_id,
-                )
-            )
-    return workers
-
-
 def _load_profiles(
     raw_profiles: Mapping[str, Any],
-    workers: Mapping[str, WorkerProfile],
     field_errors: list[ExecutionProfileFieldError],
 ) -> dict[str, ExecutionProfile]:
     profiles: dict[str, ExecutionProfile] = {}
@@ -226,43 +146,11 @@ def _load_profiles(
             continue
 
         image = _optional_profile_text(raw_profile, "image", normalized_id, field_errors)
-        if "worker_id" in raw_profile:
-            _profile_error(
-                field_errors,
-                normalized_id,
-                "worker_id",
-                "worker_id is not supported; use worker",
-                worker_id=_optional_text(raw_profile.get("worker_id")),
-            )
-        worker_id = _optional_profile_text(raw_profile, "worker", normalized_id, field_errors)
-        control_project_root = _optional_profile_path(
-            raw_profile,
-            "control_project_root",
-            normalized_id,
-            field_errors,
-        )
-        worker_project_root = _optional_profile_path(
-            raw_profile,
-            "worker_project_root",
-            normalized_id,
-            field_errors,
-        )
-        worker_runtime_root = _optional_profile_path(
-            raw_profile,
-            "worker_runtime_root",
-            normalized_id,
-            field_errors,
-        )
 
         _validate_profile_fields(
             normalized_id,
             mode=mode,
-            worker_id=worker_id,
             image=image,
-            control_project_root=control_project_root,
-            worker_project_root=worker_project_root,
-            worker_runtime_root=worker_runtime_root,
-            workers=workers,
             field_errors=field_errors,
         )
         if any(error.profile_id == normalized_id for error in field_errors):
@@ -274,11 +162,7 @@ def _load_profiles(
                 label=label,
                 mode=mode,
                 enabled=enabled,
-                worker_id=worker_id,
                 image=image,
-                control_project_root=control_project_root,
-                worker_project_root=worker_project_root,
-                worker_runtime_root=worker_runtime_root,
                 capabilities=capabilities,
                 metadata=_optional_mapping(raw_profile.get("metadata")),
             )
@@ -297,60 +181,11 @@ def _validate_profile_fields(
     profile_id: str,
     *,
     mode: str,
-    worker_id: str | None,
     image: str | None,
-    control_project_root: Path | None,
-    worker_project_root: Path | None,
-    worker_runtime_root: Path | None,
-    workers: Mapping[str, WorkerProfile],
     field_errors: list[ExecutionProfileFieldError],
 ) -> None:
     if mode == EXECUTION_MODE_LOCAL_CONTAINER and not image:
         _profile_error(field_errors, profile_id, "image", "image is required for local_container profiles")
-    if mode != EXECUTION_MODE_REMOTE_WORKER:
-        return
-
-    if not worker_id:
-        _profile_error(field_errors, profile_id, "worker", "worker is required for remote_worker profiles")
-    elif worker_id not in workers:
-        _profile_error(
-            field_errors,
-            profile_id,
-            "worker",
-            f"unknown worker {worker_id!r}",
-            worker_id=worker_id,
-        )
-    elif not workers[worker_id].enabled:
-        _profile_error(
-            field_errors,
-            profile_id,
-            "worker",
-            f"worker {worker_id!r} is disabled",
-            worker_id=worker_id,
-        )
-    if not image:
-        _profile_error(field_errors, profile_id, "image", "image is required for remote_worker profiles")
-    if control_project_root is None:
-        _profile_error(
-            field_errors,
-            profile_id,
-            "control_project_root",
-            "control_project_root is required for remote_worker profiles",
-        )
-    if worker_project_root is None:
-        _profile_error(
-            field_errors,
-            profile_id,
-            "worker_project_root",
-            "worker_project_root is required for remote_worker profiles",
-        )
-    if worker_runtime_root is None:
-        _profile_error(
-            field_errors,
-            profile_id,
-            "worker_runtime_root",
-            "worker_runtime_root is required for remote_worker profiles",
-        )
 
 
 def _validate_selected_profile(graph: ExecutionProfileGraph, profile_id: str) -> None:
@@ -389,31 +224,6 @@ def _profile_mode(
         return None
 
 
-def _required_bool(
-    raw: Mapping[str, Any],
-    field: str,
-    field_errors: list[ExecutionProfileFieldError],
-    *,
-    worker_id: str,
-) -> bool | None:
-    if "enabled" not in raw:
-        field_errors.append(
-            ExecutionProfileFieldError(
-                field=field,
-                message="enabled is required for workers",
-                worker_id=worker_id,
-            )
-        )
-        return None
-    value = raw["enabled"]
-    if isinstance(value, bool):
-        return value
-    field_errors.append(
-        ExecutionProfileFieldError(field=field, message="enabled must be a boolean", worker_id=worker_id)
-    )
-    return None
-
-
 def _optional_bool(
     raw: Mapping[str, Any],
     key: str,
@@ -430,50 +240,6 @@ def _optional_bool(
     field_errors.append(
         ExecutionProfileFieldError(field=field, message=f"{key} must be a boolean", profile_id=profile_id)
     )
-    return None
-
-
-def _required_text(
-    raw: Mapping[str, Any],
-    key: str,
-    field: str,
-    field_errors: list[ExecutionProfileFieldError],
-    *,
-    worker_id: str,
-) -> str | None:
-    if key not in raw:
-        field_errors.append(
-            ExecutionProfileFieldError(field=field, message=f"{key} is required", worker_id=worker_id)
-        )
-        return None
-    value = _optional_string(raw[key])
-    if value:
-        return value
-    message = f"{key} must be a non-empty string" if raw.get(key) is not None else f"{key} is required"
-    field_errors.append(
-        ExecutionProfileFieldError(field=field, message=message, worker_id=worker_id)
-    )
-    return None
-
-
-def _required_worker_text(
-    raw: Mapping[str, Any],
-    key: str,
-    field: str,
-    field_errors: list[ExecutionProfileFieldError],
-    *,
-    worker_id: str,
-) -> str | None:
-    if key not in raw:
-        field_errors.append(
-            ExecutionProfileFieldError(field=field, message=f"{key} is required", worker_id=worker_id)
-        )
-        return None
-    value = _optional_string(raw[key])
-    if value:
-        return value
-    message = f"{key} must be a non-empty string" if raw.get(key) is not None else f"{key} is required"
-    field_errors.append(ExecutionProfileFieldError(field=field, message=message, worker_id=worker_id))
     return None
 
 
@@ -499,15 +265,12 @@ def _profile_error(
     profile_id: str,
     field_name: str,
     message: str,
-    *,
-    worker_id: str | None = None,
 ) -> None:
     field_errors.append(
         ExecutionProfileFieldError(
             field=f"profiles.{profile_id}.{field_name}",
             message=message,
             profile_id=profile_id,
-            worker_id=worker_id,
         )
     )
 
@@ -518,7 +281,6 @@ def _optional_capabilities(
     field_errors: list[ExecutionProfileFieldError],
     *,
     profile_id: str | None = None,
-    worker_id: str | None = None,
 ) -> tuple[str, ...] | None:
     if "capabilities" not in raw:
         return ()
@@ -529,7 +291,6 @@ def _optional_capabilities(
                 field=field,
                 message="capabilities must be an array of non-empty strings",
                 profile_id=profile_id,
-                worker_id=worker_id,
             )
         )
         return None
@@ -543,7 +304,6 @@ def _optional_capabilities(
                     field=f"{field}[{index}]",
                     message="capability must be a non-empty string",
                     profile_id=profile_id,
-                    worker_id=worker_id,
                 )
             )
             return None
@@ -553,21 +313,6 @@ def _optional_capabilities(
 
 def _optional_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
-
-
-def _optional_path(value: Any) -> Path | None:
-    text = _optional_text(value)
-    return Path(text) if text else None
-
-
-def _optional_profile_path(
-    raw: Mapping[str, Any],
-    key: str,
-    profile_id: str,
-    field_errors: list[ExecutionProfileFieldError],
-) -> Path | None:
-    text = _optional_profile_text(raw, key, profile_id, field_errors)
-    return Path(text) if text else None
 
 
 def _optional_profile_text(
