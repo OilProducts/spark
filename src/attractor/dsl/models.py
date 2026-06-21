@@ -39,6 +39,13 @@ class DotNode:
     explicit_attr_keys: set[str] = field(default_factory=set)
 
 
+def has_authored_non_empty_attr(node: DotNode, key: str) -> bool:
+    if key not in node.explicit_attr_keys:
+        return False
+    attr = node.attrs.get(key)
+    return bool(attr and str(attr.value).strip())
+
+
 @dataclass
 class DotEdge:
     source: str

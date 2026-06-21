@@ -132,7 +132,11 @@ def _backend_select(
         context,
         fallback_provider=getattr(backend, "provider", None),
     )
-    effective_profile = resolve_effective_llm_profile(node_attrs, context)
+    effective_profile = resolve_effective_llm_profile(
+        node_attrs,
+        context,
+        fallback_profile=getattr(backend, "llm_profile", None),
+    )
     effective_reasoning_effort = resolve_effective_reasoning_effort(
         node_attrs,
         context,

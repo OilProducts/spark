@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from attractor.dsl.models import Duration
+from attractor.dsl.models import DotNode, Duration, has_authored_non_empty_attr
 from attractor.engine.context_contracts import (
     ContextReadContract,
     resolve_context_read_contract,
@@ -35,16 +35,10 @@ class CodergenHandler:
 
     def execute(self, runtime: HandlerRuntime) -> Outcome:
         stage_dir = _ensure_stage_dir(runtime.logs_root, runtime.node_id)
-        prompt = runtime.prompt.strip()
-        if not prompt:
-            label_attr = runtime.node_attrs.get("label")
-            if label_attr:
-                prompt = str(label_attr.value).strip()
-            if not prompt:
-                prompt = runtime.node_id
+        prompt = _authored_prompt_for_node(runtime.node).strip()
         read_contract = resolve_context_read_contract(runtime.node_attrs)
         if read_contract.parse_error:
-            failure_reason = f"spark.reads_context parse error: {read_contract.parse_error}"
+            failure_reason = f"context.reads contract parse error: {read_contract.parse_error}"
             outcome = _with_builtin_response_context(
                 Outcome(
                     status=OutcomeStatus.FAIL,
@@ -91,7 +85,11 @@ class CodergenHandler:
             runtime.context,
             fallback_provider=getattr(self.backend, "provider", None) if self.backend is not None else None,
         )
-        effective_profile = resolve_effective_llm_profile(runtime.node_attrs, runtime.context)
+        effective_profile = resolve_effective_llm_profile(
+            runtime.node_attrs,
+            runtime.context,
+            fallback_profile=getattr(self.backend, "llm_profile", None) if self.backend is not None else None,
+        )
         effective_reasoning_effort = resolve_effective_reasoning_effort(
             runtime.node_attrs,
             runtime.context,
@@ -106,6 +104,7 @@ class CodergenHandler:
             "write_contract": write_contract,
             "provider": effective_provider,
             "llm_profile": effective_profile,
+            "emit_event": runtime.event_emitter,
         }
         if effective_model is not None:
             backend_kwargs["model"] = effective_model
@@ -117,7 +116,6 @@ class CodergenHandler:
                 runtime.node_id,
                 prompt,
                 runtime.context,
-                emit_event=runtime.event_emitter,
                 **backend_kwargs,
             )
         outcome: Outcome
@@ -164,6 +162,18 @@ def _expand_goal(prompt: str, context, graph) -> str:
     if goal is None:
         goal = ""
     return prompt.replace("$goal", str(goal))
+
+
+def _authored_prompt_for_node(node: DotNode) -> str:
+    prompt_attr = node.attrs.get("prompt")
+    if has_authored_non_empty_attr(node, "prompt") and prompt_attr is not None:
+        return str(prompt_attr.value)
+
+    label_attr = node.attrs.get("label")
+    if has_authored_non_empty_attr(node, "label") and label_attr is not None:
+        return str(label_attr.value).strip()
+
+    return ""
 
 
 def _compose_prompt(prompt: str, context, read_contract: ContextReadContract) -> str:

@@ -5,6 +5,7 @@ import pytest
 from attractor.dsl import ValidationError, parse_dot, validate, validate_graph, validate_or_raise
 from attractor.dsl.models import Diagnostic, DiagnosticSeverity
 from attractor.dsl.validator import clear_registered_lint_rules, register_lint_rule
+from attractor.transforms import AttributeDefaultsTransform
 
 
 SIMPLE_LINEAR_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "simple_linear_workflow.dot"
@@ -666,6 +667,27 @@ class TestDotValidator:
         }
         """
         graph = parse_dot(dot)
+        diagnostics = validate_graph(graph)
+
+        prompt_warnings = [
+            d for d in diagnostics if d.rule_id == "prompt_on_llm_nodes" and d.severity == DiagnosticSeverity.WARNING
+        ]
+        assert len(prompt_warnings) == 1
+        assert prompt_warnings[0].node_id == "task"
+
+    def test_generated_default_label_does_not_satisfy_codergen_prompt_warning(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            task [shape=box]
+            done [shape=Msquare]
+            start -> task
+            task -> done
+        }
+        """
+        graph = parse_dot(dot)
+        AttributeDefaultsTransform().apply(graph)
+
         diagnostics = validate_graph(graph)
 
         prompt_warnings = [

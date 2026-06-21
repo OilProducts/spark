@@ -13,6 +13,7 @@ from attractor.handlers.base import ChildRunRequest, ChildRunResult
 from attractor.handlers import HandlerRunner, build_default_registry
 from attractor.interviewer import Answer, QueueInterviewer
 from attractor.llm_runtime import RUNTIME_LAUNCH_MODEL_KEY
+from attractor.transforms import AttributeDefaultsTransform
 
 BRANCHING_CONDITION_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "branching_condition_workflow.dot"
 REFERENCE_WORKFLOW_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "flows" / "parallel-review-reference.dot"
@@ -1898,6 +1899,58 @@ class TestExecutor:
         assert result.status == "completed"
         assert seen_prompts["plan"] == "Plan from label"
         assert seen_prompts["gate"] == ""
+
+    def test_codergen_prompt_without_authored_prompt_or_label_is_empty(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> done
+            }
+            """
+        )
+
+        seen_prompts: dict[str, str] = {}
+
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
+            seen_prompts[node_id] = prompt
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "completed"
+        assert seen_prompts["plan"] == ""
+        assert seen_prompts["plan"] != "plan"
+
+    def test_codergen_prompt_ignores_generated_default_label(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                done [shape=Msquare]
+
+                start -> plan
+                plan -> done
+            }
+            """
+        )
+        AttributeDefaultsTransform().apply(graph)
+
+        seen_prompts: dict[str, str] = {}
+
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
+            seen_prompts[node_id] = prompt
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "completed"
+        assert seen_prompts["plan"] == ""
 
     def test_conditional_node_routes_using_prior_stage_outcome(self):
         graph = parse_dot(

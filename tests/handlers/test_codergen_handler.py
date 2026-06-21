@@ -24,6 +24,44 @@ from tests.handlers._support.fakes import (
 )
 
 
+class _NoEmitEventBackend:
+    def __init__(self, *, llm_profile: str | None = None):
+        self.llm_profile = llm_profile
+        self.calls = []
+
+    def run(
+        self,
+        node_id: str,
+        prompt: str,
+        context: Context,
+        *,
+        response_contract: str = "",
+        contract_repair_attempts: int = 0,
+        timeout=None,
+        model=None,
+        provider=None,
+        llm_profile=None,
+        reasoning_effort=None,
+        write_contract=None,
+    ) -> str:
+        self.calls.append(
+            {
+                "node_id": node_id,
+                "prompt": prompt,
+                "context": dict(context.values),
+                "response_contract": response_contract,
+                "contract_repair_attempts": contract_repair_attempts,
+                "timeout": timeout,
+                "model": model,
+                "provider": provider,
+                "llm_profile": llm_profile,
+                "reasoning_effort": reasoning_effort,
+                "write_contract": write_contract,
+            }
+        )
+        return "backend text response"
+
+
 class TestCodergenHandler:
     def test_codergen_handler_calls_backend(self):
         graph = parse_dot(
@@ -307,7 +345,7 @@ class TestCodergenHandler:
 
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_kind == FailureKind.CONTRACT
-        assert outcome.failure_reason == "spark.reads_context parse error: expected a JSON array of strings"
+        assert outcome.failure_reason == "context.reads contract parse error: expected a JSON array of strings"
         assert backend.calls == []
 
     def test_codergen_handler_expands_goal_from_graph_attr_when_context_missing(self):
@@ -489,22 +527,114 @@ class TestCodergenHandler:
         assert outcome.status == OutcomeStatus.SUCCESS
         assert backend.calls[0]["reasoning_effort"] == "medium"
 
-    def test_codergen_handler_falls_back_to_label_when_prompt_is_empty(self):
+    def test_codergen_handler_uses_authored_prompt_before_label(self):
         graph = parse_dot(
             """
             digraph G {
-                task [shape=box, label="Label Prompt"]
+                task [shape=box, prompt="Prompt wins", label="Label loses"]
             }
             """
         )
 
-        backend = _StubBackend(ok=True)
+        backend = _NoEmitEventBackend()
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert backend.calls[0]["prompt"] == "Prompt wins"
+
+    def test_codergen_handler_uses_authored_label_when_prompt_is_blank(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, prompt="", label="Label Prompt"]
+            }
+            """
+        )
+
+        backend = _NoEmitEventBackend()
         registry = build_default_registry(codergen_backend=backend)
         runner = HandlerRunner(graph, registry)
 
         outcome = runner("task", "", Context())
         assert outcome.status == OutcomeStatus.SUCCESS
-        assert backend.calls[0][1] == "Label Prompt"
+        assert backend.calls[0]["prompt"] == "Label Prompt"
+
+    def test_codergen_handler_does_not_use_generated_label_as_prompt(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box]
+            }
+            """
+        )
+        AttributeDefaultsTransform().apply(graph)
+
+        backend = _NoEmitEventBackend()
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert backend.calls[0]["prompt"] == ""
+
+    def test_codergen_handler_without_authored_prompt_or_label_passes_empty_prompt(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box]
+            }
+            """
+        )
+
+        backend = _NoEmitEventBackend()
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert backend.calls[0]["prompt"] == ""
+        assert backend.calls[0]["prompt"] != "task"
+
+    def test_codergen_handler_filters_emit_event_for_backends_without_parameter(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, prompt="Plan"]
+            }
+            """
+        )
+
+        backend = _NoEmitEventBackend()
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "ignored", Context(), emit_event=lambda event_type, **payload: None)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert backend.calls[0]["prompt"] == "Plan"
+
+    def test_codergen_handler_uses_backend_llm_profile_as_fallback(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                task [shape=box, prompt="Plan"]
+            }
+            """
+        )
+
+        backend = _NoEmitEventBackend(llm_profile="backend-profile")
+        registry = build_default_registry(codergen_backend=backend)
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("task", "ignored", Context())
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert backend.calls[0]["llm_profile"] == "backend-profile"
 
     def test_codergen_handler_returns_simulation_response_when_backend_absent(self):
         graph = parse_dot(

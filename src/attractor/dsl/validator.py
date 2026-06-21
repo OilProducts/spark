@@ -4,7 +4,7 @@ import json
 import re
 from typing import Dict, Iterable, List, Protocol, Set
 
-from .models import Diagnostic, DiagnosticSeverity, DotEdge, DotGraph, DotNode
+from .models import Diagnostic, DiagnosticSeverity, DotEdge, DotGraph, DotNode, has_authored_non_empty_attr
 
 
 VALID_FIDELITY = {
@@ -617,8 +617,8 @@ def _validate_prompt_on_llm_nodes(graph: DotGraph) -> List[Diagnostic]:
         if not _resolves_to_codergen(node):
             continue
 
-        has_prompt = _has_non_empty_attr(node, "prompt")
-        has_label = _has_non_empty_attr(node, "label")
+        has_prompt = has_authored_non_empty_attr(node, "prompt")
+        has_label = has_authored_non_empty_attr(node, "label")
         if has_prompt or has_label:
             continue
 

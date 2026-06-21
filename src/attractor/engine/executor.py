@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
-from attractor.dsl.models import DotEdge, DotGraph
+from attractor.dsl.models import DotEdge, DotGraph, DotNode, has_authored_non_empty_attr
 from attractor.dsl.models import Duration
 from attractor.graph_prep import (
     DEFAULT_MAX_RETRIES_KEY,
@@ -1828,19 +1828,11 @@ class PipelineExecutor:
 
     def _prompt_for_node(self, node_id: str) -> str:
         node = self.graph.nodes[node_id]
+        if self._resolved_handler_type(node_id) == "codergen":
+            return _authored_codergen_prompt_for_node(node)
+
         prompt_attr = node.attrs.get("prompt")
         prompt_text = str(prompt_attr.value) if prompt_attr else ""
-        if prompt_text.strip():
-            return prompt_text
-
-        if self._resolved_handler_type(node_id) == "codergen":
-            label_attr = node.attrs.get("label")
-            if label_attr:
-                label = str(label_attr.value).strip()
-                if label:
-                    return label
-            return node_id
-
         return prompt_text
 
     def _resolved_handler_type(self, node_id: str) -> str:
@@ -2443,3 +2435,15 @@ def _coerce_status_code(value: object) -> int | None:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _authored_codergen_prompt_for_node(node: DotNode) -> str:
+    prompt_attr = node.attrs.get("prompt")
+    if has_authored_non_empty_attr(node, "prompt") and prompt_attr is not None:
+        return str(prompt_attr.value)
+
+    label_attr = node.attrs.get("label")
+    if has_authored_non_empty_attr(node, "label") and label_attr is not None:
+        return str(label_attr.value).strip()
+
+    return ""
