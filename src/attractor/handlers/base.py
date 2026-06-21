@@ -63,6 +63,29 @@ class ChildRunResult:
 
 
 @dataclass
+class ChildInterventionRequest:
+    child_run_id: str
+    message: str
+    parent_run_id: str
+    parent_node_id: str
+    root_run_id: str
+    reason: str = ""
+    source: str = "manager_loop"
+    cycle: int | None = None
+    target_node_id: str | None = None
+
+
+@dataclass
+class ChildInterventionResult:
+    run_id: str
+    status: str
+    delivery_mode: str = ""
+    reason: str = ""
+    message: str = ""
+    target_node_id: str | None = None
+
+
+@dataclass
 class HandlerRuntime:
     node_id: str
     node: DotNode
@@ -78,6 +101,9 @@ class HandlerRuntime:
     control: Callable[[], str | None] | None = None
     child_run_launcher: Optional[Callable[[ChildRunRequest], ChildRunResult]] = None
     child_status_resolver: Optional[Callable[[str], ChildRunResult | None]] = None
+    child_intervention_requester: Optional[
+        Callable[[ChildInterventionRequest], ChildInterventionResult]
+    ] = None
 
     def emit(self, event_type: str, **payload: object) -> None:
         if not self.event_emitter:

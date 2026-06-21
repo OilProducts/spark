@@ -10,6 +10,7 @@ from fastapi import WebSocket
 
 from attractor.api.token_usage import EstimatedModelCost, TokenUsageBreakdown
 from attractor.engine import Context
+from attractor.handlers.base import ChildInterventionRequest, ChildInterventionResult
 from attractor.interviewer.base import Interviewer
 from attractor.interviewer.models import Answer, AnswerValue, Question
 
@@ -323,6 +324,22 @@ class BroadcastingRunner:
         cancel = getattr(self.delegate, "cancel", None)
         if callable(cancel):
             cancel()
+
+    def request_child_intervention(
+        self,
+        request: ChildInterventionRequest,
+    ) -> ChildInterventionResult:
+        requester = getattr(self.delegate, "request_child_intervention", None)
+        if not callable(requester):
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="rejected",
+                delivery_mode="unsupported",
+                reason="backend_steering_unsupported",
+                message="active runner does not support intervention",
+                target_node_id=request.target_node_id,
+            )
+        return requester(request)
 
     def __call__(self, node_id: str, prompt: str, context: Context, *, emit_event=None):
         return self._run(node_id, prompt, context, emit_event=emit_event)

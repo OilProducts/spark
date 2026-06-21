@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import subprocess
+import threading
 import time
 from typing import Any, Callable, Optional
 
@@ -168,6 +169,11 @@ class CodexAppServerClient:
         self._stdout_reader: Optional[ProcessLineReader] = None
         self._request_id = 0
         self._pending_messages: deque[dict[str, Any]] = deque()
+        self._pending_responses: dict[Any, deque[dict[str, Any]]] = {}
+        self._pending_lock = threading.RLock()
+        self._read_lock = threading.Lock()
+        self._request_id_lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._raw_rpc_logger: Optional[Callable[[str, str], None]] = None
 
     @property
@@ -201,8 +207,11 @@ class CodexAppServerClient:
                 stdout_reader.join(timeout=0.5)
             except Exception:
                 pass
-        self._pending_messages.clear()
-        self._request_id = 0
+        with self._pending_lock:
+            self._pending_messages.clear()
+            self._pending_responses.clear()
+        with self._request_id_lock:
+            self._request_id = 0
 
     def set_raw_rpc_logger(self, callback: Optional[Callable[[str, str], None]]) -> None:
         self._raw_rpc_logger = callback
@@ -243,8 +252,11 @@ class CodexAppServerClient:
             raise RuntimeError("codex app-server did not expose stdout")
         self._proc = proc
         self._stdout_reader = ProcessLineReader(proc.stdout)
-        self._request_id = 0
-        self._pending_messages.clear()
+        with self._request_id_lock:
+            self._request_id = 0
+        with self._pending_lock:
+            self._pending_messages.clear()
+            self._pending_responses.clear()
         init_response = self.send_request(
             "initialize",
             {
@@ -261,10 +273,11 @@ class CodexAppServerClient:
         if self._proc is None or self._proc.stdin is None:
             raise RuntimeError("codex app-server stdin unavailable")
         raw_line = json.dumps(payload)
-        if self._raw_rpc_logger is not None:
-            self._raw_rpc_logger("outgoing", raw_line)
-        self._proc.stdin.write(raw_line + "\n")
-        self._proc.stdin.flush()
+        with self._write_lock:
+            if self._raw_rpc_logger is not None:
+                self._raw_rpc_logger("outgoing", raw_line)
+            self._proc.stdin.write(raw_line + "\n")
+            self._proc.stdin.flush()
 
     def send_response(
         self,
@@ -308,6 +321,31 @@ class CodexAppServerClient:
             "params": message.get("params") or {},
         }
 
+    def _pop_pending_message(self) -> Optional[dict[str, Any]]:
+        with self._pending_lock:
+            if not self._pending_messages:
+                return None
+            return self._pending_messages.popleft()
+
+    def _queue_pending_message(self, message: dict[str, Any]) -> None:
+        with self._pending_lock:
+            self._pending_messages.append(message)
+
+    def _pop_pending_response(self, target_id: Any) -> Optional[dict[str, Any]]:
+        with self._pending_lock:
+            responses = self._pending_responses.get(target_id)
+            if not responses:
+                return None
+            response = responses.popleft()
+            if not responses:
+                del self._pending_responses[target_id]
+            return response
+
+    def _queue_pending_response(self, message: dict[str, Any]) -> None:
+        with self._pending_lock:
+            response_id = message.get("id")
+            self._pending_responses.setdefault(response_id, deque()).append(message)
+
     def wait_for_response(
         self,
         target_id: int,
@@ -318,7 +356,14 @@ class CodexAppServerClient:
         started_at = now()
         reader = read_line or self.read_line
         while True:
-            line = reader(0.1)
+            pending_response = self._pop_pending_response(target_id)
+            if pending_response is not None:
+                return pending_response
+            with self._read_lock:
+                pending_response = self._pop_pending_response(target_id)
+                if pending_response is not None:
+                    return pending_response
+                line = reader(0.1)
             if line is None:
                 if self._proc is not None and self._proc.poll() is not None:
                     raise RuntimeError("codex app-server exited unexpectedly")
@@ -332,12 +377,15 @@ class CodexAppServerClient:
                 self._handle_unparsed_line(line)
                 continue
             if "id" in message and "method" in message:
-                self._pending_messages.append(self._handle_server_request(message))
+                self._queue_pending_message(self._handle_server_request(message))
                 continue
             if message.get("id") == target_id:
                 return message
+            if "id" in message:
+                self._queue_pending_response(message)
+                continue
             if "method" in message:
-                self._pending_messages.append(message)
+                self._queue_pending_message(message)
 
     def next_message(
         self,
@@ -348,15 +396,23 @@ class CodexAppServerClient:
         on_activity: Optional[Callable[[], None]] = None,
         server_request_handler: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
     ) -> Optional[dict[str, Any]]:
-        if self._pending_messages:
-            return self._pending_messages.popleft()
+        pending_message = self._pop_pending_message()
+        if pending_message is not None:
+            return pending_message
         reader = read_line or self.read_line
         deadline = now() + max(wait, 0)
         while True:
+            pending_message = self._pop_pending_message()
+            if pending_message is not None:
+                return pending_message
             remaining = deadline - now()
             if remaining <= 0:
                 return None
-            line = reader(remaining)
+            with self._read_lock:
+                pending_message = self._pop_pending_message()
+                if pending_message is not None:
+                    return pending_message
+                line = reader(remaining)
             if line is None:
                 return None
             if on_activity is not None:
@@ -369,6 +425,9 @@ class CodexAppServerClient:
             if "id" in message and "method" in message:
                 handler = server_request_handler or self._handle_server_request
                 return handler(message)
+            if "id" in message:
+                self._queue_pending_response(message)
+                continue
             if "method" in message:
                 return message
 
@@ -380,12 +439,14 @@ class CodexAppServerClient:
         read_line: Optional[Callable[[float], Optional[str]]] = None,
         now: Callable[[], float] = time.monotonic,
     ) -> dict[str, Any]:
-        self._request_id += 1
-        payload: dict[str, Any] = {"jsonrpc": "2.0", "id": self._request_id, "method": method}
+        with self._request_id_lock:
+            self._request_id += 1
+            request_id = self._request_id
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
             payload["params"] = params
         self.send_json(payload)
-        return self.wait_for_response(self._request_id, read_line=read_line, now=now)
+        return self.wait_for_response(request_id, read_line=read_line, now=now)
 
     def start_thread(
         self,
@@ -590,6 +651,28 @@ class CodexAppServerClient:
             now=now,
             server_request_handler=server_request_handler,
         )
+
+    def steer_turn(
+        self,
+        thread_id: str,
+        turn_id: str,
+        message: str,
+    ) -> dict[str, Any]:
+        response = self.send_request(
+            "turn/steer",
+            {
+                "threadId": thread_id,
+                "expectedTurnId": turn_id,
+                "input": [{"type": "text", "text": message}],
+            },
+        )
+        if response.get("error"):
+            error = response.get("error") or {}
+            text = codex_app_protocol.as_non_empty_string(error.get("message"))
+            if text:
+                raise RuntimeError(f"codex app-server turn/steer failed: {text}")
+            raise RuntimeError("codex app-server turn/steer failed")
+        return response
 
     def _consume_turn_stream(
         self,

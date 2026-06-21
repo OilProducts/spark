@@ -20,6 +20,7 @@ from attractor.engine import Context, load_checkpoint
 from attractor.engine.context_contracts import ContextWriteContract
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
 from attractor.engine.status_envelope_prompting import build_status_envelope_context_updates_contract_text
+from attractor.handlers.base import ChildInterventionRequest, ChildInterventionResult
 from spark_common.project_identity import build_project_id
 from spark_common.runtime_path import resolve_runtime_workspace_path
 from tests.api._support import (
@@ -1773,6 +1774,126 @@ def test_codex_app_server_backend_forwards_reasoning_effort_to_turn(
     assert run_turn_calls[0]["reasoning_effort"] == "high"
 
 
+def test_codex_app_server_backend_delivers_intervention_to_active_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend = server.CodexAppServerBackend(str(tmp_path), lambda event: None, model=None)
+    intervention_result: ChildInterventionResult | None = None
+    steer_calls: list[tuple[str, str, str]] = []
+
+    class FakeResult:
+        assistant_message = "Ack"
+        command_text = ""
+        token_total = None
+        token_usage_payload = None
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def ensure_process(self, **kwargs) -> None:
+            return None
+
+        def start_thread(self, **kwargs) -> str:
+            return "thread-123"
+
+        def run_turn(self, **kwargs) -> FakeResult:
+            nonlocal intervention_result
+            kwargs["on_turn_started"]("turn-456")
+            intervention_result = backend.request_child_intervention(
+                ChildInterventionRequest(
+                    child_run_id="child-1",
+                    message="Please fix the failure.",
+                    parent_run_id="parent-1",
+                    parent_node_id="manager",
+                    root_run_id="parent-1",
+                    reason="tests failed",
+                    target_node_id="task",
+                )
+            )
+            return FakeResult()
+
+        def steer_turn(self, thread_id: str, turn_id: str, message: str) -> None:
+            steer_calls.append((thread_id, turn_id, message))
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(codex_backends_module, "CodexAppServerClient", FakeClient)
+
+    assert backend.run("plan", "hello", Context()) == "Ack"
+    assert steer_calls == [("thread-123", "turn-456", "Please fix the failure.")]
+    assert intervention_result is not None
+    assert intervention_result.status == "delivered"
+    assert intervention_result.delivery_mode == "codex_app_server_turn"
+    assert intervention_result.reason == "tests failed"
+    inactive = backend.request_child_intervention(
+        ChildInterventionRequest(
+            child_run_id="child-1",
+            message="late",
+            parent_run_id="parent-1",
+            parent_node_id="manager",
+            root_run_id="parent-1",
+        )
+    )
+    assert inactive.status == "rejected"
+    assert inactive.reason == "no_active_turn"
+
+
+def test_codex_app_server_backend_reports_steer_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend = server.CodexAppServerBackend(str(tmp_path), lambda event: None, model=None)
+    intervention_result: ChildInterventionResult | None = None
+
+    class FakeResult:
+        assistant_message = "Ack"
+        command_text = ""
+        token_total = None
+        token_usage_payload = None
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def ensure_process(self, **kwargs) -> None:
+            return None
+
+        def start_thread(self, **kwargs) -> str:
+            return "thread-123"
+
+        def run_turn(self, **kwargs) -> FakeResult:
+            nonlocal intervention_result
+            kwargs["on_turn_started"]("turn-456")
+            intervention_result = backend.request_child_intervention(
+                ChildInterventionRequest(
+                    child_run_id="child-1",
+                    message="Please fix the failure.",
+                    parent_run_id="parent-1",
+                    parent_node_id="manager",
+                    root_run_id="parent-1",
+                )
+            )
+            return FakeResult()
+
+        def steer_turn(self, thread_id: str, turn_id: str, message: str) -> None:
+            del thread_id, turn_id, message
+            raise RuntimeError("codex app-server turn/steer failed: rejected")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(codex_backends_module, "CodexAppServerClient", FakeClient)
+
+    assert backend.run("plan", "hello", Context()) == "Ack"
+    assert intervention_result is not None
+    assert intervention_result.status == "rejected"
+    assert intervention_result.reason == "app_server_steer_failed"
+    assert "rejected" in intervention_result.message
+
+
 @pytest.mark.parametrize(
     ("provider", "expected_backend"),
     [
@@ -1830,6 +1951,104 @@ def test_provider_router_dispatches_supported_providers(
     assert run_call["backend"] == expected_backend
     assert run_call["kwargs"]["model"] == "node-model"
     assert run_call["kwargs"]["reasoning_effort"] == "medium"
+
+
+def test_provider_router_forwards_intervention_to_active_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    router_box: dict[str, codex_backends_module.ProviderRouterBackend] = {}
+    forwarded_results: list[ChildInterventionResult] = []
+
+    class FakeCodexBackend(_BackendRunAdapter):
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        def bind_stage_raw_rpc_log(self, node_id, logs_root):
+            del node_id, logs_root
+            return nullcontext()
+
+        def request_child_intervention(self, request: ChildInterventionRequest) -> ChildInterventionResult:
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="delivered",
+                delivery_mode="fake_codex",
+                reason=request.reason,
+            )
+
+        def run(self, *args, **kwargs) -> str:
+            del args, kwargs
+            forwarded_results.append(
+                router_box["router"].request_child_intervention(
+                    ChildInterventionRequest(
+                        child_run_id="child-1",
+                        message="steer",
+                        parent_run_id="parent-1",
+                        parent_node_id="manager",
+                        root_run_id="parent-1",
+                        reason="tests failed",
+                    )
+                )
+            )
+            return "codex-result"
+
+    monkeypatch.setattr(codex_backends_module, "CodexAppServerBackend", FakeCodexBackend)
+    router = codex_backends_module.ProviderRouterBackend(str(tmp_path), lambda event: None)
+    router_box["router"] = router
+
+    assert router.run("plan", "hello", Context(), provider="codex") == "codex-result"
+    assert forwarded_results[0].status == "delivered"
+    assert forwarded_results[0].delivery_mode == "fake_codex"
+    inactive = router.request_child_intervention(
+        ChildInterventionRequest(
+            child_run_id="child-1",
+            message="late",
+            parent_run_id="parent-1",
+            parent_node_id="manager",
+            root_run_id="parent-1",
+        )
+    )
+    assert inactive.status == "rejected"
+    assert inactive.reason == "no_active_turn"
+
+
+def test_provider_router_rejects_intervention_when_active_backend_is_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    router_box: dict[str, codex_backends_module.ProviderRouterBackend] = {}
+    intervention_results: list[ChildInterventionResult] = []
+
+    class FakeCodexBackend(_BackendRunAdapter):
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        def bind_stage_raw_rpc_log(self, node_id, logs_root):
+            del node_id, logs_root
+            return nullcontext()
+
+        def run(self, *args, **kwargs) -> str:
+            del args, kwargs
+            intervention_results.append(
+                router_box["router"].request_child_intervention(
+                    ChildInterventionRequest(
+                        child_run_id="child-1",
+                        message="steer",
+                        parent_run_id="parent-1",
+                        parent_node_id="manager",
+                        root_run_id="parent-1",
+                    )
+                )
+            )
+            return "codex-result"
+
+    monkeypatch.setattr(codex_backends_module, "CodexAppServerBackend", FakeCodexBackend)
+    router = codex_backends_module.ProviderRouterBackend(str(tmp_path), lambda event: None)
+    router_box["router"] = router
+
+    assert router.run("plan", "hello", Context(), provider="codex") == "codex-result"
+    assert intervention_results[0].status == "rejected"
+    assert intervention_results[0].reason == "backend_steering_unsupported"
 
 
 def test_provider_router_fails_unknown_provider(tmp_path: Path) -> None:
@@ -2253,6 +2472,76 @@ def test_unified_agent_backend_returns_plain_text_and_records_tool_events(
         "[plan] tool completed: shell",
     ]
     assert usage_snapshots[-1].by_model["gpt-test"].total_tokens == 7
+
+
+def test_unified_agent_backend_delivers_intervention_to_active_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_box: dict[str, codex_backends_module.UnifiedAgentBackend] = {}
+    intervention_results: list[ChildInterventionResult] = []
+    steered_messages: list[str] = []
+
+    class FakeSession:
+        def __init__(self, *, provider_profile, execution_environment, client, config) -> None:
+            del execution_environment, client, config
+            self.provider_profile = provider_profile
+            self.state = SessionState.IDLE
+            self.history: list[AssistantTurn] = []
+            self.event_queue = codex_backends_module.asyncio.Queue()
+
+        async def process_input(self, prompt: str) -> None:
+            del prompt
+            intervention_results.append(
+                backend_box["backend"].request_child_intervention(
+                    ChildInterventionRequest(
+                        child_run_id="child-1",
+                        message="Please fix the failure.",
+                        parent_run_id="parent-1",
+                        parent_node_id="manager",
+                        root_run_id="parent-1",
+                        reason="tests failed",
+                    )
+                )
+            )
+            self.history.append(AssistantTurn("Unified reply"))
+
+        def steer(self, message: str) -> str:
+            steered_messages.append(message)
+            return message
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        codex_backends_module,
+        "_profile_for_provider",
+        lambda provider, model: SimpleNamespace(model=str(model or f"{provider}-default")),
+    )
+    monkeypatch.setattr(codex_backends_module, "Session", FakeSession)
+    backend = codex_backends_module.UnifiedAgentBackend(
+        str(tmp_path),
+        lambda event: None,
+        provider="openai",
+        client_factory=lambda provider: SimpleNamespace(close=lambda: None),
+    )
+    backend_box["backend"] = backend
+
+    assert backend.run("plan", "hello", Context(), model="gpt-test") == "Unified reply"
+    assert steered_messages == ["Please fix the failure."]
+    assert intervention_results[0].status == "delivered"
+    assert intervention_results[0].delivery_mode == "unified_agent_session"
+    inactive = backend.request_child_intervention(
+        ChildInterventionRequest(
+            child_run_id="child-1",
+            message="late",
+            parent_run_id="parent-1",
+            parent_node_id="manager",
+            root_run_id="parent-1",
+        )
+    )
+    assert inactive.status == "rejected"
+    assert inactive.reason == "no_active_turn"
 
 
 def test_unified_agent_backend_emits_llm_content_progress(

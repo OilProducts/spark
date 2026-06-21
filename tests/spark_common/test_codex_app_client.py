@@ -4,10 +4,35 @@ import itertools
 import json
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from spark_common.codex_app_client import CodexAppServerClient
 import spark_common.codex_app_protocol as codex_app_protocol
 from spark_common.turn_stream import TurnStreamEvent
+
+
+_TURN_STEER_PARAMS_CONTRACT_SCHEMA = {
+    "type": "object",
+    "required": ["threadId", "expectedTurnId", "input"],
+    "properties": {
+        "threadId": {"type": "string", "minLength": 1},
+        "expectedTurnId": {"type": "string", "minLength": 1},
+        "input": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["type", "text"],
+                "properties": {
+                    "type": {"const": "text"},
+                    "text": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    "additionalProperties": False,
+}
 
 
 def test_turn_stream_content_events_require_channel() -> None:
@@ -288,6 +313,114 @@ def test_shared_client_default_model_reads_default_entry_from_model_list() -> No
     }
 
     assert client.default_model() == "gpt-default"
+
+
+def test_shared_client_steer_turn_sends_turn_steer_request_shape() -> None:
+    client = CodexAppServerClient("/tmp/project")
+    outgoing_lines: list[str] = []
+
+    class DummyStdin:
+        def write(self, text: str) -> None:
+            outgoing_lines.append(text)
+
+        def flush(self) -> None:
+            return None
+
+    class DummyProc:
+        stdin = DummyStdin()
+
+        def poll(self) -> int | None:
+            return None
+
+    client.proc = DummyProc()  # type: ignore[assignment]
+    client.wait_for_response = lambda request_id, **kwargs: {"result": {}}  # type: ignore[method-assign]
+
+    response = client.steer_turn("thread-123", "turn-456", "Please adjust course.")
+
+    assert response == {"result": {}}
+    assert len(outgoing_lines) == 1
+    payload = json.loads(outgoing_lines[0])
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 1
+    assert payload["method"] == "turn/steer"
+    Draft202012Validator(_TURN_STEER_PARAMS_CONTRACT_SCHEMA).validate(payload["params"])
+    assert payload["params"] == {
+        "threadId": "thread-123",
+        "expectedTurnId": "turn-456",
+        "input": [{"type": "text", "text": "Please adjust course."}],
+    }
+
+
+def test_shared_client_run_turn_preserves_interleaved_steer_response_for_waiter() -> None:
+    client = CodexAppServerClient("/tmp/project", request_timeout_seconds=0.01)
+    outgoing_lines: list[str] = []
+    lines = iter(
+        [
+            '{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"turn-123","status":"inProgress","items":[]}}}',
+            '{"jsonrpc":"2.0","id":2,"result":{}}',
+            '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"turnId":"turn-123","delta":"Ack"}}',
+            '{"jsonrpc":"2.0","method":"item/completed","params":{"turnId":"turn-123","item":{"type":"AgentMessage","id":"msg-1","content":[{"type":"Text","text":"Ack"}],"phase":"final_answer"}}}',
+            '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-123","status":"completed"}}}',
+        ]
+    )
+    emitted_events: list[TurnStreamEvent] = []
+
+    class DummyStdin:
+        def write(self, text: str) -> None:
+            outgoing_lines.append(text)
+
+        def flush(self) -> None:
+            return None
+
+    class DummyProc:
+        stdin = DummyStdin()
+
+        def poll(self) -> int | None:
+            return None
+
+    client.proc = DummyProc()  # type: ignore[assignment]
+    client.read_line = lambda wait: next(lines, None)  # type: ignore[method-assign]
+
+    def send_intervention(turn_id: str) -> None:
+        assert turn_id == "turn-123"
+        client.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "turn/steer",
+                "params": {
+                    "threadId": "thread-123",
+                    "expectedTurnId": turn_id,
+                    "input": [{"type": "text", "text": "Please revise the current step."}],
+                },
+            }
+        )
+
+    result = client.run_turn(
+        thread_id="thread-123",
+        prompt="hello",
+        model="gpt-test",
+        on_event=emitted_events.append,
+        on_turn_started=send_intervention,
+    )
+    monotonic_values = itertools.count(0.0, 0.02)
+    queued_response = client.wait_for_response(
+        2,
+        read_line=lambda wait: None,
+        now=lambda: next(monotonic_values),
+    )
+
+    assert result.assistant_message == "Ack"
+    assert [event.kind for event in emitted_events] == [
+        "content_delta",
+        "content_completed",
+        "turn_completed",
+    ]
+    assert queued_response == {"jsonrpc": "2.0", "id": 2, "result": {}}
+    assert [json.loads(line).get("method") for line in outgoing_lines] == [
+        "turn/start",
+        "turn/steer",
+    ]
 
 
 def test_shared_client_model_metadata_parses_reasoning_efforts() -> None:

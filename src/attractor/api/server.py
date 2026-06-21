@@ -97,6 +97,8 @@ from attractor.execution import (
     seed_execution_profile_context,
 )
 from attractor.handlers.base import (
+    ChildInterventionRequest,
+    ChildInterventionResult,
     ChildRunRequest,
     ChildRunResult,
     CodergenBackend,
@@ -1779,6 +1781,12 @@ class PipelineContinueRequest(BaseModel):
     reasoning_effort: Optional[str] = None
 
 
+class PipelineSteerRequest(BaseModel):
+    message: str
+    target_run_id: Optional[str] = None
+    target_node_id: Optional[str] = None
+
+
 class PreviewRequest(BaseModel):
     flow_content: str
     flow_name: Optional[str] = None
@@ -2288,6 +2296,9 @@ def _clear_child_runtime_snapshot(context: Context) -> None:
             "context.stack.child.failure_reason": "",
             "context.stack.child.retry_count": "",
             "context.stack.child.intervention": "",
+            "context.stack.child.intervention_status": "",
+            "context.stack.child.intervention_delivery_mode": "",
+            "context.stack.child.intervention_reason": "",
         }
     )
 
@@ -2351,6 +2362,101 @@ def _child_run_result_from_record(run_id: str) -> ChildRunResult | None:
         route_trace=list(route_trace),
         failure_reason=record.last_error or "",
     )
+
+
+def _child_intervention_result_payload(result: ChildInterventionResult) -> dict[str, object]:
+    return {
+        "run_id": result.run_id,
+        "status": result.status,
+        "delivery_mode": result.delivery_mode,
+        "reason": result.reason,
+        "message": result.message,
+        "target_node_id": result.target_node_id,
+    }
+
+
+def _rejected_child_intervention(
+    request: ChildInterventionRequest,
+    *,
+    reason: str,
+    delivery_mode: str = "none",
+    message: str = "",
+) -> ChildInterventionResult:
+    return ChildInterventionResult(
+        run_id=request.child_run_id,
+        status="rejected",
+        delivery_mode=delivery_mode,
+        reason=reason,
+        message=message,
+        target_node_id=request.target_node_id,
+    )
+
+
+def _request_child_intervention_for_active_run(
+    request: ChildInterventionRequest,
+) -> ChildInterventionResult:
+    active = _get_active_run(request.child_run_id)
+    if active is None:
+        return _rejected_child_intervention(
+            request,
+            reason="no_active_child_run",
+            message="No active child run is available for intervention.",
+        )
+    runner = active.runner
+    requester = getattr(runner, "request_child_intervention", None)
+    if not callable(requester):
+        return _rejected_child_intervention(
+            request,
+            reason="backend_steering_unsupported",
+            delivery_mode="unsupported",
+            message="Active child runner does not support intervention.",
+        )
+    try:
+        return requester(request)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("child intervention request failed for run %s", request.child_run_id)
+        return _rejected_child_intervention(
+            request,
+            reason="intervention_request_failed",
+            delivery_mode="error",
+            message=str(exc),
+        )
+
+
+def _request_backend_or_child_intervention(
+    *,
+    current_run_id: str,
+    backend: object | None,
+    request: ChildInterventionRequest,
+) -> ChildInterventionResult:
+    if request.child_run_id == current_run_id and backend is not None:
+        requester = getattr(backend, "request_child_intervention", None)
+        if not callable(requester):
+            return _rejected_child_intervention(
+                request,
+                reason="backend_steering_unsupported",
+                delivery_mode="unsupported",
+                message="Active backend does not support intervention.",
+            )
+        return requester(request)
+    return _request_child_intervention_for_active_run(request)
+
+
+def _default_intervention_target(parent_run_id: str) -> tuple[str, str | None]:
+    checkpoint = load_checkpoint(_run_root(parent_run_id) / "state.json")
+    if checkpoint is not None:
+        child_run_id = str(checkpoint.context.get("context.stack.child.run_id", "") or "").strip()
+        if child_run_id and _get_active_run(child_run_id) is not None:
+            target_node_id = str(checkpoint.context.get("context.stack.child.active_stage", "") or "").strip()
+            return child_run_id, target_node_id or None
+    return parent_run_id, None
+
+
+def _parent_run_ids_for_child_run(child_run_id: str) -> tuple[str | None, str | None]:
+    record = _read_run_meta(_run_meta_path(child_run_id))
+    if record is None:
+        return None, None
+    return record.parent_run_id, record.parent_node_id
 
 
 def _next_child_invocation_index(parent_run_id: str, parent_node_id: str) -> int:
@@ -2632,6 +2738,17 @@ def _run_first_class_child_pipeline(
             assert execution_profile.image is not None
             interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, request.child_flow_name, child_run_id)
             shared_transport = _shared_container_transport(root_run_id)
+
+            def request_child_intervention(intervention_request: ChildInterventionRequest) -> ChildInterventionResult:
+                if intervention_request.child_run_id == child_run_id:
+                    return _rejected_child_intervention(
+                        intervention_request,
+                        reason="backend_steering_unsupported",
+                        delivery_mode="local_container",
+                        message="API steering for an active backend inside a local container is unavailable.",
+                    )
+                return _request_child_intervention_for_active_run(intervention_request)
+
             delegate_runner = ContainerizedHandlerRunner(
                 request.child_graph,
                 image=execution_profile.image,
@@ -2641,6 +2758,7 @@ def _run_first_class_child_pipeline(
                 transport=shared_transport,
                 child_run_launcher=launch_nested_child,
                 child_status_resolver=_child_run_result_from_record,
+                child_intervention_requester=request_child_intervention,
                 interviewer=interviewer,
             )
         else:
@@ -2652,6 +2770,14 @@ def _run_first_class_child_pipeline(
                 on_usage_update=handle_usage_update,
             )
             interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, request.child_flow_name, child_run_id)
+
+            def request_child_intervention(intervention_request: ChildInterventionRequest) -> ChildInterventionResult:
+                return _request_backend_or_child_intervention(
+                    current_run_id=child_run_id,
+                    backend=backend,
+                    request=intervention_request,
+                )
+
             registry = build_default_registry(
                 codergen_backend=backend,
                 interviewer=interviewer,
@@ -2661,6 +2787,7 @@ def _run_first_class_child_pipeline(
                 registry,
                 child_run_launcher=launch_nested_child,
                 child_status_resolver=_child_run_result_from_record,
+                child_intervention_requester=request_child_intervention,
             )
     except (ValueError, ContainerExecutionError) as exc:
         _set_active_run_status(child_run_id, "failed", last_error=str(exc))
@@ -2947,6 +3074,17 @@ def _build_pipeline_runner_for_run(
 
     if execution_profile.is_container:
         assert execution_profile.image is not None
+
+        def request_child_intervention(intervention_request: ChildInterventionRequest) -> ChildInterventionResult:
+            if intervention_request.child_run_id == run_id:
+                return _rejected_child_intervention(
+                    intervention_request,
+                    reason="backend_steering_unsupported",
+                    delivery_mode="local_container",
+                    message="API steering for an active backend inside a local container is unavailable.",
+                )
+            return _request_child_intervention_for_active_run(intervention_request)
+
         delegate_runner = ContainerizedHandlerRunner(
             graph,
             image=execution_profile.image,
@@ -2955,6 +3093,7 @@ def _build_pipeline_runner_for_run(
             run_root=_run_root(run_id),
             child_run_launcher=launch_child_run,
             child_status_resolver=_child_run_result_from_record,
+            child_intervention_requester=request_child_intervention,
             interviewer=interviewer,
         )
         _register_shared_container_transport(run_id, delegate_runner.transport)
@@ -2966,6 +3105,14 @@ def _build_pipeline_runner_for_run(
             model=selected_model,
             on_usage_update=on_usage_update,
         )
+
+        def request_child_intervention(intervention_request: ChildInterventionRequest) -> ChildInterventionResult:
+            return _request_backend_or_child_intervention(
+                current_run_id=run_id,
+                backend=backend,
+                request=intervention_request,
+            )
+
         registry = build_default_registry(
             codergen_backend=backend,
             interviewer=interviewer,
@@ -2975,6 +3122,7 @@ def _build_pipeline_runner_for_run(
             registry,
             child_run_launcher=launch_child_run,
             child_status_resolver=_child_run_result_from_record,
+            child_intervention_requester=request_child_intervention,
         )
 
     runner = BroadcastingRunner(delegate_runner, emit)
@@ -3495,6 +3643,17 @@ async def _launch_pipeline_run(
         if execution_profile.is_container:
             assert execution_profile.image is not None
             interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, resolved_run_id)
+
+            def request_child_intervention(intervention_request: ChildInterventionRequest) -> ChildInterventionResult:
+                if intervention_request.child_run_id == resolved_run_id:
+                    return _rejected_child_intervention(
+                        intervention_request,
+                        reason="backend_steering_unsupported",
+                        delivery_mode="local_container",
+                        message="API steering for an active backend inside a local container is unavailable.",
+                    )
+                return _request_child_intervention_for_active_run(intervention_request)
+
             delegate_runner = ContainerizedHandlerRunner(
                 graph,
                 image=execution_profile.image,
@@ -3503,6 +3662,7 @@ async def _launch_pipeline_run(
                 run_root=run_root,
                 child_run_launcher=launch_child_run,
                 child_status_resolver=_child_run_result_from_record,
+                child_intervention_requester=request_child_intervention,
                 interviewer=interviewer,
             )
             _register_shared_container_transport(resolved_run_id, delegate_runner.transport)
@@ -3515,6 +3675,14 @@ async def _launch_pipeline_run(
                 on_usage_update=handle_usage_update,
             )
             interviewer: Interviewer = WebInterviewer(HUMAN_BROKER, emit, flow_name, resolved_run_id)
+
+            def request_child_intervention(intervention_request: ChildInterventionRequest) -> ChildInterventionResult:
+                return _request_backend_or_child_intervention(
+                    current_run_id=resolved_run_id,
+                    backend=backend,
+                    request=intervention_request,
+                )
+
             registry = build_default_registry(
                 codergen_backend=backend,
                 interviewer=interviewer,
@@ -3524,6 +3692,7 @@ async def _launch_pipeline_run(
                 registry,
                 child_run_launcher=launch_child_run,
                 child_status_resolver=_child_run_result_from_record,
+                child_intervention_requester=request_child_intervention,
             )
     except (ValueError, ContainerExecutionError, ExecutionLaunchError) as exc:
         return {
@@ -4221,6 +4390,54 @@ async def continue_pipeline(pipeline_id: str, req: PipelineContinueRequest):
 @attractor_router.post("/pipelines/{pipeline_id}/retry")
 async def retry_pipeline(pipeline_id: str):
     return await _retry_pipeline_run(pipeline_id)
+
+
+@attractor_router.post("/pipelines/{pipeline_id}/steer")
+async def steer_pipeline(pipeline_id: str, req: PipelineSteerRequest):
+    message = req.message.strip()
+    if not message:
+        return {
+            "status": "validation_error",
+            "error": "message is required.",
+        }
+    explicit_target_run_id = (req.target_run_id or "").strip()
+    if explicit_target_run_id:
+        target_run_id = explicit_target_run_id
+        target_node_id = (req.target_node_id or "").strip() or None
+    else:
+        target_run_id, target_node_id = _default_intervention_target(pipeline_id)
+        target_node_id = (req.target_node_id or "").strip() or target_node_id
+
+    parent_run_id, parent_node_id = _parent_run_ids_for_child_run(target_run_id)
+    request = ChildInterventionRequest(
+        child_run_id=target_run_id,
+        message=message,
+        parent_run_id=parent_run_id or pipeline_id,
+        parent_node_id=parent_node_id or "",
+        root_run_id=pipeline_id,
+        reason="human_intervention",
+        source="api",
+        target_node_id=target_node_id,
+    )
+    result = _request_child_intervention_for_active_run(request)
+    payload = _child_intervention_result_payload(result)
+    event_payload = {
+        "type": "HumanInterventionRequested",
+        "parent_run_id": pipeline_id,
+        "target_run_id": target_run_id,
+        "target_node_id": target_node_id,
+        "message": message,
+        "intervention_status": result.status,
+        "intervention_delivery_mode": result.delivery_mode,
+        "intervention_reason": result.reason,
+        "result": payload,
+    }
+    await _publish_run_event(pipeline_id, event_payload)
+    return {
+        "pipeline_id": pipeline_id,
+        "target_run_id": target_run_id,
+        **payload,
+    }
 
 
 @attractor_router.get("/pipelines/{pipeline_id}")

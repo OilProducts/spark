@@ -12,7 +12,12 @@ from attractor.engine.executor import PipelineExecutor
 from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome
 from attractor.engine.outcome import OutcomeStatus
-from attractor.handlers.base import ChildRunRequest, ChildRunResult
+from attractor.handlers.base import (
+    ChildInterventionRequest,
+    ChildInterventionResult,
+    ChildRunRequest,
+    ChildRunResult,
+)
 from attractor.handlers.execution_container import (
     ContainerExecutionError,
     ContainerizedHandlerRunner,
@@ -22,6 +27,7 @@ from attractor.handlers.execution_container import (
     _container_env,
     graph_to_payload,
     run_worker_node,
+    worker_child_intervention_requester,
     worker_child_run_launcher,
     worker_child_status_resolver,
 )
@@ -130,6 +136,19 @@ def test_docker_transport_creates_run_container_with_labels_env_mounts_and_clean
                     + "\n",
                     json.dumps(
                         {
+                            "type": "child_intervention_request",
+                            "child_run_id": "child-1",
+                            "message": "please fix",
+                            "parent_run_id": "parent-1",
+                            "parent_node_id": "manager",
+                            "root_run_id": "root-1",
+                            "reason": "tests failed",
+                            "target_node_id": "task",
+                        }
+                    )
+                    + "\n",
+                    json.dumps(
+                        {
                             "type": "result",
                             "context": {"context.ran": True},
                             "outcome": {"status": "success", "suggested_next_ids": [], "context_updates": {}},
@@ -158,7 +177,17 @@ def test_docker_transport_creates_run_container_with_labels_env_mounts_and_clean
     events: list[tuple[str, dict[str, Any]]] = []
     result = transport.run_node(
         {"node_id": "work"},
-        WorkerCallbacks(emit_event=lambda event_type, payload: events.append((event_type, payload))),
+        WorkerCallbacks(
+            emit_event=lambda event_type, payload: events.append((event_type, payload)),
+            request_child_intervention=lambda payload: {
+                "run_id": payload["child_run_id"],
+                "status": "delivered",
+                "delivery_mode": "test_transport",
+                "reason": payload["reason"],
+                "message": "queued",
+                "target_node_id": payload["target_node_id"],
+            },
+        ),
     )
     transport.close()
 
@@ -181,6 +210,17 @@ def test_docker_transport_creates_run_container_with_labels_env_mounts_and_clean
     assert commands[1] == ["docker", "exec", "-i", "container-123", "spark-server", "worker", "run-node"]
     assert commands[-1] == ["docker", "rm", "-f", "container-123"]
     assert json.loads(stdin_writes[0])["node_id"] == "work"
+    assert json.loads(stdin_writes[1]) == {
+        "type": "child_intervention_result",
+        "result": {
+            "run_id": "child-1",
+            "status": "delivered",
+            "delivery_mode": "test_transport",
+            "reason": "tests failed",
+            "message": "queued",
+            "target_node_id": "task",
+        },
+    }
     assert events == [("WorkerProgress", {"node_id": "work"})]
     assert result["context"] == {"context.ran": True}
 
@@ -394,6 +434,56 @@ def test_worker_protocol_delegates_child_run_and_status_lookup(monkeypatch, caps
     assert child_result.completed_nodes == ["start", "done"]
     assert status_result is not None
     assert status_result.current_node == "work"
+
+
+def test_worker_protocol_delegates_child_intervention(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda: json.dumps(
+            {
+                "type": "child_intervention_result",
+                "result": {
+                    "run_id": "child-1",
+                    "status": "delivered",
+                    "delivery_mode": "codex_app_server_turn",
+                    "reason": "tests failed",
+                    "message": "queued",
+                    "target_node_id": "task",
+                },
+            }
+        ),
+    )
+
+    result = worker_child_intervention_requester(
+        ChildInterventionRequest(
+            child_run_id="child-1",
+            message="Please fix the failing tests.",
+            parent_run_id="parent-1",
+            parent_node_id="manager",
+            root_run_id="root-1",
+            reason="tests failed",
+            cycle=3,
+            target_node_id="task",
+        )
+    )
+    emitted = json.loads(capsys.readouterr().out)
+
+    assert emitted == {
+        "type": "child_intervention_request",
+        "child_run_id": "child-1",
+        "message": "Please fix the failing tests.",
+        "parent_run_id": "parent-1",
+        "parent_node_id": "manager",
+        "root_run_id": "root-1",
+        "reason": "tests failed",
+        "source": "manager_loop",
+        "cycle": 3,
+        "target_node_id": "task",
+    }
+    assert isinstance(result, ChildInterventionResult)
+    assert result.status == "delivered"
+    assert result.delivery_mode == "codex_app_server_turn"
+    assert result.target_node_id == "task"
 
 
 def test_worker_run_node_streams_events_and_serializes_outcome(monkeypatch, capsys) -> None:

@@ -13,7 +13,13 @@ from attractor.engine.conditions import evaluate_condition
 from attractor.engine.context import Context
 from attractor.engine.outcome import Outcome, OutcomeStatus
 from attractor.graph_prep import prepare_graph
-from attractor.handlers.base import ChildRunRequest, ChildRunResult, PIPELINE_RETRY_RUN_ID_CONTEXT_KEY
+from attractor.handlers.base import (
+    ChildInterventionRequest,
+    ChildInterventionResult,
+    ChildRunRequest,
+    ChildRunResult,
+    PIPELINE_RETRY_RUN_ID_CONTEXT_KEY,
+)
 
 from ..base import HandlerRuntime
 
@@ -47,14 +53,15 @@ class ManagerLoopHandler:
                 last_steer_at=last_steer_at,
                 cooldown_seconds=steer_cooldown,
             ):
-                _steer_child(runtime.context, runtime.node_id, cycle)
-                _append_manager_artifact(
-                    runtime.logs_root,
-                    runtime.node_id,
-                    "manager_interventions.jsonl",
-                    _intervention_payload(runtime.context, runtime.node_id, cycle),
-                )
-                last_steer_at = now
+                intervention_result = _request_child_intervention(runtime, cycle)
+                if intervention_result is not None:
+                    _append_manager_artifact(
+                        runtime.logs_root,
+                        runtime.node_id,
+                        "manager_interventions.jsonl",
+                        _intervention_payload(runtime.context, runtime.node_id, cycle),
+                    )
+                    last_steer_at = now
 
             child_resolution = _resolve_child_status(runtime.context)
             if child_resolution is not None:
@@ -255,6 +262,9 @@ def _clear_child_snapshot(context: Context) -> None:
             "context.stack.child.failure_reason": "",
             "context.stack.child.retry_count": "",
             "context.stack.child.intervention": "",
+            "context.stack.child.intervention_status": "",
+            "context.stack.child.intervention_delivery_mode": "",
+            "context.stack.child.intervention_reason": "",
         }
     )
 
@@ -421,8 +431,127 @@ def _ingest_child_telemetry(context: Context, node_id: str, cycle: int) -> None:
     del context, node_id, cycle
 
 
+def _request_child_intervention(
+    runtime: HandlerRuntime,
+    cycle: int,
+) -> ChildInterventionResult | None:
+    failure_reason = _child_failure_context(runtime.context)
+    if not failure_reason:
+        return None
+
+    child_run_id = str(runtime.context.get("context.stack.child.run_id", "")).strip()
+    target_node_id = str(runtime.context.get("context.stack.child.active_stage", "")).strip() or None
+    if not child_run_id:
+        result = ChildInterventionResult(
+            run_id="",
+            status="rejected",
+            delivery_mode="none",
+            reason="no_active_child_run",
+            message="No active child run is available for intervention.",
+            target_node_id=target_node_id,
+        )
+        _apply_intervention_result(runtime, result, failure_reason=failure_reason)
+        return result
+
+    _steer_child(runtime.context, runtime.node_id, cycle)
+    message = str(runtime.context.get("context.stack.child.intervention", "")).strip()
+    if not message:
+        message = _default_intervention_message(runtime.context, failure_reason)
+        runtime.context.set("context.stack.child.intervention", message)
+
+    request = ChildInterventionRequest(
+        child_run_id=child_run_id,
+        message=message,
+        parent_run_id=str(runtime.context.get("internal.run_id", "")).strip(),
+        parent_node_id=runtime.node_id,
+        root_run_id=str(runtime.context.get("internal.root_run_id", "")).strip()
+        or str(runtime.context.get("internal.run_id", "")).strip(),
+        reason=failure_reason,
+        source="manager_loop",
+        cycle=cycle,
+        target_node_id=target_node_id,
+    )
+    if runtime.child_intervention_requester is None:
+        result = ChildInterventionResult(
+            run_id=child_run_id,
+            status="rejected",
+            delivery_mode="unsupported",
+            reason="backend_steering_unsupported",
+            message="Child intervention requester is unavailable.",
+            target_node_id=target_node_id,
+        )
+    else:
+        try:
+            result = runtime.child_intervention_requester(request)
+        except Exception as exc:  # noqa: BLE001
+            result = ChildInterventionResult(
+                run_id=child_run_id,
+                status="rejected",
+                delivery_mode="error",
+                reason="intervention_request_failed",
+                message=str(exc),
+                target_node_id=target_node_id,
+            )
+    _apply_intervention_result(runtime, result, failure_reason=failure_reason)
+    return result
+
+
+def _apply_intervention_result(
+    runtime: HandlerRuntime,
+    result: ChildInterventionResult,
+    *,
+    failure_reason: str,
+) -> None:
+    status = result.status or "rejected"
+    delivery_mode = result.delivery_mode or ""
+    intervention_reason = result.reason or failure_reason
+    runtime.context.set("context.stack.child.intervention_status", status)
+    runtime.context.set("context.stack.child.intervention_delivery_mode", delivery_mode)
+    runtime.context.set("context.stack.child.intervention_reason", intervention_reason)
+    runtime.emit(
+        "ChildInterventionRequested",
+        child_run_id=result.run_id,
+        parent_run_id=str(runtime.context.get("internal.run_id", "")).strip(),
+        parent_node_id=runtime.node_id,
+        root_run_id=str(runtime.context.get("internal.root_run_id", "")).strip()
+        or str(runtime.context.get("internal.run_id", "")).strip(),
+        target_node_id=result.target_node_id,
+        status=status,
+        delivery_mode=delivery_mode,
+        reason=intervention_reason,
+        message=result.message or None,
+    )
+
+
 def _steer_child(context: Context, node_id: str, cycle: int) -> None:
-    del context, node_id, cycle
+    del node_id, cycle
+    reason = _child_failure_context(context)
+    if reason:
+        context.set("context.stack.child.intervention", _default_intervention_message(context, reason))
+
+
+def _child_failure_context(context: Context) -> str:
+    for key in (
+        "context.stack.child.failure_reason",
+        "context.stack.child.outcome_reason_message",
+        "context.stack.child.outcome_reason_code",
+    ):
+        value = str(context.get(key, "") or "").strip()
+        if value:
+            return value
+    child_outcome = str(context.get("context.stack.child.outcome", "")).strip().lower()
+    if child_outcome == "failure":
+        return "child reported failure outcome"
+    return ""
+
+
+def _default_intervention_message(context: Context, failure_reason: str) -> str:
+    stage = str(context.get("context.stack.child.active_stage", "") or "").strip()
+    child_run_id = str(context.get("context.stack.child.run_id", "") or "").strip()
+    target = f"child run {child_run_id}" if child_run_id else "the child run"
+    if stage:
+        target = f"{target} at {stage}"
+    return f"{target} reported a failure: {failure_reason}. Address the failure and continue."
 
 
 def _telemetry_payload(context: Context, node_id: str, cycle: int) -> dict[str, Any]:
@@ -445,6 +574,12 @@ def _intervention_payload(context: Context, node_id: str, cycle: int) -> dict[st
         "child_status": context.get("context.stack.child.status", ""),
         "child_active_stage": context.get("context.stack.child.active_stage", ""),
         "instruction": context.get("context.stack.child.intervention", ""),
+        "intervention_status": context.get("context.stack.child.intervention_status", ""),
+        "intervention_delivery_mode": context.get("context.stack.child.intervention_delivery_mode", ""),
+        "intervention_reason": context.get("context.stack.child.intervention_reason", ""),
+        "child_failure_reason": context.get("context.stack.child.failure_reason", ""),
+        "child_outcome_reason_code": context.get("context.stack.child.outcome_reason_code", ""),
+        "child_outcome_reason_message": context.get("context.stack.child.outcome_reason_message", ""),
     }
 
 

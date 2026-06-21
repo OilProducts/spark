@@ -37,7 +37,7 @@ from attractor.api.codergen_contracts import (
 from attractor.engine.context import Context
 from attractor.engine.context_contracts import ContextWriteContract
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
-from attractor.handlers.base import CodergenBackend
+from attractor.handlers.base import ChildInterventionRequest, ChildInterventionResult, CodergenBackend
 from spark_common.turn_stream import TurnStreamEvent
 from spark.llm_profiles import LlmProfileConfigurationError, get_llm_profile
 from unified_llm.client import Client as UnifiedLlmClient
@@ -53,6 +53,39 @@ SUPPORTED_LLM_PROVIDERS = {"codex", *UNIFIED_AGENT_PROVIDERS}
 SUPPORTED_LLM_PROVIDER_MESSAGE = (
     "Supported providers: codex, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
 )
+
+
+def _rejected_intervention(
+    request: ChildInterventionRequest,
+    *,
+    reason: str,
+    delivery_mode: str = "none",
+    message: str = "",
+) -> ChildInterventionResult:
+    return ChildInterventionResult(
+        run_id=request.child_run_id,
+        status="rejected",
+        delivery_mode=delivery_mode,
+        reason=reason,
+        message=message,
+        target_node_id=request.target_node_id,
+    )
+
+
+def _delivered_intervention(
+    request: ChildInterventionRequest,
+    *,
+    delivery_mode: str,
+    message: str = "",
+) -> ChildInterventionResult:
+    return ChildInterventionResult(
+        run_id=request.child_run_id,
+        status="delivered",
+        delivery_mode=delivery_mode,
+        reason=request.reason,
+        message=message,
+        target_node_id=request.target_node_id,
+    )
 
 
 def _turn_stream_source_payload(event: TurnStreamEvent) -> dict[str, object]:
@@ -187,6 +220,10 @@ class CodexAppServerBackend(CodergenBackend):
         self._raw_rpc_log_state = threading.local()
         self._token_usage_lock = threading.Lock()
         self._token_usage_breakdown = TokenUsageBreakdown()
+        self._active_turn_lock = threading.Lock()
+        self._active_client: CodexAppServerClient | None = None
+        self._active_thread_id: str | None = None
+        self._active_turn_id: str | None = None
 
     @contextmanager
     def bind_stage_raw_rpc_log(self, node_id: str, logs_root: str | Path | None):
@@ -262,6 +299,55 @@ class CodexAppServerBackend(CodergenBackend):
             snapshot = self._token_usage_breakdown.copy()
         if self._on_usage_update is not None:
             self._on_usage_update(snapshot)
+
+    def _set_active_turn(
+        self,
+        *,
+        client: CodexAppServerClient,
+        thread_id: str,
+        turn_id: str,
+    ) -> None:
+        with self._active_turn_lock:
+            self._active_client = client
+            self._active_thread_id = thread_id
+            self._active_turn_id = turn_id
+
+    def _clear_active_turn(self, *, client: CodexAppServerClient) -> None:
+        with self._active_turn_lock:
+            if self._active_client is not client:
+                return
+            self._active_client = None
+            self._active_thread_id = None
+            self._active_turn_id = None
+
+    def request_child_intervention(
+        self,
+        request: ChildInterventionRequest,
+    ) -> ChildInterventionResult:
+        with self._active_turn_lock:
+            client = self._active_client
+            thread_id = self._active_thread_id
+            turn_id = self._active_turn_id
+        if client is None or not thread_id or not turn_id:
+            return _rejected_intervention(
+                request,
+                reason="no_active_turn",
+                message="No active codex app-server turn is available for intervention.",
+            )
+        try:
+            client.steer_turn(thread_id, turn_id, request.message)
+        except RuntimeError as exc:
+            return _rejected_intervention(
+                request,
+                reason="app_server_steer_failed",
+                delivery_mode="codex_app_server_turn",
+                message=str(exc),
+            )
+        return _delivered_intervention(
+            request,
+            delivery_mode="codex_app_server_turn",
+            message="Intervention delivered to active codex app-server turn.",
+        )
 
     def run(
         self,
@@ -381,16 +467,24 @@ class CodexAppServerBackend(CodergenBackend):
             saw_usage_update = True
             self._record_token_usage_delta(model=model, delta=delta)
 
-        result = client.run_turn(
-            thread_id=thread_id,
-            prompt=prompt,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            cwd=self.working_dir,
-            on_event=handle_turn_event,
-            overall_timeout_seconds=timeout,
-            now=time.monotonic,
-        )
+        try:
+            result = client.run_turn(
+                thread_id=thread_id,
+                prompt=prompt,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                cwd=self.working_dir,
+                on_event=handle_turn_event,
+                on_turn_started=lambda turn_id: self._set_active_turn(
+                    client=client,
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                ),
+                overall_timeout_seconds=timeout,
+                now=time.monotonic,
+            )
+        finally:
+            self._clear_active_turn(client=client)
         if not saw_usage_update:
             delta, _ = compute_live_usage_delta(getattr(result, "token_usage_payload", None), None)
             if delta is not None and delta.has_any_usage():
@@ -586,6 +680,8 @@ class UnifiedAgentBackend(CodergenBackend):
         )
         self._token_usage_lock = threading.Lock()
         self._token_usage_breakdown = TokenUsageBreakdown()
+        self._active_session_lock = threading.Lock()
+        self._active_session: Session | None = None
 
     def _log(self, node_id: str, message: str) -> None:
         if message:
@@ -609,6 +705,33 @@ class UnifiedAgentBackend(CodergenBackend):
             snapshot = self._token_usage_breakdown.copy()
         if self._on_usage_update is not None:
             self._on_usage_update(snapshot)
+
+    def request_child_intervention(
+        self,
+        request: ChildInterventionRequest,
+    ) -> ChildInterventionResult:
+        with self._active_session_lock:
+            session = self._active_session
+        if session is None:
+            return _rejected_intervention(
+                request,
+                reason="no_active_turn",
+                message="No active unified-agent session is available for intervention.",
+            )
+        try:
+            session.steer(request.message)
+        except Exception as exc:  # noqa: BLE001
+            return _rejected_intervention(
+                request,
+                reason="session_steer_failed",
+                delivery_mode="unified_agent_session",
+                message=str(exc),
+            )
+        return _delivered_intervention(
+            request,
+            delivery_mode="unified_agent_session",
+            message="Intervention queued on active unified-agent session.",
+        )
 
     def _handle_event(
         self,
@@ -707,6 +830,8 @@ class UnifiedAgentBackend(CodergenBackend):
             client=client,
             config=SessionConfig(reasoning_effort=reasoning_effort),
         )
+        with self._active_session_lock:
+            self._active_session = session
         try:
             response_text = await self._submit_and_capture(session, node_id, prompt, emit_event)
             result = _coerce_structured_text_outcome(response_text, response_contract=response_contract)
@@ -761,6 +886,9 @@ class UnifiedAgentBackend(CodergenBackend):
                 current_violation = _with_write_contract(repaired, write_contract)
             return _contract_failure_outcome(current_violation)
         finally:
+            with self._active_session_lock:
+                if self._active_session is session:
+                    self._active_session = None
             await session.close()
             close_client = getattr(client, "close", None)
             if callable(close_client):
@@ -836,6 +964,8 @@ class ProviderRouterBackend(CodergenBackend):
         self._token_usage_lock = threading.Lock()
         self._token_usage_breakdown = TokenUsageBreakdown()
         self._source_usage_snapshots: dict[object, TokenUsageBreakdown] = {}
+        self._active_backend_lock = threading.Lock()
+        self._active_backend: object | None = None
         self._codex_usage_source = object()
         self._codex = CodexAppServerBackend(
             working_dir,
@@ -863,6 +993,37 @@ class ProviderRouterBackend(CodergenBackend):
         if self._on_usage_update is not None:
             self._on_usage_update(snapshot)
 
+    def _set_active_backend(self, backend: object | None) -> None:
+        with self._active_backend_lock:
+            self._active_backend = backend
+
+    def _clear_active_backend(self, backend: object) -> None:
+        with self._active_backend_lock:
+            if self._active_backend is backend:
+                self._active_backend = None
+
+    def request_child_intervention(
+        self,
+        request: ChildInterventionRequest,
+    ) -> ChildInterventionResult:
+        with self._active_backend_lock:
+            backend = self._active_backend
+        if backend is None:
+            return _rejected_intervention(
+                request,
+                reason="no_active_turn",
+                message="No active provider backend is available for intervention.",
+            )
+        requester = getattr(backend, "request_child_intervention", None)
+        if not callable(requester):
+            return _rejected_intervention(
+                request,
+                reason="backend_steering_unsupported",
+                delivery_mode="unsupported",
+                message="Active provider backend does not support intervention.",
+            )
+        return requester(request)
+
     def run(
         self,
         node_id: str,
@@ -881,18 +1042,22 @@ class ProviderRouterBackend(CodergenBackend):
     ) -> str | Outcome:
         effective_provider = _normalize_provider(provider)
         if effective_provider == "codex" and not llm_profile:
-            return self._codex.run(
-                node_id,
-                prompt,
-                context,
-                response_contract=response_contract,
-                contract_repair_attempts=contract_repair_attempts,
-                timeout=timeout,
-                model=model,
-                reasoning_effort=reasoning_effort,
-                emit_event=emit_event,
-                write_contract=write_contract,
-            )
+            self._set_active_backend(self._codex)
+            try:
+                return self._codex.run(
+                    node_id,
+                    prompt,
+                    context,
+                    response_contract=response_contract,
+                    contract_repair_attempts=contract_repair_attempts,
+                    timeout=timeout,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    emit_event=emit_event,
+                    write_contract=write_contract,
+                )
+            finally:
+                self._clear_active_backend(self._codex)
         if llm_profile or effective_provider in UNIFIED_AGENT_PROVIDERS:
             usage_source = object()
             backend = UnifiedAgentBackend(
@@ -916,7 +1081,11 @@ class ProviderRouterBackend(CodergenBackend):
             }
             if llm_profile:
                 kwargs["llm_profile"] = llm_profile
-            return backend.run(node_id, prompt, context, **kwargs)
+            self._set_active_backend(backend)
+            try:
+                return backend.run(node_id, prompt, context, **kwargs)
+            finally:
+                self._clear_active_backend(backend)
         return Outcome(
             status=OutcomeStatus.FAIL,
             failure_reason=(

@@ -17,6 +17,8 @@ from attractor.engine.outcome import OutcomeStatus
 from .base import HandlerRuntime
 from .base import ChildRunRequest
 from .base import ChildRunResult
+from .base import ChildInterventionRequest
+from .base import ChildInterventionResult
 from .registry import HandlerRegistry
 
 
@@ -42,6 +44,9 @@ class HandlerRunner:
     control: Callable[[], str | None] | None = None
     child_run_launcher: Callable[[ChildRunRequest], ChildRunResult] | None = None
     child_status_resolver: Callable[[str], ChildRunResult | None] | None = None
+    child_intervention_requester: Callable[
+        [ChildInterventionRequest], ChildInterventionResult
+    ] | None = None
     _concurrency_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _active_calls: int = field(default=0, init=False, repr=False)
     _concurrency_overrides: int = field(default=0, init=False, repr=False)
@@ -94,6 +99,7 @@ class HandlerRunner:
                 control=self.control,
                 child_run_launcher=self.child_run_launcher,
                 child_status_resolver=self.child_status_resolver,
+                child_intervention_requester=self.child_intervention_requester,
             )
             timeout = _to_seconds(node.attrs.get("timeout"))
             if timeout is None or timeout <= 0:
@@ -142,6 +148,21 @@ class HandlerRunner:
 
     def set_control(self, control: Callable[[], str | None] | None) -> None:
         self.control = control
+
+    def request_child_intervention(
+        self,
+        request: ChildInterventionRequest,
+    ) -> ChildInterventionResult:
+        if self.child_intervention_requester is None:
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="rejected",
+                delivery_mode="unsupported",
+                reason="backend_steering_unsupported",
+                message="child intervention requester is unavailable",
+                target_node_id=request.target_node_id,
+            )
+        return self.child_intervention_requester(request)
 
     def _artifact_store(self) -> ArtifactStore | None:
         return self.artifact_store

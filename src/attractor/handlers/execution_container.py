@@ -26,7 +26,12 @@ from attractor.execution import (
     EXECUTION_MODE_LOCAL_CONTAINER,
     ExecutionLaunchError,
 )
-from attractor.handlers.base import ChildRunRequest, ChildRunResult
+from attractor.handlers.base import (
+    ChildInterventionRequest,
+    ChildInterventionResult,
+    ChildRunRequest,
+    ChildRunResult,
+)
 from attractor.interviewer import Answer, Interviewer, Question, QuestionOption, QuestionType
 from spark_common.codex_runtime import build_codex_runtime_environment
 
@@ -76,6 +81,7 @@ class WorkerCallbacks:
     ask_human: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     launch_child: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     resolve_child_status: Callable[[str], dict[str, Any] | None] | None = None
+    request_child_intervention: Callable[[dict[str, Any]], dict[str, Any]] | None = None
 
 
 class DockerContainerTransport:
@@ -163,6 +169,17 @@ class DockerContainerTransport:
                         response = callbacks.resolve_child_status(child_run_id) if callbacks.resolve_child_status is not None else None
                         proc.stdin.write(json.dumps({"type": "child_status_result", "result": response}) + "\n")
                         proc.stdin.flush()
+                    elif kind == "child_intervention_request":
+                        response = callbacks.request_child_intervention(payload) if callbacks.request_child_intervention is not None else {
+                            "run_id": str(payload.get("child_run_id", "")),
+                            "status": "rejected",
+                            "delivery_mode": "unsupported",
+                            "reason": "backend_steering_unsupported",
+                            "message": "child intervention delegation is unavailable",
+                            "target_node_id": payload.get("target_node_id"),
+                        }
+                        proc.stdin.write(json.dumps({"type": "child_intervention_result", "result": response}) + "\n")
+                        proc.stdin.flush()
                     elif kind == "result":
                         result = payload
                 stderr = proc.stderr.read() if proc.stderr is not None else ""
@@ -249,6 +266,9 @@ class ContainerizedHandlerRunner:
         control: Callable[[], str | None] | None = None,
         child_run_launcher: Callable[[ChildRunRequest], ChildRunResult] | None = None,
         child_status_resolver: Callable[[str], ChildRunResult | None] | None = None,
+        child_intervention_requester: Callable[
+            [ChildInterventionRequest], ChildInterventionResult
+        ] | None = None,
         interviewer: Interviewer | None = None,
     ) -> None:
         self.graph = graph
@@ -260,6 +280,7 @@ class ContainerizedHandlerRunner:
         self.control = control
         self.child_run_launcher = child_run_launcher
         self.child_status_resolver = child_status_resolver
+        self.child_intervention_requester = child_intervention_requester
         self.interviewer = interviewer
         self._owns_transport = transport is None
         self.transport = transport or DockerContainerTransport(
@@ -300,6 +321,7 @@ class ContainerizedHandlerRunner:
             ask_human=self._ask_human,
             launch_child=self._launch_child,
             resolve_child_status=self._resolve_child_status,
+            request_child_intervention=self._request_child_intervention_payload,
         )
         result = self.transport.run_node(request, callbacks)
         if isinstance(result.get("context"), dict):
@@ -338,6 +360,25 @@ class ContainerizedHandlerRunner:
         result = self.child_status_resolver(run_id)
         return child_run_result_to_payload(result) if result is not None else None
 
+    def _request_child_intervention_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = child_intervention_request_from_payload(payload)
+        return child_intervention_result_to_payload(self.request_child_intervention(request))
+
+    def request_child_intervention(
+        self,
+        request: ChildInterventionRequest,
+    ) -> ChildInterventionResult:
+        if self.child_intervention_requester is None:
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="rejected",
+                delivery_mode="unsupported",
+                reason="backend_steering_unsupported",
+                message="child intervention requester is unavailable",
+                target_node_id=request.target_node_id,
+            )
+        return self.child_intervention_requester(request)
+
 
 def run_worker_node() -> int:
     from attractor.api.codex_backends import build_codergen_backend
@@ -367,6 +408,7 @@ def run_worker_node() -> int:
         logs_root=Path(str(request["logs_root"])) if request.get("logs_root") else None,
         child_run_launcher=worker_child_run_launcher,
         child_status_resolver=worker_child_status_resolver,
+        child_intervention_requester=worker_child_intervention_requester,
     )
 
     def emit_event(event_type: str, **payload: object) -> None:
@@ -442,6 +484,16 @@ def worker_child_status_resolver(run_id: str) -> ChildRunResult | None:
     response = _decode_json_line(input())
     result = response.get("result")
     return child_run_result_from_payload(result) if isinstance(result, dict) else None
+
+
+def worker_child_intervention_requester(
+    request: ChildInterventionRequest,
+) -> ChildInterventionResult:
+    payload = {"type": "child_intervention_request", **child_intervention_request_to_payload(request)}
+    print(json.dumps(payload, default=str, sort_keys=True), flush=True)
+    response = _decode_json_line(input())
+    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    return child_intervention_result_from_payload(result)
 
 
 def _container_env() -> dict[str, str]:
@@ -820,4 +872,56 @@ def child_run_result_from_payload(payload: dict[str, Any]) -> ChildRunResult:
         completed_nodes=[str(item) for item in payload.get("completed_nodes") or []],
         route_trace=[str(item) for item in payload.get("route_trace") or []],
         failure_reason=str(payload.get("failure_reason") or ""),
+    )
+
+
+def child_intervention_request_to_payload(request: ChildInterventionRequest) -> dict[str, Any]:
+    return {
+        "child_run_id": request.child_run_id,
+        "message": request.message,
+        "parent_run_id": request.parent_run_id,
+        "parent_node_id": request.parent_node_id,
+        "root_run_id": request.root_run_id,
+        "reason": request.reason,
+        "source": request.source,
+        "cycle": request.cycle,
+        "target_node_id": request.target_node_id,
+    }
+
+
+def child_intervention_request_from_payload(payload: dict[str, Any]) -> ChildInterventionRequest:
+    raw_cycle = payload.get("cycle")
+    cycle = int(raw_cycle) if isinstance(raw_cycle, (int, float, str)) and str(raw_cycle).strip() else None
+    return ChildInterventionRequest(
+        child_run_id=str(payload.get("child_run_id") or ""),
+        message=str(payload.get("message") or ""),
+        parent_run_id=str(payload.get("parent_run_id") or ""),
+        parent_node_id=str(payload.get("parent_node_id") or ""),
+        root_run_id=str(payload.get("root_run_id") or ""),
+        reason=str(payload.get("reason") or ""),
+        source=str(payload.get("source") or "manager_loop"),
+        cycle=cycle,
+        target_node_id=str(payload["target_node_id"]) if payload.get("target_node_id") is not None else None,
+    )
+
+
+def child_intervention_result_to_payload(result: ChildInterventionResult) -> dict[str, Any]:
+    return {
+        "run_id": result.run_id,
+        "status": result.status,
+        "delivery_mode": result.delivery_mode,
+        "reason": result.reason,
+        "message": result.message,
+        "target_node_id": result.target_node_id,
+    }
+
+
+def child_intervention_result_from_payload(payload: dict[str, Any]) -> ChildInterventionResult:
+    return ChildInterventionResult(
+        run_id=str(payload.get("run_id") or ""),
+        status=str(payload.get("status") or ""),
+        delivery_mode=str(payload.get("delivery_mode") or ""),
+        reason=str(payload.get("reason") or ""),
+        message=str(payload.get("message") or ""),
+        target_node_id=str(payload["target_node_id"]) if payload.get("target_node_id") is not None else None,
     )

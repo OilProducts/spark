@@ -5,7 +5,7 @@ import pytest
 from attractor.dsl import parse_dot
 from attractor.engine.context import Context
 from attractor.engine.outcome import OutcomeStatus
-from attractor.handlers.base import ChildRunRequest, ChildRunResult
+from attractor.handlers.base import ChildInterventionRequest, ChildInterventionResult, ChildRunRequest, ChildRunResult
 from attractor.handlers import HandlerRunner, build_default_registry
 
 from tests.handlers._support.fakes import _StubBackend
@@ -436,7 +436,17 @@ class TestManagerLoopHandler:
         )
         registry = build_default_registry(codergen_backend=_StubBackend())
         runner = HandlerRunner(graph, registry)
-        outcome = runner("manager", "", Context(values={"context.stack.child.status": "running"}))
+        outcome = runner(
+            "manager",
+            "",
+            Context(
+                values={
+                    "context.stack.child.run_id": "child-1",
+                    "context.stack.child.status": "running",
+                    "context.stack.child.failure_reason": "tests failed",
+                }
+            ),
+        )
 
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_reason == "Max cycles exceeded"
@@ -736,7 +746,17 @@ class TestManagerLoopHandler:
         registry = build_default_registry(codergen_backend=_StubBackend())
         runner = HandlerRunner(graph, registry)
 
-        outcome = runner("manager", "", Context())
+        outcome = runner(
+            "manager",
+            "",
+            Context(
+                values={
+                    "context.stack.child.run_id": "child-1",
+                    "context.stack.child.status": "running",
+                    "context.stack.child.failure_reason": "tests failed",
+                }
+            ),
+        )
 
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_reason == "Max cycles exceeded"
@@ -762,7 +782,17 @@ class TestManagerLoopHandler:
         registry = build_default_registry(codergen_backend=_StubBackend())
         runner = HandlerRunner(graph, registry, logs_root=logs_root)
 
-        outcome = runner("manager", "", Context())
+        outcome = runner(
+            "manager",
+            "",
+            Context(
+                values={
+                    "context.stack.child.run_id": "child-1",
+                    "context.stack.child.status": "running",
+                    "context.stack.child.failure_reason": "tests failed",
+                }
+            ),
+        )
 
         assert outcome.status == OutcomeStatus.FAIL
         interventions_path = logs_root / "manager" / "manager_interventions.jsonl"
@@ -773,6 +803,146 @@ class TestManagerLoopHandler:
         assert [entry["node_id"] for entry in payloads] == ["manager", "manager"]
         assert [entry["child_active_stage"] for entry in payloads] == ["active-1", "active-2"]
         assert [entry["instruction"] for entry in payloads] == ["instruction-1", "instruction-2"]
+        assert [entry["intervention_status"] for entry in payloads] == ["rejected", "rejected"]
+        assert [entry["intervention_reason"] for entry in payloads] == [
+            "backend_steering_unsupported",
+            "backend_steering_unsupported",
+        ]
+
+    def test_manager_loop_requests_child_intervention_and_records_delivered_result(self, tmp_path):
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [shape=house, manager.poll_interval=0ms, manager.max_cycles=1, manager.actions="steer"]
+            }
+            """
+        )
+        requests: list[ChildInterventionRequest] = []
+
+        def request_intervention(request: ChildInterventionRequest) -> ChildInterventionResult:
+            requests.append(request)
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="delivered",
+                delivery_mode="unified_agent_session",
+                reason=request.reason,
+                message="queued",
+                target_node_id=request.target_node_id,
+            )
+
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_intervention_requester=request_intervention,
+        )
+        events: list[dict[str, object]] = []
+        context = Context(
+            values={
+                "internal.run_id": "parent-1",
+                "internal.root_run_id": "root-1",
+                "context.stack.child.run_id": "child-1",
+                "context.stack.child.status": "running",
+                "context.stack.child.active_stage": "task",
+                "context.stack.child.failure_reason": "unit tests failed",
+            }
+        )
+
+        outcome = runner(
+            "manager",
+            "",
+            context,
+            emit_event=lambda event_type, **payload: events.append({"type": event_type, **payload}),
+        )
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert len(requests) == 1
+        assert requests[0].child_run_id == "child-1"
+        assert requests[0].parent_run_id == "parent-1"
+        assert requests[0].parent_node_id == "manager"
+        assert requests[0].root_run_id == "root-1"
+        assert requests[0].target_node_id == "task"
+        assert requests[0].reason == "unit tests failed"
+        assert "unit tests failed" in requests[0].message
+        assert context.get("context.stack.child.intervention_status") == "delivered"
+        assert context.get("context.stack.child.intervention_delivery_mode") == "unified_agent_session"
+        assert context.get("context.stack.child.intervention_reason") == "unit tests failed"
+        assert events == [
+            {
+                "type": "ChildInterventionRequested",
+                "child_run_id": "child-1",
+                "parent_run_id": "parent-1",
+                "parent_node_id": "manager",
+                "root_run_id": "root-1",
+                "target_node_id": "task",
+                "status": "delivered",
+                "delivery_mode": "unified_agent_session",
+                "reason": "unit tests failed",
+                "message": "queued",
+            }
+        ]
+
+    def test_manager_loop_steer_action_waits_for_failure_context(self, tmp_path):
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [shape=house, manager.poll_interval=0ms, manager.max_cycles=1, manager.actions="steer"]
+            }
+            """
+        )
+
+        def request_intervention(request: ChildInterventionRequest) -> ChildInterventionResult:
+            raise AssertionError(f"unexpected intervention request: {request}")
+
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_intervention_requester=request_intervention,
+        )
+
+        outcome = runner(
+            "manager",
+            "",
+            Context(
+                values={
+                    "context.stack.child.run_id": "child-1",
+                    "context.stack.child.status": "running",
+                }
+            ),
+        )
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert not (tmp_path / "logs" / "manager" / "manager_interventions.jsonl").exists()
+
+    def test_manager_loop_records_rejected_intervention_when_failure_has_no_child_run(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [shape=house, manager.poll_interval=0ms, manager.max_cycles=1, manager.actions="steer"]
+            }
+            """
+        )
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry)
+        events: list[dict[str, object]] = []
+        context = Context(values={"context.stack.child.failure_reason": "child failed before run id"})
+
+        outcome = runner(
+            "manager",
+            "",
+            context,
+            emit_event=lambda event_type, **payload: events.append({"type": event_type, **payload}),
+        )
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert context.get("context.stack.child.intervention_status") == "rejected"
+        assert context.get("context.stack.child.intervention_delivery_mode") == "none"
+        assert context.get("context.stack.child.intervention_reason") == "no_active_child_run"
+        assert events[0]["type"] == "ChildInterventionRequested"
+        assert events[0]["reason"] == "no_active_child_run"
 
     def test_manager_loop_stop_condition_returns_success_when_satisfied(self, monkeypatch):
         def _fake_observe(context: Context, node_id: str, cycle: int) -> None:
