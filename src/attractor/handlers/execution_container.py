@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import threading
 import uuid
 from typing import Any, Callable, Iterable, Protocol
@@ -68,6 +69,9 @@ class ContainerTransport(Protocol):
     def run_node(self, request: dict[str, Any], callbacks: "WorkerCallbacks") -> dict[str, Any]:
         ...
 
+    def request_child_intervention(self, request: ChildInterventionRequest) -> ChildInterventionResult:
+        ...
+
     def close(self) -> None:
         ...
 
@@ -82,6 +86,59 @@ class WorkerCallbacks:
     launch_child: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     resolve_child_status: Callable[[str], dict[str, Any] | None] | None = None
     request_child_intervention: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+
+
+@dataclass
+class _ControlResponseWaiter:
+    event: threading.Event
+    request: ChildInterventionRequest
+    payload: dict[str, Any] | None = None
+
+
+def _rejected_child_intervention_result(
+    request: ChildInterventionRequest,
+    *,
+    reason: str,
+    delivery_mode: str = "local_container",
+    message: str = "",
+) -> ChildInterventionResult:
+    return ChildInterventionResult(
+        run_id=request.child_run_id,
+        status="rejected",
+        delivery_mode=delivery_mode,
+        reason=reason,
+        message=message,
+        target_node_id=request.target_node_id,
+    )
+
+
+_WORKER_STDOUT_LOCK = threading.Lock()
+_WORKER_PROTOCOL_LOCK = threading.Lock()
+_WORKER_PROTOCOL: "_WorkerProtocolBridge | None" = None
+
+
+def _emit_worker_payload(payload: dict[str, Any]) -> None:
+    with _WORKER_STDOUT_LOCK:
+        print(json.dumps(payload, default=str, sort_keys=True), flush=True)
+
+
+def _set_worker_protocol(protocol: "_WorkerProtocolBridge | None") -> None:
+    global _WORKER_PROTOCOL
+    with _WORKER_PROTOCOL_LOCK:
+        _WORKER_PROTOCOL = protocol
+
+
+def _worker_protocol() -> "_WorkerProtocolBridge | None":
+    with _WORKER_PROTOCOL_LOCK:
+        return _WORKER_PROTOCOL
+
+
+def _worker_request_response(request: dict[str, Any], response_type: str) -> dict[str, Any]:
+    protocol = _worker_protocol()
+    if protocol is None:
+        _emit_worker_payload(request)
+        return _decode_json_line(input())
+    return protocol.request_response(request, response_type)
 
 
 class DockerContainerTransport:
@@ -113,6 +170,9 @@ class DockerContainerTransport:
         self.container_id: str | None = None
         self._lock = threading.Lock()
         self._proc_lock = threading.Lock()
+        self._stdin_lock = threading.Lock()
+        self._control_lock = threading.Lock()
+        self._control_waiters: dict[str, _ControlResponseWaiter] = {}
         self._active_proc: subprocess.Popen[str] | None = None
 
     def run_node(self, request: dict[str, Any], callbacks: WorkerCallbacks) -> dict[str, Any]:
@@ -141,8 +201,7 @@ class DockerContainerTransport:
             assert proc.stdin is not None
             assert proc.stdout is not None
             try:
-                proc.stdin.write(json.dumps(request, sort_keys=True) + "\n")
-                proc.stdin.flush()
+                self._write_proc_payload(proc, request)
                 result: dict[str, Any] | None = None
                 for line in proc.stdout:
                     payload = _decode_json_line(line)
@@ -154,21 +213,18 @@ class DockerContainerTransport:
                             callbacks.emit_event(event_type, dict(event_payload))
                     elif kind == "human_gate_request":
                         answer = callbacks.ask_human(payload) if callbacks.ask_human is not None else {"value": "TIMEOUT"}
-                        proc.stdin.write(json.dumps({"type": "human_gate_answer", "answer": answer}) + "\n")
-                        proc.stdin.flush()
+                        self._write_proc_payload(proc, {"type": "human_gate_answer", "answer": answer})
                     elif kind == "child_run_request":
                         response = callbacks.launch_child(payload) if callbacks.launch_child is not None else {
                             "run_id": str(payload.get("child_run_id", "")),
                             "status": "failed",
                             "failure_reason": "child run delegation is unavailable",
                         }
-                        proc.stdin.write(json.dumps({"type": "child_run_result", "result": response}) + "\n")
-                        proc.stdin.flush()
+                        self._write_proc_payload(proc, {"type": "child_run_result", "result": response})
                     elif kind == "child_status_request":
                         child_run_id = str(payload.get("run_id", ""))
                         response = callbacks.resolve_child_status(child_run_id) if callbacks.resolve_child_status is not None else None
-                        proc.stdin.write(json.dumps({"type": "child_status_result", "result": response}) + "\n")
-                        proc.stdin.flush()
+                        self._write_proc_payload(proc, {"type": "child_status_result", "result": response})
                     elif kind == "child_intervention_request":
                         response = callbacks.request_child_intervention(payload) if callbacks.request_child_intervention is not None else {
                             "run_id": str(payload.get("child_run_id", "")),
@@ -178,8 +234,9 @@ class DockerContainerTransport:
                             "message": "child intervention delegation is unavailable",
                             "target_node_id": payload.get("target_node_id"),
                         }
-                        proc.stdin.write(json.dumps({"type": "child_intervention_result", "result": response}) + "\n")
-                        proc.stdin.flush()
+                        self._write_proc_payload(proc, {"type": "child_intervention_result", "result": response})
+                    elif kind == "child_intervention_control_result":
+                        self._resolve_control_response(str(payload.get("request_id") or ""), payload)
                     elif kind == "result":
                         result = payload
                 stderr = proc.stderr.read() if proc.stderr is not None else ""
@@ -195,6 +252,98 @@ class DockerContainerTransport:
                 with self._proc_lock:
                     if self._active_proc is proc:
                         self._active_proc = None
+                self._reject_control_waiters(
+                    reason="no_active_container_worker",
+                    message="Container worker is no longer active.",
+                )
+
+    def request_child_intervention(
+        self,
+        request: ChildInterventionRequest,
+    ) -> ChildInterventionResult:
+        request_id = uuid.uuid4().hex
+        with self._proc_lock:
+            proc = self._active_proc
+        if proc is None or proc.poll() is not None or proc.stdin is None:
+            return _rejected_child_intervention_result(
+                request,
+                reason="no_active_container_worker",
+                message="No active local-container worker is available for intervention.",
+            )
+
+        waiter = _ControlResponseWaiter(event=threading.Event(), request=request)
+        with self._control_lock:
+            self._control_waiters[request_id] = waiter
+        try:
+            self._write_proc_payload(
+                proc,
+                {
+                    "type": "child_intervention_control_request",
+                    "request_id": request_id,
+                    "request": child_intervention_request_to_payload(request),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            with self._control_lock:
+                self._control_waiters.pop(request_id, None)
+            return _rejected_child_intervention_result(
+                request,
+                reason="no_active_container_worker",
+                message=str(exc),
+            )
+
+        timeout_seconds = _container_steer_timeout_seconds()
+        if not waiter.event.wait(timeout_seconds):
+            with self._control_lock:
+                self._control_waiters.pop(request_id, None)
+            return _rejected_child_intervention_result(
+                request,
+                reason="intervention_request_failed",
+                message="Timed out waiting for local-container worker intervention result.",
+            )
+
+        payload = waiter.payload or {}
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        if not isinstance(result, dict) or not result:
+            return _rejected_child_intervention_result(
+                request,
+                reason="intervention_request_failed",
+                message="Local-container worker returned an invalid intervention result.",
+            )
+        return child_intervention_result_from_payload(result)
+
+    def _write_proc_payload(self, proc: subprocess.Popen[str], payload: dict[str, Any]) -> None:
+        if proc.stdin is None:
+            raise ContainerExecutionError("Container node worker stdin is unavailable.")
+        with self._stdin_lock:
+            proc.stdin.write(json.dumps(payload, default=str, sort_keys=True) + "\n")
+            proc.stdin.flush()
+
+    def _resolve_control_response(self, request_id: str, payload: dict[str, Any]) -> None:
+        with self._control_lock:
+            waiter = self._control_waiters.pop(request_id, None)
+        if waiter is None:
+            return
+        waiter.payload = payload
+        waiter.event.set()
+
+    def _reject_control_waiters(self, *, reason: str, message: str) -> None:
+        with self._control_lock:
+            waiters = list(self._control_waiters.values())
+            self._control_waiters.clear()
+        for waiter in waiters:
+            waiter.payload = {
+                "type": "child_intervention_control_result",
+                "result": {
+                    "run_id": waiter.request.child_run_id,
+                    "status": "rejected",
+                    "delivery_mode": "local_container",
+                    "reason": reason,
+                    "message": message,
+                    "target_node_id": waiter.request.target_node_id,
+                },
+            }
+            waiter.event.set()
 
     def close(self) -> None:
         if not self.container_id:
@@ -305,6 +454,7 @@ class ContainerizedHandlerRunner:
         emit_event: Callable[..., None] | None = None,
     ) -> Outcome | None:
         request = {
+            "run_id": self.run_id,
             "graph": graph_to_payload(self.graph),
             "node_id": node_id,
             "prompt": prompt,
@@ -362,22 +512,127 @@ class ContainerizedHandlerRunner:
 
     def _request_child_intervention_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = child_intervention_request_from_payload(payload)
-        return child_intervention_result_to_payload(self.request_child_intervention(request))
+        if self.child_intervention_requester is None:
+            return child_intervention_result_to_payload(
+                _rejected_child_intervention_result(
+                    request,
+                    reason="backend_steering_unsupported",
+                    delivery_mode="unsupported",
+                    message="child intervention requester is unavailable",
+                )
+            )
+        return child_intervention_result_to_payload(self.child_intervention_requester(request))
 
     def request_child_intervention(
         self,
         request: ChildInterventionRequest,
     ) -> ChildInterventionResult:
-        if self.child_intervention_requester is None:
-            return ChildInterventionResult(
-                run_id=request.child_run_id,
-                status="rejected",
-                delivery_mode="unsupported",
+        requester = getattr(self.transport, "request_child_intervention", None)
+        if not callable(requester):
+            return _rejected_child_intervention_result(
+                request,
                 reason="backend_steering_unsupported",
-                message="child intervention requester is unavailable",
-                target_node_id=request.target_node_id,
+                delivery_mode="unsupported",
+                message="Active local-container transport does not support intervention.",
             )
-        return self.child_intervention_requester(request)
+        return requester(request)
+
+
+@dataclass
+class _WorkerResponseWaiter:
+    event: threading.Event
+    payload: dict[str, Any] | None = None
+
+
+class _WorkerProtocolBridge:
+    _CALLBACK_RESPONSE_TYPES = {
+        "human_gate_answer",
+        "child_run_result",
+        "child_status_result",
+        "child_intervention_result",
+    }
+
+    def __init__(
+        self,
+        intervention_handler: Callable[[ChildInterventionRequest], ChildInterventionResult],
+    ) -> None:
+        self._intervention_handler = intervention_handler
+        self._lock = threading.Lock()
+        self._pending: dict[str, list[_WorkerResponseWaiter]] = {}
+        self._closed = False
+        self._thread = threading.Thread(target=self._read_loop, name="spark-worker-protocol", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            waiters = [waiter for waiters in self._pending.values() for waiter in waiters]
+            self._pending.clear()
+        for waiter in waiters:
+            waiter.payload = {}
+            waiter.event.set()
+
+    def request_response(self, request: dict[str, Any], response_type: str) -> dict[str, Any]:
+        waiter = _WorkerResponseWaiter(event=threading.Event())
+        with self._lock:
+            if self._closed:
+                return {}
+            self._pending.setdefault(response_type, []).append(waiter)
+        _emit_worker_payload(request)
+        waiter.event.wait()
+        return waiter.payload or {}
+
+    def _read_loop(self) -> None:
+        try:
+            try:
+                for line in sys.stdin:
+                    try:
+                        payload = _decode_json_line(line)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    kind = str(payload.get("type", ""))
+                    if kind in self._CALLBACK_RESPONSE_TYPES:
+                        self._dispatch_callback_response(kind, payload)
+                    elif kind == "child_intervention_control_request":
+                        self._handle_control_request(payload)
+            except OSError:
+                return
+        finally:
+            self.close()
+
+    def _dispatch_callback_response(self, response_type: str, payload: dict[str, Any]) -> None:
+        with self._lock:
+            waiters = self._pending.get(response_type) or []
+            waiter = waiters.pop(0) if waiters else None
+            if not waiters:
+                self._pending.pop(response_type, None)
+            if waiter is None:
+                return
+        waiter.payload = payload
+        waiter.event.set()
+
+    def _handle_control_request(self, payload: dict[str, Any]) -> None:
+        request_id = str(payload.get("request_id") or "")
+        request_payload = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+        request = child_intervention_request_from_payload(request_payload)
+        try:
+            result = self._intervention_handler(request)
+        except Exception as exc:  # noqa: BLE001
+            result = _rejected_child_intervention_result(
+                request,
+                reason="intervention_request_failed",
+                delivery_mode="error",
+                message=str(exc),
+            )
+        _emit_worker_payload(
+            {
+                "type": "child_intervention_control_result",
+                "request_id": request_id,
+                "result": child_intervention_result_to_payload(result),
+            }
+        )
 
 
 def run_worker_node() -> int:
@@ -387,9 +642,10 @@ def run_worker_node() -> int:
     graph = graph_from_payload(request["graph"])
     context = Context(values=dict(request.get("context") or {}), logs=list(request.get("context_logs") or []))
     working_dir = str(request.get("working_dir") or ".")
+    worker_run_id = str(request.get("run_id") or context.get("internal.run_id") or "")
 
     def emit(message: dict[str, Any]) -> None:
-        print(json.dumps({"type": "event", "event_type": "WorkerLog", "payload": message}, sort_keys=True), flush=True)
+        _emit_worker_payload({"type": "event", "event_type": "WorkerLog", "payload": message})
 
     backend = build_codergen_backend(
         str(request.get("backend_name") or "provider-router"),
@@ -402,61 +658,66 @@ def run_worker_node() -> int:
         codergen_backend=backend,
         interviewer=WorkerProtocolInterviewer(),
     )
+
+    def request_child_intervention(
+        intervention_request: ChildInterventionRequest,
+    ) -> ChildInterventionResult:
+        if worker_run_id and intervention_request.child_run_id == worker_run_id:
+            requester = getattr(backend, "request_child_intervention", None)
+            if not callable(requester):
+                return _rejected_child_intervention_result(
+                    intervention_request,
+                    reason="backend_steering_unsupported",
+                    delivery_mode="unsupported",
+                    message="Active worker backend does not support intervention.",
+                )
+            return requester(intervention_request)
+        return worker_child_intervention_requester(intervention_request)
+
     runner = HandlerRunner(
         graph,
         registry,
         logs_root=Path(str(request["logs_root"])) if request.get("logs_root") else None,
         child_run_launcher=worker_child_run_launcher,
         child_status_resolver=worker_child_status_resolver,
-        child_intervention_requester=worker_child_intervention_requester,
+        child_intervention_requester=request_child_intervention,
     )
+    protocol = _WorkerProtocolBridge(runner.request_child_intervention)
+    _set_worker_protocol(protocol)
+    protocol.start()
 
     def emit_event(event_type: str, **payload: object) -> None:
-        print(
-            json.dumps(
-                {"type": "event", "event_type": event_type, "payload": payload},
-                default=str,
-                sort_keys=True,
-            ),
-            flush=True,
-        )
+        _emit_worker_payload({"type": "event", "event_type": event_type, "payload": payload})
 
     try:
         outcome = runner(str(request["node_id"]), str(request.get("prompt") or ""), context, emit_event=emit_event)
-        print(
-            json.dumps(
-                {
-                    "type": "result",
-                    "outcome": outcome_to_payload(outcome),
-                    "context": dict(context.values),
-                },
-                default=str,
-                sort_keys=True,
-            ),
-            flush=True,
+        _emit_worker_payload(
+            {
+                "type": "result",
+                "outcome": outcome_to_payload(outcome),
+                "context": dict(context.values),
+            }
         )
         return 0
     except Exception as exc:  # noqa: BLE001
-        print(
-            json.dumps(
-                {
-                    "type": "result",
-                    "outcome": outcome_to_payload(
-                        Outcome(
-                            status=OutcomeStatus.FAIL,
-                            failure_reason=str(exc),
-                            retryable=False,
-                            failure_kind=FailureKind.RUNTIME,
-                        )
-                    ),
-                    "context": dict(context.values),
-                },
-                default=str,
-                sort_keys=True,
-            ),
-            flush=True,
+        _emit_worker_payload(
+            {
+                "type": "result",
+                "outcome": outcome_to_payload(
+                    Outcome(
+                        status=OutcomeStatus.FAIL,
+                        failure_reason=str(exc),
+                        retryable=False,
+                        failure_kind=FailureKind.RUNTIME,
+                    )
+                ),
+                "context": dict(context.values),
+            }
         )
         return 0
+    finally:
+        protocol.close()
+        _set_worker_protocol(None)
 
 
 class WorkerProtocolInterviewer(Interviewer):
@@ -465,23 +726,20 @@ class WorkerProtocolInterviewer(Interviewer):
             "type": "human_gate_request",
             "question": question_to_payload(question),
         }
-        print(json.dumps(payload, default=str, sort_keys=True), flush=True)
-        response = _decode_json_line(input())
+        response = _worker_request_response(payload, "human_gate_answer")
         answer = response.get("answer") if isinstance(response.get("answer"), dict) else {}
         return answer_from_payload(answer)
 
 
 def worker_child_run_launcher(request: ChildRunRequest) -> ChildRunResult:
     payload = {"type": "child_run_request", **child_run_request_to_payload(request)}
-    print(json.dumps(payload, default=str, sort_keys=True), flush=True)
-    response = _decode_json_line(input())
+    response = _worker_request_response(payload, "child_run_result")
     result = response.get("result") if isinstance(response.get("result"), dict) else {}
     return child_run_result_from_payload(result)
 
 
 def worker_child_status_resolver(run_id: str) -> ChildRunResult | None:
-    print(json.dumps({"type": "child_status_request", "run_id": run_id}, sort_keys=True), flush=True)
-    response = _decode_json_line(input())
+    response = _worker_request_response({"type": "child_status_request", "run_id": run_id}, "child_status_result")
     result = response.get("result")
     return child_run_result_from_payload(result) if isinstance(result, dict) else None
 
@@ -490,8 +748,7 @@ def worker_child_intervention_requester(
     request: ChildInterventionRequest,
 ) -> ChildInterventionResult:
     payload = {"type": "child_intervention_request", **child_intervention_request_to_payload(request)}
-    print(json.dumps(payload, default=str, sort_keys=True), flush=True)
-    response = _decode_json_line(input())
+    response = _worker_request_response(payload, "child_intervention_result")
     result = response.get("result") if isinstance(response.get("result"), dict) else {}
     return child_intervention_result_from_payload(result)
 
@@ -504,6 +761,17 @@ def _container_env() -> dict[str, str]:
         if value:
             env[key] = value
     return env
+
+
+def _container_steer_timeout_seconds() -> float:
+    raw = str(os.environ.get("SPARK_CONTAINER_STEER_TIMEOUT_SECONDS", "")).strip()
+    if not raw:
+        return 30.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 30.0
+    return value if value > 0 else 30.0
 
 
 def _spark_runtime_root() -> Path | None:

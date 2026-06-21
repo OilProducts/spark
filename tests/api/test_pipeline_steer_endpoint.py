@@ -31,7 +31,22 @@ class _InterventionRunner:
 
 def _seed_run_root(run_id: str, workdir: Path) -> Path:
     workdir.mkdir(parents=True, exist_ok=True)
-    return server._ensure_run_root_for_project(run_id, str(workdir))
+    run_root = server._ensure_run_root_for_project(run_id, str(workdir))
+    server._write_run_meta(
+        server.RunRecord(
+            run_id=run_id,
+            flow_name=f"{run_id}.dot",
+            status="running",
+            outcome=None,
+            outcome_reason_code=None,
+            outcome_reason_message=None,
+            working_directory=str(workdir),
+            model="test-model",
+            started_at="2026-01-01T00:00:00Z",
+            project_path=str(workdir),
+        )
+    )
+    return run_root
 
 
 def _seed_active_run(run_id: str, workdir: Path, runner: object) -> None:
@@ -46,7 +61,12 @@ def _seed_active_run(run_id: str, workdir: Path, runner: object) -> None:
         )
 
 
-def test_pipeline_steer_rejects_empty_message(attractor_api_client: TestClient) -> None:
+def test_pipeline_steer_rejects_empty_message(
+    attractor_api_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _seed_run_root("run-1", tmp_path / "run-work")
+
     response = attractor_api_client.post("/pipelines/run-1/steer", json={"message": "  "})
 
     assert response.status_code == 200
@@ -54,6 +74,19 @@ def test_pipeline_steer_rejects_empty_message(attractor_api_client: TestClient) 
         "status": "validation_error",
         "error": "message is required.",
     }
+
+
+def test_pipeline_steer_returns_unknown_pipeline_without_event(
+    attractor_api_client: TestClient,
+) -> None:
+    response = attractor_api_client.post(
+        "/pipelines/missing-parent/steer",
+        json={"message": "Please steer."},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Unknown pipeline"}
+    assert server.EVENT_HUB.history("missing-parent") == []
 
 
 def test_pipeline_steer_defaults_to_active_child_from_parent_checkpoint(

@@ -3,6 +3,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import queue
+import threading
+import time
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
@@ -38,6 +41,7 @@ from attractor.interviewer import Question, QuestionType
 class FakeTransport:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
+        self.intervention_requests: list[ChildInterventionRequest] = []
         self.closed = False
 
     def run_node(self, request: dict[str, Any], callbacks: WorkerCallbacks) -> dict[str, Any]:
@@ -59,6 +63,17 @@ class FakeTransport:
                 "failure_reason": "",
             },
         }
+
+    def request_child_intervention(self, request: ChildInterventionRequest) -> ChildInterventionResult:
+        self.intervention_requests.append(request)
+        return ChildInterventionResult(
+            run_id=request.child_run_id,
+            status="delivered",
+            delivery_mode="fake_transport",
+            reason=request.reason,
+            message="queued",
+            target_node_id=request.target_node_id,
+        )
 
     def close(self) -> None:
         self.closed = True
@@ -109,6 +124,37 @@ def test_containerized_handler_runner_delegates_node_and_merges_worker_context(t
     assert events == [("WorkerProgress", {"node_id": "work"})]
     runner.close()
     assert transport.closed is False
+
+
+def test_containerized_handler_runner_forwards_parent_intervention_to_active_transport(tmp_path: Path) -> None:
+    graph = parse_dot("digraph G { work [shape=box, label=\"Work\"]; }")
+    transport = FakeTransport()
+    runner = ContainerizedHandlerRunner(
+        graph,
+        image="spark-exec:test",
+        run_id="run-container-test",
+        working_dir=tmp_path,
+        run_root=tmp_path / "runs" / "run-container-test",
+        transport=transport,
+    )
+
+    result = runner.request_child_intervention(
+        ChildInterventionRequest(
+            child_run_id="run-container-test",
+            message="Please adjust the current turn.",
+            parent_run_id="parent-1",
+            parent_node_id="manager",
+            root_run_id="parent-1",
+            reason="api",
+            source="api",
+            target_node_id="work",
+        )
+    )
+
+    assert result.status == "delivered"
+    assert result.delivery_mode == "fake_transport"
+    assert transport.intervention_requests[0].message == "Please adjust the current turn."
+    assert transport.intervention_requests[0].target_node_id == "work"
 
 
 def test_docker_transport_creates_run_container_with_labels_env_mounts_and_cleanup(
@@ -223,6 +269,155 @@ def test_docker_transport_creates_run_container_with_labels_env_mounts_and_clean
     }
     assert events == [("WorkerProgress", {"node_id": "work"})]
     assert result["context"] == {"context.ran": True}
+
+
+def test_docker_transport_routes_concurrent_parent_intervention_results_by_request_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    commands: list[list[str]] = []
+    stdin_writes: list[str] = []
+    proc_box: dict[str, _QueuedPopen] = {}
+    run_result: dict[str, Any] = {}
+    run_errors: list[BaseException] = []
+    monkeypatch.setenv("SPARK_CONTAINER_STEER_TIMEOUT_SECONDS", "2")
+    monkeypatch.setattr("attractor.handlers.execution_container.shutil.which", lambda _: "/usr/bin/docker")
+
+    def fake_run(args, **kwargs):
+        commands.append(list(args))
+        if args[:2] == ["docker", "run"]:
+            return SimpleNamespace(returncode=0, stdout="container-123\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    class FakePopen(_QueuedPopen):
+        def __init__(self, args, **kwargs):
+            commands.append(list(args))
+            super().__init__(stdin_writes)
+            proc_box["proc"] = self
+
+    monkeypatch.setattr("attractor.handlers.execution_container.subprocess.run", fake_run)
+    monkeypatch.setattr("attractor.handlers.execution_container.subprocess.Popen", FakePopen)
+    transport = DockerContainerTransport(
+        image="spark-exec:test",
+        run_id="run-123",
+        project_path=tmp_path / "project",
+        run_root=tmp_path / "runs" / "run-123",
+    )
+
+    def run_node() -> None:
+        try:
+            run_result["payload"] = transport.run_node({"node_id": "work"}, WorkerCallbacks())
+        except BaseException as exc:  # noqa: BLE001
+            run_errors.append(exc)
+
+    run_thread = threading.Thread(target=run_node)
+    run_thread.start()
+    _wait_for(lambda: len(stdin_writes) >= 1 and "proc" in proc_box)
+
+    results: dict[str, ChildInterventionResult] = {}
+
+    def request_intervention(name: str, child_run_id: str) -> None:
+        results[name] = transport.request_child_intervention(
+            ChildInterventionRequest(
+                child_run_id=child_run_id,
+                message=f"steer {child_run_id}",
+                parent_run_id="parent-1",
+                parent_node_id="manager",
+                root_run_id="parent-1",
+                reason=name,
+                source="api",
+                target_node_id="task",
+            )
+        )
+
+    first_thread = threading.Thread(target=request_intervention, args=("first", "child-1"))
+    second_thread = threading.Thread(target=request_intervention, args=("second", "child-2"))
+    first_thread.start()
+    second_thread.start()
+
+    def control_writes() -> list[dict[str, Any]]:
+        return [
+            json.loads(value)
+            for value in stdin_writes
+            if json.loads(value).get("type") == "child_intervention_control_request"
+        ]
+
+    _wait_for(lambda: len(control_writes()) == 2)
+    request_ids = {
+        payload["request"]["child_run_id"]: payload["request_id"]
+        for payload in control_writes()
+    }
+    proc = proc_box["proc"]
+    proc.stdout.put_json(
+        {
+            "type": "child_intervention_control_result",
+            "request_id": request_ids["child-2"],
+            "result": {
+                "run_id": "child-2",
+                "status": "delivered",
+                "delivery_mode": "worker",
+                "reason": "second",
+                "message": "queued second",
+                "target_node_id": "task",
+            },
+        }
+    )
+    proc.stdout.put_json(
+        {
+            "type": "child_intervention_control_result",
+            "request_id": request_ids["child-1"],
+            "result": {
+                "run_id": "child-1",
+                "status": "delivered",
+                "delivery_mode": "worker",
+                "reason": "first",
+                "message": "queued first",
+                "target_node_id": "task",
+            },
+        }
+    )
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+
+    assert results["first"].run_id == "child-1"
+    assert results["first"].message == "queued first"
+    assert results["second"].run_id == "child-2"
+    assert results["second"].message == "queued second"
+
+    proc.stdout.put_json(
+        {
+            "type": "result",
+            "context": {"context.ran": True},
+            "outcome": {"status": "success", "suggested_next_ids": [], "context_updates": {}},
+        }
+    )
+    proc.stdout.close()
+    run_thread.join(timeout=2)
+    transport.close()
+
+    assert run_errors == []
+    assert run_result["payload"]["context"] == {"context.ran": True}
+    assert commands[1] == ["docker", "exec", "-i", "container-123", "spark-server", "worker", "run-node"]
+
+
+def test_docker_transport_rejects_parent_intervention_without_active_worker() -> None:
+    transport = DockerContainerTransport.__new__(DockerContainerTransport)
+    transport._proc_lock = threading.Lock()
+    transport._active_proc = None
+
+    result = transport.request_child_intervention(
+        ChildInterventionRequest(
+            child_run_id="child-1",
+            message="steer",
+            parent_run_id="parent-1",
+            parent_node_id="manager",
+            root_run_id="parent-1",
+            source="api",
+        )
+    )
+
+    assert result.status == "rejected"
+    assert result.delivery_mode == "local_container"
+    assert result.reason == "no_active_container_worker"
 
 
 def test_containerized_handler_runner_default_transport_labels_run_and_project_metadata(
@@ -530,6 +725,87 @@ def test_worker_run_node_streams_events_and_serializes_outcome(monkeypatch, caps
     assert emitted[-1]["outcome"]["context_updates"]["context.answer"] == "done"
 
 
+def test_worker_run_node_handles_parent_initiated_intervention_inside_active_backend(
+    monkeypatch,
+    capsys,
+) -> None:
+    graph = parse_dot(
+        """
+        digraph G {
+          work [shape=box, label="Do work"];
+        }
+        """
+    )
+    stdin = _QueueStdin(
+        [
+            {
+                "run_id": "worker-run",
+                "graph": graph_to_payload(graph),
+                "node_id": "work",
+                "prompt": "Do work",
+                "context": {"internal.run_id": "worker-run"},
+                "context_logs": [],
+                "logs_root": None,
+                "working_dir": ".",
+                "backend_name": "provider-router",
+                "model": "gpt-test",
+            }
+        ]
+    )
+    seen_request = threading.Event()
+    captured: list[ChildInterventionRequest] = []
+
+    class FakeBackend:
+        def request_child_intervention(self, request: ChildInterventionRequest) -> ChildInterventionResult:
+            captured.append(request)
+            seen_request.set()
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="delivered",
+                delivery_mode="worker_backend",
+                reason=request.reason,
+                message="queued",
+                target_node_id=request.target_node_id,
+            )
+
+        def run(self, *args, emit_event=None, **kwargs):
+            del args, emit_event, kwargs
+            stdin.put_json(
+                {
+                    "type": "child_intervention_control_request",
+                    "request_id": "control-1",
+                    "request": {
+                        "child_run_id": "worker-run",
+                        "message": "Please adjust the active turn.",
+                        "parent_run_id": "parent-1",
+                        "parent_node_id": "manager",
+                        "root_run_id": "parent-1",
+                        "reason": "api",
+                        "source": "api",
+                        "target_node_id": "work",
+                    },
+                }
+            )
+            assert seen_request.wait(2)
+            stdin.close()
+            return Outcome(status=OutcomeStatus.SUCCESS, notes="done")
+
+    monkeypatch.setattr("sys.stdin", stdin)
+    monkeypatch.setattr("attractor.api.codex_backends.build_codergen_backend", lambda *args, **kwargs: FakeBackend())
+
+    assert run_worker_node() == 0
+    emitted = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    control_result = next(item for item in emitted if item["type"] == "child_intervention_control_result")
+
+    assert captured[0].message == "Please adjust the active turn."
+    assert captured[0].source == "api"
+    assert control_result["request_id"] == "control-1"
+    assert control_result["result"]["status"] == "delivered"
+    assert control_result["result"]["delivery_mode"] == "worker_backend"
+    assert emitted[-1]["type"] == "result"
+    assert emitted[-1]["outcome"]["status"] == "success"
+
+
 def test_behavioral_flow_executes_tool_and_llm_nodes_through_same_container_runner(tmp_path: Path) -> None:
     graph = parse_dot(
         """
@@ -572,6 +848,82 @@ class _RecordingStdin:
 
     def flush(self) -> None:
         return None
+
+
+class _QueueStdout:
+    def __init__(self) -> None:
+        self._lines: queue.Queue[str | None] = queue.Queue()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        try:
+            line = self._lines.get(timeout=2)
+        except queue.Empty as exc:
+            raise AssertionError("timed out waiting for queued stdout") from exc
+        if line is None:
+            raise StopIteration
+        return line
+
+    def put_json(self, payload: dict[str, Any]) -> None:
+        self._lines.put(json.dumps(payload) + "\n")
+
+    def close(self) -> None:
+        self._lines.put(None)
+
+
+class _QueuedPopen:
+    def __init__(self, stdin_writes: list[str]) -> None:
+        self.stdin = _RecordingStdin(stdin_writes)
+        self.stdout = _QueueStdout()
+        self.stderr = io.StringIO("")
+        self._done = False
+
+    def poll(self) -> int | None:
+        return 0 if self._done else None
+
+    def wait(self, timeout=None):
+        del timeout
+        self._done = True
+        return 0
+
+
+class _QueueStdin:
+    def __init__(self, initial_payloads: list[dict[str, Any]]) -> None:
+        self._lines: queue.Queue[str] = queue.Queue()
+        for payload in initial_payloads:
+            self.put_json(payload)
+
+    def readline(self) -> str:
+        try:
+            return self._lines.get(timeout=2)
+        except queue.Empty as exc:
+            raise AssertionError("timed out waiting for queued stdin") from exc
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        line = self.readline()
+        if line == "":
+            raise StopIteration
+        return line
+
+    def put_json(self, payload: dict[str, Any]) -> None:
+        self._lines.put(json.dumps(payload) + "\n")
+
+    def close(self) -> None:
+        self._lines.put("")
+
+
+def _wait_for(predicate, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition was not met before timeout")
 
 
 class _CancelableProc:

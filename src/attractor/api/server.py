@@ -4394,6 +4394,7 @@ async def retry_pipeline(pipeline_id: str):
 
 @attractor_router.post("/pipelines/{pipeline_id}/steer")
 async def steer_pipeline(pipeline_id: str, req: PipelineSteerRequest):
+    _ensure_known_pipeline(pipeline_id)
     message = req.message.strip()
     if not message:
         return {
