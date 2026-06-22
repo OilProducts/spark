@@ -1,8 +1,7 @@
 # TODO
 
 - [x] Normalize checkpoint semantics so `current_node` has one stable meaning in both persistence and resume logic, and update the Attractor spec accordingly.
-- [ ] Mirror the documented `graph.*` context namespace in the engine itself instead of only seeding it through the API bootstrap path.
-- [ ] Either wire the existing `ArtifactStore` into normal pipeline execution/runtime surfaces or narrow the Attractor spec so it does not promise a first-class artifact store that the engine does not use.
+- [x] Mirror the documented `graph.*` context namespace in the engine itself instead of only seeding it through the API bootstrap path.
 - [ ] Complete `wait.human` timeout/default wiring by setting `Question.default` / `Question.timeout_seconds` where the interviewer contract expects them, or narrow the Attractor spec to the implemented behavior.
 - [ ] Finish or narrow the `stack.manager_loop` observe/steer contract. The current supervisory loop framework exists, but telemetry ingestion and steering behavior are still mostly stubs.
 - [ ] Evaluate progress-aware manager steering for `stack.manager_loop` nodes. One possible direction: keep `manager.steer_cooldown` as a throttle, but only steer when child telemetry indicates stall/regression (for example unchanged active stage, repeated retries, repeated failures, or lack of new artifacts) and record the intervention reason.
@@ -18,5 +17,4 @@
 
 ## Feature candidates
 
-- [ ] Add an artifact viewer UI suitable for workspace-generated files, including safe inline preview and download behavior for run outputs and project artifacts.
 - [ ] Add configurable workspace navigation so specialized project views can be enabled without crowding the default Spark tools.

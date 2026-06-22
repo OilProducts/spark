@@ -19,10 +19,7 @@ from attractor.api.run_records import (
 from attractor.api.token_usage import TokenUsageBreakdown, estimate_model_cost
 from attractor.api.runtime_paths import AttractorRuntimePaths
 from attractor.engine import load_checkpoint
-from attractor.graph_prep import (
-    DEFAULT_MAX_RETRIES_KEY,
-    resolve_default_max_retries_value,
-)
+from attractor.graph_prep import graph_attr_context_seed
 from spark_common.project_identity import build_project_id, normalize_project_path
 
 
@@ -101,19 +98,6 @@ def resolve_start_node_id(graph) -> str:
     if len(candidates) != 1:
         raise RuntimeError(f"Expected exactly one start node, found {len(candidates)}")
     return candidates[0]
-
-
-def graph_attr_context_seed(graph) -> Dict[str, object]:
-    seeded: Dict[str, object] = {}
-    for key, attr in graph.graph_attrs.items():
-        value = getattr(attr, "value", "")
-        if hasattr(value, "raw"):
-            value = value.raw
-        seeded[f"graph.{key}"] = value
-    seeded.setdefault("graph.goal", "")
-    default_max_retries = resolve_default_max_retries_value(graph.graph_attrs, default=0)
-    seeded[f"graph.{DEFAULT_MAX_RETRIES_KEY}"] = default_max_retries
-    return seeded
 
 
 def run_meta_path(get_runtime_paths: Callable[[], AttractorRuntimePaths], run_id: str) -> Path:

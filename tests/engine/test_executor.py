@@ -701,6 +701,40 @@ class TestExecutor:
         assert result.context["graph.goal"] == "Ship docs"
         assert seen_goals == ["Ship docs", "Ship docs"]
 
+    def test_executor_mirrors_graph_attrs_into_context(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                graph [default_fidelity="summary:high", custom_attr="custom", default_max_retries="3"]
+                start [shape=Mdiamond]
+                work [shape=box]
+                done [shape=Msquare]
+                start -> work
+                work -> done
+            }
+            """
+        )
+        seen_contexts: list[dict[str, object]] = []
+
+        def runner(node_id: str, prompt: str, context: Context, *, emit_event=None) -> Outcome:
+            seen_contexts.append(context.snapshot())
+            return Outcome(status=OutcomeStatus.SUCCESS)
+
+        result = PipelineExecutor(graph, runner).run(Context())
+
+        assert result.status == "completed"
+        assert result.context["graph.goal"] == ""
+        assert result.context["graph.default_fidelity"] == "summary:high"
+        assert result.context["graph.custom_attr"] == "custom"
+        assert result.context["graph.default_max_retries"] == 3
+        assert isinstance(result.context["graph.default_max_retries"], int)
+        assert seen_contexts
+        for snapshot in seen_contexts:
+            assert snapshot["graph.goal"] == ""
+            assert snapshot["graph.default_fidelity"] == "summary:high"
+            assert snapshot["graph.custom_attr"] == "custom"
+            assert snapshot["graph.default_max_retries"] == 3
+
     def test_executor_seeds_builtin_context_keys_across_lifecycle(self):
         graph = parse_dot(
             """

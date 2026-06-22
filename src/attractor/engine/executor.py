@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from attractor.dsl.models import DotEdge, DotGraph, DotNode, has_authored_non_empty_attr
 from attractor.dsl.models import Duration
 from attractor.graph_prep import (
-    DEFAULT_MAX_RETRIES_KEY,
+    graph_attr_context_seed,
     resolve_default_max_retries_value,
 )
 from attractor.llm_runtime import (
@@ -1836,10 +1836,7 @@ class PipelineExecutor:
         return payload
 
     def _mirror_graph_attrs(self, context: Context) -> None:
-        goal_attr = self.graph.graph_attrs.get("goal")
-        context.set("graph.goal", str(goal_attr.value) if goal_attr else "")
-        default_max_retries = resolve_default_max_retries_value(self.graph.graph_attrs, default=0)
-        context.set(f"graph.{DEFAULT_MAX_RETRIES_KEY}", default_max_retries)
+        context.apply_updates(graph_attr_context_seed(self.graph))
 
     def _seed_builtin_context(self, context: Context, current_node: str) -> None:
         outcomes = context.get(NODE_OUTCOMES_KEY, None)

@@ -59,3 +59,16 @@ def resolve_default_max_retries_value(attrs: Mapping[str, DotAttribute], default
         return int(str(value))
     except (TypeError, ValueError):
         return default
+
+
+def graph_attr_context_seed(graph: DotGraph) -> dict[str, object]:
+    seeded: dict[str, object] = {}
+    for key, attr in graph.graph_attrs.items():
+        value = getattr(attr, "value", "")
+        if hasattr(value, "raw"):
+            value = value.raw
+        seeded[f"graph.{key}"] = value
+    seeded.setdefault("graph.goal", "")
+    default_max_retries = resolve_default_max_retries_value(graph.graph_attrs, default=0)
+    seeded[f"graph.{DEFAULT_MAX_RETRIES_KEY}"] = default_max_retries
+    return seeded
