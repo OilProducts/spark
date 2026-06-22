@@ -474,21 +474,20 @@ def append_run_log(get_runtime_paths: Callable[[], AttractorRuntimePaths], run_i
 def read_checkpoint_progress(
     get_runtime_paths: Callable[[], AttractorRuntimePaths],
     run_id: str,
-) -> tuple[str | None, str | None, List[str]]:
+) -> tuple[str | None, List[str]]:
     checkpoint = load_checkpoint(run_root(get_runtime_paths, run_id) / "state.json")
     if checkpoint is None:
-        return None, None, []
-    return checkpoint.active_node, checkpoint.last_completed_node, list(checkpoint.completed_nodes)
+        return None, []
+    return checkpoint.current_node, list(checkpoint.completed_nodes)
 
 
 def pipeline_progress_payload(
-    active_node: str | None,
-    last_completed_node: str | None,
+    current_node: str | None,
     completed_nodes: List[str],
 ) -> Dict[str, object]:
     return {
-        "active_node": active_node,
-        "last_completed_node": last_completed_node,
+        "current_node": current_node,
+        "completed_nodes": list(completed_nodes),
         "completed_count": len(completed_nodes),
     }
 

@@ -209,7 +209,7 @@ def _select_source_node_id(graph: DotGraph, checkpoint: Checkpoint) -> str | Non
     if explicit:
         return explicit if _source_node_is_valid(graph, checkpoint, explicit) else None
 
-    current_node = checkpoint.active_node
+    current_node = checkpoint.current_node
     completed_nodes = list(checkpoint.completed_nodes)
     node_outcomes = _node_outcomes(checkpoint)
     exit_predecessors = {

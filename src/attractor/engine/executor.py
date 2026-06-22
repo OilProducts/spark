@@ -249,9 +249,7 @@ class PipelineExecutor:
         if resume and self.checkpoint_path:
             checkpoint = load_checkpoint(self.checkpoint_path)
             if checkpoint:
-                candidate = checkpoint.active_node
-                if candidate is None:
-                    return self._terminal_checkpoint_result(checkpoint)
+                candidate = checkpoint.current_node
                 if candidate in self.graph.nodes:
                     current = candidate
                     route_trace = [current]
@@ -265,6 +263,14 @@ class PipelineExecutor:
                         values=dict(checkpoint.context),
                         logs=list(checkpoint.logs),
                     )
+                    if current in completed:
+                        next_edge = self._resolve_resume_next_edge(current, ctx)
+                        if next_edge is None:
+                            return self._terminal_checkpoint_result(checkpoint)
+                        current = next_edge.target
+                        incoming_edge = next_edge
+                        route_trace.append(current)
+                        ctx.set("current_node", current)
                     degrade_resume_fidelity_once = (
                         str(checkpoint.context.get(RUNTIME_FIDELITY_KEY, "")).strip().lower() == "full"
                     )
@@ -278,7 +284,6 @@ class PipelineExecutor:
                 completed_nodes=completed,
                 context=ctx,
                 retry_counts=retry_counts,
-                last_completed_node=None,
             )
 
         steps = 0
@@ -572,26 +577,16 @@ class PipelineExecutor:
                         failure_reason="aborted_by_user",
                     )
                 if post_stage_action == "pause":
-                    outgoing = [edge for edge in self.graph.edges if edge.source == node.node_id]
-                    routing_outcome = self._routing_outcome(
-                        node.node_id,
-                        outcome,
-                        prior_status,
-                        prior_preferred_label,
-                    )
-                    next_edge = self._select_route_edge(node.node_id, outgoing, routing_outcome, ctx)
-                    pause_node = next_edge.target if next_edge else None
                     self._finalize_run(
-                        current_node=pause_node,
+                        current_node=node.node_id,
                         completed_nodes=completed,
                         context=ctx,
                         retry_counts=retry_counts,
                         event_type="PipelinePaused",
-                        last_completed_node=node.node_id,
                     )
                     return PipelineResult(
                         status="paused",
-                        current_node=pause_node or node.node_id,
+                        current_node=node.node_id,
                         completed_nodes=completed,
                         context=dict(ctx.values),
                         node_outcomes=outcomes,
@@ -677,7 +672,6 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=ctx,
                     retry_counts=retry_counts,
-                    last_completed_node=node.node_id,
                 )
 
                 steps += 1
@@ -738,7 +732,6 @@ class PipelineExecutor:
             completed_nodes=completed,
             context=ctx,
             retry_counts=retry_counts,
-            last_completed_node=None,
         )
 
         try:
@@ -1047,26 +1040,16 @@ class PipelineExecutor:
                         failure_reason="aborted_by_user",
                     )
                 if post_stage_action == "pause":
-                    outgoing = [edge for edge in self.graph.edges if edge.source == node.node_id]
-                    routing_outcome = self._routing_outcome(
-                        node.node_id,
-                        outcome,
-                        prior_status,
-                        prior_preferred_label,
-                    )
-                    next_edge = self._select_route_edge(node.node_id, outgoing, routing_outcome, ctx)
-                    pause_node = next_edge.target if next_edge else None
                     self._finalize_run(
-                        current_node=pause_node,
+                        current_node=node.node_id,
                         completed_nodes=completed,
                         context=ctx,
                         retry_counts=retry_counts,
                         event_type="PipelinePaused",
-                        last_completed_node=node.node_id,
                     )
                     return PipelineResult(
                         status="paused",
-                        current_node=pause_node or node.node_id,
+                        current_node=node.node_id,
                         completed_nodes=completed,
                         context=dict(ctx.values),
                         node_outcomes=outcomes,
@@ -1152,7 +1135,6 @@ class PipelineExecutor:
                     completed_nodes=completed,
                     context=ctx,
                     retry_counts=retry_counts,
-                    last_completed_node=node.node_id,
                 )
 
                 steps += 1
@@ -1185,17 +1167,13 @@ class PipelineExecutor:
 
     def _save_checkpoint(
         self,
-        current_node: str | None,
+        current_node: str,
         completed_nodes: List[str],
         context: Context,
         retry_counts: Dict[str, int],
-        last_completed_node: str | None = None,
     ) -> None:
-        if last_completed_node is None and completed_nodes:
-            last_completed_node = completed_nodes[-1]
         checkpoint = Checkpoint(
-            active_node=current_node,
-            last_completed_node=last_completed_node,
+            current_node=current_node,
             completed_nodes=list(completed_nodes),
             context=dict(context.values),
             retry_counts=dict(retry_counts),
@@ -1212,8 +1190,8 @@ class PipelineExecutor:
         if persisted:
             self._emit_event(
                 "CheckpointSaved",
-                active_node=current_node,
-                last_completed_node=last_completed_node,
+                current_node=current_node,
+                completed_nodes=list(completed_nodes),
                 persisted=True,
             )
 
@@ -1256,19 +1234,12 @@ class PipelineExecutor:
         outcome: str | None = None,
         outcome_reason_code: str | None = None,
         outcome_reason_message: str | None = None,
-        last_completed_node: str | None = None,
     ) -> None:
-        if last_completed_node is None:
-            if event_type in {"PipelineCompleted", "PipelineFailed"}:
-                last_completed_node = current_node
-            elif completed_nodes:
-                last_completed_node = completed_nodes[-1]
         self._save_checkpoint(
-            current_node=None if event_type in {"PipelineCompleted", "PipelineFailed"} else current_node,
+            current_node=current_node,
             completed_nodes=completed_nodes,
             context=context,
             retry_counts=retry_counts,
-            last_completed_node=last_completed_node,
         )
         event_payload: Dict[str, object] = {"current_node": current_node}
         if error:
@@ -1316,7 +1287,7 @@ class PipelineExecutor:
         )
 
     def _terminal_checkpoint_result(self, checkpoint: Checkpoint) -> PipelineResult:
-        current_node = checkpoint.last_completed_node or self._resolve_start_node()
+        current_node = checkpoint.current_node
         completed = [node for node in checkpoint.completed_nodes if node in self.graph.nodes]
         context = dict(checkpoint.context)
         outcome_value = str(context.get("outcome", "")).strip().lower()

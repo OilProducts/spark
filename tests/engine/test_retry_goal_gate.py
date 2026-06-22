@@ -827,7 +827,7 @@ class TestRetryAndGoalGate:
             checkpoint_fix_indices = [
                 i
                 for i, event in enumerate(events)
-                if event["type"] == "CheckpointSaved" and event.get("active_node") == "fix"
+                if event["type"] == "CheckpointSaved" and event.get("current_node") == "fix"
             ]
             assert checkpoint_fix_indices
             assert any(index < stage_started_fix_index for index in checkpoint_fix_indices)

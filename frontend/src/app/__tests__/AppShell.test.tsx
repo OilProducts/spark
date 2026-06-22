@@ -1953,8 +1953,7 @@ describe('App shell behavior', () => {
           pipeline_id: 'run-two',
           checkpoint: {
             completed_nodes: ['prepare'],
-            active_node: 'review',
-            last_completed_node: 'prepare',
+            current_node: 'review',
           },
         })
       }
@@ -2079,8 +2078,7 @@ describe('App shell behavior', () => {
             token_usage: 1234,
             completed_nodes: ['prepare', 'review'],
             progress: {
-              active_node: 'review',
-              last_completed_node: 'review',
+              current_node: 'review',
               completed_count: 2,
             },
             continued_from_run_id: null,
@@ -2094,8 +2092,7 @@ describe('App shell behavior', () => {
           pipeline_id: 'run-session',
           checkpoint: {
             completed_nodes: ['prepare'],
-            active_node: 'review',
-            last_completed_node: 'prepare',
+            current_node: 'review',
           },
         })
         }
@@ -2317,8 +2314,7 @@ describe('App shell behavior', () => {
           pipeline_id: 'run-hidden',
           checkpoint: {
             completed_nodes: ['prepare'],
-            active_node: 'review',
-            last_completed_node: 'prepare',
+            current_node: 'review',
           },
         })
       }

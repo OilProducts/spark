@@ -135,8 +135,8 @@ export interface PipelineStatusResponse {
     current_node?: string | null
     completed_nodes?: string[]
     progress?: {
-        active_node?: string | null
-        last_completed_node?: string | null
+        current_node?: string | null
+        completed_nodes?: string[]
         completed_count?: number
     }
     started_at?: string
@@ -436,8 +436,9 @@ export function parsePipelineStatusResponse(payload: unknown, endpoint = '/attra
     const record = expectObjectRecord(payload, endpoint)
     const pipelineId = expectString(record.pipeline_id, endpoint, 'pipeline_id')
     const progressRecord = asUnknownRecord(record.progress)
-    const progressActiveNode = asOptionalNullableString(progressRecord?.active_node) ?? null
-    const progressLastCompletedNode = asOptionalNullableString(progressRecord?.last_completed_node) ?? null
+    const progressCurrentNode = asOptionalNullableString(progressRecord?.current_node) ?? null
+    const resolvedCurrentNode = progressCurrentNode ?? asOptionalNullableString(record.current_node) ?? null
+    const progressCompletedNodes = asOptionalStringArray(progressRecord?.completed_nodes)
     const rawProgressCompletedCount = progressRecord?.completed_count
     const progressCompletedCount = typeof rawProgressCompletedCount === 'number' && Number.isFinite(rawProgressCompletedCount)
         ? rawProgressCompletedCount
@@ -445,20 +446,20 @@ export function parsePipelineStatusResponse(payload: unknown, endpoint = '/attra
     const runRecord = parseRunRecord({
         ...record,
         run_id: typeof record.run_id === 'string' ? record.run_id : pipelineId,
-    }, { currentNode: progressActiveNode })
+    }, { currentNode: resolvedCurrentNode })
     if (!runRecord) {
         throw new ApiSchemaError(endpoint, 'Expected a valid run detail payload.')
     }
-    const completedNodes = asOptionalStringArray(record.completed_nodes)
+    const completedNodes = asOptionalStringArray(record.completed_nodes) ?? progressCompletedNodes
     return {
         pipeline_id: pipelineId,
         ...runRecord,
-        current_node: progressActiveNode,
+        current_node: resolvedCurrentNode,
         completed_nodes: completedNodes,
         progress: progressRecord
             ? {
-                active_node: progressActiveNode,
-                last_completed_node: progressLastCompletedNode,
+                current_node: progressCurrentNode,
+                completed_nodes: progressCompletedNodes ?? [],
                 completed_count: progressCompletedCount,
             }
             : undefined,

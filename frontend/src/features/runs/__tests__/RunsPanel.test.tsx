@@ -597,8 +597,7 @@ describe('RunsPanel', () => {
         return jsonResponse({
           pipeline_id: 'run-selected',
           checkpoint: {
-            active_node: 'validate',
-            last_completed_node: 'prepare',
+            current_node: 'validate',
             completed_nodes: ['prepare'],
           },
         })
@@ -835,8 +834,7 @@ describe('RunsPanel', () => {
         return jsonResponse({
           pipeline_id: 'run-selected',
           checkpoint: {
-            active_node: 'validate',
-            last_completed_node: 'prepare',
+            current_node: 'validate',
             completed_nodes: ['prepare'],
           },
         })
@@ -929,8 +927,7 @@ describe('RunsPanel', () => {
         return jsonResponse({
           pipeline_id: 'run-to-continue',
           checkpoint: {
-            active_node: 'failed_node',
-            last_completed_node: 'prepare',
+            current_node: 'failed_node',
             completed_nodes: ['prepare'],
           },
         })
@@ -1036,8 +1033,7 @@ describe('RunsPanel', () => {
         return jsonResponse({
           pipeline_id: 'run-running',
           checkpoint: {
-            active_node: 'work',
-            last_completed_node: 'prepare',
+            current_node: 'work',
             completed_nodes: ['prepare'],
           },
         })
@@ -1154,8 +1150,7 @@ describe('RunsPanel', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'done',
-              last_completed_node: 'execute',
+              current_node: 'done',
               completed_nodes: ['prepare', 'execute'],
             },
           })
@@ -1262,8 +1257,7 @@ describe('RunsPanel', () => {
         return jsonResponse({
           pipeline_id: 'run-stale-status',
           checkpoint: {
-            active_node: 'done',
-            last_completed_node: 'prepare',
+            current_node: 'done',
             completed_nodes: ['prepare'],
           },
         })
@@ -1328,8 +1322,7 @@ describe('RunsPanel', () => {
             token_usage: 1234,
             completed_nodes: ['start', 'done'],
             progress: {
-              active_node: 'done',
-              last_completed_node: 'done',
+              current_node: 'done',
               completed_count: 2,
             },
             continued_from_run_id: null,
@@ -1434,8 +1427,7 @@ describe('RunsPanel', () => {
         return jsonResponse({
           pipeline_id: 'run-stream-count',
           checkpoint: {
-            active_node: 'validate',
-            last_completed_node: 'prepare',
+            current_node: 'validate',
             completed_nodes: ['prepare'],
           },
         })
@@ -1502,8 +1494,7 @@ describe('RunsPanel', () => {
           token_usage: 1234,
           completed_nodes: ['prepare'],
           progress: {
-            active_node: 'validate',
-            last_completed_node: 'prepare',
+            current_node: 'validate',
             completed_count: 1,
           },
           continued_from_run_id: null,
@@ -1588,8 +1579,7 @@ describe('RunsPanel', () => {
         return jsonResponse({
           pipeline_id: 'run-live-usage',
           checkpoint: {
-            active_node: 'review',
-            last_completed_node: 'start',
+            current_node: 'review',
             completed_nodes: ['start'],
           },
         })
@@ -1637,8 +1627,7 @@ describe('RunsPanel', () => {
           ...selectedRun,
           completed_nodes: ['start'],
           progress: {
-            active_node: 'review',
-            last_completed_node: 'start',
+            current_node: 'review',
             completed_count: 1,
           },
         })
@@ -1792,8 +1781,7 @@ describe('RunsPanel', () => {
           token_usage: run.token_usage,
           completed_nodes: ['prepare'],
           progress: {
-            active_node: currentNode,
-            last_completed_node: 'prepare',
+            current_node: currentNode,
             completed_count: 1,
           },
           continued_from_run_id: null,
@@ -1810,8 +1798,7 @@ describe('RunsPanel', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: currentNodeByRunId[runId as keyof typeof currentNodeByRunId],
-              last_completed_node: 'prepare',
+              current_node: currentNodeByRunId[runId as keyof typeof currentNodeByRunId],
               completed_nodes: ['prepare'],
             },
           })
@@ -1974,8 +1961,7 @@ describe('RunsPanel', () => {
         return jsonResponse({
           pipeline_id: 'run-reconnect',
           checkpoint: {
-            active_node: 'validate',
-            last_completed_node: 'prepare',
+            current_node: 'validate',
             completed_nodes: ['prepare'],
           },
         })
@@ -2042,8 +2028,7 @@ describe('RunsPanel', () => {
           token_usage: 1234,
           completed_nodes: ['prepare'],
           progress: {
-            active_node: 'validate',
-            last_completed_node: 'prepare',
+            current_node: 'validate',
             completed_count: 1,
           },
           continued_from_run_id: null,
@@ -2236,8 +2221,7 @@ describe('RunsPanel', () => {
           token_usage: run.token_usage,
           completed_nodes: ['prepare', 'done'],
           progress: {
-            active_node: 'done',
-            last_completed_node: 'done',
+            current_node: 'done',
             completed_count: 2,
           },
           continued_from_run_id: null,
@@ -2254,8 +2238,7 @@ describe('RunsPanel', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'done',
-              last_completed_node: 'prepare',
+              current_node: 'done',
               completed_nodes: ['prepare'],
             },
           })
@@ -2572,8 +2555,7 @@ describe('RunsPanel', () => {
           token_usage: selectedRun.token_usage,
           completed_nodes: ['prepare', 'done'],
           progress: {
-            active_node: 'done',
-            last_completed_node: 'done',
+            current_node: 'done',
             completed_count: 2,
           },
           continued_from_run_id: null,
@@ -2590,8 +2572,7 @@ describe('RunsPanel', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'done',
-              last_completed_node: 'prepare',
+              current_node: 'done',
               completed_nodes: ['prepare'],
             },
           })
@@ -2753,8 +2734,7 @@ describe('RunsPanel', () => {
           token_usage: selectedRun.token_usage,
           completed_nodes: ['prepare'],
           progress: {
-            active_node: 'review_loop',
-            last_completed_node: 'prepare',
+            current_node: 'review_loop',
             completed_count: 1,
           },
           continued_from_run_id: null,
@@ -2771,8 +2751,7 @@ describe('RunsPanel', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_loop',
-              last_completed_node: 'prepare',
+              current_node: 'review_loop',
               completed_nodes: ['prepare'],
             },
           })
@@ -2980,8 +2959,7 @@ describe('RunsPanel', () => {
           token_usage: run.token_usage,
           completed_nodes: ['prepare', 'done'],
           progress: {
-            active_node: 'done',
-            last_completed_node: 'done',
+            current_node: 'done',
             completed_count: 2,
           },
           continued_from_run_id: null,
@@ -2998,8 +2976,7 @@ describe('RunsPanel', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'done',
-              last_completed_node: 'prepare',
+              current_node: 'done',
               completed_nodes: ['prepare'],
             },
           })

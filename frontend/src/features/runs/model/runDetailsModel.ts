@@ -258,8 +258,8 @@ const buildContextExportPayload = (runId: string, contextEntries: ContextExportE
 
 const buildCheckpointSummary = (checkpointData: CheckpointResponse | null) => {
     const checkpointSnapshot = asRecord(checkpointData?.checkpoint)
-    const activeNode = checkpointSnapshot?.active_node
-    const checkpointCurrentNode = typeof activeNode === 'string' && activeNode.trim().length > 0 ? activeNode : '—'
+    const currentNode = checkpointSnapshot?.current_node
+    const checkpointCurrentNode = typeof currentNode === 'string' && currentNode.trim().length > 0 ? currentNode : '—'
 
     const completedNodes = checkpointSnapshot?.completed_nodes
     const checkpointCompletedNodes = Array.isArray(completedNodes)

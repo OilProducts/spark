@@ -102,14 +102,12 @@ const buildPipelineStatusPayload = (
   runRecord: Record<string, unknown>,
   options?: {
     currentNode?: string | null
-    lastCompletedNode?: string | null
     completedNodes?: string[]
     overrides?: Record<string, unknown>
   },
 ) => {
   const currentNode = options?.currentNode ?? null
   const completedNodes = options?.completedNodes ?? []
-  const lastCompletedNode = options?.lastCompletedNode ?? completedNodes.at(-1) ?? null
   return {
     pipeline_id: String(runRecord.run_id ?? ''),
     run_id: String(runRecord.run_id ?? ''),
@@ -131,8 +129,8 @@ const buildPipelineStatusPayload = (
     token_usage: (runRecord.token_usage as number | null | undefined) ?? 0,
     completed_nodes: completedNodes,
     progress: {
-      active_node: currentNode,
-      last_completed_node: lastCompletedNode,
+      current_node: currentNode,
+      completed_nodes: completedNodes,
       completed_count: completedNodes.length,
     },
     continued_from_run_id: null,
@@ -721,7 +719,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({ runtime: 'idle' })
         }
         if (url.endsWith(`/attractor/pipelines/${encodeURIComponent(runId)}/checkpoint`)) {
-          return jsonResponse({ pipeline_id: runId, checkpoint: { active_node: null, last_completed_node: null, completed_nodes: [] } })
+          return jsonResponse({ pipeline_id: runId, checkpoint: { current_node: null, completed_nodes: [] } })
         }
         if (url.endsWith(`/attractor/pipelines/${encodeURIComponent(runId)}/context`)) {
           return jsonResponse({ pipeline_id: runId, context: {} })
@@ -1100,7 +1098,7 @@ describe('Frontend contract behavior', () => {
     const statusSnapshot = parsePipelineStatusResponse({
       ...localRunSnapshot,
       completed_nodes: ['start', 'done'],
-      progress: { active_node: null, last_completed_node: 'done', completed_count: 2 },
+      progress: { current_node: null, completed_nodes: ['start', 'done'], completed_count: 2 },
     })
     const listSnapshot = parseRunsListResponse({ runs: [localRunSnapshot] }).runs[0]
 
@@ -2656,8 +2654,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_gate',
-              last_completed_node: 'start',
+              current_node: 'review_gate',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -2804,8 +2801,7 @@ describe('Frontend contract behavior', () => {
         return jsonResponse({
           pipeline_id: runId,
           checkpoint: {
-            active_node: 'review_gate',
-            last_completed_node: 'start',
+            current_node: 'review_gate',
             completed_nodes: ['start'],
             retry_counts: {},
           },
@@ -2953,8 +2949,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_gate',
-              last_completed_node: 'start',
+              current_node: 'review_gate',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3100,8 +3095,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_gate',
-              last_completed_node: 'start',
+              current_node: 'review_gate',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3253,8 +3247,7 @@ describe('Frontend contract behavior', () => {
         return jsonResponse({
           pipeline_id: runId,
           checkpoint: {
-            active_node: 'review_gate',
-            last_completed_node: 'start',
+            current_node: 'review_gate',
             completed_nodes: ['start'],
             retry_counts: {},
           },
@@ -3408,8 +3401,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_gate',
-              last_completed_node: 'start',
+              current_node: 'review_gate',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3613,8 +3605,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_gate',
-              last_completed_node: 'start',
+              current_node: 'review_gate',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3781,8 +3772,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_gate',
-              last_completed_node: 'start',
+              current_node: 'review_gate',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -3929,8 +3919,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_gate',
-              last_completed_node: 'start',
+              current_node: 'review_gate',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -4117,8 +4106,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_gate',
-              last_completed_node: 'start',
+              current_node: 'review_gate',
               completed_nodes: ['start'],
               retry_counts: {},
             },
@@ -4272,8 +4260,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             checkpoint: {
-              active_node: 'review_gate',
-              last_completed_node: 'start',
+              current_node: 'review_gate',
               completed_nodes: ['start'],
               retry_counts: {},
             },

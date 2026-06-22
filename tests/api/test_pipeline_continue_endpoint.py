@@ -44,8 +44,7 @@ def _seed_inactive_source_run(
     server.save_checkpoint(
         run_root / "state.json",
         server.Checkpoint(
-            active_node="checkpoint",
-            last_completed_node="start",
+            current_node="checkpoint",
             completed_nodes=["start"],
             context={
                 "context.seed": "from-source",
@@ -294,8 +293,7 @@ def test_continue_pipeline_supports_inactive_source_runs_without_mutating_source
     assert derived_record.continued_from_run_id == source_record.run_id
     assert derived_record.continued_from_node == "checkpoint"
     assert derived_record.continued_from_flow_mode == "snapshot"
-    assert derived_checkpoint.active_node == "checkpoint"
-    assert derived_checkpoint.last_completed_node is None
+    assert derived_checkpoint.current_node == "checkpoint"
     assert derived_checkpoint.context["context.seed"] == "from-source"
 
     assert server._run_meta_path(source_record.run_id).read_text(encoding="utf-8") == source_meta_before

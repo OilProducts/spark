@@ -97,7 +97,7 @@ def test_pipeline_steer_defaults_to_active_child_from_parent_checkpoint(
     save_checkpoint(
         parent_root / "state.json",
         Checkpoint(
-            active_node="manager",
+            current_node="manager",
             context={
                 "context.stack.child.run_id": "child-1",
                 "context.stack.child.active_stage": "task",
@@ -136,7 +136,7 @@ def test_pipeline_steer_explicit_target_overrides_default_child(
     save_checkpoint(
         parent_root / "state.json",
         Checkpoint(
-            active_node="manager",
+            current_node="manager",
             context={
                 "context.stack.child.run_id": "child-1",
                 "context.stack.child.active_stage": "task",

@@ -59,8 +59,7 @@ describe('runDetailsModel', () => {
     const summary = buildCheckpointSummary({
       pipeline_id: 'run-1',
       checkpoint: {
-        active_node: 'apply',
-        last_completed_node: 'review',
+        current_node: 'apply',
         completed_nodes: ['plan', 'review'],
         retry_counts: { apply: 2 },
       },
@@ -77,8 +76,7 @@ describe('runDetailsModel', () => {
     const summary = buildCheckpointSummary({
       pipeline_id: 'run-1',
       checkpoint: {
-        active_node: null,
-        last_completed_node: 'done',
+        current_node: null,
         completed_nodes: ['plan', 'review', 'done'],
         retry_counts: {},
       },

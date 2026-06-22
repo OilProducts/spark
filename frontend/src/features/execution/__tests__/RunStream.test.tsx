@@ -88,8 +88,7 @@ describe('RunStream save indicator', () => {
           token_usage: 10,
           completed_nodes: ['start'],
           progress: {
-            active_node: 'review',
-            last_completed_node: 'start',
+            current_node: 'review',
             completed_count: 1,
           },
           continued_from_run_id: null,

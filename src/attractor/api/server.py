@@ -733,11 +733,7 @@ def _journal_source_prefix(
 
 def _journal_node_id(payload: dict[str, Any], *, raw_type: str | None = None) -> Optional[str]:
     if raw_type == "CheckpointSaved":
-        for candidate in (payload.get("active_node"), payload.get("last_completed_node")):
-            node_id = _as_trimmed_string(candidate)
-            if node_id:
-                return node_id
-        return None
+        return _as_trimmed_string(payload.get("current_node"))
 
     for candidate in (
         payload.get("node_id"),
@@ -1019,13 +1015,8 @@ def _journal_summary(
             else f"{source_prefix}Human gate pending for {node_id or 'unknown'}"
         )
     if raw_type == "CheckpointSaved":
-        active_node = _as_trimmed_string(payload.get("active_node"))
-        last_completed_node = _as_trimmed_string(payload.get("last_completed_node"))
-        if active_node:
-            return f"{source_prefix}Checkpoint saved before {active_node}"
-        if last_completed_node:
-            return f"{source_prefix}Terminal checkpoint saved after {last_completed_node}"
-        return f"{source_prefix}Terminal checkpoint saved"
+        current_node = _as_trimmed_string(payload.get("current_node"))
+        return f"{source_prefix}Checkpoint saved at {current_node or 'current node'}"
     if raw_type == "LLMContent":
         channel = _as_trimmed_string(payload.get("channel")) or "assistant"
         status = _as_trimmed_string(payload.get("status")) or "streaming"
@@ -1526,16 +1517,15 @@ def _get_active_run(run_id: str) -> Optional[ActiveRun]:
         return ACTIVE_RUNS.get(run_id)
 
 
-def _read_checkpoint_progress(run_id: str) -> tuple[str | None, str | None, List[str]]:
+def _read_checkpoint_progress(run_id: str) -> tuple[str | None, List[str]]:
     return pipeline_runs.read_checkpoint_progress(get_runtime_paths, run_id)
 
 
 def _pipeline_progress_payload(
-    active_node: str | None,
-    last_completed_node: str | None,
+    current_node: str | None,
     completed_nodes: List[str],
 ) -> Dict[str, object]:
-    return pipeline_runs.pipeline_progress_payload(active_node, last_completed_node, completed_nodes)
+    return pipeline_runs.pipeline_progress_payload(current_node, completed_nodes)
 
 
 def _read_hydrated_run_record(run_id: str) -> Optional[RunRecord]:
@@ -1584,7 +1574,7 @@ def _apply_active_run_to_record(record: RunRecord, active: Optional[ActiveRun]) 
 
 
 def _pipeline_status_payload(run_id: str) -> Dict[str, object]:
-    checkpoint_active_node, checkpoint_last_completed_node, checkpoint_completed_nodes = _read_checkpoint_progress(run_id)
+    checkpoint_current_node, checkpoint_completed_nodes = _read_checkpoint_progress(run_id)
     active = _get_active_run(run_id)
     record = _read_hydrated_run_record(run_id)
 
@@ -1644,10 +1634,10 @@ def _pipeline_status_payload(run_id: str) -> Dict[str, object]:
 
     payload["pipeline_id"] = run_id
     payload["run_id"] = str(payload.get("run_id") or run_id)
+    payload["current_node"] = checkpoint_current_node
     payload["completed_nodes"] = completed_nodes
     payload["progress"] = _pipeline_progress_payload(
-        checkpoint_active_node,
-        checkpoint_last_completed_node,
+        checkpoint_current_node,
         completed_nodes,
     )
     return payload
@@ -2326,11 +2316,7 @@ def _child_run_result_from_record(run_id: str) -> ChildRunResult | None:
     if active is None and record is None:
         return None
     checkpoint = load_checkpoint(_run_root(run_id) / "state.json")
-    current_node = (
-        checkpoint.active_node or checkpoint.last_completed_node
-        if checkpoint is not None
-        else ""
-    )
+    current_node = checkpoint.current_node if checkpoint is not None else ""
     completed_nodes = list(checkpoint.completed_nodes) if checkpoint is not None else []
     checkpoint_context = checkpoint.context if checkpoint is not None else {}
     route_trace = checkpoint_context.get("context.stack.child.route_trace", [])
@@ -2725,8 +2711,7 @@ def _run_first_class_child_pipeline(
     save_checkpoint(
         Path(checkpoint_file),
         Checkpoint(
-            active_node=start_node,
-            last_completed_node=None,
+            current_node=start_node,
             completed_nodes=[],
             context=dict(context.values),
             retry_counts={},
@@ -2994,7 +2979,7 @@ def _record_run_retry_start(
 
 
 def _prepare_checkpoint_for_retry(run_id: str, checkpoint: Checkpoint) -> Checkpoint:
-    current_node = checkpoint.active_node or checkpoint.last_completed_node
+    current_node = checkpoint.current_node
     completed_nodes = list(checkpoint.completed_nodes)
     checkpoint_context = dict(checkpoint.context)
     checkpoint_context[PIPELINE_RETRY_RUN_ID_CONTEXT_KEY] = run_id
@@ -3003,12 +2988,7 @@ def _prepare_checkpoint_for_retry(run_id: str, checkpoint: Checkpoint) -> Checkp
     if current_node and current_outcome == "fail" and current_node in completed_nodes:
         completed_nodes = [node_id for node_id in completed_nodes if node_id != current_node]
     prepared = Checkpoint(
-        active_node=current_node,
-        last_completed_node=(
-            completed_nodes[-1]
-            if completed_nodes
-            else None
-        ),
+        current_node=current_node,
         completed_nodes=completed_nodes,
         context=checkpoint_context,
         retry_counts=dict(checkpoint.retry_counts),
@@ -3245,8 +3225,7 @@ async def _retry_pipeline_run(pipeline_id: str) -> dict:
         pipeline_id,
         {
             "type": "PipelineRetryStarted",
-            "active_node": checkpoint.active_node,
-            "last_completed_node": checkpoint.last_completed_node,
+            "current_node": checkpoint.current_node,
             "completed_nodes": list(checkpoint.completed_nodes),
         },
     )
@@ -3717,8 +3696,7 @@ async def _launch_pipeline_run(
     save_checkpoint(
         Path(checkpoint_file),
         Checkpoint(
-            active_node=resolved_start_node,
-            last_completed_node=None,
+            current_node=resolved_start_node,
             completed_nodes=[],
             context=dict(context.values),
             retry_counts={},

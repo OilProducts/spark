@@ -14,8 +14,7 @@ def _utc_timestamp() -> str:
 
 @dataclass
 class Checkpoint:
-    active_node: Optional[str]
-    last_completed_node: Optional[str] = None
+    current_node: str
     completed_nodes: List[str] = field(default_factory=list)
     context: Dict[str, object] = field(default_factory=dict)
     retry_counts: Dict[str, int] = field(default_factory=dict)
@@ -25,8 +24,7 @@ class Checkpoint:
     def to_dict(self) -> Dict[str, object]:
         return {
             "timestamp": self.timestamp,
-            "active_node": self.active_node,
-            "last_completed_node": self.last_completed_node,
+            "current_node": self.current_node,
             "completed_nodes": list(self.completed_nodes),
             "context": dict(self.context),
             "retry_counts": dict(self.retry_counts),
@@ -37,10 +35,7 @@ class Checkpoint:
     def from_dict(cls, data: Dict[str, object]) -> "Checkpoint":
         return cls(
             timestamp=str(data.get("timestamp", _utc_timestamp())),
-            active_node=str(data["active_node"]) if data.get("active_node") is not None else None,
-            last_completed_node=(
-                str(data["last_completed_node"]) if data.get("last_completed_node") is not None else None
-            ),
+            current_node=str(data["current_node"]),
             completed_nodes=[str(v) for v in data.get("completed_nodes", [])],
             context=dict(data.get("context", {})),
             retry_counts={str(k): int(v) for k, v in dict(data.get("retry_counts", {})).items()},

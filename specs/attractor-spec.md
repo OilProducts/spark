@@ -45,7 +45,7 @@ For reference on DOT syntax, see the Graphviz DOT language specification: https:
 
 **Pluggable handlers.** Each node type (LLM call, human gate, parallel fan-out) is backed by a handler that implements a common interface. New node types are added by registering new handlers. The execution engine does not know about handler internals.
 
-**Checkpoint and resume.** After each node completes, the execution engine saves a serializable checkpoint. If the process crashes, execution resumes from the last checkpoint.
+**Checkpoint and resume.** The execution engine saves a serializable checkpoint before the first node runs and after each transition or terminal finalize. If the process crashes, execution resumes from the last checkpoint's canonical `current_node`.
 
 **Human-in-the-loop.** The pipeline can pause at designated nodes, present choices to a human operator, and route based on the human's decision. This supports approval gates, code review, and manual override -- critical for AI workflows where automated judgment may not be sufficient.
 
@@ -420,12 +420,12 @@ FUNCTION run(graph, config):
         next_edge = select_edge(node, outcome, context, graph)
 
         -- Step 6: Save checkpoint
-        active_node = next_edge.to_node IF next_edge is not NONE ELSE NONE
+        checkpoint_current_node = next_edge.to_node IF next_edge is not NONE ELSE current_node.id
         checkpoint = create_checkpoint(
             context,
-            active_node=active_node,
-            last_completed_node=current_node.id,
-            completed_nodes=completed_nodes
+            current_node=checkpoint_current_node,
+            completed_nodes=completed_nodes,
+            retry_counts=retry_counts
         )
         save_checkpoint(checkpoint, logs_root)
 
@@ -1264,27 +1264,27 @@ Rules:
 
 ### 5.3 Checkpoint
 
-A serializable snapshot of execution state, saved after each node completes. Enables crash recovery and resume.
+A serializable snapshot of execution state. The checkpoint has one canonical node marker: `current_node`. It is the node the engine can resume from now, not a split "active" and "last completed" pair.
+
+The engine writes an initial checkpoint with the start node as `current_node`, writes in-progress checkpoints with the next resumable node, and writes terminal checkpoints with the terminal/current result node. `current_node` is always a non-empty node ID, including completed or failed terminal checkpoints.
 
 ```
 Checkpoint:
     timestamp           : Timestamp              -- when this checkpoint was created
-    active_node         : String?                 -- node to execute when this checkpoint resumes; null when terminal
-    last_completed_node : String?                 -- most recent completed or final processed node
+    current_node        : String                  -- current/resumable node; never empty, including terminal checkpoints
     completed_nodes     : List<String>            -- IDs of all completed nodes in order
-    node_retries        : Map<String, Integer>    -- retry counters per node
-    context_values      : Map<String, Any>        -- serialized snapshot of the context
+    retry_counts        : Map<String, Integer>    -- retry counters per node
+    context             : Map<String, Any>        -- serialized snapshot of the context
     logs                : List<String>            -- run log entries
 
     FUNCTION save(path):
         -- Serialize to JSON and write to filesystem
         data = {
             "timestamp": timestamp,
-            "active_node": active_node,
-            "last_completed_node": last_completed_node,
+            "current_node": current_node,
             "completed_nodes": completed_nodes,
-            "node_retries": node_retries,
-            "context": serialize_to_json(context_values),
+            "retry_counts": retry_counts,
+            "context": serialize_to_json(context),
             "logs": logs
         }
         write_json_file(path, data)
@@ -1298,11 +1298,13 @@ Checkpoint:
 **Resume behavior:**
 
 1. Load the checkpoint from `{logs_root}/checkpoint.json`.
-2. Restore context state from `context_values`.
+2. Restore context state from `context`.
 3. Restore `completed_nodes` to skip already-finished work.
-4. Restore retry counters from `node_retries`.
-5. Execute `active_node` directly; if it is `null` or absent, the checkpoint is terminal/non-resumable.
-6. If the previous node used `full` fidelity, degrade to `summary:high` for the first resumed node, because in-memory LLM sessions cannot be serialized. After this one degraded hop, subsequent nodes may use `full` fidelity again.
+4. Restore retry counters from `retry_counts`.
+5. Read `checkpoint.current_node`. If that node is not in `completed_nodes`, execute it directly.
+6. If `checkpoint.current_node` is already in `completed_nodes`, resolve its outgoing route from the restored context and execute the routed next node. If no route is available, the checkpoint is terminal/non-resumable and the completed run result is returned without restarting at graph start.
+7. A pause requested before node execution checkpoints the node about to run. A pause requested after node completion checkpoints the completed node, so resume advances through routing instead of re-running it.
+8. If the previous node used `full` fidelity, degrade to `summary:high` for the first resumed node, because in-memory LLM sessions cannot be serialized. After this one degraded hop, subsequent nodes may use `full` fidelity again.
 
 ### 5.4 Context Fidelity
 
@@ -1852,7 +1854,7 @@ The engine emits typed events during execution for UI, logging, and metrics inte
 - `InterviewTimeout(question, stage, duration)` -- timeout reached
 
 **Checkpoint events:**
-- `CheckpointSaved(active_node, last_completed_node)` -- checkpoint written; `active_node` is the node that will execute when resumed, and `last_completed_node` is the most recent completed or final processed node
+- `CheckpointSaved(current_node, completed_nodes)` -- checkpoint written. `current_node` is the current/resumable node stored in the checkpoint, and `completed_nodes` is the ordered completed-node list stored alongside it.
 
 Events can be consumed via an observer/callback pattern or an asynchronous stream:
 
@@ -2093,8 +2095,8 @@ This section defines how to validate that an implementation of this spec is comp
 - [ ] Context is a key-value store accessible to all handlers
 - [ ] Handlers can read context and return `context_updates` in the Outcome
 - [ ] Context updates are merged after each node execution
-- [ ] Checkpoint is saved after routing with `active_node`, `last_completed_node`, `completed_nodes`, context, and retry counts
-- [ ] Resume from checkpoint: load checkpoint -> restore state -> continue from `active_node`
+- [ ] Checkpoint is saved with non-empty `current_node`, `completed_nodes`, context, retry counts, logs, and timestamp
+- [ ] Resume from checkpoint: load checkpoint -> restore state -> continue from `current_node`, or advance through routing when `current_node` is already completed
 - [ ] Derived continuation: create a new run from a stored checkpoint context and explicit start node without mutating the source run
 - [ ] Stage trace is written to `{run_root}/logs/{node_id}/` (prompt.md, response.md, status.json)
 - [ ] Extra run artifacts are written under `{run_root}/artifacts/`
@@ -2216,8 +2218,7 @@ ASSERT goal_gate_satisfied(graph, outcome, "implement")
 
 -- 6. Verify checkpoint
 checkpoint = load_checkpoint(logs_root)
-ASSERT checkpoint.active_node == NONE
-ASSERT checkpoint.last_completed_node == "done"
+ASSERT checkpoint.current_node == "done"
 ASSERT "plan" IN checkpoint.completed_nodes
 ASSERT "implement" IN checkpoint.completed_nodes
 ASSERT "review" IN checkpoint.completed_nodes

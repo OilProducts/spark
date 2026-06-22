@@ -308,7 +308,7 @@ def test_pipeline_journal_returns_newest_first_durable_history_for_completed_run
     assert page["entries"][0]["source_flow_name"] == "implement-milestone.dot"
 
 
-def test_pipeline_journal_uses_checkpoint_active_node_semantics(tmp_path: Path) -> None:
+def test_pipeline_journal_uses_checkpoint_current_node_semantics(tmp_path: Path) -> None:
     run_id = "run-journal-checkpoint"
     working_directory = tmp_path / "work"
     working_directory.mkdir()
@@ -323,8 +323,8 @@ def test_pipeline_journal_uses_checkpoint_active_node_semantics(tmp_path: Path) 
                 "run_id": run_id,
                 "sequence": 1,
                 "emitted_at": "2026-04-06T12:00:00Z",
-                "active_node": "review",
-                "last_completed_node": "implement",
+                "current_node": "review",
+                "completed_nodes": ["start", "implement"],
                 "persisted": True,
             },
             {
@@ -332,8 +332,8 @@ def test_pipeline_journal_uses_checkpoint_active_node_semantics(tmp_path: Path) 
                 "run_id": run_id,
                 "sequence": 2,
                 "emitted_at": "2026-04-06T12:00:05Z",
-                "active_node": None,
-                "last_completed_node": "done",
+                "current_node": "done",
+                "completed_nodes": ["start", "implement"],
                 "persisted": True,
             },
         ],
@@ -342,15 +342,15 @@ def test_pipeline_journal_uses_checkpoint_active_node_semantics(tmp_path: Path) 
     page = asyncio.run(server.pipeline_journal(run_id))
 
     assert [entry["sequence"] for entry in page["entries"]] == [2, 1]
-    terminal_entry, active_entry = page["entries"]
-    assert active_entry["node_id"] == "review"
-    assert active_entry["summary"] == "Checkpoint saved before review"
-    assert active_entry["payload"]["active_node"] == "review"
-    assert active_entry["payload"]["last_completed_node"] == "implement"
-    assert terminal_entry["node_id"] == "done"
-    assert terminal_entry["summary"] == "Terminal checkpoint saved after done"
-    assert terminal_entry["payload"]["active_node"] is None
-    assert terminal_entry["payload"]["last_completed_node"] == "done"
+    done_entry, review_entry = page["entries"]
+    assert review_entry["node_id"] == "review"
+    assert review_entry["summary"] == "Checkpoint saved at review"
+    assert review_entry["payload"]["current_node"] == "review"
+    assert review_entry["payload"]["completed_nodes"] == ["start", "implement"]
+    assert done_entry["node_id"] == "done"
+    assert done_entry["summary"] == "Checkpoint saved at done"
+    assert done_entry["payload"]["current_node"] == "done"
+    assert done_entry["payload"]["completed_nodes"] == ["start", "implement"]
 
 
 def test_pipeline_journal_paginates_older_entries_and_preserves_log_and_interview_provenance(

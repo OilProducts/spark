@@ -81,7 +81,7 @@ function toRunRecord(status: PipelineStatusResponse): RunRecord {
             : undefined,
         token_usage_breakdown: status.token_usage_breakdown ?? undefined,
         estimated_model_cost: status.estimated_model_cost ?? undefined,
-        current_node: status.current_node ?? status.progress?.active_node ?? null,
+        current_node: status.current_node ?? null,
         continued_from_run_id: status.continued_from_run_id ?? null,
         continued_from_node: status.continued_from_node ?? null,
         continued_from_flow_mode: status.continued_from_flow_mode ?? null,
