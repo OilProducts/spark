@@ -148,3 +148,53 @@ def test_node_attributes_round_trip_across_all_handler_types_item_6_2_04() -> No
     assert nodes_by_id["manager"]["manager.max_cycles"] == 3
     assert nodes_by_id["manager"]["manager.stop_condition"] == 'child.outcome == "success"'
     assert nodes_by_id["manager"]["manager.actions"] == "observe,steer"
+
+
+def test_parallel_threshold_attrs_serialize_only_for_active_join_policy() -> None:
+    probe_script = """
+import { pathToFileURL } from 'node:url'
+const mod = await import(pathToFileURL(process.env.DOT_UTILS_JS_PATH).href)
+const nodes = [
+  { id: 'start', data: { label: 'Start', shape: 'Mdiamond' } },
+  {
+    id: 'parallel',
+    data: {
+      label: 'Parallel',
+      shape: 'component',
+      type: 'parallel',
+      join_policy: 'k_of_n',
+      join_k: '2',
+      join_quorum: '0.75',
+      max_parallel: '3'
+    }
+  },
+  { id: 'a', data: { label: 'A', shape: 'box', prompt: 'A' } },
+  { id: 'b', data: { label: 'B', shape: 'box', prompt: 'B' } },
+  { id: 'done', data: { label: 'Done', shape: 'Msquare' } }
+]
+const edges = [
+  { id: 'e1', source: 'start', target: 'parallel' },
+  { id: 'e2', source: 'parallel', target: 'a' },
+  { id: 'e3', source: 'parallel', target: 'b' },
+  { id: 'e4', source: 'a', target: 'done' },
+  { id: 'e5', source: 'b', target: 'done' }
+]
+const dot = mod.generateDot('parallel_threshold_probe', nodes, edges, {})
+console.log(dot)
+""".strip()
+
+    flow = run_dot_utils_probe(
+        probe_script,
+        temp_prefix=".tmp-dotutils-parallel-threshold-",
+        error_context="parallel threshold serialization probe",
+    )
+
+    assert "join_k=2" in flow
+    assert "join_quorum" not in flow
+
+    payload = preview_pipeline(flow)
+    nodes_by_id = {node["id"]: node for node in payload["graph"]["nodes"]}
+
+    assert nodes_by_id["parallel"]["join_policy"] == "k_of_n"
+    assert nodes_by_id["parallel"]["join_k"] == 2
+    assert nodes_by_id["parallel"]["join_quorum"] is None

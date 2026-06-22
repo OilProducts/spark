@@ -2036,6 +2036,8 @@ def _graph_payload(graph, *, child_previews: dict[str, dict] | None = None) -> d
                 "tool.artifacts.stdout": _dot_attr_value(n.attrs, "tool.artifacts.stdout"),
                 "tool.artifacts.stderr": _dot_attr_value(n.attrs, "tool.artifacts.stderr"),
                 "join_policy": _dot_attr_value(n.attrs, "join_policy"),
+                "join_k": _dot_attr_value(n.attrs, "join_k"),
+                "join_quorum": _dot_attr_value(n.attrs, "join_quorum"),
                 "error_policy": _dot_attr_value(n.attrs, "error_policy"),
                 "max_parallel": _dot_attr_value(n.attrs, "max_parallel"),
                 "type": _dot_attr_value(n.attrs, "type"),

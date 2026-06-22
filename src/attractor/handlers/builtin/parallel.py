@@ -31,6 +31,9 @@ class ParallelHandler:
         max_parallel = _attr_int(runtime.node_attrs, "max_parallel", 4)
         if max_parallel < 1:
             return Outcome(status=OutcomeStatus.FAIL, failure_reason="max_parallel must be >= 1")
+        threshold_error = _validate_join_thresholds(runtime.node_attrs, join_policy, len(runtime.outgoing_edges))
+        if threshold_error:
+            return Outcome(status=OutcomeStatus.FAIL, failure_reason=threshold_error)
 
         fan_in_nodes = _fan_in_nodes(runtime.graph)
         branch_order = {edge.target: index for index, edge in enumerate(runtime.outgoing_edges)}
@@ -137,7 +140,7 @@ class ParallelHandler:
         elif join_policy == "first_success":
             outcome_status = OutcomeStatus.SUCCESS if success_count > 0 else OutcomeStatus.FAIL
         elif join_policy == "k_of_n":
-            required = max(1, _attr_int(runtime.node_attrs, "join_k", len(results_for_policy)))
+            required = _attr_int(runtime.node_attrs, "join_k", len(results_for_policy))
             outcome_status = OutcomeStatus.SUCCESS if success_count >= required else OutcomeStatus.FAIL
         elif join_policy == "quorum":
             quorum = _attr_float(runtime.node_attrs, "join_quorum", 0.5)
@@ -176,6 +179,27 @@ def _fan_in_nodes(graph) -> set[str]:
     return fan_in
 
 
+def _validate_join_thresholds(attrs: Dict[str, Any], join_policy: str, branch_count: int) -> str | None:
+    if join_policy != "k_of_n" and "join_k" in attrs:
+        return "join_k is only supported when join_policy is k_of_n"
+    if join_policy != "quorum" and "join_quorum" in attrs:
+        return "join_quorum is only supported when join_policy is quorum"
+
+    if join_policy == "k_of_n":
+        join_k = _attr_int_strict(attrs, "join_k")
+        if join_k is None:
+            return "join_k is required and must be an integer >= 1"
+        if join_k > branch_count:
+            return f"join_k must be <= outgoing branch count ({branch_count})"
+
+    if join_policy == "quorum" and "join_quorum" in attrs:
+        join_quorum = _attr_float_strict(attrs, "join_quorum")
+        if join_quorum is None or not math.isfinite(join_quorum) or join_quorum <= 0 or join_quorum > 1:
+            return "join_quorum must be finite and > 0 and <= 1"
+
+    return None
+
+
 def _attr_str(attrs: Dict[str, Any], key: str, default: str) -> str:
     attr = attrs.get(key)
     if not attr:
@@ -193,6 +217,25 @@ def _attr_int(attrs: Dict[str, Any], key: str, default: int) -> int:
         return default
 
 
+def _attr_int_strict(attrs: Dict[str, Any], key: str) -> int | None:
+    attr = attrs.get(key)
+    if not attr:
+        return None
+    value = attr.value
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped or not stripped.lstrip("+-").isdigit():
+            return None
+        parsed = int(stripped)
+    else:
+        return None
+    return parsed if parsed >= 1 else None
+
+
 def _attr_float(attrs: Dict[str, Any], key: str, default: float) -> float:
     attr = attrs.get(key)
     if not attr:
@@ -201,3 +244,23 @@ def _attr_float(attrs: Dict[str, Any], key: str, default: float) -> float:
         return float(str(attr.value))
     except (TypeError, ValueError):
         return default
+
+
+def _attr_float_strict(attrs: Dict[str, Any], key: str) -> float | None:
+    attr = attrs.get(key)
+    if not attr:
+        return None
+    value = attr.value
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None

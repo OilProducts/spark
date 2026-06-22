@@ -334,6 +334,14 @@ function formatIntAttr(key: string, value: string | number): string {
     return `${key}=${parsed}`
 }
 
+function formatNumberAttr(key: string, value: string | number): string {
+    if (value === '' || value === null || value === undefined) return ''
+    if (typeof value === 'string' && value.trim() === '') return ''
+    const parsed = typeof value === 'number' ? value : Number(value.trim())
+    if (!Number.isFinite(parsed)) return ''
+    return `${key}=${parsed}`
+}
+
 function formatGraphAttr(key: string, value?: string): string {
     if (!value) return ''
     return `${key}="${escapeDotString(value)}"`
@@ -390,6 +398,8 @@ const KNOWN_NODE_ATTR_KEYS = new Set<string>([
     'tool.artifacts.stdout',
     'tool.artifacts.stderr',
     'join_policy',
+    'join_k',
+    'join_quorum',
     'error_policy',
     'max_parallel',
     'type',
@@ -533,6 +543,8 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         const toolArtifactsStdoutValue = readStringAttr(attrs, 'tool.artifacts.stdout')
         const toolArtifactsStderrValue = readStringAttr(attrs, 'tool.artifacts.stderr')
         const joinPolicyValue = readStringAttr(attrs, 'join_policy')
+        const joinKValue = readStringOrNumberAttr(attrs, 'join_k')
+        const joinQuorumValue = readStringOrNumberAttr(attrs, 'join_quorum')
         const errorPolicyValue = readStringAttr(attrs, 'error_policy')
         const maxParallelValue = readStringOrNumberAttr(attrs, 'max_parallel')
         const typeValue = readStringAttr(attrs, 'type')
@@ -574,6 +586,8 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
             ? `tool.artifacts.stderr="${escapeDotString(toolArtifactsStderrValue)}"`
             : ''
         const joinPolicy = joinPolicyValue ? `join_policy=${formatAttrValue(joinPolicyValue)}` : ''
+        const joinK = joinPolicyValue === 'k_of_n' ? formatIntAttr('join_k', joinKValue) : ''
+        const joinQuorum = joinPolicyValue === 'quorum' ? formatNumberAttr('join_quorum', joinQuorumValue) : ''
         const errorPolicy = errorPolicyValue ? `error_policy=${formatAttrValue(errorPolicyValue)}` : ''
         const maxParallel = formatIntAttr('max_parallel', maxParallelValue)
 
@@ -588,6 +602,8 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
             toolArtifactsStdout,
             toolArtifactsStderr,
             joinPolicy,
+            joinK,
+            joinQuorum,
             errorPolicy,
             maxParallel,
             typeValue ? `type=${formatAttrValue(typeValue)}` : '',

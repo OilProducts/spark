@@ -53,6 +53,8 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'tool.artifacts.stdout',
     'tool.artifacts.stderr',
     'join_policy',
+    'join_k',
+    'join_quorum',
     'error_policy',
     'max_parallel',
     'type',
@@ -101,6 +103,23 @@ function resolveInspectorScope({
     if (selectedNodeId) return 'node'
     if (activeFlow) return 'graph'
     return 'none'
+}
+
+export function applyNodePropertyChangeToData(
+    data: Record<string, unknown>,
+    key: string,
+    value: string | boolean,
+): Record<string, unknown> {
+    const nextData = { ...data, [key]: value }
+    if (key === 'join_policy') {
+        if (value !== 'k_of_n') {
+            delete nextData.join_k
+        }
+        if (value !== 'quorum') {
+            delete nextData.join_quorum
+        }
+    }
+    return nextData
 }
 
 export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
@@ -255,7 +274,12 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         updateNodes((nds) => {
             newNodes = nds.map(node => {
                 if (node.id === nodeId) {
-                    return applyNodeVisualState(node, { ...node.data, [key]: value });
+                    const nextData = applyNodePropertyChangeToData(
+                        (node.data ?? {}) as Record<string, unknown>,
+                        key,
+                        value,
+                    )
+                    return applyNodeVisualState(node, nextData);
                 }
                 return node;
             });

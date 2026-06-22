@@ -216,6 +216,166 @@ class TestDotValidator:
             "legacy tool attr 'tool_command' is not supported; use 'tool.command'",
         }
 
+    def test_parallel_k_of_n_join_policy_accepts_valid_join_k(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            fan [shape=component, join_policy=k_of_n, join_k=2]
+            a [shape=box, prompt="A"]
+            b [shape=box, prompt="B"]
+            done [shape=Msquare]
+
+            start -> fan
+            fan -> a
+            fan -> b
+            a -> done
+            b -> done
+        }
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+
+        assert self._errors(diagnostics) == []
+
+    @pytest.mark.parametrize(
+        ("attrs", "expected_message"),
+        [
+            ("join_policy=k_of_n", "join_k is required and must be an integer >= 1"),
+            ("join_policy=k_of_n, join_k=0", "join_k is required and must be an integer >= 1"),
+            ("join_policy=k_of_n, join_k=1.5", "join_k is required and must be an integer >= 1"),
+            ("join_policy=k_of_n, join_k=3", "join_k must be <= outgoing branch count (2)"),
+        ],
+    )
+    def test_parallel_k_of_n_join_policy_rejects_missing_invalid_or_out_of_range_join_k(
+        self,
+        attrs: str,
+        expected_message: str,
+    ):
+        dot = f"""
+        digraph G {{
+            start [shape=Mdiamond]
+            fan [shape=component, {attrs}]
+            a [shape=box, prompt="A"]
+            b [shape=box, prompt="B"]
+            done [shape=Msquare]
+
+            start -> fan
+            fan -> a
+            fan -> b
+            a -> done
+            b -> done
+        }}
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+        errors = [d for d in self._errors(diagnostics) if d.rule_id == "parallel_join_threshold"]
+
+        assert len(errors) == 1
+        assert expected_message in errors[0].message
+        assert errors[0].node_id == "fan"
+
+    @pytest.mark.parametrize("attrs", ["join_policy=quorum", "join_policy=quorum, join_quorum=0.75"])
+    def test_parallel_quorum_join_policy_accepts_default_or_valid_join_quorum(self, attrs: str):
+        dot = f"""
+        digraph G {{
+            start [shape=Mdiamond]
+            fan [shape=component, {attrs}]
+            a [shape=box, prompt="A"]
+            b [shape=box, prompt="B"]
+            done [shape=Msquare]
+
+            start -> fan
+            fan -> a
+            fan -> b
+            a -> done
+            b -> done
+        }}
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+
+        assert self._errors(diagnostics) == []
+
+    @pytest.mark.parametrize("join_quorum", ["0", "-0.1", "1.1", "nan", "not_numeric"])
+    def test_parallel_quorum_join_policy_rejects_invalid_join_quorum(self, join_quorum: str):
+        dot = f"""
+        digraph G {{
+            start [shape=Mdiamond]
+            fan [shape=component, join_policy=quorum, join_quorum={join_quorum}]
+            a [shape=box, prompt="A"]
+            b [shape=box, prompt="B"]
+            done [shape=Msquare]
+
+            start -> fan
+            fan -> a
+            fan -> b
+            a -> done
+            b -> done
+        }}
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+        errors = [d for d in self._errors(diagnostics) if d.rule_id == "parallel_join_threshold"]
+
+        assert len(errors) == 1
+        assert "join_quorum must be finite and > 0 and <= 1" in errors[0].message
+        assert errors[0].node_id == "fan"
+
+    @pytest.mark.parametrize(
+        ("attrs", "expected_message"),
+        [
+            ("join_policy=wait_all, join_k=1", "join_k is only valid when join_policy is k_of_n"),
+            ("join_policy=first_success, join_quorum=0.5", "join_quorum is only valid when join_policy is quorum"),
+            ("join_policy=k_of_n, join_k=1, join_quorum=0.5", "join_quorum is only valid when join_policy is quorum"),
+            ("join_policy=quorum, join_k=1", "join_k is only valid when join_policy is k_of_n"),
+        ],
+    )
+    def test_parallel_join_policy_rejects_stale_threshold_attrs(self, attrs: str, expected_message: str):
+        dot = f"""
+        digraph G {{
+            start [shape=Mdiamond]
+            fan [shape=component, {attrs}]
+            a [shape=box, prompt="A"]
+            b [shape=box, prompt="B"]
+            done [shape=Msquare]
+
+            start -> fan
+            fan -> a
+            fan -> b
+            a -> done
+            b -> done
+        }}
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+        errors = [d for d in self._errors(diagnostics) if d.rule_id == "parallel_join_threshold"]
+
+        assert any(expected_message in error.message for error in errors)
+
+    def test_parallel_join_policy_rejects_unknown_policy(self):
+        dot = """
+        digraph G {
+            start [shape=Mdiamond]
+            fan [shape=component, join_policy=fast_enough]
+            a [shape=box, prompt="A"]
+            b [shape=box, prompt="B"]
+            done [shape=Msquare]
+
+            start -> fan
+            fan -> a
+            fan -> b
+            a -> done
+            b -> done
+        }
+        """
+
+        diagnostics = validate_graph(parse_dot(dot))
+        errors = [d for d in self._errors(diagnostics) if d.rule_id == "parallel_join_policy"]
+
+        assert len(errors) == 1
+        assert "wait_all, first_success, k_of_n, quorum" in errors[0].message
+        assert errors[0].node_id == "fan"
+
     def test_condition_and_stylesheet_syntax(self):
         dot = """
         digraph G {

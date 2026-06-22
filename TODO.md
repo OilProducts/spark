@@ -9,7 +9,7 @@
 - [ ] Document the full manager-loop node attribute surface in the Attractor spec appendix, including `manager.poll_interval`, `manager.max_cycles`, `manager.stop_condition`, `manager.actions`, `manager.steer_cooldown`, and `stack.child_autostart`.
 - [ ] Decide whether the validator rule that every non-exit node must have an outgoing edge is intended Attractor behavior; if so, document it, otherwise relax it.
 - [ ] Document the implemented `retry_policy` node attribute and named preset semantics as part of the Attractor DSL, or remove/hide that attribute surface if it is meant to stay implementation-specific.
-- [ ] Document or remove the parallel-handler DSL additions `join_k` and `join_quorum`, which are implemented but not covered in the current Attractor spec.
+- [x] Document the parallel-handler DSL additions `join_k` and `join_quorum` in the Spark guide and Attractor spec.
 - [ ] Define the flow trigger/automation system, including how users associate flows with triggers, what the first trigger should be, and whether trigger-driven repo mutation is ever allowed by default.
 - [ ] Build the harness for agent-driven acceptance workflows under `tests/acceptance/agent-workflows`.
 - [ ] Add first-class structured UI authoring for subgraphs and scoped `node[...]` / `edge[...]` defaults so these no longer require raw DOT editing.

@@ -885,6 +885,8 @@ ParallelHandler:
 
         -- 2. Determine join policy from node attributes
         join_policy = node.attrs.get("join_policy", "wait_all")
+        join_k = node.attrs.get("join_k")
+        join_quorum = node.attrs.get("join_quorum", 0.5)
         max_parallel = integer(node.attrs.get("max_parallel", "4"))
 
         -- 3. Execute branches concurrently with bounded parallelism
@@ -913,15 +915,32 @@ ParallelHandler:
             ELSE:
                 RETURN Outcome(status=FAIL)
 
+        IF join_policy == "k_of_n":
+            IF success_count >= join_k:
+                RETURN Outcome(status=SUCCESS)
+            ELSE:
+                RETURN Outcome(status=FAIL)
+
+        IF join_policy == "quorum":
+            required = ceil(count(results) * join_quorum)
+            IF success_count >= required:
+                RETURN Outcome(status=SUCCESS)
+            ELSE:
+                RETURN Outcome(status=FAIL)
+
         RETURN Outcome(status=SUCCESS)
 ```
 
 **Join policies:**
 
-| Policy           | Behavior |
-|------------------|----------|
-| `wait_all`       | All branches must complete. Join satisfied when all are done. |
-| `first_success`  | Join satisfied as soon as one branch succeeds. Others may be cancelled. |
+| Policy | Behavior |
+| --- | --- |
+| `wait_all` | All branches must complete. Join succeeds when no branch fails; failures produce `PARTIAL_SUCCESS`. |
+| `first_success` | Join succeeds as soon as one branch succeeds. Others may be cancelled. |
+| `k_of_n` | Join succeeds when at least `join_k` branches succeed. `join_k` is required, must be an integer `>= 1`, and must not exceed the outgoing branch count. |
+| `quorum` | Join succeeds when successful branches meet `ceil(branch_count * join_quorum)`. `join_quorum` is optional, defaults to `0.5`, and when present must be finite with `0 < value <= 1`. |
+
+Only the threshold attribute for the active policy is valid: non-`k_of_n` policies must not carry `join_k`, and non-`quorum` policies must not carry `join_quorum`.
 
 ### 4.9 Fan-In Handler
 
@@ -2267,6 +2286,11 @@ ASSERT "review" IN checkpoint.completed_nodes
 | `codergen.contract_repair_attempts` | Integer | contract-dependent | Codergen-only bounded same-thread repair budget for malformed response-contract output and structured write-contract violations. Defaults to `1` when `codergen.response_contract` is set, otherwise `0`. |
 | `auto_status`           | Boolean  | `false`       | Auto-generate SUCCESS if no status written |
 | `allow_partial`         | Boolean  | `false`       | Accept PARTIAL_SUCCESS on retry exhaustion |
+| `join_policy`           | String   | `"wait_all"`  | Parallel-node join rule: `wait_all`, `first_success`, `k_of_n`, or `quorum`. |
+| `join_k`                | Integer  | unset         | Required for `join_policy=k_of_n`; must be `>= 1` and no larger than the outgoing branch count. Invalid on other join policies. |
+| `join_quorum`           | Float    | `0.5`         | Optional for `join_policy=quorum`; must be finite with `0 < value <= 1`. Invalid on other join policies. |
+| `error_policy`          | String   | `"continue"`  | Parallel branch failure handling: `fail_fast`, `continue`, or `ignore`. |
+| `max_parallel`          | Integer  | `4`           | Max concurrent branches for parallel nodes. |
 | `tool.command`          | String   | `""`          | Shell command executed by tool nodes. Required when a node resolves to `tool`. |
 | `tool.hooks.pre`        | String   | inherited     | Node-level pre-hook override for tool nodes. |
 | `tool.hooks.post`       | String   | inherited     | Node-level post-hook override for tool nodes. |

@@ -96,6 +96,7 @@ export function NodeInspectorPanel({
     }, [])
     const selectedProfile = (selectedNode?.data?.llm_profile as string) || ''
     const selectedProvider = (selectedNode?.data?.llm_provider as string) || ''
+    const selectedJoinPolicy = (selectedNode?.data?.join_policy as string) || 'wait_all'
     return (
         <div className="flex-1 overflow-y-auto px-5 pb-5 pt-3">
             <InspectorScaffold
@@ -182,7 +183,7 @@ export function NodeInspectorPanel({
                                 <div className="space-y-1.5">
                                     <Label>Join Policy</Label>
                                     <NativeSelect
-                                        value={(selectedNode?.data?.join_policy as string) || 'wait_all'}
+                                        value={selectedJoinPolicy}
                                         onChange={(event) => onPropertyChange('join_policy', event.target.value)}
                                     >
                                         <option value="wait_all">Wait All</option>
@@ -191,6 +192,28 @@ export function NodeInspectorPanel({
                                         <option value="quorum">Quorum</option>
                                     </NativeSelect>
                                 </div>
+                                {selectedJoinPolicy === 'k_of_n' ? (
+                                    <div className="space-y-1.5">
+                                        <Label>K Threshold</Label>
+                                        <Input
+                                            data-testid="node-attr-input-join_k"
+                                            value={(selectedNode?.data?.join_k as number | string | undefined) ?? ''}
+                                            onChange={(event) => onPropertyChange('join_k', event.target.value)}
+                                            placeholder="2"
+                                        />
+                                    </div>
+                                ) : null}
+                                {selectedJoinPolicy === 'quorum' ? (
+                                    <div className="space-y-1.5">
+                                        <Label>Quorum Threshold</Label>
+                                        <Input
+                                            data-testid="node-attr-input-join_quorum"
+                                            value={(selectedNode?.data?.join_quorum as number | string | undefined) ?? ''}
+                                            onChange={(event) => onPropertyChange('join_quorum', event.target.value)}
+                                            placeholder="0.5"
+                                        />
+                                    </div>
+                                ) : null}
                                 <div className="space-y-1.5">
                                     <Label>Error Policy</Label>
                                     <NativeSelect
@@ -562,6 +585,8 @@ export function NodeInspectorPanel({
                                 'tool.artifacts.stdout',
                                 'tool.artifacts.stderr',
                                 'join_policy',
+                                'join_k',
+                                'join_quorum',
                                 'error_policy',
                                 'max_parallel',
                                 'type',

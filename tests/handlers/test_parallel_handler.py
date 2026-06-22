@@ -296,6 +296,54 @@ class TestParallelHandler:
         assert outcome.failure_reason == "unsupported error_policy: not_a_policy"
 
     @pytest.mark.parametrize(
+        ("fan_attrs", "expected_reason"),
+        [
+            ("join_policy=k_of_n", "join_k is required and must be an integer >= 1"),
+            ("join_policy=k_of_n, join_k=0", "join_k is required and must be an integer >= 1"),
+            ("join_policy=k_of_n, join_k=4", "join_k must be <= outgoing branch count (3)"),
+            ("join_policy=quorum, join_quorum=0", "join_quorum must be finite and > 0 and <= 1"),
+            ("join_policy=wait_all, join_k=1", "join_k is only supported when join_policy is k_of_n"),
+            ("join_policy=first_success, join_quorum=0.5", "join_quorum is only supported when join_policy is quorum"),
+        ],
+    )
+    def test_parallel_handler_rejects_invalid_join_threshold_config(
+        self,
+        fan_attrs: str,
+        expected_reason: str,
+    ):
+        graph = parse_dot(
+            f"""
+            digraph G {{
+                fan [shape=component, {fan_attrs}]
+                a [shape=box, type="custom.success"]
+                b [shape=box, type="custom.success"]
+                c [shape=box, type="custom.success"]
+                stop_a [shape=tripleoctagon]
+                stop_b [shape=tripleoctagon]
+                stop_c [shape=tripleoctagon]
+
+                fan -> a
+                fan -> b
+                fan -> c
+                a -> stop_a [condition="outcome=success"]
+                b -> stop_b [condition="outcome=success"]
+                c -> stop_c [condition="outcome=success"]
+            }}
+            """
+        )
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            extra_handlers={"custom.success": _AlwaysSuccessHandler()},
+        )
+        runner = HandlerRunner(graph, registry)
+
+        outcome = runner("fan", "", Context())
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == expected_reason
+        assert outcome.context_updates == {}
+
+    @pytest.mark.parametrize(
         ("error_policy", "expected_status", "expected_result_count", "expected_failures"),
         [
             ("continue", OutcomeStatus.PARTIAL_SUCCESS, 3, 1),

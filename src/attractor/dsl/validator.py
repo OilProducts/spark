@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Dict, Iterable, List, Protocol, Set
 
@@ -40,6 +41,7 @@ _LEGACY_TOOL_ATTR_MESSAGES = {
     "tool_hooks.pre": "legacy tool attr 'tool_hooks.pre' is not supported; use 'tool.hooks.pre'",
     "tool_hooks.post": "legacy tool attr 'tool_hooks.post' is not supported; use 'tool.hooks.post'",
 }
+_SUPPORTED_PARALLEL_JOIN_POLICIES = {"wait_all", "first_success", "k_of_n", "quorum"}
 _PROTECTED_EXECUTION_CONTEXT_PREFIX = "_attractor.runtime.execution_"
 _SHAPE_TO_HANDLER_TYPE = {
     "Mdiamond": "start",
@@ -242,6 +244,7 @@ def validate_graph(graph: DotGraph) -> List[Diagnostic]:
     diagnostics.extend(_validate_prompt_on_llm_nodes(graph))
     diagnostics.extend(_validate_stylesheet(graph))
     diagnostics.extend(_validate_tool_handler_attrs(graph))
+    diagnostics.extend(_validate_parallel_join_attrs(graph, out_degree))
     diagnostics.extend(_validate_execution_context_write_authority(graph))
 
     return diagnostics
@@ -722,6 +725,137 @@ def _validate_tool_handler_attrs(graph: DotGraph) -> List[Diagnostic]:
         )
 
     return diagnostics
+
+
+def _validate_parallel_join_attrs(graph: DotGraph, out_degree: Dict[str, int]) -> List[Diagnostic]:
+    diagnostics: List[Diagnostic] = []
+
+    for node in graph.nodes.values():
+        if _resolves_to_handler_type(node) != "parallel":
+            continue
+
+        join_policy_attr = node.attrs.get("join_policy")
+        join_policy = str(join_policy_attr.value).strip() if join_policy_attr else "wait_all"
+        if join_policy not in _SUPPORTED_PARALLEL_JOIN_POLICIES:
+            diagnostics.append(
+                Diagnostic(
+                    rule_id="parallel_join_policy",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=(
+                        f"node '{node.node_id}' join_policy must be one of: "
+                        "wait_all, first_success, k_of_n, quorum"
+                    ),
+                    line=join_policy_attr.line if join_policy_attr else node.line,
+                    node_id=node.node_id,
+                )
+            )
+            continue
+
+        join_k_attr = node.attrs.get("join_k")
+        join_quorum_attr = node.attrs.get("join_quorum")
+
+        if join_policy != "k_of_n" and join_k_attr is not None:
+            diagnostics.append(
+                Diagnostic(
+                    rule_id="parallel_join_threshold",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"node '{node.node_id}' join_k is only valid when join_policy is k_of_n",
+                    line=join_k_attr.line,
+                    node_id=node.node_id,
+                )
+            )
+
+        if join_policy != "quorum" and join_quorum_attr is not None:
+            diagnostics.append(
+                Diagnostic(
+                    rule_id="parallel_join_threshold",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"node '{node.node_id}' join_quorum is only valid when join_policy is quorum",
+                    line=join_quorum_attr.line,
+                    node_id=node.node_id,
+                )
+            )
+
+        if join_policy == "k_of_n":
+            branch_count = out_degree.get(node.node_id, 0)
+            join_k = _strict_positive_int_attr(join_k_attr)
+            if join_k is None:
+                diagnostics.append(
+                    Diagnostic(
+                        rule_id="parallel_join_threshold",
+                        severity=DiagnosticSeverity.ERROR,
+                        message=f"node '{node.node_id}' join_k is required and must be an integer >= 1",
+                        line=(
+                            join_k_attr.line
+                            if join_k_attr
+                            else (join_policy_attr.line if join_policy_attr else node.line)
+                        ),
+                        node_id=node.node_id,
+                    )
+                )
+            elif join_k > branch_count:
+                diagnostics.append(
+                    Diagnostic(
+                        rule_id="parallel_join_threshold",
+                        severity=DiagnosticSeverity.ERROR,
+                        message=(
+                            f"node '{node.node_id}' join_k must be <= outgoing branch count "
+                            f"({branch_count})"
+                        ),
+                        line=join_k_attr.line,
+                        node_id=node.node_id,
+                    )
+                )
+
+        if join_policy == "quorum" and join_quorum_attr is not None:
+            join_quorum = _strict_float_attr(join_quorum_attr)
+            if join_quorum is None or not math.isfinite(join_quorum) or join_quorum <= 0 or join_quorum > 1:
+                diagnostics.append(
+                    Diagnostic(
+                        rule_id="parallel_join_threshold",
+                        severity=DiagnosticSeverity.ERROR,
+                        message=f"node '{node.node_id}' join_quorum must be finite and > 0 and <= 1",
+                        line=join_quorum_attr.line,
+                        node_id=node.node_id,
+                    )
+                )
+
+    return diagnostics
+
+
+def _strict_positive_int_attr(attr) -> int | None:
+    if attr is None:
+        return None
+    value = getattr(attr, "value", None)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not re.fullmatch(r"[+-]?\d+", stripped):
+            return None
+        parsed = int(stripped)
+    else:
+        return None
+    return parsed if parsed >= 1 else None
+
+
+def _strict_float_attr(attr) -> float | None:
+    value = getattr(attr, "value", None)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped == "":
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
 
 
 def _validate_execution_context_write_authority(graph: DotGraph) -> List[Diagnostic]:

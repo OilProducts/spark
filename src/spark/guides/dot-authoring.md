@@ -227,8 +227,12 @@ Artifact capture rules:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `join_policy` | string | Join rule for branch completion. Documented values: `wait_all`, `first_success`. |
+| `join_policy` | string | Join rule for branch completion. Supported values: `wait_all`, `first_success`, `k_of_n`, `quorum`. |
+| `join_k` | integer | Required when `join_policy=k_of_n`; must be `>= 1` and no larger than the outgoing branch count. |
+| `join_quorum` | number | Optional when `join_policy=quorum`; defaults to `0.5` and must be finite with `0 < value <= 1`. |
 | `max_parallel` | integer | Max concurrent branches. |
+
+Only the threshold attr for the active `join_policy` is valid. Do not keep `join_k` on non-`k_of_n` nodes or `join_quorum` on non-`quorum` nodes.
 
 `error_policy` exists in the current implementation but is not part of the supported packaged authoring contract, so do not rely on it in authored flows unless it is added here later.
 

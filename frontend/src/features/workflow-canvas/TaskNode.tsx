@@ -144,6 +144,10 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         (data['tool.artifacts.stderr'] as string) || '',
     )
     const [draftJoinPolicy, setDraftJoinPolicy] = useState<string>((data.join_policy as string) || 'wait_all')
+    const [draftJoinK, setDraftJoinK] = useState<string>(data.join_k !== undefined ? String(data.join_k) : '')
+    const [draftJoinQuorum, setDraftJoinQuorum] = useState<string>(
+        data.join_quorum !== undefined ? String(data.join_quorum) : '',
+    )
     const [draftErrorPolicy, setDraftErrorPolicy] = useState<string>((data.error_policy as string) || 'continue')
     const [draftMaxParallel, setDraftMaxParallel] = useState<string>(
         data.max_parallel !== undefined ? String(data.max_parallel) : '4',
@@ -239,7 +243,14 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                 if (node.id !== id) {
                     return node
                 }
-                const mergedData = { ...node.data, ...nextData }
+                const mergedData = { ...node.data }
+                Object.entries(nextData).forEach(([key, value]) => {
+                    if (value === undefined) {
+                        delete mergedData[key]
+                        return
+                    }
+                    mergedData[key] = value
+                })
                 const nextShape = normalizeWorkflowNodeShape((mergedData.shape as string) || defaultShape)
                 return {
                     ...node,
@@ -303,6 +314,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setDraftToolArtifactsStdout((data['tool.artifacts.stdout'] as string) || '')
         setDraftToolArtifactsStderr((data['tool.artifacts.stderr'] as string) || '')
         setDraftJoinPolicy((data.join_policy as string) || 'wait_all')
+        setDraftJoinK(data.join_k !== undefined ? String(data.join_k) : '')
+        setDraftJoinQuorum(data.join_quorum !== undefined ? String(data.join_quorum) : '')
         setDraftErrorPolicy((data.error_policy as string) || 'continue')
         setDraftMaxParallel(data.max_parallel !== undefined ? String(data.max_parallel) : '4')
         setDraftType((data.type as string) || '')
@@ -332,6 +345,16 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setIsEditingDetails(false)
     }
 
+    const changeDraftJoinPolicy = (nextPolicy: string) => {
+        setDraftJoinPolicy(nextPolicy)
+        if (nextPolicy !== 'k_of_n') {
+            setDraftJoinK('')
+        }
+        if (nextPolicy !== 'quorum') {
+            setDraftJoinQuorum('')
+        }
+    }
+
     const saveDetails = () => {
         persistNodeData({
             shape: draftShape,
@@ -343,6 +366,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             'tool.artifacts.stdout': draftToolArtifactsStdout,
             'tool.artifacts.stderr': draftToolArtifactsStderr,
             join_policy: draftJoinPolicy,
+            join_k: draftJoinPolicy === 'k_of_n' ? draftJoinK : undefined,
+            join_quorum: draftJoinPolicy === 'quorum' ? draftJoinQuorum : undefined,
             error_policy: draftErrorPolicy,
             max_parallel: draftMaxParallel,
             type: draftType,
@@ -533,7 +558,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     <label className="text-xs font-medium text-foreground">Join Policy</label>
                                     <select
                                         value={draftJoinPolicy}
-                                        onChange={(event) => setDraftJoinPolicy(event.target.value)}
+                                        onChange={(event) => changeDraftJoinPolicy(event.target.value)}
                                         className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     >
                                         <option value="wait_all">Wait All</option>
@@ -542,6 +567,30 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                         <option value="quorum">Quorum</option>
                                     </select>
                                 </div>
+                                {draftJoinPolicy === 'k_of_n' && (
+                                    <div className="space-y-1">
+                                        <label className="text-xs font-medium text-foreground">K Threshold</label>
+                                        <input
+                                            data-testid="node-toolbar-attr-input-join_k"
+                                            value={draftJoinK}
+                                            onChange={(event) => setDraftJoinK(event.target.value)}
+                                            className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                            placeholder="2"
+                                        />
+                                    </div>
+                                )}
+                                {draftJoinPolicy === 'quorum' && (
+                                    <div className="space-y-1">
+                                        <label className="text-xs font-medium text-foreground">Quorum Threshold</label>
+                                        <input
+                                            data-testid="node-toolbar-attr-input-join_quorum"
+                                            value={draftJoinQuorum}
+                                            onChange={(event) => setDraftJoinQuorum(event.target.value)}
+                                            className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                            placeholder="0.5"
+                                        />
+                                    </div>
+                                )}
                                 <div className="space-y-1">
                                     <label className="text-xs font-medium text-foreground">Error Policy</label>
                                     <select
