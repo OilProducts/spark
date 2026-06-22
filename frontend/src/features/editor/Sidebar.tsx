@@ -76,7 +76,6 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'manager.max_cycles',
     'manager.stop_condition',
     'manager.actions',
-    'human.default_choice',
     'spark.reads_context',
     'spark.writes_context',
 ])
@@ -88,7 +87,7 @@ const CORE_EDGE_ATTR_KEYS = new Set<string>([
     'thread_id',
     'loop_restart',
 ])
-const EXCLUDED_NODE_EXTENSION_ATTR_KEYS = new Set<string>(['status'])
+const EXCLUDED_NODE_EXTENSION_ATTR_KEYS = new Set<string>(['status', 'human.default_choice'])
 
 function resolveInspectorScope({
     activeFlow,

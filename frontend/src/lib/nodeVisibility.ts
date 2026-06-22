@@ -28,7 +28,6 @@ export function getNodeFieldVisibility(handlerType: HandlerType) {
     const showToolCommand = handlerType === 'tool'
     const showParallelOptions = handlerType === 'parallel'
     const showManagerOptions = handlerType === 'stack.manager_loop'
-    const showHumanDefaultChoice = handlerType === 'wait.human'
     const showLlmSettings = handlerType === 'codergen' || handlerType === 'parallel.fan_in'
     const showTypeOverride = true
 
@@ -40,7 +39,6 @@ export function getNodeFieldVisibility(handlerType: HandlerType) {
         showToolCommand,
         showParallelOptions,
         showManagerOptions,
-        showHumanDefaultChoice,
         showTypeOverride,
         showAdvanced,
         showGeneralAdvanced,

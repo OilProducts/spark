@@ -34,7 +34,6 @@ def _generate_dot_with_all_handler_types() -> str:
                 "shape": "hexagon",
                 "type": "wait.human",
                 "prompt": "Approve release?",
-                "human.default_choice": "approve",
             },
         },
         {
@@ -135,7 +134,6 @@ def test_node_attributes_round_trip_across_all_handler_types_item_6_2_04() -> No
     assert nodes_by_id["code"]["prompt"] == "Implement feature"
     assert nodes_by_id["cond"]["prompt"] == "Route based on result"
     assert nodes_by_id["human"]["prompt"] == "Approve release?"
-    assert nodes_by_id["human"]["human.default_choice"] == "approve"
     assert nodes_by_id["tool"]["tool.command"] == "echo run tool"
     assert nodes_by_id["tool"]["tool.artifacts.paths"] == "dist/**,reports/*.json"
     assert nodes_by_id["tool"]["tool.artifacts.stdout"] == "stdout.txt"

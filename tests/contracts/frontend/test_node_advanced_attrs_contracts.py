@@ -70,6 +70,7 @@ def test_node_advanced_attr_controls_present_item_6_2_02() -> None:
 
 def test_node_advanced_attrs_round_trip_through_preview_item_6_2_02() -> None:
     flow = _generate_dot_with_advanced_node_attrs()
+    assert "human.default_choice" not in flow
     payload = preview_pipeline(flow)
     nodes = payload["graph"]["nodes"]
 
@@ -94,4 +95,4 @@ def test_node_advanced_attrs_round_trip_through_preview_item_6_2_02() -> None:
     assert task_node["allow_partial"] is True
     assert task_node["spark.reads_context"] == '["context.request.summary","context.review.required_changes"]'
     assert task_node["spark.writes_context"] == '["context.plan.summary"]'
-    assert gate_node["human.default_choice"] == "fix"
+    assert "human.default_choice" not in gate_node

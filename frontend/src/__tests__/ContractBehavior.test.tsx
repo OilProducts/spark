@@ -2363,7 +2363,7 @@ describe('Frontend contract behavior', () => {
     })
   })
 
-  it('[CID:6.2.02] renders advanced node controls for codergen and wait.human in sidebar inspector', async () => {
+  it('[CID:6.2.02] renders supported advanced node controls and omits wait.human defaults', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().setSelectedNodeId('task')
@@ -2405,7 +2405,7 @@ describe('Frontend contract behavior', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText('Human Default Choice')).toBeVisible()
+      expect(screen.queryByText('Human Default Choice')).not.toBeInTheDocument()
     })
   })
 
@@ -4070,7 +4070,7 @@ describe('Frontend contract behavior', () => {
     expect(thirdAudit).toHaveTextContent('Received:')
   })
 
-  it('[CID:10.3.02] renders timeout/default-applied/skipped provenance in run timeline summaries', async () => {
+  it('[CID:10.3.02] renders accepted and skipped human-gate provenance in run timeline summaries', async () => {
     const runId = 'run-contract-human-gate-provenance'
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
@@ -4151,16 +4151,6 @@ describe('Frontend contract behavior', () => {
           this.onopen?.(new Event('open'))
           this.onmessage?.(new MessageEvent('message', {
             data: JSON.stringify(stableTimelineEvent(1, {
-              type: 'InterviewTimeout',
-              stage: 'review_gate',
-              index: 2,
-              question: 'Select release path',
-              outcome_provenance: 'timeout_default_applied',
-              default_choice_label: 'Fix',
-            })),
-          }))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(2, {
               type: 'InterviewCompleted',
               stage: 'review_gate',
               index: 2,
@@ -4170,12 +4160,13 @@ describe('Frontend contract behavior', () => {
             })),
           }))
           this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(3, {
+            data: JSON.stringify(stableTimelineEvent(2, {
               type: 'InterviewCompleted',
               stage: 'release_gate',
               index: 3,
               question: 'Finalize deployment?',
               answer: 'skipped',
+              outcome_provenance: 'skipped',
             })),
           }))
         }, 0)
@@ -4213,18 +4204,15 @@ describe('Frontend contract behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
-        'Interview timed out for review_gate (default applied: Fix)',
+        'Interview completed for review_gate (accepted answer: Approve)',
       )
     })
-    expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
-      'Interview completed for review_gate (accepted answer: Approve)',
-    )
     expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
       'Interview completed for release_gate (skipped)',
     )
   })
 
-  it('[CID:10.3.03] falls back to timeout and explicit-answer branches when outcome provenance is omitted', async () => {
+  it('[CID:10.3.03] falls back to explicit-answer and skipped branches when outcome provenance is omitted', async () => {
     const runId = 'run-contract-human-gate-provenance-fallback'
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
@@ -4269,7 +4257,7 @@ describe('Frontend contract behavior', () => {
         if (url.endsWith(`${runApiPath}/context`)) {
           return jsonResponse({
             pipeline_id: runId,
-            context: { 'graph.goal': 'Human gate timeout fallback contract' },
+            context: { 'graph.goal': 'Human gate provenance fallback contract' },
           })
         }
         if (url.endsWith(`${runApiPath}/artifacts`)) {
@@ -4305,28 +4293,20 @@ describe('Frontend contract behavior', () => {
           this.onopen?.(new Event('open'))
           this.onmessage?.(new MessageEvent('message', {
             data: JSON.stringify(stableTimelineEvent(1, {
-              type: 'InterviewTimeout',
-              stage: 'review_gate',
-              index: 2,
-              question: 'Select release path',
-              default_choice_label: 'Fix',
-            })),
-          }))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(2, {
-              type: 'InterviewTimeout',
-              stage: 'approval_gate',
-              index: 3,
-              question: 'Finalize deployment?',
-            })),
-          }))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(3, {
               type: 'InterviewCompleted',
               stage: 'review_gate',
               index: 2,
               question: 'Select release path',
               answer: 'Approve',
+            })),
+          }))
+          this.onmessage?.(new MessageEvent('message', {
+            data: JSON.stringify(stableTimelineEvent(2, {
+              type: 'InterviewCompleted',
+              stage: 'approval_gate',
+              index: 3,
+              question: 'Finalize deployment?',
+              answer: 'skipped',
             })),
           }))
         }, 0)
@@ -4364,14 +4344,11 @@ describe('Frontend contract behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
-        'Interview timed out for review_gate (default applied: Fix)',
+        'Interview completed for review_gate (accepted answer: Approve)',
       )
     })
     expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
-      'Interview timed out for approval_gate (no default applied)',
-    )
-    expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
-      'Interview completed for review_gate (accepted answer: Approve)',
+      'Interview completed for approval_gate (skipped)',
     )
   })
 
@@ -4954,7 +4931,7 @@ digraph contract_behavior {
     })
   })
 
-  it('[CID:10.3.01] exposes human.default_choice authoring and timeout-default visibility in node inspector', async () => {
+  it('[CID:10.3.01] does not expose human.default_choice authoring in node inspector', async () => {
     act(() => {
       useStore.getState().setSelectedNodeId('gate')
       useStore.getState().setSelectedEdgeId(null)
@@ -4981,11 +4958,10 @@ digraph contract_behavior {
 
     renderSidebar(nodes, [])
 
-    const defaultChoiceInput = await screen.findByDisplayValue('fix')
-    expect(defaultChoiceInput).toBeVisible()
-    expect(defaultChoiceInput).toHaveAttribute('placeholder', 'target node id')
-    expect(defaultChoiceInput).toBeEnabled()
-    expect(screen.getByText('Used when this gate times out without an explicit answer.')).toBeVisible()
+    expect(screen.queryByText('Human Default Choice')).not.toBeInTheDocument()
+    expect(screen.queryByDisplayValue('fix')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('human-default-choice-timeout-guidance')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('node-extension-attrs-list')).not.toBeInTheDocument()
 
     act(() => {
       useStore.getState().setSelectedNodeId('task')
@@ -5000,7 +4976,7 @@ digraph contract_behavior {
     })
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('fix')).toBeVisible()
+      expect(screen.queryByDisplayValue('fix')).not.toBeInTheDocument()
     })
   })
 

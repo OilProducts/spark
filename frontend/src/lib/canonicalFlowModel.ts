@@ -65,6 +65,15 @@ const PREVIEW_NODE_META_KEYS = new Set<string>(['id'])
 const PREVIEW_EDGE_META_KEYS = new Set<string>(['from', 'to', 'source', 'target'])
 const EPHEMERAL_NODE_ATTR_KEYS = new Set<string>(['status'])
 const EPHEMERAL_EDGE_ATTR_KEYS = new Set<string>([EDGE_RENDER_ROUTE_KEY])
+const UNSUPPORTED_NODE_ATTR_KEYS = new Set<string>(['human.default_choice'])
+const PREVIEW_NODE_EXCLUDED_ATTR_KEYS = new Set<string>([
+    ...PREVIEW_NODE_META_KEYS,
+    ...UNSUPPORTED_NODE_ATTR_KEYS,
+])
+const EDITOR_NODE_EXCLUDED_ATTR_KEYS = new Set<string>([
+    ...EPHEMERAL_NODE_ATTR_KEYS,
+    ...UNSUPPORTED_NODE_ATTR_KEYS,
+])
 
 function isCanonicalAttrValue(value: unknown): value is CanonicalAttrValue {
     return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
@@ -104,7 +113,7 @@ function canonicalizeGraphAttrs(attrs: CanonicalAttrMap): CanonicalAttrMap {
 
 function cloneDefaultsScope(defaults?: Partial<CanonicalDefaultsScope>): CanonicalDefaultsScope {
     return {
-        node: cloneCanonicalAttrMap(defaults?.node),
+        node: cloneCanonicalAttrMap(defaults?.node, UNSUPPORTED_NODE_ATTR_KEYS),
         edge: cloneCanonicalAttrMap(defaults?.edge),
     }
 }
@@ -112,7 +121,7 @@ function cloneDefaultsScope(defaults?: Partial<CanonicalDefaultsScope>): Canonic
 function parseDefaultsScope(defaults: unknown): CanonicalDefaultsScope {
     const defaultsRecord = asRecord(defaults)
     return {
-        node: cloneCanonicalAttrMap(asRecord(defaultsRecord?.node)),
+        node: cloneCanonicalAttrMap(asRecord(defaultsRecord?.node), UNSUPPORTED_NODE_ATTR_KEYS),
         edge: cloneCanonicalAttrMap(asRecord(defaultsRecord?.edge)),
     }
 }
@@ -210,7 +219,7 @@ export function buildCanonicalFlowModelFromPreviewGraph(
         if (!nodeId) {
             return []
         }
-        const attrs = cloneCanonicalAttrMap(nodePayload, PREVIEW_NODE_META_KEYS)
+        const attrs = cloneCanonicalAttrMap(nodePayload, PREVIEW_NODE_EXCLUDED_ATTR_KEYS)
         if (attrs.label === nodeId && !nodeIdsWithExplicitLabels.has(nodeId)) {
             delete attrs.label
         }
@@ -259,7 +268,7 @@ export function buildCanonicalFlowModelFromEditorState(
     const nodes: CanonicalFlowNode[] = input.nodes.map((node) => {
         return {
             id: node.id,
-            attrs: cloneCanonicalAttrMap(asRecord(node.data), EPHEMERAL_NODE_ATTR_KEYS),
+            attrs: cloneCanonicalAttrMap(asRecord(node.data), EDITOR_NODE_EXCLUDED_ATTR_KEYS),
         }
     })
 
@@ -421,9 +430,12 @@ const KNOWN_NODE_ATTR_KEYS = new Set<string>([
     'manager.max_cycles',
     'manager.stop_condition',
     'manager.actions',
-    'human.default_choice',
     'spark.reads_context',
     'spark.writes_context',
+])
+const SERIALIZED_NODE_EXCLUDED_ATTR_KEYS = new Set<string>([
+    ...KNOWN_NODE_ATTR_KEYS,
+    ...UNSUPPORTED_NODE_ATTR_KEYS,
 ])
 
 const KNOWN_EDGE_ATTR_KEYS = new Set<string>([
@@ -566,7 +578,6 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         const managerMaxCyclesValue = readStringOrNumberAttr(attrs, 'manager.max_cycles')
         const managerStopConditionValue = readStringAttr(attrs, 'manager.stop_condition')
         const managerActionsValue = readStringAttr(attrs, 'manager.actions')
-        const humanDefaultChoiceValue = readStringAttr(attrs, 'human.default_choice')
         const readsContextValue = readStringAttr(attrs, 'spark.reads_context')
         const writesContextValue = readStringAttr(attrs, 'spark.writes_context')
 
@@ -625,10 +636,9 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
             formatIntAttr('manager.max_cycles', managerMaxCyclesValue),
             managerStopConditionValue ? `manager.stop_condition="${escapeDotString(managerStopConditionValue)}"` : '',
             managerActionsValue ? `manager.actions="${escapeDotString(managerActionsValue)}"` : '',
-            humanDefaultChoiceValue ? `human.default_choice=${formatAttrValue(humanDefaultChoiceValue)}` : '',
             readsContextValue ? `spark.reads_context="${escapeDotString(readsContextValue)}"` : '',
             writesContextValue ? `spark.writes_context="${escapeDotString(writesContextValue)}"` : '',
-            ...formatCanonicalAttrEntries(attrs, KNOWN_NODE_ATTR_KEYS),
+            ...formatCanonicalAttrEntries(attrs, SERIALIZED_NODE_EXCLUDED_ATTR_KEYS),
         ].filter(Boolean).join(', ')
 
         dot += `  ${node.id} [${nodeAttrs}];\n`

@@ -2542,7 +2542,6 @@ describe('App shell behavior', () => {
                   'manager.max_cycles': null,
                   'manager.stop_condition': null,
                   'manager.actions': null,
-                  'human.default_choice': null,
                 },
                 {
                   id: 'plan',
@@ -2576,7 +2575,6 @@ describe('App shell behavior', () => {
                   'manager.max_cycles': null,
                   'manager.stop_condition': null,
                   'manager.actions': null,
-                  'human.default_choice': null,
                 },
                 {
                   id: 'done',
@@ -2610,7 +2608,6 @@ describe('App shell behavior', () => {
                   'manager.max_cycles': null,
                   'manager.stop_condition': null,
                   'manager.actions': null,
-                  'human.default_choice': null,
                 },
               ],
               edges: [

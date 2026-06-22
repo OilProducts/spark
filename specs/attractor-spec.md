@@ -822,21 +822,14 @@ WaitForHumanHandler:
         -- 3. Present to interviewer and wait for answer
         answer = interviewer.ask(question)
 
-        -- 4. Handle timeout/skip
-        IF answer is TIMEOUT:
-            default_choice = node.attrs["human.default_choice"]
-            IF default_choice exists:
-                -- Use default
-            ELSE:
-                RETURN Outcome(status=RETRY, failure_reason="human gate timeout, no default")
-
+        -- 4. Handle skipped or empty answers
         IF answer is SKIPPED:
             RETURN Outcome(status=FAIL, failure_reason="human skipped interaction")
 
         -- 5. Find matching choice
         selected = find_choice_matching(answer, choices)
         IF selected is NONE:
-            selected = choices[0]  -- fallback to first
+            RETURN Outcome(status=FAIL, failure_reason="human skipped interaction")
 
         -- 6. Record in context and return
         RETURN Outcome(
@@ -1455,8 +1448,6 @@ Question:
     text            : String              -- the question to present to the human
     type            : QuestionType        -- determines the UI and valid answers
     options         : List<Option>        -- for MULTIPLE_CHOICE type
-    default         : Answer or NONE      -- default if timeout/skip
-    timeout_seconds : Float or NONE       -- max wait time
     stage           : String              -- originating stage name (for display)
     metadata        : Map<String, Any>    -- arbitrary key-value pairs
 
@@ -1483,7 +1474,6 @@ AnswerValue:
     YES       -- affirmative
     NO        -- negative
     SKIPPED   -- human skipped the question
-    TIMEOUT   -- no response within timeout
 ```
 
 ### 6.4 Built-In Interviewer Implementations
@@ -1500,7 +1490,7 @@ AutoApproveInterviewer:
         RETURN Answer(value="auto-approved", text="auto-approved")
 ```
 
-**ConsoleInterviewer (CLI):** Reads from standard input. Displays formatted prompts with option keys. Supports timeout via non-blocking read.
+**ConsoleInterviewer (CLI):** Reads from standard input. Displays formatted prompts with option keys.
 
 ```
 ConsoleInterviewer:
@@ -1554,15 +1544,11 @@ RecordingInterviewer:
         RETURN answer
 ```
 
-### 6.5 Timeout Handling
+### 6.5 Human Wait Semantics
 
-If a human does not respond within the configured `timeout_seconds`:
+Interviewer requests wait indefinitely until an explicit answer is supplied or the interaction is skipped by the active interviewer implementation.
 
-1. If the question has a `default` answer, use it.
-2. If no default, return `Answer(value=TIMEOUT)`.
-3. The handler decides how to handle a timeout (retry the question, fail, or proceed with assumptions).
-
-For `wait.human` nodes, the node attribute `human.default_choice` specifies which edge target to select on timeout.
+For `wait.human` nodes, only an answer that matches one of the outgoing edge choices selects a route. A skipped, empty, or unmatched answer fails the node as `human skipped interaction`.
 
 ---
 
@@ -1887,7 +1873,6 @@ The engine emits typed events during execution for UI, logging, and metrics inte
 **Human interaction events:**
 - `InterviewStarted(question, stage)` -- question presented
 - `InterviewCompleted(question, answer, duration)` -- answer received
-- `InterviewTimeout(question, stage, duration)` -- timeout reached
 
 **Checkpoint events:**
 - `CheckpointSaved(current_node, completed_nodes)` -- checkpoint written. `current_node` is the current/resumable node stored in the checkpoint, and `completed_nodes` is the ordered completed-node list stored alongside it.

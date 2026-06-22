@@ -1,82 +1,77 @@
 from __future__ import annotations
 
+import queue
+import threading
+
 import attractor.api.server as server
-from attractor.interviewer import Answer, AnswerValue, Question, QuestionOption, QuestionType
+from attractor.interviewer import Question, QuestionOption, QuestionType
 
 
-class _TimedOutEvent:
-    def __init__(self) -> None:
-        self.timeout = None
-
-    def wait(self, timeout=None) -> bool:
-        self.timeout = timeout
-        return False
-
-    def set(self) -> None:
-        return None
-
-
-def test_human_gate_broker_applies_question_default_when_wait_times_out(monkeypatch):
-    created: dict[str, _TimedOutEvent] = {}
-
-    def _event_factory() -> _TimedOutEvent:
-        event = _TimedOutEvent()
-        created["event"] = event
-        return event
-
-    monkeypatch.setattr(server.threading, "Event", _event_factory)
-
-    broker = server.HumanGateBroker()
-    default_answer = Answer(selected_values=["fix"])
-    question = Question(
-        text="Choose an option",
-        type=QuestionType.MULTIPLE_CHOICE,
-        options=[QuestionOption(label="Fix", value="fix", key="F")],
-        default=default_answer,
-        timeout_seconds=0.25,
-        stage="gate",
-    )
-
-    answer = broker.request(
-        question=question,
-        run_id="run-1",
-        node_id="gate",
-        flow_name="flow",
-        emit=lambda _event: None,
-    )
-
-    assert answer.selected_values == ["fix"]
-    assert answer.value == "fix"
-    assert created["event"].timeout == 0.25
-
-
-def test_human_gate_broker_returns_timeout_when_wait_times_out_without_default(monkeypatch):
-    created: dict[str, _TimedOutEvent] = {}
-
-    def _event_factory() -> _TimedOutEvent:
-        event = _TimedOutEvent()
-        created["event"] = event
-        return event
-
-    monkeypatch.setattr(server.threading, "Event", _event_factory)
-
+def test_human_gate_broker_waits_for_explicit_answer() -> None:
     broker = server.HumanGateBroker()
     question = Question(
         text="Choose an option",
         type=QuestionType.MULTIPLE_CHOICE,
         options=[QuestionOption(label="Fix", value="fix", key="F")],
-        timeout_seconds=0.5,
         stage="gate",
     )
+    emitted_events: queue.Queue[dict] = queue.Queue()
+    answers: queue.Queue[list[str]] = queue.Queue()
 
-    answer = broker.request(
-        question=question,
-        run_id="run-1",
-        node_id="gate",
-        flow_name="flow",
-        emit=lambda _event: None,
+    def _request_gate() -> None:
+        answer = broker.request(
+            question=question,
+            run_id="run-1",
+            node_id="gate",
+            flow_name="flow",
+            emit=emitted_events.put,
+        )
+        answers.put(answer.selected_values)
+
+    request_thread = threading.Thread(target=_request_gate)
+    request_thread.start()
+
+    gate_event = _next_event(emitted_events, "human_gate")
+    assert gate_event["prompt"] == "Choose an option"
+    assert gate_event["options"] == [{"label": "Fix", "value": "fix"}]
+    assert broker.answer("run-1", str(gate_event["question_id"]), "fix") is True
+
+    request_thread.join(timeout=1)
+    assert request_thread.is_alive() is False
+    assert answers.get_nowait() == ["fix"]
+
+
+def test_human_gate_broker_rejects_answers_for_wrong_run() -> None:
+    broker = server.HumanGateBroker()
+    question = Question(
+        text="Choose an option",
+        type=QuestionType.MULTIPLE_CHOICE,
+        options=[QuestionOption(label="Fix", value="fix", key="F")],
+        stage="gate",
     )
+    emitted_events: queue.Queue[dict] = queue.Queue()
 
-    assert answer.value == AnswerValue.TIMEOUT.value
-    assert answer.selected_values == [AnswerValue.TIMEOUT.value]
-    assert created["event"].timeout == 0.5
+    request_thread = threading.Thread(
+        target=lambda: broker.request(
+            question=question,
+            run_id="run-1",
+            node_id="gate",
+            flow_name="flow",
+            emit=emitted_events.put,
+        ),
+    )
+    request_thread.start()
+
+    gate_event = _next_event(emitted_events, "human_gate")
+    assert broker.answer("other-run", str(gate_event["question_id"]), "fix") is False
+    assert broker.answer("run-1", str(gate_event["question_id"]), "fix") is True
+
+    request_thread.join(timeout=1)
+    assert request_thread.is_alive() is False
+
+
+def _next_event(events: queue.Queue[dict], event_type: str) -> dict:
+    while True:
+        event = events.get(timeout=1)
+        if event.get("type") == event_type:
+            return event

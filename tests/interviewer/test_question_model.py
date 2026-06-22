@@ -1,16 +1,13 @@
 from attractor.interviewer import Answer, AnswerValue, Question, QuestionOption, QuestionType
 
 
-def test_question_supports_full_payload_fields():
-    default_answer = Answer(text="fallback")
+def test_question_supports_payload_fields():
     options = [QuestionOption(label="Proceed", value="proceed", key="P")]
 
     question = Question(
         text="Proceed with deployment?",
         type=QuestionType.MULTIPLE_CHOICE,
         options=options,
-        default=default_answer,
-        timeout_seconds=30.0,
         stage="approval_review",
         metadata={"ticket": "ABC-123"},
     )
@@ -18,8 +15,6 @@ def test_question_supports_full_payload_fields():
     assert question.text == "Proceed with deployment?"
     assert question.type == QuestionType.MULTIPLE_CHOICE
     assert question.options == options
-    assert question.default == default_answer
-    assert question.timeout_seconds == 30.0
     assert question.stage == "approval_review"
     assert question.metadata == {"ticket": "ABC-123"}
 
@@ -112,4 +107,3 @@ def test_answer_supports_spec_answer_values():
     assert Answer(value=AnswerValue.YES).value == "YES"
     assert Answer(value=AnswerValue.NO).value == "NO"
     assert Answer(value=AnswerValue.SKIPPED).value == "SKIPPED"
-    assert Answer(value=AnswerValue.TIMEOUT).value == "TIMEOUT"

@@ -27,15 +27,15 @@ def test_supported_human_gate_question_types_have_contract_coverage_item_10_2_04
     assert_frontend_behavior_contract_passed("10.2.04")
 
 
-def test_human_default_choice_is_authorable_and_visible_in_node_inspector_item_10_3_01() -> None:
+def test_human_default_choice_is_not_authorable_or_visible_in_node_inspector_item_10_3_01() -> None:
     assert_frontend_behavior_contract_passed("10.3.01")
 
 
-def test_run_timeline_displays_human_gate_timeout_default_and_skip_provenance_item_10_3_02() -> None:
+def test_run_timeline_displays_human_gate_accepted_and_skip_provenance_item_10_3_02() -> None:
     assert_frontend_behavior_contract_passed("10.3.02")
 
 
-def test_run_timeline_supports_timeout_fallback_and_explicit_answer_branches_item_10_3_03() -> None:
+def test_run_timeline_supports_explicit_answer_and_skip_fallback_branches_item_10_3_03() -> None:
     assert_frontend_behavior_contract_passed("10.3.03")
 
 

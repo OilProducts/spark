@@ -166,11 +166,9 @@ function buildHydratedNode(
             ? node.attrs['manager.stop_condition']
             : '',
         'manager.actions': typeof node.attrs['manager.actions'] === 'string' ? node.attrs['manager.actions'] : '',
-        'human.default_choice': typeof node.attrs['human.default_choice'] === 'string'
-            ? node.attrs['human.default_choice']
-            : '',
         status: 'idle',
     }
+    delete nodeData['human.default_choice']
 
     const nextNode: Node = {
         id: node.id,

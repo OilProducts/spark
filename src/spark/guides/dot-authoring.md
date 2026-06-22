@@ -238,9 +238,7 @@ Only the threshold attr for the active `join_policy` is valid. Do not keep `join
 
 ### `wait.human`
 
-| Key | Type | Meaning |
-| --- | --- | --- |
-| `human.default_choice` | string | Default selected choice on timeout. |
+`wait.human` choices are derived from outgoing edges. No node attributes are currently supported for timeout or default-choice routing.
 
 ### `stack.manager_loop`
 

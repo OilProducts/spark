@@ -16,7 +16,6 @@ class AnswerValue(str, Enum):
     YES = "YES"
     NO = "NO"
     SKIPPED = "SKIPPED"
-    TIMEOUT = "TIMEOUT"
 
 
 @dataclass
@@ -31,8 +30,6 @@ class Question:
     text: str
     type: QuestionType
     options: List[QuestionOption]
-    default: Answer | None
-    timeout_seconds: float | None
     stage: str
     metadata: dict[str, Any]
 
@@ -41,8 +38,6 @@ class Question:
         text: str | None = None,
         type: QuestionType | None = None,
         options: List[QuestionOption] | None = None,
-        default: Answer | None = None,
-        timeout_seconds: float | None = None,
         stage: str = "",
         metadata: dict[str, Any] | None = None,
     ):
@@ -56,8 +51,6 @@ class Question:
         self.text = text or ""
         self.type = resolved_type
         self.options = resolved_options
-        self.default = default
-        self.timeout_seconds = timeout_seconds
         self.stage = stage
         self.metadata = dict(metadata) if metadata else {}
 

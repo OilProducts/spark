@@ -802,7 +802,7 @@ def _journal_severity(raw_type: str, payload: dict[str, Any]) -> str:
         return "info"
     if raw_type in {"PipelineFailed", "StageFailed"}:
         return "error"
-    if raw_type in {"StageRetrying", "InterviewTimeout"}:
+    if raw_type == "StageRetrying":
         return "warning"
     if raw_type == "PipelineCompleted" and payload.get("outcome") == "failure":
         return "warning"
@@ -817,27 +817,14 @@ def _journal_severity(raw_type: str, payload: dict[str, Any]) -> str:
 
 def _interview_outcome_provenance(raw_type: str, payload: dict[str, Any]) -> Optional[str]:
     raw_provenance = _as_trimmed_string(payload.get("outcome_provenance")) or _as_trimmed_string(payload.get("provenance"))
-    if raw_provenance in {"accepted", "skipped", "timeout_default_applied", "timeout_no_default"}:
+    if raw_provenance in {"accepted", "skipped"}:
         return raw_provenance
     if raw_type == "InterviewCompleted":
         answer = _as_trimmed_string(payload.get("answer"))
         if not answer:
             return None
         return "skipped" if answer.lower() == "skipped" else "accepted"
-    if raw_type == "InterviewTimeout":
-        default_choice = (
-            _as_trimmed_string(payload.get("default_choice_label"))
-            or _as_trimmed_string(payload.get("default_choice_target"))
-        )
-        return "timeout_default_applied" if default_choice else "timeout_no_default"
     return None
-
-
-def _interview_default_choice_label(payload: dict[str, Any]) -> Optional[str]:
-    return (
-        _as_trimmed_string(payload.get("default_choice_label"))
-        or _as_trimmed_string(payload.get("default_choice_target"))
-    )
 
 
 def _journal_summary(
@@ -995,18 +982,6 @@ def _journal_summary(
             if answer
             else f"{source_prefix}Interview completed for {node_id or 'human gate'}"
         )
-    if raw_type == "InterviewTimeout":
-        provenance = _interview_outcome_provenance(raw_type, payload)
-        if provenance == "timeout_default_applied":
-            default_choice = _interview_default_choice_label(payload)
-            return (
-                f"{source_prefix}Interview timed out for {node_id or 'human gate'} (default applied: {default_choice})"
-                if default_choice
-                else f"{source_prefix}Interview timed out for {node_id or 'human gate'} (default applied)"
-            )
-        if provenance == "timeout_no_default":
-            return f"{source_prefix}Interview timed out for {node_id or 'human gate'} (no default applied)"
-        return f"{source_prefix}Interview timed out for {node_id or 'human gate'}"
     if raw_type == "human_gate":
         prompt = _as_trimmed_string(payload.get("prompt"))
         return (
@@ -1996,9 +1971,10 @@ def _build_child_preview_payload(
 def _graph_payload(graph, *, child_previews: dict[str, dict] | None = None) -> dict:
     canonical_graph = copy.deepcopy(graph)
     canonical_graph_attrs = canonical_graph.graph_attrs
+    unsupported_attr_keys = {"human.default_choice"}
 
     def _all_attrs_payload(attrs: Dict[str, object]) -> Dict[str, object]:
-        return {key: _dot_attr_value(attrs, key) for key in attrs}
+        return {key: _dot_attr_value(attrs, key) for key in attrs if key not in unsupported_attr_keys}
 
     def _merge_extension_attrs(payload: Dict[str, object], attrs: Dict[str, object]) -> Dict[str, object]:
         merged = dict(payload)
@@ -2059,7 +2035,6 @@ def _graph_payload(graph, *, child_previews: dict[str, dict] | None = None) -> d
                 "manager.max_cycles": _dot_attr_value(n.attrs, "manager.max_cycles"),
                 "manager.stop_condition": _dot_attr_value(n.attrs, "manager.stop_condition"),
                 "manager.actions": _dot_attr_value(n.attrs, "manager.actions"),
-                "human.default_choice": _dot_attr_value(n.attrs, "human.default_choice"),
             }, n.attrs)
             for n in graph.nodes.values()
         ],

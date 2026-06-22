@@ -2,7 +2,7 @@
 
 - [x] Normalize checkpoint semantics so `current_node` has one stable meaning in both persistence and resume logic, and update the Attractor spec accordingly.
 - [x] Mirror the documented `graph.*` context namespace in the engine itself instead of only seeding it through the API bootstrap path.
-- [ ] Complete `wait.human` timeout/default wiring by setting `Question.default` / `Question.timeout_seconds` where the interviewer contract expects them, or narrow the Attractor spec to the implemented behavior.
+- [x] Remove `wait.human` timeout/default routing and narrow the Attractor spec to explicit human selection.
 - [ ] Complete `stack.manager_loop` telemetry ingestion beyond the current runtime context snapshot.
 - [x] Narrow the `stack.manager_loop` automatic steering contract: observe progress telemetry without treating it as a stall heuristic, auto-steer only from child failure context, and cap repeated automatic steering for the same child run, target node, and failure reason within one manager invocation.
 - [ ] Expose the full implemented manager-loop authoring surface in the UI and preview payload, including at least `manager.steer_cooldown` and `stack.child_autostart`, which the runtime already honors but the current editor does not treat as first-class fields.

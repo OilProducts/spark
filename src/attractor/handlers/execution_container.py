@@ -212,7 +212,7 @@ class DockerContainerTransport:
                         if callbacks.emit_event is not None:
                             callbacks.emit_event(event_type, dict(event_payload))
                     elif kind == "human_gate_request":
-                        answer = callbacks.ask_human(payload) if callbacks.ask_human is not None else {"value": "TIMEOUT"}
+                        answer = callbacks.ask_human(payload) if callbacks.ask_human is not None else {"value": "SKIPPED"}
                         self._write_proc_payload(proc, {"type": "human_gate_answer", "answer": answer})
                     elif kind == "child_run_request":
                         response = callbacks.launch_child(payload) if callbacks.launch_child is not None else {
@@ -490,7 +490,7 @@ class ContainerizedHandlerRunner:
 
     def _ask_human(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.interviewer is None:
-            return {"value": "TIMEOUT", "selected_values": []}
+            return {"value": "SKIPPED", "selected_values": []}
         question_payload = payload.get("question") if isinstance(payload.get("question"), dict) else {}
         return answer_to_payload(self.interviewer.ask(question_from_payload(question_payload)))
 
@@ -919,7 +919,6 @@ def question_to_payload(question: Question) -> dict[str, Any]:
             {"label": option.label, "value": option.value, "key": option.key}
             for option in question.options
         ],
-        "timeout_seconds": question.timeout_seconds,
         "stage": question.stage,
         "metadata": dict(question.metadata),
     }
@@ -938,11 +937,6 @@ def question_from_payload(payload: dict[str, Any]) -> Question:
             for option in payload.get("options") or []
             if isinstance(option, dict)
         ],
-        timeout_seconds=(
-            float(payload["timeout_seconds"])
-            if payload.get("timeout_seconds") is not None
-            else None
-        ),
         stage=str(payload.get("stage") or ""),
         metadata=dict(payload.get("metadata") or {}),
     )

@@ -569,6 +569,8 @@ def test_worker_protocol_serializes_human_gate_request_and_reply(monkeypatch, ca
     assert emitted["type"] == "human_gate_request"
     assert emitted["question"]["text"] == "Continue?"
     assert emitted["question"]["stage"] == "gate"
+    assert "default" not in emitted["question"]
+    assert "timeout_seconds" not in emitted["question"]
     assert answer.value == "YES"
     assert answer.selected_values == ["YES"]
 

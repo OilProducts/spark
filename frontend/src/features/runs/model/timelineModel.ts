@@ -30,7 +30,6 @@ const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
     InterviewStarted: 'interview',
     InterviewInform: 'interview',
     InterviewCompleted: 'interview',
-    InterviewTimeout: 'interview',
     human_gate: 'interview',
     CheckpointSaved: 'checkpoint',
     log: 'log',
@@ -129,7 +128,7 @@ const timelineSeverityFromEvent = (type: string, payload: Record<string, unknown
     if (type === 'PipelineFailed' || type === 'StageFailed') {
         return 'error'
     }
-    if (type === 'StageRetrying' || type === 'InterviewTimeout') {
+    if (type === 'StageRetrying') {
         return 'warning'
     }
     return 'info'
@@ -142,7 +141,7 @@ const timelineSeverityFromJournalEntry = (value: unknown): TimelineSeverity => {
     return 'info'
 }
 
-type InterviewOutcomeProvenance = 'accepted' | 'skipped' | 'timeout_default_applied' | 'timeout_no_default' | null
+type InterviewOutcomeProvenance = 'accepted' | 'skipped' | null
 
 const asTrimmedString = (value: unknown): string | null => {
     if (typeof value !== 'string') {
@@ -161,8 +160,6 @@ const interviewOutcomeProvenanceFromPayload = (
     if (
         normalizedProvenance === 'accepted'
         || normalizedProvenance === 'skipped'
-        || normalizedProvenance === 'timeout_default_applied'
-        || normalizedProvenance === 'timeout_no_default'
     ) {
         return normalizedProvenance
     }
@@ -174,20 +171,8 @@ const interviewOutcomeProvenanceFromPayload = (
         }
         return answer.toLowerCase() === 'skipped' ? 'skipped' : 'accepted'
     }
-
-    if (type === 'InterviewTimeout') {
-        const defaultChoice = asTrimmedString(payload.default_choice_label)
-            ?? asTrimmedString(payload.default_choice_target)
-        return defaultChoice ? 'timeout_default_applied' : 'timeout_no_default'
-    }
-
     return null
 }
-
-const interviewDefaultChoiceLabelFromPayload = (payload: Record<string, unknown>): string | null => (
-    asTrimmedString(payload.default_choice_label)
-    ?? asTrimmedString(payload.default_choice_target)
-)
 
 const timelineSummaryFromEvent = (
     type: string,
@@ -303,19 +288,6 @@ const timelineSummaryFromEvent = (
         return answer
             ? `${sourcePrefix}Interview completed for ${nodeId || 'human gate'} (${answer})`
             : `${sourcePrefix}Interview completed for ${nodeId || 'human gate'}`
-    }
-    if (type === 'InterviewTimeout') {
-        const provenance = interviewOutcomeProvenanceFromPayload(type, payload)
-        if (provenance === 'timeout_default_applied') {
-            const defaultChoiceLabel = interviewDefaultChoiceLabelFromPayload(payload)
-            return defaultChoiceLabel
-                ? `${sourcePrefix}Interview timed out for ${nodeId || 'human gate'} (default applied: ${defaultChoiceLabel})`
-                : `${sourcePrefix}Interview timed out for ${nodeId || 'human gate'} (default applied)`
-        }
-        if (provenance === 'timeout_no_default') {
-            return `${sourcePrefix}Interview timed out for ${nodeId || 'human gate'} (no default applied)`
-        }
-        return `${sourcePrefix}Interview timed out for ${nodeId || 'human gate'}`
     }
     if (type === 'human_gate') {
         const prompt = typeof payload.prompt === 'string' && payload.prompt.trim().length > 0
@@ -710,7 +682,7 @@ const buildJournalPendingInterviewGates = (
         if (closedEntityKeys.has(entityKey)) {
             continue
         }
-        if (event.type === 'InterviewCompleted' || event.type === 'InterviewTimeout') {
+        if (event.type === 'InterviewCompleted') {
             closedEntityKeys.add(entityKey)
             continue
         }

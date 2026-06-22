@@ -353,7 +353,7 @@ def test_pipeline_journal_uses_checkpoint_current_node_semantics(tmp_path: Path)
     assert done_entry["payload"]["completed_nodes"] == ["start", "implement"]
 
 
-def test_pipeline_journal_paginates_older_entries_and_preserves_log_and_interview_provenance(
+def test_pipeline_journal_paginates_older_entries_and_preserves_log_and_interview_completion_provenance(
     tmp_path: Path,
 ) -> None:
     run_id = "run-journal-pagination"
@@ -374,13 +374,14 @@ def test_pipeline_journal_paginates_older_entries_and_preserves_log_and_intervie
                 "source_scope": "root",
             },
             {
-                "type": "InterviewTimeout",
+                "type": "InterviewCompleted",
                 "run_id": run_id,
                 "sequence": 2,
                 "emitted_at": "2026-04-06T12:00:01Z",
                 "stage": "review_gate",
                 "question_id": "question-1",
-                "default_choice_label": "Fix",
+                "answer": "skipped",
+                "outcome_provenance": "skipped",
                 "source_scope": "root",
             },
             {
@@ -414,7 +415,7 @@ def test_pipeline_journal_paginates_older_entries_and_preserves_log_and_intervie
     assert [entry["sequence"] for entry in older_page["entries"]] == [2, 1]
     assert older_page["has_older"] is False
     assert older_page["entries"][0]["question_id"] == "question-1"
-    assert older_page["entries"][0]["summary"] == "Interview timed out for review_gate (default applied: Fix)"
+    assert older_page["entries"][0]["summary"] == "Interview completed for review_gate (skipped)"
     assert older_page["entries"][1]["kind"] == "log"
     assert older_page["entries"][1]["severity"] == "warning"
     assert older_page["entries"][1]["summary"] == "warn: disk almost full"

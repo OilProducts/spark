@@ -74,8 +74,7 @@ digraph AdvancedRoundTrip {
     ]
     gate [
         shape=hexagon,
-        prompt="Choose path",
-        human.default_choice="fix"
+        prompt="Choose path"
     ]
     fix [shape=box, prompt="Fix issue"]
     done [shape=Msquare]

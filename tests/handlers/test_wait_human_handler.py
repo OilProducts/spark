@@ -162,90 +162,7 @@ class TestWaitHumanHandler:
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_reason == "human skipped interaction"
 
-    def test_wait_human_timeout_default_choice_requires_exact_target_match(self):
-        graph = parse_dot(
-            """
-            digraph G {
-                gate [shape=hexagon, prompt="Choose", human.default_choice="FIX"]
-                ship [shape=box]
-                fix [shape=box]
-                gate -> ship [label="Approve"]
-                gate -> fix [label="Fix"]
-            }
-            """
-        )
-
-        registry = build_default_registry(
-            codergen_backend=_StubBackend(),
-            interviewer=QueueInterviewer([Answer(value="TIMEOUT")]),
-        )
-        runner = HandlerRunner(graph, registry)
-        outcome = runner("gate", "Choose", Context())
-
-        assert outcome.status == OutcomeStatus.RETRY
-        assert outcome.failure_reason == "human gate timeout, no default"
-
-    def test_wait_human_timeout_uses_human_default_choice_target(self):
-        graph = parse_dot(
-            """
-            digraph G {
-                gate [shape=hexagon, prompt="Choose", human.default_choice="fix"]
-                ship [shape=box]
-                fix [shape=box]
-                gate -> ship [label="Approve"]
-                gate -> fix [label="Fix"]
-            }
-            """
-        )
-
-        registry = build_default_registry(
-            codergen_backend=_StubBackend(),
-            interviewer=QueueInterviewer([Answer(value="TIMEOUT")]),
-        )
-        runner = HandlerRunner(graph, registry)
-        outcome = runner("gate", "Choose", Context())
-
-        assert outcome.status == OutcomeStatus.SUCCESS
-        assert outcome.preferred_label == "Fix"
-        assert outcome.suggested_next_ids == ["fix"]
-        assert outcome.context_updates == {
-            "human.gate.selected": "F",
-            "human.gate.label": "Fix",
-        }
-
-    def test_wait_human_timeout_emits_default_applied_provenance(self):
-        graph = parse_dot(
-            """
-            digraph G {
-                gate [shape=hexagon, prompt="Choose", human.default_choice="fix"]
-                ship [shape=box]
-                fix [shape=box]
-                gate -> ship [label="Approve"]
-                gate -> fix [label="Fix"]
-            }
-            """
-        )
-        events = []
-
-        registry = build_default_registry(
-            codergen_backend=_StubBackend(),
-            interviewer=QueueInterviewer([Answer(value="TIMEOUT")]),
-        )
-        runner = HandlerRunner(graph, registry)
-        outcome = runner(
-            "gate",
-            "Choose",
-            Context(),
-            emit_event=lambda event_type, **payload: events.append({"type": event_type, **payload}),
-        )
-
-        assert outcome.status == OutcomeStatus.SUCCESS
-        timeout_event = next(event for event in events if event["type"] == "InterviewTimeout")
-        assert timeout_event["outcome_provenance"] == "timeout_default_applied"
-        assert timeout_event["default_choice_label"] == "Fix"
-        assert timeout_event["default_choice_target"] == "fix"
-
-    def test_wait_human_timeout_without_default_returns_retry(self):
+    def test_wait_human_empty_answer_returns_fail(self):
         graph = parse_dot(
             """
             digraph G {
@@ -260,13 +177,55 @@ class TestWaitHumanHandler:
 
         registry = build_default_registry(
             codergen_backend=_StubBackend(),
-            interviewer=QueueInterviewer([Answer(value="TIMEOUT")]),
+            interviewer=QueueInterviewer([Answer()]),
         )
         runner = HandlerRunner(graph, registry)
         outcome = runner("gate", "Choose", Context())
 
-        assert outcome.status == OutcomeStatus.RETRY
-        assert outcome.failure_reason == "human gate timeout, no default"
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == "human skipped interaction"
+
+    def test_wait_human_unmatched_answer_returns_fail(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                gate [shape=hexagon, prompt="Choose"]
+                ship [shape=box]
+                fix [shape=box]
+                gate -> ship [label="Approve"]
+                gate -> fix [label="Fix"]
+            }
+            """
+        )
+
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            interviewer=QueueInterviewer([Answer(value="unknown")]),
+        )
+        runner = HandlerRunner(graph, registry)
+        outcome = runner("gate", "Choose", Context())
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == "human skipped interaction"
+
+    def test_wait_human_no_outgoing_edges_returns_fail(self):
+        graph = parse_dot(
+            """
+            digraph G {
+                gate [shape=hexagon, prompt="Choose"]
+            }
+            """
+        )
+
+        registry = build_default_registry(
+            codergen_backend=_StubBackend(),
+            interviewer=QueueInterviewer([Answer(selected_values=["Approve"])]),
+        )
+        runner = HandlerRunner(graph, registry)
+        outcome = runner("gate", "Choose", Context())
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert outcome.failure_reason == "No outgoing edges for human gate"
 
     def test_wait_human_uses_falsey_external_interviewer(self):
         graph = parse_dot(

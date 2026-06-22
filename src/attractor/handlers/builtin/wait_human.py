@@ -49,30 +49,6 @@ class WaitHumanHandler:
         runtime.emit("InterviewStarted", question=question.text, stage=runtime.node_id)
         answer = self.interviewer.ask(question)
         duration = time.perf_counter() - started_at
-        if _is_timeout(answer):
-            default_choice = _default_choice(runtime.node_attrs, choices)
-            timeout_payload = {
-                "question": question.text,
-                "stage": runtime.node_id,
-                "duration": duration,
-                "outcome_provenance": "timeout_default_applied" if default_choice else "timeout_no_default",
-            }
-            if default_choice is not None:
-                timeout_payload["default_choice_target"] = default_choice.target
-                timeout_payload["default_choice_label"] = default_choice.label
-            runtime.emit("InterviewTimeout", **timeout_payload)
-            if default_choice is None:
-                return Outcome(status=OutcomeStatus.RETRY, failure_reason="human gate timeout, no default")
-            return Outcome(
-                status=OutcomeStatus.SUCCESS,
-                preferred_label=default_choice.label,
-                suggested_next_ids=[default_choice.target],
-                context_updates={
-                    "human.gate.selected": default_choice.key,
-                    "human.gate.label": default_choice.label,
-                },
-                notes="human selection applied",
-            )
         if answer.value == AnswerValue.SKIPPED.value:
             runtime.emit(
                 "InterviewCompleted",
@@ -107,38 +83,6 @@ class WaitHumanHandler:
         )
 
 
-def _is_timeout(answer: Answer) -> bool:
-    if answer.value == AnswerValue.TIMEOUT.value:
-        return True
-    if answer.selected_option is not None:
-        if answer.selected_option.value and answer.selected_option.value.strip():
-            return False
-        if answer.selected_option.label and answer.selected_option.label.strip():
-            return False
-        if answer.selected_option.key and answer.selected_option.key.strip():
-            return False
-    if any(value and value.strip() for value in answer.selected_values):
-        return False
-    if answer.text and answer.text.strip():
-        return False
-    return True
-
-
-def _default_choice(node_attrs, choices: list[_Choice]) -> _Choice | None:
-    attr = node_attrs.get("human.default_choice")
-    if not attr:
-        return None
-
-    default_target = str(attr.value).strip()
-    if not default_target:
-        return None
-
-    for choice in choices:
-        if choice.target == default_target:
-            return choice
-    return None
-
-
 def _select_choice(answer: Answer, choices: list[_Choice]) -> _Choice | None:
     tokens = [value.strip() for value in answer.selected_values if value and value.strip()]
     if answer.selected_option is not None:
@@ -168,7 +112,7 @@ def _select_choice(answer: Answer, choices: list[_Choice]) -> _Choice | None:
             if choice.target.lower() == normalized_token:
                 return choice
 
-    return choices[0] if choices else None
+    return None
 
 
 def _normalize_label(label: str) -> str:

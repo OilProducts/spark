@@ -318,7 +318,7 @@ const appendPendingInterviewGate = (
         }
     }
 
-    if (entry.type === 'InterviewCompleted' || entry.type === 'InterviewTimeout') {
+    if (entry.type === 'InterviewCompleted') {
         nextClosedInterviewEntityKeys.add(entityKey)
         nextPendingInterviewGates = nextPendingInterviewGates.filter((gate) => (
             (gate.nodeId ?? '') !== (entry.nodeId ?? '')

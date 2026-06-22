@@ -20,7 +20,6 @@ type VisibilityConfig = {
     showToolCommand: boolean
     showParallelOptions: boolean
     showManagerOptions: boolean
-    showHumanDefaultChoice: boolean
     showTypeOverride: boolean
     showAdvanced: boolean
     showGeneralAdvanced: boolean
@@ -296,23 +295,6 @@ export function NodeInspectorPanel({
                                     </Button>
                                 </div>
                             </>
-                        ) : null}
-
-                        {visibility.showHumanDefaultChoice ? (
-                            <div className="space-y-1.5">
-                                <Label>Human Default Choice</Label>
-                                <Input
-                                    value={(selectedNode?.data?.['human.default_choice'] as string) || ''}
-                                    onChange={(event) => onPropertyChange('human.default_choice', event.target.value)}
-                                    placeholder="target node id"
-                                />
-                                <p
-                                    data-testid="human-default-choice-timeout-guidance"
-                                    className="text-xs text-muted-foreground"
-                                >
-                                    Used when this gate times out without an explicit answer.
-                                </p>
-                            </div>
                         ) : null}
 
                         {visibility.showTypeOverride ? (
