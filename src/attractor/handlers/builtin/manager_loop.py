@@ -24,6 +24,10 @@ from attractor.handlers.base import (
 from ..base import HandlerRuntime
 
 
+_AUTO_STEER_ATTEMPT_LIMIT = 1
+_AutoSteerKey = tuple[str, str | None, str]
+
+
 class ManagerLoopHandler:
     def execute(self, runtime: HandlerRuntime) -> Outcome:
         startup_error = _autostart_child_pipeline(runtime)
@@ -36,6 +40,7 @@ class ManagerLoopHandler:
         actions = _manager_actions(runtime.node_attrs.get("manager.actions"))
         steer_cooldown = _steer_cooldown_seconds(runtime.node_attrs.get("manager.steer_cooldown"))
         last_steer_at: float | None = None
+        automatic_steer_attempts: dict[_AutoSteerKey, int] = {}
 
         for cycle in range(1, max_cycles + 1):
             if "observe" in actions:
@@ -53,15 +58,26 @@ class ManagerLoopHandler:
                 last_steer_at=last_steer_at,
                 cooldown_seconds=steer_cooldown,
             ):
-                intervention_result = _request_child_intervention(runtime, cycle)
+                intervention_result = _request_child_intervention(
+                    runtime,
+                    cycle,
+                    automatic_steer_attempts=automatic_steer_attempts,
+                )
                 if intervention_result is not None:
                     _append_manager_artifact(
                         runtime.logs_root,
                         runtime.node_id,
                         "manager_interventions.jsonl",
-                        _intervention_payload(runtime.context, runtime.node_id, cycle),
+                        _intervention_payload(
+                            runtime.context,
+                            runtime.node_id,
+                            cycle,
+                            intervention_result=intervention_result,
+                            failure_reason=_child_failure_context(runtime.context),
+                        ),
                     )
-                    last_steer_at = now
+                    if intervention_result.status != "skipped":
+                        last_steer_at = now
 
             child_resolution = _resolve_child_status(runtime.context)
             if child_resolution is not None:
@@ -434,6 +450,8 @@ def _ingest_child_telemetry(context: Context, node_id: str, cycle: int) -> None:
 def _request_child_intervention(
     runtime: HandlerRuntime,
     cycle: int,
+    *,
+    automatic_steer_attempts: dict[_AutoSteerKey, int],
 ) -> ChildInterventionResult | None:
     failure_reason = _child_failure_context(runtime.context)
     if not failure_reason:
@@ -452,6 +470,25 @@ def _request_child_intervention(
         )
         _apply_intervention_result(runtime, result, failure_reason=failure_reason)
         return result
+
+    auto_steer_key: _AutoSteerKey = (child_run_id, target_node_id, failure_reason)
+    prior_attempts = automatic_steer_attempts.get(auto_steer_key, 0)
+    if prior_attempts >= _AUTO_STEER_ATTEMPT_LIMIT:
+        result = ChildInterventionResult(
+            run_id=child_run_id,
+            status="skipped",
+            delivery_mode="none",
+            reason="auto_steer_limit_reached",
+            message=_auto_steer_limit_message(
+                child_run_id=child_run_id,
+                target_node_id=target_node_id,
+                failure_reason=failure_reason,
+            ),
+            target_node_id=target_node_id,
+        )
+        _apply_intervention_result(runtime, result, failure_reason=failure_reason)
+        return result
+    automatic_steer_attempts[auto_steer_key] = prior_attempts + 1
 
     _steer_child(runtime.context, runtime.node_id, cycle)
     message = str(runtime.context.get("context.stack.child.intervention", "")).strip()
@@ -519,8 +556,21 @@ def _apply_intervention_result(
         status=status,
         delivery_mode=delivery_mode,
         reason=intervention_reason,
+        child_failure_reason=failure_reason,
         message=result.message or None,
     )
+
+
+def _auto_steer_limit_message(
+    *,
+    child_run_id: str,
+    target_node_id: str | None,
+    failure_reason: str,
+) -> str:
+    target = f"child run {child_run_id}"
+    if target_node_id:
+        target = f"{target} at {target_node_id}"
+    return f"Automatic manager steering already attempted for {target}: {failure_reason}"
 
 
 def _steer_child(context: Context, node_id: str, cycle: int) -> None:
@@ -566,17 +616,28 @@ def _telemetry_payload(context: Context, node_id: str, cycle: int) -> dict[str, 
     }
 
 
-def _intervention_payload(context: Context, node_id: str, cycle: int) -> dict[str, Any]:
+def _intervention_payload(
+    context: Context,
+    node_id: str,
+    cycle: int,
+    *,
+    intervention_result: ChildInterventionResult,
+    failure_reason: str,
+) -> dict[str, Any]:
     return {
         "cycle": cycle,
         "node_id": node_id,
         "timestamp_unix": time.time(),
+        "child_run_id": intervention_result.run_id,
         "child_status": context.get("context.stack.child.status", ""),
         "child_active_stage": context.get("context.stack.child.active_stage", ""),
+        "target_node_id": intervention_result.target_node_id,
         "instruction": context.get("context.stack.child.intervention", ""),
         "intervention_status": context.get("context.stack.child.intervention_status", ""),
         "intervention_delivery_mode": context.get("context.stack.child.intervention_delivery_mode", ""),
         "intervention_reason": context.get("context.stack.child.intervention_reason", ""),
+        "result_message": intervention_result.message,
+        "failure_reason": failure_reason,
         "child_failure_reason": context.get("context.stack.child.failure_reason", ""),
         "child_outcome_reason_code": context.get("context.stack.child.outcome_reason_code", ""),
         "child_outcome_reason_message": context.get("context.stack.child.outcome_reason_message", ""),

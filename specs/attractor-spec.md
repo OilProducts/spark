@@ -1042,7 +1042,7 @@ ToolHandler:
 
 ### 4.11 Manager Loop Handler
 
-Orchestrates sprint-based iteration by supervising a child pipeline. The manager observes the child's telemetry, evaluates progress via a guard function, and optionally steers the child through intervention.
+Orchestrates sprint-based iteration by supervising a child pipeline. The manager observes child telemetry as ambiguous progress data and optionally steers the child only when concrete failure context is present. It does not infer failure or automatically steer from elapsed time, unchanged active stage, missing artifacts, or long-running work.
 
 ```
 ManagerLoopHandler:
@@ -1053,6 +1053,8 @@ ManagerLoopHandler:
         max_cycles = integer(node.attrs.get("manager.max_cycles", "1000"))
         stop_condition = node.attrs.get("manager.stop_condition", "")
         actions = split(node.attrs.get("manager.actions", "observe,wait"), ",")
+        steer_cooldown = parse_duration(node.attrs.get("manager.steer_cooldown", "0s"))
+        automatic_steer_attempts = {}
 
         -- 1. Auto-start child if configured
         IF node.attrs.get("stack.child_autostart", "true") == "true":
@@ -1077,8 +1079,19 @@ ManagerLoopHandler:
             IF "observe" IN actions:
                 ingest_child_telemetry(context)
 
-            IF "steer" IN actions AND steer_cooldown_elapsed():
-                steer_child(context, node)
+            failure_reason = child_failure_context(context)
+            IF "steer" IN actions AND failure_reason != "" AND steer_cooldown_elapsed():
+                child_run_id = context.get_string("context.stack.child.run_id")
+                target_node_id = context.get_string("context.stack.child.active_stage")
+                IF child_run_id == "":
+                    record_intervention_result(status="rejected", reason="no_active_child_run")
+                ELSE:
+                    key = (child_run_id, target_node_id, failure_reason)
+                    IF automatic_steer_attempts.get(key, 0) >= 1:
+                        record_intervention_result(status="skipped", reason="auto_steer_limit_reached")
+                    ELSE:
+                        automatic_steer_attempts[key] = automatic_steer_attempts.get(key, 0) + 1
+                        request_child_intervention(child_run_id, target_node_id, failure_reason)
 
             -- Evaluate stop conditions
             child_status = context.get_string("context.stack.child.status")
@@ -1100,9 +1113,13 @@ ManagerLoopHandler:
 ```
 
 The manager pattern implements a **supervisor architecture** where:
-- **Observe** ingests worker telemetry (active stage, outcomes, retry counts, artifacts)
-- **Guard** scores worker progress and routes to continue, intervene, or escalate
-- **Steer** writes intervention instructions to the child's active stage directory
+- **Observe** ingests worker telemetry (active stage, outcomes, retry counts, artifacts) as observational context.
+- **Failure context** comes from `context.stack.child.failure_reason`, outcome reason message/code, or a failure outcome.
+- **Steer** requests intervention for an active child only when failure context exists.
+
+Automatic manager steering is bounded per manager-loop invocation. The runtime keys automatic attempts by `(child_run_id, target_node_id, failure_reason)` and allows one delivered or attempted intervention per key. Later cycles with the same key record a skipped intervention result with reason `auto_steer_limit_reached` and do not call the child intervention backend. A different target node or different failure reason is a new key. Human/API steering is outside this automatic repeat guard.
+
+`manager.steer_cooldown` only spaces automatic steering attempts in time. It is not a progress detector and must not be interpreted as evidence that the child is stalled.
 
 `context.stack.child.*` is runtime-owned latest-child telemetry. Authored flows may read it, but should not clear or set it as business logic.
 
@@ -2291,6 +2308,12 @@ ASSERT "review" IN checkpoint.completed_nodes
 | `join_quorum`           | Float    | `0.5`         | Optional for `join_policy=quorum`; must be finite with `0 < value <= 1`. Invalid on other join policies. |
 | `error_policy`          | String   | `"continue"`  | Parallel branch failure handling: `fail_fast`, `continue`, or `ignore`. |
 | `max_parallel`          | Integer  | `4`           | Max concurrent branches for parallel nodes. |
+| `manager.poll_interval` | Duration | `45s`         | Manager-loop poll cadence for observation/wait cycles. |
+| `manager.max_cycles`    | Integer  | `1000`        | Maximum manager-loop cycles before failing with `Max cycles exceeded`. |
+| `manager.stop_condition` | String  | `""`          | Manager-loop condition expression evaluated against context after child status resolution. |
+| `manager.actions`       | String   | `"observe,wait"` | Comma-separated manager actions: `observe`, `steer`, and `wait`. |
+| `manager.steer_cooldown` | Duration | `0s`         | Time throttle between eligible automatic manager steering attempts. It does not detect progress or stalls. |
+| `stack.child_autostart` | Boolean  | `true`        | Whether a manager-loop node starts the configured child pipeline automatically. |
 | `tool.command`          | String   | `""`          | Shell command executed by tool nodes. Required when a node resolves to `tool`. |
 | `tool.hooks.pre`        | String   | inherited     | Node-level pre-hook override for tool nodes. |
 | `tool.hooks.post`       | String   | inherited     | Node-level post-hook override for tool nodes. |

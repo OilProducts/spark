@@ -127,6 +127,17 @@ def test_pipeline_steer_defaults_to_active_child_from_parent_checkpoint(
     assert event["target_node_id"] == "task"
     assert event["intervention_status"] == "delivered"
 
+    second_response = attractor_api_client.post(
+        "/pipelines/parent-1/steer",
+        json={"message": "Please address the current failure again."},
+    )
+
+    assert second_response.status_code == 200, second_response.text
+    assert second_response.json()["status"] == "delivered"
+    assert len(child_runner.requests) == 2
+    assert child_runner.requests[1].source == "api"
+    assert child_runner.requests[1].target_node_id == "task"
+
 
 def test_pipeline_steer_explicit_target_overrides_default_child(
     attractor_api_client: TestClient,

@@ -250,9 +250,12 @@ Only the threshold attr for the active `join_policy` is valid. Do not keep `join
 | `manager.max_cycles` | integer | Max supervisor cycles. |
 | `manager.stop_condition` | string | Condition expression evaluated against context. |
 | `manager.actions` | string | Comma-separated manager actions such as `observe,wait` or `observe,steer,wait`. |
+| `manager.steer_cooldown` | duration | Minimum time between eligible automatic steering attempts. |
 | `stack.child_autostart` | boolean | Whether the child pipeline should be started automatically. |
 
-`manager.steer_cooldown` exists in the runtime implementation but is not part of the supported packaged authoring contract, so it is intentionally omitted from this guide.
+Automatic manager steering requires concrete child failure context from `context.stack.child.*`. The manager does not auto-steer from elapsed time, unchanged active stage, missing artifacts, or long-running work. `manager.steer_cooldown` only spaces eligible attempts; it is not a stall or progress detector.
+
+Within one manager invocation, automatic steering is capped at one delivered or attempted intervention per `(child_run_id, target_node_id, failure_reason)`. Later cycles with the same key are recorded as skipped automatic interventions. Human/API steering through `/pipelines/{pipeline_id}/steer` is unaffected.
 
 `context.stack.child.*` is runtime-owned manager-loop telemetry. Read it from authored flows if you need child status or outcome, but do not clear or set it from prompts or context updates as business logic.
 

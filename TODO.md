@@ -3,10 +3,10 @@
 - [x] Normalize checkpoint semantics so `current_node` has one stable meaning in both persistence and resume logic, and update the Attractor spec accordingly.
 - [x] Mirror the documented `graph.*` context namespace in the engine itself instead of only seeding it through the API bootstrap path.
 - [ ] Complete `wait.human` timeout/default wiring by setting `Question.default` / `Question.timeout_seconds` where the interviewer contract expects them, or narrow the Attractor spec to the implemented behavior.
-- [ ] Finish or narrow the `stack.manager_loop` observe/steer contract. The current supervisory loop framework exists, but telemetry ingestion and steering behavior are still mostly stubs.
-- [ ] Evaluate progress-aware manager steering for `stack.manager_loop` nodes. One possible direction: keep `manager.steer_cooldown` as a throttle, but only steer when child telemetry indicates stall/regression (for example unchanged active stage, repeated retries, repeated failures, or lack of new artifacts) and record the intervention reason.
+- [ ] Complete `stack.manager_loop` telemetry ingestion beyond the current runtime context snapshot.
+- [x] Narrow the `stack.manager_loop` automatic steering contract: observe progress telemetry without treating it as a stall heuristic, auto-steer only from child failure context, and cap repeated automatic steering for the same child run, target node, and failure reason within one manager invocation.
 - [ ] Expose the full implemented manager-loop authoring surface in the UI and preview payload, including at least `manager.steer_cooldown` and `stack.child_autostart`, which the runtime already honors but the current editor does not treat as first-class fields.
-- [ ] Document the full manager-loop node attribute surface in the Attractor spec appendix, including `manager.poll_interval`, `manager.max_cycles`, `manager.stop_condition`, `manager.actions`, `manager.steer_cooldown`, and `stack.child_autostart`.
+- [x] Document the full manager-loop node attribute surface in the Attractor spec appendix, including `manager.poll_interval`, `manager.max_cycles`, `manager.stop_condition`, `manager.actions`, `manager.steer_cooldown`, and `stack.child_autostart`.
 - [ ] Decide whether the validator rule that every non-exit node must have an outgoing edge is intended Attractor behavior; if so, document it, otherwise relax it.
 - [ ] Document the implemented `retry_policy` node attribute and named preset semantics as part of the Attractor DSL, or remove/hide that attribute surface if it is meant to stay implementation-specific.
 - [x] Document the parallel-handler DSL additions `join_k` and `join_quorum` in the Spark guide and Attractor spec.

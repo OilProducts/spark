@@ -451,7 +451,7 @@ class TestManagerLoopHandler:
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_reason == "Max cycles exceeded"
         assert [entry[:2] for entry in observed] == [("manager", 1), ("manager", 2)]
-        assert [entry[:2] for entry in steered] == [("manager", 1), ("manager", 2)]
+        assert [entry[:2] for entry in steered] == [("manager", 1)]
         assert sleep_calls == []
 
     def test_manager_loop_returns_fail_when_child_status_is_failed(self, monkeypatch):
@@ -722,13 +722,25 @@ class TestManagerLoopHandler:
         assert launched_requests[0].child_workdir == run_workdir
 
     def test_manager_loop_steer_action_honors_cooldown(self, monkeypatch):
-        steered = []
+        requests: list[ChildInterventionRequest] = []
         clock = iter([0.0, 1.0, 2.0])
 
-        def _fake_steer(context: Context, node_id: str, cycle: int) -> None:
-            steered.append((node_id, cycle, dict(context.values)))
+        def _fake_observe(context: Context, node_id: str, cycle: int) -> None:
+            del node_id
+            context.set("context.stack.child.failure_reason", f"failure-{cycle}")
 
-        monkeypatch.setattr("attractor.handlers.builtin.manager_loop._steer_child", _fake_steer)
+        def request_intervention(request: ChildInterventionRequest) -> ChildInterventionResult:
+            requests.append(request)
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="delivered",
+                delivery_mode="test",
+                reason=request.reason,
+                message="queued",
+                target_node_id=request.target_node_id,
+            )
+
+        monkeypatch.setattr("attractor.handlers.builtin.manager_loop._ingest_child_telemetry", _fake_observe)
         monkeypatch.setattr("attractor.handlers.builtin.manager_loop.time.monotonic", lambda: next(clock))
         graph = parse_dot(
             """
@@ -737,14 +749,14 @@ class TestManagerLoopHandler:
                     shape=house,
                     manager.poll_interval=0ms,
                     manager.max_cycles=3,
-                    manager.actions="steer",
+                    manager.actions="observe,steer",
                     manager.steer_cooldown=2s
                 ]
             }
             """
         )
         registry = build_default_registry(codergen_backend=_StubBackend())
-        runner = HandlerRunner(graph, registry)
+        runner = HandlerRunner(graph, registry, child_intervention_requester=request_intervention)
 
         outcome = runner(
             "manager",
@@ -753,14 +765,15 @@ class TestManagerLoopHandler:
                 values={
                     "context.stack.child.run_id": "child-1",
                     "context.stack.child.status": "running",
-                    "context.stack.child.failure_reason": "tests failed",
+                    "context.stack.child.active_stage": "task",
                 }
             ),
         )
 
         assert outcome.status == OutcomeStatus.FAIL
         assert outcome.failure_reason == "Max cycles exceeded"
-        assert [entry[:2] for entry in steered] == [("manager", 1), ("manager", 3)]
+        assert [request.cycle for request in requests] == [1, 3]
+        assert [request.reason for request in requests] == ["failure-1", "failure-3"]
 
     def test_manager_loop_steer_action_writes_intervention_artifacts(self, monkeypatch, tmp_path):
         def _fake_steer(context: Context, node_id: str, cycle: int) -> None:
@@ -808,6 +821,8 @@ class TestManagerLoopHandler:
             "backend_steering_unsupported",
             "backend_steering_unsupported",
         ]
+        assert [entry["child_run_id"] for entry in payloads] == ["child-1", "child-1"]
+        assert [entry["failure_reason"] for entry in payloads] == ["tests failed", "tests failed"]
 
     def test_manager_loop_requests_child_intervention_and_records_delivered_result(self, tmp_path):
         graph = parse_dot(
@@ -864,6 +879,7 @@ class TestManagerLoopHandler:
         assert requests[0].root_run_id == "root-1"
         assert requests[0].target_node_id == "task"
         assert requests[0].reason == "unit tests failed"
+        assert requests[0].source == "manager_loop"
         assert "unit tests failed" in requests[0].message
         assert context.get("context.stack.child.intervention_status") == "delivered"
         assert context.get("context.stack.child.intervention_delivery_mode") == "unified_agent_session"
@@ -879,9 +895,160 @@ class TestManagerLoopHandler:
                 "status": "delivered",
                 "delivery_mode": "unified_agent_session",
                 "reason": "unit tests failed",
+                "child_failure_reason": "unit tests failed",
                 "message": "queued",
             }
         ]
+
+    def test_manager_loop_suppresses_repeated_automatic_intervention_for_same_failure_point(self, tmp_path):
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [shape=house, manager.poll_interval=0ms, manager.max_cycles=2, manager.actions="steer"]
+            }
+            """
+        )
+        requests: list[ChildInterventionRequest] = []
+
+        def request_intervention(request: ChildInterventionRequest) -> ChildInterventionResult:
+            requests.append(request)
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="delivered",
+                delivery_mode="test",
+                reason=request.reason,
+                message="queued",
+                target_node_id=request.target_node_id,
+            )
+
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=tmp_path / "logs",
+            child_intervention_requester=request_intervention,
+        )
+        events: list[dict[str, object]] = []
+        context = Context(
+            values={
+                "context.stack.child.run_id": "child-1",
+                "context.stack.child.status": "running",
+                "context.stack.child.active_stage": "task",
+                "context.stack.child.failure_reason": "unit tests failed",
+            }
+        )
+
+        outcome = runner(
+            "manager",
+            "",
+            context,
+            emit_event=lambda event_type, **payload: events.append({"type": event_type, **payload}),
+        )
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert len(requests) == 1
+        assert requests[0].cycle == 1
+        assert context.get("context.stack.child.intervention_status") == "skipped"
+        assert context.get("context.stack.child.intervention_reason") == "auto_steer_limit_reached"
+        assert [event["status"] for event in events] == ["delivered", "skipped"]
+        assert events[1]["child_run_id"] == "child-1"
+        assert events[1]["target_node_id"] == "task"
+        assert events[1]["reason"] == "auto_steer_limit_reached"
+        assert events[1]["child_failure_reason"] == "unit tests failed"
+        interventions_path = tmp_path / "logs" / "manager" / "manager_interventions.jsonl"
+        payloads = [json.loads(line) for line in interventions_path.read_text(encoding="utf-8").splitlines()]
+        assert [entry["intervention_status"] for entry in payloads] == ["delivered", "skipped"]
+        assert payloads[1]["child_run_id"] == "child-1"
+        assert payloads[1]["target_node_id"] == "task"
+        assert payloads[1]["failure_reason"] == "unit tests failed"
+
+    def test_manager_loop_allows_automatic_intervention_for_different_target_node(self, monkeypatch):
+        def _fake_observe(context: Context, node_id: str, cycle: int) -> None:
+            del node_id
+            context.set("context.stack.child.active_stage", f"task-{cycle}")
+
+        monkeypatch.setattr("attractor.handlers.builtin.manager_loop._ingest_child_telemetry", _fake_observe)
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [shape=house, manager.poll_interval=0ms, manager.max_cycles=2, manager.actions="observe,steer"]
+            }
+            """
+        )
+        requests: list[ChildInterventionRequest] = []
+
+        def request_intervention(request: ChildInterventionRequest) -> ChildInterventionResult:
+            requests.append(request)
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="delivered",
+                delivery_mode="test",
+                reason=request.reason,
+                message="queued",
+                target_node_id=request.target_node_id,
+            )
+
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry, child_intervention_requester=request_intervention)
+
+        outcome = runner(
+            "manager",
+            "",
+            Context(
+                values={
+                    "context.stack.child.run_id": "child-1",
+                    "context.stack.child.status": "running",
+                    "context.stack.child.failure_reason": "same failure",
+                }
+            ),
+        )
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert [request.target_node_id for request in requests] == ["task-1", "task-2"]
+
+    def test_manager_loop_allows_automatic_intervention_for_different_failure_reason(self, monkeypatch):
+        def _fake_observe(context: Context, node_id: str, cycle: int) -> None:
+            del node_id
+            context.set("context.stack.child.failure_reason", f"failure-{cycle}")
+
+        monkeypatch.setattr("attractor.handlers.builtin.manager_loop._ingest_child_telemetry", _fake_observe)
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [shape=house, manager.poll_interval=0ms, manager.max_cycles=2, manager.actions="observe,steer"]
+            }
+            """
+        )
+        requests: list[ChildInterventionRequest] = []
+
+        def request_intervention(request: ChildInterventionRequest) -> ChildInterventionResult:
+            requests.append(request)
+            return ChildInterventionResult(
+                run_id=request.child_run_id,
+                status="delivered",
+                delivery_mode="test",
+                reason=request.reason,
+                message="queued",
+                target_node_id=request.target_node_id,
+            )
+
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(graph, registry, child_intervention_requester=request_intervention)
+
+        outcome = runner(
+            "manager",
+            "",
+            Context(
+                values={
+                    "context.stack.child.run_id": "child-1",
+                    "context.stack.child.status": "running",
+                    "context.stack.child.active_stage": "task",
+                }
+            ),
+        )
+
+        assert outcome.status == OutcomeStatus.FAIL
+        assert [request.reason for request in requests] == ["failure-1", "failure-2"]
 
     def test_manager_loop_steer_action_waits_for_failure_context(self, tmp_path):
         graph = parse_dot(
