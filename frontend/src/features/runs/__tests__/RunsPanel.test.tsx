@@ -454,6 +454,21 @@ describe('RunsPanel', () => {
         type: 'run.upsert',
         resource: { kind: 'runs_overview', id: null },
         payload: {
+          run: {
+            run_id: 'run-incomplete-live-upsert',
+            flow_name: 'incomplete-live-upsert.dot',
+            project_path: '/tmp/project-one',
+          },
+        },
+      })
+    })
+    expect(screen.queryByText('incomplete-live-upsert.dot')).not.toBeInTheDocument()
+
+    act(() => {
+      activeScopeSource?.emit({
+        type: 'run.upsert',
+        resource: { kind: 'runs_overview', id: null },
+        payload: {
           run: makeRun({
             run_id: 'run-streamed-active',
             flow_name: 'streamed-active.dot',
@@ -1402,6 +1417,135 @@ describe('RunsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-history-row')).toHaveTextContent('Completed')
     })
+  })
+
+  it('applies live status and outcome upserts to the selected run summary', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-live-status',
+      flow_name: 'selected.dot',
+      status: 'running',
+      outcome: null,
+      ended_at: null,
+      project_path: '/tmp/project-one',
+    })
+
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [selectedRun] })
+      }
+      if (url.includes('/attractor/pipelines/run-live-status/checkpoint')) {
+        return jsonResponse({
+          pipeline_id: 'run-live-status',
+          checkpoint: {
+            current_node: 'review',
+            completed_nodes: ['prepare'],
+          },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-status/context')) {
+        return jsonResponse({
+          pipeline_id: 'run-live-status',
+          context: { active_item: 'REQ-001' },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-status/artifacts')) {
+        return jsonResponse({
+          pipeline_id: 'run-live-status',
+          artifacts: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-status/graph-preview')) {
+        return jsonResponse({
+          status: 'ok',
+          graph: {
+            graph_attrs: {},
+            nodes: [
+              { id: 'start', label: 'Start', shape: 'Mdiamond' },
+              { id: 'review', label: 'Review', shape: 'box' },
+              { id: 'done', label: 'Done', shape: 'Msquare' },
+            ],
+            edges: [
+              { from: 'start', to: 'review', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'review', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+            ],
+          },
+          diagnostics: [],
+          errors: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-status/questions')) {
+        return jsonResponse({
+          pipeline_id: 'run-live-status',
+          questions: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-status/journal')) {
+        return jsonResponse(makeJournalPage('run-live-status', []))
+      }
+      if (url.endsWith('/attractor/pipelines/run-live-status')) {
+        return jsonResponse({
+          pipeline_id: 'run-live-status',
+          ...selectedRun,
+          completed_nodes: ['prepare'],
+          progress: {
+            current_node: 'review',
+            completed_count: 1,
+          },
+        })
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    const { latestSourceMatching } = installControllableEventSource()
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+
+    await user.click(screen.getByTestId('run-history-row'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-status')).toHaveTextContent('running')
+    })
+
+    act(() => {
+      latestSourceMatching('/workspace/api/live/events')?.emit({
+        type: 'run.upsert',
+        resource: { kind: 'runs_overview', id: null },
+        payload: {
+          run: {
+            ...selectedRun,
+            status: 'completed',
+            outcome: 'failure',
+            outcome_reason_code: 'live_failure',
+            outcome_reason_message: 'Live gate failed',
+            ended_at: '2026-03-22T00:06:00Z',
+            last_error: 'Live gate failed',
+          },
+        },
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-status')).toHaveTextContent('Completed')
+    })
+    expect(screen.getByTestId('run-summary-outcome')).toHaveTextContent('Failure')
+    expect(screen.getByTestId('run-summary-outcome-reason')).toHaveTextContent('Live gate failed')
+    expect(screen.getByTestId('run-history-row')).toHaveTextContent('Completed')
   })
 
   it('opens one runs-list stream and one selected-run stream while a run is selected', async () => {

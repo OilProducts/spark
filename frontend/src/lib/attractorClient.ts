@@ -60,6 +60,7 @@ export {
     parsePipelineResultResponse,
     parsePipelineStartResponse,
     parsePipelineStatusResponse,
+    parseRunRecordPayload,
     parsePreviewResponse,
     parseRunsListResponse,
     parseRuntimeStatusResponse,

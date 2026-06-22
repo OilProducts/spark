@@ -767,6 +767,10 @@ function parseRunRecord(
     }
 }
 
+export function parseRunRecordPayload(payload: unknown): RunRecordResponse | null {
+    return parseRunRecord(payload)
+}
+
 export function parseRunsListResponse(payload: unknown, endpoint = '/attractor/runs'): RunsListResponse {
     const record = expectObjectRecord(payload, endpoint)
     if (!Array.isArray(record.runs)) {
@@ -774,7 +778,7 @@ export function parseRunsListResponse(payload: unknown, endpoint = '/attractor/r
     }
     return {
         runs: record.runs
-            .map((run) => parseRunRecord(run))
+            .map((run) => parseRunRecordPayload(run))
             .filter((run): run is RunRecordResponse => run !== null),
     }
 }

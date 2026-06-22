@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, type SetStateAction } from 'react'
 
-import { fetchRunsListValidated } from '@/lib/attractorClient'
+import { fetchRunsListValidated, parseRunRecordPayload } from '@/lib/attractorClient'
 import { useStore } from '@/store'
 
 import type { RunRecord } from '../model/shared'
@@ -29,6 +29,40 @@ const mergeRunUpsert = (currentRuns: RunRecord[], nextRun: RunRecord) => {
     const nextRuns = [...currentRuns]
     nextRuns[existingIndex] = nextRun
     return sortRuns(nextRuns)
+}
+
+const mergeSelectedRunLiveUpsert = (currentRun: RunRecord, nextRun: RunRecord): RunRecord => ({
+    ...currentRun,
+    status: nextRun.status,
+    outcome: nextRun.outcome !== undefined ? nextRun.outcome : currentRun.outcome,
+    outcome_reason_code: nextRun.outcome_reason_code !== undefined
+        ? nextRun.outcome_reason_code
+        : currentRun.outcome_reason_code,
+    outcome_reason_message: nextRun.outcome_reason_message !== undefined
+        ? nextRun.outcome_reason_message
+        : currentRun.outcome_reason_message,
+    ended_at: nextRun.ended_at !== undefined ? nextRun.ended_at : currentRun.ended_at,
+    last_error: nextRun.last_error !== undefined ? nextRun.last_error : currentRun.last_error,
+    token_usage: nextRun.token_usage !== undefined ? nextRun.token_usage : currentRun.token_usage,
+    token_usage_breakdown: nextRun.token_usage_breakdown !== undefined
+        ? nextRun.token_usage_breakdown
+        : currentRun.token_usage_breakdown,
+    estimated_model_cost: nextRun.estimated_model_cost !== undefined
+        ? nextRun.estimated_model_cost
+        : currentRun.estimated_model_cost,
+})
+
+const applySelectedRunLiveUpsert = (nextRun: RunRecord) => {
+    const state = useStore.getState()
+    const currentRun = state.selectedRunRecord
+    if (state.selectedRunId !== nextRun.run_id || currentRun?.run_id !== nextRun.run_id) {
+        return
+    }
+    state.setSelectedRunSnapshot({
+        record: mergeSelectedRunLiveUpsert(currentRun, nextRun),
+        completedNodes: state.selectedRunCompletedNodes,
+        fetchedAtMs: state.selectedRunStatusFetchedAtMs,
+    })
 }
 
 export function useRunsList({
@@ -108,13 +142,14 @@ export function useRunsList({
 
         const handleLiveRunUpsert = (event: Event) => {
             const detail = event instanceof CustomEvent ? event.detail : null
-            const nextRun = asRunRecord(detail?.run)
+            const nextRun = parseRunRecordPayload(detail?.run)
             if (!nextRun) {
                 return
             }
             if (usesActiveProjectScope && activeProjectPath && nextRun.project_path !== activeProjectPath) {
                 return
             }
+            applySelectedRunLiveUpsert(nextRun)
             updateRunsListSession({
                 runs: mergeRunUpsert(useStore.getState().runsListSession.runs, nextRun),
                 status: 'ready',
