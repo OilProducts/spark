@@ -86,6 +86,18 @@ def _catalog_env_manifest(monkeypatch) -> dict[str, Any]:
             "sonnet_alias": _model_payload(unified_llm.get_model_info("sonnet")),
             "gemini_models": [model.id for model in unified_llm.list_models("gemini")],
             "openai_latest": _model_payload(unified_llm.get_latest_model("openai")),
+            "native_capability_latest": {
+                "openai_tools": _latest_model_id("openai", "tools"),
+                "anthropic_reasoning": _latest_model_id("anthropic", "reasoning"),
+                "gemini_vision": _latest_model_id("gemini", "vision"),
+            },
+            "compatible_latest_defaults": {
+                "openrouter": _model_payload(unified_llm.get_latest_model("openrouter")),
+                "litellm": _model_payload(unified_llm.get_latest_model("litellm")),
+                "openai_compatible": _model_payload(
+                    unified_llm.get_latest_model("openai_compatible")
+                ),
+            },
             "client_default_provider": client.default_provider,
             "client_providers": sorted(client.providers.keys()),
         },
@@ -313,6 +325,11 @@ def _model_payload(model: Any) -> dict[str, Any] | None:
         "output_cost_per_million": model.output_cost_per_million,
         "aliases": list(model.aliases),
     }
+
+
+def _latest_model_id(provider: str, capability: str) -> str | None:
+    model = unified_llm.get_latest_model(provider, capability)
+    return None if model is None else model.id
 
 
 def _error_payload(error: Exception) -> dict[str, Any]:

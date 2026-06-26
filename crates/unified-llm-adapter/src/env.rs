@@ -2,6 +2,15 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub const PROVIDER_REGISTRATION_ORDER: [&str; 6] = [
+    "openai",
+    "anthropic",
+    "gemini",
+    "openrouter",
+    "litellm",
+    "openai_compatible",
+];
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub provider: String,
@@ -123,17 +132,10 @@ impl ProviderEnvironment {
         }
 
         let default_provider = explicit_default.map(normalize_provider).or_else(|| {
-            [
-                "openai",
-                "anthropic",
-                "gemini",
-                "openrouter",
-                "litellm",
-                "openai_compatible",
-            ]
-            .into_iter()
-            .find(|provider| providers.contains_key(*provider))
-            .map(str::to_string)
+            PROVIDER_REGISTRATION_ORDER
+                .into_iter()
+                .find(|provider| providers.contains_key(*provider))
+                .map(str::to_string)
         });
 
         Self {

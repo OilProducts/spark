@@ -1,0 +1,494 @@
+{
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "spec_refs": ["1.1", "1.2", "2.1", "7.1", "8.1"],
+      "title": "Native Rust unified LLM architecture boundary",
+      "summary": "Define the Rust-owned unified LLM runtime as a layered adapter crate with provider specification types, provider utilities, a core client, and high-level API entry points, while preserving the existing Python modules only as oracle or compatibility assets.",
+      "acceptance_criteria": [
+        "Normal Spark server and CLI LLM execution reaches Rust-owned unified LLM code without importing src.unified_llm provider clients.",
+        "The Rust crate exposes a provider adapter contract with name, complete, and stream operations plus optional initialize, close, and supports_tool_choice behavior where applicable.",
+        "The implementation separates shared types, provider utilities, core routing, and high-level orchestration so adapter authors do not need to modify the provider specification contract to add a provider.",
+        "Python unified_llm tests may still run as compatibility or oracle tests, but delivered runtime ownership is documented and exercised through Rust-facing tests."
+      ],
+      "dependencies": [],
+      "target_paths": ["crates/unified-llm-adapter", "src/unified_llm", "tests/compat/providers", "docs/rust-rewrite-migration.md"],
+      "status": "completed",
+      "milestone_id": "M1-core-rust-contract",
+      "notes": "This requirement anchors the scope constraint that the Rust rewrite must replace normal runtime dependence on Python unified_llm provider clients."
+    },
+    {
+      "id": "REQ-002",
+      "spec_refs": ["2.2", "2.5", "2.6", "8.1"],
+      "title": "Client construction and provider routing",
+      "summary": "Implement Client construction from environment variables and explicit adapters, deterministic provider routing, default provider behavior, and module-level default client semantics.",
+      "acceptance_criteria": [
+        "Client.from_env registers only providers whose required environment is present and selects the first registered provider as default.",
+        "Programmatic Client construction accepts explicit adapter instances and an explicit default provider.",
+        "A request with provider set is routed to that provider's adapter.",
+        "A request without provider is routed to default_provider.",
+        "A configuration error is raised when no provider is configured and a request does not specify a provider.",
+        "set_default_client overrides the lazily initialized environment-backed default client used by high-level entry points.",
+        "The client is safe to use concurrently and holds no mutable per-request state that can leak between requests."
+      ],
+      "dependencies": ["REQ-001"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "completed",
+      "milestone_id": "M1-core-rust-contract",
+      "notes": "Provider resolution must never guess from model strings when no default provider exists."
+    },
+    {
+      "id": "REQ-003",
+      "spec_refs": ["2.2", "2.9", "8.1", "8.2"],
+      "title": "Provider environment and model catalog",
+      "summary": "Provide Rust-owned provider environment resolution and an advisory model catalog with lookup, listing, and latest-model selection behavior.",
+      "acceptance_criteria": [
+        "OpenAI, Anthropic, Gemini, OpenRouter, and LiteLLM required and optional environment variables are resolved according to the spec.",
+        "GOOGLE_API_KEY is accepted as a fallback for GEMINI_API_KEY.",
+        "OpenRouter and LiteLLM are treated as first-class OpenAI-compatible providers and require explicit model selection rather than catalog defaults.",
+        "The model catalog includes provider, display name, context window, max output when known, tool support, vision support, reasoning support, costs when known, and aliases.",
+        "Unknown model strings are passed through to providers and are not rejected solely because they are absent from the catalog.",
+        "get_model_info, list_models, and get_latest_model return correct data and support provider and capability filtering."
+      ],
+      "dependencies": ["REQ-001"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers", "specs/unified-llm-spec-md"],
+      "status": "completed",
+      "milestone_id": "M1-core-rust-contract",
+      "notes": "Catalog data should be updateable independently from adapter logic."
+    },
+    {
+      "id": "REQ-004",
+      "spec_refs": ["2.3", "8.1"],
+      "title": "Middleware for complete and stream calls",
+      "summary": "Support middleware that wraps non-streaming and streaming provider calls, can inspect or modify requests and responses, and observes stream events.",
+      "acceptance_criteria": [
+        "Middleware executes in registration order on request entry and reverse registration order on response exit for complete calls.",
+        "Middleware can observe and transform complete responses without bypassing provider routing or error handling.",
+        "Streaming middleware wraps the event iterator and can observe or transform individual stream events.",
+        "Middleware ordering is covered by behavior tests for both complete and stream paths."
+      ],
+      "dependencies": ["REQ-002"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters"],
+      "status": "completed",
+      "milestone_id": "M1-core-rust-contract",
+      "notes": "Middleware is a cross-cutting extension point for logging, caching, budgets, rate limiting, prompt inspection, and circuit breakers."
+    },
+    {
+      "id": "REQ-005",
+      "spec_refs": ["3.1", "3.2", "3.3", "3.4", "3.5", "8.3"],
+      "title": "Unified message and content model",
+      "summary": "Implement the unified message, role, content part, and content data structures including multimodal inputs, tool calls, tool results, and thinking blocks.",
+      "acceptance_criteria": [
+        "Message supports SYSTEM, USER, ASSISTANT, TOOL, and DEVELOPER roles.",
+        "Message convenience constructors create valid system, user, assistant, and tool result messages.",
+        "Message.text concatenates text from all text content parts and returns an empty string when no text exists.",
+        "ContentPart supports TEXT, IMAGE, AUDIO, DOCUMENT, TOOL_CALL, TOOL_RESULT, THINKING, REDACTED_THINKING, and provider-specific string kinds.",
+        "ToolCallData requires a stable ID, name, arguments as parsed JSON or raw string, and type.",
+        "ToolResultData links to a tool_call_id, carries structured or text content, records is_error, and can carry optional image data.",
+        "ThinkingData preserves text, signature, and redacted status for provider round-tripping.",
+        "Direction constraints for content kinds are validated or rejected with clear errors where the Rust API can enforce them."
+      ],
+      "dependencies": ["REQ-001"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "completed",
+      "milestone_id": "M1-core-rust-contract",
+      "notes": "Provider-specific extension content kinds must not require changing the core enum."
+    },
+    {
+      "id": "REQ-006",
+      "spec_refs": ["3.5", "7.3", "8.3", "8.9"],
+      "title": "Media content handling",
+      "summary": "Translate image, audio, and document content through unified data structures, with full image support for URL, raw data, and local file path inputs.",
+      "acceptance_criteria": [
+        "ImageData validates that exactly one of url or data is provided.",
+        "When raw image data has no media_type, image/png is used as the default.",
+        "Local image paths starting with slash, ./, or ~ are read, MIME type is inferred from extension, contents are base64 encoded, and the provider's inline data format is used.",
+        "OpenAI image URL and image data inputs are translated to Responses API input_image payloads, using data URIs for raw or local-file data.",
+        "Anthropic image URL and image data inputs are translated to image source url or base64 payloads.",
+        "Gemini image URL and image data inputs are translated to fileData or inlineData payloads.",
+        "Unsupported audio or document content for a provider is either translated correctly or rejected with a provider-specific warning or error without corrupting other content parts.",
+        "Behavior tests cover text plus image in the same user message."
+      ],
+      "dependencies": ["REQ-005"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M2-native-provider-translation",
+      "notes": "Image support is critical for coding-agent screenshot and diagram workflows."
+    },
+    {
+      "id": "REQ-007",
+      "spec_refs": ["3.6", "3.7", "3.8", "3.9", "3.11", "3.12", "8.3", "8.5"],
+      "title": "Request response usage and metadata model",
+      "summary": "Implement unified Request, Response, FinishReason, Usage, Warning, and RateLimitInfo types with accessors and aggregation behavior.",
+      "acceptance_criteria": [
+        "Request carries model, messages, optional provider, tools, tool_choice, response_format, temperature, top_p, max_tokens, stop_sequences, reasoning_effort, metadata, and provider_options.",
+        "Provider options are preserved as a provider-specific escape hatch and ignored by adapters that do not understand a key.",
+        "Response carries provider response ID, actual model, provider, assistant message, finish reason, usage, raw provider JSON, warnings, and optional rate limit metadata.",
+        "Response.text concatenates final text content, Response.tool_calls extracts tool calls, and Response.reasoning concatenates thinking text when available.",
+        "FinishReason preserves both unified reason and raw provider reason.",
+        "Provider finish reasons map to stop, length, tool_calls, content_filter, error, or other according to the spec tables.",
+        "Usage addition sums required integer fields and optional fields according to None-as-absent semantics.",
+        "RateLimitInfo is populated from provider response headers when available."
+      ],
+      "dependencies": ["REQ-005"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "completed",
+      "milestone_id": "M1-core-rust-contract",
+      "notes": "Usage and finish reason normalization are shared by complete, stream, tools, structured output, and retries."
+    },
+    {
+      "id": "REQ-008",
+      "spec_refs": ["2.7", "7.2", "7.3", "7.4", "7.8", "8.2"],
+      "title": "Native provider request translation",
+      "summary": "Translate unified requests to each provider's native API, not a lowest-common-denominator compatibility protocol.",
+      "acceptance_criteria": [
+        "OpenAI native adapter sends requests to the Responses API /v1/responses and not Chat Completions.",
+        "Anthropic native adapter sends requests to the Messages API /v1/messages.",
+        "Gemini native adapter sends requests to the Gemini API generateContent endpoint.",
+        "System and developer messages are extracted or merged according to each provider convention.",
+        "All five roles are translated according to provider-specific role handling.",
+        "Tools and tool choice are translated according to the spec mapping for OpenAI, Anthropic, and Gemini.",
+        "Generation parameters and response_format are translated to provider-native fields.",
+        "provider_options for the active provider are merged into the provider request body or headers without affecting other providers."
+      ],
+      "dependencies": ["REQ-005", "REQ-007"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M2-native-provider-translation",
+      "notes": "This requirement preserves provider/model behavior while avoiding Python unified_llm clients in normal runtime."
+    },
+    {
+      "id": "REQ-009",
+      "spec_refs": ["2.8", "3.6", "7.3", "7.8", "8.2"],
+      "title": "Provider feature flags and beta headers",
+      "summary": "Pass provider-specific feature flags through cleanly, including Anthropic beta headers and provider-specific body options for OpenAI and Gemini.",
+      "acceptance_criteria": [
+        "provider_options.anthropic.beta_headers is joined into a comma-separated anthropic-beta request header.",
+        "Anthropic beta headers can enable thinking, interleaved thinking, token-efficient tools, prompt caching, and long-context features without changing the core Request type.",
+        "OpenAI built-in tool and feature options can be supplied through provider_options or equivalent typed options and appear in the Responses API body.",
+        "Gemini safety settings, grounding configuration, thinking configuration, and cached content references can be supplied through provider_options or equivalent typed options and appear in the request body.",
+        "Unsupported provider_options keys are ignored or surfaced as warnings without breaking portable requests."
+      ],
+      "dependencies": ["REQ-008"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters"],
+      "status": "pending",
+      "milestone_id": "M2-native-provider-translation",
+      "notes": "Escape hatch behavior is intentionally non-portable but must be explicit and observable."
+    },
+    {
+      "id": "REQ-010",
+      "spec_refs": ["2.10", "3.9", "7.3", "7.8", "8.6"],
+      "title": "Prompt caching support and accounting",
+      "summary": "Support provider prompt caching behavior and map cache usage statistics into unified Usage fields.",
+      "acceptance_criteria": [
+        "OpenAI cache_read_tokens is populated from usage.input_tokens_details.cached_tokens when present.",
+        "Gemini cache_read_tokens is populated from usageMetadata.cachedContentTokenCount when present.",
+        "Anthropic request translation supports cache_control annotations on content blocks.",
+        "Anthropic automatic caching, when enabled, injects cache_control breakpoints on the system prompt, tool definitions, and stable conversation prefix using a documented heuristic.",
+        "Anthropic prompt-caching-2024-07-31 beta header is included automatically when cache_control is present.",
+        "Anthropic cache_read_tokens and cache_write_tokens are populated from provider usage fields.",
+        "provider_options.anthropic.auto_cache = false disables automatic Anthropic cache breakpoint injection.",
+        "A multi-turn agentic session test can observe cache_read_tokens for providers that report them."
+      ],
+      "dependencies": ["REQ-007", "REQ-008", "REQ-009"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers", "docs/rust-rewrite-migration.md"],
+      "status": "pending",
+      "milestone_id": "M2-native-provider-translation",
+      "notes": "Anthropic caching is required because it is not automatic."
+    },
+    {
+      "id": "REQ-011",
+      "spec_refs": ["3.5", "3.9", "7.3", "7.8", "8.5"],
+      "title": "Reasoning and thinking token support",
+      "summary": "Preserve reasoning controls, visible thinking blocks, signatures, and reasoning token accounting across providers.",
+      "acceptance_criteria": [
+        "OpenAI reasoning_effort maps to Responses API reasoning.effort for GPT-5+ reasoning models.",
+        "OpenAI reasoning_tokens is populated from usage.output_tokens_details.reasoning_tokens.",
+        "Anthropic extended thinking options enable thinking blocks through provider_options and beta headers.",
+        "Anthropic thinking and redacted_thinking content blocks are returned as THINKING or REDACTED_THINKING content parts.",
+        "Anthropic thinking signatures and redacted payloads are round-tripped verbatim in subsequent assistant messages.",
+        "Anthropic reasoning_tokens is estimated from thinking blocks when exact provider counts are unavailable.",
+        "Gemini thinkingConfig can be passed through and usageMetadata.thoughtsTokenCount maps to reasoning_tokens.",
+        "Usage reports reasoning_tokens separately from output_tokens."
+      ],
+      "dependencies": ["REQ-007", "REQ-008", "REQ-009"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M2-native-provider-translation",
+      "notes": "Thinking signatures are only portable for same-provider, same-model continuation."
+    },
+    {
+      "id": "REQ-012",
+      "spec_refs": ["7.3", "7.5", "7.8", "8.2", "8.3", "8.9"],
+      "title": "Provider response translation",
+      "summary": "Normalize provider complete responses into the unified Response, Message, ContentPart, FinishReason, Usage, raw, warning, and rate-limit model.",
+      "acceptance_criteria": [
+        "OpenAI Responses API output items are parsed into text, tool call, and usage fields, including reasoning token details.",
+        "Anthropic content blocks are parsed into text, tool_use, thinking, redacted_thinking, and usage fields.",
+        "Gemini candidates parts are parsed into text, functionCall, thought parts when available, finish reason, and usageMetadata.",
+        "Gemini tool-call responses generate stable synthetic tool call IDs and preserve mappings needed for follow-up tool results.",
+        "Provider raw response JSON is preserved in Response.raw for debugging.",
+        "Provider rate limit headers are parsed into RateLimitInfo when present.",
+        "Finish reason mapping tests cover stop, length, tool_calls, content_filter, error, and other outcomes."
+      ],
+      "dependencies": ["REQ-007", "REQ-008", "REQ-011"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M2-native-provider-translation",
+      "notes": "Response translation must preserve observable behavior used by existing adapters and compatibility tests."
+    },
+    {
+      "id": "REQ-013",
+      "spec_refs": ["6.1", "6.2", "6.3", "6.4", "6.5", "6.7", "7.6", "8.8"],
+      "title": "Error taxonomy and provider error translation",
+      "summary": "Implement the unified error hierarchy, provider error fields, retryability classification, HTTP status mapping, Gemini gRPC mapping, message-based classification, and rate-limit metadata.",
+      "acceptance_criteria": [
+        "All errors inherit from SDKError and expose message and optional cause.",
+        "ProviderError exposes provider, status_code, error_code, retryable, retry_after, and raw response fields.",
+        "HTTP statuses 400, 401, 403, 404, 408, 413, 422, 429, and 500-599 map to the specified error types and retryable flags.",
+        "Gemini gRPC status codes map to the specified unified error types.",
+        "Ambiguous error bodies are classified by message signals for not found, authentication, context length, content filter, and safety cases.",
+        "Retry-After is parsed from provider headers and stored on rate limit errors.",
+        "Unknown provider errors default to retryable.",
+        "Provider error translation preserves raw provider error bodies for debugging."
+      ],
+      "dependencies": ["REQ-007", "REQ-008"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M3-errors-retry-streaming-compatible",
+      "notes": "RequestTimeoutError is non-retryable by default unless application retry policy opts in."
+    },
+    {
+      "id": "REQ-014",
+      "spec_refs": ["6.3", "6.6", "6.7", "8.8"],
+      "title": "Retry policy and backoff behavior",
+      "summary": "Provide high-level retry behavior with exponential backoff, jitter, Retry-After handling, per-call retry scope, and low-level no-retry semantics.",
+      "acceptance_criteria": [
+        "RetryPolicy supports max_retries, base_delay, max_delay, backoff_multiplier, jitter, and on_retry callback.",
+        "Backoff delay uses min(base_delay * backoff_multiplier^attempt, max_delay).",
+        "Jitter multiplies delay by a random factor between 0.5 and 1.5 when enabled.",
+        "Retry-After overrides calculated backoff when present and not greater than max_delay.",
+        "A Retry-After greater than max_delay prevents retry and raises the original error with retry_after set.",
+        "max_retries = 0 disables high-level automatic retries.",
+        "Low-level Client.complete and Client.stream do not retry automatically.",
+        "High-level generate retries individual LLM calls, not entire multi-step operations.",
+        "Streaming only retries the initial connection and does not retry after partial data has been delivered.",
+        "generate_object does not retry schema validation failures."
+      ],
+      "dependencies": ["REQ-013"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M3-errors-retry-streaming-compatible",
+      "notes": "Retry semantics must preserve existing error and streaming behavior."
+    },
+    {
+      "id": "REQ-015",
+      "spec_refs": ["3.13", "3.14", "4.2", "4.4", "7.7", "8.4", "8.9"],
+      "title": "Unified streaming event model",
+      "summary": "Normalize provider streaming protocols into StreamEvent values with start/delta/end lifecycle events, final response accumulation, and error propagation.",
+      "acceptance_criteria": [
+        "StreamEvent supports type, text delta and text_id fields, reasoning deltas, tool call data, finish reason, usage, full response, error, and raw provider event payloads.",
+        "Client.stream returns an async iterator immediately and yields StreamEvent values as provider data arrives.",
+        "Every successful stream terminates with FINISH containing finish_reason, usage, and the complete accumulated Response.",
+        "Text, reasoning, and tool call events follow a start/delta/end lifecycle with stable IDs.",
+        "Consumers that filter TEXT_DELTA can concatenate deltas to the same text returned by the final response.",
+        "Stream errors after partial delivery surface as stream error events or stream errors without silently retrying.",
+        "Stream resources can be explicitly closed to avoid leaking provider connections."
+      ],
+      "dependencies": ["REQ-007", "REQ-012", "REQ-013"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M3-errors-retry-streaming-compatible",
+      "notes": "The start/delta/end pattern is required for multiple concurrent content segments and tool calls."
+    },
+    {
+      "id": "REQ-016",
+      "spec_refs": ["7.7", "7.8", "8.2", "8.4", "8.9"],
+      "title": "Provider streaming translation",
+      "summary": "Implement SSE and provider-specific streaming parsers for OpenAI Responses API, Anthropic Messages API, Gemini streaming chunks, and OpenAI-compatible Chat Completions.",
+      "acceptance_criteria": [
+        "The SSE parser handles event lines, multi-line data lines, retry lines, comment lines, and blank event boundaries.",
+        "OpenAI Responses streaming events map response.created to STREAM_START, output_text.delta to TEXT_DELTA, function_call_arguments.delta to TOOL_CALL_DELTA, output_item.done to text or tool-call end events, and response.completed to FINISH.",
+        "Anthropic streaming events map message_start, content_block_start, content_block_delta, content_block_stop, message_delta, and message_stop to unified stream events.",
+        "Gemini SSE or JSON chunks map text parts, functionCall parts, finish reasons, and final usage to unified stream events.",
+        "Gemini function calls emitted as complete objects produce TOOL_CALL_START and TOOL_CALL_END.",
+        "OpenAI-compatible Chat Completions streaming handles delta content, delta tool_calls, usage chunks, and data: [DONE].",
+        "Final streaming usage includes reasoning and cache token fields when providers report them."
+      ],
+      "dependencies": ["REQ-015"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M3-errors-retry-streaming-compatible",
+      "notes": "OpenAI native streaming must use the Responses API event vocabulary."
+    },
+    {
+      "id": "REQ-017",
+      "spec_refs": ["4.1", "4.2", "4.3", "4.4", "8.4"],
+      "title": "High-level generate and stream APIs",
+      "summary": "Provide high-level non-streaming and streaming generation APIs that standardize prompts, call the core client, execute tool loops, aggregate usage, and expose step results.",
+      "acceptance_criteria": [
+        "generate accepts either prompt or messages, but rejects calls that provide both.",
+        "prompt is converted to a single user message and system is prepended as a system message.",
+        "generate returns GenerateResult with text, reasoning, tool_calls, tool_results, finish_reason, usage, total_usage, steps, response, and optional output.",
+        "usage is the final step usage and total_usage aggregates all steps.",
+        "stream accepts the same generation parameters and yields a StreamResult over unified events.",
+        "StreamResult.response returns the accumulated response after stream completion.",
+        "StreamResult.text_stream yields only text deltas.",
+        "StreamResult.partial_response exposes current accumulated state while streaming.",
+        "StreamAccumulator can rebuild a complete Response from stream events."
+      ],
+      "dependencies": ["REQ-002", "REQ-007", "REQ-014", "REQ-015"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M4-high-level-tools-structured-output",
+      "notes": "Low-level client calls stay no-retry; high-level APIs apply retry behavior."
+    },
+    {
+      "id": "REQ-018",
+      "spec_refs": ["4.7", "8.4"],
+      "title": "Cancellation and timeout handling",
+      "summary": "Support cooperative cancellation and timeout scopes for high-level operations and provider adapters.",
+      "acceptance_criteria": [
+        "generate accepts an abort signal and raises AbortError when the signal is triggered before completion.",
+        "stream accepts an abort signal, closes the underlying provider connection, and raises or emits AbortError when cancelled.",
+        "High-level operations accept total timeout and per-step timeout configuration.",
+        "Provider adapters support connect, request, and stream_read timeout scopes with default values of 10 seconds, 120 seconds, and 30 seconds respectively.",
+        "Timeout errors use RequestTimeoutError and follow retryability rules from the error taxonomy.",
+        "Timeout behavior is tested for complete and stream paths without depending on provider live services."
+      ],
+      "dependencies": ["REQ-013", "REQ-014", "REQ-017"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters"],
+      "status": "pending",
+      "milestone_id": "M4-high-level-tools-structured-output",
+      "notes": "Adapters may expose async-native APIs and sync wrappers where appropriate, but behavior must match the spec."
+    },
+    {
+      "id": "REQ-019",
+      "spec_refs": ["5.1", "5.2", "5.3", "5.4", "5.5", "7.4", "8.7"],
+      "title": "Tool definitions choices and passive tool calls",
+      "summary": "Implement tool definitions, tool execute handler contracts, ToolChoice translation, ToolCall and ToolResult extraction, and passive tool behavior.",
+      "acceptance_criteria": [
+        "Tool names validate as [a-zA-Z][a-zA-Z0-9_]* with maximum length 64.",
+        "Tool parameter schemas require a JSON Schema object at the root.",
+        "Tool execute handlers accept parsed JSON arguments and return string, object, list, or other JSON-serializable values.",
+        "Tool execute handler errors become tool error results when used in high-level tool loops.",
+        "Recognized injected context values include messages, abort_signal, and tool_call_id where the language interface supports injection.",
+        "ToolChoice supports auto, none, required, and named modes, with tool_name required for named mode.",
+        "ToolChoice maps to provider-specific values according to the spec, including omitting Anthropic tools entirely for none mode.",
+        "Unsupported tool choice modes raise UnsupportedToolChoiceError.",
+        "Passive tools without execute handlers return tool calls to the caller without automatic execution."
+      ],
+      "dependencies": ["REQ-005", "REQ-008", "REQ-013"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M4-high-level-tools-structured-output",
+      "notes": "ToolCall preserves raw_arguments before parsing for debugging and repair."
+    },
+    {
+      "id": "REQ-020",
+      "spec_refs": ["5.6", "5.7", "5.8", "5.9", "5.10", "8.7"],
+      "title": "Automatic tool execution loop",
+      "summary": "Implement high-level active tool execution loops with round limits, concurrent execution, ordered batched results, validation or repair, and streaming step boundaries.",
+      "acceptance_criteria": [
+        "generate with active tools automatically executes returned tool calls and continues until no tool calls remain, finish_reason is not tool_calls, max_tool_rounds is reached, or stop_when returns true.",
+        "max_tool_rounds = 1 permits the initial call, one tool execution batch, and one continuation call.",
+        "max_tool_rounds = 0 disables automatic tool execution and returns tool calls to the caller.",
+        "Multiple tool calls returned in one model response are executed concurrently.",
+        "All tool results from one response are sent back together in a single continuation request.",
+        "Tool result ordering matches the original tool call ordering even when execution completes out of order.",
+        "Partial tool execution failures are sent as is_error = true results without aborting successful sibling calls.",
+        "Unknown tool calls produce error tool results instead of exceptions.",
+        "Tool argument strings are parsed as JSON and optionally validated against the tool schema before handler execution.",
+        "Configured repair behavior is attempted when validation fails; otherwise an error tool result is sent.",
+        "Streaming with active tools emits tool call events as they form and a step_finish event between model steps."
+      ],
+      "dependencies": ["REQ-017", "REQ-019"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M4-high-level-tools-structured-output",
+      "notes": "Parallel execution and single continuation batching are required for coding-agent correctness."
+    },
+    {
+      "id": "REQ-021",
+      "spec_refs": ["3.10", "4.5", "4.6", "8.4", "8.9"],
+      "title": "Structured output generation",
+      "summary": "Implement response formats, generate_object, stream_object, provider-specific structured-output strategies, validation, and failure behavior.",
+      "acceptance_criteria": [
+        "ResponseFormat supports text, json, and json_schema with strict mode and required schema for json_schema.",
+        "generate_object sends native strict JSON Schema response_format to OpenAI where supported.",
+        "generate_object sends Gemini responseMimeType application/json and responseSchema where supported.",
+        "generate_object supports Anthropic structured output through schema instructions or tool-based extraction.",
+        "generate_object parses and validates final output against the requested schema and returns it in GenerateResult.output.",
+        "NoObjectGeneratedError is raised when parsing or validation fails.",
+        "stream_object incrementally parses JSON text from streaming events and yields partial object updates.",
+        "stream_object.object returns the final validated object after stream completion."
+      ],
+      "dependencies": ["REQ-007", "REQ-017"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M4-high-level-tools-structured-output",
+      "notes": "Schema validation failures are model-output failures and are not retried by default."
+    },
+    {
+      "id": "REQ-022",
+      "spec_refs": ["7.10", "8.2"],
+      "title": "OpenAI-compatible provider adapters",
+      "summary": "Provide an OpenAI-compatible Chat Completions adapter for third-party endpoints and named OpenRouter and LiteLLM wrappers with correct environment and model behavior.",
+      "acceptance_criteria": [
+        "OpenAICompatibleAdapter uses /v1/chat/completions and not /v1/responses.",
+        "OpenAICompatibleAdapter translates unified messages, tools, tool choice, responses, usage, errors, and Chat Completions streams into unified types.",
+        "The compatible adapter documents and exposes that reasoning tokens, built-in Responses API tools, and Responses-only features are unsupported.",
+        "OpenRouterAdapter defaults to https://openrouter.ai/api/v1 and requires OPENROUTER_API_KEY unless explicitly configured otherwise.",
+        "OpenRouter forwards OPENROUTER_HTTP_REFERER and OPENROUTER_TITLE when configured.",
+        "LiteLLMAdapter requires LITELLM_BASE_URL and accepts optional LITELLM_API_KEY.",
+        "OpenRouter and LiteLLM require explicit model selection rather than using provider catalog defaults."
+      ],
+      "dependencies": ["REQ-007", "REQ-013", "REQ-016"],
+      "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
+      "status": "pending",
+      "milestone_id": "M3-errors-retry-streaming-compatible",
+      "notes": "This path exists for compatibility endpoints and must remain distinct from native OpenAI."
+    },
+    {
+      "id": "REQ-023",
+      "spec_refs": ["8.2", "8.9", "8.10"],
+      "title": "Cross-provider parity validation",
+      "summary": "Validate the Rust runtime against a cross-provider matrix for text, streaming, media, tools, structured output, reasoning, errors, usage, caching, and provider options.",
+      "acceptance_criteria": [
+        "Parity tests cover simple text generation for OpenAI, Anthropic, and Gemini using mocked or recorded provider interfaces where live keys are unavailable.",
+        "Parity tests cover streaming text generation and assert text deltas concatenate to the final response text.",
+        "Parity tests cover image URL and base64 image inputs for each native provider.",
+        "Parity tests cover single tool calls, multiple parallel tool calls, three-or-more-round tool loops, and streaming with tool calls.",
+        "Parity tests cover generate_object structured output for each native provider strategy.",
+        "Parity tests cover reasoning or thinking token reporting for each provider.",
+        "Parity tests cover invalid API key or authentication errors and rate limit errors.",
+        "Parity tests cover accurate usage token mapping and provider-specific options pass-through.",
+        "A real-key smoke test plan exists for OpenAI, Anthropic, and Gemini and is gated so it does not fail ordinary local test runs without credentials."
+      ],
+      "dependencies": ["REQ-008", "REQ-012", "REQ-016", "REQ-017", "REQ-020", "REQ-021"],
+      "target_paths": ["tests/adapters", "tests/compat/providers", "crates/unified-llm-adapter", "docs/rust-rewrite-migration.md"],
+      "status": "pending",
+      "milestone_id": "M6-parity-validation-migration-closure",
+      "notes": "Tests should assert observable behavior rather than source strings or prompt text."
+    },
+    {
+      "id": "REQ-024",
+      "spec_refs": ["8.1", "8.2", "8.3", "8.4", "8.5", "8.6", "8.7", "8.8", "8.9", "8.10"],
+      "title": "Migration completion and documentation",
+      "summary": "Record Rust ownership, Python compatibility status, validation evidence, and operational guidance for the unified LLM runtime migration.",
+      "acceptance_criteria": [
+        "docs/rust-rewrite-migration.md identifies the unified LLM runtime path as Rust-owned for normal Spark server and CLI execution.",
+        "The migration document states which Python unified_llm tests remain oracle or historical compatibility tests.",
+        "The migration document records any retained Python unified_llm surfaces that are not part of normal runtime execution.",
+        "Validation evidence references the Rust tests and compatibility tests that cover provider routing, request and response translation, streaming, errors, retry, usage, tools, structured output, and caching.",
+        "Any unsupported or intentionally deferred provider capabilities are documented as explicit non-goals or future work, not as silent gaps.",
+        "The full repository test suite passes with uv run pytest -q before the implementation is reported complete."
+      ],
+      "dependencies": ["REQ-001", "REQ-023"],
+      "target_paths": ["docs/rust-rewrite-migration.md", "specs/unified-llm-spec-md", "tests/adapters", "tests/compat/providers", "crates/unified-llm-adapter"],
+      "status": "pending",
+      "milestone_id": "M6-parity-validation-migration-closure",
+      "notes": "This closes the spec by tying delivered behavior to the Rust rewrite migration record."
+    }
+  ]
+}

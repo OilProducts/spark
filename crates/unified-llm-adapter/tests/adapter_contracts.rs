@@ -8,9 +8,9 @@ use unified_llm_adapter::{
     get_latest_model, get_model_info, list_models, resolve_effective_llm_model,
     resolve_effective_llm_provider, resolve_effective_reasoning_effort, AdapterError,
     AdapterErrorKind, FinishReason, LlmRequest, LlmResolutionInputs, Message, ProviderConfig,
-    ProviderEnvironment, ResponseFormat, RetryPolicy, StreamAccumulator, StreamEvent,
-    StreamEventType, ToolCall, ToolResult, Usage, RUNTIME_LAUNCH_MODEL_KEY,
-    RUNTIME_LAUNCH_PROVIDER_KEY, RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+    ProviderEnvironment, ResponseFormat, RetryPolicy, StreamAccumulator, StreamEvent, ToolCall,
+    ToolResult, Usage, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
+    RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
 };
 
 #[test]
@@ -92,6 +92,16 @@ fn model_catalog_env_resolution_observation() -> Value {
             .map(|model| model.id)
             .collect::<Vec<_>>(),
         "openai_latest": get_latest_model("openai", None),
+        "native_capability_latest": {
+            "openai_tools": get_latest_model("openai", Some("tools")).map(|model| model.id),
+            "anthropic_reasoning": get_latest_model("anthropic", Some("reasoning")).map(|model| model.id),
+            "gemini_vision": get_latest_model("gemini", Some("vision")).map(|model| model.id),
+        },
+        "compatible_latest_defaults": {
+            "openrouter": get_latest_model("openrouter", None),
+            "litellm": get_latest_model("litellm", None),
+            "openai_compatible": get_latest_model("openai_compatible", None),
+        },
         "client_default_provider": providers.default_provider,
         "client_providers": providers.providers.keys().cloned().collect::<Vec<_>>(),
     })
@@ -259,16 +269,7 @@ fn retry_error_usage_stream_observation() -> Value {
     );
 
     let mut accumulator = StreamAccumulator::default();
-    accumulator.push(StreamEvent {
-        event_type: StreamEventType::ProviderEvent,
-        text: None,
-        reasoning: None,
-        tool_call: None,
-        finish_reason: None,
-        usage: None,
-        error: None,
-        raw: Some(json!({"kind": "provider"})),
-    });
+    accumulator.push(StreamEvent::provider_event(json!({"kind": "provider"})));
     accumulator.push(StreamEvent::text_delta("hello "));
     accumulator.push(StreamEvent::text_delta("world"));
     accumulator.push(StreamEvent::finish(
@@ -311,12 +312,12 @@ fn retry_error_usage_stream_observation() -> Value {
         },
         "stream": {
             "text": accumulator.final_text,
-            "finish_reason": accumulator.finish_reason.unwrap(),
+            "finish_reason": accumulator.finish_reason.unwrap().reason,
             "usage": accumulator.usage.unwrap(),
             "raw_events": accumulator.raw_provider_events,
             "event_types": accumulator.events
                 .iter()
-                .map(|event| serde_json::to_value(event.event_type).unwrap())
+                .map(|event| serde_json::to_value(&event.r#type).unwrap())
                 .collect::<Vec<_>>(),
         },
         "usage_cost": cost,
@@ -335,6 +336,10 @@ fn request_tool_structured_output_observation() -> Value {
         }),
         tools: Vec::new(),
         tool_choice: None,
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        stop_sequences: Vec::new(),
         provider_options: BTreeMap::from([("trace".to_string(), json!("enabled"))]),
         metadata: BTreeMap::from([("run_id".to_string(), json!("run-1"))]),
     };
@@ -377,7 +382,7 @@ fn message_observation(message: &Message) -> Value {
             unified_llm_adapter::ContentPart::Text { text } => Some(text.clone()),
             _ => None,
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| message.text());
     json!({
         "role": message.role,
         "text": text,

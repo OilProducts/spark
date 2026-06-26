@@ -1,0 +1,213 @@
+{
+  "decisions": [
+    {
+      "id": "CD-ULLM-RUST-001",
+      "title": "Rust owns the normal unified LLM runtime path",
+      "summary": "Normal Spark server and CLI LLM execution must use the Rust unified-llm-adapter runtime instead of importing Python unified_llm provider clients.",
+      "requirement_ids": ["REQ-001", "REQ-023", "REQ-024"],
+      "spec_refs": ["1.1", "1.2", "2.1", "7.1", "8.1", "8.10"],
+      "architecture_refs": ["Canonical Repository Topology", "Implementation Boundaries", "Repository Hygiene"],
+      "behavioral_contract": "A normal Spark LLM request reaches Rust-owned request, routing, provider, streaming, retry, and result code. Python unified_llm modules may remain importable for compatibility tests, but they are not the provider execution mechanism for server or CLI runtime.",
+      "implementation_contract": "Implement provider clients, core client, high-level APIs, and migration wiring in crates/unified-llm-adapter and Rust consumers. Do not satisfy runtime migration by shelling out to Python, importing src.unified_llm.adapters, or wrapping Python provider_utils.",
+      "validation_expectations": "Rust-facing tests and migration documentation must show the runtime ownership boundary. Compatibility tests may compare Python oracle fixtures, but completion evidence must include Rust-owned behavior tests and uv run pytest -q."
+    },
+    {
+      "id": "CD-ULLM-RUST-002",
+      "title": "Single layered Rust crate, not duplicate delivery layers",
+      "summary": "The specification's four layers are implemented inside crates/unified-llm-adapter with clear module boundaries instead of parallel wrapper stacks.",
+      "requirement_ids": ["REQ-001", "REQ-002", "REQ-004", "REQ-017"],
+      "spec_refs": ["2.1", "2.3", "2.4", "4.1", "4.2", "4.3", "4.4"],
+      "architecture_refs": ["Canonical Repository Topology", "Implementation Boundaries", "High-Level Generation And Tools"],
+      "behavioral_contract": "Provider authors implement one Rust adapter contract; application callers use one Rust client/high-level API surface. Behavior is not split across duplicate Python and Rust runtime implementations for normal execution.",
+      "implementation_contract": "Keep public DTOs, provider utilities, client/middleware, adapters, and high-level orchestration in the Rust crate modules described by the architecture. Shared helpers are imported by adapters; high-level APIs call the Rust Client.",
+      "validation_expectations": "Tests must exercise the public Rust API and provider adapter behavior. Review must reject wrapper-only implementations that pass tests by delegating primary behavior to another runtime."
+    },
+    {
+      "id": "CD-ULLM-RUST-003",
+      "title": "Spec names are canonical, existing Llm names are aliases",
+      "summary": "Rust public names should match the specification where practical; existing LlmRequest and LlmResponse may remain only as aliases for compatibility.",
+      "requirement_ids": ["REQ-005", "REQ-007", "REQ-015", "REQ-017"],
+      "spec_refs": ["3.1", "3.6", "3.7", "3.8", "3.13", "4.3"],
+      "architecture_refs": ["Public Interface", "Data Translation Contracts"],
+      "behavioral_contract": "The public contract is Request, Response, Message, ContentPart, FinishReason, Usage, StreamEvent, and related spec types. Compatibility aliases must serialize and behave identically to the canonical types.",
+      "implementation_contract": "Expose canonical names in lib.rs. If LlmRequest or LlmResponse remain for existing callers, implement them as type aliases or re-exports, not separate structs with divergent fields.",
+      "validation_expectations": "Round-trip serialization and accessor tests must cover canonical names and any retained aliases. Tests must fail if alias behavior diverges from the canonical type."
+    },
+    {
+      "id": "CD-ULLM-RUST-004",
+      "title": "Deterministic provider routing and environment registration",
+      "summary": "Provider routing is explicit-provider first, default-provider second, and never model-string inferred. Environment default selection follows a fixed provider order.",
+      "requirement_ids": ["REQ-002", "REQ-003"],
+      "spec_refs": ["2.2", "2.5", "2.6", "2.9", "8.1"],
+      "architecture_refs": ["Provider Routing And Configuration"],
+      "behavioral_contract": "A request with provider set routes to that adapter. A request without provider uses default_provider. If no default is configured, a ConfigurationError is raised. Model strings do not select providers.",
+      "implementation_contract": "Client.from_env registers configured providers in the order openai, anthropic, gemini, openrouter, litellm, openai_compatible. The first configured provider becomes the default unless an explicit default is supplied and resolves to a configured provider.",
+      "validation_expectations": "Environment tests must cover required and optional variables, GOOGLE_API_KEY fallback, explicit default normalization, no-provider errors, unknown model pass-through, and OpenRouter/LiteLLM explicit model requirements."
+    },
+    {
+      "id": "CD-ULLM-RUST-005",
+      "title": "Native providers use native APIs; compatible providers are separate",
+      "summary": "OpenAI, Anthropic, and Gemini adapters use their native protocols, while OpenAI-compatible endpoints use a separate Chat Completions adapter path.",
+      "requirement_ids": ["REQ-008", "REQ-012", "REQ-016", "REQ-022", "REQ-023"],
+      "spec_refs": ["2.7", "7.2", "7.3", "7.7", "7.8", "7.10", "8.2", "8.9"],
+      "architecture_refs": ["Provider Adapter Architecture"],
+      "behavioral_contract": "Native OpenAI requests go to /v1/responses, Anthropic requests go to /v1/messages, and Gemini requests go to generateContent or streamGenerateContent. OpenRouter, LiteLLM, and explicit compatible endpoints use /v1/chat/completions and do not claim Responses-only capabilities.",
+      "implementation_contract": "Implement distinct adapter modules for native OpenAI and OpenAI-compatible protocols. Do not share a lowest-common-denominator Chat Completions request builder as the primary native provider path.",
+      "validation_expectations": "Mock transport tests must assert method, path, headers, request body shape, stream vocabulary, response parsing, and unsupported feature warnings for each provider family. OpenAI-compatible scaffolding may land before M3, but REQ-022 is not complete until Chat Completions response translation, error translation, and streaming tests pass."
+    },
+    {
+      "id": "CD-ULLM-RUST-006",
+      "title": "Provider options are namespace-scoped escape hatches",
+      "summary": "provider_options are intentionally non-portable and only the active provider namespace may affect an adapter call.",
+      "requirement_ids": ["REQ-007", "REQ-008", "REQ-009", "REQ-010", "REQ-011", "REQ-022"],
+      "spec_refs": ["2.8", "3.6", "7.2", "7.3", "7.8"],
+      "architecture_refs": ["Data Translation Contracts", "Provider Adapter Architecture"],
+      "behavioral_contract": "Provider-specific options can enable beta headers, built-in tools, safety settings, grounding, thinking, cached content, and other native features. Options for other providers do not leak into the active request.",
+      "implementation_contract": "Adapters read request.provider_options[provider_name] only. Anthropic beta_headers become a comma-separated anthropic-beta header. OpenAI and Gemini options merge into their native request bodies using documented keys. Unsupported active-provider keys are ignored or surfaced as warnings.",
+      "validation_expectations": "Tests must send mixed provider_options and assert that only the active provider's options appear in the outgoing request while the original request remains unmodified."
+    },
+    {
+      "id": "CD-ULLM-RUST-007",
+      "title": "Content model is extensible and media handling is adapter-owned",
+      "summary": "The unified content model includes all spec content kinds plus custom provider-specific payloads, and media translation happens in Rust provider utilities.",
+      "requirement_ids": ["REQ-005", "REQ-006", "REQ-008", "REQ-012"],
+      "spec_refs": ["3.1", "3.2", "3.3", "3.4", "3.5", "7.3", "8.3", "8.9"],
+      "architecture_refs": ["Data Translation Contracts"],
+      "behavioral_contract": "Messages can carry text, images, audio, documents, tool calls, tool results, thinking, redacted thinking, and custom provider-specific content. Image URL, bytes, and local path inputs translate correctly per provider.",
+      "implementation_contract": "Implement typed content variants and a custom provider/raw variant. Validate ImageData source exclusivity, default raw image media_type to image/png, normalize local image paths, infer MIME type, base64 encode bytes, and reject unsupported media with provider-specific errors or warnings.",
+      "validation_expectations": "Behavior tests must cover Message.text, direction constraints, text plus image in one user message, URL image, raw base64 image, local path image, and unsupported audio/document handling."
+    },
+    {
+      "id": "CD-ULLM-RUST-008",
+      "title": "Anthropic prompt caching uses a documented default heuristic",
+      "summary": "Anthropic automatic cache-control injection is enabled by default with a stable-prefix heuristic and an explicit opt-out.",
+      "requirement_ids": ["REQ-010", "REQ-009", "REQ-011", "REQ-012"],
+      "spec_refs": ["2.10", "3.9", "7.3", "7.8", "8.6"],
+      "architecture_refs": ["Data Translation Contracts", "Provider Adapter Architecture"],
+      "behavioral_contract": "Callers get cache accounting for providers that report it. For Anthropic, cache controls are added automatically unless provider_options.anthropic.auto_cache is false, and explicit user cache controls take precedence.",
+      "implementation_contract": "Inject Anthropic cache_control breakpoints, within provider limits, on the merged system prompt, tool definitions, and stable conversation prefix before the current user turn. Add prompt-caching-2024-07-31 to anthropic-beta whenever cache_control is present.",
+      "validation_expectations": "Tests must assert automatic cache-control placement, explicit opt-out, preservation of explicit cache controls, automatic beta header injection, and cache_read/cache_write usage mapping."
+    },
+    {
+      "id": "CD-ULLM-RUST-009",
+      "title": "Reasoning and thinking are preserved without inventing portability",
+      "summary": "Reasoning controls and token accounting are normalized, while provider-specific visible thinking is preserved only where valid.",
+      "requirement_ids": ["REQ-011", "REQ-012", "REQ-015", "REQ-016"],
+      "spec_refs": ["3.5", "3.9", "7.3", "7.7", "7.8", "8.5"],
+      "architecture_refs": ["Data Translation Contracts", "Streaming, Errors, And Retry"],
+      "behavioral_contract": "OpenAI reasoning tokens are accounted without visible thinking text. Anthropic thinking and redacted thinking round-trip with signatures or opaque payloads. Gemini thoughtsTokenCount maps to reasoning_tokens and thought parts are normalized when present.",
+      "implementation_contract": "Map reasoning_effort to OpenAI Responses reasoning.effort. Estimate Anthropic reasoning_tokens from thinking content when exact counts are unavailable. Preserve Anthropic signatures only for same-provider continuations and strip or warn when cross-provider portability is attempted.",
+      "validation_expectations": "Tests must cover OpenAI reasoning usage, Anthropic thinking and redacted_thinking round-trips, Gemini thoughtsTokenCount, streaming reasoning deltas, and Usage.reasoning_tokens distinct from output_tokens."
+    },
+    {
+      "id": "CD-ULLM-RUST-010",
+      "title": "Gemini synthetic tool IDs are stable and stateless",
+      "summary": "Gemini lacks provider tool call IDs, so the adapter generates stable synthetic IDs and recovers function names from message history instead of keeping mutable adapter state.",
+      "requirement_ids": ["REQ-005", "REQ-012", "REQ-019", "REQ-020"],
+      "spec_refs": ["3.5", "7.3", "7.5", "7.8", "8.3", "8.7"],
+      "architecture_refs": ["Provider Adapter Architecture", "High-Level Generation And Tools"],
+      "behavioral_contract": "Gemini tool calls expose IDs that callers can use in ToolResultData. Follow-up tool results map back to Gemini functionResponse names correctly, including after response serialization and replay.",
+      "implementation_contract": "Generate synthetic IDs from deterministic response-local inputs such as candidate index, part index, function name, and argument digest. When translating tool results, find the matching prior assistant tool call in the request history to recover the function name.",
+      "validation_expectations": "Tests must cover Gemini function call response parsing, synthetic ID stability, serialized conversation replay, and functionResponse translation for follow-up tool results."
+    },
+    {
+      "id": "CD-ULLM-RUST-011",
+      "title": "Client middleware wraps complete and stream consistently",
+      "summary": "Middleware uses onion ordering for complete calls and wraps streaming event iterators without bypassing routing or errors.",
+      "requirement_ids": ["REQ-002", "REQ-004", "REQ-015", "REQ-017"],
+      "spec_refs": ["2.3", "2.4", "2.6", "4.1", "4.2", "8.1"],
+      "architecture_refs": ["Implementation Boundaries", "Streaming, Errors, And Retry"],
+      "behavioral_contract": "Middleware runs in registration order entering a request and reverse order exiting a response. Stream middleware can observe or transform individual stream events and final stream errors.",
+      "implementation_contract": "Store providers and middleware in Send + Sync Rust structures. Do not hold mutable per-request client state. Apply the same resolved provider and error semantics whether middleware is present or absent.",
+      "validation_expectations": "Behavior tests must cover complete ordering, response transformation, stream event observation/transformation, and concurrent requests sharing one Client."
+    },
+    {
+      "id": "CD-ULLM-RUST-012",
+      "title": "Retry boundaries preserve low-level semantics and stream safety",
+      "summary": "Low-level client calls do not retry, high-level APIs retry individual provider calls, and streams are not retried after partial delivery.",
+      "requirement_ids": ["REQ-013", "REQ-014", "REQ-015", "REQ-017", "REQ-018", "REQ-021"],
+      "spec_refs": ["4.1", "4.2", "4.7", "6.1", "6.2", "6.3", "6.6", "6.7", "7.6", "7.7", "8.8"],
+      "architecture_refs": ["Streaming, Errors, And Retry"],
+      "behavioral_contract": "Provider errors expose the unified taxonomy and retryability. Retry-After controls retry timing. A stream can be retried only before any data is emitted; after partial data, errors surface to the consumer and terminate.",
+      "implementation_contract": "Implement retry as high-level orchestration and standalone utilities. Parse retry-after and rate-limit headers in provider utilities. Emit or raise post-partial stream errors without reissuing the request.",
+      "validation_expectations": "Tests must cover HTTP and Gemini gRPC mappings, message classification, retry delay math, Retry-After max-delay behavior, max_retries=0, per-step retry scope, timeout classification, and post-partial stream errors."
+    },
+    {
+      "id": "CD-ULLM-RUST-013",
+      "title": "Rust tool handlers use explicit invocation context",
+      "summary": "Rust cannot use Python keyword signature introspection, so tool handlers receive an explicit invocation object with parsed arguments and injected context.",
+      "requirement_ids": ["REQ-019", "REQ-020", "REQ-017", "REQ-018"],
+      "spec_refs": ["5.1", "5.2", "5.5", "5.6", "5.7", "5.8", "5.9", "5.10", "8.7"],
+      "architecture_refs": ["High-Level Generation And Tools"],
+      "behavioral_contract": "Active tools can access parsed arguments, current messages, abort signal, and tool_call_id. Passive tools return tool calls without automatic execution. Tool failures and unknown tools become error tool results.",
+      "implementation_contract": "Define a Rust ToolInvocation and async handler contract. Execute parallel tool calls concurrently, await every result, preserve original order, append one batched continuation, and respect max_tool_rounds and stop_when.",
+      "validation_expectations": "Tests must cover active and passive tools, multiple parallel calls, ordered batched continuation, unknown tools, handler errors, argument validation or repair, max_tool_rounds=0 and 1, cancellation, and streaming step_finish boundaries."
+    },
+    {
+      "id": "CD-ULLM-RUST-014",
+      "title": "Structured output combines provider enforcement with local validation",
+      "summary": "OpenAI and Gemini use native structured-output mechanisms, Anthropic uses tool-based extraction where possible, and all providers are locally parsed and schema-validated.",
+      "requirement_ids": ["REQ-021", "REQ-007", "REQ-017"],
+      "spec_refs": ["3.10", "4.5", "4.6", "8.4", "8.9"],
+      "architecture_refs": ["Structured Output"],
+      "behavioral_contract": "generate_object returns parsed validated output in GenerateResult.output. stream_object yields partial JSON updates and returns a final validated object. Parse or validation failure raises NoObjectGeneratedError and is not retried by default.",
+      "implementation_contract": "Map OpenAI to Responses JSON Schema response_format, Gemini to responseMimeType/responseSchema, and Anthropic to forced tool extraction when available or schema instructions otherwise. Always perform local JSON Schema validation before success.",
+      "validation_expectations": "Tests must cover each provider strategy, strict schema request payloads, Anthropic fallback behavior, invalid JSON, schema validation failure, stream partial parsing, and final object retrieval."
+    },
+    {
+      "id": "CD-ULLM-RUST-015",
+      "title": "Validation is behavioral and Rust-owned with Python oracle support",
+      "summary": "Python unified_llm tests can remain as historical oracle tests, but they do not replace Rust-owned runtime validation.",
+      "requirement_ids": ["REQ-001", "REQ-023", "REQ-024"],
+      "spec_refs": ["8.1", "8.2", "8.3", "8.4", "8.5", "8.6", "8.7", "8.8", "8.9", "8.10"],
+      "architecture_refs": ["Validation Strategy", "Repository Hygiene"],
+      "behavioral_contract": "Completion evidence demonstrates observable behavior through public interfaces, mocked or recorded providers, and gated live smoke plans. Ordinary local validation does not require live provider credentials.",
+      "implementation_contract": "Maintain behavior tests under tests/adapters, tests/compat/providers, and Rust crate tests. Add cargo checks as supplemental milestone evidence when Rust code changes, while preserving uv run pytest -q as this run's full-suite command.",
+      "validation_expectations": "Review must reject source-text assertions, prompt-string brittle tests, test-only bootstrap behavior, and validation that only exercises helpers for a documented public surface."
+    },
+    {
+      "id": "CD-ULLM-RUST-016",
+      "title": "Migration documentation closes retained surface decisions",
+      "summary": "The migration record must state which unified LLM surfaces are Rust-owned, which Python surfaces remain retained, and what is intentionally deferred.",
+      "requirement_ids": ["REQ-001", "REQ-010", "REQ-023", "REQ-024"],
+      "spec_refs": ["2.10", "8.1", "8.2", "8.6", "8.9", "8.10"],
+      "architecture_refs": ["Canonical Repository Topology", "Repository Hygiene"],
+      "behavioral_contract": "Consumers can tell from docs that normal Spark runtime is Rust-owned and that retained Python code is compatibility, oracle, or package-data support rather than the primary provider execution path.",
+      "implementation_contract": "Update docs/rust-rewrite-migration.md with ownership, retained Python status, validation evidence, unsupported or deferred provider capabilities, and any live-smoke prerequisites.",
+      "validation_expectations": "Documentation and repo hygiene tests must verify migration records name the Rust-owned surfaces, retained Python surfaces, validation artifacts, and explicit non-goals before final completion."
+    },
+    {
+      "id": "CD-ULLM-RUST-017",
+      "title": "Model omission resolves only before low-level requests",
+      "summary": "Low-level Request.model remains required, while high-level APIs may omit model and resolve it through provider/profile/catalog defaults before constructing a Request.",
+      "requirement_ids": ["REQ-002", "REQ-003", "REQ-017", "REQ-021", "REQ-022"],
+      "spec_refs": ["2.2", "2.9", "4.3", "4.4", "8.1", "8.2"],
+      "architecture_refs": ["Public Interface", "Provider Routing And Configuration", "Model, Profile, And Launch Resolution", "High-Level Generation And Tools"],
+      "behavioral_contract": "Client.complete and Client.stream reject or never receive an empty model. generate, stream, generate_object, and stream_object can accept an omitted model only when provider/model resolution can choose a concrete model before the provider request is built.",
+      "implementation_contract": "Resolve provider from explicit input, active profile, then client default. Resolve model from explicit input, active profile default_model, then get_latest_model for native openai, anthropic, or gemini with any required capability. For openrouter, litellm, and openai_compatible, require an explicit model or profile default_model and raise ConfigurationError otherwise.",
+      "validation_expectations": "Tests must cover omitted model on high-level native-provider calls, low-level empty-model rejection, native latest-model selection, capability-filtered latest-model selection, explicit unknown model pass-through, and OpenRouter/LiteLLM/OpenAI-compatible omitted-model errors unless a profile default is present."
+    },
+    {
+      "id": "CD-ULLM-RUST-018",
+      "title": "Spark LLM profiles and launch context are runtime inputs",
+      "summary": "Spark profile configuration and Attractor launch context participate in Rust-owned provider/model/profile/reasoning resolution.",
+      "requirement_ids": ["REQ-001", "REQ-002", "REQ-003", "REQ-017", "REQ-022", "REQ-024"],
+      "spec_refs": ["2.2", "2.5", "2.9", "4.3", "8.1", "repository:src/spark/llm_profiles.py", "repository:src/attractor/llm_runtime.py", "repository:crates/unified-llm-adapter/src/profiles.rs", "repository:crates/unified-llm-adapter/src/resolution.rs"],
+      "architecture_refs": ["Canonical Repository Topology", "Provider Routing And Configuration", "Model, Profile, And Launch Resolution"],
+      "behavioral_contract": "llm-profiles.toml exposes safe public metadata and can configure OpenAI-compatible endpoints without exposing base URLs or secrets. Runtime launch keys preserve selected model, provider, profile, and reasoning effort. Node attributes override launch context, launch context overrides backend fallback, and fallback precedes defaults, except generated default reasoning placeholders do not override launch reasoning.",
+      "implementation_contract": "Load profiles from Spark config using the existing schema: provider=openai_compatible, base_url, non-empty models, optional label, api_key_env, and default_model constrained to models. Build profile-backed OpenAI-compatible adapters with require_api_key=false and the profile endpoint. Implement resolution helpers for _attractor.runtime.launch_model, _attractor.runtime.launch_provider, _attractor.runtime.launch_profile, and _attractor.runtime.launch_reasoning_effort, including lowercasing provider/reasoning values and the explicit default-placeholder marker.",
+      "validation_expectations": "Tests must cover missing and malformed profile config, public metadata redaction, configured flag behavior, missing api_key_env failures, profile-backed adapter construction, profile id supplied through provider selection normalization, node/style/launch/fallback precedence, and launch reasoning overriding generated default placeholder node reasoning."
+    },
+    {
+      "id": "CD-ULLM-RUST-019",
+      "title": "SDKError and ProviderError are canonical public error names",
+      "summary": "Rust exposes the spec error taxonomy under canonical names; AdapterError may remain only as a compatibility alias or re-export.",
+      "requirement_ids": ["REQ-013", "REQ-014", "REQ-015", "REQ-018", "REQ-019", "REQ-021"],
+      "spec_refs": ["6.1", "6.2", "6.3", "6.4", "6.5", "8.8"],
+      "architecture_refs": ["Public Interface", "Streaming, Errors, And Retry"],
+      "behavioral_contract": "Callers can depend on SDKError, ProviderError, SDKErrorKind, retryable flags, retry_after, provider metadata, raw provider payloads, and the spec error type names. Any retained AdapterError or AdapterErrorKind name behaves identically and does not introduce a second taxonomy.",
+      "implementation_contract": "Implement a Rust SDKError surface with ProviderError metadata and spec error kinds or variants for authentication, access denied, not found, invalid request, rate limit, server, content filter, context length, quota, request timeout, abort, network, stream, invalid tool call, unsupported tool choice, no object generated, and configuration errors. Retain AdapterError only as a type alias/re-export or compatibility wrapper with lossless conversion and equivalent serialization.",
+      "validation_expectations": "Tests must cover canonical names, compatibility aliases, HTTP and Gemini gRPC mappings, message-based classification, retryability defaults, Retry-After preservation, raw body preservation, and identical serialized/error-class behavior between retained aliases and canonical types."
+    }
+  ]
+}

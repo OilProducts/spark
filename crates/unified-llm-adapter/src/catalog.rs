@@ -35,8 +35,11 @@ impl ModelCatalog {
 
     pub fn development() -> &'static Self {
         CATALOG.get_or_init(|| {
-            Self::from_json(spark_assets::models::model_catalog_json())
-                .expect("development unified LLM model catalog must be valid")
+            let resource = spark_assets::models::model_catalog_resource();
+            let text = resource
+                .text()
+                .expect("development unified LLM model catalog must be UTF-8");
+            Self::from_json(text).expect("development unified LLM model catalog must be valid")
         })
     }
 
@@ -67,6 +70,9 @@ impl ModelCatalog {
     }
 
     pub fn get_latest_model(&self, provider: &str, capability: Option<&str>) -> Option<ModelInfo> {
+        if !is_native_default_provider(provider) {
+            return None;
+        }
         self.list_models(Some(provider))
             .into_iter()
             .find(|model| model_supports(model, capability))
@@ -95,6 +101,13 @@ fn model_supports(model: &ModelInfo, capability: Option<&str>) -> bool {
         "reasoning" => model.supports_reasoning,
         _ => false,
     }
+}
+
+fn is_native_default_provider(provider: &str) -> bool {
+    matches!(
+        normalize(provider).as_str(),
+        "openai" | "anthropic" | "gemini"
+    )
 }
 
 fn normalize(value: &str) -> String {

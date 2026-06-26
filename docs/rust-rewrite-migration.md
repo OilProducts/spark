@@ -28,6 +28,18 @@ This note summarizes the M7 migration record for Rust-backed Spark. The structur
 | Provider adapter bridge from Rust callers to retained provider behavior | `rust_owned_adapter` | `crates/unified-llm-adapter` | Live provider clients and transports remain Python unless a future parity milestone replaces them | M3 and M6 provider/model validation artifacts |
 | Provider-specific clients, cross-provider streaming normalization, structured-output fallback handling, middleware, and timeouts | `retained_python_module` | `src/unified_llm` | Retained Python modules guarded by provider and cross-provider tests | `tests/adapters/test_openai_adapter.py`; `tests/adapters/test_anthropic_adapter.py`; `tests/adapters/test_cross_provider_parity.py` |
 
+## M1 Unified LLM Runtime Boundary
+
+M1 establishes `crates/unified-llm-adapter` as the Rust-owned low-level runtime boundary for rewrite callers. The Rust crate owns the public `Request`, `Response`, `Message`, `ContentPart`, `FinishReason`, `Usage`, `StreamEvent`, `ProviderAdapter`, `Client`, default-client functions, provider environment registration, model catalog access, retry/error normalization, and middleware contracts.
+
+Normal M1 Rust-facing complete and stream calls are made through `Client` and registered `ProviderAdapter` trait objects. `Client::from_env` records configured providers in the fixed order `openai`, `anthropic`, `gemini`, `openrouter`, `litellm`, and `openai_compatible`, including the `GOOGLE_API_KEY` fallback for Gemini. Until native provider transports land, those environment-configured provider entries report an unavailable Rust provider adapter instead of importing or delegating to Python `src/unified_llm` provider clients.
+
+The retained Python `src/unified_llm` package remains valid for compatibility tests, oracle fixture generation, live-provider adapter behavior that has not been replaced, and package data such as the model catalog. Existing provider-specific Python clients, cross-provider streaming normalization, structured-output fallbacks, timeout behavior, and live credential handling are retained compatibility surfaces, not normal M1 Rust runtime dependencies.
+
+Deferred provider capabilities include native HTTP transports for OpenAI, Anthropic, Gemini, OpenRouter, LiteLLM, and generic OpenAI-compatible endpoints; provider-specific streaming parsers; live SDK error-shape parity; and optional credential-backed smoke coverage. Catalog defaults remain native-provider only in M1, so OpenRouter, LiteLLM, and OpenAI-compatible endpoints do not receive advisory latest-model defaults from the catalog.
+
+Validation for this boundary is behavioral: `cargo test -p unified-llm-adapter` exercises the Rust public client, adapter, routing, middleware, catalog, DTO, complete, and stream contracts; `uv run pytest tests/compat/providers -q` checks retained Python compatibility observations; `uv run pytest tests/adapters -q` guards retained Python provider behavior; and `uv run pytest -q` remains the full repository completion gate.
+
 ## Deprecated Compatibility Surfaces
 
 The following routes are compatibility surfaces, not cleanup leftovers. They remain preserved until a later contract decision, migration note, and validation update approve a different contract.

@@ -7,9 +7,12 @@
 //! provider resources remain owned by later milestones.
 
 pub mod catalog;
+pub mod client;
+pub mod defaults;
 pub mod env;
 pub mod errors;
 pub mod events;
+pub mod middleware;
 pub mod profiles;
 pub mod request;
 pub mod resolution;
@@ -17,19 +20,24 @@ pub mod retry;
 pub mod usage;
 
 pub use catalog::{get_latest_model, get_model_info, list_models, ModelCatalog, ModelInfo};
+pub use client::{Client, ProviderAdapter};
+pub use defaults::{default_client, get_default_client, set_default_client};
 pub use env::{ProviderConfig, ProviderEnvironment};
 pub use errors::{
     classify_provider_error_message, error_from_status_code, AdapterError, AdapterErrorKind,
 };
-pub use events::{StreamAccumulator, StreamEvent, StreamEventType};
+pub use events::{StreamAccumulator, StreamEvent, StreamEventType, StreamEvents};
+pub use middleware::{CompleteNext, Middleware, StreamNext};
 pub use profiles::{
     get_llm_profile, get_llm_profile_with_env, load_llm_profiles, public_llm_profiles,
     public_llm_profiles_with_env, LlmProfile, LlmProfileConfigRoot, LlmProfileConfigurationError,
     LlmProfileEnvironment, ProcessLlmProfileEnvironment, PROFILE_CONFIG_FILE,
 };
 pub use request::{
-    ContentPart, FinishReason, LlmRequest, LlmResponse, Message, MessageRole, ResponseFormat,
-    ToolCall, ToolResult,
+    AudioData, ContentKind, ContentPart, DocumentData, FinishReason, FinishReasonKind, ImageData,
+    LlmRequest, LlmResponse, Message, MessageRole, RateLimitInfo, Request, Response,
+    ResponseFormat, Role, ThinkingData, ToolCall, ToolCallData, ToolResult, ToolResultData,
+    Warning,
 };
 pub use resolution::{
     resolve_effective_llm_model, resolve_effective_llm_profile, resolve_effective_llm_provider,

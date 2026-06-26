@@ -1,11 +1,13 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-use crate::request::{FinishReason, ToolCall};
+use crate::errors::AdapterError;
+use crate::request::{FinishReason, Response, ToolCall};
 use crate::usage::Usage;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+pub type StreamEvents = Box<dyn Iterator<Item = Result<StreamEvent, AdapterError>> + Send>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEventType {
     StreamStart,
     TextStart,
@@ -20,15 +22,78 @@ pub enum StreamEventType {
     Finish,
     Error,
     ProviderEvent,
+    Custom(String),
+}
+
+impl StreamEventType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::StreamStart => "stream_start",
+            Self::TextStart => "text_start",
+            Self::TextDelta => "text_delta",
+            Self::TextEnd => "text_end",
+            Self::ReasoningStart => "reasoning_start",
+            Self::ReasoningDelta => "reasoning_delta",
+            Self::ReasoningEnd => "reasoning_end",
+            Self::ToolCallStart => "tool_call_start",
+            Self::ToolCallDelta => "tool_call_delta",
+            Self::ToolCallEnd => "tool_call_end",
+            Self::Finish => "finish",
+            Self::Error => "error",
+            Self::ProviderEvent => "provider_event",
+            Self::Custom(event_type) => event_type.as_str(),
+        }
+    }
+
+    fn from_type(event_type: &str) -> Self {
+        match event_type {
+            "stream_start" => Self::StreamStart,
+            "text_start" => Self::TextStart,
+            "text_delta" => Self::TextDelta,
+            "text_end" => Self::TextEnd,
+            "reasoning_start" => Self::ReasoningStart,
+            "reasoning_delta" => Self::ReasoningDelta,
+            "reasoning_end" => Self::ReasoningEnd,
+            "tool_call_start" => Self::ToolCallStart,
+            "tool_call_delta" => Self::ToolCallDelta,
+            "tool_call_end" => Self::ToolCallEnd,
+            "finish" => Self::Finish,
+            "error" => Self::Error,
+            "provider_event" => Self::ProviderEvent,
+            other => Self::Custom(other.to_string()),
+        }
+    }
+}
+
+impl Serialize for StreamEventType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamEventType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let event_type = String::deserialize(deserializer)?;
+        Ok(Self::from_type(&event_type))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamEvent {
-    pub event_type: StreamEventType,
+    #[serde(rename = "type")]
+    pub r#type: StreamEventType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
+    pub delta: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<String>,
+    pub text_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_delta: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,35 +101,55 @@ pub struct StreamEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub response: Option<Response>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<AdapterError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
 }
 
 impl StreamEvent {
-    pub fn text_delta(text: impl Into<String>) -> Self {
+    pub fn new(event_type: StreamEventType) -> Self {
         Self {
-            event_type: StreamEventType::TextDelta,
-            text: Some(text.into()),
-            reasoning: None,
+            r#type: event_type,
+            delta: None,
+            text_id: None,
+            reasoning_delta: None,
             tool_call: None,
             finish_reason: None,
             usage: None,
+            response: None,
             error: None,
             raw: None,
         }
     }
 
+    pub fn text_delta(text: impl Into<String>) -> Self {
+        Self {
+            delta: Some(text.into()),
+            ..Self::new(StreamEventType::TextDelta)
+        }
+    }
+
     pub fn finish(reason: FinishReason, usage: Option<Usage>) -> Self {
         Self {
-            event_type: StreamEventType::Finish,
-            text: None,
-            reasoning: None,
-            tool_call: None,
             finish_reason: Some(reason),
             usage,
-            error: None,
-            raw: None,
+            ..Self::new(StreamEventType::Finish)
+        }
+    }
+
+    pub fn reasoning_delta(text: impl Into<String>) -> Self {
+        Self {
+            reasoning_delta: Some(text.into()),
+            ..Self::new(StreamEventType::ReasoningDelta)
+        }
+    }
+
+    pub fn provider_event(raw: impl Into<Value>) -> Self {
+        Self {
+            raw: Some(raw.into()),
+            ..Self::new(StreamEventType::ProviderEvent)
         }
     }
 }
@@ -89,14 +174,14 @@ pub struct StreamAccumulator {
 
 impl StreamAccumulator {
     pub fn push(&mut self, event: StreamEvent) {
-        match event.event_type {
+        match event.r#type {
             StreamEventType::TextDelta => {
-                if let Some(text) = event.text.as_deref() {
+                if let Some(text) = event.delta.as_deref() {
                     self.final_text.push_str(text);
                 }
             }
             StreamEventType::ReasoningDelta => {
-                if let Some(text) = event.reasoning.as_deref().or(event.text.as_deref()) {
+                if let Some(text) = event.reasoning_delta.as_deref() {
                     self.reasoning_text.push_str(text);
                 }
             }
