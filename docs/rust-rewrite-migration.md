@@ -8,7 +8,7 @@ This note summarizes the M7 migration record for Rust-backed Spark. The structur
 - Rust crates own the contracts already implemented and validated through the rewrite milestones.
 - Python modules remain valid where the record classifies them as retained behavior.
 - Deprecated compatibility routes remain supported until a later contract decision records an incompatible change.
-- Open policy gaps remain open; they are not counted as closed parity by this milestone.
+- No open policy gaps remain after the post-gap spec/API drift audit. Explicit non-goals and future compatibility-break candidates are still not counted as closed parity.
 
 ## Agent Boundary
 
@@ -38,14 +38,16 @@ The following routes are compatibility surfaces, not cleanup leftovers. They rem
 | `GET /workspace/api/conversations/{conversation_id}/events` | Preserved compatibility route | `GET /workspace/api/live/events` | `http/deprecated-workspace-conversation-events`; M5 deprecated route evidence |
 | `GET /attractor/pipelines/{id}/events` | Preserved compatibility route | `GET /attractor/pipelines/{id}/journal` or `GET /workspace/api/live/events?run_id=<id>` | `crates/spark-http/tests/deprecated_route_error_contracts.rs`; `tests/api/test_pipeline_contract_section_95.py` |
 
-## Open Gaps And Non-Goals
+## Closed Gaps, Non-Goals, And Audit Result
 
-The structured record carries these as open policy gaps or explicit non-goals, with `counts_as_closed_parity` set to `false`:
+The structured record now carries all prior policy gaps as closed with implementation or audit evidence:
 
-- Manager-loop telemetry ingestion beyond the runtime context snapshot remains open.
-- Agent-driven acceptance workflow assets remain manual until an executable harness closes the gap.
-- First-class subgraph and scoped `node[...]` / `edge[...]` default authoring remains open.
-- A post-gap spec/API drift audit remains pending.
+- Acceptance workflow assets are covered by an executable pytest harness.
+- First-class subgraph and scoped `node[...]` / `edge[...]` default authoring is available through Graph Settings.
+- The post-gap spec/API drift audit found no remaining unintended runtime, editor, or API drift and records all remaining differences as intentional policy decisions, explicit non-goals, or future compatibility-break candidates.
+
+The structured record carries these as explicit non-goals, with `counts_as_closed_parity` set to `false`:
+
 - M7 does not remove Python `agent` or `unified_llm` modules.
 - M7 does not reintroduce remote-worker execution; native and local-container execution remain the supported modes.
 
@@ -53,8 +55,9 @@ The structured record carries these as open policy gaps or explicit non-goals, w
 
 - Trigger-launched flows may run against and mutate the trigger action's configured project repository by default. This preserves the current trigger launch behavior: `project_path` on the trigger action is the launched run's project target, trigger static context and payload are injected into the run checkpoint, trigger provenance is recorded, and missing `project_path` falls back to Spark home/data-dir behavior.
 - Manager-loop authoring is first-class in Rust-backed preview payloads and frontend authoring for the supported manager-loop attributes.
+- Manager-loop observe cycles ingest linked child-run telemetry into the runtime-owned `context.stack.child.*` snapshot without adding stall or progress heuristics.
 - The non-exit outgoing-edge validator rule is intended behavior: every non-exit node must declare at least one outgoing edge, and intentional completion routes through the single terminal node.
 
 ## Future Decision Candidates
 
-Any removal of deprecated event routes, first-class manager-loop authoring contract change, or validator rule relaxation/tightening requires a new contract decision before implementation depends on it.
+Any removal of deprecated event routes, manager-loop contract change, or validator rule relaxation/tightening requires a new contract decision before implementation depends on it.

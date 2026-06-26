@@ -174,6 +174,22 @@ def test_acceptance_workflow_harness_coverage_is_closed_when_final_validation_pa
     assert closed
     assert all(note["counts_as_passing"] is True for note in closed)
 
+    post_gap_closed = [
+        note
+        for note in artifact["retained_boundary_notes"]
+        if note["id"] == "post_gap_spec_api_drift_audit"
+        and note["classification"] == "closed_policy_gaps"
+    ]
+    post_gap_open = [
+        note
+        for note in artifact["retained_boundary_notes"]
+        if note["id"] == "post_gap_spec_api_drift_audit"
+        and note["classification"] == "policy_gaps"
+    ]
+    assert post_gap_closed
+    assert post_gap_open == []
+    assert all(note["counts_as_passing"] is True for note in post_gap_closed)
+
 
 def test_python_validation_command_evidence_uses_uv_pytest() -> None:
     artifact = _load_artifact()
