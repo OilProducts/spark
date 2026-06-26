@@ -4,6 +4,7 @@ set shell := ["bash", "-lc"]
 frontend-deps:
   if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -x frontend/node_modules/.bin/vitest || ! -x frontend/node_modules/.bin/playwright ]]; then echo "Installing frontend dependencies with npm ci..." >&2; npm --prefix frontend ci; fi
 
+# Developer setup for the Rust-backed source checkout and frontend.
 setup:
   uv sync --dev
   npm --prefix frontend ci
@@ -17,10 +18,12 @@ run-docker:
 dev-run: frontend-deps
   bash scripts/dev-run.sh
 
+# Repository guardrails for Python compatibility and frontend unit behavior.
 test: frontend-deps
   uv run pytest -q
   npm --prefix frontend run test:unit
 
+# Build the packaged Rust-backed wheel and sdist through the deliverable image.
 deliverable:
   docker build -f Dockerfile.wheel -t spark-wheel-builder .
   mkdir -p dist

@@ -1,0 +1,19 @@
+[package]
+name = "unified-llm-adapter"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+spark-assets = { path = "../spark-assets" }
+thiserror = "1.0"
+time = { version = "0.3", features = ["formatting"] }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3.10"

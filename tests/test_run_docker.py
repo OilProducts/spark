@@ -18,6 +18,8 @@ def _write_fake_docker(bin_dir: Path, log_path: Path) -> None:
                 'printf "spark_docker_host_uid=%s\\n" "${SPARK_DOCKER_HOST_UID:-}" >> "$FAKE_DOCKER_LOG"',
                 'printf "spark_docker_host_gid=%s\\n" "${SPARK_DOCKER_HOST_GID:-}" >> "$FAKE_DOCKER_LOG"',
                 'printf "provider=%s\\n" "${SPARK_TEST_PROVIDER_VALUE:-}" >> "$FAKE_DOCKER_LOG"',
+                'printf "openai_compatible_base_url=%s\\n" "${OPENAI_COMPATIBLE_BASE_URL:-}" >> "$FAKE_DOCKER_LOG"',
+                'printf "openai_compatible_api_key=%s\\n" "${OPENAI_COMPATIBLE_API_KEY:-}" >> "$FAKE_DOCKER_LOG"',
             ]
         )
         + "\n"
@@ -89,7 +91,16 @@ def test_run_docker_seeds_codex_auth_config_and_sources_provider_env(tmp_path: P
     (codex_home / "config.toml").write_text("host-config\n")
     provider_dir = spark_home / "config"
     provider_dir.mkdir(parents=True)
-    (provider_dir / "provider.env").write_text("SPARK_TEST_PROVIDER_VALUE=from-provider-env\n")
+    (provider_dir / "provider.env").write_text(
+        "\n".join(
+            [
+                "SPARK_TEST_PROVIDER_VALUE=from-provider-env",
+                "OPENAI_COMPATIBLE_BASE_URL=http://compatible.example/v1",
+                "OPENAI_COMPATIBLE_API_KEY=compatible-secret",
+                "",
+            ]
+        )
+    )
 
     _run_docker_script(
         tmp_path=tmp_path,
@@ -110,6 +121,8 @@ def test_run_docker_seeds_codex_auth_config_and_sources_provider_env(tmp_path: P
         f"spark_docker_host_uid={os.getuid()}\n"
         f"spark_docker_host_gid={os.getgid()}\n"
         "provider=from-provider-env\n"
+        "openai_compatible_base_url=http://compatible.example/v1\n"
+        "openai_compatible_api_key=compatible-secret\n"
     )
 
 
@@ -186,4 +199,6 @@ def test_run_docker_defaults_to_account_home_when_runtime_rewrites_home(tmp_path
         f"spark_docker_host_uid={os.getuid()}\n"
         f"spark_docker_host_gid={os.getgid()}\n"
         "provider=\n"
+        "openai_compatible_base_url=\n"
+        "openai_compatible_api_key=\n"
     )

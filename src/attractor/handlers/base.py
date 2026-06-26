@@ -60,6 +60,14 @@ class ChildRunResult:
     completed_nodes: List[str] = field(default_factory=list)
     route_trace: List[str] = field(default_factory=list)
     failure_reason: str = ""
+    retry_count: int | None = None
+    retry_counts: Dict[str, int] = field(default_factory=dict)
+    artifact_count: int | None = None
+    event_count: int | None = None
+    checkpoint_timestamp: str = ""
+    latest_event_at: str = ""
+    started_at: str = ""
+    ended_at: str | None = None
 
 
 @dataclass

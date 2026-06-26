@@ -17,15 +17,23 @@ You can do every step in the visual editor, by editing the `.dot` file directly,
 
 ## Prerequisites
 
-Install dependencies and seed the runtime tree:
+Install dependencies and seed the runtime tree with the source-checkout development wrapper:
 
 ```bash
-uv sync --dev
-npm --prefix frontend install
+just setup
 SPARK_HOME=~/.spark-dev uv run spark-server init
 ```
 
-Start the app:
+The `uv run spark` and `uv run spark-server` commands are useful source-checkout wrappers. In this checkout they enter through Python console scripts unless a packaged wheel has installed `spark/bin/*`; running `cargo build --workspace` does not change where `uv run` dispatches.
+
+If you need native Cargo-built binaries from the checkout, build the workspace and call the Cargo output paths directly:
+
+```bash
+cargo build --workspace
+SPARK_HOME=~/.spark-dev target/debug/spark-server init
+```
+
+For the full editor and frontend during source development, start the app through the wrapper:
 
 ```bash
 just dev-run
@@ -36,6 +44,22 @@ That gives you:
 - the backend at `http://127.0.0.1:8010`
 - the frontend at `http://127.0.0.1:5173`
 - a local flow library at `~/.spark-dev/flows`
+
+Use `~/.spark-dev` for source-checkout work so the tutorial does not mutate a stable packaged runtime under `~/.spark`. Server-backed checkout CLI commands should target the development backend with `SPARK_API_BASE_URL=http://127.0.0.1:8010`. Local file validation remains safe without a server target:
+
+```bash
+uv run spark flow validate --file ~/.spark-dev/flows/my-first-flow.dot --text
+```
+
+To exercise the native Rust backend instead of the wrapper backend, stop any server already using port `8010` and run the Cargo-built server directly:
+
+```bash
+SPARK_HOME=~/.spark-dev target/debug/spark-server serve \
+  --host 127.0.0.1 \
+  --port 8010 \
+  --data-dir ~/.spark-dev \
+  --flows-dir ~/.spark-dev/flows
+```
 
 ## Part 1: Start From A Minimal Flow
 
@@ -48,10 +72,25 @@ uv run spark flow validate --file ~/.spark-dev/flows/my-first-flow.dot --text
 
 Open `my-first-flow.dot` in the Editor.
 
-The starter looks like this structurally:
+The copied starter is structurally equivalent to this complete flow:
 
 ```dot
-start -> plan -> implement -> summarize -> done
+digraph my_first_flow {
+  graph [
+    goal="Add a /healthz endpoint that returns {\"status\":\"ok\"}.",
+    label="My First Flow",
+    spark.title="My First Flow",
+    spark.description="A minimal workflow for one small repository change."
+  ];
+
+  start [shape=Mdiamond, label="Start"];
+  plan [shape=box, label="Plan", prompt="Inspect the repository and plan the work."];
+  implement [shape=box, label="Implement", prompt="Make the requested change and keep it scoped."];
+  summarize [shape=box, label="Summarize", prompt="Summarize the result and validation."];
+  done [shape=Msquare, label="Done"];
+
+  start -> plan -> implement -> summarize -> done;
+}
 ```
 
 That is the best first shape because each node has one job:
@@ -120,6 +159,30 @@ plan [
 ```
 
 On Codergen nodes, `spark.reads_context` is the deterministic prompt-input contract: Spark projects the declared live context keys into a dedicated prompt section and renders absent keys as `<missing>`. It still does not restrict generic runtime reads for non-LLM handlers.
+
+When the development backend is running, launch the edited runtime flow through the source-checkout wrapper:
+
+```bash
+SPARK_API_BASE_URL=http://127.0.0.1:8010 uv run spark run launch \
+  --project "$PWD" \
+  --flow my-first-flow.dot \
+  --summary "Run the first-flow tutorial against this checkout." \
+  --goal "Add a /healthz endpoint that returns {\"status\":\"ok\"}." \
+  --launch-context-json '{"context.request.summary":"Add a health endpoint.","context.request.target_paths":["src"],"context.request.acceptance_criteria":["Expose /healthz","Add or update tests"]}'
+```
+
+If you are using the native Cargo-built server above, run the same request through the Cargo-built CLI binary:
+
+```bash
+SPARK_API_BASE_URL=http://127.0.0.1:8010 target/debug/spark run launch \
+  --project "$PWD" \
+  --flow my-first-flow.dot \
+  --summary "Run the first-flow tutorial against this checkout." \
+  --goal "Add a /healthz endpoint that returns {\"status\":\"ok\"}." \
+  --launch-context-json '{"context.request.summary":"Add a health endpoint.","context.request.target_paths":["src"],"context.request.acceptance_criteria":["Expose /healthz","Add or update tests"]}'
+```
+
+Use `--launch-context-file` instead when the context is too large for a shell-safe inline JSON value. Launch context keys must be JSON object keys under `context.*`; the `spark.launch_inputs` schema controls the UI form and documents the values a flow expects.
 
 ## Part 3: Add A Real Review Loop
 

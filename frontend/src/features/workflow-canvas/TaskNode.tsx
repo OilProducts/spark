@@ -93,6 +93,21 @@ function getStatusBadgeClassName(status: string) {
     return 'bg-muted/50 text-muted-foreground'
 }
 
+function isDefaultEnabledBoolean(value: unknown): boolean {
+    return value !== false && value !== 'false'
+}
+
+function hasExplicitBooleanAttr(value: unknown): boolean {
+    return value === true || value === false || value === 'true' || value === 'false'
+}
+
+function nextDefaultEnabledBooleanValue(currentValue: unknown, draftValue: boolean): boolean | undefined {
+    if (!draftValue) {
+        return false
+    }
+    return hasExplicitBooleanAttr(currentValue) ? true : undefined
+}
+
 function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNodeProps) {
     const canvasMode = useCanvasSessionMode()
     const isEditorCanvas = canvasMode === 'editor'
@@ -190,6 +205,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     )
     const [draftManagerActions, setDraftManagerActions] = useState<string>(
         (data['manager.actions'] as string) || '',
+    )
+    const [draftManagerSteerCooldown, setDraftManagerSteerCooldown] = useState<string>(
+        (data['manager.steer_cooldown'] as string) || '',
+    )
+    const [draftStackChildAutostart, setDraftStackChildAutostart] = useState<boolean>(
+        isDefaultEnabledBoolean(data['stack.child_autostart']),
     )
 
     const status = (data.status as string) || 'idle'
@@ -334,6 +355,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setDraftManagerMaxCycles(data['manager.max_cycles'] !== undefined ? String(data['manager.max_cycles']) : '')
         setDraftManagerStopCondition((data['manager.stop_condition'] as string) || '')
         setDraftManagerActions((data['manager.actions'] as string) || '')
+        setDraftManagerSteerCooldown((data['manager.steer_cooldown'] as string) || '')
+        setDraftStackChildAutostart(isDefaultEnabledBoolean(data['stack.child_autostart']))
         setIsEditingDetails(true)
     }
 
@@ -385,6 +408,11 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             'manager.max_cycles': draftManagerMaxCycles,
             'manager.stop_condition': draftManagerStopCondition,
             'manager.actions': draftManagerActions,
+            'manager.steer_cooldown': draftManagerSteerCooldown,
+            'stack.child_autostart': nextDefaultEnabledBooleanValue(
+                data['stack.child_autostart'],
+                draftStackChildAutostart,
+            ),
         })
         setIsEditingDetails(false)
     }
@@ -647,6 +675,26 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                         placeholder="observe,steer"
                                     />
                                 </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-foreground">Manager Steer Cooldown</label>
+                                    <input
+                                        data-testid="node-toolbar-attr-input-manager.steer_cooldown"
+                                        value={draftManagerSteerCooldown}
+                                        onChange={(event) => setDraftManagerSteerCooldown(event.target.value)}
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        placeholder="2s"
+                                    />
+                                </div>
+                                <label className="flex items-center gap-2 text-xs font-medium">
+                                    <input
+                                        data-testid="node-toolbar-attr-checkbox-stack.child_autostart"
+                                        type="checkbox"
+                                        checked={draftStackChildAutostart}
+                                        onChange={(event) => setDraftStackChildAutostart(event.target.checked)}
+                                        className="h-4 w-4 rounded border border-input"
+                                    />
+                                    Start Child Automatically
+                                </label>
                             </>
                         )}
                         {visibility.showTypeOverride && (

@@ -63,6 +63,7 @@ interface NodeInspectorPanelProps {
 }
 
 const isTrue = (value: unknown) => value === true || value === 'true'
+const isDefaultEnabledBoolean = (value: unknown) => value !== false && value !== 'false'
 
 export function NodeInspectorPanel({
     selectedNodeId,
@@ -267,6 +268,26 @@ export function NodeInspectorPanel({
                                         onChange={(event) => onPropertyChange('manager.actions', event.target.value)}
                                         placeholder="observe,steer"
                                     />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label>Manager Steer Cooldown</Label>
+                                    <Input
+                                        data-testid="node-attr-input-manager.steer_cooldown"
+                                        value={(selectedNode?.data?.['manager.steer_cooldown'] as string) || ''}
+                                        onChange={(event) => onPropertyChange('manager.steer_cooldown', event.target.value)}
+                                        placeholder="2s"
+                                    />
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <Checkbox
+                                        id={`stack-child-autostart-${selectedNodeId}`}
+                                        data-testid="node-attr-checkbox-stack.child_autostart"
+                                        checked={isDefaultEnabledBoolean(selectedNode?.data?.['stack.child_autostart'])}
+                                        onCheckedChange={(checked) => onPropertyChange('stack.child_autostart', checked === true)}
+                                    />
+                                    <Label htmlFor={`stack-child-autostart-${selectedNodeId}`} className="text-sm font-medium">
+                                        Start Child Automatically
+                                    </Label>
                                 </div>
                                 <div
                                     data-testid="manager-child-linkage"
@@ -589,6 +610,8 @@ export function NodeInspectorPanel({
                                 'manager.max_cycles',
                                 'manager.stop_condition',
                                 'manager.actions',
+                                'manager.steer_cooldown',
+                                'stack.child_autostart',
                                 'human.default_choice',
                                 'spark.reads_context',
                                 'spark.writes_context',

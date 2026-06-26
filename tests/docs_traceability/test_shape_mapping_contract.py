@@ -5,8 +5,11 @@ from attractor.handlers.defaults import build_default_registry
 from attractor.handlers.registry import SHAPE_TO_TYPE
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _shape_mapping_from_spec() -> dict[str, str]:
-    spec_path = Path(__file__).resolve().parents[2] / "specs/attractor-spec.md"
+    spec_path = REPO_ROOT / "specs/attractor-spec.md"
     lines = spec_path.read_text(encoding="utf-8").splitlines()
 
     start_idx = lines.index("### 2.8 Shape-to-Handler-Type Mapping")
@@ -32,8 +35,38 @@ def _shape_mapping_from_spec() -> dict[str, str]:
     return mapping
 
 
+def _shape_mapping_from_authoring_guide() -> dict[str, str]:
+    guide_path = REPO_ROOT / "src/spark/guides/dot-authoring.md"
+    lines = guide_path.read_text(encoding="utf-8").splitlines()
+    start_idx = lines.index("## Node Types And Shape Mapping")
+    mapping: dict[str, str] = {}
+
+    for line in lines[start_idx + 1 :]:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            break
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            continue
+
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        if cells[0] == "Shape" or set(cells[0]) == {"-"}:
+            continue
+
+        shape = cells[0].strip("`")
+        handler_type = cells[1].strip("`")
+        mapping[shape] = handler_type
+
+    return mapping
+
+
 def test_shape_mapping_docs_table_matches_runtime_mapping():
     assert _shape_mapping_from_spec() == SHAPE_TO_TYPE
+
+
+def test_packaged_authoring_guide_shape_mapping_matches_runtime_mapping():
+    assert _shape_mapping_from_authoring_guide() == SHAPE_TO_TYPE
 
 
 def _mixed_case(raw: str) -> str:

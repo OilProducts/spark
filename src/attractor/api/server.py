@@ -2035,6 +2035,8 @@ def _graph_payload(graph, *, child_previews: dict[str, dict] | None = None) -> d
                 "manager.max_cycles": _dot_attr_value(n.attrs, "manager.max_cycles"),
                 "manager.stop_condition": _dot_attr_value(n.attrs, "manager.stop_condition"),
                 "manager.actions": _dot_attr_value(n.attrs, "manager.actions"),
+                "manager.steer_cooldown": _dot_attr_value(n.attrs, "manager.steer_cooldown"),
+                "stack.child_autostart": _dot_attr_value(n.attrs, "stack.child_autostart"),
             }, n.attrs)
             for n in graph.nodes.values()
         ],
@@ -2262,6 +2264,13 @@ def _clear_child_runtime_snapshot(context: Context) -> None:
             "context.stack.child.route_trace": [],
             "context.stack.child.failure_reason": "",
             "context.stack.child.retry_count": "",
+            "context.stack.child.retry_counts": {},
+            "context.stack.child.artifact_count": "",
+            "context.stack.child.event_count": "",
+            "context.stack.child.checkpoint_timestamp": "",
+            "context.stack.child.latest_event_at": "",
+            "context.stack.child.started_at": "",
+            "context.stack.child.ended_at": "",
             "context.stack.child.intervention": "",
             "context.stack.child.intervention_status": "",
             "context.stack.child.intervention_delivery_mode": "",
@@ -2295,10 +2304,23 @@ def _child_run_result_from_record(run_id: str) -> ChildRunResult | None:
     checkpoint = load_checkpoint(_run_root(run_id) / "state.json")
     current_node = checkpoint.current_node if checkpoint is not None else ""
     completed_nodes = list(checkpoint.completed_nodes) if checkpoint is not None else []
+    retry_counts = dict(checkpoint.retry_counts) if checkpoint is not None else {}
+    retry_count = retry_counts.get(current_node) if current_node else None
+    checkpoint_timestamp = checkpoint.timestamp if checkpoint is not None else ""
     checkpoint_context = checkpoint.context if checkpoint is not None else {}
     route_trace = checkpoint_context.get("context.stack.child.route_trace", [])
     if not isinstance(route_trace, list):
         route_trace = []
+    events = _read_persisted_run_events(run_id)
+    latest_event_at = ""
+    for event in reversed(events):
+        latest_event_at = str(event.get("emitted_at") or "")
+        if latest_event_at:
+            break
+    try:
+        artifact_count = len(_list_run_output_artifacts(_run_root(run_id)))
+    except Exception:  # noqa: BLE001
+        artifact_count = None
 
     if active is not None:
         return ChildRunResult(
@@ -2311,6 +2333,14 @@ def _child_run_result_from_record(run_id: str) -> ChildRunResult | None:
             completed_nodes=list(active.completed_nodes or completed_nodes),
             route_trace=list(route_trace),
             failure_reason=active.last_error or "",
+            retry_count=retry_count,
+            retry_counts=retry_counts,
+            artifact_count=artifact_count,
+            event_count=len(events),
+            checkpoint_timestamp=checkpoint_timestamp,
+            latest_event_at=latest_event_at,
+            started_at=active.started_at,
+            ended_at=active.ended_at,
         )
 
     assert record is not None
@@ -2324,6 +2354,14 @@ def _child_run_result_from_record(run_id: str) -> ChildRunResult | None:
         completed_nodes=completed_nodes,
         route_trace=list(route_trace),
         failure_reason=record.last_error or "",
+        retry_count=retry_count,
+        retry_counts=retry_counts,
+        artifact_count=artifact_count,
+        event_count=len(events),
+        checkpoint_timestamp=checkpoint_timestamp,
+        latest_event_at=latest_event_at,
+        started_at=record.started_at,
+        ended_at=record.ended_at,
     )
 
 

@@ -88,6 +88,7 @@ const stubSidebarApis = async (page: Page) => {
             title: "I'd like to change the default model on the global settings page and keep the rest intact",
             created_at: '2026-04-17T16:00:00Z',
             updated_at: '2026-04-17T16:30:00Z',
+            revision: 1,
             last_message_preview: 'Default model change request.',
           },
           {
@@ -96,6 +97,7 @@ const stubSidebarApis = async (page: Page) => {
             title: 'There is an issue with the UI where the thread card grows wider than the sidebar',
             created_at: '2026-04-17T16:10:00Z',
             updated_at: '2026-04-17T17:35:00Z',
+            revision: 2,
             last_message_preview: 'Sidebar overflow investigation.',
           },
           {
@@ -104,6 +106,7 @@ const stubSidebarApis = async (page: Page) => {
             title: 'Can you run the implement-change-request flow with the latest sidebar layout fix applied',
             created_at: '2026-04-16T09:00:00Z',
             updated_at: '2026-04-16T12:00:00Z',
+            revision: 1,
             last_message_preview: 'Implementation flow check.',
           },
         ]),
@@ -122,6 +125,7 @@ const stubSidebarApis = async (page: Page) => {
           title: 'There is an issue with the UI where the thread card grows wider than the sidebar',
           created_at: '2026-04-17T16:10:00Z',
           updated_at: '2026-04-17T17:35:00Z',
+          revision: 2,
           turns: [],
           event_log: [],
         }),

@@ -15,6 +15,8 @@ BASELINE_FIXTURES: dict[str, tuple[str, ...]] = {
         "manager.max_cycles",
         "manager.stop_condition",
         "manager.actions",
+        "manager.steer_cooldown",
+        "stack.child_autostart",
     ),
     "tests/fixtures/reference-1.1-03-subgraph-defaults.dot": (
         "subgraph cluster_",

@@ -1,0 +1,23 @@
+[package]
+name = "spark-triggers"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+spark-common = { path = "../spark-common" }
+spark-storage = { path = "../spark-storage" }
+thiserror = "1.0"
+time = "0.3"
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

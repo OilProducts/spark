@@ -1,6 +1,6 @@
 # Spark
 
-Spark is a workspace workbench for AI-assisted software delivery. It combines a FastAPI backend and React UI for registering local projects, authoring shared DOT workflows, running them against a selected project context, and coordinating project conversations, flow requests, and run launches.
+Spark is a workspace workbench for AI-assisted software delivery. It now uses Rust-backed `spark` and `spark-server` binaries with a React UI for registering local projects, authoring shared DOT workflows, running them against a selected project context, and coordinating project conversations, flow requests, and run launches.
 
 ## What Spark Does
 
@@ -30,7 +30,7 @@ For flow authoring, use this progression:
 - Full raw DOT reference: [src/spark/guides/dot-authoring.md](src/spark/guides/dot-authoring.md)
 - Task-oriented CLI/API operations guide: [src/spark/guides/spark-operations.md](src/spark/guides/spark-operations.md)
 
-When working from a source checkout, validate direct flow edits with `uv run spark flow validate --file /path/to/flow.dot --text`.
+When working from a source checkout, validate direct flow edits locally with `uv run spark flow validate --file /path/to/flow.dot --text`. Server-backed `spark` commands from the checkout should set `SPARK_API_BASE_URL=http://127.0.0.1:8010` when they target the development backend.
 
 ## Flow Building Guide
 
@@ -118,23 +118,32 @@ Use hooks and model defaults deliberately:
 
 ## Architecture
 
-- [src/attractor/](src/attractor): Attractor runtime, pipeline engine, handlers, CLI, and mounted Attractor API
-- [src/spark/workspace/](src/spark/workspace): Spark workspace service, conversations, review artifacts, trigger subsystem, and mounted Workspace API
-- [src/spark/chat/](src/spark/chat): Spark chat orchestration, prompt templates, session plumbing, and chat response parsing
-- [frontend/](frontend): React 19 + Vite UI
+Spark is distributed through the public command names `spark` and `spark-server`. In packaged installs those names execute native Rust binaries; in source checkouts the Python entry points remain useful development wrappers while transitional adapter coverage is completed.
+
+- [Cargo.toml](Cargo.toml): Rust workspace manifest for the Spark rewrite
+- [crates/spark-cli/](crates/spark-cli): Rust `spark` command surface for conversations, runs, flows, and triggers
+- [crates/spark-server/](crates/spark-server): Rust `spark-server` command surface for serving, init, service management, and hidden worker execution
+- [crates/spark-http/](crates/spark-http), [crates/spark-workspace/](crates/spark-workspace), and [crates/attractor-api/](crates/attractor-api): composed HTTP app, Workspace API, and Attractor API ownership
+- [crates/attractor-dsl/](crates/attractor-dsl), [crates/attractor-core/](crates/attractor-core), and [crates/attractor-runtime/](crates/attractor-runtime): DOT parsing, typed graph/runtime contracts, and execution state machine
+- [crates/spark-assets/](crates/spark-assets) and [crates/spark-storage/](crates/spark-storage): packaged resource discovery and compatible filesystem storage
+- [crates/spark-agent-adapter/](crates/spark-agent-adapter) and [crates/unified-llm-adapter/](crates/unified-llm-adapter): Rust-owned adapter boundaries for Codex/agent and provider/model behavior during migration
+- [frontend/](frontend): React 19 + Vite UI served by the Rust-backed server
 - [src/spark/flows/](src/spark/flows): packaged `.dot` flows shipped with Spark; examples live under [src/spark/flows/examples/](src/spark/flows/examples)
 - [tests/fixtures/flows/](tests/fixtures/flows): repo-only `.dot` fixtures used by tests and local development
-- [tests/](tests): backend tests, UI contracts, and acceptance assets
+- [tests/](tests): Rust parity fixtures, Python guardrails, UI contracts, and acceptance assets
 - [specs/](specs): Attractor, workspace, frontend, and storage specifications
 
 ## Requirements
 
-- Python 3.10+
+- Rust stable toolchain with Cargo
+- Python 3.11+
 - [`uv`](https://docs.astral.sh/uv/)
 - Node.js 20+ and npm
 - Graphviz `dot` on `PATH` for graph artifacts
 - `codex` CLI on `PATH` with working auth for Codex-backed handlers and project chat flows
 - `just` is optional, but the repo commands assume it when available
+
+Python and `uv` remain part of the source-checkout workflow for compatibility guardrails, tests, packaging, and transitional adapter paths. They do not change the supported user commands.
 
 ## Local Development
 
@@ -144,13 +153,19 @@ Prepare a fresh checkout:
 just setup
 ```
 
+This installs the Python development environment with `uv sync --dev` and the frontend toolchain with `npm --prefix frontend ci`. Build the Rust workspace directly when you need fresh local binaries:
+
+```bash
+cargo build --workspace
+```
+
 Initialize the runtime tree and seed packaged flows:
 
 ```bash
-uv run spark-server init
+SPARK_HOME=~/.spark-dev uv run spark-server init
 ```
 
-`just setup` installs the Python dev environment with `uv sync --dev` and the frontend toolchain with `npm --prefix frontend ci`.
+Source-checkout commands should use a separate development runtime so they do not mutate a stable install under `~/.spark`.
 
 Install a stable wheel into `~/.spark/venv` and initialize the stable runtime:
 
@@ -262,6 +277,9 @@ The source-checkout dev wrapper intentionally uses a separate runtime home and p
 
 - `SPARK_HOME` defaults to `~/.spark-dev`
 - backend port defaults to `8010`
+- frontend port defaults to `5173`
+- server-backed checkout CLI calls should use `SPARK_API_BASE_URL=http://127.0.0.1:8010`
+- explicit development data, flow, and UI directories can be supplied with `--data-dir`, `--flows-dir`, `--ui-dir`, `SPARK_FLOWS_DIR`, and `SPARK_UI_DIR`
 - provider secrets, when present, are read from `~/.spark-dev/config/provider.env` unless `SPARK_HOME` is set
 
 Initialize that dev runtime explicitly with:
@@ -320,26 +338,27 @@ The packaged Docker stack also keeps project work mounted from `${SPARK_PROJECTS
 Start the server directly:
 
 ```bash
-uv run spark-server serve --host 127.0.0.1 --port 8000
+SPARK_HOME=~/.spark-dev uv run spark-server serve --host 127.0.0.1 --port 8010
 ```
 
 Useful development flags:
 
 ```bash
+SPARK_HOME=~/.spark-dev \
 uv run spark-server serve \
   --host 127.0.0.1 \
-  --port 8000 \
+  --port 8010 \
   --reload \
-  --data-dir ~/.spark \
-  --flows-dir ~/.spark/flows \
+  --data-dir ~/.spark-dev \
+  --flows-dir ~/.spark-dev/flows \
   --ui-dir ./frontend/dist
 ```
 
-When a built UI is available, the backend serves it at [http://127.0.0.1:8000](http://127.0.0.1:8000).
+When a built UI is available, the development backend serves it at [http://127.0.0.1:8010](http://127.0.0.1:8010). The stable packaged runtime continues to default to [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
 ## Runtime Data and Configuration
 
-By default, Spark stores runtime data under `~/.spark`:
+By default, packaged Spark stores runtime data under `~/.spark`; source-checkout development should use `SPARK_HOME=~/.spark-dev`:
 
 - `config/`
 - `runtime/`
@@ -351,6 +370,7 @@ By default, Spark stores runtime data under `~/.spark`:
 Important path overrides:
 
 - `SPARK_HOME`
+- `SPARK_API_BASE_URL`
 - `SPARK_FLOWS_DIR`
 - `SPARK_UI_DIR`
 
@@ -434,16 +454,25 @@ Useful `just` targets from [justfile](justfile):
 
 ## Testing
 
+Rust workspace checks:
+
+```bash
+cargo fmt --check
+cargo test --workspace --all-features
+```
+
 Backend suite:
 
 ```bash
 uv run pytest -q
 ```
 
-Frontend unit tests:
+Frontend checks:
 
 ```bash
 npm --prefix frontend run test:unit
+npm --prefix frontend run build
+npm --prefix frontend run ui:smoke
 ```
 
 ## Packaging

@@ -38,6 +38,14 @@ def test_supervised_implementation_summaries_read_child_runtime_telemetry() -> N
         "context.stack.child.completed_nodes",
         "context.stack.child.route_trace",
         "context.stack.child.failure_reason",
+        "context.stack.child.retry_count",
+        "context.stack.child.retry_counts",
+        "context.stack.child.artifact_count",
+        "context.stack.child.event_count",
+        "context.stack.child.checkpoint_timestamp",
+        "context.stack.child.latest_event_at",
+        "context.stack.child.started_at",
+        "context.stack.child.ended_at",
     }
 
     for node_id in ("summarize_failure", "summarize_success"):

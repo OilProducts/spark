@@ -44,7 +44,15 @@ class ManagerLoopHandler:
 
         for cycle in range(1, max_cycles + 1):
             if "observe" in actions:
-                _ingest_child_telemetry(runtime.context, runtime.node_id, cycle)
+                if runtime.child_status_resolver is None:
+                    _ingest_child_telemetry(runtime.context, runtime.node_id, cycle)
+                else:
+                    _ingest_child_telemetry(
+                        runtime.context,
+                        runtime.node_id,
+                        cycle,
+                        runtime.child_status_resolver,
+                    )
                 _append_manager_artifact(
                     runtime.logs_root,
                     runtime.node_id,
@@ -262,6 +270,14 @@ def _apply_child_run_result(context: Context, child_result: ChildRunResult) -> N
     context.set("context.stack.child.completed_nodes", list(child_result.completed_nodes))
     context.set("context.stack.child.route_trace", list(child_result.route_trace))
     context.set("context.stack.child.failure_reason", child_result.failure_reason or "")
+    context.set("context.stack.child.retry_count", child_result.retry_count if child_result.retry_count is not None else "")
+    context.set("context.stack.child.retry_counts", dict(child_result.retry_counts))
+    context.set("context.stack.child.artifact_count", child_result.artifact_count if child_result.artifact_count is not None else "")
+    context.set("context.stack.child.event_count", child_result.event_count if child_result.event_count is not None else "")
+    context.set("context.stack.child.checkpoint_timestamp", child_result.checkpoint_timestamp)
+    context.set("context.stack.child.latest_event_at", child_result.latest_event_at)
+    context.set("context.stack.child.started_at", child_result.started_at)
+    context.set("context.stack.child.ended_at", child_result.ended_at or "")
 
 
 def _clear_child_snapshot(context: Context) -> None:
@@ -277,6 +293,13 @@ def _clear_child_snapshot(context: Context) -> None:
             "context.stack.child.route_trace": [],
             "context.stack.child.failure_reason": "",
             "context.stack.child.retry_count": "",
+            "context.stack.child.retry_counts": {},
+            "context.stack.child.artifact_count": "",
+            "context.stack.child.event_count": "",
+            "context.stack.child.checkpoint_timestamp": "",
+            "context.stack.child.latest_event_at": "",
+            "context.stack.child.started_at": "",
+            "context.stack.child.ended_at": "",
             "context.stack.child.intervention": "",
             "context.stack.child.intervention_status": "",
             "context.stack.child.intervention_delivery_mode": "",
@@ -443,8 +466,19 @@ def _resolve_child_status(context: Context) -> Outcome | None:
     return None
 
 
-def _ingest_child_telemetry(context: Context, node_id: str, cycle: int) -> None:
-    del context, node_id, cycle
+def _ingest_child_telemetry(
+    context: Context,
+    node_id: str,
+    cycle: int,
+    child_status_resolver=None,
+) -> None:
+    del node_id, cycle
+    child_run_id = str(context.get("context.stack.child.run_id", "") or "").strip()
+    if not child_run_id or child_status_resolver is None:
+        return
+    child_result = child_status_resolver(child_run_id)
+    if child_result is not None:
+        _apply_child_run_result(context, child_result)
 
 
 def _request_child_intervention(
@@ -613,6 +647,10 @@ def _telemetry_payload(context: Context, node_id: str, cycle: int) -> dict[str, 
         "child_outcome": context.get("context.stack.child.outcome", ""),
         "child_active_stage": context.get("context.stack.child.active_stage", ""),
         "child_retry_count": context.get("context.stack.child.retry_count", ""),
+        "child_artifact_count": context.get("context.stack.child.artifact_count", ""),
+        "child_event_count": context.get("context.stack.child.event_count", ""),
+        "child_checkpoint_timestamp": context.get("context.stack.child.checkpoint_timestamp", ""),
+        "child_latest_event_at": context.get("context.stack.child.latest_event_at", ""),
     }
 
 

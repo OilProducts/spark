@@ -10,3 +10,11 @@ dist
 node_modules
 frontend/node_modules
 frontend/dist
+target
+tests/**
+!tests/
+!tests/compat/
+!tests/compat/providers/
+!tests/compat/providers/test_unified_llm_adapter_fixtures.py
+!tests/compat/packaging/
+!tests/compat/packaging/test_packaging_smoke_fixtures.py

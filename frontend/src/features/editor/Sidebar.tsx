@@ -76,6 +76,8 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'manager.max_cycles',
     'manager.stop_condition',
     'manager.actions',
+    'manager.steer_cooldown',
+    'stack.child_autostart',
     'spark.reads_context',
     'spark.writes_context',
 ])

@@ -1,27 +1,40 @@
-FROM node:20-slim AS frontend-build
+FROM python:3.11-slim AS deliverable-build
 
-WORKDIR /frontend
+WORKDIR /src
 
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    SPARK_DELIVERABLE_OUT=/out \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-COPY frontend/ ./
-RUN npm run build
+ENV PATH="${CARGO_HOME}/bin:${PATH}"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg build-essential \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable \
+    && rustc --version \
+    && cargo --version \
+    && pip install --no-cache-dir --upgrade pip uv \
+    && apt-get purge -y --auto-remove curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /src
+
+RUN uv run python scripts/build_deliverable.py
 
 
 FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive \
-    SPARK_HOME=/spark \
-    SPARK_PROJECT_ROOTS=/projects \
-    ATTRACTOR_CODEX_RUNTIME_ROOT=/spark/runtime/codex
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git gnupg graphviz openssh-client ripgrep docker.io \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git gnupg graphviz openssh-client ripgrep docker.io \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g @openai/codex \
@@ -29,12 +42,23 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --upgrade pip
 
-COPY pyproject.toml README-package.md ./
-COPY src/ ./src/
-COPY scripts/package-entrypoint.sh ./scripts/package-entrypoint.sh
-COPY --from=frontend-build /frontend/dist ./src/spark/ui_dist/
+COPY --from=deliverable-build /out/spark-*.whl /tmp/spark-wheel/
+RUN pip install --no-cache-dir /tmp/spark-wheel/spark-*.whl \
+    && rm -rf /tmp/spark-wheel
 
-RUN pip install --no-cache-dir /app
+COPY scripts/package-entrypoint.sh ./scripts/package-entrypoint.sh
+RUN chmod 0755 ./scripts/package-entrypoint.sh
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    SPARK_HOME=/spark \
+    SPARK_PROJECT_ROOTS=/projects \
+    SPARK_DOCKER_HOME=/spark \
+    ATTRACTOR_CODEX_RUNTIME_ROOT=/spark/runtime/codex \
+    HOME=/spark/runtime/codex \
+    CODEX_HOME=/spark/runtime/codex/.codex \
+    XDG_CONFIG_HOME=/spark/runtime/codex/.config \
+    XDG_DATA_HOME=/spark/runtime/codex/.local/share
 
 EXPOSE 8000
 

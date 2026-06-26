@@ -20,6 +20,8 @@ spark flow validate --file /path/to/flow.dot --text
 
 Use `--file` when you are editing a `.dot` file directly. Use `--flow <name>` only when you want to validate a flow that already exists in Spark's runtime flow library.
 
+Validation covers the parser, formatter-facing graph model, structural graph rules, supported handler attrs, Spark extension attrs, stylesheet syntax, context read/write contracts, and the `spark.launch_inputs` schema. A server launch still validates the supplied `launch_context` object separately before initializing runtime state.
+
 ## Structural Building Blocks
 
 Attractor flows are Graphviz `digraph` files.
@@ -155,6 +157,7 @@ Documented Attractor node attributes:
 | `timeout` | duration | Max node execution time. |
 | `llm_model` | string | Explicit model override. |
 | `llm_provider` | string | Explicit provider override. |
+| `llm_profile` | string | Explicit configured LLM profile override. |
 | `reasoning_effort` | string | `low`, `medium`, `high`, or `xhigh`. |
 | `codergen.response_contract` | string | Codergen-only shared response-format contract. |
 | `codergen.contract_repair_attempts` | integer | Codergen-only bounded same-thread repair budget for malformed response-contract output and structured write-contract violations. |
@@ -334,7 +337,7 @@ Thread/session resolution for `full` fidelity follows the same pattern:
 
 ## Model Stylesheet
 
-`model_stylesheet` lets you define default `llm_model`, `llm_provider`, and `reasoning_effort` centrally.
+`model_stylesheet` lets you define default `llm_model`, `llm_provider`, `llm_profile`, and `reasoning_effort` centrally.
 
 Documented selectors:
 
@@ -354,6 +357,7 @@ Allowed properties:
 
 - `llm_model`
 - `llm_provider`
+- `llm_profile`
 - `reasoning_effort`
 
 Example:
@@ -363,7 +367,7 @@ graph [
   model_stylesheet="
     * { llm_provider: openai; reasoning_effort: medium; }
     box { llm_model: gpt-5; }
-    .review { reasoning_effort: high; }
+    .review { llm_profile: default; reasoning_effort: high; }
     #finalize { llm_model: gpt-5.4; }
   "
 ];
@@ -406,6 +410,7 @@ Spark stores additional graph-level authoring metadata in DOT:
 | `spark.result_summary_prompt` | string | Optional custom result summarization prompt. |
 | `ui_default_llm_model` | string | Flow-level UI default model. |
 | `ui_default_llm_provider` | string | Flow-level UI default provider. |
+| `ui_default_llm_profile` | string | Flow-level UI default LLM profile. |
 | `ui_default_reasoning_effort` | string | Flow-level UI default reasoning effort. |
 
 These are Spark-owned metadata, not Attractor core semantics.
@@ -439,6 +444,10 @@ Documented `type` values:
 - `json`
 
 The `key` must use the `context.*` namespace.
+
+Each launch input object must include a non-empty `key`, a non-empty `label`, and a supported `type`. Keys must be unique within the array. `description` and `required` are UI/documentation fields; launch-time values are still supplied as a JSON object in `launch_context`.
+
+The launch path accepts only JSON-compatible context values and only `context.*` keys. That launch-context check is separate from normal DOT validation because it validates the user-supplied run payload, not the flow source.
 
 ## Spark Node Metadata
 
@@ -505,6 +514,12 @@ Treat any extra attrs you encounter as one of:
 - project-specific extension attrs that are only meaningful to a custom host
 
 Do not assume an undocumented attribute is portable just because it round-trips.
+
+The following attrs are intentionally outside the packaged authoring contract today:
+
+- legacy tool attrs `tool_command`, `tool_hooks.pre`, and `tool_hooks.post`; use `tool.command`, `tool.hooks.pre`, and `tool.hooks.post`
+- preview-only or unsupported human-gate attrs such as `human.default_choice`
+- parallel `error_policy`, even though older starter flows may still round-trip it for compatibility
 
 ## Bundled Example Starting Points
 

@@ -12,7 +12,9 @@ digraph manager_loop_authoring_round_trip {
         manager.poll_interval=25ms,
         manager.max_cycles=4,
         manager.stop_condition="child.status == \"success\"",
-        manager.actions="observe,steer"
+        manager.actions="observe,steer",
+        manager.steer_cooldown=2s,
+        stack.child_autostart=false
     ];
 
     done [label="Done", shape=ellipse, type=exit];

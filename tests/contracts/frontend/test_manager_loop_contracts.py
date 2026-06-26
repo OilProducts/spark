@@ -22,7 +22,9 @@ const nodes = [
       'manager.poll_interval': '25ms',
       'manager.max_cycles': '3',
       'manager.stop_condition': 'child.outcome == "success"',
-      'manager.actions': 'observe,steer'
+      'manager.actions': 'observe,steer',
+      'manager.steer_cooldown': '2s',
+      'stack.child_autostart': false
     }
   }
 ]
@@ -91,6 +93,8 @@ def test_manager_loop_attrs_round_trip_through_preview_item_6_2_01() -> None:
     assert manager_node["manager.max_cycles"] == 3
     assert manager_node["manager.stop_condition"] == 'child.outcome == "success"'
     assert manager_node["manager.actions"] == "observe,steer"
+    assert manager_node["manager.steer_cooldown"] == "2s"
+    assert manager_node["stack.child_autostart"] is False
 
 
 def test_manager_loop_fixture_round_trip_item_6_7_04() -> None:
@@ -116,5 +120,7 @@ def test_manager_loop_fixture_round_trip_item_6_7_04() -> None:
         "manager.max_cycles",
         "manager.stop_condition",
         "manager.actions",
+        "manager.steer_cooldown",
+        "stack.child_autostart",
     ):
         assert round_trip_manager[key] == fixture_manager[key]

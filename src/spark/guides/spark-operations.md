@@ -85,6 +85,15 @@ spark flow validate --flow examples/simple-linear.dot --text
 curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear.dot/validate
 ```
 
+Format a file you are editing directly:
+
+```bash
+spark flow format --file /absolute/path/to/flow.dot
+spark flow format --file /absolute/path/to/flow.dot --write
+```
+
+`spark flow format --file` is local like file validation. The `--write` form updates only the target DOT file.
+
 ## Launch Runs, Recover Runs, And Create Run Requests
 
 Assistant-runtime default:
@@ -138,7 +147,21 @@ spark run launch \
   --summary "Implement the approved change." \
   --project /absolute/path/to/project \
   --goal "Add the requested endpoint and tests." \
-  --launch-context-json '{"context.request.ticket":"ABC-123"}'
+  --launch-context-json '{"context.request.ticket":"ABC-123"}' \
+  --model gpt-5 \
+  --llm-provider openai \
+  --reasoning-effort high \
+  --execution-profile native
+```
+
+Source-checkout launch against the development backend:
+
+```bash
+SPARK_API_BASE_URL=http://127.0.0.1:8010 uv run spark run launch \
+  --flow examples/simple-linear.dot \
+  --summary "Inspect the repo and summarize next steps." \
+  --project "$PWD" \
+  --launch-context-json '{"context.request.summary":"Inspect the checkout."}'
 ```
 
 Create a pending run request inside a conversation:
@@ -164,7 +187,8 @@ Notes:
 
 - `spark run launch` requires either `--conversation` or `--project`.
 - `--goal-file` and `--launch-context-file` are available when inline text is inconvenient.
-- Use `model` only when you need a launch-time override; otherwise let the flow defaults apply.
+- Use `--model`, `--llm-provider`, `--reasoning-effort`, and `--execution-profile` only when you need launch-time overrides; otherwise let the flow defaults and project settings apply.
+- `spark run launch` and `spark convo run-request` do not take `--llm-profile`; use flow defaults such as `ui_default_llm_profile`, or use `--llm-profile` on supported recovery commands.
 - A launch created without `--conversation` is project-scoped only, so no flow-launch card appears in chat.
 
 ## Recover Runs
@@ -381,3 +405,35 @@ spark trigger delete --id <trigger_id>
 ```bash
 curl -X DELETE http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>
 ```
+
+Trigger operation notes:
+
+- Trigger definitions are project-scoped and persisted through the Workspace trigger API.
+- Protected triggers reject edits and deletes through the same CLI and HTTP surfaces.
+- Webhook triggers use the shared Workspace webhook ingress route and validate their configured secret before dispatch.
+- Production trigger runtime state, dispatch provenance, and live trigger events are emitted by the Rust trigger runtime. The browser/operator stream observes trigger changes through `/workspace/api/live/events` with `triggers_project_path`.
+- Trigger-launched repository mutation policy is compatibility behavior, not a new safety policy defined by this guide.
+
+## Packaged, Service, And Container Operation
+
+Foreground packaged runtime:
+
+```bash
+spark-server init
+spark-server serve --host 127.0.0.1 --port 8000
+```
+
+Linux user service:
+
+```bash
+spark-server service install --host 0.0.0.0 --port 8000
+spark-server service status
+spark-server service remove
+```
+
+Operational rules:
+
+- Packaged installs use `~/.spark` unless `SPARK_HOME` or `--data-dir` points elsewhere.
+- The service loads provider secrets from `$SPARK_HOME/config/provider.env` when that file exists.
+- Source checkouts should use `SPARK_HOME=~/.spark-dev uv run spark-server init` and `SPARK_HOME=~/.spark-dev uv run spark-server serve --reload --port 8010` instead of mutating a stable packaged runtime.
+- Packaged container workflows use `compose.package.yaml` and keep host-visible runtime state under the configured Spark home volume.

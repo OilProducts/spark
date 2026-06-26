@@ -162,6 +162,10 @@ test("medium graph performance profile renders optimizations for item 13.3-02", 
   }))
 
   try {
+    await page.addInitScript(() => {
+      window.localStorage.setItem("spark.debug.performance", "1")
+    })
+
     await page.route("**/attractor/preview", async (route) => {
       await route.fulfill({
         status: 200,

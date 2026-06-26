@@ -430,6 +430,8 @@ const KNOWN_NODE_ATTR_KEYS = new Set<string>([
     'manager.max_cycles',
     'manager.stop_condition',
     'manager.actions',
+    'manager.steer_cooldown',
+    'stack.child_autostart',
     'spark.reads_context',
     'spark.writes_context',
 ])
@@ -578,6 +580,8 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
         const managerMaxCyclesValue = readStringOrNumberAttr(attrs, 'manager.max_cycles')
         const managerStopConditionValue = readStringAttr(attrs, 'manager.stop_condition')
         const managerActionsValue = readStringAttr(attrs, 'manager.actions')
+        const managerSteerCooldownValue = readStringAttr(attrs, 'manager.steer_cooldown')
+        const stackChildAutostartValue = readExplicitBooleanAttr(attrs, 'stack.child_autostart')
         const readsContextValue = readStringAttr(attrs, 'spark.reads_context')
         const writesContextValue = readStringAttr(attrs, 'spark.writes_context')
 
@@ -636,6 +640,8 @@ export function generateDotFromCanonicalFlowModel(flowName: string, model: Canon
             formatIntAttr('manager.max_cycles', managerMaxCyclesValue),
             managerStopConditionValue ? `manager.stop_condition="${escapeDotString(managerStopConditionValue)}"` : '',
             managerActionsValue ? `manager.actions="${escapeDotString(managerActionsValue)}"` : '',
+            managerSteerCooldownValue ? formatDurationAttr('manager.steer_cooldown', managerSteerCooldownValue) : '',
+            formatExplicitBooleanAttr('stack.child_autostart', stackChildAutostartValue),
             readsContextValue ? `spark.reads_context="${escapeDotString(readsContextValue)}"` : '',
             writesContextValue ? `spark.writes_context="${escapeDotString(writesContextValue)}"` : '',
             ...formatCanonicalAttrEntries(attrs, SERIALIZED_NODE_EXCLUDED_ATTR_KEYS),

@@ -28,8 +28,8 @@ dependencies = [
 ]
 
 [project.scripts]
-spark = "spark.cli:main"
-spark-server = "spark.server_cli:main"
+spark = "spark._rust_launcher:spark_main"
+spark-server = "spark._rust_launcher:spark_server_main"
 
 [tool.setuptools]
 include-package-data = true
@@ -40,7 +40,7 @@ where = ["src"]
 include = ["agent*", "attractor*", "spark*", "spark_common*", "unified_llm*"]
 
 [tool.setuptools.package-data]
-spark = ["flows/*.dot", "flows/*/*.dot", "flows/*/*/*.dot", "guides/*.md", "ui_dist/**"]
+spark = ["bin/*", "flows/*.dot", "flows/*/*.dot", "flows/*/*/*.dot", "guides/*.md", "ui_dist/**"]
 unified_llm = ["data/*.json"]
 
 [dependency-groups]

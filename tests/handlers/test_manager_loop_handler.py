@@ -409,6 +409,65 @@ class TestManagerLoopHandler:
         assert [entry["child_active_stage"] for entry in payloads] == ["stage-1", "stage-2"]
         assert [entry["child_retry_count"] for entry in payloads] == [1, 2]
 
+    def test_manager_loop_observe_ingests_child_status_resolver_telemetry_without_steering(self, tmp_path):
+        def resolve_child(run_id: str) -> ChildRunResult:
+            return ChildRunResult(
+                run_id=run_id,
+                status="running",
+                current_node="work",
+                completed_nodes=["start"],
+                route_trace=["start", "work"],
+                retry_count=2,
+                retry_counts={"work": 2},
+                artifact_count=0,
+                event_count=7,
+                checkpoint_timestamp="2026-06-23T10:00:00Z",
+                latest_event_at="2026-06-23T10:00:05Z",
+                started_at="2026-06-23T09:59:00Z",
+            )
+
+        def request_intervention(request: ChildInterventionRequest) -> ChildInterventionResult:
+            raise AssertionError(f"unexpected intervention request: {request}")
+
+        graph = parse_dot(
+            """
+            digraph G {
+                manager [
+                    shape=house,
+                    manager.poll_interval=0ms,
+                    manager.max_cycles=1,
+                    manager.actions="observe,steer",
+                    manager.stop_condition="context.stack.child.event_count=7"
+                ]
+            }
+            """
+        )
+        logs_root = tmp_path / "logs"
+        registry = build_default_registry(codergen_backend=_StubBackend())
+        runner = HandlerRunner(
+            graph,
+            registry,
+            logs_root=logs_root,
+            child_status_resolver=resolve_child,
+            child_intervention_requester=request_intervention,
+        )
+        context = Context(values={"context.stack.child.run_id": "child-progress"})
+
+        outcome = runner("manager", "", context)
+
+        assert outcome.status == OutcomeStatus.SUCCESS
+        assert outcome.notes == "Stop condition satisfied"
+        assert context.get("context.stack.child.status") == "running"
+        assert context.get("context.stack.child.active_stage") == "work"
+        assert context.get("context.stack.child.retry_count") == 2
+        assert context.get("context.stack.child.retry_counts") == {"work": 2}
+        assert context.get("context.stack.child.artifact_count") == 0
+        assert context.get("context.stack.child.event_count") == 7
+        assert context.get("context.stack.child.checkpoint_timestamp") == "2026-06-23T10:00:00Z"
+        assert context.get("context.stack.child.latest_event_at") == "2026-06-23T10:00:05Z"
+        assert (logs_root / "manager" / "manager_telemetry.jsonl").exists()
+        assert not (logs_root / "manager" / "manager_interventions.jsonl").exists()
+
     def test_manager_loop_observe_and_steer_actions_skip_wait_when_wait_not_enabled(self, monkeypatch):
         observed = []
         steered = []

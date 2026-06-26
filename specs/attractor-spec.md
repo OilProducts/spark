@@ -1116,6 +1116,8 @@ Automatic manager steering is bounded per manager-loop invocation. The runtime k
 
 `context.stack.child.*` is runtime-owned latest-child telemetry. Authored flows may read it, but should not clear or set it as business logic.
 
+Concrete child-run telemetry includes `context.stack.child.run_id`, `status`, `outcome`, `outcome_reason_code`, `outcome_reason_message`, `active_stage`, `completed_nodes`, `route_trace`, `failure_reason`, `retry_count`, `retry_counts`, `artifact_count`, `event_count`, `checkpoint_timestamp`, `latest_event_at`, `started_at`, and `ended_at` when those values are available from the child run record, checkpoint, events, or artifact index. These fields are observational; missing artifacts, unchanged stages, elapsed time, and retry/progress counters do not by themselves create failure context.
+
 With `stack.child_autostart=true`, terminal child state from an earlier manager invocation is stale. Only `context.stack.child.status=running` suppresses a new child launch; `completed` and `failed` do not.
 
 When the runtime launches a fresh autostarted child, it clears the runtime-owned `context.stack.child.*` snapshot fields it manages before writing the new child result. When autostart is disabled, the manager may still resolve directly from pre-populated terminal child state in context.
@@ -1583,6 +1585,7 @@ Severity:
 | `edge_target_exists`     | ERROR    | Every edge target must reference an existing node ID. |
 | `start_no_incoming`      | ERROR    | The start node must have no incoming edges. |
 | `exit_no_outgoing`       | ERROR    | The exit node must have no outgoing edges. |
+| `node_has_outgoing_edge` | ERROR    | Every non-exit node must declare at least one outgoing edge; intentional completion must route to the single terminal node. |
 | `condition_syntax`       | ERROR    | Edge condition expressions must parse correctly (valid operators and keys). |
 | `stylesheet_syntax`      | ERROR    | The `model_stylesheet` attribute must parse as valid stylesheet rules. |
 | `type_known`             | WARNING  | Node `type` values should be recognized by the handler registry. |
@@ -2065,6 +2068,7 @@ This section defines how to validate that an implementation of this spec is comp
 - [ ] Exactly one exit node (shape=Msquare or id matching `exit`/`end`) is required
 - [ ] Start node has no incoming edges
 - [ ] Exit node has no outgoing edges
+- [ ] Every non-exit node declares at least one outgoing edge
 - [ ] All nodes are reachable from start (no orphans)
 - [ ] All edges reference valid node IDs
 - [ ] Codergen nodes (shape=box) have non-empty `prompt` attribute (warning if missing)

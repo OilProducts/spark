@@ -1120,6 +1120,14 @@ def child_run_result_to_payload(result: ChildRunResult) -> dict[str, Any]:
         "completed_nodes": list(result.completed_nodes),
         "route_trace": list(result.route_trace),
         "failure_reason": result.failure_reason,
+        "retry_count": result.retry_count,
+        "retry_counts": dict(result.retry_counts),
+        "artifact_count": result.artifact_count,
+        "event_count": result.event_count,
+        "checkpoint_timestamp": result.checkpoint_timestamp,
+        "latest_event_at": result.latest_event_at,
+        "started_at": result.started_at,
+        "ended_at": result.ended_at,
     }
 
 
@@ -1134,7 +1142,21 @@ def child_run_result_from_payload(payload: dict[str, Any]) -> ChildRunResult:
         completed_nodes=[str(item) for item in payload.get("completed_nodes") or []],
         route_trace=[str(item) for item in payload.get("route_trace") or []],
         failure_reason=str(payload.get("failure_reason") or ""),
+        retry_count=_optional_int(payload.get("retry_count")),
+        retry_counts={str(key): int(value) for key, value in dict(payload.get("retry_counts") or {}).items()},
+        artifact_count=_optional_int(payload.get("artifact_count")),
+        event_count=_optional_int(payload.get("event_count")),
+        checkpoint_timestamp=str(payload.get("checkpoint_timestamp") or ""),
+        latest_event_at=str(payload.get("latest_event_at") or ""),
+        started_at=str(payload.get("started_at") or ""),
+        ended_at=str(payload["ended_at"]) if payload.get("ended_at") is not None else None,
     )
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
 
 
 def child_intervention_request_to_payload(request: ChildInterventionRequest) -> dict[str, Any]:

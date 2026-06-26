@@ -78,6 +78,8 @@ def _generate_dot_with_all_handler_types() -> str:
                 "manager.max_cycles": "3",
                 "manager.stop_condition": 'child.outcome == "success"',
                 "manager.actions": "observe,steer",
+                "manager.steer_cooldown": "2s",
+                "stack.child_autostart": False,
             },
         },
         {"id": "done", "data": {"label": "Done", "shape": "Msquare", "type": "exit"}},
@@ -146,6 +148,8 @@ def test_node_attributes_round_trip_across_all_handler_types_item_6_2_04() -> No
     assert nodes_by_id["manager"]["manager.max_cycles"] == 3
     assert nodes_by_id["manager"]["manager.stop_condition"] == 'child.outcome == "success"'
     assert nodes_by_id["manager"]["manager.actions"] == "observe,steer"
+    assert nodes_by_id["manager"]["manager.steer_cooldown"] == "2s"
+    assert nodes_by_id["manager"]["stack.child_autostart"] is False
 
 
 def test_parallel_threshold_attrs_serialize_only_for_active_join_policy() -> None:
