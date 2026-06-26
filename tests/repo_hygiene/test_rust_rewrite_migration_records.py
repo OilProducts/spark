@@ -81,9 +81,9 @@ def test_policy_gaps_and_non_goals_are_not_counted_as_closed_parity() -> None:
     non_goals = {entry["id"]: entry for entry in record["explicit_non_goals"]}
 
     assert {
-        "subgraph_and_scoped_defaults_ui_authoring",
         "post_gap_spec_api_drift_audit",
     } <= set(policy_gaps)
+    assert "subgraph_and_scoped_defaults_ui_authoring" not in policy_gaps
     assert "acceptance_workflow_harness" not in policy_gaps
     assert "manager_loop_telemetry_ingestion" not in policy_gaps
     assert {
@@ -108,6 +108,13 @@ def test_acceptance_workflow_harness_is_closed_with_executable_evidence() -> Non
     assert harness["counts_as_closed_parity"] is True
     assert "pytest harness" in harness["current_boundary"]
     _assert_evidence(harness["evidence"])
+
+    subgraph_defaults = closed_gaps["subgraph_and_scoped_defaults_ui_authoring"]
+    assert subgraph_defaults["status"] == "implemented"
+    assert subgraph_defaults["counts_as_closed_parity"] is True
+    assert "Graph Settings" in subgraph_defaults["current_boundary"]
+    assert "scoped node/edge defaults" in subgraph_defaults["current_boundary"]
+    _assert_evidence(subgraph_defaults["evidence"])
 
 
 def test_future_compatibility_break_candidates_require_new_decisions() -> None:

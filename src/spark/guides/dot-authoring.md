@@ -396,6 +396,19 @@ subgraph cluster_review {
 }
 ```
 
+In the visual editor, use Graph Settings to author the same constructs without
+switching to raw DOT:
+
+- Scoped Defaults edits graph-level `node [ ... ]` and `edge [ ... ]` default
+  statements.
+- Subgraphs lists top-level subgraphs and supports id, label, node-id
+  membership, additional graph attrs, scoped node defaults, and scoped edge
+  defaults.
+- Nested subgraphs are shown when present and are preserved while editing the
+  exposed top-level fields.
+- Unknown extension attrs remain available as key/value entries and are kept in
+  generated DOT.
+
 ## Spark Graph Metadata
 
 Spark stores additional graph-level authoring metadata in DOT:

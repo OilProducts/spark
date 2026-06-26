@@ -13,6 +13,7 @@ interface AdvancedKeyValueEditorProps {
     onAdd: (key: string, value: string) => void
     reservedKeys?: Set<string>
     title?: string
+    description?: string
 }
 
 export function AdvancedKeyValueEditor({
@@ -23,6 +24,7 @@ export function AdvancedKeyValueEditor({
     onAdd,
     reservedKeys,
     title = 'Extension Attributes',
+    description = 'Edit non-core attributes as generic key/value pairs.',
 }: AdvancedKeyValueEditorProps) {
     const [newKey, setNewKey] = useState('')
     const [newValue, setNewValue] = useState('')
@@ -52,7 +54,7 @@ export function AdvancedKeyValueEditor({
                 {title}
             </p>
             <p className="text-[11px] text-muted-foreground">
-                Edit non-core attributes as generic key/value pairs.
+                {description}
             </p>
 
             {entries.length === 0 ? (

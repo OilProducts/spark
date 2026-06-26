@@ -48,6 +48,12 @@ const resetGraphSettingsState = () => {
     graphAttrs: {},
     graphAttrErrors: {},
     graphAttrsUserEditVersion: 0,
+    canonicalDefaults: {
+      node: {},
+      edge: {},
+    },
+    canonicalSubgraphs: [],
+    canonicalStructureUserEditVersion: 0,
     editorGraphSettingsPanelOpenByFlow: {},
     editorShowAdvancedGraphAttrsByFlow: {},
     editorLaunchInputDraftsByFlow: {},
@@ -70,6 +76,18 @@ const resetGraphSettingsState = () => {
 }
 
 const wrapWithFlowProvider = (node: ReactNode) => render(<ReactFlowProvider>{node}</ReactFlowProvider>)
+
+const addKeyValueEntry = async (
+  user: ReturnType<typeof userEvent.setup>,
+  testIdPrefix: string,
+  key: string,
+  value: string,
+) => {
+  const editor = within(screen.getByTestId(`${testIdPrefix}-extension-attrs-editor`))
+  await user.type(editor.getByTestId(`${testIdPrefix}-extension-attr-new-key`), key)
+  await user.type(editor.getByTestId(`${testIdPrefix}-extension-attr-new-value`), value)
+  await user.click(editor.getByRole('button', { name: 'Add Attribute' }))
+}
 
 describe('Graph and settings behavior', () => {
   beforeEach(() => {
@@ -274,6 +292,121 @@ describe('Graph and settings behavior', () => {
     const dot = generateDot(TEST_GRAPH_FLOW, [], [], useStore.getState().graphAttrs)
     expect(dot).toContain('spark.launch_inputs=')
     expect(dot).toContain('context.request.acceptance_criteria')
+  })
+
+  it('authors graph-level node and edge defaults through structured controls', async () => {
+    const user = userEvent.setup()
+    wrapWithFlowProvider(<GraphSettings inline />)
+
+    expect(screen.getByTestId('graph-scoped-defaults-section')).toBeVisible()
+    await addKeyValueEntry(user, 'graph-node-defaults', 'prompt', 'Default prompt')
+    await addKeyValueEntry(user, 'graph-edge-defaults', 'weight', '3')
+
+    const state = useStore.getState()
+    expect(state.canonicalDefaults.node.prompt).toBe('Default prompt')
+    expect(state.canonicalDefaults.edge.weight).toBe(3)
+
+    const dot = generateDot(TEST_GRAPH_FLOW, [], [], state.graphAttrs, {
+      defaults: state.canonicalDefaults,
+      subgraphs: state.canonicalSubgraphs,
+    })
+    expect(dot).toContain('node [prompt="Default prompt"];')
+    expect(dot).toContain('edge [weight=3];')
+  })
+
+  it('creates and serializes a subgraph with attrs, membership, and scoped defaults', async () => {
+    const user = userEvent.setup()
+    wrapWithFlowProvider(<GraphSettings inline />)
+
+    await user.click(screen.getByTestId('graph-subgraph-add'))
+    expect(screen.getByTestId('graph-subgraph-0')).toBeVisible()
+
+    await user.clear(screen.getByTestId('graph-subgraph-id-0'))
+    await user.type(screen.getByTestId('graph-subgraph-id-0'), 'cluster_review')
+    await user.type(screen.getByTestId('graph-subgraph-label-0'), 'Review Loop')
+    await user.type(screen.getByTestId('graph-subgraph-node-ids-0'), 'author, review')
+    await addKeyValueEntry(user, 'graph-subgraph-0-attrs', 'ext.scope_flag', 'review')
+    await addKeyValueEntry(user, 'graph-subgraph-0-node-defaults', 'thread_id', 'review-thread')
+    await addKeyValueEntry(user, 'graph-subgraph-0-edge-defaults', 'weight', '8')
+
+    const state = useStore.getState()
+    expect(state.canonicalSubgraphs[0]).toMatchObject({
+      id: 'cluster_review',
+      nodeIds: ['author', 'review'],
+    })
+    expect(state.canonicalSubgraphs[0].attrs.label).toBe('Review Loop')
+    expect(state.canonicalSubgraphs[0].defaults.node.thread_id).toBe('review-thread')
+    expect(state.canonicalSubgraphs[0].defaults.edge.weight).toBe(8)
+
+    const dot = generateDot(TEST_GRAPH_FLOW, [], [], state.graphAttrs, {
+      defaults: state.canonicalDefaults,
+      subgraphs: state.canonicalSubgraphs,
+    })
+    expect(dot).toContain('subgraph cluster_review {')
+    expect(dot).toContain('graph [ext.scope_flag=review, label="Review Loop"];')
+    expect(dot).toContain('node [thread_id="review-thread"];')
+    expect(dot).toContain('edge [weight=8];')
+    expect(dot).toContain('author;')
+    expect(dot).toContain('review;')
+  })
+
+  it('shows loaded subgraphs and preserves nested subgraphs while editing top-level fields', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().replaceCanonicalFlowScopes(
+        {
+          node: { timeout: '5m' },
+          edge: { condition: 'ready=true' },
+        },
+        [
+          {
+            id: 'cluster_review',
+            attrs: {
+              label: 'Review',
+              'ext.scope_flag': 'keep',
+            },
+            nodeIds: ['author'],
+            defaults: {
+              node: { thread_id: 'review-thread' },
+              edge: { weight: 7 },
+            },
+            subgraphs: [
+              {
+                id: 'cluster_inner',
+                attrs: { label: 'Inner' },
+                nodeIds: ['author'],
+                defaults: {
+                  node: { timeout: '45s' },
+                  edge: {},
+                },
+                subgraphs: [],
+              },
+            ],
+          },
+        ],
+      )
+    })
+
+    wrapWithFlowProvider(<GraphSettings inline />)
+
+    expect(screen.getByTestId('graph-node-defaults-extension-attr-key-0')).toHaveValue('timeout')
+    expect(screen.getByTestId('graph-edge-defaults-extension-attr-key-0')).toHaveValue('condition')
+    expect(screen.getByTestId('graph-subgraph-id-0')).toHaveValue('cluster_review')
+    expect(screen.getByTestId('graph-subgraph-node-ids-0')).toHaveValue('author')
+    expect(screen.getByTestId('graph-subgraph-0-nested-summary')).toHaveTextContent('cluster_inner')
+
+    await user.clear(screen.getByTestId('graph-subgraph-label-0'))
+    await user.type(screen.getByTestId('graph-subgraph-label-0'), 'Updated Review')
+
+    const state = useStore.getState()
+    const dot = generateDot(TEST_GRAPH_FLOW, [], [], state.graphAttrs, {
+      defaults: state.canonicalDefaults,
+      subgraphs: state.canonicalSubgraphs,
+    })
+    expect(dot).toContain('label="Updated Review"')
+    expect(dot).toContain('subgraph cluster_inner {')
+    expect(dot).toContain('node [timeout="45s"];')
+    expect(dot).toContain('ext.scope_flag=keep')
   })
 
   it('preserves panel state, advanced toggle, and invalid launch-input drafts across remounts', async () => {

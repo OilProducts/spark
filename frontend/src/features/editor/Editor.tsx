@@ -15,7 +15,12 @@ import '@xyflow/react/dist/style.css';
 
 import { useStore, type GraphAttrs } from '@/store';
 import { ValidationPanel } from './components/ValidationPanel';
-import { clearDotSerializationContext, generateDot, setDotSerializationContext } from '@/lib/dotUtils';
+import {
+    clearDotSerializationContext,
+    generateDot,
+    setDotSerializationContext,
+    type DotSerializationContext,
+} from '@/lib/dotUtils';
 import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib/flowLoadDebug';
 import {
     EXPECT_SEMANTIC_EQUIVALENCE_OPTIONS,
@@ -165,12 +170,14 @@ function buildAuthoredDot(
     nodes: Node[],
     edges: Edge[],
     graphAttrs: GraphAttrs,
+    serializationContext?: DotSerializationContext,
 ) {
     return generateDot(
         flowName,
         filterAuthoredNodes(nodes),
         filterAuthoredEdges(edges),
         graphAttrs,
+        serializationContext,
     )
 }
 
@@ -188,6 +195,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const activeProjectPath = useStore((state) => state.activeProjectPath);
     const activeFlow = useStore((state) => state.activeFlow);
     const graphAttrs = useStore((state) => state.graphAttrs);
+    const canonicalDefaults = useStore((state) => state.canonicalDefaults);
+    const canonicalSubgraphs = useStore((state) => state.canonicalSubgraphs);
     const uiDefaults = useStore((state) => state.uiDefaults);
     const uiDefaultModel = uiDefaults.llm_model;
     const uiDefaultProvider = uiDefaults.llm_provider;
@@ -200,6 +209,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         reasoning_effort: uiDefaultReasoningEffort,
     }), [uiDefaultModel, uiDefaultProvider, uiDefaultProfile, uiDefaultReasoningEffort]);
     const replaceGraphAttrs = useStore((state) => state.replaceGraphAttrs);
+    const replaceCanonicalFlowScopes = useStore((state) => state.replaceCanonicalFlowScopes);
     const setDiagnostics = useStore((state) => state.setDiagnostics);
     const clearDiagnostics = useStore((state) => state.clearDiagnostics);
     const suppressPreview = useStore((state) => state.suppressPreview);
@@ -233,6 +243,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         nodes: [] as Node[],
         edges: [] as Edge[],
         graphAttrs: {} as GraphAttrs,
+        canonicalDefaults,
+        canonicalSubgraphs,
     });
     const [isDragging, setIsDragging] = useState(false);
     const [isRawHandoffInFlight, setIsRawHandoffInFlight] = useState(false);
@@ -271,8 +283,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             nodes,
             edges,
             graphAttrs,
+            canonicalDefaults,
+            canonicalSubgraphs,
         }
-    }, [edges, graphAttrs, nodes]);
+    }, [canonicalDefaults, canonicalSubgraphs, edges, graphAttrs, nodes]);
 
     const enforceSingleSelectedNode = useCallback((nextNodes: Node[], selectedNodeId: string) => {
         setEdges((currentEdges) =>
@@ -306,6 +320,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             filterAuthoredNodes(snapshot?.nodes || []),
             filterAuthoredEdges(snapshot?.edges || []),
             graphAttrs,
+            {
+                defaults: canonicalDefaults,
+                subgraphs: canonicalSubgraphs,
+            },
         ),
     })
 
@@ -644,6 +662,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             setSelectedNodeId(null);
             setSelectedEdgeId(null);
             replaceGraphAttrs({});
+            replaceCanonicalFlowScopes({ node: {}, edge: {} }, []);
             clearDiagnostics();
             setRawDotDraft('');
             setRawHandoffError(null);
@@ -688,6 +707,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         setSelectedNodeId(null);
         setSelectedEdgeId(null);
         replaceGraphAttrs({});
+        replaceCanonicalFlowScopes({ node: {}, edge: {} }, []);
         clearDiagnostics();
         recordFlowLoadDebug('diagnostics:clear', flowName, {
             loadId,
@@ -759,6 +779,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     defaults: hydrated.defaults,
                     subgraphs: hydrated.subgraphs,
                 });
+                replaceCanonicalFlowScopes(hydrated.defaults, hydrated.subgraphs);
                 replaceGraphAttrs(hydrated.graphAttrs);
                 setLastLayoutMs(hydrated.layoutDurationMs);
                 layoutStateRef.current = hydrated.layout;
@@ -770,7 +791,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 }
                 primeFlowSaveBaseline(
                     flowName,
-                    buildAuthoredDot(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.graphAttrs),
+                    buildAuthoredDot(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.graphAttrs, {
+                        defaults: hydrated.defaults,
+                        subgraphs: hydrated.subgraphs,
+                    }),
                 );
                 hydratedRef.current = true;
                 setIsHydrated(true);
@@ -802,6 +826,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         clearDiagnostics,
         hydrateFromPreview,
         requestPreview,
+        replaceCanonicalFlowScopes,
         replaceGraphAttrs,
         persistLayoutState,
         setEdges,
@@ -824,6 +849,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             nodes,
             edges,
             graphAttrs,
+            {
+                defaults: canonicalDefaults,
+                subgraphs: canonicalSubgraphs,
+            },
         );
         if (previewTimer.current) {
             window.clearTimeout(previewTimer.current);
@@ -868,6 +897,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             }
         };
     }, [
+        canonicalDefaults,
+        canonicalSubgraphs,
         clearDiagnostics,
         flowName,
         graphAttrs,
@@ -1103,12 +1134,15 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         if (!flowName) return;
         if (editorMode === 'raw') return;
         flushPendingSave();
-        const dot = buildAuthoredDot(flowName, nodes, edges, graphAttrs);
+        const dot = buildAuthoredDot(flowName, nodes, edges, graphAttrs, {
+            defaults: canonicalDefaults,
+            subgraphs: canonicalSubgraphs,
+        });
         rawDotEntryDraftRef.current = dot;
         setRawDotDraft(dot);
         setRawHandoffError(null);
         setEditorMode('raw');
-    }, [flowName, editorMode, edges, flushPendingSave, graphAttrs, nodes]);
+    }, [canonicalDefaults, canonicalSubgraphs, flowName, editorMode, edges, flushPendingSave, graphAttrs, nodes]);
 
     const returnToStructuredMode = useCallback(async () => {
         if (!flowName) return;
@@ -1168,6 +1202,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     defaults: hydrated.defaults,
                     subgraphs: hydrated.subgraphs,
                 });
+                replaceCanonicalFlowScopes(hydrated.defaults, hydrated.subgraphs);
                 replaceGraphAttrs(hydrated.graphAttrs);
                 setLastLayoutMs(hydrated.layoutDurationMs);
                 layoutStateRef.current = hydrated.layout;
@@ -1179,7 +1214,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 }
                 primeFlowSaveBaseline(
                     flowName,
-                    buildAuthoredDot(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.graphAttrs),
+                    buildAuthoredDot(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.graphAttrs, {
+                        defaults: hydrated.defaults,
+                        subgraphs: hydrated.subgraphs,
+                    }),
                 );
                 hydratedRef.current = true;
                 setIsHydrated(true);
@@ -1206,6 +1244,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         hydrateFromPreview,
         persistLayoutState,
         rawDotDraft,
+        replaceCanonicalFlowScopes,
         replaceGraphAttrs,
         requestPreview,
         setDiagnostics,
@@ -1283,6 +1322,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             authoredGraph.nodes,
             authoredGraph.edges,
             authoredGraph.graphAttrs,
+            {
+                defaults: authoredGraph.canonicalDefaults,
+                subgraphs: authoredGraph.canonicalSubgraphs,
+            },
         )
 
         void requestPreview(
@@ -1319,6 +1362,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     defaults: hydrated.defaults,
                     subgraphs: hydrated.subgraphs,
                 })
+                replaceCanonicalFlowScopes(hydrated.defaults, hydrated.subgraphs)
                 replaceGraphAttrs(hydrated.graphAttrs)
                 setLastLayoutMs(hydrated.layoutDurationMs)
                 layoutStateRef.current = hydrated.layout
@@ -1340,12 +1384,15 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             controller.abort()
         }
     }, [
+        canonicalDefaults,
+        canonicalSubgraphs,
         expandChildFlows,
         flowName,
         hydrateFromPreview,
         isHydrated,
         isActive,
         persistLayoutState,
+        replaceCanonicalFlowScopes,
         replaceGraphAttrs,
         requestPreview,
         suppressPreview,

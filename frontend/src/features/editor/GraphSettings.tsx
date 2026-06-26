@@ -29,6 +29,8 @@ import {
     GraphMetadataSection,
     GraphResultSection,
     GraphRunConfigurationSection,
+    GraphScopedDefaultsSection,
+    GraphSubgraphsSection,
 } from './components/graph-settings/GraphSettingsSections'
 import {
     loadGraphLaunchPolicy,
@@ -48,8 +50,13 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const graphAttrs = useStore((state) => state.graphAttrs)
     const graphAttrErrors = useStore((state) => state.graphAttrErrors)
     const graphAttrsUserEditVersion = useStore((state) => state.graphAttrsUserEditVersion)
+    const canonicalDefaults = useStore((state) => state.canonicalDefaults)
+    const canonicalSubgraphs = useStore((state) => state.canonicalSubgraphs)
+    const canonicalStructureUserEditVersion = useStore((state) => state.canonicalStructureUserEditVersion)
     const setGraphAttrs = useStore((state) => state.setGraphAttrs)
     const updateGraphAttr = useStore((state) => state.updateGraphAttr)
+    const setCanonicalDefaults = useStore((state) => state.setCanonicalDefaults)
+    const setCanonicalSubgraphs = useStore((state) => state.setCanonicalSubgraphs)
     const model = useStore((state) => state.model)
     const setModel = useStore((state) => state.setModel)
     const workingDir = useStore((state) => state.workingDir)
@@ -72,6 +79,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const flowNodes = useNodes()
     const autosaveScopeRef = useRef<string | null>(null)
     const lastHandledGraphAttrsVersionRef = useRef(graphAttrsUserEditVersion)
+    const lastHandledCanonicalStructureVersionRef = useRef(canonicalStructureUserEditVersion)
     const activeFlowRef = useRef<string | null>(activeFlow)
     const [launchPolicy, setLaunchPolicy] = useState<FlowLaunchPolicy>('disabled')
     const [launchPolicySource, setLaunchPolicySource] = useState<FlowLaunchPolicy | null>(null)
@@ -193,6 +201,10 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
             nextNodes ?? readNodes(),
             readEdges(),
             graphAttrs,
+            {
+                defaults: canonicalDefaults,
+                subgraphs: canonicalSubgraphs,
+            },
         ),
     })
 
@@ -410,6 +422,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         if (!activeFlow) {
             autosaveScopeRef.current = null
             lastHandledGraphAttrsVersionRef.current = graphAttrsUserEditVersion
+            lastHandledCanonicalStructureVersionRef.current = canonicalStructureUserEditVersion
             clearPendingSave()
             return
         }
@@ -417,15 +430,26 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         if (autosaveScopeRef.current !== autosaveScope) {
             autosaveScopeRef.current = autosaveScope
             lastHandledGraphAttrsVersionRef.current = graphAttrsUserEditVersion
+            lastHandledCanonicalStructureVersionRef.current = canonicalStructureUserEditVersion
             clearPendingSave()
             return
         }
-        if (graphAttrsUserEditVersion === lastHandledGraphAttrsVersionRef.current) {
+        if (
+            graphAttrsUserEditVersion === lastHandledGraphAttrsVersionRef.current
+            && canonicalStructureUserEditVersion === lastHandledCanonicalStructureVersionRef.current
+        ) {
             return
         }
         lastHandledGraphAttrsVersionRef.current = graphAttrsUserEditVersion
+        lastHandledCanonicalStructureVersionRef.current = canonicalStructureUserEditVersion
         scheduleSave()
-    }, [activeFlow, clearPendingSave, graphAttrsUserEditVersion, scheduleSave])
+    }, [
+        activeFlow,
+        canonicalStructureUserEditVersion,
+        clearPendingSave,
+        graphAttrsUserEditVersion,
+        scheduleSave,
+    ])
 
     const renderFieldDiagnostics = (field: string, testId: string) => {
         const diagnosticsForField = graphFieldDiagnostics[field] || []
@@ -522,6 +546,14 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     graphAttrErrors={graphAttrErrors}
                     renderFieldDiagnostics={renderFieldDiagnostics}
                     updateGraphAttr={updateGraphAttr}
+                />
+                <GraphScopedDefaultsSection
+                    defaults={canonicalDefaults}
+                    onDefaultsChange={setCanonicalDefaults}
+                />
+                <GraphSubgraphsSection
+                    subgraphs={canonicalSubgraphs}
+                    onSubgraphsChange={setCanonicalSubgraphs}
                 />
                 <GraphAdvancedAttrsSection
                     graphAttrs={graphAttrs}

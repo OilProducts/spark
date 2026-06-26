@@ -1,4 +1,5 @@
 import type { RunRecord } from '@/features/runs/model/shared'
+import type { CanonicalDefaultsScope, CanonicalSubgraph } from '@/lib/canonicalFlowModel'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import type {
     ExecutionSessionSlice,
@@ -288,6 +289,15 @@ export interface EditorSlice {
     setGraphAttrs: (attrs: GraphAttrs) => void
     replaceGraphAttrs: (attrs: GraphAttrs) => void
     updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
+    canonicalDefaults: CanonicalDefaultsScope
+    canonicalSubgraphs: CanonicalSubgraph[]
+    canonicalStructureUserEditVersion: number
+    setCanonicalDefaults: (defaults: CanonicalDefaultsScope) => void
+    setCanonicalSubgraphs: (subgraphs: CanonicalSubgraph[]) => void
+    replaceCanonicalFlowScopes: (
+        defaults: CanonicalDefaultsScope,
+        subgraphs: CanonicalSubgraph[],
+    ) => void
     diagnostics: DiagnosticEntry[]
     setDiagnostics: (diagnostics: DiagnosticEntry[]) => void
     clearDiagnostics: () => void

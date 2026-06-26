@@ -118,6 +118,10 @@ function cloneDefaultsScope(defaults?: Partial<CanonicalDefaultsScope>): Canonic
     }
 }
 
+export function cloneCanonicalDefaultsScope(defaults?: Partial<CanonicalDefaultsScope>): CanonicalDefaultsScope {
+    return cloneDefaultsScope(defaults)
+}
+
 function parseDefaultsScope(defaults: unknown): CanonicalDefaultsScope {
     const defaultsRecord = asRecord(defaults)
     return {
@@ -170,6 +174,10 @@ function cloneSubgraph(subgraph: CanonicalSubgraph): CanonicalSubgraph {
         defaults: cloneDefaultsScope(subgraph.defaults),
         subgraphs: subgraph.subgraphs.map(cloneSubgraph),
     }
+}
+
+export function cloneCanonicalSubgraphs(subgraphs?: CanonicalSubgraph[]): CanonicalSubgraph[] {
+    return (subgraphs ?? []).map(cloneSubgraph)
 }
 
 function normalizeDotId(rawId: string): string {
