@@ -81,20 +81,33 @@ def test_policy_gaps_and_non_goals_are_not_counted_as_closed_parity() -> None:
     non_goals = {entry["id"]: entry for entry in record["explicit_non_goals"]}
 
     assert {
-        "acceptance_workflow_harness",
+        "subgraph_and_scoped_defaults_ui_authoring",
+        "post_gap_spec_api_drift_audit",
     } <= set(policy_gaps)
+    assert "acceptance_workflow_harness" not in policy_gaps
     assert "manager_loop_telemetry_ingestion" not in policy_gaps
     assert {
         "full_agent_python_removal_in_m7",
         "full_unified_llm_python_removal_in_m7",
-        "acceptance_workflow_harness_closure_in_m7",
         "remote_worker_reintroduction",
     } <= set(non_goals)
+    assert "acceptance_workflow_harness_closure_in_m7" not in non_goals
 
     for entry in [*policy_gaps.values(), *non_goals.values()]:
         assert entry["status"] in {"open_policy_gap", "non_goal"}
         assert entry["counts_as_closed_parity"] is False
         _assert_evidence(entry["evidence"])
+
+
+def test_acceptance_workflow_harness_is_closed_with_executable_evidence() -> None:
+    record = _load_record()
+    closed_gaps = {entry["id"]: entry for entry in record["closed_policy_gaps"]}
+
+    harness = closed_gaps["acceptance_workflow_harness"]
+    assert harness["status"] == "implemented"
+    assert harness["counts_as_closed_parity"] is True
+    assert "pytest harness" in harness["current_boundary"]
+    _assert_evidence(harness["evidence"])
 
 
 def test_future_compatibility_break_candidates_require_new_decisions() -> None:

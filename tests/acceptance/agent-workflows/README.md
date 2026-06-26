@@ -10,7 +10,21 @@ These files are not source-of-truth product specifications. They are acceptance 
 
 Use these workflows to verify that the UI works in practice for complete user goals, not just isolated component or API behavior.
 
-They are intended to evolve into executable agent-driven acceptance tests once the required computer-use harness exists.
+They are bound to executable pytest cases by `harness.py` and `test_agent_workflows.py`. The harness drives Spark through local FastAPI product surfaces and deterministic local state, so it does not require external LLM/provider calls.
+
+## Running
+
+Run the harness from the repository root:
+
+```bash
+uv run pytest -q tests/acceptance/agent-workflows
+```
+
+The full repository gate also includes these cases:
+
+```bash
+uv run pytest -q
+```
 
 ## Structure
 
@@ -20,18 +34,20 @@ Each workflow file should define:
 - the ordered steps through the live product
 - the observable outcomes that determine pass/fail
 
-## Current Workflows
+The executable registry in `harness.py` maps every markdown workflow asset to a pytest case and declares the observable outcomes covered by that case. `test_every_markdown_workflow_asset_is_registered_in_harness` fails if a workflow markdown file is added without an executable case.
+
+## Executable Coverage
 
 - `project-select-author-execute-inspect.md`
-  End-to-end Home -> Editor -> Execution -> Runs workflow.
+  Registers a project, creates a project-scoped conversation, saves and reopens a flow, launches a run, inspects status/context/checkpoint/events/artifacts, edits the flow, and launches a follow-up run in the same project.
 - `pipeline-author-workflow.md`
-  Author-focused flow editing and validation workflow.
+  Saves a structured graph/node/edge flow, verifies validation blocks invalid authoring, saves an edit, and reopens the edited flow through the workspace API.
 - `operator-run-workflow.md`
-  Execution launch, monitoring, and cancellation workflow.
+  Launches a valid project run to terminal state and exercises an active run cancellation path with visible status transitions.
 - `reviewer-auditor-workflow.md`
-  Run inspection and diagnostic reconstruction workflow.
+  Launches a completed run, discovers it in history, inspects status/context/checkpoint/journal data, and verifies artifact listing/download behavior.
 - `project-owner-workflow.md`
-  Project-scoped conversation, flow-run request review, and direct flow launch workflow.
+  Sends a project-scoped chat turn with visible tool activity, creates and approves a flow-run request, verifies the launched run is recorded, then performs a direct launch that remains attached to the conversation event log.
 
 ## Notes
 

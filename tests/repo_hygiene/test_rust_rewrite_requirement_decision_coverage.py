@@ -141,7 +141,7 @@ def test_prerequisite_limited_and_pending_entries_do_not_count_as_passing() -> N
     limited = artifact["prerequisite_limited_notes"]
 
     assert pending == []
-    assert limited
+    assert limited == []
 
     for entry in artifact["requirement_coverage"].values():
         if entry["status"] in {"pending_ledger_status", "prerequisite_limited", "missing_evidence", "fail"}:
@@ -150,6 +150,29 @@ def test_prerequisite_limited_and_pending_entries_do_not_count_as_passing() -> N
     for note in [*artifact["retained_boundary_notes"], *limited]:
         if note["status"] in {"prerequisite_limited", "open_policy_gap", "non_goal", "future_decision_candidate"}:
             assert note["counts_as_passing"] is False
+
+
+def test_acceptance_workflow_harness_coverage_is_closed_when_final_validation_passes() -> None:
+    artifact = _load_artifact()
+    final_validation = _load_json(CURRENT / "validation" / "final-validation-artifacts.json")
+
+    assert final_validation["acceptance_workflow_status"]["status"] == "pass"
+    assert final_validation["acceptance_workflow_status"]["counts_as_passing"] is True
+
+    rr_val_005 = artifact["requirement_coverage"]["RR-VAL-005"]
+    assert rr_val_005["status"] == "pass"
+    assert rr_val_005["counts_as_passing"] is True
+    assert final_validation["acceptance_workflow_status"]["missing_prerequisites"] == []
+    assert all(record["status"] != "prerequisite_limited" for record in rr_val_005["evidence"])
+
+    closed = [
+        note
+        for note in artifact["retained_boundary_notes"]
+        if note["id"] == "acceptance_workflow_harness"
+        and note["classification"] == "closed_policy_gaps"
+    ]
+    assert closed
+    assert all(note["counts_as_passing"] is True for note in closed)
 
 
 def test_python_validation_command_evidence_uses_uv_pytest() -> None:
