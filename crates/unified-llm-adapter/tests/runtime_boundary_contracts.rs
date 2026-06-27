@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use unified_llm_adapter::{
-    AdapterError, AdapterErrorKind, Client, FinishReason, Message, ProviderAdapter, Request,
-    Response, StreamEvent, StreamEvents,
+    stream_events, AdapterError, AdapterErrorKind, Client, FinishReason, Message, ProviderAdapter,
+    Request, Response, StreamEvent, StreamEvents,
 };
 
 #[test]
@@ -115,7 +115,7 @@ impl ProviderAdapter for RuntimeBoundaryAdapter {
 
     fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
         self.record(&request, "stream");
-        Ok(Box::new(
+        Ok(stream_events(
             vec![
                 Ok(StreamEvent::text_delta(format!(
                     "stream:{}:{}",

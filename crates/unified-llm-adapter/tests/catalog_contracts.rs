@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use serde_json::json;
 use unified_llm_adapter::{
-    get_latest_model, get_model_info, list_models, Client, FinishReason, Message, ModelCatalog,
-    ProviderAdapter, Request, Response, StreamEvents,
+    get_latest_model, get_model_info, list_models, stream_events, Client, FinishReason, Message,
+    ModelCatalog, ProviderAdapter, Request, Response, StreamEvents,
 };
 
 #[test]
@@ -152,6 +152,6 @@ impl ProviderAdapter for EchoModelAdapter {
     }
 
     fn stream(&self, _request: Request) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
-        Ok(Box::new(Vec::new().into_iter()))
+        Ok(stream_events(Vec::new().into_iter()))
     }
 }

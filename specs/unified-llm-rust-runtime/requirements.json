@@ -254,7 +254,7 @@
       ],
       "dependencies": ["REQ-007", "REQ-008"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M3-errors-retry-streaming-compatible",
       "notes": "RequestTimeoutError is non-retryable by default unless application retry policy opts in."
     },
@@ -277,7 +277,7 @@
       ],
       "dependencies": ["REQ-013"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M3-errors-retry-streaming-compatible",
       "notes": "Retry semantics must preserve existing error and streaming behavior."
     },
@@ -297,7 +297,7 @@
       ],
       "dependencies": ["REQ-007", "REQ-012", "REQ-013"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M3-errors-retry-streaming-compatible",
       "notes": "The start/delta/end pattern is required for multiple concurrent content segments and tool calls."
     },
@@ -317,7 +317,7 @@
       ],
       "dependencies": ["REQ-015"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M3-errors-retry-streaming-compatible",
       "notes": "OpenAI native streaming must use the Responses API event vocabulary."
     },
@@ -445,7 +445,7 @@
       ],
       "dependencies": ["REQ-007", "REQ-013", "REQ-016"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M3-errors-retry-streaming-compatible",
       "notes": "This path exists for compatibility endpoints and must remain distinct from native OpenAI."
     },

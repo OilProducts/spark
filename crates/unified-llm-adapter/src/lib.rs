@@ -13,12 +13,16 @@ pub mod defaults;
 pub mod env;
 pub mod errors;
 pub mod events;
+pub mod generation;
 pub mod middleware;
 pub mod native;
+pub mod openai_compatible;
 pub mod profiles;
+pub mod provider_utils;
 pub mod request;
 pub mod resolution;
 pub mod retry;
+pub mod structured;
 pub mod usage;
 
 pub use catalog::{get_latest_model, get_model_info, list_models, ModelCatalog, ModelInfo};
@@ -26,18 +30,37 @@ pub use client::{Client, ProviderAdapter};
 pub use defaults::{default_client, get_default_client, set_default_client};
 pub use env::{ProviderConfig, ProviderEnvironment};
 pub use errors::{
-    classify_provider_error_message, error_from_status_code, AdapterError, AdapterErrorKind,
+    classify_grpc_code, classify_http_status_code, classify_provider_error_message,
+    error_from_grpc_code, error_from_status_code, retry_after_from_headers, AdapterError,
+    AdapterErrorKind, ProviderError, SDKError, SDKErrorKind,
 };
-pub use events::{StreamAccumulator, StreamEvent, StreamEventType, StreamEvents};
+pub use events::{
+    managed_stream, stream_events, StreamAccumulator, StreamEvent, StreamEventStream,
+    StreamEventType, StreamEvents,
+};
+pub use generation::{
+    generate, generate_steps_with_policy, generate_steps_with_policy_and_hooks,
+    generate_with_policy, generate_with_policy_and_hooks, GenerateResult, GenerateStep,
+};
 pub use middleware::{CompleteNext, Middleware, StreamNext};
 pub use native::{
     NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport, NativeProviderAdapter,
-    NativeRequestConfig,
+    NativeRequestConfig, NativeStreamResponse,
+};
+pub use openai_compatible::{
+    build_openai_compatible_chat_request, build_openai_compatible_chat_stream_request,
+    translate_chat_completions_response, translate_chat_completions_response_with_headers,
+    translate_chat_completions_stream_response, LiteLLMAdapter, OpenAICompatibleAdapter,
+    OpenAICompatibleRequestConfig, OpenRouterAdapter,
 };
 pub use profiles::{
     get_llm_profile, get_llm_profile_with_env, load_llm_profiles, public_llm_profiles,
     public_llm_profiles_with_env, LlmProfile, LlmProfileConfigRoot, LlmProfileConfigurationError,
     LlmProfileEnvironment, ProcessLlmProfileEnvironment, PROFILE_CONFIG_FILE,
+};
+pub use provider_utils::{
+    parse_sse_stream, provider_json_event_name, ProviderStreamPayloadError, ProviderStreamRecord,
+    SseParser,
 };
 pub use request::{
     AudioData, ContentKind, ContentPart, DocumentData, FinishReason, FinishReasonKind, ImageData,
@@ -50,5 +73,12 @@ pub use resolution::{
     resolve_effective_reasoning_effort, LlmResolutionInputs, RUNTIME_LAUNCH_MODEL_KEY,
     RUNTIME_LAUNCH_PROFILE_KEY, RUNTIME_LAUNCH_PROVIDER_KEY, RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
 };
-pub use retry::{calculate_retry_delay, is_retryable_error, RetryPolicy};
+pub use retry::{
+    calculate_retry_delay, is_retryable_error, retry, retry_stream_before_first_event,
+    retry_stream_before_first_event_with_hooks, retry_with_hooks, RetryCallback, RetryPolicy,
+};
+pub use structured::{
+    generate_object, generate_object_with_policy, generate_object_with_policy_and_hooks,
+    parse_structured_output, GenerateObjectResult,
+};
 pub use usage::{CostEstimate, Usage};

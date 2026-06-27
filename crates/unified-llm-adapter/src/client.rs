@@ -6,6 +6,7 @@ use crate::errors::{AdapterError, AdapterErrorKind};
 use crate::events::StreamEvents;
 use crate::middleware::{run_complete_chain, run_stream_chain, Middleware};
 use crate::native::NativeProviderAdapter;
+use crate::openai_compatible::{LiteLLMAdapter, OpenAICompatibleAdapter, OpenRouterAdapter};
 use crate::request::{Request, Response};
 
 pub trait ProviderAdapter: Send + Sync {
@@ -230,6 +231,12 @@ fn configured_adapter(config: &ProviderConfig) -> Result<Arc<dyn ProviderAdapter
         "openai" | "anthropic" | "gemini" => Ok(Arc::new(
             NativeProviderAdapter::without_transport(config.provider.as_str(), config)?,
         )),
+        "openrouter" => Ok(Arc::new(OpenRouterAdapter::without_transport(config)?)),
+        "litellm" => Ok(Arc::new(LiteLLMAdapter::without_transport(config)?)),
+        "openai_compatible" => Ok(Arc::new(OpenAICompatibleAdapter::without_transport(
+            "openai_compatible",
+            config,
+        )?)),
         _ => Ok(Arc::new(ConfiguredProviderAdapter::new(config.clone()))),
     }
 }

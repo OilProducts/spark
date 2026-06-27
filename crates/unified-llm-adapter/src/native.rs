@@ -9,8 +9,15 @@ use serde_json::{json, Map, Value};
 
 use crate::client::ProviderAdapter;
 use crate::env::ProviderConfig;
-use crate::errors::{error_from_status_code, AdapterError, AdapterErrorKind};
-use crate::events::StreamEvents;
+use crate::errors::{
+    error_from_status_code, extract_error_details_from_raw, retry_after_from_headers, AdapterError,
+    AdapterErrorKind,
+};
+use crate::events::{
+    merge_stream_usage, stream_events, StreamAccumulator, StreamEvent, StreamEventType,
+    StreamEvents,
+};
+use crate::provider_utils::{ProviderStreamPayloadError, ProviderStreamRecord, SseParser};
 use crate::request::{
     ContentPart, FinishReason, FinishReasonKind, ImageData, Message, MessageRole, RateLimitInfo,
     Request, Response, ResponseFormat, ThinkingData, ToolCall, ToolResultData,
@@ -147,11 +154,47 @@ impl NativeCompleteResponse {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct NativeStreamResponse {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<Result<Value, AdapterError>>,
+}
+
+impl NativeStreamResponse {
+    pub fn ok(body: impl IntoIterator<Item = Value>) -> Self {
+        Self {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: body.into_iter().map(Ok).collect(),
+        }
+    }
+
+    pub fn sse(body: impl Into<String>) -> Self {
+        Self {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: vec![Ok(Value::String(body.into()))],
+        }
+    }
+}
+
 pub trait NativeCompleteTransport: Send + Sync {
     fn complete(
         &self,
         request: NativeCompleteRequest,
     ) -> Result<NativeCompleteResponse, AdapterError>;
+
+    fn stream(&self, request: NativeCompleteRequest) -> Result<NativeStreamResponse, AdapterError> {
+        Err(AdapterError::provider(
+            AdapterErrorKind::Stream,
+            format!(
+                "Provider '{}' has a Rust native adapter, but no streaming transport is configured",
+                request.provider
+            ),
+            Some(request.provider),
+        ))
+    }
 }
 
 #[derive(Clone)]
@@ -235,14 +278,20 @@ impl ProviderAdapter for NativeProviderAdapter {
         )
     }
 
-    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
-        Err(AdapterError::provider(
-            AdapterErrorKind::Stream,
-            format!(
-                "Native provider '{}' does not yet support streaming through the Rust adapter",
-                self.provider
-            ),
-            Some(self.provider.clone()),
+    fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
+        let native_request =
+            build_native_stream_request(&self.provider, &request, self.config.clone())?;
+        let native_response = self.transport.stream(native_request)?;
+        if !(200..=299).contains(&native_response.status) {
+            return Err(provider_status_error(
+                &self.provider,
+                native_stream_error_response(native_response),
+            ));
+        }
+        Ok(translate_native_stream_response(
+            &self.provider,
+            native_response.body,
+            &native_response.headers,
         ))
     }
 }
@@ -287,6 +336,25 @@ where
     }
 }
 
+pub fn build_native_stream_request<C>(
+    provider: &str,
+    request: &Request,
+    config: C,
+) -> Result<NativeCompleteRequest, AdapterError>
+where
+    C: Into<NativeRequestConfig>,
+{
+    match normalize_provider(provider).as_str() {
+        "openai" => build_openai_responses_stream_request(request, config),
+        "anthropic" => build_anthropic_messages_stream_request(request, config),
+        "gemini" => build_gemini_stream_generate_content_request(request, config),
+        other => Err(configuration_error(
+            other,
+            format!("Unsupported native provider {other:?}"),
+        )),
+    }
+}
+
 pub fn build_openai_responses_request<C>(
     request: &Request,
     config: C,
@@ -319,6 +387,18 @@ where
         headers,
         body,
     })
+}
+
+pub fn build_openai_responses_stream_request<C>(
+    request: &Request,
+    config: C,
+) -> Result<NativeCompleteRequest, AdapterError>
+where
+    C: Into<NativeRequestConfig>,
+{
+    let mut native_request = build_openai_responses_request(request, config)?;
+    deep_insert(&mut native_request.body, json!({"stream": true}));
+    Ok(native_request)
 }
 
 pub fn build_anthropic_messages_request<C>(
@@ -362,6 +442,18 @@ where
     })
 }
 
+pub fn build_anthropic_messages_stream_request<C>(
+    request: &Request,
+    config: C,
+) -> Result<NativeCompleteRequest, AdapterError>
+where
+    C: Into<NativeRequestConfig>,
+{
+    let mut native_request = build_anthropic_messages_request(request, config)?;
+    deep_insert(&mut native_request.body, json!({"stream": true}));
+    Ok(native_request)
+}
+
 pub fn build_gemini_generate_content_request<C>(
     request: &Request,
     config: C,
@@ -380,6 +472,38 @@ where
     let mut headers = config.default_headers.clone();
     remove_header_case_insensitive(&mut headers, "authorization");
     let mut url = gemini_generate_content_url(config.base_url.as_deref(), &request.model);
+    if let Some(api_key) = non_empty(config.api_key.as_deref()) {
+        url = append_query_pair(&url, "key", api_key);
+    }
+
+    Ok(NativeCompleteRequest {
+        provider: "gemini".to_string(),
+        method: "POST".to_string(),
+        url,
+        headers,
+        body: gemini_generate_content_body(request)?,
+    })
+}
+
+pub fn build_gemini_stream_generate_content_request<C>(
+    request: &Request,
+    config: C,
+) -> Result<NativeCompleteRequest, AdapterError>
+where
+    C: Into<NativeRequestConfig>,
+{
+    request.validate_for_client().map_err(|message| {
+        AdapterError::provider(
+            AdapterErrorKind::InvalidRequest,
+            message,
+            Some("gemini".to_string()),
+        )
+    })?;
+    let config = config.into();
+    let mut headers = config.default_headers.clone();
+    remove_header_case_insensitive(&mut headers, "authorization");
+    let mut url = gemini_stream_generate_content_url(config.base_url.as_deref(), &request.model);
+    url = append_query_pair(&url, "alt", "sse");
     if let Some(api_key) = non_empty(config.api_key.as_deref()) {
         url = append_query_pair(&url, "key", api_key);
     }
@@ -414,6 +538,1545 @@ pub fn translate_native_complete_response_with_headers(
             other,
             format!("Unsupported native provider {other:?}"),
         )),
+    }
+}
+
+pub fn translate_native_stream_response(
+    provider: &str,
+    body: Vec<Result<Value, AdapterError>>,
+    headers: &BTreeMap<String, String>,
+) -> StreamEvents {
+    let provider = normalize_provider(provider);
+    let body = native_stream_records(body);
+    let mut results = match provider.as_str() {
+        "openai" => translate_openai_stream(body, headers),
+        "anthropic" => translate_anthropic_stream(body, headers),
+        "gemini" => translate_gemini_stream(body, headers),
+        other => vec![Err(configuration_error(
+            other,
+            format!("Unsupported native provider {other:?}"),
+        ))],
+    };
+
+    if results.is_empty() {
+        let response = Response {
+            provider,
+            ..Response::default()
+        };
+        results.push(Ok(StreamEvent {
+            response: Some(response),
+            ..StreamEvent::finish(FinishReason::Other, Some(Usage::default()))
+        }));
+    }
+
+    stream_events(results.into_iter())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ActiveStreamBlock {
+    Text(String),
+    Reasoning,
+    ToolCall(String),
+}
+
+#[derive(Debug, Clone)]
+struct NativeStreamState {
+    provider: &'static str,
+    rate_limit: Option<RateLimitInfo>,
+    events: Vec<Result<StreamEvent, AdapterError>>,
+    accumulator: StreamAccumulator,
+    raw_payloads: Vec<Value>,
+    started: bool,
+    active_texts: BTreeMap<String, String>,
+    active_reasoning: bool,
+    active_tool_calls: BTreeMap<String, ToolCall>,
+    active_tool_call_order: Vec<String>,
+    next_text_id: usize,
+    next_tool_call_id: usize,
+    last_response: Option<Response>,
+    finish_reason: Option<FinishReason>,
+    usage: Option<Usage>,
+}
+
+impl NativeStreamState {
+    fn new(provider: &'static str, headers: &BTreeMap<String, String>) -> Self {
+        Self {
+            provider,
+            rate_limit: normalize_rate_limit_headers(headers),
+            events: Vec::new(),
+            accumulator: StreamAccumulator::default(),
+            raw_payloads: Vec::new(),
+            started: false,
+            active_texts: BTreeMap::new(),
+            active_reasoning: false,
+            active_tool_calls: BTreeMap::new(),
+            active_tool_call_order: Vec::new(),
+            next_text_id: 0,
+            next_tool_call_id: 0,
+            last_response: None,
+            finish_reason: None,
+            usage: None,
+        }
+    }
+
+    fn push(&mut self, event: StreamEvent) {
+        self.accumulator.push(event.clone());
+        self.events.push(Ok(event));
+    }
+
+    fn push_error(&mut self, error: AdapterError, raw: Option<Value>) {
+        let response = self.current_response(FinishReason::Error);
+        self.push(StreamEvent {
+            r#type: StreamEventType::Error,
+            finish_reason: Some(FinishReason::Error),
+            usage: Some(response.usage.clone()),
+            response: Some(response),
+            error: Some(error),
+            raw,
+            ..StreamEvent::new(StreamEventType::Error)
+        });
+    }
+
+    fn push_iterator_error(&mut self, error: AdapterError) {
+        self.events.push(Err(error));
+    }
+
+    fn record_usage(&mut self, usage: Usage) {
+        self.usage = merge_stream_usage(self.usage.take(), usage);
+    }
+
+    fn ensure_started(&mut self, raw: Option<Value>, response: Option<Response>) {
+        if let Some(response) = response {
+            self.record_usage(response.usage.clone());
+            self.last_response = Some(response);
+        }
+        if self.started {
+            return;
+        }
+        self.started = true;
+        let response = self.last_response.clone().unwrap_or_else(|| Response {
+            provider: self.provider.to_string(),
+            rate_limit: self.rate_limit.clone(),
+            ..Response::default()
+        });
+        self.push(StreamEvent {
+            r#type: StreamEventType::StreamStart,
+            response: Some(Response {
+                raw: None,
+                ..response
+            }),
+            raw,
+            ..StreamEvent::new(StreamEventType::StreamStart)
+        });
+    }
+
+    fn text_start(&mut self, text_id: Option<String>, raw: Option<Value>) {
+        self.ensure_started(raw.clone(), None);
+        self.close_reasoning(raw.clone());
+        let text_id = self.resolve_text_id(text_id);
+        if self.active_texts.contains_key(&text_id) {
+            return;
+        }
+        self.active_texts.insert(text_id.clone(), String::new());
+        self.push(StreamEvent {
+            r#type: StreamEventType::TextStart,
+            text_id: Some(text_id),
+            raw,
+            ..StreamEvent::new(StreamEventType::TextStart)
+        });
+    }
+
+    fn text_delta(&mut self, text_id: Option<String>, delta: String, raw: Option<Value>) {
+        if delta.is_empty() {
+            return;
+        }
+        self.ensure_started(raw.clone(), None);
+        self.close_reasoning(raw.clone());
+        let text_id = self.resolve_text_id(text_id);
+        if !self.active_texts.contains_key(&text_id) {
+            self.active_texts.insert(text_id.clone(), String::new());
+            self.push(StreamEvent {
+                r#type: StreamEventType::TextStart,
+                text_id: Some(text_id.clone()),
+                raw: raw.clone(),
+                ..StreamEvent::new(StreamEventType::TextStart)
+            });
+        }
+        if let Some(active_text) = self.active_texts.get_mut(&text_id) {
+            active_text.push_str(&delta);
+        }
+        self.push(StreamEvent {
+            delta: Some(delta),
+            text_id: Some(text_id),
+            raw,
+            ..StreamEvent::text_delta("")
+        });
+    }
+
+    fn text_end(
+        &mut self,
+        text_id: Option<String>,
+        final_text: Option<String>,
+        raw: Option<Value>,
+    ) {
+        self.ensure_started(raw.clone(), None);
+        let text_id = self.resolve_text_id(text_id);
+        if !self.active_texts.contains_key(&text_id) {
+            self.active_texts.insert(text_id.clone(), String::new());
+            self.push(StreamEvent {
+                r#type: StreamEventType::TextStart,
+                text_id: Some(text_id.clone()),
+                raw: raw.clone(),
+                ..StreamEvent::new(StreamEventType::TextStart)
+            });
+        }
+        if let Some(final_text) = final_text {
+            let active = self.active_texts.get(&text_id).cloned().unwrap_or_default();
+            let missing = if final_text == active || active.starts_with(&final_text) {
+                String::new()
+            } else if let Some(suffix) = final_text.strip_prefix(&active) {
+                suffix.to_string()
+            } else {
+                final_text
+            };
+            if !missing.is_empty() {
+                self.text_delta(Some(text_id.clone()), missing, raw.clone());
+            }
+        }
+        self.push(StreamEvent {
+            r#type: StreamEventType::TextEnd,
+            text_id: Some(text_id.clone()),
+            raw,
+            ..StreamEvent::new(StreamEventType::TextEnd)
+        });
+        self.active_texts.remove(&text_id);
+    }
+
+    fn reasoning_delta(&mut self, delta: String, raw: Option<Value>) {
+        self.reasoning_delta_with_metadata(delta, None, raw);
+    }
+
+    fn reasoning_delta_with_metadata(
+        &mut self,
+        delta: String,
+        thinking: Option<ThinkingData>,
+        raw: Option<Value>,
+    ) {
+        if delta.is_empty() && thinking.is_none() {
+            return;
+        }
+        self.ensure_started(raw.clone(), None);
+        self.close_all_text(raw.clone());
+        self.close_all_tool_calls(raw.clone());
+        if !self.active_reasoning {
+            self.reasoning_start_with_metadata(thinking.clone(), raw.clone());
+        }
+        if delta.is_empty() {
+            self.push(StreamEvent {
+                r#type: StreamEventType::ReasoningDelta,
+                thinking,
+                raw,
+                ..StreamEvent::new(StreamEventType::ReasoningDelta)
+            });
+            return;
+        }
+        self.push(StreamEvent {
+            reasoning_delta: Some(delta),
+            thinking,
+            raw,
+            ..StreamEvent::new(StreamEventType::ReasoningDelta)
+        });
+    }
+
+    fn reasoning_start_with_metadata(
+        &mut self,
+        thinking: Option<ThinkingData>,
+        raw: Option<Value>,
+    ) {
+        self.ensure_started(raw.clone(), None);
+        self.close_all_text(raw.clone());
+        self.close_all_tool_calls(raw.clone());
+        if self.active_reasoning {
+            if thinking.is_some() {
+                self.push(StreamEvent {
+                    r#type: StreamEventType::ReasoningDelta,
+                    thinking,
+                    raw,
+                    ..StreamEvent::new(StreamEventType::ReasoningDelta)
+                });
+            }
+            return;
+        }
+        self.active_reasoning = true;
+        self.push(StreamEvent {
+            r#type: StreamEventType::ReasoningStart,
+            thinking,
+            raw,
+            ..StreamEvent::new(StreamEventType::ReasoningStart)
+        });
+    }
+
+    fn tool_call_start(&mut self, tool_call: ToolCall, raw: Option<Value>) {
+        self.ensure_started(raw.clone(), None);
+        self.close_reasoning(raw.clone());
+        let key = self.resolve_tool_call_id(&tool_call, false);
+        let mut tool_call = tool_call;
+        if tool_call.id.is_empty() {
+            tool_call.id = key.clone();
+        }
+        if self.active_tool_calls.contains_key(&key) {
+            let merged = merge_tool_calls_for_stream(
+                self.active_tool_calls.remove(&key),
+                tool_call.clone(),
+                false,
+            );
+            self.active_tool_calls.insert(key, merged);
+            return;
+        }
+        self.active_tool_call_order.push(key.clone());
+        self.active_tool_calls.insert(key, tool_call.clone());
+        self.push(StreamEvent {
+            r#type: StreamEventType::ToolCallStart,
+            tool_call: Some(tool_call),
+            raw,
+            ..StreamEvent::new(StreamEventType::ToolCallStart)
+        });
+    }
+
+    fn tool_call_delta(&mut self, tool_call: ToolCall, raw: Option<Value>) {
+        self.ensure_started(raw.clone(), None);
+        self.close_reasoning(raw.clone());
+        let key = self.resolve_tool_call_id(&tool_call, false);
+        if !self.active_tool_calls.contains_key(&key) {
+            let mut started = tool_call.clone();
+            if started.id.is_empty() {
+                started.id = key.clone();
+            }
+            started.arguments = Value::String(String::new());
+            started.raw_arguments = Some(String::new());
+            self.active_tool_call_order.push(key.clone());
+            self.active_tool_calls.insert(key.clone(), started.clone());
+            self.push(StreamEvent {
+                r#type: StreamEventType::ToolCallStart,
+                tool_call: Some(started),
+                raw: raw.clone(),
+                ..StreamEvent::new(StreamEventType::ToolCallStart)
+            });
+        }
+        let mut tool_call = tool_call;
+        if tool_call.id.is_empty() {
+            tool_call.id = key.clone();
+        }
+        let merged = merge_tool_calls_for_stream(
+            self.active_tool_calls.remove(&key),
+            tool_call.clone(),
+            false,
+        );
+        self.active_tool_calls.insert(key, merged);
+        self.push(StreamEvent {
+            r#type: StreamEventType::ToolCallDelta,
+            tool_call: Some(tool_call),
+            raw,
+            ..StreamEvent::new(StreamEventType::ToolCallDelta)
+        });
+    }
+
+    fn tool_call_end(&mut self, tool_call: Option<ToolCall>, raw: Option<Value>) {
+        self.ensure_started(raw.clone(), None);
+        self.close_reasoning(raw.clone());
+        let key = tool_call
+            .as_ref()
+            .map(|incoming| self.resolve_tool_call_id(incoming, true))
+            .or_else(|| self.only_active_tool_call_id());
+        let Some(key) = key else {
+            return;
+        };
+        let final_tool_call = match (self.active_tool_calls.remove(&key), tool_call) {
+            (Some(current), Some(mut incoming)) => {
+                if incoming.id.is_empty() {
+                    incoming.id = key.clone();
+                }
+                merge_tool_calls_for_stream(Some(current), incoming, true)
+            }
+            (Some(current), None) => current,
+            (None, Some(mut incoming)) => {
+                if incoming.id.is_empty() {
+                    incoming.id = key.clone();
+                }
+                incoming
+            }
+            (None, None) => return,
+        };
+        self.active_tool_call_order
+            .retain(|active_key| active_key != &key);
+        self.push(StreamEvent {
+            r#type: StreamEventType::ToolCallEnd,
+            tool_call: Some(final_tool_call),
+            raw,
+            ..StreamEvent::new(StreamEventType::ToolCallEnd)
+        });
+    }
+
+    fn provider_event(&mut self, raw: Value) {
+        self.ensure_started(Some(raw.clone()), None);
+        self.push(StreamEvent::provider_event(raw));
+    }
+
+    fn close_reasoning(&mut self, raw: Option<Value>) {
+        if self.active_reasoning {
+            self.active_reasoning = false;
+            self.push(StreamEvent {
+                r#type: StreamEventType::ReasoningEnd,
+                raw,
+                ..StreamEvent::new(StreamEventType::ReasoningEnd)
+            });
+        }
+    }
+
+    fn close_all_text(&mut self, raw: Option<Value>) {
+        let text_ids = self.active_texts.keys().cloned().collect::<Vec<_>>();
+        for text_id in text_ids {
+            self.text_end(Some(text_id), None, raw.clone());
+        }
+    }
+
+    fn close_all_tool_calls(&mut self, raw: Option<Value>) {
+        let tool_call_ids = std::mem::take(&mut self.active_tool_call_order);
+        for tool_call_id in tool_call_ids {
+            self.tool_call_end_by_id(tool_call_id, raw.clone());
+        }
+        let remaining = self.active_tool_calls.keys().cloned().collect::<Vec<_>>();
+        for tool_call_id in remaining {
+            self.tool_call_end_by_id(tool_call_id, raw.clone());
+        }
+    }
+
+    fn tool_call_end_by_id(&mut self, tool_call_id: String, raw: Option<Value>) {
+        if let Some(tool_call) = self.active_tool_calls.remove(&tool_call_id) {
+            self.push(StreamEvent {
+                r#type: StreamEventType::ToolCallEnd,
+                tool_call: Some(tool_call),
+                raw,
+                ..StreamEvent::new(StreamEventType::ToolCallEnd)
+            });
+        }
+    }
+
+    fn resolve_text_id(&mut self, text_id: Option<String>) -> String {
+        if let Some(text_id) = text_id.filter(|text_id| !text_id.is_empty()) {
+            return text_id;
+        }
+        if self.active_texts.len() == 1 {
+            if let Some(text_id) = self.active_texts.keys().next() {
+                return text_id.clone();
+            }
+        }
+        let text_id = format!("text_{}", self.next_text_id);
+        self.next_text_id += 1;
+        text_id
+    }
+
+    fn resolve_tool_call_id(&mut self, tool_call: &ToolCall, final_fragment: bool) -> String {
+        if !tool_call.id.is_empty() && self.active_tool_calls.contains_key(&tool_call.id) {
+            return tool_call.id.clone();
+        }
+        if final_fragment {
+            if let Some(tool_call_id) = self.only_active_tool_call_id() {
+                return tool_call_id;
+            }
+        }
+        if !tool_call.id.is_empty() {
+            return tool_call.id.clone();
+        }
+        if let Some(tool_call_id) = self.only_active_tool_call_id() {
+            return tool_call_id;
+        }
+        let tool_call_id = format!("tool_call_{}", self.next_tool_call_id);
+        self.next_tool_call_id += 1;
+        tool_call_id
+    }
+
+    fn only_active_tool_call_id(&self) -> Option<String> {
+        (self.active_tool_calls.len() == 1)
+            .then(|| self.active_tool_calls.keys().next().cloned())
+            .flatten()
+    }
+
+    fn finish(mut self, raw: Option<Value>) -> Vec<Result<StreamEvent, AdapterError>> {
+        self.ensure_started(raw.clone(), None);
+        self.close_all_text(raw.clone());
+        self.close_reasoning(raw.clone());
+        self.close_all_tool_calls(raw.clone());
+        let reason = self
+            .finish_reason
+            .clone()
+            .or_else(|| {
+                self.last_response
+                    .as_ref()
+                    .map(|response| response.finish_reason.clone())
+            })
+            .unwrap_or(FinishReason::Other);
+        let response = self.current_response(reason);
+        let usage = response.usage.clone();
+        self.push(StreamEvent {
+            finish_reason: Some(response.finish_reason.clone()),
+            usage: Some(usage),
+            response: Some(response),
+            raw,
+            ..StreamEvent::finish(FinishReason::Other, None)
+        });
+        self.events
+    }
+
+    fn current_response(&self, finish_reason: FinishReason) -> Response {
+        let accumulated = self.accumulator.response.clone();
+        let mut response = self
+            .last_response
+            .clone()
+            .unwrap_or_else(|| accumulated.clone());
+        response.provider = if response.provider.is_empty() {
+            self.provider.to_string()
+        } else {
+            response.provider
+        };
+        response.finish_reason = finish_reason;
+        let usage = self
+            .last_response
+            .as_ref()
+            .map(|response| response.usage.clone())
+            .and_then(|usage| merge_stream_usage(self.usage.clone(), usage))
+            .or_else(|| self.usage.clone())
+            .and_then(|usage| merge_stream_usage(Some(usage), accumulated.usage.clone()))
+            .or_else(|| merge_stream_usage(None, accumulated.usage.clone()));
+        response.usage = usage.unwrap_or_default().normalized();
+        response.raw = stream_raw_payload(&self.raw_payloads);
+        response.raw_provider_events = self.raw_payloads.clone();
+        response.rate_limit = response.rate_limit.or_else(|| self.rate_limit.clone());
+        if response.text().is_empty() && !accumulated.text().is_empty() {
+            response.text = accumulated.text();
+        }
+        if response.message.content.is_empty() && !accumulated.message.content.is_empty() {
+            response.message = accumulated.message.clone();
+        }
+        if response.tool_calls().is_empty() && !accumulated.tool_calls().is_empty() {
+            response.tool_calls = accumulated.tool_calls();
+        }
+        if self.provider == "anthropic" && response.usage.reasoning_tokens.is_none() {
+            if let Some(estimated_reasoning_tokens) =
+                estimate_reasoning_tokens(&response.message.content)
+            {
+                response.usage.reasoning_tokens = Some(estimated_reasoning_tokens);
+            }
+        }
+        response
+    }
+}
+
+fn native_stream_records(
+    body: Vec<Result<Value, AdapterError>>,
+) -> Vec<Result<ProviderStreamRecord, AdapterError>> {
+    let mut parser = SseParser::default();
+    let mut json_buffer = String::new();
+    let mut json_mode = false;
+    let mut records = Vec::new();
+
+    for item in body {
+        match item {
+            Ok(Value::String(chunk)) => {
+                if json_mode || (!parser.has_pending_input() && looks_like_json_stream(&chunk)) {
+                    records.extend(parser.finish().into_iter().map(Ok));
+                    json_mode = true;
+                    json_buffer.push_str(&chunk);
+                    match parse_json_stream_records(&json_buffer) {
+                        JsonStreamParse::Complete(parsed) => {
+                            records.extend(parsed.into_iter().map(Ok));
+                            json_buffer.clear();
+                            json_mode = false;
+                        }
+                        JsonStreamParse::Incomplete => {}
+                        JsonStreamParse::Malformed(error) => {
+                            records.push(Ok(malformed_json_stream_record(
+                                std::mem::take(&mut json_buffer),
+                                error.message,
+                            )));
+                            json_mode = false;
+                        }
+                    }
+                } else {
+                    records.extend(parser.push_str(&chunk).into_iter().map(Ok));
+                }
+            }
+            Ok(payload) => {
+                flush_json_stream_buffer(&mut json_buffer, &mut json_mode, &mut records);
+                records.extend(parser.finish().into_iter().map(Ok));
+                records.push(Ok(ProviderStreamRecord::from_json(payload)));
+            }
+            Err(error) => {
+                flush_json_stream_buffer(&mut json_buffer, &mut json_mode, &mut records);
+                records.extend(parser.finish().into_iter().map(Ok));
+                records.push(Err(error));
+            }
+        }
+    }
+
+    flush_json_stream_buffer(&mut json_buffer, &mut json_mode, &mut records);
+    records.extend(parser.finish().into_iter().map(Ok));
+    records
+}
+
+#[derive(Debug)]
+enum JsonStreamParse {
+    Complete(Vec<ProviderStreamRecord>),
+    Incomplete,
+    Malformed(ProviderStreamPayloadError),
+}
+
+fn looks_like_json_stream(chunk: &str) -> bool {
+    matches!(
+        chunk.trim_start().as_bytes().first(),
+        Some(b'{') | Some(b'[')
+    )
+}
+
+fn parse_json_stream_records(input: &str) -> JsonStreamParse {
+    if input.trim().is_empty() {
+        return JsonStreamParse::Complete(Vec::new());
+    }
+
+    let mut stream = serde_json::Deserializer::from_str(input).into_iter::<Value>();
+    let mut records = Vec::new();
+    while let Some(result) = stream.next() {
+        match result {
+            Ok(payload) => records.push(ProviderStreamRecord::from_json(payload)),
+            Err(error) if error.is_eof() => return JsonStreamParse::Incomplete,
+            Err(error) => {
+                return JsonStreamParse::Malformed(ProviderStreamPayloadError {
+                    message: error.to_string(),
+                    raw: input.to_string(),
+                });
+            }
+        }
+    }
+
+    if input[stream.byte_offset()..].trim().is_empty() {
+        JsonStreamParse::Complete(records)
+    } else {
+        JsonStreamParse::Malformed(ProviderStreamPayloadError {
+            message: "trailing data after JSON stream payload".to_string(),
+            raw: input.to_string(),
+        })
+    }
+}
+
+fn flush_json_stream_buffer(
+    json_buffer: &mut String,
+    json_mode: &mut bool,
+    records: &mut Vec<Result<ProviderStreamRecord, AdapterError>>,
+) {
+    if json_buffer.trim().is_empty() {
+        json_buffer.clear();
+        *json_mode = false;
+        return;
+    }
+
+    match parse_json_stream_records(json_buffer) {
+        JsonStreamParse::Complete(parsed) => records.extend(parsed.into_iter().map(Ok)),
+        JsonStreamParse::Incomplete => records.push(Ok(malformed_json_stream_record(
+            std::mem::take(json_buffer),
+            "incomplete JSON stream payload".to_string(),
+        ))),
+        JsonStreamParse::Malformed(error) => records.push(Ok(malformed_json_stream_record(
+            std::mem::take(json_buffer),
+            error.message,
+        ))),
+    }
+    json_buffer.clear();
+    *json_mode = false;
+}
+
+fn malformed_json_stream_record(raw: String, message: String) -> ProviderStreamRecord {
+    ProviderStreamRecord {
+        event: None,
+        sse_event: None,
+        json_event: None,
+        data: raw.clone(),
+        retry: None,
+        payload: None,
+        payload_error: Some(ProviderStreamPayloadError { message, raw }),
+        done: false,
+    }
+}
+
+fn stream_record_payload(
+    provider: &'static str,
+    record: ProviderStreamRecord,
+) -> Result<Value, AdapterError> {
+    if let Some(payload) = record.payload.clone() {
+        return Ok(payload);
+    }
+
+    let message = record
+        .payload_error
+        .as_ref()
+        .map(|error| format!("Malformed provider stream payload: {}", error.message))
+        .unwrap_or_else(|| "Provider stream event did not contain a JSON payload".to_string());
+    let mut error = AdapterError::provider(
+        AdapterErrorKind::Stream,
+        message,
+        Some(provider.to_string()),
+    );
+    error.raw = Some(serde_json::to_value(&record).unwrap_or_else(|_| {
+        json!({
+            "data": record.data,
+            "event": record.event,
+            "sse_event": record.sse_event,
+            "done": record.done,
+        })
+    }));
+    Err(error)
+}
+
+fn translate_openai_stream(
+    body: Vec<Result<ProviderStreamRecord, AdapterError>>,
+    headers: &BTreeMap<String, String>,
+) -> Vec<Result<StreamEvent, AdapterError>> {
+    let mut state = NativeStreamState::new("openai", headers);
+    let mut tool_call_aliases = BTreeMap::new();
+
+    for item in body {
+        let record = match item {
+            Ok(record) => record,
+            Err(error) => {
+                if state.started {
+                    state.push_iterator_error(error);
+                    return state.events;
+                }
+                return vec![Err(error)];
+            }
+        };
+        if record.done {
+            let raw = stream_raw_payload(&state.raw_payloads);
+            return state.finish(raw);
+        }
+        let event_type = record.event.clone().unwrap_or_default();
+        let payload = match stream_record_payload("openai", record) {
+            Ok(payload) => payload,
+            Err(error) => {
+                if state.started {
+                    state.push_iterator_error(error);
+                    return state.events;
+                }
+                return vec![Err(error)];
+            }
+        };
+        state.raw_payloads.push(payload.clone());
+        let raw = Some(payload.clone());
+        let event_type = if event_type.is_empty() {
+            value_string(&payload, "type").unwrap_or_default()
+        } else {
+            event_type
+        };
+
+        if event_type == "response.created" || event_type == "response.in_progress" {
+            let response = payload.get("response").cloned().and_then(|value| {
+                translate_openai_responses_response(value, state.rate_limit.clone()).ok()
+            });
+            state.ensure_started(raw, response);
+            continue;
+        }
+
+        if matches!(
+            event_type.as_str(),
+            "response.output_text.delta" | "response.text.delta" | "response.refusal.delta"
+        ) {
+            if let Some(delta) = value_string(&payload, "delta") {
+                state.text_delta(openai_stream_item_id(&payload, "text"), delta, raw);
+            }
+            continue;
+        }
+
+        if matches!(
+            event_type.as_str(),
+            "response.output_text.done" | "response.text.done" | "response.refusal.done"
+        ) {
+            let final_text =
+                value_string(&payload, "text").or_else(|| value_string(&payload, "delta"));
+            state.text_end(openai_stream_item_id(&payload, "text"), final_text, raw);
+            continue;
+        }
+
+        if event_type.contains("reasoning") && event_type.ends_with(".delta") {
+            if let Some(delta) = value_string(&payload, "delta")
+                .or_else(|| value_string(&payload, "text"))
+                .or_else(|| value_string(&payload, "summary"))
+            {
+                state.reasoning_delta(delta, raw);
+            }
+            continue;
+        }
+
+        if event_type == "response.output_item.added" {
+            if let Some(item) = payload.get("item") {
+                if let Some(tool_call) = openai_stream_tool_call(item) {
+                    remember_openai_stream_tool_call_aliases(
+                        &mut tool_call_aliases,
+                        &payload,
+                        item,
+                        &tool_call.id,
+                    );
+                    state.tool_call_start(tool_call, raw);
+                } else {
+                    state.provider_event(payload);
+                }
+            } else {
+                state.provider_event(payload);
+            }
+            continue;
+        }
+
+        if event_type == "response.function_call_arguments.delta" {
+            let id = openai_stream_tool_call_delta_id(&payload, &tool_call_aliases)
+                .unwrap_or_else(|| "function_call".to_string());
+            let name = value_string(&payload, "name").unwrap_or_default();
+            let delta = value_string(&payload, "delta").unwrap_or_default();
+            state.tool_call_delta(
+                ToolCall {
+                    id,
+                    name,
+                    arguments: Value::String(delta.clone()),
+                    raw_arguments: Some(delta),
+                    r#type: "function".to_string(),
+                },
+                raw,
+            );
+            continue;
+        }
+
+        if event_type == "response.output_item.done" {
+            if let Some(item) = payload
+                .get("item")
+                .and_then(|item| openai_stream_tool_call(item).map(|tool_call| (item, tool_call)))
+            {
+                let (item, mut tool_call) = item;
+                if let Some(id) =
+                    openai_stream_tool_call_alias_id(&payload, Some(item), &tool_call_aliases)
+                {
+                    tool_call.id = id;
+                }
+                remember_openai_stream_tool_call_aliases(
+                    &mut tool_call_aliases,
+                    &payload,
+                    item,
+                    &tool_call.id,
+                );
+                state.tool_call_end(Some(tool_call), raw);
+            } else if let Some((text_id, text)) =
+                payload.get("item").and_then(openai_stream_text_item)
+            {
+                state.text_end(text_id, text, raw);
+            } else {
+                state.provider_event(payload);
+            }
+            continue;
+        }
+
+        if event_type == "response.completed" || event_type == "response.done" {
+            if let Some(response_payload) = payload.get("response").cloned() {
+                match translate_openai_responses_response(
+                    response_payload,
+                    state.rate_limit.clone(),
+                ) {
+                    Ok(response) => {
+                        state.finish_reason = Some(response.finish_reason.clone());
+                        state.record_usage(response.usage.clone());
+                        state.last_response = Some(response);
+                    }
+                    Err(error) => {
+                        state.push_error(error, raw);
+                        return state.events;
+                    }
+                }
+            }
+            return state.finish(raw);
+        }
+
+        if event_type == "response.failed" || event_type == "error" {
+            state.push_error(provider_payload_error("openai", &payload), raw);
+            return state.events;
+        }
+
+        state.provider_event(payload);
+    }
+
+    let raw = stream_raw_payload(&state.raw_payloads);
+    state.finish(raw)
+}
+
+fn translate_anthropic_stream(
+    body: Vec<Result<ProviderStreamRecord, AdapterError>>,
+    headers: &BTreeMap<String, String>,
+) -> Vec<Result<StreamEvent, AdapterError>> {
+    let mut state = NativeStreamState::new("anthropic", headers);
+    let mut active_blocks: BTreeMap<String, ActiveStreamBlock> = BTreeMap::new();
+
+    for item in body {
+        let record = match item {
+            Ok(record) => record,
+            Err(error) => {
+                if state.started {
+                    state.push_iterator_error(error);
+                    return state.events;
+                }
+                return vec![Err(error)];
+            }
+        };
+        if record.done {
+            let raw = stream_raw_payload(&state.raw_payloads);
+            return state.finish(raw);
+        }
+        let event_type = record.event.clone().unwrap_or_default();
+        let payload = match stream_record_payload("anthropic", record) {
+            Ok(payload) => payload,
+            Err(error) => {
+                if state.started {
+                    state.push_iterator_error(error);
+                    return state.events;
+                }
+                return vec![Err(error)];
+            }
+        };
+        state.raw_payloads.push(payload.clone());
+        let raw = Some(payload.clone());
+        let event_type = if event_type.is_empty() {
+            value_string(&payload, "type").unwrap_or_default()
+        } else {
+            event_type
+        };
+
+        match event_type.as_str() {
+            "message_start" => {
+                let response = payload.get("message").cloned().and_then(|value| {
+                    translate_anthropic_messages_response(value, state.rate_limit.clone()).ok()
+                });
+                state.ensure_started(raw, response);
+            }
+            "content_block_start" => {
+                let Some(block) = payload.get("content_block") else {
+                    state.provider_event(payload);
+                    continue;
+                };
+                let block_index =
+                    value_identifier(&payload, "index").unwrap_or_else(|| "0".to_string());
+                let block_type = value_string(block, "type").unwrap_or_default();
+                match block_type.as_str() {
+                    "text" => {
+                        let text_id = format!("text_{block_index}");
+                        active_blocks.insert(
+                            block_index.clone(),
+                            ActiveStreamBlock::Text(text_id.clone()),
+                        );
+                        if let Some(text) = value_string(block, "text") {
+                            state.text_delta(Some(text_id), text, raw);
+                        } else {
+                            state.text_start(Some(text_id), raw);
+                        }
+                    }
+                    "thinking" | "redacted_thinking" => {
+                        let redacted = block_type == "redacted_thinking";
+                        let metadata = anthropic_stream_thinking_metadata(
+                            block,
+                            redacted,
+                            state
+                                .last_response
+                                .as_ref()
+                                .and_then(|response| source_model(&response.model)),
+                        );
+                        active_blocks.insert(block_index.clone(), ActiveStreamBlock::Reasoning);
+                        if let Some(text) = value_string(block, "thinking")
+                            .or_else(|| value_string(block, "text"))
+                            .or_else(|| value_string(block, "data"))
+                        {
+                            state.reasoning_delta_with_metadata(text, Some(metadata), raw);
+                        } else {
+                            state.reasoning_start_with_metadata(Some(metadata), raw);
+                        }
+                    }
+                    "tool_use" => {
+                        let id = value_string(block, "id")
+                            .unwrap_or_else(|| format!("toolu_{block_index}"));
+                        active_blocks
+                            .insert(block_index.clone(), ActiveStreamBlock::ToolCall(id.clone()));
+                        let name = value_string(block, "name").unwrap_or_default();
+                        let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
+                        let raw_arguments = if input.as_object().is_some_and(Map::is_empty) {
+                            String::new()
+                        } else {
+                            json_compact(&input)
+                        };
+                        state.tool_call_start(
+                            ToolCall {
+                                id,
+                                name,
+                                raw_arguments: Some(raw_arguments),
+                                arguments: input,
+                                r#type: "function".to_string(),
+                            },
+                            raw,
+                        );
+                    }
+                    _ => state.provider_event(payload),
+                }
+            }
+            "content_block_delta" => {
+                let Some(delta) = payload.get("delta") else {
+                    state.provider_event(payload);
+                    continue;
+                };
+                let block_index =
+                    value_identifier(&payload, "index").unwrap_or_else(|| "0".to_string());
+                match value_string(delta, "type").as_deref() {
+                    Some("text_delta") => {
+                        if let Some(text) = value_string(delta, "text") {
+                            let text_id = active_blocks
+                                .get(&block_index)
+                                .and_then(|block| match block {
+                                    ActiveStreamBlock::Text(text_id) => Some(text_id.clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| format!("text_{block_index}"));
+                            state.text_delta(Some(text_id), text, raw);
+                        }
+                    }
+                    Some("thinking_delta") => {
+                        if let Some(text) = value_string(delta, "thinking") {
+                            state.reasoning_delta(text, raw);
+                        }
+                    }
+                    Some("signature_delta") => {
+                        if let Some(signature) = value_string(delta, "signature") {
+                            state.reasoning_delta_with_metadata(
+                                String::new(),
+                                Some(ThinkingData {
+                                    text: String::new(),
+                                    signature: Some(signature),
+                                    redacted: false,
+                                    source_provider: Some("anthropic".to_string()),
+                                    source_model: state
+                                        .last_response
+                                        .as_ref()
+                                        .and_then(|response| source_model(&response.model)),
+                                }),
+                                raw,
+                            );
+                        }
+                    }
+                    Some("input_json_delta") => {
+                        let partial = value_string(delta, "partial_json").unwrap_or_default();
+                        let id = active_blocks
+                            .get(&block_index)
+                            .and_then(|block| match block {
+                                ActiveStreamBlock::ToolCall(tool_call_id) => {
+                                    Some(tool_call_id.clone())
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| format!("toolu_{block_index}"));
+                        state.tool_call_delta(
+                            ToolCall {
+                                id,
+                                name: String::new(),
+                                arguments: Value::String(partial.clone()),
+                                raw_arguments: Some(partial),
+                                r#type: "function".to_string(),
+                            },
+                            raw,
+                        );
+                    }
+                    _ => state.provider_event(payload),
+                }
+            }
+            "content_block_stop" => {
+                let block_index =
+                    value_identifier(&payload, "index").unwrap_or_else(|| "0".to_string());
+                match active_blocks.remove(&block_index) {
+                    Some(ActiveStreamBlock::Text(text_id)) => {
+                        state.text_end(Some(text_id), None, raw)
+                    }
+                    Some(ActiveStreamBlock::Reasoning) => state.close_reasoning(raw),
+                    Some(ActiveStreamBlock::ToolCall(tool_call_id)) => {
+                        state.tool_call_end_by_id(tool_call_id, raw)
+                    }
+                    None => {
+                        state.close_all_text(raw.clone());
+                        state.close_reasoning(raw.clone());
+                        state.close_all_tool_calls(raw);
+                    }
+                }
+            }
+            "message_delta" => {
+                if let Some(delta) = payload.get("delta") {
+                    if let Some(stop_reason) = value_string(delta, "stop_reason") {
+                        let has_tool_calls = !state.accumulator.tool_calls.is_empty()
+                            || !state.active_tool_calls.is_empty();
+                        state.finish_reason =
+                            Some(anthropic_finish_reason(Some(stop_reason), has_tool_calls));
+                    }
+                }
+                if let Some(usage) = payload.get("usage") {
+                    state.record_usage(usage_from_anthropic(Some(usage)));
+                }
+            }
+            "message_stop" => return state.finish(raw),
+            "error" => {
+                state.push_error(provider_payload_error("anthropic", &payload), raw);
+                return state.events;
+            }
+            _ => state.provider_event(payload),
+        }
+    }
+
+    let raw = stream_raw_payload(&state.raw_payloads);
+    state.finish(raw)
+}
+
+fn translate_gemini_stream(
+    body: Vec<Result<ProviderStreamRecord, AdapterError>>,
+    headers: &BTreeMap<String, String>,
+) -> Vec<Result<StreamEvent, AdapterError>> {
+    let mut state = NativeStreamState::new("gemini", headers);
+    let mut active_text = String::new();
+    let mut active_reasoning = String::new();
+    let mut emitted_tool_calls = BTreeSet::new();
+
+    for item in body {
+        let record = match item {
+            Ok(record) => record,
+            Err(error) => {
+                if state.started {
+                    state.push_iterator_error(error);
+                    return state.events;
+                }
+                return vec![Err(error)];
+            }
+        };
+        if record.done {
+            let raw = stream_raw_payload(&state.raw_payloads);
+            return state.finish(raw);
+        }
+        let payload = match stream_record_payload("gemini", record) {
+            Ok(payload) => payload,
+            Err(error) => {
+                if state.started {
+                    state.push_iterator_error(error);
+                    return state.events;
+                }
+                return vec![Err(error)];
+            }
+        };
+        for payload in gemini_stream_payloads(payload) {
+            state.raw_payloads.push(payload.clone());
+            let raw = Some(payload.clone());
+
+            if payload.get("error").is_some() {
+                state.push_error(provider_payload_error("gemini", &payload), raw);
+                return state.events;
+            }
+            if !is_gemini_stream_payload(&payload) {
+                state.provider_event(payload);
+                continue;
+            }
+
+            let response = match translate_gemini_generate_content_response(
+                payload.clone(),
+                state.rate_limit.clone(),
+            ) {
+                Ok(response) => response,
+                Err(error) => {
+                    state.push_error(error, raw);
+                    return state.events;
+                }
+            };
+            state.finish_reason = Some(response.finish_reason.clone());
+            state.record_usage(response.usage.clone());
+            state.last_response = Some(Response {
+                raw: None,
+                ..response.clone()
+            });
+            state.ensure_started(
+                raw.clone(),
+                Some(Response {
+                    raw: None,
+                    ..response.clone()
+                }),
+            );
+
+            let text = response.message.text();
+            if !text.is_empty() {
+                let delta = if text == active_text || active_text.starts_with(&text) {
+                    String::new()
+                } else if let Some(suffix) = text.strip_prefix(&active_text) {
+                    suffix.to_string()
+                } else {
+                    text.clone()
+                };
+                if !delta.is_empty() {
+                    state.text_delta(Some("text_0".to_string()), delta, raw.clone());
+                }
+                if text.starts_with(&active_text) {
+                    active_text = text;
+                } else {
+                    active_text.push_str(&response.message.text());
+                }
+            }
+
+            let reasoning = response.reasoning().unwrap_or_default();
+            if !reasoning.is_empty() {
+                let delta =
+                    if reasoning == active_reasoning || active_reasoning.starts_with(&reasoning) {
+                        String::new()
+                    } else if let Some(suffix) = reasoning.strip_prefix(&active_reasoning) {
+                        suffix.to_string()
+                    } else {
+                        reasoning.clone()
+                    };
+                if !delta.is_empty() {
+                    state.reasoning_delta_with_metadata(
+                        delta,
+                        gemini_reasoning_metadata(&response),
+                        raw.clone(),
+                    );
+                }
+                if reasoning.starts_with(&active_reasoning) {
+                    active_reasoning = reasoning;
+                } else {
+                    active_reasoning.push_str(&response.reasoning().unwrap_or_default());
+                }
+            }
+
+            let tool_calls = response.tool_calls();
+            if !tool_calls.is_empty() && state.active_texts.contains_key("text_0") {
+                state.text_end(Some("text_0".to_string()), None, raw.clone());
+            }
+
+            for tool_call in tool_calls {
+                let signature = format!(
+                    "{}:{}:{}",
+                    tool_call.id,
+                    tool_call.name,
+                    json_compact(&tool_call.arguments)
+                );
+                if emitted_tool_calls.insert(signature) {
+                    state.tool_call_start(tool_call.clone(), raw.clone());
+                    state.tool_call_end(Some(tool_call), raw.clone());
+                }
+            }
+
+            if response_has_provider_content(&response) {
+                state.provider_event(payload);
+            }
+        }
+    }
+
+    let raw = stream_raw_payload(&state.raw_payloads);
+    state.finish(raw)
+}
+
+fn stream_raw_payload(payloads: &[Value]) -> Option<Value> {
+    match payloads.len() {
+        0 => None,
+        1 => payloads.first().cloned(),
+        _ => Some(Value::Array(payloads.to_vec())),
+    }
+}
+
+fn gemini_stream_payloads(payload: Value) -> Vec<Value> {
+    match payload {
+        Value::Array(values) if values.iter().all(Value::is_object) => values,
+        other => vec![other],
+    }
+}
+
+fn is_gemini_stream_payload(payload: &Value) -> bool {
+    payload.get("candidates").is_some()
+        || payload.get("usageMetadata").is_some()
+        || payload.get("responseId").is_some()
+        || payload.get("modelVersion").is_some()
+        || payload.get("model").is_some()
+}
+
+fn gemini_reasoning_metadata(response: &Response) -> Option<ThinkingData> {
+    response.message.content.iter().find_map(|part| match part {
+        ContentPart::Thinking { thinking } | ContentPart::RedactedThinking { thinking } => {
+            let mut metadata = thinking.clone();
+            metadata.text.clear();
+            Some(metadata)
+        }
+        _ => None,
+    })
+}
+
+fn response_has_provider_content(response: &Response) -> bool {
+    response
+        .message
+        .content
+        .iter()
+        .any(|part| matches!(part, ContentPart::Provider { .. }))
+}
+
+fn value_string(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn value_identifier(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(|value| {
+        value
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| value.as_u64().map(|value| value.to_string()))
+            .or_else(|| value.as_i64().map(|value| value.to_string()))
+    })
+}
+
+fn openai_stream_item_id(payload: &Value, prefix: &str) -> Option<String> {
+    value_identifier(payload, "item_id")
+        .or_else(|| value_identifier(payload, "id"))
+        .or_else(|| {
+            value_identifier(payload, "output_index").map(|index| format!("{prefix}_{index}"))
+        })
+}
+
+fn openai_stream_text_item(value: &Value) -> Option<(Option<String>, Option<String>)> {
+    let object = value.as_object()?;
+    let item_type = string_field(object, "type").unwrap_or_default();
+    if !matches!(
+        item_type.as_str(),
+        "output_text" | "message" | "text" | "refusal"
+    ) {
+        return None;
+    }
+    let text_id = string_field(object, "item_id")
+        .or_else(|| string_field(object, "id"))
+        .or_else(|| string_field(object, "output_index").map(|index| format!("text_{index}")));
+    let text = string_field(object, "text")
+        .or_else(|| string_field(object, "content"))
+        .or_else(|| string_field(object, "refusal"));
+    Some((text_id, text))
+}
+
+fn openai_stream_tool_call(value: &Value) -> Option<ToolCall> {
+    let object = value.as_object()?;
+    let item_type = string_field(object, "type").unwrap_or_default();
+    if item_type != "function_call" {
+        return None;
+    }
+    let name = string_field(object, "name").unwrap_or_default();
+    let id = string_field(object, "call_id")
+        .or_else(|| string_field(object, "id"))
+        .or_else(|| string_field(object, "item_id"))
+        .unwrap_or_else(|| name.clone());
+    let raw_arguments = string_field(object, "arguments").unwrap_or_default();
+    let arguments = if raw_arguments.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&raw_arguments)
+            .unwrap_or_else(|_| Value::String(raw_arguments.clone()))
+    };
+    Some(ToolCall {
+        id,
+        name,
+        arguments,
+        raw_arguments: Some(raw_arguments),
+        r#type: "function".to_string(),
+    })
+}
+
+fn remember_openai_stream_tool_call_aliases(
+    aliases: &mut BTreeMap<String, String>,
+    payload: &Value,
+    item: &Value,
+    tool_call_id: &str,
+) {
+    let tool_call_id = tool_call_id.trim();
+    if tool_call_id.is_empty() {
+        return;
+    }
+    for key in openai_stream_tool_call_alias_keys(payload, Some(item)) {
+        aliases.insert(key, tool_call_id.to_string());
+    }
+}
+
+fn openai_stream_tool_call_delta_id(
+    payload: &Value,
+    aliases: &BTreeMap<String, String>,
+) -> Option<String> {
+    value_identifier(payload, "call_id")
+        .or_else(|| openai_stream_tool_call_alias_id(payload, None, aliases))
+        .or_else(|| value_identifier(payload, "item_id"))
+        .or_else(|| value_identifier(payload, "output_index"))
+}
+
+fn openai_stream_tool_call_alias_id(
+    payload: &Value,
+    item: Option<&Value>,
+    aliases: &BTreeMap<String, String>,
+) -> Option<String> {
+    openai_stream_tool_call_alias_keys(payload, item)
+        .into_iter()
+        .find_map(|key| aliases.get(&key).cloned())
+}
+
+fn openai_stream_tool_call_alias_keys(payload: &Value, item: Option<&Value>) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(item) = item {
+        push_openai_stream_item_alias_keys(&mut keys, value_identifier(item, "id"));
+        push_openai_stream_item_alias_keys(&mut keys, value_identifier(item, "item_id"));
+        push_openai_stream_output_index_alias_key(
+            &mut keys,
+            value_identifier(item, "output_index"),
+        );
+    }
+    push_openai_stream_item_alias_keys(&mut keys, value_identifier(payload, "item_id"));
+    push_openai_stream_output_index_alias_key(&mut keys, value_identifier(payload, "output_index"));
+    keys
+}
+
+fn push_openai_stream_item_alias_keys(keys: &mut Vec<String>, value: Option<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    keys.push(format!("item_id:{value}"));
+    keys.push(format!("id:{value}"));
+}
+
+fn push_openai_stream_output_index_alias_key(keys: &mut Vec<String>, value: Option<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    keys.push(format!("output_index:{value}"));
+}
+
+fn merge_tool_calls_for_stream(
+    current: Option<ToolCall>,
+    incoming: ToolCall,
+    final_fragment: bool,
+) -> ToolCall {
+    let Some(current) = current else {
+        return incoming;
+    };
+    let id = if incoming.id.is_empty() {
+        current.id
+    } else {
+        incoming.id
+    };
+    let name = if incoming.name.is_empty() {
+        current.name
+    } else {
+        incoming.name
+    };
+    let r#type = if incoming.r#type.is_empty() {
+        current.r#type
+    } else {
+        incoming.r#type
+    };
+    let (arguments, raw_arguments) = merge_stream_tool_arguments(
+        current.arguments,
+        current.raw_arguments,
+        incoming.arguments,
+        incoming.raw_arguments,
+        final_fragment,
+    );
+    ToolCall {
+        id,
+        name,
+        arguments,
+        raw_arguments,
+        r#type,
+    }
+}
+
+fn merge_stream_tool_arguments(
+    current_arguments: Value,
+    current_raw: Option<String>,
+    incoming_arguments: Value,
+    incoming_raw: Option<String>,
+    final_fragment: bool,
+) -> (Value, Option<String>) {
+    match (current_arguments, incoming_arguments) {
+        (Value::Object(mut current), Value::Object(incoming)) => {
+            for (key, value) in incoming {
+                current.insert(key, value);
+            }
+            let arguments = Value::Object(current);
+            let raw = incoming_raw
+                .or(current_raw)
+                .or_else(|| Some(json_compact(&arguments)));
+            (arguments, raw)
+        }
+        (Value::String(current), Value::String(incoming)) => {
+            let merged = if final_fragment && incoming.starts_with(&current) {
+                incoming
+            } else {
+                format!("{current}{incoming}")
+            };
+            (Value::String(merged.clone()), Some(merged))
+        }
+        (current, Value::String(incoming)) => {
+            let current_raw = current_raw.unwrap_or_else(|| json_compact(&current));
+            let merged = if final_fragment && incoming.starts_with(&current_raw) {
+                incoming
+            } else {
+                format!("{current_raw}{incoming}")
+            };
+            (Value::String(merged.clone()), Some(merged))
+        }
+        (_, incoming) => {
+            let raw = incoming_raw.or_else(|| Some(json_compact(&incoming)));
+            (incoming, raw)
+        }
+    }
+}
+
+fn provider_payload_error(provider: &'static str, payload: &Value) -> AdapterError {
+    let error = payload.get("error").unwrap_or(payload);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("message").and_then(Value::as_str))
+        .unwrap_or("provider stream error");
+    let mut error = AdapterError::provider(
+        AdapterErrorKind::Stream,
+        message.to_string(),
+        Some(provider.to_string()),
+    );
+    error.raw = Some(payload.clone());
+    error
+}
+
+fn anthropic_stream_thinking_metadata(
+    block: &Value,
+    redacted: bool,
+    source_model: Option<String>,
+) -> ThinkingData {
+    ThinkingData {
+        text: String::new(),
+        signature: if redacted {
+            None
+        } else {
+            block
+                .as_object()
+                .and_then(|object| string_field(object, "signature"))
+        },
+        redacted,
+        source_provider: Some("anthropic".to_string()),
+        source_model,
     }
 }
 
@@ -2974,6 +4637,19 @@ fn gemini_generate_content_url(base_url: Option<&str>, model: &str) -> String {
     )
 }
 
+fn gemini_stream_generate_content_url(base_url: Option<&str>, model: &str) -> String {
+    let normalized = normalize_gemini_base_url(base_url);
+    let model = model.trim().strip_prefix("models/").unwrap_or(model.trim());
+    append_path_segment(
+        &normalized,
+        &format!(
+            "models/{}:streamGenerateContent",
+            percent_encode_path_segment(model)
+        ),
+        &[],
+    )
+}
+
 fn normalize_openai_base_url(base_url: Option<&str>) -> String {
     let base = non_empty(base_url).unwrap_or(OPENAI_DEFAULT_BASE_URL);
     let normalized = trim_url_path_suffix(base, &[]);
@@ -3329,36 +5005,27 @@ fn provider_status_error(provider: &str, response: NativeCompleteResponse) -> Ad
         message,
         Some(provider),
         error_code.as_deref(),
-        retry_after_header(&response.headers),
+        retry_after_from_headers(&response.headers),
         Some(response.body),
     )
 }
 
-fn provider_error_details(body: &Value) -> (String, Option<String>) {
-    if let Some(error) = body.get("error") {
-        match error {
-            Value::Object(error) => {
-                let message = string_field(error, "message")
-                    .or_else(|| string_field(error, "detail"))
-                    .or_else(|| string_field(error, "type"))
-                    .unwrap_or_else(|| json_compact(body));
-                let code = string_field(error, "code")
-                    .or_else(|| string_field(error, "status"))
-                    .or_else(|| string_field(error, "type"));
-                return (message, code);
-            }
-            Value::String(message) => return (message.clone(), None),
-            _ => {}
-        }
+fn native_stream_error_response(response: NativeStreamResponse) -> NativeCompleteResponse {
+    let body = response
+        .body
+        .into_iter()
+        .find_map(Result::ok)
+        .unwrap_or_else(|| json!({}));
+    NativeCompleteResponse {
+        status: response.status,
+        headers: response.headers,
+        body,
     }
-    if let Some(message) = body.get("message").and_then(Value::as_str) {
-        return (message.to_string(), None);
-    }
-    (json_compact(body), None)
 }
 
-fn retry_after_header(headers: &BTreeMap<String, String>) -> Option<f64> {
-    header_value(headers, &["retry-after"]).and_then(|value| value.parse::<f64>().ok())
+fn provider_error_details(body: &Value) -> (String, Option<String>) {
+    let (message, error_code) = extract_error_details_from_raw(body);
+    (message.unwrap_or_else(|| json_compact(body)), error_code)
 }
 
 fn invalid_request_error(provider: &'static str, message: impl Into<String>) -> AdapterError {
