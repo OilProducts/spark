@@ -52,7 +52,7 @@ fn client_complete_and_stream_execute_through_registered_rust_adapter() {
 }
 
 #[test]
-fn env_configured_client_defers_provider_transport_without_python_fallback() {
+fn env_configured_native_client_defers_http_transport_without_python_fallback() {
     let env = BTreeMap::from([("OPENAI_API_KEY".to_string(), "test-key".to_string())]);
     let client = Client::from_env_map(&env, None).unwrap();
     assert_eq!(client.provider_names().collect::<Vec<_>>(), vec!["openai"]);
@@ -68,9 +68,7 @@ fn env_configured_client_defers_provider_transport_without_python_fallback() {
 
     assert_eq!(error.kind, AdapterErrorKind::Configuration);
     assert_eq!(error.provider.as_deref(), Some("openai"));
-    assert!(error
-        .message
-        .contains("no Rust provider adapter is registered"));
+    assert!(error.message.contains("no HTTP transport is configured"));
 }
 
 struct RuntimeBoundaryAdapter {

@@ -734,6 +734,8 @@ fn core_dtos_preserve_content_accessors_and_extensible_payloads() {
                     text: "private plan".to_string(),
                     signature: Some("sig-1".to_string()),
                     redacted: false,
+                    source_provider: Some("anthropic".to_string()),
+                    source_model: Some("claude-sonnet-4-5".to_string()),
                 },
             },
             ContentPart::Text {

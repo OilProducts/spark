@@ -2,9 +2,10 @@
 
 //! Rust-owned Unified LLM adapter contracts for Spark runtime migration.
 //!
-//! This crate intentionally exposes DTOs, normalization helpers, and
-//! deterministic adapter policy. Live provider implementations and packaged
-//! provider resources remain owned by later milestones.
+//! This crate intentionally exposes DTOs, normalization helpers, native
+//! provider adapter boundaries, and deterministic adapter policy. Production
+//! live transports and packaged provider resources remain owned by later
+//! milestones.
 
 pub mod catalog;
 pub mod client;
@@ -13,6 +14,7 @@ pub mod env;
 pub mod errors;
 pub mod events;
 pub mod middleware;
+pub mod native;
 pub mod profiles;
 pub mod request;
 pub mod resolution;
@@ -28,6 +30,10 @@ pub use errors::{
 };
 pub use events::{StreamAccumulator, StreamEvent, StreamEventType, StreamEvents};
 pub use middleware::{CompleteNext, Middleware, StreamNext};
+pub use native::{
+    NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport, NativeProviderAdapter,
+    NativeRequestConfig,
+};
 pub use profiles::{
     get_llm_profile, get_llm_profile_with_env, load_llm_profiles, public_llm_profiles,
     public_llm_profiles_with_env, LlmProfile, LlmProfileConfigRoot, LlmProfileConfigurationError,

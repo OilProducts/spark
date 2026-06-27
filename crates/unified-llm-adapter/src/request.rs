@@ -592,10 +592,20 @@ pub struct ThinkingData {
     pub signature: Option<String>,
     #[serde(default)]
     pub redacted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_model: Option<String>,
 }
 
 impl ThinkingData {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(provider) = self.source_provider.as_deref() {
+            validate_non_empty("thinking source_provider", provider)?;
+        }
+        if let Some(model) = self.source_model.as_deref() {
+            validate_non_empty("thinking source_model", model)?;
+        }
         if self.redacted {
             return Ok(());
         }

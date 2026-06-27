@@ -5,6 +5,7 @@ use crate::env::{ProviderConfig, ProviderEnvironment, PROVIDER_REGISTRATION_ORDE
 use crate::errors::{AdapterError, AdapterErrorKind};
 use crate::events::StreamEvents;
 use crate::middleware::{run_complete_chain, run_stream_chain, Middleware};
+use crate::native::NativeProviderAdapter;
 use crate::request::{Request, Response};
 
 pub trait ProviderAdapter: Send + Sync {
@@ -76,17 +77,13 @@ impl Client {
         default_provider: Option<&str>,
     ) -> Result<Self, AdapterError> {
         let environment = ProviderEnvironment::from_env_map(env, default_provider);
-        let providers = PROVIDER_REGISTRATION_ORDER
-            .into_iter()
-            .filter_map(|provider| {
-                environment.providers.get(provider).map(|config| {
-                    (
-                        provider.to_string(),
-                        Arc::new(ConfiguredProviderAdapter::new(config.clone()))
-                            as Arc<dyn ProviderAdapter>,
-                    )
-                })
-            });
+        let mut providers = Vec::new();
+        for provider in PROVIDER_REGISTRATION_ORDER {
+            let Some(config) = environment.providers.get(provider) else {
+                continue;
+            };
+            providers.push((provider.to_string(), configured_adapter(config)?));
+        }
 
         Self::from_provider_entries(providers, environment.default_provider.as_deref())
     }
@@ -225,6 +222,15 @@ impl Client {
             .get_key_value(&provider)
             .map(|(name, adapter)| (name.as_str(), adapter))
             .ok_or_else(|| configuration_error(format!("Unknown provider {provider:?}")))
+    }
+}
+
+fn configured_adapter(config: &ProviderConfig) -> Result<Arc<dyn ProviderAdapter>, AdapterError> {
+    match config.provider.as_str() {
+        "openai" | "anthropic" | "gemini" => Ok(Arc::new(
+            NativeProviderAdapter::without_transport(config.provider.as_str(), config)?,
+        )),
+        _ => Ok(Arc::new(ConfiguredProviderAdapter::new(config.clone()))),
     }
 }
 
