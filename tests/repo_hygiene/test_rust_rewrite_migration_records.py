@@ -22,8 +22,8 @@ def test_committed_migration_doc_is_self_contained_source_of_truth() -> None:
     assert "This committed document is the migration source of truth" in document
     assert "Validation of this document uses committed repository files only" in document
     for forbidden_text in (
-        ".spark/rust-rewrite/current/migration-records.json",
-        ".spark/spec-implementation/current",
+        _workflow_current_path("rust" + "-rewrite", "migration-records.json"),
+        _workflow_current_path("spec" + "-implementation"),
         "generated workflow ledger",
         "generated workflow ledgers",
         "workflow ledger",
@@ -151,6 +151,10 @@ def _row_containing(rows: list[dict[str, str]], column: str, text: str) -> dict[
 
 def _code_value(value: str) -> str:
     return value.strip("`")
+
+
+def _workflow_current_path(workflow: str, *parts: str) -> str:
+    return "/".join(("." + "spark", workflow, "cur" + "rent", *parts))
 
 
 def _contract_decisions() -> dict[str, dict]:

@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join(".spark/rust-rewrite/current/compat-fixtures")
+        .join("tests/compat/fixtures")
         .join(name)
 }
 

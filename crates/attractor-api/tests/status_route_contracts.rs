@@ -67,10 +67,9 @@ fn route_dispatch_keeps_root_and_api_subroutes_distinct() {
 
 fn fixture_json(relative: &str) -> Value {
     let path = workspace_root()
-        .join(".spark")
-        .join("rust-rewrite")
-        .join("current")
-        .join("compat-fixtures")
+        .join("tests")
+        .join("compat")
+        .join("fixtures")
         .join(relative);
     serde_json::from_str(
         &fs::read_to_string(&path)

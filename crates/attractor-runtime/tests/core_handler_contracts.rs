@@ -37,7 +37,7 @@ fn repo_root() -> PathBuf {
 
 fn runtime_fixture(name: &str) -> Value {
     let path = repo_root()
-        .join(".spark/rust-rewrite/current/compat-fixtures/runtime")
+        .join("tests/compat/fixtures/runtime")
         .join(format!("{name}.json"));
     serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture")).expect("fixture json")
 }

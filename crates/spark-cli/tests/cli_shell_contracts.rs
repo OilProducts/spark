@@ -1548,7 +1548,7 @@ fn content_length(headers: &str) -> usize {
 fn fixture_json(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join(".spark/rust-rewrite/current/compat-fixtures")
+        .join("tests/compat/fixtures")
         .join(name);
     serde_json::from_str(&fs::read_to_string(&path).expect("fixture readable"))
         .expect("fixture json")

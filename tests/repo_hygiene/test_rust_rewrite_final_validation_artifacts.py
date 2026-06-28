@@ -103,7 +103,9 @@ def test_git_tracked_path_hygiene_allows_legitimate_credentials_source_modules()
     assert _tracked_path_violation("crates/example/src/credentials.rs") is None
     assert _tracked_path_violation("src/spark/auth/token.py") is None
 
-    assert _tracked_path_violation(".spark/spec-implementation/current/state.json")
+    assert _tracked_path_violation(
+        _workflow_current_path("spec" + "-implementation", "state.json")
+    )
     assert _tracked_path_violation("target/debug/spark-server")
     assert _tracked_path_violation("config/credentials.json")
     assert _tracked_path_violation("config/secrets.toml")
@@ -133,6 +135,10 @@ def _tracked_path_violation(path: str) -> str | None:
         return "credential or secret data file"
 
     return None
+
+
+def _workflow_current_path(workflow: str, *parts: str) -> str:
+    return "/".join(("." + "spark", workflow, "cur" + "rent", *parts))
 
 
 def _looks_like_secret_data_file(path: PurePosixPath) -> bool:

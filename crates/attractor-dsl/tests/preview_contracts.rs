@@ -241,10 +241,9 @@ fn preview_nodes_follow_declaration_order_not_map_key_order() {
 
 fn fixture_json(relative: &str) -> Value {
     let path = workspace_root()
-        .join(".spark")
-        .join("rust-rewrite")
-        .join("current")
-        .join("compat-fixtures")
+        .join("tests")
+        .join("compat")
+        .join("fixtures")
         .join(relative);
     serde_json::from_str(
         &fs::read_to_string(&path)

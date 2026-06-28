@@ -282,7 +282,7 @@ fn repository_adapters_use_public_codecs_and_expose_paths() {
 #[test]
 fn m0_filesystem_fixture_samples_load_as_generic_values_and_rewrite_through_codecs() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let fixture_dir = repo_root().join(".spark/rust-rewrite/current/compat-fixtures/filesystem");
+    let fixture_dir = repo_root().join("tests/compat/fixtures/filesystem");
 
     let layout: serde_json::Value =
         read_json(fixture_dir.join("project-conversation-layout.json")).expect("layout fixture");

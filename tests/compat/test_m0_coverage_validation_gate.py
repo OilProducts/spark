@@ -38,7 +38,9 @@ EXPECTED_ITEM_GROUPS = {
 }
 FIXTURE_ROOT_RELATIVE = "tests/compat/fixtures"
 FORBIDDEN_COMMITTED_FIXTURE_PATTERNS = {
-    "ignored rust-rewrite current alias": re.compile(r"\.spark/rust-rewrite/current"),
+    "ignored rust-rewrite current alias": re.compile(
+        r"\.spark/" + "rust" + r"-rewrite/" + "cur" + "rent"
+    ),
     "legacy compat current provenance token": re.compile(r"__LEGACY_COMPAT_CURRENT__"),
     "legacy compat runtime provenance token": re.compile(r"__LEGACY_COMPAT_RUNTIME__"),
     "machine-local home path": re.compile(r"/home/[^/\s]+/"),

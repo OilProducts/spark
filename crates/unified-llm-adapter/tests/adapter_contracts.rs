@@ -46,7 +46,7 @@ fn llm_resolution_preserves_node_launch_fallback_order_and_reasoning_rule() {
 }
 
 #[test]
-fn provider_model_env_observation_matches_active_fixture() {
+fn provider_model_env_observation_matches_committed_fixture() {
     assert_fixture_observation(
         "model-catalog-env-resolution",
         model_catalog_env_resolution_observation(),
@@ -54,7 +54,7 @@ fn provider_model_env_observation_matches_active_fixture() {
 }
 
 #[test]
-fn retry_error_usage_stream_observation_matches_active_fixture() {
+fn retry_error_usage_stream_observation_matches_committed_fixture() {
     assert_fixture_observation(
         "retry-error-usage-stream",
         retry_error_usage_stream_observation(),
@@ -62,7 +62,7 @@ fn retry_error_usage_stream_observation_matches_active_fixture() {
 }
 
 #[test]
-fn request_tool_structured_output_observation_matches_active_fixture() {
+fn request_tool_structured_output_observation_matches_committed_fixture() {
     assert_fixture_observation(
         "request-tool-structured-output",
         request_tool_structured_output_observation(),
@@ -70,11 +70,25 @@ fn request_tool_structured_output_observation_matches_active_fixture() {
 }
 
 #[test]
-fn m6_provider_profile_resource_observation_matches_active_fixture() {
+fn m6_provider_profile_resource_observation_matches_committed_fixture() {
     assert_fixture_observation(
         "m6-provider-profile-resource-parity",
         m6_provider_profile_resource_observation(),
     );
+}
+
+#[test]
+fn missing_provider_fixture_names_committed_path_and_fixture_name() {
+    let fixture_name = "missing-provider-fixture";
+    let panic = std::panic::catch_unwind(|| fixture(fixture_name)).expect_err("missing fixture");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("panic message");
+
+    assert!(message.contains("read committed provider fixture missing-provider-fixture at"));
+    assert!(message.contains("tests/compat/fixtures/providers/missing-provider-fixture.json"));
 }
 
 fn model_catalog_env_resolution_observation() -> Value {
@@ -402,14 +416,22 @@ fn assert_fixture_observation(fixture_name: &str, actual: Value) {
 fn fixture(fixture_name: &str) -> Value {
     let path = fixture_path(fixture_name);
     serde_json::from_str(&fs::read_to_string(&path).unwrap_or_else(|source| {
-        panic!("read active provider fixture {}: {source}", path.display())
+        panic!(
+            "read committed provider fixture {fixture_name} at {}: {source}",
+            path.display()
+        )
     }))
-    .unwrap_or_else(|source| panic!("parse active provider fixture {}: {source}", path.display()))
+    .unwrap_or_else(|source| {
+        panic!(
+            "parse committed provider fixture {fixture_name} at {}: {source}",
+            path.display()
+        )
+    })
 }
 
 fn fixture_path(fixture_name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.spark/rust-rewrite/current/compat-fixtures/providers")
+        .join("../../tests/compat/fixtures/providers")
         .join(format!("{fixture_name}.json"))
 }
 

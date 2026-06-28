@@ -19,7 +19,7 @@ fn context_map(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Cont
 
 fn fixture_graph(name: &str) -> DotGraph {
     let fixture_path = repo_root()
-        .join(".spark/rust-rewrite/current/compat-fixtures/runtime")
+        .join("tests/compat/fixtures/runtime")
         .join(format!("{name}.json"));
     let fixture: Value = serde_json::from_str(
         &std::fs::read_to_string(&fixture_path)
