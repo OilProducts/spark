@@ -19,7 +19,7 @@
         },
         "type": "trigger.snapshot"
       },
-      "data_text": "{\"type\": \"trigger.snapshot\", \"project_path\": \"__PROJECT_DIR__\", \"resource\": {\"kind\": \"trigger\", \"id\": null}, \"cursor\": null, \"payload\": {\"triggers\": []}}",
+      "data_text": "{\"type\":\"trigger.snapshot\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":null},\"cursor\":null,\"payload\":{\"triggers\":[]}}",
       "event": "message",
       "kind": "event"
     },
@@ -35,13 +35,13 @@
                 "origin": "compat"
               }
             },
-            "created_at": "2026-06-22T16:50:17Z",
+            "created_at": "2026-06-28T19:40:52Z",
             "enabled": true,
-            "id": "trigger-5b844831e479",
+            "id": "trigger-57518a1da083",
             "name": "Compat webhook",
             "protected": false,
             "source": {
-              "webhook_key": "bBieqHqwOBpxa26s"
+              "webhook_key": "B5q2u9CZ7HI7aprN"
             },
             "source_type": "webhook",
             "state": {
@@ -51,19 +51,19 @@
               "next_run_at": null,
               "recent_history": []
             },
-            "updated_at": "2026-06-22T16:50:17Z",
-            "webhook_secret": "5njR7P2HJ57PLeCzUcUJK9lTj5JtuYSZ"
+            "updated_at": "2026-06-28T19:40:52Z",
+            "webhook_secret": "BY1XV8Gf7F0CjZqvMlkWuHxDD7sTlNbA"
           },
           "type": "trigger_upsert"
         },
         "project_path": "__PROJECT_DIR__",
         "resource": {
-          "id": "trigger-5b844831e479",
+          "id": "trigger-57518a1da083",
           "kind": "trigger"
         },
         "type": "trigger.upsert"
       },
-      "data_text": "{\"type\": \"trigger.upsert\", \"project_path\": \"__PROJECT_DIR__\", \"resource\": {\"kind\": \"trigger\", \"id\": \"trigger-5b844831e479\"}, \"cursor\": null, \"payload\": {\"type\": \"trigger_upsert\", \"trigger\": {\"id\": \"trigger-5b844831e479\", \"name\": \"Compat webhook\", \"enabled\": true, \"protected\": false, \"source_type\": \"webhook\", \"created_at\": \"2026-06-22T16:50:17Z\", \"updated_at\": \"2026-06-22T16:50:17Z\", \"action\": {\"flow_name\": \"software-development/implement-change-request.dot\", \"project_path\": \"__PROJECT_DIR__\", \"static_context\": {\"origin\": \"compat\"}}, \"source\": {\"webhook_key\": \"bBieqHqwOBpxa26s\"}, \"state\": {\"last_fired_at\": null, \"last_result\": null, \"last_error\": null, \"next_run_at\": null, \"recent_history\": []}, \"webhook_secret\": \"5njR7P2HJ57PLeCzUcUJK9lTj5JtuYSZ\"}}}",
+      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-57518a1da083\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.dot\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-28T19:40:52Z\",\"enabled\":true,\"id\":\"trigger-57518a1da083\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"B5q2u9CZ7HI7aprN\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":null,\"last_result\":null,\"next_run_at\":null,\"recent_history\":[]},\"updated_at\":\"2026-06-28T19:40:52Z\",\"webhook_secret\":\"BY1XV8Gf7F0CjZqvMlkWuHxDD7sTlNbA\"},\"type\":\"trigger_upsert\"}}",
       "event": "message",
       "kind": "event"
     },
@@ -72,19 +72,19 @@
         "cursor": null,
         "payload": {
           "trigger": {
-            "id": "trigger-5b844831e479",
+            "id": "trigger-57518a1da083",
             "status": "deleted"
           },
           "type": "trigger_deleted"
         },
         "project_path": "__PROJECT_DIR__",
         "resource": {
-          "id": "trigger-5b844831e479",
+          "id": "trigger-57518a1da083",
           "kind": "trigger"
         },
         "type": "trigger.delete"
       },
-      "data_text": "{\"type\": \"trigger.delete\", \"project_path\": \"__PROJECT_DIR__\", \"resource\": {\"kind\": \"trigger\", \"id\": \"trigger-5b844831e479\"}, \"cursor\": null, \"payload\": {\"type\": \"trigger_deleted\", \"trigger\": {\"status\": \"deleted\", \"id\": \"trigger-5b844831e479\"}}}",
+      "data_text": "{\"type\":\"trigger.delete\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-57518a1da083\"},\"cursor\":null,\"payload\":{\"trigger\":{\"id\":\"trigger-57518a1da083\",\"status\":\"deleted\"},\"type\":\"trigger_deleted\"}}",
       "event": "message",
       "kind": "event"
     }
@@ -106,7 +106,7 @@
       "--host",
       "127.0.0.1",
       "--port",
-      "60283",
+      "58633",
       "--data-dir",
       "__SPARK_HOME__",
       "--flows-dir",

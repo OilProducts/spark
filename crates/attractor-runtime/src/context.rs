@@ -7,9 +7,9 @@ use attractor_core::{
     LaunchContext, Outcome, OutcomeStatus, RoutingEdge,
 };
 use serde_json::{json, Value};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::error::Result;
+use crate::events::utc_timestamp;
 
 pub const NODE_OUTCOMES_KEY: &str = "_attractor.node_outcomes";
 pub const OUTCOME_KEY: &str = "outcome";
@@ -366,12 +366,6 @@ fn remember_node_outcome(
     outcomes.insert(node_id.to_string(), Value::String(status.to_string()));
     context.set(NODE_OUTCOMES_KEY, Value::Object(outcomes))?;
     Ok(())
-}
-
-fn utc_timestamp() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_default()
 }
 
 fn edge_attr_text(edge: &RoutingEdge, key: &str) -> Option<String> {

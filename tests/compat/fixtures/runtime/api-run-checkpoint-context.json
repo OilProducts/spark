@@ -17,9 +17,9 @@
                 "_attractor.node_outcomes": {
                   "start": "success"
                 },
-                "_attractor.runtime.context_carryover": "carryover:compact\ngoal=Capture API runtime durability\nrun_id=run-m0-i04-api\n- context.topic=compat\n- current_node=start\n- execution_mode=native\n- execution_profile_capabilities={}\n- execution_profile_id=native\n- graph.default_max_retries=0\n- graph.release=compat\n- outcome=",
+                "_attractor.runtime.execution_container_image": "",
                 "_attractor.runtime.execution_mode": "native",
-                "_attractor.runtime.execution_profile_capabilities": {},
+                "_attractor.runtime.execution_profile_capabilities": [],
                 "_attractor.runtime.execution_profile_id": "native",
                 "_attractor.runtime.execution_profile_selection_source": "implementation_default",
                 "_attractor.runtime.fidelity": "compact",
@@ -33,9 +33,13 @@
                 "_attractor.runtime.retry.node_id": "",
                 "_attractor.runtime.thread_id": "",
                 "context.topic": "compat",
+                "context.workflow_outcome": "",
+                "context.workflow_outcome_reason_code": "",
+                "context.workflow_outcome_reason_message": "",
                 "current_node": "done",
+                "execution_container_image": "",
                 "execution_mode": "native",
-                "execution_profile_capabilities": {},
+                "execution_profile_capabilities": [],
                 "execution_profile_id": "native",
                 "graph.default_max_retries": 0,
                 "graph.goal": "Capture API runtime durability",
@@ -49,7 +53,7 @@
               "current_node": "done",
               "logs": [],
               "retry_counts": {},
-              "timestamp": "2026-06-25T04:43:47.800186+00:00"
+              "timestamp": "2026-06-28T19:40:52.605360144Z"
             },
             "pipeline_id": "run-m0-i04-api"
           },
@@ -74,9 +78,9 @@
               "_attractor.node_outcomes": {
                 "start": "success"
               },
-              "_attractor.runtime.context_carryover": "carryover:compact\ngoal=Capture API runtime durability\nrun_id=run-m0-i04-api\n- context.topic=compat\n- current_node=start\n- execution_mode=native\n- execution_profile_capabilities={}\n- execution_profile_id=native\n- graph.default_max_retries=0\n- graph.release=compat\n- outcome=",
+              "_attractor.runtime.execution_container_image": "",
               "_attractor.runtime.execution_mode": "native",
-              "_attractor.runtime.execution_profile_capabilities": {},
+              "_attractor.runtime.execution_profile_capabilities": [],
               "_attractor.runtime.execution_profile_id": "native",
               "_attractor.runtime.execution_profile_selection_source": "implementation_default",
               "_attractor.runtime.fidelity": "compact",
@@ -90,9 +94,13 @@
               "_attractor.runtime.retry.node_id": "",
               "_attractor.runtime.thread_id": "",
               "context.topic": "compat",
+              "context.workflow_outcome": "",
+              "context.workflow_outcome_reason_code": "",
+              "context.workflow_outcome_reason_message": "",
               "current_node": "done",
+              "execution_container_image": "",
               "execution_mode": "native",
-              "execution_profile_capabilities": {},
+              "execution_profile_capabilities": [],
               "execution_profile_id": "native",
               "graph.default_max_retries": 0,
               "graph.goal": "Capture API runtime durability",
@@ -123,280 +131,162 @@
     "run_root": {
       "parsed": {
         "checkpoint.json": {
-          "exists": false
+          "data": {
+            "completed_nodes": [
+              "start"
+            ],
+            "context": {
+              "_attractor.node_outcomes": {
+                "start": "success"
+              },
+              "_attractor.runtime.execution_container_image": "",
+              "_attractor.runtime.execution_mode": "native",
+              "_attractor.runtime.execution_profile_capabilities": [],
+              "_attractor.runtime.execution_profile_id": "native",
+              "_attractor.runtime.execution_profile_selection_source": "implementation_default",
+              "_attractor.runtime.fidelity": "compact",
+              "_attractor.runtime.launch_model": "compat-model",
+              "_attractor.runtime.launch_profile": "",
+              "_attractor.runtime.launch_provider": "codex",
+              "_attractor.runtime.launch_reasoning_effort": "",
+              "_attractor.runtime.retry.attempt": 0,
+              "_attractor.runtime.retry.failure_reason": "",
+              "_attractor.runtime.retry.max_attempts": 0,
+              "_attractor.runtime.retry.node_id": "",
+              "_attractor.runtime.thread_id": "",
+              "context.topic": "compat",
+              "context.workflow_outcome": "",
+              "context.workflow_outcome_reason_code": "",
+              "context.workflow_outcome_reason_message": "",
+              "current_node": "done",
+              "execution_container_image": "",
+              "execution_mode": "native",
+              "execution_profile_capabilities": [],
+              "execution_profile_id": "native",
+              "graph.default_max_retries": 0,
+              "graph.goal": "Capture API runtime durability",
+              "graph.release": "compat",
+              "internal.root_run_id": "run-m0-i04-api",
+              "internal.run_id": "run-m0-i04-api",
+              "internal.run_workdir": "__PROJECT_DIR__",
+              "outcome": "success",
+              "preferred_label": ""
+            },
+            "current_node": "done",
+            "logs": [],
+            "retry_counts": {},
+            "timestamp": "2026-06-28T19:40:52.605360144Z"
+          },
+          "exists": true
         },
         "events.jsonl": {
           "exists": true,
           "records": [
             {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "phase": "PARSE",
+              "emitted_at": "2026-06-28T19:40:52.604365793Z",
+              "phase": "INITIALIZE",
               "run_id": "run-m0-i04-api",
               "sequence": 1,
               "source_scope": "root",
               "type": "lifecycle"
             },
             {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "phase": "TRANSFORM",
-              "run_id": "run-m0-i04-api",
-              "sequence": 2,
-              "source_scope": "root",
-              "type": "lifecycle"
-            },
-            {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "phase": "VALIDATE",
-              "run_id": "run-m0-i04-api",
-              "sequence": 3,
-              "source_scope": "root",
-              "type": "lifecycle"
-            },
-            {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "phase": "INITIALIZE",
-              "run_id": "run-m0-i04-api",
-              "sequence": 4,
-              "source_scope": "root",
-              "type": "lifecycle"
-            },
-            {
-              "defaults": {
-                "edge": {},
-                "node": {}
-              },
-              "edges": [
-                {
-                  "condition": null,
-                  "fidelity": null,
-                  "from": "start",
-                  "label": null,
-                  "loop_restart": null,
-                  "thread_id": null,
-                  "to": "done",
-                  "weight": null
-                }
-              ],
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "graph_attrs": {
-                "default_fidelity": null,
-                "default_max_retries": null,
-                "fallback_retry_target": null,
-                "goal": "Capture API runtime durability",
-                "label": "",
-                "model_stylesheet": null,
-                "release": "compat",
-                "retry_target": null,
-                "stack.child_dotfile": null,
-                "stack.child_workdir": null,
-                "tool.hooks.post": null,
-                "tool.hooks.pre": null,
-                "ui_default_llm_model": null,
-                "ui_default_llm_profile": null,
-                "ui_default_llm_provider": null,
-                "ui_default_reasoning_effort": null
-              },
-              "nodes": [
-                {
-                  "allow_partial": null,
-                  "auto_status": null,
-                  "class": null,
-                  "error_policy": null,
-                  "fallback_retry_target": null,
-                  "fidelity": null,
-                  "goal_gate": null,
-                  "id": "start",
-                  "join_k": null,
-                  "join_policy": null,
-                  "join_quorum": null,
-                  "label": "start",
-                  "llm_model": "",
-                  "llm_profile": "",
-                  "llm_provider": "",
-                  "manager.actions": null,
-                  "manager.max_cycles": null,
-                  "manager.poll_interval": null,
-                  "manager.steer_cooldown": null,
-                  "manager.stop_condition": null,
-                  "max_parallel": null,
-                  "max_retries": null,
-                  "prompt": null,
-                  "reasoning_effort": "high",
-                  "retry_target": null,
-                  "shape": "Mdiamond",
-                  "stack.child_autostart": null,
-                  "thread_id": null,
-                  "timeout": null,
-                  "tool.artifacts.paths": null,
-                  "tool.artifacts.stderr": null,
-                  "tool.artifacts.stdout": null,
-                  "tool.command": null,
-                  "tool.hooks.post": null,
-                  "tool.hooks.pre": null,
-                  "type": null
-                },
-                {
-                  "allow_partial": null,
-                  "auto_status": null,
-                  "class": null,
-                  "error_policy": null,
-                  "fallback_retry_target": null,
-                  "fidelity": null,
-                  "goal_gate": null,
-                  "id": "done",
-                  "join_k": null,
-                  "join_policy": null,
-                  "join_quorum": null,
-                  "label": "done",
-                  "llm_model": "",
-                  "llm_profile": "",
-                  "llm_provider": "",
-                  "manager.actions": null,
-                  "manager.max_cycles": null,
-                  "manager.poll_interval": null,
-                  "manager.steer_cooldown": null,
-                  "manager.stop_condition": null,
-                  "max_parallel": null,
-                  "max_retries": null,
-                  "prompt": null,
-                  "reasoning_effort": "high",
-                  "retry_target": null,
-                  "shape": "Msquare",
-                  "stack.child_autostart": null,
-                  "thread_id": null,
-                  "timeout": null,
-                  "tool.artifacts.paths": null,
-                  "tool.artifacts.stderr": null,
-                  "tool.artifacts.stdout": null,
-                  "tool.command": null,
-                  "tool.hooks.post": null,
-                  "tool.hooks.pre": null,
-                  "type": null
-                }
-              ],
-              "run_id": "run-m0-i04-api",
-              "sequence": 5,
-              "source_scope": "root",
-              "subgraphs": [],
-              "type": "graph"
-            },
-            {
-              "emitted_at": "2026-06-25T04:43:47Z",
+              "emitted_at": "2026-06-28T19:40:52.604398952Z",
+              "last_error": null,
               "outcome": null,
               "outcome_reason_code": null,
               "outcome_reason_message": null,
               "run_id": "run-m0-i04-api",
-              "sequence": 6,
+              "sequence": 2,
               "source_scope": "root",
               "status": "running",
               "type": "runtime"
             },
             {
+              "child_invocation_index": null,
+              "cleanup_error": null,
               "continued_from_flow_mode": null,
               "continued_from_flow_name": null,
               "continued_from_node": null,
               "continued_from_run_id": null,
-              "emitted_at": "2026-06-25T04:43:47Z",
+              "emitted_at": "2026-06-28T19:40:52.604481767Z",
+              "ended_at": null,
+              "estimated_model_cost": null,
               "execution_container_image": null,
+              "execution_lock": null,
               "execution_mode": "native",
-              "execution_profile_capabilities": {},
+              "execution_profile_capabilities": [],
               "execution_profile_id": "native",
               "flow_name": "",
+              "git_branch": null,
+              "git_commit": null,
               "graph_dot_path": "__RUN_ROOT__/artifacts/graphviz/pipeline.dot",
               "graph_render_path": null,
               "graph_source_path": "__RUN_ROOT__/artifacts/graphviz/pipeline-source.dot",
+              "last_error": "",
               "llm_profile": null,
               "llm_provider": "codex",
               "model": "compat-model",
+              "outcome": null,
+              "outcome_reason_code": null,
+              "outcome_reason_message": null,
+              "parent_node_id": null,
+              "parent_run_id": null,
+              "plan_id": null,
+              "project_path": "__PROJECT_DIR__",
               "provider": "codex",
               "reasoning_effort": null,
               "root_run_id": "run-m0-i04-api",
               "run_id": "run-m0-i04-api",
-              "sequence": 7,
+              "sequence": 3,
               "source_scope": "root",
+              "spec_id": null,
+              "started_at": "2026-06-28T19:40:52.603968236Z",
+              "status": "running",
+              "token_usage": null,
+              "token_usage_breakdown": null,
               "type": "run_meta",
               "working_directory": "__PROJECT_DIR__"
             },
             {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "msg": "[System] Graph render unavailable: Graphviz 'dot' binary not found",
-              "run_id": "run-m0-i04-api",
-              "sequence": 8,
-              "source_scope": "root",
-              "type": "log"
-            },
-            {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "msg": "[System] Launching run run-m0-i04-api in __PROJECT_DIR__ with model: compat-model",
-              "run_id": "run-m0-i04-api",
-              "sequence": 9,
-              "source_scope": "root",
-              "type": "log"
-            },
-            {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "phase": "EXECUTE",
-              "run_id": "run-m0-i04-api",
-              "sequence": 10,
-              "source_scope": "root",
-              "type": "lifecycle"
-            },
-            {
               "current_node": "start",
-              "emitted_at": "2026-06-25T04:43:47Z",
+              "emitted_at": "2026-06-28T19:40:52.604569438Z",
               "id": "ApiRuntimeFixture",
               "name": "ApiRuntimeFixture",
-              "resumed": true,
+              "resumed": false,
               "run_id": "run-m0-i04-api",
-              "sequence": 11,
+              "sequence": 4,
               "source_scope": "root",
               "type": "PipelineStarted"
             },
             {
-              "emitted_at": "2026-06-25T04:43:47Z",
+              "completed_nodes": [],
+              "current_node": "start",
+              "emitted_at": "2026-06-28T19:40:52.604761847Z",
+              "persisted": true,
+              "run_id": "run-m0-i04-api",
+              "sequence": 5,
+              "source_scope": "root",
+              "type": "CheckpointSaved"
+            },
+            {
+              "emitted_at": "2026-06-28T19:40:52.604843729Z",
               "index": 0,
               "name": "start",
               "node_id": "start",
               "run_id": "run-m0-i04-api",
-              "sequence": 12,
+              "sequence": 6,
               "source_scope": "root",
               "type": "StageStarted"
             },
             {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "node": "start",
-              "run_id": "run-m0-i04-api",
-              "sequence": 13,
-              "source_scope": "root",
-              "status": "running",
-              "type": "state"
-            },
-            {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "msg": "[start] running",
-              "run_id": "run-m0-i04-api",
-              "sequence": 14,
-              "source_scope": "root",
-              "type": "log"
-            },
-            {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "node": "start",
-              "run_id": "run-m0-i04-api",
-              "sequence": 15,
-              "source_scope": "root",
-              "status": "success",
-              "type": "state"
-            },
-            {
-              "duration": 0.00033779710065573454,
-              "emitted_at": "2026-06-25T04:43:47Z",
+              "emitted_at": "2026-06-28T19:40:52.605015557Z",
               "index": 0,
               "name": "start",
               "node_id": "start",
               "outcome": "success",
               "run_id": "run-m0-i04-api",
-              "sequence": 16,
+              "sequence": 7,
               "source_scope": "root",
               "type": "StageCompleted"
             },
@@ -405,10 +295,10 @@
                 "start"
               ],
               "current_node": "done",
-              "emitted_at": "2026-06-25T04:43:47Z",
+              "emitted_at": "2026-06-28T19:40:52.605235337Z",
               "persisted": true,
               "run_id": "run-m0-i04-api",
-              "sequence": 17,
+              "sequence": 8,
               "source_scope": "root",
               "type": "CheckpointSaved"
             },
@@ -417,52 +307,37 @@
                 "start"
               ],
               "current_node": "done",
-              "emitted_at": "2026-06-25T04:43:47Z",
+              "emitted_at": "2026-06-28T19:40:52.605484561Z",
               "persisted": true,
               "run_id": "run-m0-i04-api",
-              "sequence": 18,
+              "sequence": 9,
               "source_scope": "root",
               "type": "CheckpointSaved"
             },
             {
-              "artifact_count": 2,
-              "current_node": "done",
-              "duration": 0.001729232957586646,
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "outcome": "success",
-              "run_id": "run-m0-i04-api",
-              "sequence": 19,
-              "source_scope": "root",
-              "status": "completed",
-              "type": "PipelineCompleted"
-            },
-            {
-              "emitted_at": "2026-06-25T04:43:47Z",
+              "emitted_at": "2026-06-28T19:40:52.605686724Z",
               "last_error": null,
               "outcome": "success",
               "outcome_reason_code": null,
               "outcome_reason_message": null,
               "run_id": "run-m0-i04-api",
-              "sequence": 20,
+              "sequence": 10,
               "source_scope": "root",
               "status": "completed",
               "type": "runtime"
             },
             {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "msg": "Pipeline completed (success)",
+              "artifact_count": 2,
+              "current_node": "done",
+              "emitted_at": "2026-06-28T19:40:52.605784811Z",
+              "outcome": "success",
+              "outcome_reason_code": null,
+              "outcome_reason_message": null,
               "run_id": "run-m0-i04-api",
-              "sequence": 21,
+              "sequence": 11,
               "source_scope": "root",
-              "type": "log"
-            },
-            {
-              "emitted_at": "2026-06-25T04:43:47Z",
-              "phase": "FINALIZE",
-              "run_id": "run-m0-i04-api",
-              "sequence": 22,
-              "source_scope": "root",
-              "type": "lifecycle"
+              "status": "completed",
+              "type": "PipelineCompleted"
             }
           ]
         },
@@ -472,14 +347,17 @@
         "run.json": {
           "data": {
             "child_invocation_index": null,
+            "cleanup_error": null,
             "continued_from_flow_mode": null,
             "continued_from_flow_name": null,
             "continued_from_node": null,
             "continued_from_run_id": null,
-            "ended_at": "2026-06-25T04:43:47Z",
+            "ended_at": "2026-06-28T19:40:52.605568016Z",
             "estimated_model_cost": null,
+            "execution_container_image": null,
+            "execution_lock": null,
             "execution_mode": "native",
-            "execution_profile_capabilities": {},
+            "execution_profile_capabilities": [],
             "execution_profile_id": "native",
             "flow_name": "",
             "git_branch": null,
@@ -500,7 +378,7 @@
             "root_run_id": "run-m0-i04-api",
             "run_id": "run-m0-i04-api",
             "spec_id": null,
-            "started_at": "2026-06-25T04:43:47Z",
+            "started_at": "2026-06-28T19:40:52.603968236Z",
             "status": "completed",
             "token_usage": null,
             "token_usage_breakdown": null,
@@ -517,9 +395,9 @@
               "_attractor.node_outcomes": {
                 "start": "success"
               },
-              "_attractor.runtime.context_carryover": "carryover:compact\ngoal=Capture API runtime durability\nrun_id=run-m0-i04-api\n- context.topic=compat\n- current_node=start\n- execution_mode=native\n- execution_profile_capabilities={}\n- execution_profile_id=native\n- graph.default_max_retries=0\n- graph.release=compat\n- outcome=",
+              "_attractor.runtime.execution_container_image": "",
               "_attractor.runtime.execution_mode": "native",
-              "_attractor.runtime.execution_profile_capabilities": {},
+              "_attractor.runtime.execution_profile_capabilities": [],
               "_attractor.runtime.execution_profile_id": "native",
               "_attractor.runtime.execution_profile_selection_source": "implementation_default",
               "_attractor.runtime.fidelity": "compact",
@@ -533,9 +411,13 @@
               "_attractor.runtime.retry.node_id": "",
               "_attractor.runtime.thread_id": "",
               "context.topic": "compat",
+              "context.workflow_outcome": "",
+              "context.workflow_outcome_reason_code": "",
+              "context.workflow_outcome_reason_message": "",
               "current_node": "done",
+              "execution_container_image": "",
               "execution_mode": "native",
-              "execution_profile_capabilities": {},
+              "execution_profile_capabilities": [],
               "execution_profile_id": "native",
               "graph.default_max_retries": 0,
               "graph.goal": "Capture API runtime durability",
@@ -549,7 +431,7 @@
             "current_node": "done",
             "logs": [],
             "retry_counts": {},
-            "timestamp": "2026-06-25T04:43:47.800186+00:00"
+            "timestamp": "2026-06-28T19:40:52.605360144Z"
           },
           "exists": true
         }
@@ -574,14 +456,20 @@
           {
             "kind": "file",
             "path": "artifacts/graphviz/pipeline.dot",
-            "sha256": "5185bfefab68691471c75be55a64cbbbe013f2564968b97fa1b88a873460413e",
-            "size": 163
+            "sha256": "f63c516cb6053cf087399a0be76c86ca86bb437bf80c4420c3cffbca9565888c",
+            "size": 314
+          },
+          {
+            "kind": "file",
+            "path": "checkpoint.json",
+            "sha256": "f40e79bc414d1de811976e21c36c5e526902dc2abdc4890f7b429afe59f99eb9",
+            "size": 1748
           },
           {
             "kind": "file",
             "path": "events.jsonl",
-            "sha256": "dc15864a417f0d2d95b47221ce9be23ce91577815b8035505c721b699d48ca4a",
-            "size": 7218
+            "sha256": "1a87b101a1af0a10b5d05075c5ce31b7a3e132f299dda2c2a9a7fb4b28c40466",
+            "size": 3682
           },
           {
             "kind": "dir",
@@ -594,8 +482,8 @@
           {
             "kind": "file",
             "path": "logs/checkpoint.json",
-            "sha256": "cfd017cf2cf2ca955168d35594020a8495ab652e6f29a13e8253eb5f629da88b",
-            "size": 1852
+            "sha256": "f40e79bc414d1de811976e21c36c5e526902dc2abdc4890f7b429afe59f99eb9",
+            "size": 1748
           },
           {
             "kind": "dir",
@@ -616,14 +504,14 @@
           {
             "kind": "file",
             "path": "logs/done/status.json",
-            "sha256": "03c5d77eff9edb085ad4abbf59f1e1402a2639803fdd9c3ab7023740f1ea44b8",
-            "size": 164
+            "sha256": "4fb10bb125ce88bda0084544dd68316c52bce1658b11e5f3dd2caddcc845ffe5",
+            "size": 165
           },
           {
             "kind": "file",
             "path": "logs/manifest.json",
-            "sha256": "a284cf73e40f6b567842e8811fa704e8c80e88e760ed7f04641e6bda59ef8cb6",
-            "size": 158
+            "sha256": "61ba7b399e09ac1912d99c2886baf6c151a146894e6a0397480deb9e4a8b90de",
+            "size": 157
           },
           {
             "kind": "dir",
@@ -644,8 +532,8 @@
           {
             "kind": "file",
             "path": "logs/start/status.json",
-            "sha256": "03c5d77eff9edb085ad4abbf59f1e1402a2639803fdd9c3ab7023740f1ea44b8",
-            "size": 164
+            "sha256": "4fb10bb125ce88bda0084544dd68316c52bce1658b11e5f3dd2caddcc845ffe5",
+            "size": 165
           },
           {
             "kind": "dir",
@@ -654,7 +542,7 @@
           {
             "kind": "file",
             "path": "result/result.json",
-            "sha256": "036647931a4666e2b044456cef79252da07e8e6e5c4dc62f8150e98e9bfd9f01",
+            "sha256": "1f13ed69cefde5bf73de40e3c50c30c2eeda10120d8d2ffaafad829b2f6ac027",
             "size": 285
           },
           {
@@ -666,20 +554,20 @@
           {
             "kind": "file",
             "path": "run.json",
-            "sha256": "b5cfccef426b7efe84538d57f92dc66b872b25e3b1390449e63fe9cfcc387d16",
-            "size": 1144
+            "sha256": "a06d3b3c3d4c410f2ac8e3c8aa23740eb66c154da2fcf0e5af6589192bdee732",
+            "size": 1253
           },
           {
             "kind": "file",
             "path": "run.log",
-            "sha256": "0428f8f8052ec8fd281fdf53d045852cf9c45fb5be08518734d3be48a0868460",
-            "size": 369
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "size": 0
           },
           {
             "kind": "file",
             "path": "state.json",
-            "sha256": "cfd017cf2cf2ca955168d35594020a8495ab652e6f29a13e8253eb5f629da88b",
-            "size": 1852
+            "sha256": "f40e79bc414d1de811976e21c36c5e526902dc2abdc4890f7b429afe59f99eb9",
+            "size": 1748
           }
         ],
         "root": "__RUN_ROOT__"

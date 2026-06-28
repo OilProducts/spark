@@ -120,7 +120,7 @@ Use hooks and model defaults deliberately:
 
 Spark is distributed through the public command names `spark` and `spark-server`. Packaged installs execute native Rust binaries shipped with the wheel.
 
-In source checkouts, `uv run spark` and `uv run spark-server` are development entry points for the same command surface: they dispatch to packaged Rust payloads when present, otherwise they bootstrap the source-checkout development path for the Rust-owned server and CLI runtime where the rewrite supports it, and keep that path separated from a stable install with `SPARK_HOME=~/.spark-dev` and `SPARK_API_BASE_URL=http://127.0.0.1:8010`. Normal Spark server and CLI unified LLM provider execution remains Rust-owned through the Rust crates and adapters; Python `unified_llm` provider clients are retained for compatibility/oracle/package-data support, not as the normal provider runtime.
+In source checkouts, `uv run spark` and `uv run spark-server` are development entry points for the same command surface: they dispatch to packaged Rust payloads when present, otherwise to built workspace binaries under `target/debug` or `target/release`. If those binaries are unavailable, the launchers fail with `cargo build` instructions instead of entering Python Spark CLI, server, or provider fallback paths. Source-checkout runtime state stays separated from a stable install with `SPARK_HOME=~/.spark-dev` and `SPARK_API_BASE_URL=http://127.0.0.1:8010`. Normal Spark server and CLI unified LLM provider execution remains Rust-owned through the Rust crates and adapters; Python `unified_llm` provider clients are retained for compatibility/oracle/package-data support, not as the normal provider runtime.
 
 - [Cargo.toml](Cargo.toml): Rust workspace manifest for the Spark rewrite
 - [crates/spark-cli/](crates/spark-cli): Rust `spark` command surface for conversations, runs, flows, and triggers
@@ -159,6 +159,13 @@ This installs the Python development environment with `uv sync --dev` and the fr
 
 ```bash
 cargo build --workspace
+```
+
+`uv run spark --help` and `uv run spark-server --help` dispatch to the built workspace binaries from a source checkout. If the binaries are absent, build the specific command first:
+
+```bash
+cargo build -p spark-cli --bin spark
+cargo build -p spark-server --bin spark-server
 ```
 
 Initialize the runtime tree and seed packaged flows:

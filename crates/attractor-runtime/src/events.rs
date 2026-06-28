@@ -697,7 +697,37 @@ fn path_value_if_exists(path: std::path::PathBuf) -> Value {
 }
 
 pub(crate) fn utc_timestamp() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+    format_utc_timestamp(time::OffsetDateTime::now_utc())
+}
+
+fn format_utc_timestamp(value: time::OffsetDateTime) -> String {
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
+        value.year(),
+        u8::from(value.month()),
+        value.day(),
+        value.hour(),
+        value.minute(),
+        value.second(),
+        value.nanosecond(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use time::{Date, Month, PrimitiveDateTime, Time};
+
+    use super::format_utc_timestamp;
+
+    #[test]
+    fn format_utc_timestamp_uses_fixed_nanosecond_width() {
+        let date = Date::from_calendar_date(2026, Month::June, 28).unwrap();
+        let time = Time::from_hms_nano(1, 2, 3, 40_500_000).unwrap();
+        let timestamp = PrimitiveDateTime::new(date, time).assume_utc();
+
+        assert_eq!(
+            format_utc_timestamp(timestamp),
+            "2026-06-28T01:02:03.040500000Z"
+        );
+    }
 }

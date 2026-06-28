@@ -13,13 +13,13 @@
           "value": 1
         },
         "payload": {
-          "emitted_at": "2026-06-22T17:08:22Z",
+          "emitted_at": "2026-06-28T19:40:52.347810352Z",
           "id": "journal-1",
           "kind": "lifecycle",
           "node_id": null,
           "payload": {
-            "emitted_at": "2026-06-22T17:08:22Z",
-            "phase": "PARSE",
+            "emitted_at": "2026-06-28T19:40:52.347810352Z",
+            "phase": "INITIALIZE",
             "run_id": "run-000000000001",
             "sequence": 1,
             "source_scope": "root",
@@ -33,7 +33,7 @@
           "source_parent_node_id": null,
           "source_scope": "root",
           "stage_index": null,
-          "summary": "Lifecycle phase: PARSE"
+          "summary": "Lifecycle phase: INITIALIZE"
         },
         "project_path": null,
         "resource": {
@@ -42,7 +42,7 @@
         },
         "type": "run.journal_entry"
       },
-      "data_text": "{\"type\": \"run.journal_entry\", \"project_path\": null, \"resource\": {\"kind\": \"run\", \"id\": \"run-000000000001\"}, \"cursor\": {\"kind\": \"run_sequence\", \"value\": 1}, \"payload\": {\"id\": \"journal-1\", \"sequence\": 1, \"emitted_at\": \"2026-06-22T17:08:22Z\", \"kind\": \"lifecycle\", \"raw_type\": \"lifecycle\", \"severity\": \"info\", \"summary\": \"Lifecycle phase: PARSE\", \"node_id\": null, \"stage_index\": null, \"source_scope\": \"root\", \"source_parent_node_id\": null, \"source_flow_name\": null, \"question_id\": null, \"payload\": {\"emitted_at\": \"2026-06-22T17:08:22Z\", \"phase\": \"PARSE\", \"run_id\": \"run-000000000001\", \"sequence\": 1, \"source_scope\": \"root\", \"type\": \"lifecycle\"}}}",
+      "data_text": "{\"type\":\"run.journal_entry\",\"project_path\":null,\"resource\":{\"kind\":\"run\",\"id\":\"run-000000000001\"},\"cursor\":{\"kind\":\"run_sequence\",\"value\":1},\"payload\":{\"emitted_at\":\"2026-06-28T19:40:52.347810352Z\",\"id\":\"journal-1\",\"kind\":\"lifecycle\",\"node_id\":null,\"payload\":{\"emitted_at\":\"2026-06-28T19:40:52.347810352Z\",\"phase\":\"INITIALIZE\",\"run_id\":\"run-000000000001\",\"sequence\":1,\"source_scope\":\"root\",\"type\":\"lifecycle\"},\"question_id\":null,\"raw_type\":\"lifecycle\",\"sequence\":1,\"severity\":\"info\",\"source_flow_name\":null,\"source_parent_node_id\":null,\"source_scope\":\"root\",\"stage_index\":null,\"summary\":\"Lifecycle phase: INITIALIZE\"}}",
       "event": "message",
       "kind": "event"
     },
@@ -53,27 +53,31 @@
           "value": 2
         },
         "payload": {
-          "emitted_at": "2026-06-22T17:08:22Z",
+          "emitted_at": "2026-06-28T19:40:52.347851023Z",
           "id": "journal-2",
-          "kind": "lifecycle",
+          "kind": "runtime",
           "node_id": null,
           "payload": {
-            "emitted_at": "2026-06-22T17:08:22Z",
-            "phase": "TRANSFORM",
+            "emitted_at": "2026-06-28T19:40:52.347851023Z",
+            "last_error": null,
+            "outcome": null,
+            "outcome_reason_code": null,
+            "outcome_reason_message": null,
             "run_id": "run-000000000001",
             "sequence": 2,
             "source_scope": "root",
-            "type": "lifecycle"
+            "status": "running",
+            "type": "runtime"
           },
           "question_id": null,
-          "raw_type": "lifecycle",
+          "raw_type": "runtime",
           "sequence": 2,
           "severity": "info",
           "source_flow_name": null,
           "source_parent_node_id": null,
           "source_scope": "root",
           "stage_index": null,
-          "summary": "Lifecycle phase: TRANSFORM"
+          "summary": "Run status: running"
         },
         "project_path": null,
         "resource": {
@@ -82,7 +86,7 @@
         },
         "type": "run.journal_entry"
       },
-      "data_text": "{\"type\": \"run.journal_entry\", \"project_path\": null, \"resource\": {\"kind\": \"run\", \"id\": \"run-000000000001\"}, \"cursor\": {\"kind\": \"run_sequence\", \"value\": 2}, \"payload\": {\"id\": \"journal-2\", \"sequence\": 2, \"emitted_at\": \"2026-06-22T17:08:22Z\", \"kind\": \"lifecycle\", \"raw_type\": \"lifecycle\", \"severity\": \"info\", \"summary\": \"Lifecycle phase: TRANSFORM\", \"node_id\": null, \"stage_index\": null, \"source_scope\": \"root\", \"source_parent_node_id\": null, \"source_flow_name\": null, \"question_id\": null, \"payload\": {\"emitted_at\": \"2026-06-22T17:08:22Z\", \"phase\": \"TRANSFORM\", \"run_id\": \"run-000000000001\", \"sequence\": 2, \"source_scope\": \"root\", \"type\": \"lifecycle\"}}}",
+      "data_text": "{\"type\":\"run.journal_entry\",\"project_path\":null,\"resource\":{\"kind\":\"run\",\"id\":\"run-000000000001\"},\"cursor\":{\"kind\":\"run_sequence\",\"value\":2},\"payload\":{\"emitted_at\":\"2026-06-28T19:40:52.347851023Z\",\"id\":\"journal-2\",\"kind\":\"runtime\",\"node_id\":null,\"payload\":{\"emitted_at\":\"2026-06-28T19:40:52.347851023Z\",\"last_error\":null,\"outcome\":null,\"outcome_reason_code\":null,\"outcome_reason_message\":null,\"run_id\":\"run-000000000001\",\"sequence\":2,\"source_scope\":\"root\",\"status\":\"running\",\"type\":\"runtime\"},\"question_id\":null,\"raw_type\":\"runtime\",\"sequence\":2,\"severity\":\"info\",\"source_flow_name\":null,\"source_parent_node_id\":null,\"source_scope\":\"root\",\"stage_index\":null,\"summary\":\"Run status: running\"}}",
       "event": "message",
       "kind": "event"
     }
@@ -104,7 +108,7 @@
       "--host",
       "127.0.0.1",
       "--port",
-      "45515",
+      "57559",
       "--data-dir",
       "__SPARK_HOME__",
       "--flows-dir",

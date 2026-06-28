@@ -17,7 +17,7 @@
             "chat_mode": "chat",
             "conversation_handle": "",
             "conversation_id": "missing-conversation",
-            "created_at": "2026-06-22T16:50:16Z",
+            "created_at": "2026-06-28T19:40:51Z",
             "event_log": [],
             "flow_launches": [],
             "flow_run_requests": [],
@@ -33,7 +33,7 @@
             "segments": [],
             "title": "New thread",
             "turns": [],
-            "updated_at": "2026-06-22T16:50:16Z"
+            "updated_at": "2026-06-28T19:40:51Z"
           }
         },
         "project_path": "__PROJECT_DIR__",
@@ -43,7 +43,7 @@
         },
         "type": "conversation.snapshot"
       },
-      "data_text": "{\"type\": \"conversation.snapshot\", \"project_path\": \"__PROJECT_DIR__\", \"resource\": {\"kind\": \"conversation\", \"id\": \"missing-conversation\"}, \"cursor\": {\"kind\": \"conversation_revision\", \"value\": 0}, \"payload\": {\"state\": {\"schema_version\": 5, \"revision\": 0, \"conversation_id\": \"missing-conversation\", \"conversation_handle\": \"\", \"project_path\": \"__PROJECT_DIR__\", \"chat_mode\": \"chat\", \"provider\": \"codex\", \"model\": null, \"llm_profile\": null, \"reasoning_effort\": null, \"title\": \"New thread\", \"created_at\": \"2026-06-22T16:50:16Z\", \"updated_at\": \"2026-06-22T16:50:16Z\", \"turns\": [], \"segments\": [], \"event_log\": [], \"flow_run_requests\": [], \"flow_launches\": [], \"run_recoveries\": [], \"proposed_plans\": []}}}",
+      "data_text": "{\"type\":\"conversation.snapshot\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"conversation\",\"id\":\"missing-conversation\"},\"cursor\":{\"kind\":\"conversation_revision\",\"value\":0},\"payload\":{\"state\":{\"chat_mode\":\"chat\",\"conversation_handle\":\"\",\"conversation_id\":\"missing-conversation\",\"created_at\":\"2026-06-28T19:40:51Z\",\"event_log\":[],\"flow_launches\":[],\"flow_run_requests\":[],\"llm_profile\":null,\"model\":null,\"project_path\":\"__PROJECT_DIR__\",\"proposed_plans\":[],\"provider\":\"codex\",\"reasoning_effort\":null,\"revision\":0,\"run_recoveries\":[],\"schema_version\":5,\"segments\":[],\"title\":\"New thread\",\"turns\":[],\"updated_at\":\"2026-06-28T19:40:51Z\"}}}",
       "event": "message",
       "kind": "event"
     }
@@ -65,7 +65,7 @@
       "--host",
       "127.0.0.1",
       "--port",
-      "52949",
+      "36391",
       "--data-dir",
       "__SPARK_HOME__",
       "--flows-dir",

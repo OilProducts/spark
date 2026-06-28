@@ -41,7 +41,7 @@
       "CODEX_HOME": "__CODEX_HOME__",
       "CODEX_MANAGED_BY_NPM": "1",
       "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
-      "CODEX_THREAD_ID": "019ef013-15bd-7d11-a48e-cad8977bd59e",
+      "CODEX_THREAD_ID": "__PROJECT_ID__",
       "SPARK_API_BASE_URL": "__API_BASE_URL__",
       "SPARK_FLOWS_DIR": "__FLOWS_DIR__",
       "SPARK_HOME": "__SPARK_HOME__"
@@ -92,7 +92,7 @@
   },
   "provenance": {
     "capture_tool": "scripts/compat_capture.py",
-    "captured_at_utc": "2026-06-22T16:16:08.208319Z",
+    "captured_at_utc": "__TIMESTAMP__",
     "oracle": "python-worktree",
     "worktree_path": "__WORKTREE__"
   },

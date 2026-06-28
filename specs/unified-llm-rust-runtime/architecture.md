@@ -1,6 +1,6 @@
 # Unified LLM Rust Runtime Architecture
 
-This architecture implements the Unified LLM Client Specification in the Rust rewrite worktree. The product behavior and external contract come from `.spark/spec-implementation/current/spec/source.md`; the extracted requirement ledger is `.spark/spec-implementation/current/spec/requirements.json`.
+This architecture implements the Unified LLM Client Specification in the Rust rewrite worktree. The product behavior and external contract come from the committed runtime source specification at `specs/unified-llm-rust-runtime/source.md`, backed by the upstream committed source specification at `specs/unified-llm-spec-md/source.md`. The extracted requirement ledgers are `specs/unified-llm-rust-runtime/requirements.json` and `specs/unified-llm-spec-md/requirements.json`.
 
 The implementation target is a Rust-owned normal runtime path for Spark server and CLI LLM execution. The existing Python `src/unified_llm` package may remain as an oracle, historical compatibility surface, and package data location, but normal Spark server and CLI execution must not import or delegate provider calls to `src.unified_llm.adapters` or `src.unified_llm.provider_utils`.
 
@@ -245,4 +245,4 @@ Documentation updates in `docs/rust-rewrite-migration.md` must identify Rust-own
 | M4 high-level tools | REQ-017, REQ-018, REQ-019, REQ-020, REQ-021 | Depends on routing, retry, streaming, and provider translation. Implements generate/stream orchestration, cancellation/timeouts, tools, loops, and structured output. |
 | M5 migration validation | REQ-023, REQ-024 | Depends on provider and high-level behavior. Proves cross-provider parity, documents Rust ownership, and records validation evidence. |
 
-Downstream implementation items must bind to the relevant contract decisions in `.spark/spec-implementation/current/spec/contract-decisions.json`. A material spec-versus-architecture conflict must be resolved there before implementation depends on it.
+Downstream implementation items must bind to the relevant committed contract decisions in `specs/unified-llm-rust-runtime/contract-decisions.json`, backed by upstream decisions in `specs/unified-llm-spec-md/contract-decisions.json`. A material spec-versus-architecture conflict must be resolved there before implementation depends on it.

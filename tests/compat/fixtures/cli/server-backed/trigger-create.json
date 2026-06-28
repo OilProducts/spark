@@ -35,7 +35,7 @@
         "exists": true,
         "format": "bytes",
         "path": "__SPARK_HOME__/config/triggers",
-        "size": 60
+        "size": "__SIZE__"
       }
     },
     "before": {
@@ -43,7 +43,7 @@
         "exists": true,
         "format": "bytes",
         "path": "__SPARK_HOME__/config/triggers",
-        "size": 40
+        "size": "__SIZE__"
       }
     }
   },
@@ -55,7 +55,7 @@
       "CODEX_HOME": "__CODEX_HOME__",
       "CODEX_MANAGED_BY_NPM": "1",
       "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
-      "CODEX_THREAD_ID": "019ef013-15bd-7d11-a48e-cad8977bd59e",
+      "CODEX_THREAD_ID": "__PROJECT_ID__",
       "SPARK_API_BASE_URL": "__API_BASE_URL__",
       "SPARK_FLOWS_DIR": "__FLOWS_DIR__",
       "SPARK_HOME": "__SPARK_HOME__"
@@ -92,14 +92,8 @@
           {
             "kind": "file",
             "path": "config/flow-catalog.toml",
-            "sha256": "ed13154bb4710d9378b678d4cd87f019fb2c792f68df428007850384bda4bf91",
-            "size": 277
-          },
-          {
-            "kind": "file",
-            "path": "config/prompts.toml",
-            "sha256": "60202395b18e2bb30a12d19f34a0b35771611cbe06545ba3604f4683a0cbfccc",
-            "size": 135
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
@@ -107,9 +101,9 @@
           },
           {
             "kind": "file",
-            "path": "config/triggers/trigger-a321ddf469ee.toml",
-            "sha256": "00ec4265c6b1a62003f694e965279608bfb4a2069e10840ba0c8961e6dbac582",
-            "size": 487
+            "path": "config/triggers/trigger-__ID__.toml",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
@@ -126,8 +120,8 @@
           {
             "kind": "file",
             "path": "workspace/conversation-handles.json",
-            "sha256": "c1f5de5203f2a655e37f8dacc7ca1c1c608b67f4720387d335aeb1cfaad50cb1",
-            "size": 373
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
@@ -135,57 +129,57 @@
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d"
+            "path": "workspace/projects/__PROJECT_ID__"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/conversations"
+            "path": "workspace/projects/__PROJECT_ID__/conversations"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/conversations/conversation-compat"
+            "path": "workspace/projects/__PROJECT_ID__/conversations/conversation-compat"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/conversations/conversation-compat/state.json",
-            "sha256": "7de7c38e86515f7a3acd612503d3eb06d862b499a02c9bcbd780273b2043d5fc",
-            "size": 651
+            "path": "workspace/projects/__PROJECT_ID__/conversations/conversation-compat/state.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/flow-launches"
+            "path": "workspace/projects/__PROJECT_ID__/flow-launches"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/flow-launches/conversation-compat.json",
-            "sha256": "eecb3a85b855dc09d385199fa6c27c44bfb629c07c9ce0a7654fbdaf6ec57b65",
-            "size": 196
+            "path": "workspace/projects/__PROJECT_ID__/flow-launches/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/flow-run-requests"
+            "path": "workspace/projects/__PROJECT_ID__/flow-run-requests"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/flow-run-requests/conversation-compat.json",
-            "sha256": "14c1fc6bfe086c09c5936e1ced86b2e9c0625ed40c2350032a2c3d6e30df095e",
-            "size": 195
+            "path": "workspace/projects/__PROJECT_ID__/flow-run-requests/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/project.toml",
-            "sha256": "aa91b2a72ddce719f84e84c16bbc91e93cc2cdd8f867c04a4002397b138da51a",
-            "size": 216
+            "path": "workspace/projects/__PROJECT_ID__/project.toml",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/proposed-plans"
+            "path": "workspace/projects/__PROJECT_ID__/proposed-plans"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/proposed-plans/conversation-compat.json",
-            "sha256": "f03860661d14b80aed48be9f52dd7fa3990b9d3d74109bf90fbca354873d4553",
-            "size": 173
+            "path": "workspace/projects/__PROJECT_ID__/proposed-plans/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
@@ -193,9 +187,9 @@
           },
           {
             "kind": "file",
-            "path": "workspace/trigger-state/trigger-a321ddf469ee.json",
-            "sha256": "3f152d4e375ee94492f4480d82f63ae2171783850ae1732e49bda4f9773bce19",
-            "size": 120
+            "path": "workspace/trigger-state/trigger-__ID__.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           }
         ],
         "exists": true,
@@ -220,14 +214,8 @@
           {
             "kind": "file",
             "path": "config/flow-catalog.toml",
-            "sha256": "ed13154bb4710d9378b678d4cd87f019fb2c792f68df428007850384bda4bf91",
-            "size": 277
-          },
-          {
-            "kind": "file",
-            "path": "config/prompts.toml",
-            "sha256": "60202395b18e2bb30a12d19f34a0b35771611cbe06545ba3604f4683a0cbfccc",
-            "size": 135
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
@@ -248,8 +236,8 @@
           {
             "kind": "file",
             "path": "workspace/conversation-handles.json",
-            "sha256": "c1f5de5203f2a655e37f8dacc7ca1c1c608b67f4720387d335aeb1cfaad50cb1",
-            "size": 373
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
@@ -257,57 +245,57 @@
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d"
+            "path": "workspace/projects/__PROJECT_ID__"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/conversations"
+            "path": "workspace/projects/__PROJECT_ID__/conversations"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/conversations/conversation-compat"
+            "path": "workspace/projects/__PROJECT_ID__/conversations/conversation-compat"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/conversations/conversation-compat/state.json",
-            "sha256": "7de7c38e86515f7a3acd612503d3eb06d862b499a02c9bcbd780273b2043d5fc",
-            "size": 651
+            "path": "workspace/projects/__PROJECT_ID__/conversations/conversation-compat/state.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/flow-launches"
+            "path": "workspace/projects/__PROJECT_ID__/flow-launches"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/flow-launches/conversation-compat.json",
-            "sha256": "eecb3a85b855dc09d385199fa6c27c44bfb629c07c9ce0a7654fbdaf6ec57b65",
-            "size": 196
+            "path": "workspace/projects/__PROJECT_ID__/flow-launches/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/flow-run-requests"
+            "path": "workspace/projects/__PROJECT_ID__/flow-run-requests"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/flow-run-requests/conversation-compat.json",
-            "sha256": "14c1fc6bfe086c09c5936e1ced86b2e9c0625ed40c2350032a2c3d6e30df095e",
-            "size": 195
+            "path": "workspace/projects/__PROJECT_ID__/flow-run-requests/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/project.toml",
-            "sha256": "aa91b2a72ddce719f84e84c16bbc91e93cc2cdd8f867c04a4002397b138da51a",
-            "size": 216
+            "path": "workspace/projects/__PROJECT_ID__/project.toml",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           },
           {
             "kind": "dir",
-            "path": "workspace/projects/project-2086e038275d/proposed-plans"
+            "path": "workspace/projects/__PROJECT_ID__/proposed-plans"
           },
           {
             "kind": "file",
-            "path": "workspace/projects/project-2086e038275d/proposed-plans/conversation-compat.json",
-            "sha256": "f03860661d14b80aed48be9f52dd7fa3990b9d3d74109bf90fbca354873d4553",
-            "size": 173
+            "path": "workspace/projects/__PROJECT_ID__/proposed-plans/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
           }
         ],
         "exists": true,
@@ -340,11 +328,11 @@
   "process": {
     "returncode": 0,
     "stderr": "",
-    "stdout": "{\n  \"action\": {\n    \"flow_name\": \"software-development/implement-change-request.dot\",\n    \"project_path\": \"__PROJECT_DIR__\",\n    \"static_context\": {\n      \"origin\": \"compat\"\n    }\n  },\n  \"created_at\": \"2026-06-22T16:16:07Z\",\n  \"enabled\": true,\n  \"id\": \"trigger-a321ddf469ee\",\n  \"name\": \"Compat webhook\",\n  \"protected\": false,\n  \"source\": {\n    \"webhook_key\": \"v-5BslKeyCjZLW8s\"\n  },\n  \"source_type\": \"webhook\",\n  \"state\": {\n    \"last_error\": null,\n    \"last_fired_at\": null,\n    \"last_result\": null,\n    \"next_run_at\": null,\n    \"recent_history\": []\n  },\n  \"updated_at\": \"2026-06-22T16:16:07Z\",\n  \"webhook_secret\": \"b7IBkZnXQOBvtOkNFi5hvND3LYZpNbSH\"\n}\n"
+    "stdout": "{\n  \"action\": {\n    \"flow_name\": \"software-development/implement-change-request.dot\",\n    \"project_path\": \"__PROJECT_DIR__\",\n    \"static_context\": {\n      \"origin\": \"compat\"\n    }\n  },\n  \"created_at\": \"__TIMESTAMP__\",\n  \"enabled\": true,\n  \"id\": \"trigger-__ID__\",\n  \"name\": \"Compat webhook\",\n  \"protected\": false,\n  \"source\": {\n    \"webhook_key\": \"__WEBHOOK_KEY__\"\n  },\n  \"source_type\": \"webhook\",\n  \"state\": {\n    \"last_error\": null,\n    \"last_fired_at\": null,\n    \"last_result\": null,\n    \"next_run_at\": null,\n    \"recent_history\": []\n  },\n  \"updated_at\": \"__TIMESTAMP__\",\n  \"webhook_secret\": \"__WEBHOOK_SECRET__\"\n}\n"
   },
   "provenance": {
     "capture_tool": "scripts/compat_capture.py",
-    "captured_at_utc": "2026-06-22T16:16:07.524723Z",
+    "captured_at_utc": "__TIMESTAMP__",
     "oracle": "python-worktree",
     "worktree_path": "__WORKTREE__"
   },

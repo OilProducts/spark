@@ -44,11 +44,28 @@ RETAINED_PYTHON_ORACLE_TESTS = {
     "tests/compat/providers/test_unified_llm_adapter_fixtures.py",
     "tests/compat/providers/test_unified_llm_runtime_boundary.py",
 }
-COMMITTED_UNIFIED_LLM_MANIFESTS = (
-    REPO_ROOT / "specs" / "unified-llm-rust-runtime" / "requirements.json",
-    REPO_ROOT / "specs" / "unified-llm-rust-runtime" / "contract-decisions.json",
-    REPO_ROOT / "specs" / "unified-llm-spec-md" / "requirements.json",
-    REPO_ROOT / "specs" / "unified-llm-spec-md" / "contract-decisions.json",
+COMMITTED_UNIFIED_LLM_CONTRACT_SOURCE_PATHS = (
+    "specs/unified-llm-rust-runtime/architecture.md",
+    "specs/unified-llm-rust-runtime/source.md",
+    "specs/unified-llm-rust-runtime/requirements.json",
+    "specs/unified-llm-rust-runtime/contract-decisions.json",
+    "specs/unified-llm-spec-md/architecture.md",
+    "specs/unified-llm-spec-md/source.md",
+    "specs/unified-llm-spec-md/requirements.json",
+    "specs/unified-llm-spec-md/contract-decisions.json",
+)
+RUST_RUNTIME_ARCHITECTURE_PATH = (
+    REPO_ROOT / "specs" / "unified-llm-rust-runtime" / "architecture.md"
+)
+RUST_RUNTIME_ARCHITECTURE_CONTRACT_INPUTS = frozenset(
+    {
+        "specs/unified-llm-rust-runtime/source.md",
+        "specs/unified-llm-rust-runtime/requirements.json",
+        "specs/unified-llm-rust-runtime/contract-decisions.json",
+        "specs/unified-llm-spec-md/source.md",
+        "specs/unified-llm-spec-md/requirements.json",
+        "specs/unified-llm-spec-md/contract-decisions.json",
+    }
 )
 PROHIBITED_PROVIDER_CLIENT_REFERENCE = re.compile(
     r"\b(?:src\.)?unified_llm\.(?:adapters|provider_utils)\b"
@@ -228,18 +245,32 @@ def test_assembled_workflow_current_path_references_report_path_and_line() -> No
     ]
 
 
-def test_committed_unified_llm_manifests_do_not_depend_on_workflow_current_aliases() -> None:
-    manifest_strings = [
-        value
-        for manifest_path in COMMITTED_UNIFIED_LLM_MANIFESTS
-        for value in _walk_json_strings(json.loads(manifest_path.read_text(encoding="utf-8")))
+def test_cd_ullm_rust_016_architecture_uses_committed_contract_inputs() -> None:
+    architecture_source = RUST_RUNTIME_ARCHITECTURE_PATH.read_text(encoding="utf-8")
+    documented_code_paths = set(re.findall(r"`([^`]+)`", architecture_source))
+
+    assert RUST_RUNTIME_ARCHITECTURE_CONTRACT_INPUTS <= documented_code_paths
+    assert _workflow_current_reference_violations(
+        str(RUST_RUNTIME_ARCHITECTURE_PATH.relative_to(REPO_ROOT)),
+        architecture_source,
+    ) == []
+
+
+def test_committed_unified_llm_contract_sources_do_not_depend_on_workflow_current_aliases() -> None:
+    tracked_paths = set(_git_ls_files())
+
+    assert set(COMMITTED_UNIFIED_LLM_CONTRACT_SOURCE_PATHS) <= tracked_paths
+
+    violations = [
+        violation
+        for tracked_path in COMMITTED_UNIFIED_LLM_CONTRACT_SOURCE_PATHS
+        for violation in _workflow_current_reference_violations(
+            tracked_path,
+            (REPO_ROOT / tracked_path).read_text(encoding="utf-8"),
+        )
     ]
 
-    assert [
-        value
-        for value in manifest_strings
-        if any(alias in value for alias in WORKFLOW_CURRENT_ALIASES)
-    ] == []
+    assert violations == []
 
 
 def _load_toml(path: Path) -> dict[str, Any]:
@@ -280,17 +311,6 @@ def _contract_decisions() -> dict[str, dict[str, Any]]:
         ).read_text(encoding="utf-8")
     )
     return {decision["id"]: decision for decision in payload["decisions"]}
-
-
-def _walk_json_strings(value: Any) -> Iterable[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, list):
-        for item in value:
-            yield from _walk_json_strings(item)
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _walk_json_strings(item)
 
 
 def _tracked_validation_test_paths() -> list[str]:

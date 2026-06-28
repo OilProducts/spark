@@ -925,7 +925,7 @@ def _normalize_dynamic_value(value: Any, key: str | None = None) -> Any:
         if key in {"wheel", "sdist", "artifact_name", "filename"}:
             return _replace_artifact_text(value)
         return _replace_dynamic_text(value)
-    if key == "size" and isinstance(value, int):
+    if key in {"size", "size_bytes"} and isinstance(value, int):
         return "__SIZE__"
     if key in {"duration", "duration_seconds", "elapsed", "delay"} and isinstance(value, (int, float)):
         return "__DURATION__"

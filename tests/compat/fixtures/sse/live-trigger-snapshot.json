@@ -19,7 +19,7 @@
         },
         "type": "trigger.snapshot"
       },
-      "data_text": "{\"type\": \"trigger.snapshot\", \"project_path\": \"__PROJECT_DIR__\", \"resource\": {\"kind\": \"trigger\", \"id\": null}, \"cursor\": null, \"payload\": {\"triggers\": []}}",
+      "data_text": "{\"type\":\"trigger.snapshot\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":null},\"cursor\":null,\"payload\":{\"triggers\":[]}}",
       "event": "message",
       "kind": "event"
     }
@@ -41,7 +41,7 @@
       "--host",
       "127.0.0.1",
       "--port",
-      "60283",
+      "58633",
       "--data-dir",
       "__SPARK_HOME__",
       "--flows-dir",
