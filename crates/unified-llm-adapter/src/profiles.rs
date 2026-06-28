@@ -12,6 +12,14 @@ use crate::openai_compatible::OpenAICompatibleRequestConfig;
 
 pub const PROFILE_CONFIG_FILE: &str = "llm-profiles.toml";
 const SUPPORTED_PROFILE_PROVIDERS: &[&str] = &["openai_compatible"];
+const SUPPORTED_PROFILE_KEYS: &[&str] = &[
+    "api_key_env",
+    "base_url",
+    "default_model",
+    "label",
+    "models",
+    "provider",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{message}")]
@@ -235,6 +243,8 @@ fn parse_profile(
     profile_id: &str,
     raw: &Table,
 ) -> Result<LlmProfile, LlmProfileConfigurationError> {
+    reject_unknown_profile_keys(profile_id, raw)?;
+
     let provider = require_non_empty_text(
         raw.get("provider"),
         &format!("LLM profile '{profile_id}' provider"),
@@ -286,6 +296,20 @@ fn parse_profile(
         api_key_env: optional_text(raw.get("api_key_env"))?,
         default_model,
     })
+}
+
+fn reject_unknown_profile_keys(
+    profile_id: &str,
+    raw: &Table,
+) -> Result<(), LlmProfileConfigurationError> {
+    for key in raw.keys() {
+        if !SUPPORTED_PROFILE_KEYS.contains(&key.as_str()) {
+            return Err(LlmProfileConfigurationError::new(format!(
+                "LLM profile '{profile_id}' has unsupported key '{key}'; supported keys: api_key_env, base_url, default_model, label, models, provider."
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn optional_text(

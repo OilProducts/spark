@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -187,6 +187,40 @@ impl NativeStreamResponse {
     }
 }
 
+pub type NativeStreamBody = Box<dyn Iterator<Item = Result<Value, AdapterError>> + Send>;
+
+pub struct NativeStreamChunkResponse {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: NativeStreamBody,
+}
+
+impl NativeStreamChunkResponse {
+    pub fn new(status: u16, headers: BTreeMap<String, String>, body: NativeStreamBody) -> Self {
+        Self {
+            status,
+            headers,
+            body,
+        }
+    }
+
+    pub fn buffered(response: NativeStreamResponse) -> Self {
+        Self {
+            status: response.status,
+            headers: response.headers,
+            body: Box::new(response.body.into_iter()),
+        }
+    }
+
+    pub fn into_buffered(self) -> NativeStreamResponse {
+        NativeStreamResponse {
+            status: self.status,
+            headers: self.headers,
+            body: self.body.collect(),
+        }
+    }
+}
+
 pub trait NativeCompleteTransport: Send + Sync {
     fn complete(
         &self,
@@ -202,6 +236,14 @@ pub trait NativeCompleteTransport: Send + Sync {
             ),
             Some(request.provider),
         ))
+    }
+
+    fn stream_chunks(
+        &self,
+        request: NativeCompleteRequest,
+    ) -> Result<NativeStreamChunkResponse, AdapterError> {
+        self.stream(request)
+            .map(NativeStreamChunkResponse::buffered)
     }
 }
 
@@ -305,17 +347,18 @@ impl ProviderAdapter for NativeProviderAdapter {
     fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
         let native_request =
             build_native_stream_request(&self.provider, &request, self.config.clone())?;
-        let native_response = self.transport.stream(native_request)?;
+        let native_response = self.transport.stream_chunks(native_request)?;
         if !(200..=299).contains(&native_response.status) {
             return Err(provider_status_error(
                 &self.provider,
-                native_stream_error_response(native_response),
+                native_stream_chunk_error_response(native_response),
             ));
         }
+        let NativeStreamChunkResponse { headers, body, .. } = native_response;
         Ok(translate_native_stream_response(
             &self.provider,
-            native_response.body,
-            &native_response.headers,
+            body,
+            &headers,
         ))
     }
 
@@ -582,33 +625,25 @@ pub fn translate_native_complete_response_with_headers(
 
 pub fn translate_native_stream_response(
     provider: &str,
-    body: Vec<Result<Value, AdapterError>>,
+    body: NativeStreamBody,
     headers: &BTreeMap<String, String>,
 ) -> StreamEvents {
     let provider = normalize_provider(provider);
-    let body = native_stream_records(body);
-    let mut results = match provider.as_str() {
-        "openai" => translate_openai_stream(body, headers),
-        "anthropic" => translate_anthropic_stream(body, headers),
-        "gemini" => translate_gemini_stream(body, headers),
-        other => vec![Err(configuration_error(
-            other,
-            format!("Unsupported native provider {other:?}"),
-        ))],
-    };
-
-    if results.is_empty() {
-        let response = Response {
+    let headers = headers.clone();
+    match provider.as_str() {
+        "openai" | "anthropic" | "gemini" => Box::new(NativeTranslatedStream::new(
             provider,
-            ..Response::default()
-        };
-        results.push(Ok(StreamEvent {
-            response: Some(response),
-            ..StreamEvent::finish(FinishReason::Other, Some(Usage::default()))
-        }));
+            headers,
+            NativeRecordStream::new(body),
+        )),
+        other => stream_events(
+            vec![Err(configuration_error(
+                other,
+                format!("Unsupported native provider {other:?}"),
+            ))]
+            .into_iter(),
+        ),
     }
-
-    stream_events(results.into_iter())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -678,6 +713,10 @@ impl NativeStreamState {
 
     fn push_iterator_error(&mut self, error: AdapterError) {
         self.events.push(Err(error));
+    }
+
+    fn take_events(&mut self) -> Vec<Result<StreamEvent, AdapterError>> {
+        std::mem::take(&mut self.events)
     }
 
     fn record_usage(&mut self, usage: Usage) {
@@ -1041,7 +1080,7 @@ impl NativeStreamState {
             .flatten()
     }
 
-    fn finish(mut self, raw: Option<Value>) -> Vec<Result<StreamEvent, AdapterError>> {
+    fn finish(&mut self, raw: Option<Value>) -> Vec<Result<StreamEvent, AdapterError>> {
         self.ensure_started(raw.clone(), None);
         self.close_all_text(raw.clone());
         self.close_reasoning(raw.clone());
@@ -1064,7 +1103,7 @@ impl NativeStreamState {
             raw,
             ..StreamEvent::finish(FinishReason::Other, None)
         });
-        self.events
+        self.take_events()
     }
 
     fn current_response(&self, finish_reason: FinishReason) -> Response {
@@ -1111,56 +1150,115 @@ impl NativeStreamState {
     }
 }
 
-fn native_stream_records(
-    body: Vec<Result<Value, AdapterError>>,
-) -> Vec<Result<ProviderStreamRecord, AdapterError>> {
-    let mut parser = SseParser::default();
-    let mut json_buffer = String::new();
-    let mut json_mode = false;
-    let mut records = Vec::new();
+struct NativeRecordStream {
+    body: Option<NativeStreamBody>,
+    parser: SseParser,
+    json_buffer: String,
+    json_mode: bool,
+    pending: VecDeque<Result<ProviderStreamRecord, AdapterError>>,
+    finished: bool,
+}
 
-    for item in body {
+impl NativeRecordStream {
+    fn new(body: NativeStreamBody) -> Self {
+        Self {
+            body: Some(body),
+            parser: SseParser::default(),
+            json_buffer: String::new(),
+            json_mode: false,
+            pending: VecDeque::new(),
+            finished: false,
+        }
+    }
+
+    fn close(&mut self) {
+        self.finished = true;
+        self.pending.clear();
+        self.body = None;
+    }
+
+    fn process_item(&mut self, item: Result<Value, AdapterError>) {
         match item {
             Ok(Value::String(chunk)) => {
-                if json_mode || (!parser.has_pending_input() && looks_like_json_stream(&chunk)) {
-                    records.extend(parser.finish().into_iter().map(Ok));
-                    json_mode = true;
-                    json_buffer.push_str(&chunk);
-                    match parse_json_stream_records(&json_buffer) {
+                if self.json_mode
+                    || (!self.parser.has_pending_input() && looks_like_json_stream(&chunk))
+                {
+                    self.pending
+                        .extend(self.parser.finish().into_iter().map(Ok));
+                    self.json_mode = true;
+                    self.json_buffer.push_str(&chunk);
+                    match parse_json_stream_records(&self.json_buffer) {
                         JsonStreamParse::Complete(parsed) => {
-                            records.extend(parsed.into_iter().map(Ok));
-                            json_buffer.clear();
-                            json_mode = false;
+                            self.pending.extend(parsed.into_iter().map(Ok));
+                            self.json_buffer.clear();
+                            self.json_mode = false;
                         }
                         JsonStreamParse::Incomplete => {}
                         JsonStreamParse::Malformed(error) => {
-                            records.push(Ok(malformed_json_stream_record(
-                                std::mem::take(&mut json_buffer),
+                            self.pending.push_back(Ok(malformed_json_stream_record(
+                                std::mem::take(&mut self.json_buffer),
                                 error.message,
                             )));
-                            json_mode = false;
+                            self.json_mode = false;
                         }
                     }
                 } else {
-                    records.extend(parser.push_str(&chunk).into_iter().map(Ok));
+                    self.pending
+                        .extend(self.parser.push_str(&chunk).into_iter().map(Ok));
                 }
             }
             Ok(payload) => {
-                flush_json_stream_buffer(&mut json_buffer, &mut json_mode, &mut records);
-                records.extend(parser.finish().into_iter().map(Ok));
-                records.push(Ok(ProviderStreamRecord::from_json(payload)));
+                let mut records = Vec::new();
+                flush_json_stream_buffer(&mut self.json_buffer, &mut self.json_mode, &mut records);
+                self.pending.extend(records);
+                self.pending
+                    .extend(self.parser.finish().into_iter().map(Ok));
+                self.pending
+                    .push_back(Ok(ProviderStreamRecord::from_json(payload)));
             }
             Err(error) => {
-                flush_json_stream_buffer(&mut json_buffer, &mut json_mode, &mut records);
-                records.extend(parser.finish().into_iter().map(Ok));
-                records.push(Err(error));
+                let mut records = Vec::new();
+                flush_json_stream_buffer(&mut self.json_buffer, &mut self.json_mode, &mut records);
+                self.pending.extend(records);
+                self.pending
+                    .extend(self.parser.finish().into_iter().map(Ok));
+                self.pending.push_back(Err(error));
             }
         }
     }
 
-    flush_json_stream_buffer(&mut json_buffer, &mut json_mode, &mut records);
-    records.extend(parser.finish().into_iter().map(Ok));
-    records
+    fn finish_input(&mut self) {
+        let mut records = Vec::new();
+        flush_json_stream_buffer(&mut self.json_buffer, &mut self.json_mode, &mut records);
+        self.pending.extend(records);
+        self.pending
+            .extend(self.parser.finish().into_iter().map(Ok));
+        self.finished = true;
+        self.body = None;
+    }
+}
+
+impl Iterator for NativeRecordStream {
+    type Item = Result<ProviderStreamRecord, AdapterError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(item) = self.pending.pop_front() {
+                return Some(item);
+            }
+            if self.finished {
+                return None;
+            }
+            let Some(body) = self.body.as_mut() else {
+                self.finish_input();
+                continue;
+            };
+            match body.next() {
+                Some(item) => self.process_item(item),
+                None => self.finish_input(),
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1275,40 +1373,170 @@ fn stream_record_payload(
     Err(error)
 }
 
-fn translate_openai_stream(
-    body: Vec<Result<ProviderStreamRecord, AdapterError>>,
-    headers: &BTreeMap<String, String>,
-) -> Vec<Result<StreamEvent, AdapterError>> {
-    let mut state = NativeStreamState::new("openai", headers);
-    let mut tool_call_aliases = BTreeMap::new();
+enum NativeProviderStreamTranslator {
+    OpenAi(OpenAiStreamTranslator),
+    Anthropic(AnthropicStreamTranslator),
+    Gemini(GeminiStreamTranslator),
+}
 
-    for item in body {
+impl NativeProviderStreamTranslator {
+    fn new(provider: &str, headers: &BTreeMap<String, String>) -> Result<Self, AdapterError> {
+        match provider {
+            "openai" => Ok(Self::OpenAi(OpenAiStreamTranslator::new(headers))),
+            "anthropic" => Ok(Self::Anthropic(AnthropicStreamTranslator::new(headers))),
+            "gemini" => Ok(Self::Gemini(GeminiStreamTranslator::new(headers))),
+            other => Err(configuration_error(
+                other,
+                format!("Unsupported native provider {other:?}"),
+            )),
+        }
+    }
+
+    fn apply(
+        &mut self,
+        item: Result<ProviderStreamRecord, AdapterError>,
+    ) -> Vec<Result<StreamEvent, AdapterError>> {
+        match self {
+            Self::OpenAi(translator) => translator.apply(item),
+            Self::Anthropic(translator) => translator.apply(item),
+            Self::Gemini(translator) => translator.apply(item),
+        }
+    }
+
+    fn finish(&mut self) -> Vec<Result<StreamEvent, AdapterError>> {
+        match self {
+            Self::OpenAi(translator) => translator.finish_eof(),
+            Self::Anthropic(translator) => translator.finish_eof(),
+            Self::Gemini(translator) => translator.finish_eof(),
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        match self {
+            Self::OpenAi(translator) => translator.finished,
+            Self::Anthropic(translator) => translator.finished,
+            Self::Gemini(translator) => translator.finished,
+        }
+    }
+}
+
+struct NativeTranslatedStream {
+    records: NativeRecordStream,
+    translator: Result<NativeProviderStreamTranslator, AdapterError>,
+    pending: VecDeque<Result<StreamEvent, AdapterError>>,
+    closed: bool,
+}
+
+impl NativeTranslatedStream {
+    fn new(
+        provider: String,
+        headers: BTreeMap<String, String>,
+        records: NativeRecordStream,
+    ) -> Self {
+        Self {
+            records,
+            translator: NativeProviderStreamTranslator::new(&provider, &headers),
+            pending: VecDeque::new(),
+            closed: false,
+        }
+    }
+}
+
+impl Iterator for NativeTranslatedStream {
+    type Item = Result<StreamEvent, AdapterError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(event) = self.pending.pop_front() {
+                return Some(event);
+            }
+            if self.closed {
+                return None;
+            }
+            let translator = match self.translator.as_mut() {
+                Ok(translator) => translator,
+                Err(error) => {
+                    self.closed = true;
+                    return Some(Err(error.clone()));
+                }
+            };
+            if translator.is_finished() {
+                self.closed = true;
+                self.records.close();
+                return None;
+            }
+            match self.records.next() {
+                Some(record) => self.pending.extend(translator.apply(record)),
+                None => {
+                    self.pending.extend(translator.finish());
+                    self.closed = true;
+                    self.records.close();
+                }
+            }
+        }
+    }
+}
+
+impl crate::events::StreamEventStream for NativeTranslatedStream {
+    fn close(&mut self) -> Result<(), AdapterError> {
+        self.closed = true;
+        self.pending.clear();
+        self.records.close();
+        Ok(())
+    }
+}
+
+struct OpenAiStreamTranslator {
+    state: NativeStreamState,
+    tool_call_aliases: BTreeMap<String, String>,
+    finished: bool,
+}
+
+impl OpenAiStreamTranslator {
+    fn new(headers: &BTreeMap<String, String>) -> Self {
+        Self {
+            state: NativeStreamState::new("openai", headers),
+            tool_call_aliases: BTreeMap::new(),
+            finished: false,
+        }
+    }
+
+    fn apply(
+        &mut self,
+        item: Result<ProviderStreamRecord, AdapterError>,
+    ) -> Vec<Result<StreamEvent, AdapterError>> {
+        if self.finished {
+            return Vec::new();
+        }
         let record = match item {
             Ok(record) => record,
             Err(error) => {
-                if state.started {
-                    state.push_iterator_error(error);
-                    return state.events;
+                self.finished = true;
+                if self.state.started {
+                    self.state.push_iterator_error(error);
+                    return self.state.take_events();
                 }
                 return vec![Err(error)];
             }
         };
         if record.done {
-            let raw = stream_raw_payload(&state.raw_payloads);
-            return state.finish(raw);
+            self.finished = true;
+            let raw = stream_raw_payload(&self.state.raw_payloads);
+            return self.state.finish(raw);
         }
         let event_type = record.event.clone().unwrap_or_default();
         let payload = match stream_record_payload("openai", record) {
             Ok(payload) => payload,
             Err(error) => {
-                if state.started {
-                    state.push_iterator_error(error);
-                    return state.events;
+                self.finished = true;
+                if self.state.started {
+                    self.state.push_iterator_error(error);
+                    return self.state.take_events();
                 }
                 return vec![Err(error)];
             }
         };
-        state.raw_payloads.push(payload.clone());
+        self.state.raw_payloads.push(payload.clone());
         let raw = Some(payload.clone());
         let event_type = if event_type.is_empty() {
             value_string(&payload, "type").unwrap_or_default()
@@ -1318,10 +1546,10 @@ fn translate_openai_stream(
 
         if event_type == "response.created" || event_type == "response.in_progress" {
             let response = payload.get("response").cloned().and_then(|value| {
-                translate_openai_responses_response(value, state.rate_limit.clone()).ok()
+                translate_openai_responses_response(value, self.state.rate_limit.clone()).ok()
             });
-            state.ensure_started(raw, response);
-            continue;
+            self.state.ensure_started(raw, response);
+            return self.state.take_events();
         }
 
         if matches!(
@@ -1329,9 +1557,10 @@ fn translate_openai_stream(
             "response.output_text.delta" | "response.text.delta" | "response.refusal.delta"
         ) {
             if let Some(delta) = value_string(&payload, "delta") {
-                state.text_delta(openai_stream_item_id(&payload, "text"), delta, raw);
+                self.state
+                    .text_delta(openai_stream_item_id(&payload, "text"), delta, raw);
             }
-            continue;
+            return self.state.take_events();
         }
 
         if matches!(
@@ -1340,8 +1569,9 @@ fn translate_openai_stream(
         ) {
             let final_text =
                 value_string(&payload, "text").or_else(|| value_string(&payload, "delta"));
-            state.text_end(openai_stream_item_id(&payload, "text"), final_text, raw);
-            continue;
+            self.state
+                .text_end(openai_stream_item_id(&payload, "text"), final_text, raw);
+            return self.state.take_events();
         }
 
         if event_type.contains("reasoning") && event_type.ends_with(".delta") {
@@ -1349,36 +1579,36 @@ fn translate_openai_stream(
                 .or_else(|| value_string(&payload, "text"))
                 .or_else(|| value_string(&payload, "summary"))
             {
-                state.reasoning_delta(delta, raw);
+                self.state.reasoning_delta(delta, raw);
             }
-            continue;
+            return self.state.take_events();
         }
 
         if event_type == "response.output_item.added" {
             if let Some(item) = payload.get("item") {
                 if let Some(tool_call) = openai_stream_tool_call(item) {
                     remember_openai_stream_tool_call_aliases(
-                        &mut tool_call_aliases,
+                        &mut self.tool_call_aliases,
                         &payload,
                         item,
                         &tool_call.id,
                     );
-                    state.tool_call_start(tool_call, raw);
+                    self.state.tool_call_start(tool_call, raw);
                 } else {
-                    state.provider_event(payload);
+                    self.state.provider_event(payload);
                 }
             } else {
-                state.provider_event(payload);
+                self.state.provider_event(payload);
             }
-            continue;
+            return self.state.take_events();
         }
 
         if event_type == "response.function_call_arguments.delta" {
-            let id = openai_stream_tool_call_delta_id(&payload, &tool_call_aliases)
+            let id = openai_stream_tool_call_delta_id(&payload, &self.tool_call_aliases)
                 .unwrap_or_else(|| "function_call".to_string());
             let name = value_string(&payload, "name").unwrap_or_default();
             let delta = value_string(&payload, "delta").unwrap_or_default();
-            state.tool_call_delta(
+            self.state.tool_call_delta(
                 ToolCall {
                     id,
                     name,
@@ -1388,103 +1618,130 @@ fn translate_openai_stream(
                 },
                 raw,
             );
-            continue;
+            return self.state.take_events();
         }
 
         if event_type == "response.output_item.done" {
-            if let Some(item) = payload
+            if let Some((item, mut tool_call)) = payload
                 .get("item")
                 .and_then(|item| openai_stream_tool_call(item).map(|tool_call| (item, tool_call)))
             {
-                let (item, mut tool_call) = item;
                 if let Some(id) =
-                    openai_stream_tool_call_alias_id(&payload, Some(item), &tool_call_aliases)
+                    openai_stream_tool_call_alias_id(&payload, Some(item), &self.tool_call_aliases)
                 {
                     tool_call.id = id;
                 }
                 remember_openai_stream_tool_call_aliases(
-                    &mut tool_call_aliases,
+                    &mut self.tool_call_aliases,
                     &payload,
                     item,
                     &tool_call.id,
                 );
-                state.tool_call_end(Some(tool_call), raw);
+                self.state.tool_call_end(Some(tool_call), raw);
             } else if let Some((text_id, text)) =
                 payload.get("item").and_then(openai_stream_text_item)
             {
-                state.text_end(text_id, text, raw);
+                self.state.text_end(text_id, text, raw);
             } else {
-                state.provider_event(payload);
+                self.state.provider_event(payload);
             }
-            continue;
+            return self.state.take_events();
         }
 
         if event_type == "response.completed" || event_type == "response.done" {
             if let Some(response_payload) = payload.get("response").cloned() {
                 match translate_openai_responses_response(
                     response_payload,
-                    state.rate_limit.clone(),
+                    self.state.rate_limit.clone(),
                 ) {
                     Ok(response) => {
-                        state.finish_reason = Some(response.finish_reason.clone());
-                        state.record_usage(response.usage.clone());
-                        state.last_response = Some(response);
+                        self.state.finish_reason = Some(response.finish_reason.clone());
+                        self.state.record_usage(response.usage.clone());
+                        self.state.last_response = Some(response);
                     }
                     Err(error) => {
-                        state.push_error(error, raw);
-                        return state.events;
+                        self.finished = true;
+                        self.state.push_error(error, raw);
+                        return self.state.take_events();
                     }
                 }
             }
-            return state.finish(raw);
+            self.finished = true;
+            return self.state.finish(raw);
         }
 
         if event_type == "response.failed" || event_type == "error" {
-            state.push_error(provider_payload_error("openai", &payload), raw);
-            return state.events;
+            self.finished = true;
+            self.state
+                .push_error(provider_payload_error("openai", &payload), raw);
+            return self.state.take_events();
         }
 
-        state.provider_event(payload);
+        self.state.provider_event(payload);
+        self.state.take_events()
     }
 
-    let raw = stream_raw_payload(&state.raw_payloads);
-    state.finish(raw)
+    fn finish_eof(&mut self) -> Vec<Result<StreamEvent, AdapterError>> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
+        let raw = stream_raw_payload(&self.state.raw_payloads);
+        self.state.finish(raw)
+    }
 }
 
-fn translate_anthropic_stream(
-    body: Vec<Result<ProviderStreamRecord, AdapterError>>,
-    headers: &BTreeMap<String, String>,
-) -> Vec<Result<StreamEvent, AdapterError>> {
-    let mut state = NativeStreamState::new("anthropic", headers);
-    let mut active_blocks: BTreeMap<String, ActiveStreamBlock> = BTreeMap::new();
+struct AnthropicStreamTranslator {
+    state: NativeStreamState,
+    active_blocks: BTreeMap<String, ActiveStreamBlock>,
+    finished: bool,
+}
 
-    for item in body {
+impl AnthropicStreamTranslator {
+    fn new(headers: &BTreeMap<String, String>) -> Self {
+        Self {
+            state: NativeStreamState::new("anthropic", headers),
+            active_blocks: BTreeMap::new(),
+            finished: false,
+        }
+    }
+
+    fn apply(
+        &mut self,
+        item: Result<ProviderStreamRecord, AdapterError>,
+    ) -> Vec<Result<StreamEvent, AdapterError>> {
+        if self.finished {
+            return Vec::new();
+        }
         let record = match item {
             Ok(record) => record,
             Err(error) => {
-                if state.started {
-                    state.push_iterator_error(error);
-                    return state.events;
+                self.finished = true;
+                if self.state.started {
+                    self.state.push_iterator_error(error);
+                    return self.state.take_events();
                 }
                 return vec![Err(error)];
             }
         };
         if record.done {
-            let raw = stream_raw_payload(&state.raw_payloads);
-            return state.finish(raw);
+            self.finished = true;
+            let raw = stream_raw_payload(&self.state.raw_payloads);
+            return self.state.finish(raw);
         }
         let event_type = record.event.clone().unwrap_or_default();
         let payload = match stream_record_payload("anthropic", record) {
             Ok(payload) => payload,
             Err(error) => {
-                if state.started {
-                    state.push_iterator_error(error);
-                    return state.events;
+                self.finished = true;
+                if self.state.started {
+                    self.state.push_iterator_error(error);
+                    return self.state.take_events();
                 }
                 return vec![Err(error)];
             }
         };
-        state.raw_payloads.push(payload.clone());
+        self.state.raw_payloads.push(payload.clone());
         let raw = Some(payload.clone());
         let event_type = if event_type.is_empty() {
             value_string(&payload, "type").unwrap_or_default()
@@ -1495,14 +1752,14 @@ fn translate_anthropic_stream(
         match event_type.as_str() {
             "message_start" => {
                 let response = payload.get("message").cloned().and_then(|value| {
-                    translate_anthropic_messages_response(value, state.rate_limit.clone()).ok()
+                    translate_anthropic_messages_response(value, self.state.rate_limit.clone()).ok()
                 });
-                state.ensure_started(raw, response);
+                self.state.ensure_started(raw, response);
             }
             "content_block_start" => {
                 let Some(block) = payload.get("content_block") else {
-                    state.provider_event(payload);
-                    continue;
+                    self.state.provider_event(payload);
+                    return self.state.take_events();
                 };
                 let block_index =
                     value_identifier(&payload, "index").unwrap_or_else(|| "0".to_string());
@@ -1510,14 +1767,14 @@ fn translate_anthropic_stream(
                 match block_type.as_str() {
                     "text" => {
                         let text_id = format!("text_{block_index}");
-                        active_blocks.insert(
+                        self.active_blocks.insert(
                             block_index.clone(),
                             ActiveStreamBlock::Text(text_id.clone()),
                         );
                         if let Some(text) = value_string(block, "text") {
-                            state.text_delta(Some(text_id), text, raw);
+                            self.state.text_delta(Some(text_id), text, raw);
                         } else {
-                            state.text_start(Some(text_id), raw);
+                            self.state.text_start(Some(text_id), raw);
                         }
                     }
                     "thinking" | "redacted_thinking" => {
@@ -1525,25 +1782,28 @@ fn translate_anthropic_stream(
                         let metadata = anthropic_stream_thinking_metadata(
                             block,
                             redacted,
-                            state
+                            self.state
                                 .last_response
                                 .as_ref()
                                 .and_then(|response| source_model(&response.model)),
                         );
-                        active_blocks.insert(block_index.clone(), ActiveStreamBlock::Reasoning);
+                        self.active_blocks
+                            .insert(block_index.clone(), ActiveStreamBlock::Reasoning);
                         if let Some(text) = value_string(block, "thinking")
                             .or_else(|| value_string(block, "text"))
                             .or_else(|| value_string(block, "data"))
                         {
-                            state.reasoning_delta_with_metadata(text, Some(metadata), raw);
+                            self.state
+                                .reasoning_delta_with_metadata(text, Some(metadata), raw);
                         } else {
-                            state.reasoning_start_with_metadata(Some(metadata), raw);
+                            self.state
+                                .reasoning_start_with_metadata(Some(metadata), raw);
                         }
                     }
                     "tool_use" => {
                         let id = value_string(block, "id")
                             .unwrap_or_else(|| format!("toolu_{block_index}"));
-                        active_blocks
+                        self.active_blocks
                             .insert(block_index.clone(), ActiveStreamBlock::ToolCall(id.clone()));
                         let name = value_string(block, "name").unwrap_or_default();
                         let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
@@ -1552,7 +1812,7 @@ fn translate_anthropic_stream(
                         } else {
                             json_compact(&input)
                         };
-                        state.tool_call_start(
+                        self.state.tool_call_start(
                             ToolCall {
                                 id,
                                 name,
@@ -1563,44 +1823,46 @@ fn translate_anthropic_stream(
                             raw,
                         );
                     }
-                    _ => state.provider_event(payload),
+                    _ => self.state.provider_event(payload),
                 }
             }
             "content_block_delta" => {
                 let Some(delta) = payload.get("delta") else {
-                    state.provider_event(payload);
-                    continue;
+                    self.state.provider_event(payload);
+                    return self.state.take_events();
                 };
                 let block_index =
                     value_identifier(&payload, "index").unwrap_or_else(|| "0".to_string());
                 match value_string(delta, "type").as_deref() {
                     Some("text_delta") => {
                         if let Some(text) = value_string(delta, "text") {
-                            let text_id = active_blocks
+                            let text_id = self
+                                .active_blocks
                                 .get(&block_index)
                                 .and_then(|block| match block {
                                     ActiveStreamBlock::Text(text_id) => Some(text_id.clone()),
                                     _ => None,
                                 })
                                 .unwrap_or_else(|| format!("text_{block_index}"));
-                            state.text_delta(Some(text_id), text, raw);
+                            self.state.text_delta(Some(text_id), text, raw);
                         }
                     }
                     Some("thinking_delta") => {
                         if let Some(text) = value_string(delta, "thinking") {
-                            state.reasoning_delta(text, raw);
+                            self.state.reasoning_delta(text, raw);
                         }
                     }
                     Some("signature_delta") => {
                         if let Some(signature) = value_string(delta, "signature") {
-                            state.reasoning_delta_with_metadata(
+                            self.state.reasoning_delta_with_metadata(
                                 String::new(),
                                 Some(ThinkingData {
                                     text: String::new(),
                                     signature: Some(signature),
                                     redacted: false,
                                     source_provider: Some("anthropic".to_string()),
-                                    source_model: state
+                                    source_model: self
+                                        .state
                                         .last_response
                                         .as_ref()
                                         .and_then(|response| source_model(&response.model)),
@@ -1611,7 +1873,8 @@ fn translate_anthropic_stream(
                     }
                     Some("input_json_delta") => {
                         let partial = value_string(delta, "partial_json").unwrap_or_default();
-                        let id = active_blocks
+                        let id = self
+                            .active_blocks
                             .get(&block_index)
                             .and_then(|block| match block {
                                 ActiveStreamBlock::ToolCall(tool_call_id) => {
@@ -1620,7 +1883,7 @@ fn translate_anthropic_stream(
                                 _ => None,
                             })
                             .unwrap_or_else(|| format!("toolu_{block_index}"));
-                        state.tool_call_delta(
+                        self.state.tool_call_delta(
                             ToolCall {
                                 id,
                                 name: String::new(),
@@ -1631,117 +1894,151 @@ fn translate_anthropic_stream(
                             raw,
                         );
                     }
-                    _ => state.provider_event(payload),
+                    _ => self.state.provider_event(payload),
                 }
             }
             "content_block_stop" => {
                 let block_index =
                     value_identifier(&payload, "index").unwrap_or_else(|| "0".to_string());
-                match active_blocks.remove(&block_index) {
+                match self.active_blocks.remove(&block_index) {
                     Some(ActiveStreamBlock::Text(text_id)) => {
-                        state.text_end(Some(text_id), None, raw)
+                        self.state.text_end(Some(text_id), None, raw)
                     }
-                    Some(ActiveStreamBlock::Reasoning) => state.close_reasoning(raw),
+                    Some(ActiveStreamBlock::Reasoning) => self.state.close_reasoning(raw),
                     Some(ActiveStreamBlock::ToolCall(tool_call_id)) => {
-                        state.tool_call_end_by_id(tool_call_id, raw)
+                        self.state.tool_call_end_by_id(tool_call_id, raw)
                     }
                     None => {
-                        state.close_all_text(raw.clone());
-                        state.close_reasoning(raw.clone());
-                        state.close_all_tool_calls(raw);
+                        self.state.close_all_text(raw.clone());
+                        self.state.close_reasoning(raw.clone());
+                        self.state.close_all_tool_calls(raw);
                     }
                 }
             }
             "message_delta" => {
                 if let Some(delta) = payload.get("delta") {
                     if let Some(stop_reason) = value_string(delta, "stop_reason") {
-                        let has_tool_calls = !state.accumulator.tool_calls.is_empty()
-                            || !state.active_tool_calls.is_empty();
-                        state.finish_reason =
+                        let has_tool_calls = !self.state.accumulator.tool_calls.is_empty()
+                            || !self.state.active_tool_calls.is_empty();
+                        self.state.finish_reason =
                             Some(anthropic_finish_reason(Some(stop_reason), has_tool_calls));
                     }
                 }
                 if let Some(usage) = payload.get("usage") {
-                    state.record_usage(usage_from_anthropic(Some(usage)));
+                    self.state.record_usage(usage_from_anthropic(Some(usage)));
                 }
             }
-            "message_stop" => return state.finish(raw),
-            "error" => {
-                state.push_error(provider_payload_error("anthropic", &payload), raw);
-                return state.events;
+            "message_stop" => {
+                self.finished = true;
+                return self.state.finish(raw);
             }
-            _ => state.provider_event(payload),
+            "error" => {
+                self.finished = true;
+                self.state
+                    .push_error(provider_payload_error("anthropic", &payload), raw);
+                return self.state.take_events();
+            }
+            _ => self.state.provider_event(payload),
+        }
+        self.state.take_events()
+    }
+
+    fn finish_eof(&mut self) -> Vec<Result<StreamEvent, AdapterError>> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
+        let raw = stream_raw_payload(&self.state.raw_payloads);
+        self.state.finish(raw)
+    }
+}
+
+struct GeminiStreamTranslator {
+    state: NativeStreamState,
+    active_text: String,
+    active_reasoning: String,
+    emitted_tool_calls: BTreeSet<String>,
+    finished: bool,
+}
+
+impl GeminiStreamTranslator {
+    fn new(headers: &BTreeMap<String, String>) -> Self {
+        Self {
+            state: NativeStreamState::new("gemini", headers),
+            active_text: String::new(),
+            active_reasoning: String::new(),
+            emitted_tool_calls: BTreeSet::new(),
+            finished: false,
         }
     }
 
-    let raw = stream_raw_payload(&state.raw_payloads);
-    state.finish(raw)
-}
-
-fn translate_gemini_stream(
-    body: Vec<Result<ProviderStreamRecord, AdapterError>>,
-    headers: &BTreeMap<String, String>,
-) -> Vec<Result<StreamEvent, AdapterError>> {
-    let mut state = NativeStreamState::new("gemini", headers);
-    let mut active_text = String::new();
-    let mut active_reasoning = String::new();
-    let mut emitted_tool_calls = BTreeSet::new();
-
-    for item in body {
+    fn apply(
+        &mut self,
+        item: Result<ProviderStreamRecord, AdapterError>,
+    ) -> Vec<Result<StreamEvent, AdapterError>> {
+        if self.finished {
+            return Vec::new();
+        }
         let record = match item {
             Ok(record) => record,
             Err(error) => {
-                if state.started {
-                    state.push_iterator_error(error);
-                    return state.events;
+                self.finished = true;
+                if self.state.started {
+                    self.state.push_iterator_error(error);
+                    return self.state.take_events();
                 }
                 return vec![Err(error)];
             }
         };
         if record.done {
-            let raw = stream_raw_payload(&state.raw_payloads);
-            return state.finish(raw);
+            self.finished = true;
+            let raw = stream_raw_payload(&self.state.raw_payloads);
+            return self.state.finish(raw);
         }
         let payload = match stream_record_payload("gemini", record) {
             Ok(payload) => payload,
             Err(error) => {
-                if state.started {
-                    state.push_iterator_error(error);
-                    return state.events;
+                self.finished = true;
+                if self.state.started {
+                    self.state.push_iterator_error(error);
+                    return self.state.take_events();
                 }
                 return vec![Err(error)];
             }
         };
         for payload in gemini_stream_payloads(payload) {
-            state.raw_payloads.push(payload.clone());
+            self.state.raw_payloads.push(payload.clone());
             let raw = Some(payload.clone());
 
             if payload.get("error").is_some() {
-                state.push_error(provider_payload_error("gemini", &payload), raw);
-                return state.events;
+                self.finished = true;
+                self.state
+                    .push_error(provider_payload_error("gemini", &payload), raw);
+                return self.state.take_events();
             }
             if !is_gemini_stream_payload(&payload) {
-                state.provider_event(payload);
+                self.state.provider_event(payload);
                 continue;
             }
 
             let response = match translate_gemini_generate_content_response(
                 payload.clone(),
-                state.rate_limit.clone(),
+                self.state.rate_limit.clone(),
             ) {
                 Ok(response) => response,
                 Err(error) => {
-                    state.push_error(error, raw);
-                    return state.events;
+                    self.finished = true;
+                    self.state.push_error(error, raw);
+                    return self.state.take_events();
                 }
             };
-            state.finish_reason = Some(response.finish_reason.clone());
-            state.record_usage(response.usage.clone());
-            state.last_response = Some(Response {
+            self.state.finish_reason = Some(response.finish_reason.clone());
+            self.state.record_usage(response.usage.clone());
+            self.state.last_response = Some(Response {
                 raw: None,
                 ..response.clone()
             });
-            state.ensure_started(
+            self.state.ensure_started(
                 raw.clone(),
                 Some(Response {
                     raw: None,
@@ -1751,50 +2048,54 @@ fn translate_gemini_stream(
 
             let text = response.message.text();
             if !text.is_empty() {
-                let delta = if text == active_text || active_text.starts_with(&text) {
+                let delta = if text == self.active_text || self.active_text.starts_with(&text) {
                     String::new()
-                } else if let Some(suffix) = text.strip_prefix(&active_text) {
+                } else if let Some(suffix) = text.strip_prefix(&self.active_text) {
                     suffix.to_string()
                 } else {
                     text.clone()
                 };
                 if !delta.is_empty() {
-                    state.text_delta(Some("text_0".to_string()), delta, raw.clone());
+                    self.state
+                        .text_delta(Some("text_0".to_string()), delta, raw.clone());
                 }
-                if text.starts_with(&active_text) {
-                    active_text = text;
+                if text.starts_with(&self.active_text) {
+                    self.active_text = text;
                 } else {
-                    active_text.push_str(&response.message.text());
+                    self.active_text.push_str(&response.message.text());
                 }
             }
 
             let reasoning = response.reasoning().unwrap_or_default();
             if !reasoning.is_empty() {
-                let delta =
-                    if reasoning == active_reasoning || active_reasoning.starts_with(&reasoning) {
-                        String::new()
-                    } else if let Some(suffix) = reasoning.strip_prefix(&active_reasoning) {
-                        suffix.to_string()
-                    } else {
-                        reasoning.clone()
-                    };
+                let delta = if reasoning == self.active_reasoning
+                    || self.active_reasoning.starts_with(&reasoning)
+                {
+                    String::new()
+                } else if let Some(suffix) = reasoning.strip_prefix(&self.active_reasoning) {
+                    suffix.to_string()
+                } else {
+                    reasoning.clone()
+                };
                 if !delta.is_empty() {
-                    state.reasoning_delta_with_metadata(
+                    self.state.reasoning_delta_with_metadata(
                         delta,
                         gemini_reasoning_metadata(&response),
                         raw.clone(),
                     );
                 }
-                if reasoning.starts_with(&active_reasoning) {
-                    active_reasoning = reasoning;
+                if reasoning.starts_with(&self.active_reasoning) {
+                    self.active_reasoning = reasoning;
                 } else {
-                    active_reasoning.push_str(&response.reasoning().unwrap_or_default());
+                    self.active_reasoning
+                        .push_str(&response.reasoning().unwrap_or_default());
                 }
             }
 
             let tool_calls = response.tool_calls();
-            if !tool_calls.is_empty() && state.active_texts.contains_key("text_0") {
-                state.text_end(Some("text_0".to_string()), None, raw.clone());
+            if !tool_calls.is_empty() && self.state.active_texts.contains_key("text_0") {
+                self.state
+                    .text_end(Some("text_0".to_string()), None, raw.clone());
             }
 
             for tool_call in tool_calls {
@@ -1804,20 +2105,27 @@ fn translate_gemini_stream(
                     tool_call.name,
                     json_compact(&tool_call.arguments)
                 );
-                if emitted_tool_calls.insert(signature) {
-                    state.tool_call_start(tool_call.clone(), raw.clone());
-                    state.tool_call_end(Some(tool_call), raw.clone());
+                if self.emitted_tool_calls.insert(signature) {
+                    self.state.tool_call_start(tool_call.clone(), raw.clone());
+                    self.state.tool_call_end(Some(tool_call), raw.clone());
                 }
             }
 
             if response_has_provider_content(&response) {
-                state.provider_event(payload);
+                self.state.provider_event(payload);
             }
         }
+        self.state.take_events()
     }
 
-    let raw = stream_raw_payload(&state.raw_payloads);
-    state.finish(raw)
+    fn finish_eof(&mut self) -> Vec<Result<StreamEvent, AdapterError>> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
+        let raw = stream_raw_payload(&self.state.raw_payloads);
+        self.state.finish(raw)
+    }
 }
 
 fn stream_raw_payload(payloads: &[Value]) -> Option<Value> {
@@ -5039,6 +5347,12 @@ fn native_stream_error_response(response: NativeStreamResponse) -> NativeComplet
         headers: response.headers,
         body,
     }
+}
+
+fn native_stream_chunk_error_response(
+    response: NativeStreamChunkResponse,
+) -> NativeCompleteResponse {
+    native_stream_error_response(response.into_buffered())
 }
 
 fn provider_error_details(body: &Value) -> (String, Option<String>) {

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -457,9 +458,13 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
         "model": null,
         "config_dir": null
     });
+    let listener = TcpListener::bind("127.0.0.1:0").expect("unused local listener");
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
     let mut child = Command::new(binary)
         .args(["worker", "run-node"])
         .env("OPENAI_API_KEY", "test-key")
+        .env("OPENAI_BASE_URL", base_url)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -482,9 +487,9 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
     let reason = frame["outcome"]["failure_reason"]
         .as_str()
         .expect("failure reason");
-    assert!(reason.contains("ConfigurationError"));
-    assert!(reason.contains("Rust native adapter"));
-    assert!(reason.contains("no HTTP transport is configured"));
+    assert!(reason.contains("NetworkError"));
+    assert!(reason.contains("Provider 'openai' HTTP network failed"));
+    assert!(!reason.contains("no HTTP transport is configured"));
 }
 
 fn list_dot_files(root: &Path) -> Vec<String> {

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -734,42 +735,49 @@ fn compatible_provider_environment_preserves_headers_and_requires_explicit_model
     assert_eq!(missing_model.kind, AdapterErrorKind::InvalidRequest);
     assert!(missing_model.message.contains("model"));
 
-    let openrouter_missing_transport = client
-        .complete(Request {
-            model: "anthropic/claude-sonnet-4.5".to_string(),
-            messages: vec![Message::user("hello")],
-            ..Request::default()
-        })
-        .unwrap_err();
+    let openrouter_http_error = Client::from_env_map(
+        &BTreeMap::from([
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                "openrouter-key".to_string(),
+            ),
+            ("OPENROUTER_BASE_URL".to_string(), unused_base_url()),
+        ]),
+        None,
+    )
+    .unwrap()
+    .complete(Request {
+        model: "anthropic/claude-sonnet-4.5".to_string(),
+        messages: vec![Message::user("hello")],
+        ..Request::default()
+    })
+    .unwrap_err();
+    assert_eq!(openrouter_http_error.kind, AdapterErrorKind::Network);
     assert_eq!(
-        openrouter_missing_transport.kind,
-        AdapterErrorKind::Configuration
-    );
-    assert_eq!(
-        openrouter_missing_transport.provider.as_deref(),
+        openrouter_http_error.provider.as_deref(),
         Some("openrouter")
     );
-    assert!(openrouter_missing_transport
+    assert!(!openrouter_http_error
         .message
         .contains("no HTTP transport is configured"));
 
-    let litellm_client = Client::from_env_map(&env, Some("litellm")).unwrap();
-    let litellm_missing_transport = litellm_client
-        .complete(Request {
-            model: "team-model".to_string(),
-            messages: vec![Message::user("hello")],
-            ..Request::default()
-        })
-        .unwrap_err();
-    assert_eq!(
-        litellm_missing_transport.kind,
-        AdapterErrorKind::Configuration
-    );
-    assert_eq!(
-        litellm_missing_transport.provider.as_deref(),
-        Some("litellm")
-    );
-    assert!(litellm_missing_transport
+    let litellm_http_error = Client::from_env_map(
+        &BTreeMap::from([
+            ("LITELLM_BASE_URL".to_string(), unused_base_url()),
+            ("LITELLM_API_KEY".to_string(), "litellm-key".to_string()),
+        ]),
+        Some("litellm"),
+    )
+    .unwrap()
+    .complete(Request {
+        model: "team-model".to_string(),
+        messages: vec![Message::user("hello")],
+        ..Request::default()
+    })
+    .unwrap_err();
+    assert_eq!(litellm_http_error.kind, AdapterErrorKind::Network);
+    assert_eq!(litellm_http_error.provider.as_deref(), Some("litellm"));
+    assert!(!litellm_http_error
         .message
         .contains("no HTTP transport is configured"));
 }
@@ -777,10 +785,7 @@ fn compatible_provider_environment_preserves_headers_and_requires_explicit_model
 #[test]
 fn env_configured_compatible_client_uses_real_adapter_boundary_without_placeholder() {
     let client = Client::from_env_map(
-        &BTreeMap::from([(
-            "OPENAI_COMPATIBLE_BASE_URL".to_string(),
-            "https://compatible.example/v1".to_string(),
-        )]),
+        &BTreeMap::from([("OPENAI_COMPATIBLE_BASE_URL".to_string(), unused_base_url())]),
         None,
     )
     .unwrap();
@@ -797,12 +802,19 @@ fn env_configured_compatible_client_uses_real_adapter_boundary_without_placehold
         })
         .unwrap_err();
 
-    assert_eq!(error.kind, AdapterErrorKind::Configuration);
+    assert_eq!(error.kind, AdapterErrorKind::Network);
     assert_eq!(error.provider.as_deref(), Some("openai_compatible"));
-    assert!(error.message.contains("no HTTP transport is configured"));
+    assert!(!error.message.contains("no HTTP transport is configured"));
     assert!(!error
         .message
         .contains("no Rust provider adapter is registered"));
+}
+
+fn unused_base_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("unused local listener");
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    url
 }
 
 struct RecordingTransport {

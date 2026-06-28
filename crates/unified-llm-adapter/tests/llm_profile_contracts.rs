@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::TcpListener;
 
 use serde_json::json;
 use unified_llm_adapter::{
@@ -149,15 +150,18 @@ models = ["no-key"]
 #[test]
 fn client_profile_routes_normalize_to_openai_compatible_provider() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let base_url = unused_base_url();
     std::fs::write(
         temp.path().join("llm-profiles.toml"),
-        r#"
+        format!(
+            r#"
 [profiles.local]
 provider = "openai_compatible"
-base_url = "http://localhost:4000/v1"
+base_url = "{base_url}"
 models = ["local-large"]
 default_model = "local-large"
-"#,
+"#
+        ),
     )
     .expect("write profiles");
     let env = BTreeMap::<String, String>::new();
@@ -181,9 +185,10 @@ default_model = "local-large"
             provider: Some("LOCAL".to_string()),
             ..Request::default()
         })
-        .expect_err("missing transport");
-    assert_eq!(error.kind, AdapterErrorKind::Configuration);
+        .expect_err("local transport should attempt HTTP");
+    assert_eq!(error.kind, AdapterErrorKind::Network);
     assert_eq!(error.provider.as_deref(), Some("openai_compatible"));
+    assert!(!error.message.contains("no HTTP transport is configured"));
 }
 
 #[test]
@@ -278,6 +283,15 @@ models = ["one", "  "]
         "LLM profile 'bad' model is required.",
     );
     assert_profile_error(
+        r#"[profiles.bad]
+provider = "openai_compatible"
+base_url = "http://localhost"
+models = ["one"]
+headers = { "X-Debug" = "true" }
+"#,
+        "LLM profile 'bad' has unsupported key 'headers'; supported keys: api_key_env, base_url, default_model, label, models, provider.",
+    );
+    assert_profile_error(
         r#"[profiles.""]
 provider = "openai_compatible"
 base_url = "http://localhost"
@@ -341,4 +355,11 @@ fn assert_profile_error(config: &str, expected: &str) {
     assert_eq!(adapter_error.kind, AdapterErrorKind::Configuration);
     assert_eq!(adapter_error.message, expected);
     assert!(!adapter_error.retryable);
+}
+
+fn unused_base_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("unused local listener");
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    url
 }

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::env::{ProviderConfig, ProviderEnvironment, PROVIDER_REGISTRATION_ORDER};
 use crate::errors::{AdapterError, AdapterErrorKind};
 use crate::events::StreamEvents;
+use crate::http_transport::NativeHttpTransport;
 use crate::middleware::{run_complete_chain, run_stream_chain, Middleware};
 use crate::native::NativeProviderAdapter;
 use crate::openai_compatible::{LiteLLMAdapter, OpenAICompatibleAdapter, OpenRouterAdapter};
@@ -447,9 +448,10 @@ fn configured_profile_adapter(
     env: &impl LlmProfileEnvironment,
 ) -> Result<Arc<dyn ProviderAdapter>, AdapterError> {
     match profile.provider.as_str() {
-        "openai_compatible" => Ok(Arc::new(OpenAICompatibleAdapter::without_transport(
+        "openai_compatible" => Ok(Arc::new(OpenAICompatibleAdapter::new(
             "openai_compatible",
             profile.openai_compatible_request_config_with_env(env)?,
+            Arc::new(NativeHttpTransport::new()),
         )?)),
         other => Err(configuration_error(format!(
             "LLM profile '{}' has unsupported provider '{other}'",
@@ -460,14 +462,23 @@ fn configured_profile_adapter(
 
 fn configured_adapter(config: &ProviderConfig) -> Result<Arc<dyn ProviderAdapter>, AdapterError> {
     match config.provider.as_str() {
-        "openai" | "anthropic" | "gemini" => Ok(Arc::new(
-            NativeProviderAdapter::without_transport(config.provider.as_str(), config)?,
-        )),
-        "openrouter" => Ok(Arc::new(OpenRouterAdapter::without_transport(config)?)),
-        "litellm" => Ok(Arc::new(LiteLLMAdapter::without_transport(config)?)),
-        "openai_compatible" => Ok(Arc::new(OpenAICompatibleAdapter::without_transport(
+        "openai" | "anthropic" | "gemini" => Ok(Arc::new(NativeProviderAdapter::new(
+            config.provider.as_str(),
+            config,
+            Arc::new(NativeHttpTransport::new()),
+        )?)),
+        "openrouter" => Ok(Arc::new(OpenRouterAdapter::new(
+            config,
+            Arc::new(NativeHttpTransport::new()),
+        )?)),
+        "litellm" => Ok(Arc::new(LiteLLMAdapter::new(
+            config,
+            Arc::new(NativeHttpTransport::new()),
+        )?)),
+        "openai_compatible" => Ok(Arc::new(OpenAICompatibleAdapter::new(
             "openai_compatible",
             config,
+            Arc::new(NativeHttpTransport::new()),
         )?)),
         _ => Ok(Arc::new(ConfiguredProviderAdapter::new(config.clone()))),
     }

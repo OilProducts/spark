@@ -2116,12 +2116,14 @@ dependencies = [
  "base64",
  "futures-core",
  "jsonschema",
+ "reqwest",
  "serde",
  "serde_json",
  "spark-assets",
  "tempfile",
  "thiserror 1.0.69",
  "time",
+ "tokio",
  "toml",
 ]
 

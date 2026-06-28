@@ -341,6 +341,10 @@ fn resolve_error_details(
 }
 
 pub fn extract_error_details_from_raw(raw: &Value) -> (Option<String>, Option<String>) {
+    if let Value::String(message) = raw {
+        return (non_empty(message).map(str::to_string), None);
+    }
+
     if let Some(error) = raw.get("error") {
         match error {
             Value::Object(error) => {

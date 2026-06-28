@@ -3,9 +3,9 @@
 //! Rust-owned Unified LLM adapter contracts for Spark runtime migration.
 //!
 //! This crate intentionally exposes DTOs, normalization helpers, native
-//! provider adapter boundaries, and deterministic adapter policy. Production
-//! live transports and packaged provider resources remain owned by later
-//! milestones.
+//! provider adapter boundaries, deterministic adapter policy, and the HTTP
+//! transport used to execute prepared provider requests and streams. Packaged
+//! provider resources remain owned by later milestones.
 
 pub mod catalog;
 pub mod client;
@@ -14,6 +14,7 @@ pub mod env;
 pub mod errors;
 pub mod events;
 pub mod generation;
+pub mod http_transport;
 pub mod middleware;
 pub mod native;
 pub mod openai_compatible;
@@ -46,10 +47,11 @@ pub use generation::{
     stream_with_policy_and_hooks, GenerateRequest, GenerateResult, GenerateStep, StepResult,
     StopWhen, StreamResult, TextStream,
 };
+pub use http_transport::NativeHttpTransport;
 pub use middleware::{CompleteNext, Middleware, StreamNext};
 pub use native::{
     NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport, NativeProviderAdapter,
-    NativeRequestConfig, NativeStreamResponse,
+    NativeRequestConfig, NativeStreamBody, NativeStreamChunkResponse, NativeStreamResponse,
 };
 pub use openai_compatible::{
     build_openai_compatible_chat_request, build_openai_compatible_chat_stream_request,

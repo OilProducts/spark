@@ -3,14 +3,19 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use attractor_core::{ContextMap, FailureKind, Outcome, OutcomeStatus};
-use attractor_dsl::{parse_dot, AttributeDefaultsTransform, GraphTransform};
+use attractor_dsl::{
+    parse_dot, AttributeDefaultsTransform, GraphTransform, ModelStylesheetTransform,
+};
 use serde_json::json;
 use spark_agent_adapter::{
     build_status_envelope_prompt_appendix, CodergenBackend, CodergenBackendOutput,
     CodergenBackendRequest, CodergenError, CodergenHandler, CodergenRequest,
 };
 use tempfile::tempdir;
-use unified_llm_adapter::{RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_REASONING_EFFORT_KEY};
+use unified_llm_adapter::{
+    RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
+    RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+};
 
 #[derive(Clone)]
 struct ScriptedBackend {
@@ -347,4 +352,52 @@ fn codergen_resolves_model_provider_profile_and_reasoning() {
     );
     assert_eq!(execution.outcome.status, OutcomeStatus::Retry);
     assert_eq!(execution.outcome.suggested_next_ids, vec!["fallback_stage"]);
+}
+
+#[test]
+fn codergen_treats_stylesheet_llm_selection_as_node_precedence_before_launch_and_fallback() {
+    let mut graph = parse_dot(
+        r#"
+        digraph G {
+          graph [model_stylesheet="box { llm_model: styled-model; llm_provider: OpenAI_Compatible; llm_profile: styled-profile; reasoning_effort: low; }"];
+          task [shape=box, prompt="Plan"];
+        }
+        "#,
+    )
+    .expect("dot parses");
+    AttributeDefaultsTransform::default().apply(&mut graph);
+    ModelStylesheetTransform.apply(&mut graph);
+
+    let backend = ScriptedBackend::new([CodergenBackendOutput::text("ok")]);
+    let calls = backend.calls.clone();
+    CodergenHandler::with_backend(backend)
+        .execute(CodergenRequest {
+            node_id: "task".to_string(),
+            node: graph.nodes["task"].clone(),
+            graph,
+            context: ContextMap::from([
+                (RUNTIME_LAUNCH_MODEL_KEY.to_string(), json!("launch-model")),
+                (RUNTIME_LAUNCH_PROVIDER_KEY.to_string(), json!("Anthropic")),
+                (
+                    RUNTIME_LAUNCH_PROFILE_KEY.to_string(),
+                    json!("launch-profile"),
+                ),
+                (
+                    RUNTIME_LAUNCH_REASONING_EFFORT_KEY.to_string(),
+                    json!("HIGH"),
+                ),
+            ]),
+            logs_root: None,
+            fallback_model: Some("fallback-model".to_string()),
+            fallback_provider: Some("OpenAI".to_string()),
+            fallback_profile: Some("fallback-profile".to_string()),
+            fallback_reasoning_effort: Some("medium".to_string()),
+        })
+        .unwrap();
+
+    let call = &calls.borrow()[0];
+    assert_eq!(call.model.as_deref(), Some("styled-model"));
+    assert_eq!(call.provider, "openai_compatible");
+    assert_eq!(call.llm_profile.as_deref(), Some("styled-profile"));
+    assert_eq!(call.reasoning_effort.as_deref(), Some("low"));
 }

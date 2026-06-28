@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
@@ -119,8 +120,14 @@ fn client_complete_and_stream_execute_through_registered_rust_adapter() {
 }
 
 #[test]
-fn env_configured_native_client_defers_http_transport_without_python_fallback() {
-    let env = BTreeMap::from([("OPENAI_API_KEY".to_string(), "test-key".to_string())]);
+fn env_configured_native_client_uses_http_transport_without_python_fallback() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("unused local listener");
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let env = BTreeMap::from([
+        ("OPENAI_API_KEY".to_string(), "test-key".to_string()),
+        ("OPENAI_BASE_URL".to_string(), base_url),
+    ]);
     let client = Client::from_env_map(&env, None).unwrap();
     assert_eq!(client.provider_names().collect::<Vec<_>>(), vec!["openai"]);
     assert_eq!(client.default_provider(), Some("openai"));
@@ -133,9 +140,9 @@ fn env_configured_native_client_defers_http_transport_without_python_fallback() 
         })
         .unwrap_err();
 
-    assert_eq!(error.kind, AdapterErrorKind::Configuration);
+    assert_eq!(error.kind, AdapterErrorKind::Network);
     assert_eq!(error.provider.as_deref(), Some("openai"));
-    assert!(error.message.contains("no HTTP transport is configured"));
+    assert!(!error.message.contains("no HTTP transport is configured"));
 }
 
 struct RuntimeBoundaryAdapter {

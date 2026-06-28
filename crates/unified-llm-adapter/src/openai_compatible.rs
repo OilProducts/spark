@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use base64::Engine as _;
@@ -12,11 +12,11 @@ use crate::errors::{
     AdapterErrorKind,
 };
 use crate::events::{
-    merge_stream_usage, stream_events, StreamAccumulator, StreamEvent, StreamEventType,
-    StreamEvents,
+    merge_stream_usage, StreamAccumulator, StreamEvent, StreamEventType, StreamEvents,
 };
 use crate::native::{
-    NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport, NativeStreamResponse,
+    NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport, NativeStreamBody,
+    NativeStreamChunkResponse, NativeStreamResponse,
 };
 use crate::provider_utils::{ProviderStreamRecord, SseParser};
 use crate::request::{
@@ -206,17 +206,18 @@ impl ProviderAdapter for OpenAICompatibleAdapter {
     fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
         let prepared =
             prepare_chat_completions_request(&self.provider, &request, self.config.clone(), true)?;
-        let native_response = self.transport.stream(prepared.request)?;
+        let native_response = self.transport.stream_chunks(prepared.request)?;
         if !(200..=299).contains(&native_response.status) {
             return Err(provider_status_error(
                 &self.provider,
-                native_stream_error_response(native_response),
+                native_stream_chunk_error_response(native_response),
             ));
         }
+        let NativeStreamChunkResponse { headers, body, .. } = native_response;
         Ok(translate_chat_completions_stream_response_with_warnings(
             &self.provider,
-            native_response.body,
-            &native_response.headers,
+            body,
+            &headers,
             prepared.warnings,
         ))
     }
@@ -415,7 +416,12 @@ pub fn translate_chat_completions_stream_response(
     body: Vec<Result<Value, AdapterError>>,
     headers: &BTreeMap<String, String>,
 ) -> StreamEvents {
-    translate_chat_completions_stream_response_with_warnings(provider, body, headers, Vec::new())
+    translate_chat_completions_stream_response_with_warnings(
+        provider,
+        Box::new(body.into_iter()),
+        headers,
+        Vec::new(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1029,15 +1035,15 @@ fn chat_response_tool_call(provider: &str, value: &Value) -> Result<ToolCall, Ad
 
 fn translate_chat_completions_stream_response_with_warnings(
     provider: &str,
-    body: Vec<Result<Value, AdapterError>>,
+    body: NativeStreamBody,
     headers: &BTreeMap<String, String>,
     warnings: Vec<Warning>,
 ) -> StreamEvents {
     let provider = normalize_provider(provider);
-    let body = compatible_stream_records(body);
-    let state = ChatStreamState::new(provider, headers, warnings);
-    let events = state.translate(body);
-    stream_events(events.into_iter())
+    Box::new(CompatibleTranslatedStream::new(
+        CompatibleRecordStream::new(body),
+        ChatStreamState::new(provider, headers, warnings),
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -1058,6 +1064,7 @@ struct ChatStreamState {
     model: String,
     finish_reason: Option<FinishReason>,
     usage: Option<Usage>,
+    finished: bool,
 }
 
 impl ChatStreamState {
@@ -1079,61 +1086,66 @@ impl ChatStreamState {
             model: String::new(),
             finish_reason: None,
             usage: None,
+            finished: false,
         }
     }
 
-    fn translate(
-        mut self,
-        records: Vec<Result<ProviderStreamRecord, AdapterError>>,
+    fn apply_record(
+        &mut self,
+        item: Result<ProviderStreamRecord, AdapterError>,
     ) -> Vec<Result<StreamEvent, AdapterError>> {
-        for item in records {
-            let record = match item {
-                Ok(record) => record,
-                Err(error) => {
-                    if self.started {
-                        self.events.push(Err(error));
-                        return self.events;
-                    }
-                    return vec![Err(error)];
-                }
-            };
-            if record.done {
-                return self.finish();
-            }
-            let payload = match stream_record_payload(&self.provider, record) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    if self.started {
-                        self.events.push(Err(error));
-                        return self.events;
-                    }
-                    return vec![Err(error)];
-                }
-            };
-            self.raw_payloads.push(payload.clone());
-            if payload.get("error").is_some() {
-                self.push_error(
-                    provider_payload_error(&self.provider, &payload),
-                    Some(payload),
-                );
-                return self.events;
-            }
-            if is_responses_stream_event(&payload) {
-                let event_type = value_string(&payload, "type")
-                    .or_else(|| value_string(&payload, "event"))
-                    .unwrap_or_else(|| "response event".to_string());
-                self.warnings.push(unsupported_warning(
-                    "unsupported_responses_stream_event",
-                    format!(
-                        "OpenAI-compatible Chat Completions received unsupported Responses stream event {event_type}",
-                    ),
-                ));
-                self.provider_event(payload);
-                continue;
-            }
-            self.apply_chat_stream_payload(payload);
+        if self.finished {
+            return Vec::new();
         }
-        self.finish()
+        let record = match item {
+            Ok(record) => record,
+            Err(error) => {
+                self.finished = true;
+                if self.started {
+                    self.events.push(Err(error));
+                    return self.take_events();
+                }
+                return vec![Err(error)];
+            }
+        };
+        if record.done {
+            return self.finish();
+        }
+        let payload = match stream_record_payload(&self.provider, record) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.finished = true;
+                if self.started {
+                    self.events.push(Err(error));
+                    return self.take_events();
+                }
+                return vec![Err(error)];
+            }
+        };
+        self.raw_payloads.push(payload.clone());
+        if payload.get("error").is_some() {
+            self.finished = true;
+            self.push_error(
+                provider_payload_error(&self.provider, &payload),
+                Some(payload),
+            );
+            return self.take_events();
+        }
+        if is_responses_stream_event(&payload) {
+            let event_type = value_string(&payload, "type")
+                .or_else(|| value_string(&payload, "event"))
+                .unwrap_or_else(|| "response event".to_string());
+            self.warnings.push(unsupported_warning(
+                "unsupported_responses_stream_event",
+                format!(
+                    "OpenAI-compatible Chat Completions received unsupported Responses stream event {event_type}",
+                ),
+            ));
+            self.provider_event(payload);
+            return self.take_events();
+        }
+        self.apply_chat_stream_payload(payload);
+        self.take_events()
     }
 
     fn apply_chat_stream_payload(&mut self, payload: Value) {
@@ -1191,6 +1203,10 @@ impl ChatStreamState {
     fn push(&mut self, event: StreamEvent) {
         self.accumulator.push(event.clone());
         self.events.push(Ok(event));
+    }
+
+    fn take_events(&mut self) -> Vec<Result<StreamEvent, AdapterError>> {
+        std::mem::take(&mut self.events)
     }
 
     fn ensure_started(&mut self, raw: Option<Value>) {
@@ -1367,7 +1383,11 @@ impl ChatStreamState {
         });
     }
 
-    fn finish(mut self) -> Vec<Result<StreamEvent, AdapterError>> {
+    fn finish(&mut self) -> Vec<Result<StreamEvent, AdapterError>> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
         let raw = self.raw_payloads.last().cloned();
         self.ensure_started(raw.clone());
         self.text_end(raw.clone());
@@ -1389,7 +1409,7 @@ impl ChatStreamState {
             raw,
             ..StreamEvent::finish(FinishReason::Other, None)
         });
-        self.events
+        self.take_events()
     }
 
     fn current_response(&mut self, finish_reason: FinishReason) -> Response {
@@ -1427,26 +1447,132 @@ impl ChatStreamState {
     }
 }
 
-fn compatible_stream_records(
-    body: Vec<Result<Value, AdapterError>>,
-) -> Vec<Result<ProviderStreamRecord, AdapterError>> {
-    let mut parser = SseParser::default();
-    let mut records = Vec::new();
-    for item in body {
+struct CompatibleRecordStream {
+    body: Option<NativeStreamBody>,
+    parser: SseParser,
+    pending: VecDeque<Result<ProviderStreamRecord, AdapterError>>,
+    finished: bool,
+}
+
+impl CompatibleRecordStream {
+    fn new(body: NativeStreamBody) -> Self {
+        Self {
+            body: Some(body),
+            parser: SseParser::default(),
+            pending: VecDeque::new(),
+            finished: false,
+        }
+    }
+
+    fn close(&mut self) {
+        self.finished = true;
+        self.pending.clear();
+        self.body = None;
+    }
+
+    fn process_item(&mut self, item: Result<Value, AdapterError>) {
         match item {
-            Ok(Value::String(chunk)) => records.extend(parser.push_str(&chunk).into_iter().map(Ok)),
+            Ok(Value::String(chunk)) => self
+                .pending
+                .extend(self.parser.push_str(&chunk).into_iter().map(Ok)),
             Ok(payload) => {
-                records.extend(parser.finish().into_iter().map(Ok));
-                records.push(Ok(ProviderStreamRecord::from_json(payload)));
+                self.pending
+                    .extend(self.parser.finish().into_iter().map(Ok));
+                self.pending
+                    .push_back(Ok(ProviderStreamRecord::from_json(payload)));
             }
             Err(error) => {
-                records.extend(parser.finish().into_iter().map(Ok));
-                records.push(Err(error));
+                self.pending
+                    .extend(self.parser.finish().into_iter().map(Ok));
+                self.pending.push_back(Err(error));
             }
         }
     }
-    records.extend(parser.finish().into_iter().map(Ok));
-    records
+
+    fn finish_input(&mut self) {
+        self.pending
+            .extend(self.parser.finish().into_iter().map(Ok));
+        self.finished = true;
+        self.body = None;
+    }
+}
+
+impl Iterator for CompatibleRecordStream {
+    type Item = Result<ProviderStreamRecord, AdapterError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(item) = self.pending.pop_front() {
+                return Some(item);
+            }
+            if self.finished {
+                return None;
+            }
+            let Some(body) = self.body.as_mut() else {
+                self.finish_input();
+                continue;
+            };
+            match body.next() {
+                Some(item) => self.process_item(item),
+                None => self.finish_input(),
+            }
+        }
+    }
+}
+
+struct CompatibleTranslatedStream {
+    records: CompatibleRecordStream,
+    state: ChatStreamState,
+    pending: VecDeque<Result<StreamEvent, AdapterError>>,
+    closed: bool,
+}
+
+impl CompatibleTranslatedStream {
+    fn new(records: CompatibleRecordStream, state: ChatStreamState) -> Self {
+        Self {
+            records,
+            state,
+            pending: VecDeque::new(),
+            closed: false,
+        }
+    }
+}
+
+impl Iterator for CompatibleTranslatedStream {
+    type Item = Result<StreamEvent, AdapterError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(event) = self.pending.pop_front() {
+                return Some(event);
+            }
+            if self.closed {
+                return None;
+            }
+            if self.state.finished {
+                self.closed = true;
+                self.records.close();
+                return None;
+            }
+            match self.records.next() {
+                Some(record) => self.pending.extend(self.state.apply_record(record)),
+                None => {
+                    self.pending.extend(self.state.finish());
+                    self.closed = true;
+                    self.records.close();
+                }
+            }
+        }
+    }
+}
+
+impl crate::events::StreamEventStream for CompatibleTranslatedStream {
+    fn close(&mut self) -> Result<(), AdapterError> {
+        self.closed = true;
+        self.pending.clear();
+        self.records.close();
+        Ok(())
+    }
 }
 
 fn stream_record_payload(
@@ -1906,6 +2032,12 @@ fn native_stream_error_response(response: NativeStreamResponse) -> NativeComplet
         headers: response.headers,
         body,
     }
+}
+
+fn native_stream_chunk_error_response(
+    response: NativeStreamChunkResponse,
+) -> NativeCompleteResponse {
+    native_stream_error_response(response.into_buffered())
 }
 
 fn provider_error_details(body: &Value) -> (String, Option<String>) {
