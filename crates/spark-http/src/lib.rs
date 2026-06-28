@@ -27,9 +27,30 @@ use tokio_util::sync::CancellationToken;
 mod workspace;
 
 pub fn build_app(settings: SparkSettings) -> Router {
+    build_app_with_runtime_handler_runner_factory(
+        settings,
+        attractor_api::default_runtime_handler_runner_factory(),
+    )
+}
+
+pub fn build_app_with_rust_llm_client(
+    settings: SparkSettings,
+    client: unified_llm_adapter::Client,
+) -> Router {
+    build_app_with_runtime_handler_runner_factory(
+        settings,
+        attractor_api::rust_llm_runtime_handler_runner_factory(client),
+    )
+}
+
+pub fn build_app_with_runtime_handler_runner_factory(
+    settings: SparkSettings,
+    runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
+) -> Router {
     let state = HttpAppState {
         settings: Arc::new(settings),
         live_hub: Arc::new(WorkspaceLiveHub::new()),
+        runtime_handler_runner_factory,
         trigger_source_loop: None,
     };
     let state = state.with_trigger_source_loop();
@@ -52,6 +73,7 @@ pub fn build_app(settings: SparkSettings) -> Router {
 pub(crate) struct HttpAppState {
     settings: Arc<SparkSettings>,
     live_hub: Arc<WorkspaceLiveHub>,
+    runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
     #[allow(dead_code)]
     trigger_source_loop: Option<Arc<TriggerSourceLoop>>,
 }
@@ -65,6 +87,12 @@ impl FromRef<HttpAppState> for Arc<SparkSettings> {
 impl FromRef<HttpAppState> for Arc<WorkspaceLiveHub> {
     fn from_ref(input: &HttpAppState) -> Self {
         input.live_hub.clone()
+    }
+}
+
+impl FromRef<HttpAppState> for attractor_api::RuntimeHandlerRunnerFactory {
+    fn from_ref(input: &HttpAppState) -> Self {
+        input.runtime_handler_runner_factory.clone()
     }
 }
 
@@ -259,8 +287,13 @@ async fn attractor_dispatch(
         .as_deref()
         .and_then(|run_id| latest_run_sequence(&settings, run_id).ok().flatten());
     let body = String::from_utf8_lossy(&body);
-    let response =
-        attractor_api::handle_attractor_request(method.as_str(), path, &body, (*settings).clone());
+    let response = attractor_api::handle_attractor_request_with_runtime_handler_runner_factory(
+        method.as_str(),
+        path,
+        &body,
+        (*settings).clone(),
+        state.runtime_handler_runner_factory.clone(),
+    );
     if is_mutating_method(&method) && response.status_code < 400 {
         publish_attractor_live_updates(
             &settings,

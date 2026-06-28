@@ -17,6 +17,13 @@ pub const ALLOWED_CONTEXT_PREFIXES: &[&str] = &[
     "_attractor.",
 ];
 
+const ALLOWED_LAUNCH_CONTEXT_KEYS: &[&str] = &[
+    "_attractor.runtime.launch_model",
+    "_attractor.runtime.launch_provider",
+    "_attractor.runtime.launch_profile",
+    "_attractor.runtime.launch_reasoning_effort",
+];
+
 /// JSON-compatible context value.
 pub type ContextValue = Value;
 
@@ -178,7 +185,7 @@ pub fn validate_context_key(key: &str) -> Result<()> {
 pub fn validate_launch_context(values: &ContextMap) -> Result<ContextMap> {
     let mut normalized = ContextMap::new();
     for (key, value) in values {
-        if !key.starts_with("context.") {
+        if !key.starts_with("context.") && !ALLOWED_LAUNCH_CONTEXT_KEYS.contains(&key.as_str()) {
             return Err(AttractorCoreError::InvalidLaunchContextKey {
                 key: key.clone(),
                 reason: "launch_context key must use the context.* namespace".to_string(),

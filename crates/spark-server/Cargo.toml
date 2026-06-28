@@ -22,6 +22,7 @@ spark-http = { path = "../spark-http" }
 spark-storage = { path = "../spark-storage" }
 tokio = { version = "1", features = ["rt-multi-thread", "net"] }
 tracing = "0.1"
+unified-llm-adapter = { path = "../unified-llm-adapter" }
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 use unified_llm_adapter::{
-    get_llm_profile, load_llm_profiles, public_llm_profiles, public_llm_profiles_with_env,
+    build_openai_compatible_chat_request, get_llm_profile, load_llm_profiles, public_llm_profiles,
+    public_llm_profiles_with_env, AdapterErrorKind, Client, Message, Request,
 };
 
 #[test]
@@ -67,6 +68,157 @@ models = ["no-key"]
     let profiles = public_llm_profiles_with_env(temp.path(), &empty_env).unwrap();
     assert_eq!(profiles[0]["configured"], json!(false));
     assert_eq!(profiles[1]["configured"], json!(true));
+
+    let whitespace_env = BTreeMap::from([("LOCAL_LLM_API_KEY".to_string(), "   ".to_string())]);
+    let profiles = public_llm_profiles_with_env(temp.path(), &whitespace_env).unwrap();
+    assert_eq!(profiles[0]["configured"], json!(false));
+    assert_eq!(profiles[1]["configured"], json!(true));
+}
+
+#[test]
+fn profile_backed_openai_compatible_config_uses_endpoint_and_key_contract() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        temp.path().join("llm-profiles.toml"),
+        r#"
+[profiles.local]
+provider = "openai_compatible"
+base_url = "http://localhost:4000/responses"
+models = ["local-small", "local-large"]
+api_key_env = "LOCAL_LLM_API_KEY"
+default_model = "local-large"
+
+[profiles.no_key]
+provider = "openai_compatible"
+base_url = "http://localhost:5000/v1"
+models = ["no-key"]
+"#,
+    )
+    .expect("write profiles");
+    let profiles = load_llm_profiles(temp.path()).expect("profiles");
+    let local = profiles.get("local").expect("local profile");
+    let no_key = profiles.get("no_key").expect("no-key profile");
+
+    let missing_env = BTreeMap::<String, String>::new();
+    let error = local
+        .openai_compatible_request_config_with_env(&missing_env)
+        .expect_err("missing key");
+    assert_eq!(
+        error.to_string(),
+        "LLM profile 'local' requires environment variable LOCAL_LLM_API_KEY to be non-empty."
+    );
+
+    let whitespace_env = BTreeMap::from([("LOCAL_LLM_API_KEY".to_string(), "   ".to_string())]);
+    assert_eq!(
+        local
+            .openai_compatible_request_config_with_env(&whitespace_env)
+            .unwrap_err()
+            .to_string(),
+        "LLM profile 'local' requires environment variable LOCAL_LLM_API_KEY to be non-empty."
+    );
+
+    let env = BTreeMap::from([(
+        "LOCAL_LLM_API_KEY".to_string(),
+        " profile-secret ".to_string(),
+    )]);
+    let config = local
+        .openai_compatible_request_config_with_env(&env)
+        .expect("profile config");
+    assert_eq!(config.api_key.as_deref(), Some("profile-secret"));
+    assert!(config.require_api_key);
+    let prepared = build_openai_compatible_chat_request(
+        "openai_compatible",
+        &Request {
+            model: "local-large".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        },
+        config,
+    )
+    .expect("prepared request");
+    assert_eq!(prepared.url, "http://localhost:4000/v1/chat/completions");
+    assert_eq!(prepared.headers["Authorization"], "Bearer profile-secret");
+
+    let no_key_config = no_key
+        .openai_compatible_request_config_with_env(&missing_env)
+        .expect("local no-key profile");
+    assert_eq!(no_key_config.api_key, None);
+    assert!(!no_key_config.require_api_key);
+}
+
+#[test]
+fn client_profile_routes_normalize_to_openai_compatible_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        temp.path().join("llm-profiles.toml"),
+        r#"
+[profiles.local]
+provider = "openai_compatible"
+base_url = "http://localhost:4000/v1"
+models = ["local-large"]
+default_model = "local-large"
+"#,
+    )
+    .expect("write profiles");
+    let env = BTreeMap::<String, String>::new();
+    let client =
+        Client::from_env_map_and_profiles(&env, temp.path(), Some("LOCAL")).expect("client");
+
+    assert_eq!(client.default_provider(), Some("local"));
+    let profile = client.require_llm_profile("LOCAL").expect("profile route");
+    assert_eq!(profile.id, "local");
+    assert_eq!(profile.provider, "openai_compatible");
+    assert_eq!(profile.default_model.as_deref(), Some("local-large"));
+    assert_eq!(
+        client.routed_provider_for_selector("LOCAL").as_deref(),
+        Some("openai_compatible")
+    );
+
+    let error = client
+        .complete(Request {
+            model: "local-large".to_string(),
+            messages: vec![Message::user("hello")],
+            provider: Some("LOCAL".to_string()),
+            ..Request::default()
+        })
+        .expect_err("missing transport");
+    assert_eq!(error.kind, AdapterErrorKind::Configuration);
+    assert_eq!(error.provider.as_deref(), Some("openai_compatible"));
+}
+
+#[test]
+fn client_profile_routes_return_clear_missing_key_errors_when_selected() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        temp.path().join("llm-profiles.toml"),
+        r#"
+[profiles.local]
+provider = "openai_compatible"
+base_url = "http://localhost:4000/v1"
+models = ["local-large"]
+api_key_env = "LOCAL_LLM_API_KEY"
+default_model = "local-large"
+"#,
+    )
+    .expect("write profiles");
+    let env = BTreeMap::<String, String>::new();
+    let client = Client::from_env_map_and_profiles(&env, temp.path(), None).expect("client");
+
+    let error = client
+        .complete(Request {
+            model: "local-large".to_string(),
+            messages: vec![Message::user("hello")],
+            provider: Some("local".to_string()),
+            ..Request::default()
+        })
+        .expect_err("missing profile key");
+
+    assert_eq!(error.kind, AdapterErrorKind::Configuration);
+    assert_eq!(
+        error.message,
+        "LLM profile 'local' requires environment variable LOCAL_LLM_API_KEY to be non-empty."
+    );
+    assert!(!error.message.contains("localhost"));
 }
 
 #[test]
@@ -102,6 +254,42 @@ models = ["one"]
 default_model = "two"
 "#,
         "LLM profile 'bad' default_model 'two' is not listed in models.",
+    );
+    assert_profile_error(
+        r#"[profiles.bad]
+base_url = "http://localhost"
+models = ["one"]
+"#,
+        "LLM profile 'bad' provider is required.",
+    );
+    assert_profile_error(
+        r#"[profiles.bad]
+provider = "openai_compatible"
+models = ["one"]
+"#,
+        "LLM profile 'bad' base_url is required.",
+    );
+    assert_profile_error(
+        r#"[profiles.bad]
+provider = "openai_compatible"
+base_url = "http://localhost"
+models = ["one", "  "]
+"#,
+        "LLM profile 'bad' model is required.",
+    );
+    assert_profile_error(
+        r#"[profiles.""]
+provider = "openai_compatible"
+base_url = "http://localhost"
+models = ["one"]
+"#,
+        "profile id \"\" is required.",
+    );
+    assert_profile_error(
+        r#"[profiles]
+bad = "not a table"
+"#,
+        "LLM profile 'bad' must be a table.",
     );
 }
 
@@ -146,8 +334,11 @@ fn profiles_key_must_be_a_table_when_present() {
 fn assert_profile_error(config: &str, expected: &str) {
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(temp.path().join("llm-profiles.toml"), config).expect("write profiles");
-    assert_eq!(
-        public_llm_profiles(temp.path()).unwrap_err().to_string(),
-        expected
-    );
+    let error = public_llm_profiles(temp.path()).unwrap_err();
+    assert_eq!(error.to_string(), expected);
+
+    let adapter_error: unified_llm_adapter::AdapterError = error.into();
+    assert_eq!(adapter_error.kind, AdapterErrorKind::Configuration);
+    assert_eq!(adapter_error.message, expected);
+    assert!(!adapter_error.retryable);
 }

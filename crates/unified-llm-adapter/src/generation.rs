@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::client::Client;
+use crate::client::{Client, LlmProfileRoute};
 use crate::errors::{AdapterError, AdapterErrorKind};
 use crate::events::{
     StreamAccumulator, StreamEvent, StreamEventStream, StreamEventType, StreamEvents,
@@ -1457,20 +1457,57 @@ fn build_generate_request(
             input.response_format.as_ref(),
             input.reasoning_effort.as_deref(),
         ));
+    let selected_profile = selected_profile_for_high_level_request(
+        client,
+        input.provider.as_deref(),
+        input.active_profile.is_some(),
+    );
+    let active_profile = selected_profile
+        .as_ref()
+        .map(LlmProfileRoute::active_profile)
+        .or(input.active_profile);
+    let provider = selected_profile
+        .as_ref()
+        .map(|profile| profile.provider.clone())
+        .or(input.provider);
+    let client_default_provider = if selected_profile.is_some() {
+        None
+    } else {
+        client.default_provider().map(str::to_string)
+    };
     let resolved = resolve_high_level_provider_and_model(&HighLevelLlmResolutionInputs {
-        provider: input.provider,
+        provider,
         model: input.model,
-        active_profile: input.active_profile,
-        client_default_provider: client.default_provider().map(str::to_string),
+        active_profile,
+        client_default_provider,
         required_capabilities,
     })?;
     let has_tools = !input.tools.is_empty();
+    let request_provider = selected_profile
+        .as_ref()
+        .map(|profile| profile.id.clone())
+        .unwrap_or_else(|| resolved.provider.clone());
+    let mut metadata = input.metadata;
+    if let Some(profile) = selected_profile.as_ref() {
+        metadata.insert(
+            "spark.runtime.provider".to_string(),
+            Value::String(resolved.provider.clone()),
+        );
+        metadata.insert(
+            "spark.runtime.model".to_string(),
+            Value::String(resolved.model.clone()),
+        );
+        metadata.insert(
+            "spark.runtime.llm_profile".to_string(),
+            Value::String(profile.id.clone()),
+        );
+    }
 
     Ok(PreparedGenerateRequest {
         request: Request {
             model: resolved.model,
             messages,
-            provider: Some(resolved.provider),
+            provider: Some(request_provider),
             tools: input.tools,
             tool_choice: default_tool_choice(input.tool_choice, has_tools),
             response_format: input.response_format,
@@ -1479,7 +1516,7 @@ fn build_generate_request(
             max_tokens: input.max_tokens,
             stop_sequences: input.stop_sequences,
             reasoning_effort: input.reasoning_effort,
-            metadata: input.metadata,
+            metadata,
             provider_options: input.provider_options,
             timeout: input.timeout,
             abort_signal: input.abort_signal,
@@ -1488,6 +1525,22 @@ fn build_generate_request(
         stop_when: input.stop_when,
         repair_tool_call: input.repair_tool_call,
     })
+}
+
+fn selected_profile_for_high_level_request(
+    client: &Client,
+    provider: Option<&str>,
+    has_active_profile: bool,
+) -> Option<LlmProfileRoute> {
+    if let Some(provider) = provider.and_then(non_empty_text) {
+        return client.llm_profile(provider);
+    }
+    if has_active_profile {
+        return None;
+    }
+    client
+        .default_provider()
+        .and_then(|provider| client.llm_profile(provider))
 }
 
 fn default_tool_choice(tool_choice: Option<ToolChoice>, has_tools: bool) -> Option<ToolChoice> {
@@ -1590,6 +1643,11 @@ fn tool_results_from_response(response: &Response) -> Vec<ToolResult> {
 fn non_empty_owned(value: String) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
+}
+
+fn non_empty_text(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 fn non_empty_optional(value: Option<String>) -> Option<String> {

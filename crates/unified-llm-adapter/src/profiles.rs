@@ -7,6 +7,9 @@ use serde_json::{json, Value};
 use thiserror::Error;
 use toml::value::Table;
 
+use crate::errors::{AdapterError, AdapterErrorKind};
+use crate::openai_compatible::OpenAICompatibleRequestConfig;
+
 pub const PROFILE_CONFIG_FILE: &str = "llm-profiles.toml";
 const SUPPORTED_PROFILE_PROVIDERS: &[&str] = &["openai_compatible"];
 
@@ -21,6 +24,16 @@ impl LlmProfileConfigurationError {
         Self {
             message: message.into(),
         }
+    }
+
+    pub fn into_adapter_error(self) -> AdapterError {
+        AdapterError::new(AdapterErrorKind::Configuration, self.message)
+    }
+}
+
+impl From<LlmProfileConfigurationError> for AdapterError {
+    fn from(error: LlmProfileConfigurationError) -> Self {
+        error.into_adapter_error()
     }
 }
 
@@ -47,6 +60,37 @@ impl LlmProfile {
                 .map(|value| !value.trim().is_empty())
                 .unwrap_or(false),
         }
+    }
+
+    pub fn api_key_with_env(
+        &self,
+        env: &impl LlmProfileEnvironment,
+    ) -> Result<Option<String>, LlmProfileConfigurationError> {
+        let Some(key) = self.api_key_env.as_deref() else {
+            return Ok(None);
+        };
+        env.get_env(key)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(Some)
+            .ok_or_else(|| {
+                LlmProfileConfigurationError::new(format!(
+                    "LLM profile '{}' requires environment variable {key} to be non-empty.",
+                    self.id
+                ))
+            })
+    }
+
+    pub fn openai_compatible_request_config_with_env(
+        &self,
+        env: &impl LlmProfileEnvironment,
+    ) -> Result<OpenAICompatibleRequestConfig, LlmProfileConfigurationError> {
+        Ok(OpenAICompatibleRequestConfig {
+            api_key: self.api_key_with_env(env)?,
+            base_url: Some(self.base_url.clone()),
+            require_api_key: self.api_key_env.is_some(),
+            ..OpenAICompatibleRequestConfig::default()
+        })
     }
 
     pub fn to_public_value(&self, env: &impl LlmProfileEnvironment) -> Value {

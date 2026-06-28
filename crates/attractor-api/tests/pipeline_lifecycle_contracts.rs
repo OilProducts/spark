@@ -118,6 +118,87 @@ fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
 }
 
 #[test]
+fn start_pipeline_uses_launch_context_llm_selection_before_graph_defaults() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let project_path = temp.path().join("Project Launch Context");
+    let service = AttractorApiService::new(settings.clone());
+
+    let response = service.start_pipeline(PipelineStartRequest {
+        run_id: Some("run-api-launch-context".to_string()),
+        flow_content: Some(
+            r#"
+            digraph ApiLaunchContext {
+              graph [
+                ui_default_llm_model="graph-model",
+                ui_default_llm_provider="Anthropic",
+                ui_default_llm_profile="graph-profile"
+              ]
+              start [shape=Mdiamond]
+              done [shape=Msquare]
+              start -> done
+            }
+            "#
+            .to_string(),
+        ),
+        working_directory: project_path.to_string_lossy().to_string(),
+        launch_context: Some(
+            [
+                (
+                    unified_llm_adapter::RUNTIME_LAUNCH_MODEL_KEY.to_string(),
+                    json!("launch-model"),
+                ),
+                (
+                    unified_llm_adapter::RUNTIME_LAUNCH_PROVIDER_KEY.to_string(),
+                    json!("Gemini"),
+                ),
+                (
+                    unified_llm_adapter::RUNTIME_LAUNCH_PROFILE_KEY.to_string(),
+                    json!("launch-profile"),
+                ),
+                (
+                    unified_llm_adapter::RUNTIME_LAUNCH_REASONING_EFFORT_KEY.to_string(),
+                    json!("HIGH"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        ..PipelineStartRequest::default()
+    });
+
+    assert_eq!(response.status_code, 200);
+    assert_eq!(response.body["model"], json!("launch-model"));
+    assert_eq!(response.body["llm_provider"], json!("gemini"));
+    assert_eq!(response.body["llm_profile"], json!("launch-profile"));
+    assert_eq!(response.body["reasoning_effort"], json!("high"));
+
+    let bundle = RunStore::for_settings(&settings)
+        .read_run_bundle("run-api-launch-context")
+        .expect("read run")
+        .expect("run exists");
+    let record = bundle.record.expect("record");
+    assert_eq!(record.model, "launch-model");
+    assert_eq!(record.llm_provider, "gemini");
+    assert_eq!(record.llm_profile.as_deref(), Some("launch-profile"));
+    assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
+    let checkpoint = bundle.checkpoint.expect("checkpoint");
+    assert_eq!(
+        checkpoint.context[unified_llm_adapter::RUNTIME_LAUNCH_MODEL_KEY],
+        json!("launch-model")
+    );
+    assert_eq!(
+        checkpoint.context[unified_llm_adapter::RUNTIME_LAUNCH_PROVIDER_KEY],
+        json!("gemini")
+    );
+    assert_eq!(
+        checkpoint.context[unified_llm_adapter::RUNTIME_LAUNCH_REASONING_EFFORT_KEY],
+        json!("high")
+    );
+}
+
+#[test]
 fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invalid_runs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

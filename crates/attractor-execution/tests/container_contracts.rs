@@ -181,5 +181,9 @@ fn request() -> NodeExecutionRequest {
         run_paths: None,
         run_workdir: std::env::current_dir().expect("cwd"),
         run_id: "run-container".to_string(),
+        fallback_model: None,
+        fallback_provider: None,
+        fallback_profile: None,
+        fallback_reasoning_effort: None,
     }
 }

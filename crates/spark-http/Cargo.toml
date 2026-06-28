@@ -20,6 +20,7 @@ spark-workspace = { path = "../spark-workspace" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
 tokio-util = "0.7"
 tower = { version = "0.5", features = ["util"] }
+unified-llm-adapter = { path = "../unified-llm-adapter" }
 
 [dev-dependencies]
 attractor-core = { path = "../attractor-core" }

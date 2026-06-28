@@ -1,13 +1,18 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_http::build_app;
+use spark_http::{build_app, build_app_with_rust_llm_client};
 use spark_storage::{ConversationHandleRepository, ConversationRepository, ProjectRegistry};
 use tower::ServiceExt;
+use unified_llm_adapter::{
+    ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
+    Request as LlmRequest, Response, StreamEvents, Usage,
+};
 
 #[tokio::test]
 async fn review_routes_create_by_handle_and_review_flow_run_requests() {
@@ -123,6 +128,102 @@ async fn review_routes_create_by_handle_and_review_flow_run_requests() {
         .as_str()
         .expect("detail")
         .contains("Failed to parse"));
+}
+
+#[tokio::test]
+async fn flow_run_request_review_executes_codergen_through_injected_rust_llm_client() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    write_flow(&settings, "ops/review-rust-boundary.dot", codergen_flow());
+    seed_conversation(
+        &settings,
+        project_path.to_str().expect("utf-8"),
+        "conversation-http-review-boundary",
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "frontier",
+            ActiveLlmProfile::new("openai_compatible", Some("gpt-review-boundary".to_string())),
+            adapter,
+        )
+        .expect("client");
+    let app = build_app_with_rust_llm_client(settings, client);
+
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
+        Some(json!({
+            "flow_name": "ops/review-rust-boundary.dot",
+            "summary": "Run with Rust adapter.",
+            "model": "gpt-review-boundary",
+            "llm_provider": "OpenAI",
+            "llm_profile": "frontier",
+            "reasoning_effort": "HIGH"
+        })),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK);
+    let request_id = created.1["flow_run_request_id"]
+        .as_str()
+        .expect("request id");
+
+    let reviewed = request_json(
+        app,
+        "POST",
+        &format!(
+            "/workspace/api/conversations/conversation-http-review-boundary/flow-run-requests/{request_id}/review"
+        ),
+        Some(json!({
+            "project_path": project_path.to_string_lossy(),
+            "disposition": "approved",
+            "message": "Approved."
+        })),
+    )
+    .await;
+
+    assert_eq!(reviewed.0, StatusCode::OK);
+    let request_record = reviewed.1["flow_run_requests"]
+        .as_array()
+        .expect("requests")
+        .iter()
+        .find(|entry| entry["id"] == request_id)
+        .expect("request");
+    assert_eq!(request_record["status"], "launched");
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.provider.as_deref(), Some("openai_compatible"));
+    assert_eq!(request.model, "gpt-review-boundary");
+    assert_eq!(
+        request.messages,
+        vec![Message::user("Write review route note")]
+    );
+    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(request.metadata["spark.runtime.source"], json!("codergen"));
+    assert_eq!(
+        request.metadata["spark.runtime.provider"],
+        json!("openai_compatible")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.model"],
+        json!("gpt-review-boundary")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.llm_profile"],
+        json!("frontier")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.reasoning_effort"],
+        json!("high")
+    );
 }
 
 #[tokio::test]
@@ -324,6 +425,17 @@ fn simple_flow() -> &'static str {
     "#
 }
 
+fn codergen_flow() -> &'static str {
+    r#"
+    digraph ReviewRustBoundary {
+      start [shape=Mdiamond]
+      task [shape=box, prompt="Write review route note"]
+      done [shape=Msquare]
+      start -> task -> done
+    }
+    "#
+}
+
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
         project_root: root.join("project"),
@@ -338,5 +450,43 @@ fn settings(root: &Path) -> SparkSettings {
         flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
+    }
+}
+
+struct RecordingAdapter {
+    name: &'static str,
+    calls: Arc<Mutex<Vec<LlmRequest>>>,
+}
+
+impl RecordingAdapter {
+    fn new(name: &'static str, calls: Arc<Mutex<Vec<LlmRequest>>>) -> Self {
+        Self { name, calls }
+    }
+}
+
+impl ProviderAdapter for RecordingAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, request: LlmRequest) -> Result<Response, AdapterError> {
+        self.calls.lock().expect("calls").push(request.clone());
+        Ok(Response {
+            model: request.model.clone(),
+            provider: request.provider.clone().unwrap_or_default(),
+            message: Message::assistant("review route adapter response"),
+            finish_reason: FinishReason::Stop,
+            usage: Usage {
+                input_tokens: 2,
+                output_tokens: 3,
+                total_tokens: 5,
+                ..Usage::default()
+            },
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, _request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        unimplemented!("workspace review route codergen uses complete")
     }
 }

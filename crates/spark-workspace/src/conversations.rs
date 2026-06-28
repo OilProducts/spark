@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use attractor_api::{ContinuePipelineRequest, PipelineStartRequest, RuntimeRouteResponse};
+use attractor_api::{
+    ContinuePipelineRequest, PipelineStartRequest, RuntimeHandlerRunnerFactory,
+    RuntimeRouteResponse,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use spark_agent_adapter::{AgentThreadResumeFailure, AgentTurnOutput};
@@ -215,14 +218,28 @@ pub struct FlowRunRequestCreateResponse {
     pub segment_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WorkspaceConversationService {
     settings: SparkSettings,
+    runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
 }
 
 impl WorkspaceConversationService {
     pub fn new(settings: SparkSettings) -> Self {
-        Self { settings }
+        Self::new_with_runtime_handler_runner_factory(
+            settings,
+            attractor_api::default_runtime_handler_runner_factory(),
+        )
+    }
+
+    pub fn new_with_runtime_handler_runner_factory(
+        settings: SparkSettings,
+        runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
+    ) -> Self {
+        Self {
+            settings,
+            runtime_handler_runner_factory,
+        }
     }
 
     pub fn list_project_conversations(
@@ -1521,7 +1538,8 @@ impl WorkspaceConversationService {
             None
         };
 
-        let route_response = attractor_api::AttractorApiService::new(self.settings.clone())
+        let route_response = self
+            .runtime_api_service()
             .retry_pipeline_route(&source_run_id);
         if route_response.status_code >= 400 {
             if let (Some(selection), Some(recovery)) = (selection.as_ref(), recovery.as_ref()) {
@@ -1659,20 +1677,19 @@ impl WorkspaceConversationService {
             None
         };
 
-        let route_response = attractor_api::AttractorApiService::new(self.settings.clone())
-            .continue_pipeline_route(
-                &source_run_id,
-                ContinuePipelineRequest {
-                    start_node: start_node.clone(),
-                    flow_source_mode: mode.clone(),
-                    flow_name: flow_name.clone(),
-                    working_directory: project_override.clone(),
-                    model,
-                    llm_provider,
-                    llm_profile,
-                    reasoning_effort,
-                },
-            );
+        let route_response = self.runtime_api_service().continue_pipeline_route(
+            &source_run_id,
+            ContinuePipelineRequest {
+                start_node: start_node.clone(),
+                flow_source_mode: mode.clone(),
+                flow_name: flow_name.clone(),
+                working_directory: project_override.clone(),
+                model,
+                llm_provider,
+                llm_profile,
+                reasoning_effort,
+            },
+        );
         if route_response.status_code >= 400 {
             if let (Some(selection), Some(recovery)) = (selection.as_ref(), recovery.as_ref()) {
                 self.note_run_recovery_result(
@@ -2213,8 +2230,8 @@ impl WorkspaceConversationService {
         } else {
             None
         };
-        attractor_api::AttractorApiService::new(self.settings.clone()).start_pipeline(
-            PipelineStartRequest {
+        self.runtime_api_service()
+            .start_pipeline(PipelineStartRequest {
                 run_id: None,
                 flow_name: Some(flow_name.to_string()),
                 working_directory: project_path.to_string(),
@@ -2250,8 +2267,7 @@ impl WorkspaceConversationService {
                             .collect()
                     }),
                 ..PipelineStartRequest::default()
-            },
-        )
+            })
     }
 
     fn launch_workspace_flow(
@@ -2268,6 +2284,13 @@ impl WorkspaceConversationService {
 
     fn repository(&self) -> ConversationRepository {
         ConversationRepository::new(self.settings.data_dir.clone())
+    }
+
+    fn runtime_api_service(&self) -> attractor_api::AttractorApiService {
+        attractor_api::AttractorApiService::new_with_runtime_handler_runner_factory(
+            self.settings.clone(),
+            self.runtime_handler_runner_factory.clone(),
+        )
     }
 }
 

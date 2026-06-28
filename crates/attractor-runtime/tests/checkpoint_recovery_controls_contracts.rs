@@ -11,6 +11,10 @@ use attractor_runtime::{
 };
 use serde_json::{json, Value};
 use spark_storage::read_json;
+use unified_llm_adapter::{
+    DISPLAY_MODEL_PLACEHOLDER, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY,
+    RUNTIME_LAUNCH_PROVIDER_KEY, RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+};
 
 fn parse_graph(dot: &str) -> DotGraph {
     parse_dot(dot).expect("dot parses")
@@ -412,6 +416,177 @@ fn continue_retry_pause_and_cancel_controls_update_durable_run_state() {
         .expect("read paused record")
         .expect("paused record");
     assert_eq!(paused_record.status, "paused");
+}
+
+#[test]
+fn continue_from_snapshot_persists_explicit_llm_selection_into_checkpoint() {
+    let graph_source = r#"
+    digraph G {
+      start [shape=Mdiamond]
+      work [shape=box]
+      done [shape=Msquare]
+      start -> work -> done
+    }
+    "#;
+    let graph = parse_graph(graph_source);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = temp_store(&temp);
+    let controls = RuntimeControls::new(store.clone());
+    let mut source_checkpoint = checkpoint("work", &["start"]);
+    source_checkpoint.context.extend([
+        (RUNTIME_LAUNCH_MODEL_KEY.to_string(), json!("gpt-source")),
+        (RUNTIME_LAUNCH_PROVIDER_KEY.to_string(), json!("Gemini")),
+        (
+            RUNTIME_LAUNCH_PROFILE_KEY.to_string(),
+            json!("source-profile"),
+        ),
+        (
+            RUNTIME_LAUNCH_REASONING_EFFORT_KEY.to_string(),
+            json!("MEDIUM"),
+        ),
+    ]);
+    let (_project_path, source_paths) = create_source_run(
+        &store,
+        &temp,
+        "run-source-llm",
+        "failed",
+        source_checkpoint,
+        Some(graph_source),
+    );
+
+    let continued = controls
+        .continue_from_snapshot(ContinueRunRequest {
+            source_run_id: "run-source-llm".to_string(),
+            start_node: "work".to_string(),
+            flow_source_mode: "snapshot".to_string(),
+            flow_name: None,
+            new_run_id: Some("run-continued-llm".to_string()),
+            graph: graph.clone(),
+            graph_source: Some(graph_source.to_string()),
+            graph_dot: Some(graph_source.to_string()),
+            working_directory: None,
+            model: Some("gpt-continue".to_string()),
+            llm_provider: Some("OpenAI".to_string()),
+            llm_profile: Some("continue-profile".to_string()),
+            reasoning_effort: Some("HIGH".to_string()),
+        })
+        .expect("continue run");
+
+    assert_eq!(continued.model, "gpt-continue");
+    assert_eq!(continued.provider, "openai");
+    assert_eq!(continued.llm_profile.as_deref(), Some("continue-profile"));
+    assert_eq!(continued.reasoning_effort.as_deref(), Some("high"));
+    let continued_bundle = store
+        .read_run_bundle("run-continued-llm")
+        .expect("bundle")
+        .expect("continued bundle");
+    let continued_record = continued_bundle.record.expect("record");
+    assert_eq!(continued_record.model, "gpt-continue");
+    assert_eq!(continued_record.llm_provider, "openai");
+    assert_eq!(
+        continued_record.llm_profile.as_deref(),
+        Some("continue-profile")
+    );
+    assert_eq!(continued_record.reasoning_effort.as_deref(), Some("high"));
+    let continued_context = continued_bundle.checkpoint.expect("checkpoint").context;
+    assert_eq!(
+        continued_context[RUNTIME_LAUNCH_MODEL_KEY],
+        json!("gpt-continue")
+    );
+    assert_eq!(
+        continued_context[RUNTIME_LAUNCH_PROVIDER_KEY],
+        json!("openai")
+    );
+    assert_eq!(
+        continued_context[RUNTIME_LAUNCH_PROFILE_KEY],
+        json!("continue-profile")
+    );
+    assert_eq!(
+        continued_context[RUNTIME_LAUNCH_REASONING_EFFORT_KEY],
+        json!("high")
+    );
+    let source_checkpoint = read_checkpoint(&source_paths)
+        .expect("source checkpoint read")
+        .expect("source checkpoint");
+    assert_eq!(
+        source_checkpoint.context[RUNTIME_LAUNCH_MODEL_KEY],
+        json!("gpt-source")
+    );
+}
+
+#[test]
+fn continue_from_snapshot_omits_display_model_placeholder_from_checkpoint() {
+    let graph_source = r#"
+    digraph G {
+      start [shape=Mdiamond]
+      work [shape=box]
+      done [shape=Msquare]
+      start -> work -> done
+    }
+    "#;
+    let graph = parse_graph(graph_source);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = temp_store(&temp);
+    let project_path = temp.path().join("Project run-source-placeholder");
+    std::fs::create_dir_all(&project_path).expect("project dir");
+    let mut source_record = record("run-source-placeholder", &project_path);
+    source_record.status = "failed".to_string();
+    source_record.last_error = "previous failure".to_string();
+    source_record.model = DISPLAY_MODEL_PLACEHOLDER.to_string();
+    let mut source_checkpoint = checkpoint("work", &["start"]);
+    source_checkpoint.context.insert(
+        RUNTIME_LAUNCH_MODEL_KEY.to_string(),
+        json!(DISPLAY_MODEL_PLACEHOLDER),
+    );
+    store
+        .create_run(CreateRunRequest {
+            record: source_record,
+            checkpoint: Some(source_checkpoint),
+            graph_source: Some(graph_source.to_string()),
+            graph_dot: Some(graph_source.to_string()),
+            ..CreateRunRequest::default()
+        })
+        .expect("create source run");
+
+    let continued = RuntimeControls::new(store.clone())
+        .continue_from_snapshot(ContinueRunRequest {
+            source_run_id: "run-source-placeholder".to_string(),
+            start_node: "work".to_string(),
+            flow_source_mode: "snapshot".to_string(),
+            flow_name: None,
+            new_run_id: Some("run-continued-placeholder".to_string()),
+            graph,
+            graph_source: Some(graph_source.to_string()),
+            graph_dot: Some(graph_source.to_string()),
+            working_directory: None,
+            model: Some(DISPLAY_MODEL_PLACEHOLDER.to_string()),
+            llm_provider: Some("OpenAI".to_string()),
+            llm_profile: None,
+            reasoning_effort: Some("HIGH".to_string()),
+        })
+        .expect("continue run");
+
+    assert_eq!(continued.model, "");
+    assert_eq!(continued.provider, "openai");
+    assert_eq!(continued.reasoning_effort.as_deref(), Some("high"));
+    let continued_bundle = store
+        .read_run_bundle("run-continued-placeholder")
+        .expect("bundle")
+        .expect("continued bundle");
+    let continued_record = continued_bundle.record.expect("record");
+    assert_eq!(continued_record.model, "");
+    assert_eq!(continued_record.llm_provider, "openai");
+    assert_eq!(continued_record.reasoning_effort.as_deref(), Some("high"));
+    let continued_context = continued_bundle.checkpoint.expect("checkpoint").context;
+    assert!(!continued_context.contains_key(RUNTIME_LAUNCH_MODEL_KEY));
+    assert_eq!(
+        continued_context[RUNTIME_LAUNCH_PROVIDER_KEY],
+        json!("openai")
+    );
+    assert_eq!(
+        continued_context[RUNTIME_LAUNCH_REASONING_EFFORT_KEY],
+        json!("high")
+    );
 }
 
 #[test]

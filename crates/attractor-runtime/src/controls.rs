@@ -16,6 +16,10 @@ use crate::records::{
     mark_record_retry_started,
 };
 use crate::store::{CreateRunRequest, RunStore};
+use unified_llm_adapter::{
+    is_display_model_placeholder, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY,
+    RUNTIME_LAUNCH_PROVIDER_KEY, RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeControlError {
@@ -148,7 +152,7 @@ impl RuntimeControls {
             ));
         }
 
-        let context = source_checkpoint.context.clone();
+        let mut context = source_checkpoint.context.clone();
         let new_run_id = request
             .new_run_id
             .as_deref()
@@ -170,43 +174,69 @@ impl RuntimeControls {
         let model = request
             .model
             .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .or_else(|| context_string(&context, "_attractor.runtime.launch_model"))
-            .or_else(|| non_empty_string(&source_record.model))
+            .and_then(trimmed_real_model)
+            .or_else(|| {
+                context_string(&context, RUNTIME_LAUNCH_MODEL_KEY)
+                    .and_then(|value| trimmed_real_model(&value))
+            })
+            .or_else(|| trimmed_real_model(&source_record.model))
             .unwrap_or_default();
         let provider = request
             .llm_provider
             .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .or_else(|| context_string(&context, "_attractor.runtime.launch_provider"))
-            .or_else(|| non_empty_string(&source_record.llm_provider))
-            .or_else(|| non_empty_string(&source_record.provider))
+            .and_then(normalized_lowercase)
+            .or_else(|| {
+                context_string(&context, RUNTIME_LAUNCH_PROVIDER_KEY)
+                    .and_then(|value| normalized_lowercase(&value))
+            })
+            .or_else(|| normalized_lowercase(&source_record.llm_provider))
+            .or_else(|| normalized_lowercase(&source_record.provider))
             .unwrap_or_else(|| "codex".to_string());
         let llm_profile = request
             .llm_profile
             .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .or_else(|| context_string(&context, "_attractor.runtime.launch_profile"))
+            .and_then(non_empty_string)
+            .or_else(|| context_string(&context, RUNTIME_LAUNCH_PROFILE_KEY))
             .or_else(|| {
                 source_record
                     .llm_profile
-                    .clone()
-                    .filter(|value| !value.trim().is_empty())
+                    .as_deref()
+                    .and_then(non_empty_string)
             });
         let reasoning_effort = request
             .reasoning_effort
             .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .or_else(|| context_string(&context, "_attractor.runtime.launch_reasoning_effort"))
-            .or(source_record.reasoning_effort.clone());
+            .and_then(normalized_lowercase)
+            .or_else(|| {
+                context_string(&context, RUNTIME_LAUNCH_REASONING_EFFORT_KEY)
+                    .and_then(|value| normalized_lowercase(&value))
+            })
+            .or_else(|| {
+                source_record
+                    .reasoning_effort
+                    .as_deref()
+                    .and_then(normalized_lowercase)
+            });
+        set_launch_context_value(
+            &mut context,
+            RUNTIME_LAUNCH_MODEL_KEY,
+            non_empty_string(&model),
+        );
+        set_launch_context_value(
+            &mut context,
+            RUNTIME_LAUNCH_PROVIDER_KEY,
+            Some(provider.clone()),
+        );
+        set_launch_context_value(
+            &mut context,
+            RUNTIME_LAUNCH_PROFILE_KEY,
+            llm_profile.clone(),
+        );
+        set_launch_context_value(
+            &mut context,
+            RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+            reasoning_effort.clone(),
+        );
 
         let flow_name = request
             .flow_name
@@ -466,6 +496,25 @@ fn generated_run_id() -> String {
 fn non_empty_string(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
+}
+
+fn normalized_lowercase(value: &str) -> Option<String> {
+    non_empty_string(value).map(|value| value.to_ascii_lowercase())
+}
+
+fn trimmed_real_model(value: &str) -> Option<String> {
+    non_empty_string(value).filter(|value| !is_display_model_placeholder(value))
+}
+
+fn set_launch_context_value(context: &mut ContextMap, key: &str, value: Option<String>) {
+    match value.and_then(|value| non_empty_string(&value)) {
+        Some(value) => {
+            context.insert(key.to_string(), json!(value));
+        }
+        None => {
+            context.remove(key);
+        }
+    }
 }
 
 fn context_string(context: &ContextMap, key: &str) -> Option<String> {

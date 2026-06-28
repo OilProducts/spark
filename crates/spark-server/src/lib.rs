@@ -125,7 +125,11 @@ pub fn run() -> i32 {
         && stripped.get(1).map(String::as_str) == Some("run-node")
         && !stripped.iter().skip(2).any(|arg| is_help_arg(arg))
     {
-        return attractor_execution::run_worker_node_stdio();
+        return attractor_execution::run_worker_node_from_reader_writer(
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+            attractor_runtime_handler_runner(),
+        );
     }
     if stripped.first().map(String::as_str) == Some("serve")
         && !stripped.iter().skip(1).any(|arg| is_help_arg(arg))
@@ -267,7 +271,41 @@ fn run_worker_shell(args: &[String]) -> CommandOutput {
 }
 
 fn attractor_runtime_handler_runner() -> attractor_runtime::RuntimeHandlerRunner {
-    attractor_runtime::RuntimeHandlerRunner::new()
+    attractor_runtime::RuntimeHandlerRunner::new().with_rust_llm_client(rust_llm_client_from_env())
+}
+
+fn rust_llm_client_from_env() -> unified_llm_adapter::Client {
+    match resolve_server_settings_with_env(&SettingsOverrides::default(), &ProcessEnvironment) {
+        Ok(settings) => rust_llm_client_from_settings(&settings),
+        Err(error) => {
+            tracing::warn!(
+                target: "spark_server",
+                error = %error,
+                "failed to resolve Spark settings for unified LLM profiles"
+            );
+            unified_llm_adapter::Client::from_env().unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "spark_server",
+                    error = %error,
+                    "failed to initialize unified LLM client from environment"
+                );
+                unified_llm_adapter::Client::new()
+            })
+        }
+    }
+}
+
+fn rust_llm_client_from_settings(settings: &SparkSettings) -> unified_llm_adapter::Client {
+    let env = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
+    unified_llm_adapter::Client::from_env_map_and_profiles(&env, &settings.config_dir, None)
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "spark_server",
+                error = %error,
+                "failed to initialize unified LLM client from environment and profiles"
+            );
+            unified_llm_adapter::Client::new()
+        })
 }
 
 fn initialize_runtime(
@@ -670,7 +708,12 @@ fn run_serve_process(
         let listener = tokio::net::TcpListener::bind(&bind_addr)
             .await
             .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
-        axum_serve(listener, spark_http::build_app(config.settings)).await
+        let client = rust_llm_client_from_settings(&config.settings);
+        axum_serve(
+            listener,
+            spark_http::build_app_with_rust_llm_client(config.settings, client),
+        )
+        .await
     })
 }
 

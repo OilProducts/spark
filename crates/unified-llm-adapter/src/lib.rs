@@ -28,7 +28,7 @@ pub mod tools;
 pub mod usage;
 
 pub use catalog::{get_latest_model, get_model_info, list_models, ModelCatalog, ModelInfo};
-pub use client::{Client, ProviderAdapter};
+pub use client::{Client, LlmProfileRoute, ProviderAdapter};
 pub use defaults::{default_client, get_default_client, set_default_client};
 pub use env::{ProviderConfig, ProviderEnvironment};
 pub use errors::{
@@ -73,9 +73,10 @@ pub use request::{
     Warning,
 };
 pub use resolution::{
-    resolve_effective_llm_model, resolve_effective_llm_profile, resolve_effective_llm_provider,
-    resolve_effective_reasoning_effort, resolve_high_level_provider_and_model, ActiveLlmProfile,
-    HighLevelLlmResolutionInputs, LlmResolutionInputs, ModelCapabilities, ResolvedLlmModel,
+    is_display_model_placeholder, resolve_effective_llm_model, resolve_effective_llm_profile,
+    resolve_effective_llm_provider, resolve_effective_reasoning_effort,
+    resolve_high_level_provider_and_model, ActiveLlmProfile, HighLevelLlmResolutionInputs,
+    LlmResolutionInputs, ModelCapabilities, ResolvedLlmModel, DISPLAY_MODEL_PLACEHOLDER,
     RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
     RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
 };

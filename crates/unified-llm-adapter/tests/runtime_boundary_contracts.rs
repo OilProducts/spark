@@ -1,10 +1,77 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use serde_json::json;
 use unified_llm_adapter::{
-    stream_events, AdapterError, AdapterErrorKind, Client, FinishReason, Message, ProviderAdapter,
-    Request, Response, StreamEvent, StreamEvents,
+    resolve_effective_llm_model, resolve_effective_llm_profile, resolve_effective_llm_provider,
+    resolve_effective_reasoning_effort, resolve_high_level_provider_and_model, stream_events,
+    ActiveLlmProfile, AdapterError, AdapterErrorKind, Client, FinishReason,
+    HighLevelLlmResolutionInputs, LlmResolutionInputs, Message, ModelCapabilities, ProviderAdapter,
+    Request, Response, StreamEvent, StreamEvents, DISPLAY_MODEL_PLACEHOLDER,
+    RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
+    RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
 };
+
+#[test]
+fn llm_resolution_applies_launch_before_fallback_and_omits_model_placeholder() {
+    let context = BTreeMap::from([
+        (
+            RUNTIME_LAUNCH_MODEL_KEY.to_string(),
+            json!(DISPLAY_MODEL_PLACEHOLDER),
+        ),
+        (RUNTIME_LAUNCH_PROVIDER_KEY.to_string(), json!("Gemini")),
+        (
+            RUNTIME_LAUNCH_PROFILE_KEY.to_string(),
+            json!("launch-profile"),
+        ),
+        (
+            RUNTIME_LAUNCH_REASONING_EFFORT_KEY.to_string(),
+            json!("MEDIUM"),
+        ),
+    ]);
+    let inputs = LlmResolutionInputs {
+        node_model: Some(DISPLAY_MODEL_PLACEHOLDER.to_string()),
+        node_reasoning_effort: Some("HIGH".to_string()),
+        node_reasoning_is_default_placeholder: true,
+        fallback_model: Some("backend-model".to_string()),
+        fallback_provider: Some("OpenAI".to_string()),
+        fallback_profile: Some("backend-profile".to_string()),
+        fallback_reasoning_effort: Some("LOW".to_string()),
+        ..LlmResolutionInputs::default()
+    };
+
+    assert_eq!(
+        resolve_effective_llm_model(&inputs, &context).as_deref(),
+        Some("backend-model")
+    );
+    assert_eq!(resolve_effective_llm_provider(&inputs, &context), "gemini");
+    assert_eq!(
+        resolve_effective_llm_profile(&inputs, &context).as_deref(),
+        Some("launch-profile")
+    );
+    assert_eq!(
+        resolve_effective_reasoning_effort(&inputs, &context).as_deref(),
+        Some("medium")
+    );
+}
+
+#[test]
+fn high_level_resolution_omits_display_model_placeholder_before_request_building() {
+    let resolved = resolve_high_level_provider_and_model(&HighLevelLlmResolutionInputs {
+        provider: Some("openai_compatible".to_string()),
+        model: Some(DISPLAY_MODEL_PLACEHOLDER.to_string()),
+        active_profile: Some(ActiveLlmProfile::new(
+            "openai_compatible",
+            Some("profile-default".to_string()),
+        )),
+        client_default_provider: None,
+        required_capabilities: ModelCapabilities::default(),
+    })
+    .expect("resolved model");
+
+    assert_eq!(resolved.provider, "openai_compatible");
+    assert_eq!(resolved.model, "profile-default");
+}
 
 #[test]
 fn client_complete_and_stream_execute_through_registered_rust_adapter() {

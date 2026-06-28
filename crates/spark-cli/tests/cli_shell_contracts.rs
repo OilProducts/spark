@@ -151,6 +151,12 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             r#"{"context.request.summary":"Run the approved scope"}"#,
             "--model",
             "gpt-5",
+            "--llm-provider",
+            "OpenAI",
+            "--llm-profile",
+            "implementation",
+            "--reasoning-effort",
+            "HIGH",
             "--execution-profile",
             "local-dev",
             "--base-url",
@@ -180,7 +186,10 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "flow_name": "software-development/implement-change-request.dot",
             "goal": "Implement it.",
             "launch_context": {"context.request.summary": "Run the approved scope"},
+            "llm_profile": "implementation",
+            "llm_provider": "openai",
             "model": "gpt-5",
+            "reasoning_effort": "high",
             "summary": "Run the approved scope"
         })
     );
@@ -233,6 +242,14 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "/tmp/project",
             "--execution-profile",
             "local-review",
+            "--model",
+            "gpt-5.3",
+            "--llm-provider",
+            "Anthropic",
+            "--llm-profile",
+            "launch-profile",
+            "--reasoning-effort",
+            "LOW",
             "--base-url",
             launch_base_url.as_str(),
         ],
@@ -248,7 +265,11 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
         serde_json::json!({
             "execution_profile_id": "local-review",
             "flow_name": "test.dot",
+            "llm_profile": "launch-profile",
+            "llm_provider": "anthropic",
+            "model": "gpt-5.3",
             "project_path": "/tmp/project",
+            "reasoning_effort": "low",
             "summary": "Launch directly"
         })
     );

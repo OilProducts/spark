@@ -2828,6 +2828,81 @@ fn high_level_model_resolution_handles_profiles_capabilities_and_compatible_omis
 }
 
 #[test]
+fn high_level_profile_selectors_preserve_metadata_and_route_to_profile_provider() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ProfileRouteRecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&requests),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "implementation",
+            ActiveLlmProfile::new("openai_compatible", Some("local-default".to_string())),
+            adapter,
+        )
+        .unwrap()
+        .with_default_provider(Some("implementation"))
+        .unwrap();
+
+    let generated = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("use profile".to_string()),
+            provider: Some("IMPLEMENTATION".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        generated.steps[0].request.provider.as_deref(),
+        Some("implementation")
+    );
+    assert_eq!(generated.steps[0].request.model, "local-default");
+    assert_eq!(
+        generated.steps[0].request.metadata["spark.runtime.provider"],
+        json!("openai_compatible")
+    );
+    assert_eq!(
+        generated.steps[0].request.metadata["spark.runtime.model"],
+        json!("local-default")
+    );
+    assert_eq!(
+        generated.steps[0].request.metadata["spark.runtime.llm_profile"],
+        json!("implementation")
+    );
+
+    let mut streamed = stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("use default profile".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(streamed.response().unwrap().text(), "profile stream");
+
+    let requests = requests.lock().expect("profile requests");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].provider.as_deref(), Some("openai_compatible"));
+    assert_eq!(requests[0].model, "local-default");
+    assert_eq!(requests[1].provider.as_deref(), Some("openai_compatible"));
+    assert_eq!(requests[1].model, "local-default");
+    assert_eq!(
+        requests[1].metadata["spark.runtime.provider"],
+        json!("openai_compatible")
+    );
+    assert_eq!(
+        requests[1].metadata["spark.runtime.model"],
+        json!("local-default")
+    );
+    assert_eq!(
+        requests[1].metadata["spark.runtime.llm_profile"],
+        json!("implementation")
+    );
+}
+
+#[test]
 fn high_level_stream_routes_through_middleware_and_reconstructs_response() {
     fn assert_async_stream<T: futures_core::Stream<Item = Result<StreamEvent, AdapterError>>>() {}
     assert_async_stream::<unified_llm_adapter::StreamResult>();
@@ -4371,6 +4446,48 @@ fn high_level_generate_object_resolves_models_before_low_level_request_construct
         vec!["complete:openai_compatible:local-large:1:json_schema_strict"]
     );
 
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "structured-local",
+            ActiveLlmProfile::new("openai_compatible", Some("profile-structured".to_string())),
+            adapter,
+        )
+        .unwrap();
+    let profiled_by_selector = generate_object(
+        &client,
+        GenerateRequest {
+            prompt: Some("answer as JSON".to_string()),
+            provider: Some("structured-local".to_string()),
+            ..GenerateRequest::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+    assert_eq!(
+        profiled_by_selector.generation.steps[0]
+            .request
+            .provider
+            .as_deref(),
+        Some("structured-local")
+    );
+    assert_eq!(
+        profiled_by_selector.generation.steps[0].request.model,
+        "profile-structured"
+    );
+    assert_eq!(
+        profiled_by_selector.generation.steps[0].request.metadata["spark.runtime.llm_profile"],
+        json!("structured-local")
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:openai_compatible:profile-structured:1:json_schema_strict"]
+    );
+
     for provider in ["openrouter", "litellm", "openai_compatible"] {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
@@ -4470,6 +4587,38 @@ fn high_level_stream_object_resolves_models_before_low_level_request_constructio
     assert_eq!(
         call_log(&calls),
         vec!["stream:openai_compatible:local-large:1:json_schema_strict"]
+    );
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "structured-local",
+            ActiveLlmProfile::new("openai_compatible", Some("profile-structured".to_string())),
+            adapter,
+        )
+        .unwrap()
+        .with_default_provider(Some("structured-local"))
+        .unwrap();
+    let mut profiled_by_default = stream_object(
+        &client,
+        GenerateRequest {
+            prompt: Some("answer as JSON".to_string()),
+            ..GenerateRequest::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+    assert_eq!(
+        profiled_by_default.object().unwrap(),
+        json!({"answer": "yes"})
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec!["stream:openai_compatible:profile-structured:1:json_schema_strict"]
     );
 
     for provider in ["openrouter", "litellm", "openai_compatible"] {
@@ -5534,6 +5683,48 @@ impl ProviderAdapter for StructuredRecordingAdapter {
         self.record("stream", &request);
         Ok(stream_events(
             vec![Ok(StreamEvent::text_delta("{\"answer\":\"yes\"}"))].into_iter(),
+        ))
+    }
+}
+
+struct ProfileRouteRecordingAdapter {
+    name: &'static str,
+    requests: Arc<Mutex<Vec<Request>>>,
+}
+
+impl ProfileRouteRecordingAdapter {
+    fn new(name: &'static str, requests: Arc<Mutex<Vec<Request>>>) -> Self {
+        Self { name, requests }
+    }
+
+    fn record(&self, request: Request) {
+        self.requests
+            .lock()
+            .expect("profile route request log")
+            .push(request);
+    }
+}
+
+impl ProviderAdapter for ProfileRouteRecordingAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, unified_llm_adapter::AdapterError> {
+        self.record(request.clone());
+        Ok(Response {
+            model: request.model,
+            provider: request.provider.unwrap_or_default(),
+            message: Message::assistant("profile complete"),
+            finish_reason: FinishReason::Stop,
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
+        self.record(request);
+        Ok(stream_events(
+            vec![Ok(StreamEvent::text_delta("profile stream"))].into_iter(),
         ))
     }
 }

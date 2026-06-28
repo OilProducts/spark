@@ -8,21 +8,23 @@ use std::thread;
 use std::time::Duration;
 
 use attractor_core::{
-    ContextMap, DotGraph, FailureKind, LaunchContext, Outcome, OutcomeStatus, RawRuntimeEvent,
-    RunRecord,
+    CheckpointState, ContextMap, DotGraph, FailureKind, LaunchContext, Outcome, OutcomeStatus,
+    RawRuntimeEvent, RunRecord,
 };
 use attractor_dsl::parse_dot;
 use attractor_runtime::{
     ensure_run_layout, read_raw_events, resolve_handler_type_for_attrs, ChildInterventionRequest,
-    ChildInterventionResult, ChildRunResult, ExecuteRunRequest, HumanAnswer, NodeArtifacts,
-    NodeExecutionRequest, NodeExecutor, PipelineExecutor, QueueInterviewer, RunRootPaths, RunStore,
+    ChildInterventionResult, ChildRunResult, ContinueRunRequest, CreateRunRequest,
+    ExecuteRunRequest, ExecutionStart, HumanAnswer, NodeArtifacts, NodeExecutionRequest,
+    NodeExecutor, PipelineExecutor, QueueInterviewer, RunRootPaths, RunStore, RuntimeControls,
     RuntimeHandlerRunner, HANDLER_CODERGEN, HANDLER_CONDITIONAL, HANDLER_FAN_IN,
     HANDLER_MANAGER_LOOP, HANDLER_START, HANDLER_TOOL, HANDLER_WAIT_HUMAN,
 };
 use serde_json::{json, Value};
 use unified_llm_adapter::{
-    RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
-    RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+    ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
+    Request as LlmRequest, Response, StreamEvents, Usage, RUNTIME_LAUNCH_MODEL_KEY,
+    RUNTIME_LAUNCH_PROFILE_KEY, RUNTIME_LAUNCH_PROVIDER_KEY, RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
 };
 
 fn repo_root() -> PathBuf {
@@ -128,6 +130,10 @@ fn handler_request(
         run_paths: Some(paths.clone()),
         run_workdir: run_workdir.to_path_buf(),
         run_id: paths.run_id.clone(),
+        fallback_model: None,
+        fallback_provider: None,
+        fallback_profile: None,
+        fallback_reasoning_effort: None,
     }
 }
 
@@ -1476,6 +1482,345 @@ fn fan_in_ranking_uses_llm_resolution_contract_for_node_and_launch_metadata() {
 }
 
 #[test]
+fn codergen_runtime_handler_can_enter_rust_unified_llm_adapter_boundary() {
+    let graph = parse_graph(
+        r#"
+        digraph G {
+          task [
+            shape=box,
+            prompt="Write runtime boundary proof",
+            llm_model="gpt-runtime",
+            llm_provider="OpenAI",
+            llm_profile="implementation",
+            reasoning_effort="HIGH"
+          ]
+        }
+        "#,
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RustBoundaryRecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "implementation",
+            ActiveLlmProfile::new("openai_compatible", Some("gpt-runtime".to_string())),
+            adapter,
+        )
+        .expect("client");
+    let mut runner = RuntimeHandlerRunner::new().with_rust_llm_client(client);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = run_paths(&temp, "run-rust-llm-codergen-boundary");
+
+    let outcome = execute_handler(
+        &mut runner,
+        &graph,
+        "task",
+        ContextMap::new(),
+        &paths,
+        temp.path(),
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Success);
+    assert_eq!(outcome.notes, "runtime adapter response");
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.provider.as_deref(), Some("openai_compatible"));
+    assert_eq!(request.model, "gpt-runtime");
+    assert_eq!(
+        request.messages,
+        vec![Message::user("Write runtime boundary proof")]
+    );
+    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(request.metadata["spark.runtime.source"], json!("codergen"));
+    assert_eq!(
+        request.metadata["spark.runtime.provider"],
+        json!("openai_compatible")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.model"],
+        json!("gpt-runtime")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.llm_profile"],
+        json!("implementation")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.reasoning_effort"],
+        json!("high")
+    );
+}
+
+#[test]
+fn codergen_runtime_uses_run_record_llm_fallback_when_launch_context_omits_selection() {
+    let graph = parse_graph(
+        r#"
+        digraph G {
+          start [shape=Mdiamond]
+          task [shape=box, prompt="Use fallback selection"]
+          done [shape=Msquare]
+          start -> task
+          task -> done
+        }
+        "#,
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RustBoundaryRecordingAdapter::new(
+        "openai",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], None).expect("client");
+    let runner = RuntimeHandlerRunner::new().with_rust_llm_client(client);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project_path = temp.path().join("Project");
+    std::fs::create_dir_all(&project_path).expect("project");
+    let store = RunStore::for_runs_dir(temp.path().join("spark-home/attractor/runs"));
+    let mut record = RunRecord::new("run-record-llm-fallback", project_path.to_string_lossy());
+    record.started_at = "2026-06-23T10:00:00Z".to_string();
+    record.model = "gpt-record".to_string();
+    record.provider = "OpenAI".to_string();
+    record.llm_provider = "OpenAI".to_string();
+    record.reasoning_effort = Some("HIGH".to_string());
+    let mut executor = PipelineExecutor::new(runner);
+
+    let result = executor
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record,
+            graph,
+            graph_source: None,
+            graph_dot: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: Default::default(),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .expect("pipeline result");
+
+    assert_eq!(result.status, "completed");
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].provider.as_deref(), Some("openai"));
+    assert_eq!(requests[0].model, "gpt-record");
+    assert_eq!(requests[0].reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        requests[0].metadata["spark.runtime.model"],
+        json!("gpt-record")
+    );
+}
+
+#[test]
+fn codergen_runtime_launch_context_overrides_run_record_llm_fallback() {
+    let graph = parse_graph(
+        r#"
+        digraph G {
+          start [shape=Mdiamond]
+          task [shape=box, prompt="Use launch selection"]
+          done [shape=Msquare]
+          start -> task
+          task -> done
+        }
+        "#,
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let openai: Arc<dyn ProviderAdapter> = Arc::new(RustBoundaryRecordingAdapter::new(
+        "openai",
+        Arc::clone(&calls),
+    ));
+    let gemini: Arc<dyn ProviderAdapter> = Arc::new(RustBoundaryRecordingAdapter::new(
+        "gemini",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![openai, gemini], None).expect("client");
+    let runner = RuntimeHandlerRunner::new().with_rust_llm_client(client);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project_path = temp.path().join("Project");
+    std::fs::create_dir_all(&project_path).expect("project");
+    let store = RunStore::for_runs_dir(temp.path().join("spark-home/attractor/runs"));
+    let mut record = RunRecord::new("run-launch-llm-override", project_path.to_string_lossy());
+    record.started_at = "2026-06-23T10:00:00Z".to_string();
+    record.model = "gpt-record".to_string();
+    record.provider = "OpenAI".to_string();
+    record.llm_provider = "OpenAI".to_string();
+    record.reasoning_effort = Some("HIGH".to_string());
+    let launch_context = LaunchContext::new(context([
+        (RUNTIME_LAUNCH_MODEL_KEY, json!("gemini-launch")),
+        (RUNTIME_LAUNCH_PROVIDER_KEY, json!("Gemini")),
+        (RUNTIME_LAUNCH_REASONING_EFFORT_KEY, json!("MEDIUM")),
+    ]))
+    .expect("launch context");
+    let mut executor = PipelineExecutor::new(runner);
+
+    let result = executor
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record,
+            graph,
+            graph_source: None,
+            graph_dot: None,
+            launch_context,
+            runtime_context: Default::default(),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .expect("pipeline result");
+
+    assert_eq!(result.status, "completed");
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].provider.as_deref(), Some("gemini"));
+    assert_eq!(requests[0].model, "gemini-launch");
+    assert_eq!(requests[0].reasoning_effort.as_deref(), Some("medium"));
+}
+
+#[test]
+fn continued_run_llm_selection_reaches_resumed_codergen_backend() {
+    let graph_source = r#"
+        digraph G {
+          start [shape=Mdiamond]
+          task [shape=box, prompt="Use continued selection"]
+          done [shape=Msquare]
+          start -> task -> done
+        }
+        "#;
+    let graph = parse_graph(graph_source);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project_path = temp.path().join("Project");
+    std::fs::create_dir_all(&project_path).expect("project");
+    let store = RunStore::for_runs_dir(temp.path().join("spark-home/attractor/runs"));
+    let mut source_record =
+        RunRecord::new("run-source-continue-llm", project_path.to_string_lossy());
+    source_record.flow_name = "continue-llm.dot".to_string();
+    source_record.status = "failed".to_string();
+    source_record.last_error = "previous failure".to_string();
+    source_record.started_at = "2026-06-23T10:00:00Z".to_string();
+    source_record.model = "gpt-source-record".to_string();
+    source_record.provider = "Gemini".to_string();
+    source_record.llm_provider = "Gemini".to_string();
+    source_record.llm_profile = Some("source-profile".to_string());
+    source_record.reasoning_effort = Some("MEDIUM".to_string());
+    let source_checkpoint = CheckpointState {
+        timestamp: "2026-06-23T10:00:00Z".to_string(),
+        current_node: "task".to_string(),
+        completed_nodes: vec!["start".to_string()],
+        context: context([
+            (RUNTIME_LAUNCH_MODEL_KEY, json!("gemini-source")),
+            (RUNTIME_LAUNCH_PROVIDER_KEY, json!("Gemini")),
+            (RUNTIME_LAUNCH_PROFILE_KEY, json!("source-profile")),
+            (RUNTIME_LAUNCH_REASONING_EFFORT_KEY, json!("LOW")),
+        ]),
+        retry_counts: Default::default(),
+        logs: Vec::new(),
+    };
+    store
+        .create_run(CreateRunRequest {
+            record: source_record,
+            checkpoint: Some(source_checkpoint),
+            graph_source: Some(graph_source.to_string()),
+            graph_dot: Some(graph_source.to_string()),
+            ..CreateRunRequest::default()
+        })
+        .expect("source run");
+    RuntimeControls::new(store.clone())
+        .continue_from_snapshot(ContinueRunRequest {
+            source_run_id: "run-source-continue-llm".to_string(),
+            start_node: "task".to_string(),
+            flow_source_mode: "snapshot".to_string(),
+            flow_name: None,
+            new_run_id: Some("run-continued-llm-resume".to_string()),
+            graph: graph.clone(),
+            graph_source: Some(graph_source.to_string()),
+            graph_dot: Some(graph_source.to_string()),
+            working_directory: None,
+            model: Some("gpt-continue".to_string()),
+            llm_provider: Some("OpenAI_Compatible".to_string()),
+            llm_profile: Some("frontier".to_string()),
+            reasoning_effort: Some("HIGH".to_string()),
+        })
+        .expect("continue run");
+    let continued_bundle = store
+        .read_run_bundle("run-continued-llm-resume")
+        .expect("continued bundle")
+        .expect("continued bundle");
+    let continued_paths = continued_bundle.paths.clone();
+    let continued_record = continued_bundle.record.expect("continued record");
+    let continued_checkpoint = continued_bundle.checkpoint.expect("continued checkpoint");
+    assert_eq!(
+        continued_checkpoint.context[RUNTIME_LAUNCH_MODEL_KEY],
+        json!("gpt-continue")
+    );
+    assert_eq!(
+        continued_checkpoint.context[RUNTIME_LAUNCH_PROVIDER_KEY],
+        json!("openai_compatible")
+    );
+    assert_eq!(
+        continued_checkpoint.context[RUNTIME_LAUNCH_PROFILE_KEY],
+        json!("frontier")
+    );
+    assert_eq!(
+        continued_checkpoint.context[RUNTIME_LAUNCH_REASONING_EFFORT_KEY],
+        json!("high")
+    );
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RustBoundaryRecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "frontier",
+            ActiveLlmProfile::new("openai_compatible", Some("gpt-profile-default".to_string())),
+            adapter,
+        )
+        .expect("client");
+    let runner = RuntimeHandlerRunner::new().with_rust_llm_client(client);
+    let mut executor = PipelineExecutor::new(runner);
+
+    let result = executor
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: continued_record,
+            graph,
+            graph_source: Some(graph_source.to_string()),
+            graph_dot: Some(graph_source.to_string()),
+            launch_context: LaunchContext::empty(),
+            runtime_context: Default::default(),
+            max_steps: None,
+            start: ExecutionStart::Resume {
+                paths: continued_paths,
+                checkpoint: continued_checkpoint,
+            },
+        })
+        .expect("pipeline result");
+
+    assert_eq!(result.status, "completed");
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].provider.as_deref(), Some("openai_compatible"));
+    assert_eq!(requests[0].model, "gpt-continue");
+    assert_eq!(requests[0].reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        requests[0].metadata["spark.runtime.provider"],
+        json!("openai_compatible")
+    );
+    assert_eq!(
+        requests[0].metadata["spark.runtime.model"],
+        json!("gpt-continue")
+    );
+    assert_eq!(
+        requests[0].metadata["spark.runtime.llm_profile"],
+        json!("frontier")
+    );
+    assert_eq!(
+        requests[0].metadata["spark.runtime.reasoning_effort"],
+        json!("high")
+    );
+}
+
+#[test]
 fn handler_panics_normalize_to_durable_pipeline_failure() {
     let graph = parse_graph(
         r#"
@@ -1533,4 +1878,42 @@ fn handler_panics_normalize_to_durable_pipeline_failure() {
     .expect("status json");
     assert_eq!(status["outcome"], json!("fail"));
     assert_eq!(status["failure_kind"], json!("runtime"));
+}
+
+struct RustBoundaryRecordingAdapter {
+    name: &'static str,
+    calls: Arc<Mutex<Vec<LlmRequest>>>,
+}
+
+impl RustBoundaryRecordingAdapter {
+    fn new(name: &'static str, calls: Arc<Mutex<Vec<LlmRequest>>>) -> Self {
+        Self { name, calls }
+    }
+}
+
+impl ProviderAdapter for RustBoundaryRecordingAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, request: LlmRequest) -> Result<Response, AdapterError> {
+        self.calls.lock().expect("calls").push(request.clone());
+        Ok(Response {
+            model: request.model.clone(),
+            provider: request.provider.clone().unwrap_or_default(),
+            message: Message::assistant("runtime adapter response"),
+            finish_reason: FinishReason::Stop,
+            usage: Usage {
+                input_tokens: 1,
+                output_tokens: 2,
+                total_tokens: 3,
+                ..Usage::default()
+            },
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, _request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        unimplemented!("codergen runtime uses complete")
+    }
 }

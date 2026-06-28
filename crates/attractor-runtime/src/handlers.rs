@@ -56,6 +56,8 @@ pub type RuntimeThreadSafeHandlerFn =
     dyn Fn(HandlerRuntime) -> std::result::Result<Outcome, RuntimeNodeError> + Send + Sync;
 
 pub type FanInRanker = Box<dyn FnMut(FanInRankingRequest) -> Option<String> + Send>;
+pub type CodergenBackendFactory =
+    Arc<dyn Fn() -> Box<dyn spark_agent_adapter::CodergenBackend> + Send + Sync>;
 pub type ChildRunLauncher = Arc<dyn Fn(ChildRunRequest) -> ChildRunResult + Send + Sync>;
 pub type ChildStatusResolver = Arc<dyn Fn(&str) -> Option<ChildRunResult> + Send + Sync>;
 pub type ChildInterventionRequester =
@@ -94,6 +96,10 @@ pub struct HandlerRuntime {
     pub run_workdir: PathBuf,
     pub run_id: String,
     pub run_paths: Option<RunRootPaths>,
+    pub fallback_model: Option<String>,
+    pub fallback_provider: Option<String>,
+    pub fallback_profile: Option<String>,
+    pub fallback_reasoning_effort: Option<String>,
 }
 
 impl HandlerRuntime {
@@ -118,6 +124,10 @@ impl HandlerRuntime {
             run_workdir: request.run_workdir,
             run_id: request.run_id,
             run_paths: request.run_paths,
+            fallback_model: request.fallback_model,
+            fallback_provider: request.fallback_provider,
+            fallback_profile: request.fallback_profile,
+            fallback_reasoning_effort: request.fallback_reasoning_effort,
         }
     }
 }
@@ -317,6 +327,7 @@ pub struct RuntimeHandlerRunner {
     custom_handlers: BTreeMap<String, RegisteredRuntimeHandler>,
     interviewer: Arc<Mutex<Box<dyn Interviewer + Send>>>,
     fan_in_ranker: Option<Arc<Mutex<FanInRanker>>>,
+    codergen_backend_factory: Option<CodergenBackendFactory>,
     event_append_lock: Arc<Mutex<()>>,
     child_run_launcher: Option<ChildRunLauncher>,
     child_status_resolver: Option<ChildStatusResolver>,
@@ -339,6 +350,7 @@ impl RuntimeHandlerRunner {
             custom_handlers: BTreeMap::new(),
             interviewer: Arc::new(Mutex::new(Box::<QueueInterviewer>::default())),
             fan_in_ranker: None,
+            codergen_backend_factory: None,
             event_append_lock: Arc::new(Mutex::new(())),
             child_run_launcher: None,
             child_status_resolver: None,
@@ -359,6 +371,37 @@ impl RuntimeHandlerRunner {
     ) -> Self {
         self.fan_in_ranker = Some(Arc::new(Mutex::new(Box::new(ranker))));
         self
+    }
+
+    pub fn with_codergen_backend_factory(
+        mut self,
+        factory: impl Fn() -> Box<dyn spark_agent_adapter::CodergenBackend> + Send + Sync + 'static,
+    ) -> Self {
+        self.codergen_backend_factory = Some(Arc::new(factory));
+        self
+    }
+
+    pub fn with_rust_llm_client(self, client: unified_llm_adapter::Client) -> Self {
+        self.with_codergen_backend_factory(move || {
+            Box::new(spark_agent_adapter::RustLlmCodergenBackend::new(
+                client.clone(),
+            ))
+        })
+    }
+
+    pub fn set_codergen_backend_factory(
+        &mut self,
+        factory: impl Fn() -> Box<dyn spark_agent_adapter::CodergenBackend> + Send + Sync + 'static,
+    ) {
+        self.codergen_backend_factory = Some(Arc::new(factory));
+    }
+
+    pub fn set_rust_llm_client(&mut self, client: unified_llm_adapter::Client) {
+        self.set_codergen_backend_factory(move || {
+            Box::new(spark_agent_adapter::RustLlmCodergenBackend::new(
+                client.clone(),
+            ))
+        });
     }
 
     pub fn with_child_run_launcher(
@@ -511,8 +554,21 @@ impl RuntimeHandlerRunner {
         &self,
         runtime: HandlerRuntime,
     ) -> std::result::Result<Outcome, RuntimeNodeError> {
-        let mut codergen =
-            RuntimeCodergen::simulation(runtime.graph.clone(), runtime.logs_root.clone());
+        let mut codergen = if let Some(factory) = self.codergen_backend_factory.as_ref() {
+            RuntimeCodergen::with_boxed_backend(
+                runtime.graph.clone(),
+                runtime.logs_root.clone(),
+                factory(),
+            )
+        } else {
+            RuntimeCodergen::simulation(runtime.graph.clone(), runtime.logs_root.clone())
+        }
+        .with_llm_fallbacks(
+            runtime.fallback_model.clone(),
+            runtime.fallback_provider.clone(),
+            runtime.fallback_profile.clone(),
+            runtime.fallback_reasoning_effort.clone(),
+        );
         let execution = codergen
             .execute(&runtime.node_id, runtime.context.clone())
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
@@ -1065,6 +1121,10 @@ impl RuntimeHandlerRunner {
                 run_paths: runtime.run_paths.clone(),
                 run_workdir: runtime.run_workdir.clone(),
                 run_id: runtime.run_id.clone(),
+                fallback_model: runtime.fallback_model.clone(),
+                fallback_provider: runtime.fallback_provider.clone(),
+                fallback_profile: runtime.fallback_profile.clone(),
+                fallback_reasoning_effort: runtime.fallback_reasoning_effort.clone(),
             };
             let raw_outcome = match self.execute_request(request) {
                 Ok(outcome) => outcome,
@@ -1154,7 +1214,7 @@ impl RuntimeHandlerRunner {
         let mut selected: Option<Value> = None;
         if !runtime.prompt.trim().is_empty() {
             if let Some(ranker) = self.fan_in_ranker.as_ref() {
-                let resolution = fan_in_llm_resolution_inputs(&runtime.node_attrs);
+                let resolution = fan_in_llm_resolution_inputs(&runtime);
                 let request = FanInRankingRequest {
                     node_id: runtime.node_id.clone(),
                     prompt: runtime.prompt.clone(),
@@ -1257,9 +1317,8 @@ pub fn resolve_handler_type_for_attrs(
     HANDLER_CODERGEN.to_string()
 }
 
-fn fan_in_llm_resolution_inputs(
-    node_attrs: &BTreeMap<String, DotAttribute>,
-) -> LlmResolutionInputs {
+fn fan_in_llm_resolution_inputs(runtime: &HandlerRuntime) -> LlmResolutionInputs {
+    let node_attrs = &runtime.node_attrs;
     let reasoning_attr = node_attrs.get("reasoning_effort");
     LlmResolutionInputs {
         node_model: attr_text(node_attrs, "llm_model"),
@@ -1267,10 +1326,10 @@ fn fan_in_llm_resolution_inputs(
         node_profile: attr_text(node_attrs, "llm_profile"),
         node_reasoning_effort: attr_text(node_attrs, "reasoning_effort"),
         node_reasoning_is_default_placeholder: reasoning_attr.is_some_and(|attr| attr.line == 0),
-        fallback_model: None,
-        fallback_provider: None,
-        fallback_profile: None,
-        fallback_reasoning_effort: None,
+        fallback_model: runtime.fallback_model.clone(),
+        fallback_provider: runtime.fallback_provider.clone(),
+        fallback_profile: runtime.fallback_profile.clone(),
+        fallback_reasoning_effort: runtime.fallback_reasoning_effort.clone(),
     }
 }
 

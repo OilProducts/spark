@@ -43,6 +43,16 @@ use crate::{
 
 type ApiResult<T> = std::result::Result<Json<T>, WorkspaceApiError>;
 
+fn conversation_service(
+    settings: &SparkSettings,
+    runtime_handler_runner_factory: &attractor_api::RuntimeHandlerRunnerFactory,
+) -> WorkspaceConversationService {
+    WorkspaceConversationService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        runtime_handler_runner_factory.clone(),
+    )
+}
+
 pub fn router() -> Router<HttpAppState> {
     Router::new()
         .route("/projects", get(list_projects).delete(delete_project))
@@ -291,12 +301,13 @@ async fn answer_conversation_request_user_input(
 
 async fn create_flow_run_request_by_handle(
     State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(conversation_handle): AxumPath<String>,
     payload: Result<Json<FlowRunRequestCreateByHandleRequest>, JsonRejection>,
 ) -> ApiResult<FlowRunRequestCreateResponse> {
     let request = json_payload(payload)?;
-    let response = WorkspaceConversationService::new((*settings).clone())
+    let response = conversation_service(&settings, &runtime_handler_runner_factory)
         .create_flow_run_request_by_handle(&conversation_handle, request)?;
     publish_conversation_snapshot(
         &settings,
@@ -309,13 +320,14 @@ async fn create_flow_run_request_by_handle(
 
 async fn review_flow_run_request(
     State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath((conversation_id, request_id)): AxumPath<(String, String)>,
     payload: Result<Json<FlowRunRequestReviewRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
     let project_path = request.project_path.clone();
-    let service = WorkspaceConversationService::new((*settings).clone());
+    let service = conversation_service(&settings, &runtime_handler_runner_factory);
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let before_run_ids = current_conversation_run_ids(&service, &conversation_id, &project_path);
     let updated = service.review_flow_run_request(&conversation_id, &request_id, request)?;
@@ -332,13 +344,14 @@ async fn review_flow_run_request(
 
 async fn review_proposed_plan(
     State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath((conversation_id, plan_id)): AxumPath<(String, String)>,
     payload: Result<Json<ProposedPlanReviewRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
     let project_path = request.project_path.clone();
-    let service = WorkspaceConversationService::new((*settings).clone());
+    let service = conversation_service(&settings, &runtime_handler_runner_factory);
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let before_run_ids = current_conversation_run_ids(&service, &conversation_id, &project_path);
     let updated = service.review_proposed_plan(&conversation_id, &plan_id, request)?;
@@ -355,6 +368,7 @@ async fn review_proposed_plan(
 
 async fn launch_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     body: Bytes,
 ) -> Result<Response, WorkspaceApiError> {
@@ -362,8 +376,8 @@ async fn launch_workspace_run(
         Ok(request) => request,
         Err(response) => return Ok(response),
     };
-    let payload =
-        WorkspaceConversationService::new((*settings).clone()).launch_workspace_run(request)?;
+    let payload = conversation_service(&settings, &runtime_handler_runner_factory)
+        .launch_workspace_run(request)?;
     publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_run_ids_from_value(&settings, &live_hub, &payload);
     Ok(Json(payload).into_response())
@@ -371,6 +385,7 @@ async fn launch_workspace_run(
 
 async fn retry_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
     body: Bytes,
@@ -380,7 +395,7 @@ async fn retry_workspace_run(
         Err(response) => return Ok(response),
     };
     let before_sequence = latest_run_sequence(&settings, &run_id).ok().flatten();
-    let payload = WorkspaceConversationService::new((*settings).clone())
+    let payload = conversation_service(&settings, &runtime_handler_runner_factory)
         .retry_workspace_run(&run_id, request)?;
     publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_live_run_after(&settings, &live_hub, &run_id, before_sequence);
@@ -390,6 +405,7 @@ async fn retry_workspace_run(
 
 async fn continue_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
     body: Bytes,
@@ -399,7 +415,7 @@ async fn continue_workspace_run(
         Err(response) => return Ok(response),
     };
     let before_sequence = latest_run_sequence(&settings, &run_id).ok().flatten();
-    let payload = WorkspaceConversationService::new((*settings).clone())
+    let payload = conversation_service(&settings, &runtime_handler_runner_factory)
         .continue_workspace_run(&run_id, request)?;
     publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_live_run_after(&settings, &live_hub, &run_id, before_sequence);

@@ -289,6 +289,7 @@ fn build_convo_plan(
                     "--launch-context-file",
                     "--model",
                     "--llm-provider",
+                    "--llm-profile",
                     "--reasoning-effort",
                     "--execution-profile",
                     "--base-url",
@@ -348,6 +349,7 @@ fn build_run_plan(
                     "--launch-context-file",
                     "--model",
                     "--llm-provider",
+                    "--llm-profile",
                     "--reasoning-effort",
                     "--execution-profile",
                     "--base-url",
@@ -1709,6 +1711,7 @@ fn build_flow_payload(
     if let Some(value) = trimmed_option(options, "--llm-provider") {
         body.insert("llm_provider".to_string(), json!(value.to_lowercase()));
     }
+    insert_trimmed(&mut body, options, "--llm-profile", "llm_profile");
     if let Some(value) = trimmed_option(options, "--reasoning-effort") {
         body.insert("reasoning_effort".to_string(), json!(value.to_lowercase()));
     }

@@ -422,6 +422,71 @@ fn worker_run_node_process_accepts_json_line_request() {
     assert_eq!(frame["outcome"]["status"], json!("success"));
 }
 
+#[test]
+fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
+    let binary = env!("CARGO_BIN_EXE_spark-server");
+    let request = json!({
+        "run_id": "run-worker-llm-process",
+        "graph": {
+            "graph_id": "G",
+            "graph_attrs": {},
+            "nodes": {
+                "task": {
+                    "node_id": "task",
+                    "attrs": {
+                        "shape": {"key": "shape", "value": "box", "value_type": "string", "line": 1},
+                        "prompt": {"key": "prompt", "value": "Write a worker note", "value_type": "string", "line": 1},
+                        "llm_provider": {"key": "llm_provider", "value": "OpenAI", "value_type": "string", "line": 1},
+                        "llm_model": {"key": "llm_model", "value": "gpt-boundary", "value_type": "string", "line": 1}
+                    },
+                    "line": 1,
+                    "explicit_attr_keys": ["shape", "prompt", "llm_provider", "llm_model"]
+                }
+            },
+            "edges": [],
+            "defaults": {"node": {}, "edge": {}},
+            "subgraphs": []
+        },
+        "node_id": "task",
+        "prompt": "Write a worker note",
+        "context": {},
+        "context_logs": [],
+        "logs_root": null,
+        "working_dir": ".",
+        "backend_name": null,
+        "model": null,
+        "config_dir": null
+    });
+    let mut child = Command::new(binary)
+        .args(["worker", "run-node"])
+        .env("OPENAI_API_KEY", "test-key")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn worker");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all((request.to_string() + "\n").as_bytes())
+        .expect("write request");
+
+    let output = child.wait_with_output().expect("worker output");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let frame: Value = serde_json::from_slice(&output.stdout).expect("worker frame");
+    assert_eq!(frame["type"], json!("result"));
+    assert_eq!(frame["outcome"]["status"], json!("fail"));
+    let reason = frame["outcome"]["failure_reason"]
+        .as_str()
+        .expect("failure reason");
+    assert!(reason.contains("ConfigurationError"));
+    assert!(reason.contains("Rust native adapter"));
+    assert!(reason.contains("no HTTP transport is configured"));
+}
+
 fn list_dot_files(root: &Path) -> Vec<String> {
     let mut files = Vec::new();
     collect_dot_files(root, root, &mut files);

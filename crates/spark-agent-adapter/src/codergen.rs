@@ -162,6 +162,12 @@ impl CodergenHandler {
         }
     }
 
+    pub fn with_boxed_backend(backend: Box<dyn CodergenBackend>) -> Self {
+        Self {
+            backend: Some(backend),
+        }
+    }
+
     pub fn execute(
         &mut self,
         request: CodergenRequest,

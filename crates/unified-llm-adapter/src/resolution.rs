@@ -10,6 +10,7 @@ pub const RUNTIME_LAUNCH_MODEL_KEY: &str = "_attractor.runtime.launch_model";
 pub const RUNTIME_LAUNCH_PROVIDER_KEY: &str = "_attractor.runtime.launch_provider";
 pub const RUNTIME_LAUNCH_PROFILE_KEY: &str = "_attractor.runtime.launch_profile";
 pub const RUNTIME_LAUNCH_REASONING_EFFORT_KEY: &str = "_attractor.runtime.launch_reasoning_effort";
+pub const DISPLAY_MODEL_PLACEHOLDER: &str = "codex default (config/profile)";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LlmResolutionInputs {
@@ -140,7 +141,7 @@ pub fn resolve_high_level_provider_and_model(
 
     let profile_default_model =
         active_profile_default_model_for_provider(inputs.active_profile.as_ref(), &provider);
-    let model = first_text([inputs.model.as_deref(), profile_default_model.as_deref()])
+    let model = first_model_text([inputs.model.as_deref(), profile_default_model.as_deref()])
         .or_else(|| {
             latest_native_model(&provider, inputs.required_capabilities).map(|model| model.id)
         })
@@ -154,11 +155,15 @@ pub fn resolve_effective_llm_model(
     context: &BTreeMap<String, Value>,
 ) -> Option<String> {
     let launch_model = context_text(context, RUNTIME_LAUNCH_MODEL_KEY);
-    first_text([
+    first_model_text([
         inputs.node_model.as_deref(),
         launch_model.as_deref(),
         inputs.fallback_model.as_deref(),
     ])
+}
+
+pub fn is_display_model_placeholder(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case(DISPLAY_MODEL_PLACEHOLDER)
 }
 
 pub fn resolve_effective_llm_provider(
@@ -209,6 +214,15 @@ fn first_text<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Option<S
         .flatten()
         .map(str::trim)
         .find(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn first_model_text<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty() && !is_display_model_placeholder(value))
         .map(str::to_string)
 }
 

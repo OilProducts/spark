@@ -82,6 +82,10 @@ where
             request.working_dir.clone()
         },
         run_id,
+        fallback_model: None,
+        fallback_provider: None,
+        fallback_profile: None,
+        fallback_reasoning_effort: None,
     };
     let outcome = match runner.execute(execution_request) {
         Ok(outcome) => outcome,

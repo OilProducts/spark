@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use attractor_core::{ContextMap, DotGraph, LaunchContext, RawRuntimeEvent, RunRecord};
@@ -20,6 +21,8 @@ use attractor_runtime::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
+
+pub type RuntimeHandlerRunnerFactory = Arc<dyn Fn() -> RuntimeHandlerRunner + Send + Sync>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreviewRequest {
@@ -451,14 +454,28 @@ pub fn execution_placement_settings(settings: &SparkSettings) -> RuntimeRouteRes
     )
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AttractorApiService {
     settings: SparkSettings,
+    runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
 }
 
 impl AttractorApiService {
     pub fn new(settings: SparkSettings) -> Self {
-        Self { settings }
+        Self::new_with_runtime_handler_runner_factory(
+            settings,
+            default_runtime_handler_runner_factory(),
+        )
+    }
+
+    pub fn new_with_runtime_handler_runner_factory(
+        settings: SparkSettings,
+        runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
+    ) -> Self {
+        Self {
+            settings,
+            runtime_handler_runner_factory,
+        }
     }
 
     pub fn get_status(&self) -> RuntimeRouteResponse {
@@ -646,12 +663,16 @@ impl AttractorApiService {
         };
         let working_directory = absolutize_path(&request.working_directory);
         let (selected_model, display_model) =
-            resolve_launch_model(&graph, request.model.as_deref());
-        let selected_provider = resolve_launch_provider(&graph, request.llm_provider.as_deref())
-            .unwrap_or_else(|| "codex".to_string());
-        let selected_profile = resolve_launch_profile(&graph, request.llm_profile.as_deref());
-        let selected_reasoning_effort =
-            resolve_launch_reasoning_effort(request.reasoning_effort.as_deref());
+            resolve_launch_model(&graph, request.model.as_deref(), &requested_context);
+        let selected_provider =
+            resolve_launch_provider(&graph, request.llm_provider.as_deref(), &requested_context)
+                .unwrap_or_else(|| "codex".to_string());
+        let selected_profile =
+            resolve_launch_profile(&graph, request.llm_profile.as_deref(), &requested_context);
+        let selected_reasoning_effort = resolve_launch_reasoning_effort(
+            request.reasoning_effort.as_deref(),
+            &requested_context,
+        );
         let execution_selection = match attractor_execution::resolve_execution_profile_by_id(
             &self.settings,
             request.execution_profile_id.as_deref(),
@@ -723,7 +744,7 @@ impl AttractorApiService {
         }
 
         let graph_dot = format_readable_dot(&graph);
-        let mut executor = PipelineExecutor::new(RuntimeHandlerRunner::new());
+        let mut executor = PipelineExecutor::new((self.runtime_handler_runner_factory.as_ref())());
         let execution_result = match executor.execute(ExecuteRunRequest {
             store: store.clone(),
             record,
@@ -1304,6 +1325,30 @@ pub fn handle_attractor_request(
     AttractorApiService::new(settings).dispatch(method, path, body)
 }
 
+pub fn handle_attractor_request_with_runtime_handler_runner_factory(
+    method: &str,
+    path: &str,
+    body: &str,
+    settings: SparkSettings,
+    runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
+) -> RuntimeRouteResponse {
+    AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings,
+        runtime_handler_runner_factory,
+    )
+    .dispatch(method, path, body)
+}
+
+pub fn default_runtime_handler_runner_factory() -> RuntimeHandlerRunnerFactory {
+    Arc::new(RuntimeHandlerRunner::new)
+}
+
+pub fn rust_llm_runtime_handler_runner_factory(
+    client: unified_llm_adapter::Client,
+) -> RuntimeHandlerRunnerFactory {
+    Arc::new(move || RuntimeHandlerRunner::new().with_rust_llm_client(client.clone()))
+}
+
 pub fn preview(req: PreviewRequest) -> PreviewRouteResponse {
     preview_with_config(req, &PreviewServiceConfig::default())
 }
@@ -1790,30 +1835,74 @@ fn normalize_path_string(path: PathBuf) -> String {
 fn resolve_launch_model(
     graph: &DotGraph,
     requested_model: Option<&str>,
+    launch_context: &ContextMap,
 ) -> (Option<String>, String) {
-    if let Some(model) = trimmed_option(requested_model) {
-        if model != "codex default (config/profile)" {
-            return (Some(model.clone()), model);
-        }
-    }
-    if let Some(model) = graph_attr_string(graph, "ui_default_llm_model") {
+    if let Some(model) = trimmed_real_model(requested_model) {
         return (Some(model.clone()), model);
     }
-    (None, "codex default (config/profile)".to_string())
+    if let Some(model) = trimmed_real_model(
+        context_value_text(
+            launch_context,
+            unified_llm_adapter::RUNTIME_LAUNCH_MODEL_KEY,
+        )
+        .as_deref(),
+    ) {
+        return (Some(model.clone()), model);
+    }
+    if let Some(model) =
+        trimmed_real_model(graph_attr_string(graph, "ui_default_llm_model").as_deref())
+    {
+        return (Some(model.clone()), model);
+    }
+    (
+        None,
+        unified_llm_adapter::DISPLAY_MODEL_PLACEHOLDER.to_string(),
+    )
 }
 
-fn resolve_launch_provider(graph: &DotGraph, requested_provider: Option<&str>) -> Option<String> {
+fn resolve_launch_provider(
+    graph: &DotGraph,
+    requested_provider: Option<&str>,
+    launch_context: &ContextMap,
+) -> Option<String> {
     trimmed_option(requested_provider)
+        .or_else(|| {
+            context_value_text(
+                launch_context,
+                unified_llm_adapter::RUNTIME_LAUNCH_PROVIDER_KEY,
+            )
+        })
         .or_else(|| graph_attr_string(graph, "ui_default_llm_provider"))
         .map(|provider| provider.to_lowercase())
 }
 
-fn resolve_launch_profile(graph: &DotGraph, requested_profile: Option<&str>) -> Option<String> {
-    trimmed_option(requested_profile).or_else(|| graph_attr_string(graph, "ui_default_llm_profile"))
+fn resolve_launch_profile(
+    graph: &DotGraph,
+    requested_profile: Option<&str>,
+    launch_context: &ContextMap,
+) -> Option<String> {
+    trimmed_option(requested_profile)
+        .or_else(|| {
+            context_value_text(
+                launch_context,
+                unified_llm_adapter::RUNTIME_LAUNCH_PROFILE_KEY,
+            )
+        })
+        .or_else(|| graph_attr_string(graph, "ui_default_llm_profile"))
 }
 
-fn resolve_launch_reasoning_effort(requested: Option<&str>) -> Option<String> {
-    trimmed_option(requested).map(|value| value.to_lowercase())
+fn resolve_launch_reasoning_effort(
+    requested: Option<&str>,
+    launch_context: &ContextMap,
+) -> Option<String> {
+    trimmed_option(requested)
+        .or_else(|| {
+            context_value_text(
+                launch_context,
+                unified_llm_adapter::RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+            )
+        })
+        .map(|value| value.to_lowercase())
 }
 
 fn graph_attr_string(graph: &DotGraph, key: &str) -> Option<String> {
@@ -1822,6 +1911,22 @@ fn graph_attr_string(graph: &DotGraph, key: &str) -> Option<String> {
         .get(key)
         .map(|attr| attr.value.to_string().trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn context_value_text(context: &ContextMap, key: &str) -> Option<String> {
+    let value = context.get(key)?;
+    Some(match value {
+        Value::Null => String::new(),
+        Value::String(text) => text.clone(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).ok()?,
+    })
+    .and_then(|value| trimmed_option(Some(value.as_str())))
+}
+
+fn trimmed_real_model(value: Option<&str>) -> Option<String> {
+    trimmed_option(value).filter(|value| !unified_llm_adapter::is_display_model_placeholder(value))
 }
 
 fn start_response_payload(

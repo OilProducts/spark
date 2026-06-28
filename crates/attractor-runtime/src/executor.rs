@@ -38,6 +38,10 @@ use crate::terminal::{
     resolve_terminal_workflow_outcome, GOAL_GATE_NO_RETRY_TARGET_REASON,
     GOAL_GATE_UNSATISFIED_OUTCOME_CODE,
 };
+use unified_llm_adapter::{
+    is_display_model_placeholder, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY,
+    RUNTIME_LAUNCH_PROVIDER_KEY, RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+};
 
 #[derive(Debug, Clone)]
 pub struct ExecuteRunRequest {
@@ -78,6 +82,10 @@ pub struct NodeExecutionRequest {
     pub run_paths: Option<crate::paths::RunRootPaths>,
     pub run_workdir: PathBuf,
     pub run_id: String,
+    pub fallback_model: Option<String>,
+    pub fallback_provider: Option<String>,
+    pub fallback_profile: Option<String>,
+    pub fallback_reasoning_effort: Option<String>,
 }
 
 pub trait NodeExecutor {
@@ -541,6 +549,7 @@ where
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(&record.working_directory));
+            let llm_fallbacks = llm_fallbacks_for_record(&record);
             let execution_request = NodeExecutionRequest {
                 node_id: current_node.clone(),
                 stage_index,
@@ -552,6 +561,10 @@ where
                 run_paths: Some(paths.clone()),
                 run_workdir,
                 run_id: run_id.clone(),
+                fallback_model: llm_fallbacks.model,
+                fallback_provider: llm_fallbacks.provider,
+                fallback_profile: llm_fallbacks.profile,
+                fallback_reasoning_effort: llm_fallbacks.reasoning_effort,
             };
 
             let raw_outcome = match catch_unwind(AssertUnwindSafe(|| {
@@ -849,32 +862,28 @@ fn seed_execution_record_context(context: &mut AttractorContext, record: &RunRec
         .execution_profile_capabilities
         .clone()
         .unwrap_or_else(|| json!([]));
-    let provider = if record.llm_provider.trim().is_empty() {
-        record.provider.trim()
-    } else {
-        record.llm_provider.trim()
-    };
+    let llm_fallbacks = llm_fallbacks_for_record(record);
+    set_launch_context_if_missing(
+        context,
+        RUNTIME_LAUNCH_MODEL_KEY,
+        llm_fallbacks.model.as_deref(),
+    )?;
+    set_launch_context_if_missing(
+        context,
+        RUNTIME_LAUNCH_PROVIDER_KEY,
+        llm_fallbacks.provider.as_deref(),
+    )?;
+    set_launch_context_if_missing(
+        context,
+        RUNTIME_LAUNCH_PROFILE_KEY,
+        llm_fallbacks.profile.as_deref(),
+    )?;
+    set_launch_context_if_missing(
+        context,
+        RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+        llm_fallbacks.reasoning_effort.as_deref(),
+    )?;
     for (key, value) in [
-        (
-            "_attractor.runtime.launch_model",
-            json!(record.model.clone()),
-        ),
-        (
-            "_attractor.runtime.launch_provider",
-            json!(if provider.is_empty() {
-                "codex"
-            } else {
-                provider
-            }),
-        ),
-        (
-            "_attractor.runtime.launch_profile",
-            json!(record.llm_profile.clone().unwrap_or_default()),
-        ),
-        (
-            "_attractor.runtime.launch_reasoning_effort",
-            json!(record.reasoning_effort.clone().unwrap_or_default()),
-        ),
         ("execution_mode", json!(execution_mode)),
         ("execution_profile_id", json!(profile_id.clone())),
         ("execution_container_image", json!(container_image.clone())),
@@ -905,6 +914,70 @@ fn seed_execution_record_context(context: &mut AttractorContext, record: &RunRec
         context.set(key, value)?;
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Default)]
+struct LlmFallbacks {
+    model: Option<String>,
+    provider: Option<String>,
+    profile: Option<String>,
+    reasoning_effort: Option<String>,
+}
+
+fn llm_fallbacks_for_record(record: &RunRecord) -> LlmFallbacks {
+    let provider = if record.llm_provider.trim().is_empty() {
+        record.provider.trim()
+    } else {
+        record.llm_provider.trim()
+    };
+    LlmFallbacks {
+        model: trimmed_real_model(&record.model),
+        provider: trimmed_text(provider).map(|value| value.to_ascii_lowercase()),
+        profile: record
+            .llm_profile
+            .as_deref()
+            .and_then(trimmed_text)
+            .map(str::to_string),
+        reasoning_effort: record
+            .reasoning_effort
+            .as_deref()
+            .and_then(trimmed_text)
+            .map(|value| value.to_ascii_lowercase()),
+    }
+}
+
+fn set_launch_context_if_missing(
+    context: &mut AttractorContext,
+    key: &str,
+    value: Option<&str>,
+) -> Result<()> {
+    if context.get(key).is_some_and(context_value_has_text) {
+        return Ok(());
+    }
+    if let Some(value) = value.and_then(trimmed_text) {
+        context.set(key, json!(value))?;
+    }
+    Ok(())
+}
+
+fn trimmed_real_model(value: &str) -> Option<String> {
+    trimmed_text(value)
+        .filter(|value| !is_display_model_placeholder(value))
+        .map(str::to_string)
+}
+
+fn trimmed_text(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn context_value_has_text(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(value) => !value.trim().is_empty(),
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => true,
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => true,
+    }
 }
 
 fn resume_outcome_for_node(node_id: &str, context: &AttractorContext) -> Outcome {

@@ -12,6 +12,10 @@ pub struct RuntimeCodergen {
     graph: DotGraph,
     logs_root: Option<PathBuf>,
     handler: CodergenHandler,
+    fallback_model: Option<String>,
+    fallback_provider: Option<String>,
+    fallback_profile: Option<String>,
+    fallback_reasoning_effort: Option<String>,
 }
 
 impl RuntimeCodergen {
@@ -20,6 +24,10 @@ impl RuntimeCodergen {
             graph,
             logs_root,
             handler: CodergenHandler::simulation(),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
         }
     }
 
@@ -32,7 +40,41 @@ impl RuntimeCodergen {
             graph,
             logs_root,
             handler: CodergenHandler::with_backend(backend),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
         }
+    }
+
+    pub fn with_boxed_backend(
+        graph: DotGraph,
+        logs_root: Option<PathBuf>,
+        backend: Box<dyn CodergenBackend>,
+    ) -> Self {
+        Self {
+            graph,
+            logs_root,
+            handler: CodergenHandler::with_boxed_backend(backend),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+        }
+    }
+
+    pub fn with_llm_fallbacks(
+        mut self,
+        model: Option<String>,
+        provider: Option<String>,
+        profile: Option<String>,
+        reasoning_effort: Option<String>,
+    ) -> Self {
+        self.fallback_model = model;
+        self.fallback_provider = provider;
+        self.fallback_profile = profile;
+        self.fallback_reasoning_effort = reasoning_effort;
+        self
     }
 
     pub fn execute(
@@ -50,10 +92,10 @@ impl RuntimeCodergen {
             graph: self.graph.clone(),
             context,
             logs_root: self.logs_root.clone(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
+            fallback_model: self.fallback_model.clone(),
+            fallback_provider: self.fallback_provider.clone(),
+            fallback_profile: self.fallback_profile.clone(),
+            fallback_reasoning_effort: self.fallback_reasoning_effort.clone(),
         })
     }
 }
