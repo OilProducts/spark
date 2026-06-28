@@ -24,7 +24,7 @@ just setup
 SPARK_HOME=~/.spark-dev uv run spark-server init
 ```
 
-The `uv run spark` and `uv run spark-server` commands are useful source-checkout wrappers. In this checkout they enter through Python console scripts unless a packaged wheel has installed `spark/bin/*`; running `cargo build --workspace` does not change where `uv run` dispatches.
+The `uv run spark` and `uv run spark-server` commands are source-checkout development entry points for the packaged command surface. They keep the documented command syntax available while bootstrapping the checkout's Rust-owned server and CLI runtime path where the rewrite supports it. They do not make Python `unified_llm` provider clients the normal Spark server or CLI provider execution path.
 
 If you need native Cargo-built binaries from the checkout, build the workspace and call the Cargo output paths directly:
 
@@ -51,7 +51,7 @@ Use `~/.spark-dev` for source-checkout work so the tutorial does not mutate a st
 uv run spark flow validate --file ~/.spark-dev/flows/my-first-flow.dot --text
 ```
 
-To exercise the native Rust backend instead of the wrapper backend, stop any server already using port `8010` and run the Cargo-built server directly:
+To exercise the Cargo-built Rust server binary directly, stop any server already using port `8010` and run the binary from `target/debug`:
 
 ```bash
 SPARK_HOME=~/.spark-dev target/debug/spark-server serve \

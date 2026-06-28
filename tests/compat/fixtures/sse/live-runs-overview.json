@@ -1,0 +1,116 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "sse/live-runs-overview",
+  "frames": [
+    {
+      "data": {
+        "cursor": null,
+        "payload": {
+          "run": {
+            "child_invocation_index": null,
+            "continued_from_flow_mode": null,
+            "continued_from_flow_name": null,
+            "continued_from_node": null,
+            "continued_from_run_id": null,
+            "ended_at": "2026-06-22T17:08:22Z",
+            "estimated_model_cost": null,
+            "execution_mode": "native",
+            "execution_profile_capabilities": {},
+            "execution_profile_id": "native",
+            "flow_name": "",
+            "git_branch": null,
+            "git_commit": null,
+            "last_error": "",
+            "llm_profile": null,
+            "llm_provider": "codex",
+            "model": "compat-model",
+            "outcome": "success",
+            "outcome_reason_code": null,
+            "outcome_reason_message": null,
+            "parent_node_id": null,
+            "parent_run_id": null,
+            "plan_id": null,
+            "project_path": "__PROJECT_DIR__",
+            "provider": "codex",
+            "reasoning_effort": null,
+            "root_run_id": "run-000000000001",
+            "run_id": "run-000000000001",
+            "spec_id": null,
+            "started_at": "2026-06-22T17:08:22Z",
+            "status": "completed",
+            "token_usage": null,
+            "token_usage_breakdown": null,
+            "working_directory": "__PROJECT_DIR__"
+          }
+        },
+        "project_path": "__PROJECT_DIR__",
+        "resource": {
+          "id": null,
+          "kind": "runs_overview"
+        },
+        "type": "run.upsert"
+      },
+      "data_text": "{\"type\": \"run.upsert\", \"project_path\": \"__PROJECT_DIR__\", \"resource\": {\"kind\": \"runs_overview\", \"id\": null}, \"cursor\": null, \"payload\": {\"run\": {\"run_id\": \"run-000000000001\", \"flow_name\": \"\", \"status\": \"completed\", \"outcome\": \"success\", \"outcome_reason_code\": null, \"outcome_reason_message\": null, \"working_directory\": \"__PROJECT_DIR__\", \"model\": \"compat-model\", \"provider\": \"codex\", \"llm_provider\": \"codex\", \"llm_profile\": null, \"reasoning_effort\": null, \"started_at\": \"2026-06-22T17:08:22Z\", \"ended_at\": \"2026-06-22T17:08:22Z\", \"project_path\": \"__PROJECT_DIR__\", \"git_branch\": null, \"git_commit\": null, \"spec_id\": null, \"plan_id\": null, \"continued_from_run_id\": null, \"continued_from_node\": null, \"continued_from_flow_mode\": null, \"continued_from_flow_name\": null, \"parent_run_id\": null, \"parent_node_id\": null, \"root_run_id\": \"run-000000000001\", \"child_invocation_index\": null, \"last_error\": \"\", \"token_usage\": null, \"token_usage_breakdown\": null, \"estimated_model_cost\": null, \"execution_mode\": \"native\", \"execution_profile_id\": \"native\", \"execution_profile_capabilities\": {}}}}",
+      "event": "message",
+      "kind": "event"
+    }
+  ],
+  "item_id": "M0-I03-HTTP-SSE-FIXTURES",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "python-spark-server",
+    "server_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "45515",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": null,
+    "headers": {},
+    "method": "GET",
+    "path": "/workspace/api/live/events",
+    "query": {
+      "include_runs_overview": true,
+      "runs_project_path": "__PROJECT_DIR__"
+    }
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "response": {
+    "headers": {
+      "cache-control": "no-cache",
+      "connection": "keep-alive",
+      "content-type": "text/event-stream; charset=utf-8"
+    },
+    "status_code": 200
+  },
+  "schema_version": "compat-sse-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

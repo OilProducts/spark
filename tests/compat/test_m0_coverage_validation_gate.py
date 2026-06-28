@@ -3,14 +3,15 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 import json
 from pathlib import Path
+import re
 import subprocess
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
+
+import pytest
 
 from tests.compat import harness
 
 
-ITEM_ID = "M0-I06-COVERAGE-VALIDATION-GATE"
-MILESTONE_ID = "M0-COMPAT-HARNESS"
 REQUIREMENTS = {"RR-VAL-001", "RR-VAL-002"}
 DECISIONS = {"CD-RR-001", "CD-RR-013", "CD-RR-015"}
 KNOWN_FIXTURE_ITEM_IDS = {
@@ -29,16 +30,40 @@ EXPECTED_GROUPS = {
     "frontend",
     "packaging",
 }
-EXPECTED_DOMAIN_SLUGS = {
-    "cli-filesystem",
-    "http-sse",
-    "dsl-runtime",
-    "frontend-packaging",
-    "python-guardrail",
-    "triage",
-    "hygiene",
-    "closure-evidence",
+EXPECTED_ITEM_GROUPS = {
+    "M0-I02-CLI-FILESYSTEM-FIXTURES": {"cli", "filesystem"},
+    "M0-I03-HTTP-SSE-FIXTURES": {"http", "sse"},
+    "M0-I04-DSL-RUNTIME-FIXTURES": {"dsl", "runtime"},
+    "M0-I05-FRONTEND-PACKAGING-FIXTURES": {"frontend", "packaging"},
 }
+FIXTURE_ROOT_RELATIVE = "tests/compat/fixtures"
+FORBIDDEN_COMMITTED_FIXTURE_PATTERNS = {
+    "ignored rust-rewrite current alias": re.compile(r"\.spark/rust-rewrite/current"),
+    "legacy compat current provenance token": re.compile(r"__LEGACY_COMPAT_CURRENT__"),
+    "legacy compat runtime provenance token": re.compile(r"__LEGACY_COMPAT_RUNTIME__"),
+    "machine-local home path": re.compile(r"/home/[^/\s]+/"),
+    "machine-local macOS home path": re.compile(r"/Users/[^/\s]+/"),
+    "pytest compat temp root": re.compile(r"/tmp/spark-compat-[^/\s]+"),
+    "local Codex package path": re.compile(r"node_modules/@openai/codex"),
+}
+
+
+def test_reviewed_compat_fixtures_are_tracked_repository_inputs(
+    rewrite_worktree_path: Path,
+    compat_fixture_root: Path,
+) -> None:
+    tracked_paths = set(_git_ls_files(rewrite_worktree_path))
+    tracked_fixture_paths = sorted(
+        path for path in tracked_paths if path.startswith(f"{FIXTURE_ROOT_RELATIVE}/")
+    )
+    fixture_paths = sorted(
+        path.relative_to(rewrite_worktree_path).as_posix()
+        for path in compat_fixture_root.rglob("*")
+        if path.is_file()
+    )
+
+    assert tracked_fixture_paths
+    assert set(fixture_paths) <= tracked_paths
 
 
 def test_reviewed_fixture_manifests_have_known_m0_coverage(
@@ -69,137 +94,77 @@ def test_reviewed_fixture_manifests_have_known_m0_coverage(
 
     assert set(observed_groups) == EXPECTED_GROUPS
     assert all(count > 0 for count in observed_groups.values())
-    assert item_groups["M0-I02-CLI-FILESYSTEM-FIXTURES"] == {"cli", "filesystem"}
-    assert item_groups["M0-I03-HTTP-SSE-FIXTURES"] == {"http", "sse"}
-    assert item_groups["M0-I04-DSL-RUNTIME-FIXTURES"] == {"dsl", "runtime"}
-    assert item_groups["M0-I05-FRONTEND-PACKAGING-FIXTURES"] == {
-        "frontend",
-        "packaging",
+    assert item_groups == EXPECTED_ITEM_GROUPS
+
+
+def test_committed_m0_fixture_manifests_cover_required_contracts_by_group(
+    compat_fixture_root: Path,
+) -> None:
+    manifests = _m0_fixture_manifests(compat_fixture_root)
+    grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+
+    for path, manifest in manifests:
+        fixture_id = str(manifest.get("fixture_id", ""))
+        assert compat_fixture_root.joinpath(f"{fixture_id}.json") == path
+        grouped[path.relative_to(compat_fixture_root).parts[0]].append(manifest)
+
+    assert set(grouped) == EXPECTED_GROUPS
+    for group, group_manifests in grouped.items():
+        assert group_manifests
+        assert {
+            requirement
+            for manifest in group_manifests
+            for requirement in manifest.get("requirements", [])
+        } >= REQUIREMENTS, group
+        assert {
+            decision
+            for manifest in group_manifests
+            for decision in manifest.get("decisions", [])
+        } >= DECISIONS, group
+
+
+def test_public_manifest_coverage_helper_rejects_missing_contracts() -> None:
+    manifest = {
+        "fixture_id": "coverage/probe",
+        "requirements": sorted(REQUIREMENTS),
+        "decisions": sorted(DECISIONS),
     }
 
+    coverage = harness.validate_manifest_coverage(
+        manifest,
+        requirement_ids=REQUIREMENTS,
+        decision_ids=DECISIONS,
+    )
 
-def test_coverage_ledger_maps_fixture_groups_contracts_and_m0_acceptance(
+    assert set(coverage["requirements"]) == REQUIREMENTS
+    assert set(coverage["decisions"]) == DECISIONS
+
+    with pytest.raises(AssertionError):
+        harness.validate_manifest_coverage(
+            {**manifest, "decisions": ["CD-RR-001"]},
+            requirement_ids=REQUIREMENTS,
+            decision_ids=DECISIONS,
+        )
+
+
+def test_committed_compat_fixtures_do_not_embed_ignored_current_runtime(
     compat_fixture_root: Path,
-    compat_validation_root: Path,
 ) -> None:
-    ledger = _load_json(compat_validation_root / "m0-coverage-ledger.json")
-    manifests = _m0_fixture_manifests(compat_fixture_root)
-    observed_counts = Counter(path.relative_to(compat_fixture_root).parts[0] for path, _ in manifests)
+    offenders: list[str] = []
+    for path, manifest in _fixture_manifests(compat_fixture_root):
+        relative = path.relative_to(compat_fixture_root)
+        for value in _string_values(manifest):
+            for label, pattern in FORBIDDEN_COMMITTED_FIXTURE_PATTERNS.items():
+                if pattern.search(value):
+                    offenders.append(f"{relative}: {label}: {value}")
 
-    assert ledger["schema_version"] == "compat-m0-coverage-ledger-v1"
-    assert ledger["milestone_id"] == MILESTONE_ID
-    assert ledger["active_item_id"] == ITEM_ID
-    assert set(ledger["requirements"]) == REQUIREMENTS
-    assert set(ledger["decisions"]) == DECISIONS
-
-    fixture_counts = ledger["fixture_counts"]
-    assert set(fixture_counts) == EXPECTED_GROUPS
-    for group, expected_count in observed_counts.items():
-        group_record = fixture_counts[group]
-        assert group_record["count"] == expected_count
-        assert group_record["validation_suites"]
-        assert group_record["item_ids"]
-        for fixture_id in group_record["representative_fixture_ids"]:
-            assert (compat_fixture_root / f"{fixture_id}.json").is_file()
-
-    acceptance_slugs = {entry["slug"] for entry in ledger["acceptance_coverage"]}
-    assert {
-        "isolated-worktree-capture-provenance",
-        "golden-fixture-domain-coverage",
-        "observable-interface-tests",
-        "python-pytest-guardrail",
-        "first-failure-and-future-rust-triage",
-        "fixture-storage-hygiene",
-    } <= acceptance_slugs
-    for entry in ledger["acceptance_coverage"]:
-        assert entry["item_ids"]
-        assert entry["validation_suites"]
-        assert set(entry["fixture_groups"]) <= EXPECTED_GROUPS
-        assert set(entry["requirement_ids"]) <= REQUIREMENTS
-        assert set(entry["decision_ids"]) <= DECISIONS
-        assert set(entry["decision_ids"])
-        for fixture_id in entry["representative_fixture_ids"]:
-            assert (compat_fixture_root / f"{fixture_id}.json").is_file()
-
-    domain_slugs = {entry["slug"] for entry in ledger["domain_coverage"]}
-    assert EXPECTED_DOMAIN_SLUGS <= domain_slugs
-
-    contracts = ledger["contract_coverage"]
-    assert set(contracts["requirements"]) == REQUIREMENTS
-    assert set(contracts["decisions"]) == DECISIONS
-    for section in ("requirements", "decisions"):
-        for contract in contracts[section].values():
-            assert set(contract["fixture_groups"]) == EXPECTED_GROUPS
-            assert contract["validation_suites"]
-
-    gap_ids = {gap["gap_id"] for gap in ledger["explicit_gaps"]}
-    assert {
-        "rust-parity-not-claimed",
-        "installed-asset-closure",
-        "production-trigger-runtime",
-        "final-doc-validation",
-    } <= gap_ids
-    assert ledger["closure_evidence"]["no_python_behavior_retired"] is True
-
-
-def test_validation_gate_records_commands_triage_rust_expectations_and_closure(
-    compat_validation_root: Path,
-) -> None:
-    gate = _load_json(compat_validation_root / "m0-validation-gate.json")
-
-    assert gate["schema_version"] == "compat-m0-validation-gate-v1"
-    assert gate["milestone_id"] == MILESTONE_ID
-    assert gate["active_item_id"] == ITEM_ID
-    assert gate["no_python_behavior_retired"] is True
-    assert set(gate["requirements"]) == REQUIREMENTS
-    assert set(gate["decisions"]) == DECISIONS
-
-    required = {entry["command"]: entry for entry in gate["required_commands"]}
-    assert {
-        "uv run pytest -q tests/compat",
-        "uv run pytest -q",
-        "npm --prefix frontend run test:unit",
-    } <= set(required)
-    for entry in required.values():
-        assert entry["status"] in {"pending", "pass", "fail", "skipped"}
-        assert entry["triage_command"]
-
-    triage_commands = {entry["command"] for entry in gate["focused_python_triage_commands"]}
-    assert "uv run pytest -q -x --maxfail=1 tests/compat" in triage_commands
-    assert "uv run pytest -q -x --maxfail=1 tests/compat/test_m0_coverage_validation_gate.py" in triage_commands
-    assert any("tests/compat/cli tests/compat/storage" in command for command in triage_commands)
-    assert any("tests/compat/api tests/compat/live" in command for command in triage_commands)
-    assert any("tests/compat/dsl tests/compat/transforms" in command for command in triage_commands)
-    assert any("tests/contracts/frontend tests/compat/frontend-contracts tests/compat/packaging" in command for command in triage_commands)
-
-    rust_commands = {entry["command"] for entry in gate["future_rust_equivalent_commands"]}
-    assert "cargo fmt --all -- --check" in rust_commands
-    assert "cargo check --workspace --all-targets" in rust_commands
-    assert "cargo test --workspace --all-targets" in rust_commands
-    assert any("spark-cli" in command for command in rust_commands)
-    assert any("spark-http" in command for command in rust_commands)
-    assert any("attractor-runtime" in command for command in rust_commands)
-    assert any("packaging_compat" in command for command in rust_commands)
-
-    claims = gate["later_milestone_claims"]
-    assert claims["rust_parity_claimed"] is False
-    assert claims["installed_asset_closure_claimed"] is False
-    assert claims["production_trigger_runtime_claimed"] is False
-
-    hygiene = gate["repository_hygiene"]
-    assert hygiene["reviewed_fixture_root"].endswith("/compat-fixtures")
-    assert hygiene["generated_roots_ignored"]
-    assert hygiene["forbidden_untracked_generated_prefixes"]
-    assert gate["closure_constraints"]
+    assert offenders == []
 
 
 def test_generated_roots_are_ignored_and_not_visible_as_untracked_source(
     rewrite_worktree_path: Path,
-    rewrite_runtime_dir: Path,
 ) -> None:
-    runtime_rel = rewrite_runtime_dir.relative_to(rewrite_worktree_path).as_posix()
     ignore_candidates = [
-        f"{runtime_rel}/validation/generated/coverage/probe.json",
         "tests/compat/_generated/coverage/output.json",
         "tests/compat/.tmp/coverage/output.json",
         "tests/compat/.server-logs/stdout.log",
@@ -226,7 +191,6 @@ def test_generated_roots_are_ignored_and_not_visible_as_untracked_source(
     )
     assert untracked.returncode == 0
     forbidden_prefixes = (
-        ".spark/rust-rewrite/current/validation/generated/",
         "tests/compat/_generated/",
         "tests/compat/.tmp/",
         "tests/compat/.server-logs/",
@@ -258,3 +222,25 @@ def _load_json(path: Path) -> dict[str, Any]:
     loaded = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(loaded, dict)
     return loaded
+
+
+def _git_ls_files(root: Path) -> list[str]:
+    result = subprocess.run(
+        ["git", "ls-files"],
+        cwd=root,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _string_values(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for nested in value.values():
+            yield from _string_values(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _string_values(nested)

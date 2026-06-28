@@ -1,0 +1,60 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "packaging/package-resource-presence",
+  "item_id": "M0-I05-FRONTEND-PACKAGING-FIXTURES",
+  "provenance": {
+    "interfaces": [
+      "importlib.resources package resource lookup",
+      "built wheel content inspection when deliverable smoke succeeds"
+    ],
+    "oracle": "python-packaging-smoke"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "resources": {
+    "built_wheel": {
+      "checked": true,
+      "exists": true,
+      "filename": "spark-0.1.0-py3-none-linux_x86_64.whl",
+      "forbidden_entries_absent": {
+        "spark/guides/attractor-spec.md": true,
+        "spark/guides/spark-flow-extensions.md": true
+      },
+      "required_entries": {
+        "spark/flows/examples/simple-linear.dot": true,
+        "spark/flows/software-development/spec-implementation/implement-spec.dot": true,
+        "spark/guides/dot-authoring.md": true,
+        "spark/guides/spark-operations.md": true,
+        "spark/ui_dist/index.html": true,
+        "unified_llm/data/models.json": true
+      },
+      "selected_ui_entries": [
+        "spark/ui_dist/index.html",
+        "spark/ui_dist/assets/flowLayoutRouterWorker-CLrwAp76.js",
+        "spark/ui_dist/assets/index-C7BV1XH8.css",
+        "spark/ui_dist/assets/index-CQNqc0In.js",
+        "spark/ui_dist/assets/spark-app-icon.png"
+      ],
+      "ui_entry_count": 5
+    },
+    "source_package": {
+      "installed_asset_closure_gate": "M6",
+      "resource_presence": {
+        "flows/examples/simple-linear.dot": true,
+        "flows/software-development/implement-change-request.dot": true,
+        "guides/dot-authoring.md": true,
+        "guides/spark-operations.md": true,
+        "ui_dist/index.html": false,
+        "unified_llm/data/models.json": true
+      }
+    }
+  },
+  "scenario": "package_resource_presence",
+  "schema_version": "compat-packaging-v1"
+}

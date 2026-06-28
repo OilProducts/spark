@@ -1,0 +1,88 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "http/workspace-settings-success",
+  "item_id": "M0-I03-HTTP-SSE-FIXTURES",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "python-spark-server",
+    "server_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "58923",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": null,
+    "headers": {},
+    "method": "GET",
+    "path": "/workspace/api/settings",
+    "query": {}
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "response": {
+    "body": {
+      "json": {
+        "execution_placement": {
+          "config": {
+            "exists": false,
+            "filename": "execution-profiles.toml",
+            "loaded": true,
+            "path": "__SPARK_HOME__/config/execution-profiles.toml",
+            "synthesized_native_default": true
+          },
+          "default_execution_profile_id": null,
+          "execution_modes": [
+            "native",
+            "local_container"
+          ],
+          "profiles": [
+            {
+              "capabilities": {},
+              "enabled": true,
+              "id": "native",
+              "image": null,
+              "label": "Native",
+              "metadata": {},
+              "mode": "native"
+            }
+          ],
+          "validation_errors": []
+        }
+      },
+      "kind": "json"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status_code": 200
+  },
+  "schema_version": "compat-http-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

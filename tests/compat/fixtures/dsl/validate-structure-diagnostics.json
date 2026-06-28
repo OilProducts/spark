@@ -1,0 +1,120 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "dsl/validate-structure-diagnostics",
+  "input": {
+    "dot": "\ndigraph Broken {\n  start [shape=Mdiamond];\n  work [shape=box];\n  missing_prompt [shape=box];\n  unreachable [shape=box, prompt=\"Hidden\"];\n  done [shape=Msquare];\n\n  work -> start;\n  start -> work [fidelity=\"warp\"];\n  work -> missing [retry_target=\"nowhere\"];\n  missing_prompt -> done;\n  done -> work;\n}\n"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "diagnostics": [
+      {
+        "edge": [
+          "work",
+          "missing"
+        ],
+        "fix": "define node 'missing' or update the edge target",
+        "line": 11,
+        "message": "edge target 'missing' does not reference an existing node",
+        "node": null,
+        "rule": "edge_target_exists",
+        "severity": "error"
+      },
+      {
+        "line": 3,
+        "message": "start node 'start' must have no incoming edges",
+        "node": "start",
+        "rule": "start_no_incoming",
+        "severity": "error"
+      },
+      {
+        "line": 7,
+        "message": "exit node 'done' must have no outgoing edges",
+        "node": "done",
+        "rule": "exit_no_outgoing",
+        "severity": "error"
+      },
+      {
+        "line": 6,
+        "message": "node 'unreachable' must declare at least one outgoing edge",
+        "node": "unreachable",
+        "rule": "node_has_outgoing_edge",
+        "severity": "error"
+      },
+      {
+        "line": 5,
+        "message": "node 'missing_prompt' is not reachable from start node",
+        "node": "missing_prompt",
+        "rule": "reachability",
+        "severity": "error"
+      },
+      {
+        "line": 6,
+        "message": "node 'unreachable' is not reachable from start node",
+        "node": "unreachable",
+        "rule": "reachability",
+        "severity": "error"
+      },
+      {
+        "line": 7,
+        "message": "node 'done' is not reachable from start node",
+        "node": "done",
+        "rule": "reachability",
+        "severity": "error"
+      },
+      {
+        "edge": [
+          "start",
+          "work"
+        ],
+        "line": 10,
+        "message": "edge start->work fidelity 'warp' is not a recognized mode",
+        "node": null,
+        "rule": "fidelity_valid",
+        "severity": "warning"
+      },
+      {
+        "line": 4,
+        "message": "node 'work' resolves to codergen and should define a non-empty prompt or label",
+        "node": "work",
+        "rule": "prompt_on_llm_nodes",
+        "severity": "warning"
+      },
+      {
+        "line": 5,
+        "message": "node 'missing_prompt' resolves to codergen and should define a non-empty prompt or label",
+        "node": "missing_prompt",
+        "rule": "prompt_on_llm_nodes",
+        "severity": "warning"
+      }
+    ],
+    "error_rules": [
+      "edge_target_exists",
+      "start_no_incoming",
+      "exit_no_outgoing",
+      "node_has_outgoing_edge",
+      "reachability",
+      "reachability",
+      "reachability"
+    ]
+  },
+  "operation": "validate",
+  "provenance": {
+    "interfaces": [
+      "attractor.dsl.parse_dot",
+      "attractor.dsl.formatter.format_readable_dot",
+      "attractor.dsl.validate_graph",
+      "attractor.validation_preview.preview_dot_source",
+      "attractor.api.flow_sources.normalize_flow_name"
+    ],
+    "oracle": "python-dsl-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": "compat-dsl-v1"
+}

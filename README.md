@@ -118,7 +118,9 @@ Use hooks and model defaults deliberately:
 
 ## Architecture
 
-Spark is distributed through the public command names `spark` and `spark-server`. In packaged installs those names execute native Rust binaries; in source checkouts the Python entry points remain useful development wrappers while transitional adapter coverage is completed.
+Spark is distributed through the public command names `spark` and `spark-server`. Packaged installs execute native Rust binaries shipped with the wheel.
+
+In source checkouts, `uv run spark` and `uv run spark-server` are development entry points for the same command surface: they dispatch to packaged Rust payloads when present, otherwise they bootstrap the source-checkout development path for the Rust-owned server and CLI runtime where the rewrite supports it, and keep that path separated from a stable install with `SPARK_HOME=~/.spark-dev` and `SPARK_API_BASE_URL=http://127.0.0.1:8010`. Normal Spark server and CLI unified LLM provider execution remains Rust-owned through the Rust crates and adapters; Python `unified_llm` provider clients are retained for compatibility/oracle/package-data support, not as the normal provider runtime.
 
 - [Cargo.toml](Cargo.toml): Rust workspace manifest for the Spark rewrite
 - [crates/spark-cli/](crates/spark-cli): Rust `spark` command surface for conversations, runs, flows, and triggers
@@ -143,7 +145,7 @@ Spark is distributed through the public command names `spark` and `spark-server`
 - `codex` CLI on `PATH` with working auth for Codex-backed handlers and project chat flows
 - `just` is optional, but the repo commands assume it when available
 
-Python and `uv` remain part of the source-checkout workflow for compatibility guardrails, tests, packaging, and transitional adapter paths. They do not change the supported user commands.
+Python and `uv` remain part of the source-checkout workflow for development command wrappers, compatibility guardrails, tests, packaging, oracle fixture generation, and package data. They do not change the supported user commands or make Python `unified_llm` provider clients the normal Spark server or CLI provider runtime.
 
 ## Local Development
 
@@ -273,7 +275,7 @@ This starts:
 
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173) for live frontend development.
 
-The source-checkout dev wrapper intentionally uses a separate runtime home and port so it does not stomp on a stable installed Spark instance:
+The source-checkout development entry points intentionally use a separate runtime home and port so they do not stomp on a stable installed Spark instance:
 
 - `SPARK_HOME` defaults to `~/.spark-dev`
 - backend port defaults to `8010`

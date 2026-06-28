@@ -1,0 +1,232 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "http/attractor-preview-success",
+  "item_id": "M0-I03-HTTP-SSE-FIXTURES",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "python-spark-server",
+    "server_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "58923",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": {
+      "json": {
+        "flow_content": "digraph Workflow {\n  start [shape=Mdiamond];\n  task [shape=box, prompt=\"Do work\"];\n  done [shape=Msquare];\n  start -> task;\n  task -> done;\n}\n"
+      },
+      "kind": "json"
+    },
+    "headers": {},
+    "method": "POST",
+    "path": "/attractor/preview",
+    "query": {}
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "response": {
+    "body": {
+      "json": {
+        "diagnostics": [],
+        "errors": [],
+        "graph": {
+          "defaults": {
+            "edge": {},
+            "node": {}
+          },
+          "edges": [
+            {
+              "condition": null,
+              "fidelity": null,
+              "from": "start",
+              "label": null,
+              "loop_restart": null,
+              "thread_id": null,
+              "to": "task",
+              "weight": null
+            },
+            {
+              "condition": null,
+              "fidelity": null,
+              "from": "task",
+              "label": null,
+              "loop_restart": null,
+              "thread_id": null,
+              "to": "done",
+              "weight": null
+            }
+          ],
+          "graph_attrs": {
+            "default_fidelity": null,
+            "default_max_retries": null,
+            "fallback_retry_target": null,
+            "goal": null,
+            "label": "",
+            "model_stylesheet": null,
+            "retry_target": null,
+            "stack.child_dotfile": null,
+            "stack.child_workdir": null,
+            "tool.hooks.post": null,
+            "tool.hooks.pre": null,
+            "ui_default_llm_model": null,
+            "ui_default_llm_profile": null,
+            "ui_default_llm_provider": null,
+            "ui_default_reasoning_effort": null
+          },
+          "nodes": [
+            {
+              "allow_partial": null,
+              "auto_status": null,
+              "class": null,
+              "error_policy": null,
+              "fallback_retry_target": null,
+              "fidelity": null,
+              "goal_gate": null,
+              "id": "start",
+              "join_k": null,
+              "join_policy": null,
+              "join_quorum": null,
+              "label": "start",
+              "llm_model": "",
+              "llm_profile": "",
+              "llm_provider": "",
+              "manager.actions": null,
+              "manager.max_cycles": null,
+              "manager.poll_interval": null,
+              "manager.steer_cooldown": null,
+              "manager.stop_condition": null,
+              "max_parallel": null,
+              "max_retries": null,
+              "prompt": null,
+              "reasoning_effort": "high",
+              "retry_target": null,
+              "shape": "Mdiamond",
+              "stack.child_autostart": null,
+              "thread_id": null,
+              "timeout": null,
+              "tool.artifacts.paths": null,
+              "tool.artifacts.stderr": null,
+              "tool.artifacts.stdout": null,
+              "tool.command": null,
+              "tool.hooks.post": null,
+              "tool.hooks.pre": null,
+              "type": null
+            },
+            {
+              "allow_partial": null,
+              "auto_status": null,
+              "class": null,
+              "error_policy": null,
+              "fallback_retry_target": null,
+              "fidelity": null,
+              "goal_gate": null,
+              "id": "task",
+              "join_k": null,
+              "join_policy": null,
+              "join_quorum": null,
+              "label": "task",
+              "llm_model": "",
+              "llm_profile": "",
+              "llm_provider": "",
+              "manager.actions": null,
+              "manager.max_cycles": null,
+              "manager.poll_interval": null,
+              "manager.steer_cooldown": null,
+              "manager.stop_condition": null,
+              "max_parallel": null,
+              "max_retries": null,
+              "prompt": "Do work",
+              "reasoning_effort": "high",
+              "retry_target": null,
+              "shape": "box",
+              "stack.child_autostart": null,
+              "thread_id": null,
+              "timeout": null,
+              "tool.artifacts.paths": null,
+              "tool.artifacts.stderr": null,
+              "tool.artifacts.stdout": null,
+              "tool.command": null,
+              "tool.hooks.post": null,
+              "tool.hooks.pre": null,
+              "type": null
+            },
+            {
+              "allow_partial": null,
+              "auto_status": null,
+              "class": null,
+              "error_policy": null,
+              "fallback_retry_target": null,
+              "fidelity": null,
+              "goal_gate": null,
+              "id": "done",
+              "join_k": null,
+              "join_policy": null,
+              "join_quorum": null,
+              "label": "done",
+              "llm_model": "",
+              "llm_profile": "",
+              "llm_provider": "",
+              "manager.actions": null,
+              "manager.max_cycles": null,
+              "manager.poll_interval": null,
+              "manager.steer_cooldown": null,
+              "manager.stop_condition": null,
+              "max_parallel": null,
+              "max_retries": null,
+              "prompt": null,
+              "reasoning_effort": "high",
+              "retry_target": null,
+              "shape": "Msquare",
+              "stack.child_autostart": null,
+              "thread_id": null,
+              "timeout": null,
+              "tool.artifacts.paths": null,
+              "tool.artifacts.stderr": null,
+              "tool.artifacts.stdout": null,
+              "tool.command": null,
+              "tool.hooks.post": null,
+              "tool.hooks.pre": null,
+              "type": null
+            }
+          ],
+          "subgraphs": []
+        },
+        "status": "ok"
+      },
+      "kind": "json"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status_code": 200
+  },
+  "schema_version": "compat-http-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

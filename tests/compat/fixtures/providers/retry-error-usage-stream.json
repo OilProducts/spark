@@ -1,0 +1,80 @@
+{
+  "decisions": [
+    "CD-RR-006",
+    "CD-RR-013"
+  ],
+  "fixture_id": "providers/retry-error-usage-stream",
+  "input": {},
+  "item_id": "M3-I05-CODERGEN-AGENT-LLM-ADAPTERS",
+  "observation": {
+    "errors": {
+      "not_found_classifier": "NotFoundError",
+      "server": {
+        "message": "temporary failure",
+        "provider": "openai",
+        "retry_after": null,
+        "retryable": true,
+        "status_code": 503,
+        "type": "ServerError"
+      }
+    },
+    "retry_delays": {
+      "attempt_0_no_jitter": 1.0,
+      "attempt_1_no_jitter": 2.0,
+      "retry_after": 12.5
+    },
+    "retry_policy": {
+      "backoff_multiplier": 2.0,
+      "base_delay": 1.0,
+      "jitter": true,
+      "max_delay": 60.0,
+      "max_retries": 2,
+      "on_retry": null
+    },
+    "stream": {
+      "event_types": [
+        "provider_event",
+        "text_delta",
+        "text_delta",
+        "finish"
+      ],
+      "finish_reason": "stop",
+      "raw_events": [
+        {
+          "kind": "provider"
+        }
+      ],
+      "text": "hello world",
+      "usage": {
+        "cache_read_tokens": null,
+        "cache_write_tokens": null,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "raw": null,
+        "reasoning_tokens": null,
+        "total_tokens": 15
+      }
+    },
+    "usage_cost": {
+      "input_cost": 1.75e-05,
+      "output_cost": 7e-05,
+      "total_cost": 8.749999999999999e-05
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "unified_llm.Client.from_env",
+      "unified_llm.models",
+      "unified_llm.retry",
+      "unified_llm.errors",
+      "unified_llm.StreamAccumulator",
+      "unified_llm.Request"
+    ],
+    "oracle": "python-unified-llm-public-interfaces"
+  },
+  "requirements": [
+    "RR-EXE-006"
+  ],
+  "scenario": "retry_error_usage_stream",
+  "schema_version": "compat-provider-v1"
+}

@@ -1,0 +1,356 @@
+{
+  "command": {
+    "argv": [
+      "uv",
+      "run",
+      "spark",
+      "trigger",
+      "create",
+      "--json",
+      "__PROJECT_DIR__/trigger-payload.json",
+      "--base-url",
+      "__API_BASE_URL__"
+    ],
+    "cwd": "__WORKTREE__",
+    "normalized_argv": [
+      "uv",
+      "run",
+      "spark",
+      "trigger",
+      "create",
+      "--json",
+      "__PROJECT_DIR__/trigger-payload.json",
+      "--base-url",
+      "__API_BASE_URL__"
+    ]
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "after": {
+      "trigger_dir": {
+        "exists": true,
+        "format": "bytes",
+        "path": "__SPARK_HOME__/config/triggers",
+        "size": 60
+      }
+    },
+    "before": {
+      "trigger_dir": {
+        "exists": true,
+        "format": "bytes",
+        "path": "__SPARK_HOME__/config/triggers",
+        "size": 40
+      }
+    }
+  },
+  "environment": {
+    "selected": {
+      "ANTHROPIC_API_KEY": "<redacted>",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__CODEX_RUNTIME_ROOT__",
+      "CODEX_CI": "1",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "CODEX_MANAGED_BY_NPM": "1",
+      "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
+      "CODEX_THREAD_ID": "019ef013-15bd-7d11-a48e-cad8977bd59e",
+      "SPARK_API_BASE_URL": "__API_BASE_URL__",
+      "SPARK_FLOWS_DIR": "__FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "selected_keys": [
+      "ANTHROPIC_API_KEY",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT",
+      "CODEX_CI",
+      "CODEX_HOME",
+      "CODEX_MANAGED_BY_NPM",
+      "CODEX_MANAGED_PACKAGE_ROOT",
+      "CODEX_THREAD_ID",
+      "SPARK_API_BASE_URL",
+      "SPARK_FLOWS_DIR",
+      "SPARK_HOME"
+    ]
+  },
+  "filesystem": {
+    "after": {
+      "spark_home": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "attractor"
+          },
+          {
+            "kind": "dir",
+            "path": "attractor/runs"
+          },
+          {
+            "kind": "dir",
+            "path": "config"
+          },
+          {
+            "kind": "file",
+            "path": "config/flow-catalog.toml",
+            "sha256": "ed13154bb4710d9378b678d4cd87f019fb2c792f68df428007850384bda4bf91",
+            "size": 277
+          },
+          {
+            "kind": "file",
+            "path": "config/prompts.toml",
+            "sha256": "60202395b18e2bb30a12d19f34a0b35771611cbe06545ba3604f4683a0cbfccc",
+            "size": 135
+          },
+          {
+            "kind": "dir",
+            "path": "config/triggers"
+          },
+          {
+            "kind": "file",
+            "path": "config/triggers/trigger-a321ddf469ee.toml",
+            "sha256": "00ec4265c6b1a62003f694e965279608bfb4a2069e10840ba0c8961e6dbac582",
+            "size": 487
+          },
+          {
+            "kind": "dir",
+            "path": "logs"
+          },
+          {
+            "kind": "dir",
+            "path": "runtime"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/conversation-handles.json",
+            "sha256": "c1f5de5203f2a655e37f8dacc7ca1c1c608b67f4720387d335aeb1cfaad50cb1",
+            "size": 373
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/conversations"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/conversations/conversation-compat"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/conversations/conversation-compat/state.json",
+            "sha256": "7de7c38e86515f7a3acd612503d3eb06d862b499a02c9bcbd780273b2043d5fc",
+            "size": 651
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/flow-launches"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/flow-launches/conversation-compat.json",
+            "sha256": "eecb3a85b855dc09d385199fa6c27c44bfb629c07c9ce0a7654fbdaf6ec57b65",
+            "size": 196
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/flow-run-requests"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/flow-run-requests/conversation-compat.json",
+            "sha256": "14c1fc6bfe086c09c5936e1ced86b2e9c0625ed40c2350032a2c3d6e30df095e",
+            "size": 195
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/project.toml",
+            "sha256": "aa91b2a72ddce719f84e84c16bbc91e93cc2cdd8f867c04a4002397b138da51a",
+            "size": 216
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/proposed-plans"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/proposed-plans/conversation-compat.json",
+            "sha256": "f03860661d14b80aed48be9f52dd7fa3990b9d3d74109bf90fbca354873d4553",
+            "size": 173
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/trigger-state"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/trigger-state/trigger-a321ddf469ee.json",
+            "sha256": "3f152d4e375ee94492f4480d82f63ae2171783850ae1732e49bda4f9773bce19",
+            "size": 120
+          }
+        ],
+        "exists": true,
+        "root": "__SPARK_HOME__"
+      }
+    },
+    "before": {
+      "spark_home": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "attractor"
+          },
+          {
+            "kind": "dir",
+            "path": "attractor/runs"
+          },
+          {
+            "kind": "dir",
+            "path": "config"
+          },
+          {
+            "kind": "file",
+            "path": "config/flow-catalog.toml",
+            "sha256": "ed13154bb4710d9378b678d4cd87f019fb2c792f68df428007850384bda4bf91",
+            "size": 277
+          },
+          {
+            "kind": "file",
+            "path": "config/prompts.toml",
+            "sha256": "60202395b18e2bb30a12d19f34a0b35771611cbe06545ba3604f4683a0cbfccc",
+            "size": 135
+          },
+          {
+            "kind": "dir",
+            "path": "config/triggers"
+          },
+          {
+            "kind": "dir",
+            "path": "logs"
+          },
+          {
+            "kind": "dir",
+            "path": "runtime"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/conversation-handles.json",
+            "sha256": "c1f5de5203f2a655e37f8dacc7ca1c1c608b67f4720387d335aeb1cfaad50cb1",
+            "size": 373
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/conversations"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/conversations/conversation-compat"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/conversations/conversation-compat/state.json",
+            "sha256": "7de7c38e86515f7a3acd612503d3eb06d862b499a02c9bcbd780273b2043d5fc",
+            "size": 651
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/flow-launches"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/flow-launches/conversation-compat.json",
+            "sha256": "eecb3a85b855dc09d385199fa6c27c44bfb629c07c9ce0a7654fbdaf6ec57b65",
+            "size": 196
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/flow-run-requests"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/flow-run-requests/conversation-compat.json",
+            "sha256": "14c1fc6bfe086c09c5936e1ced86b2e9c0625ed40c2350032a2c3d6e30df095e",
+            "size": 195
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/project.toml",
+            "sha256": "aa91b2a72ddce719f84e84c16bbc91e93cc2cdd8f867c04a4002397b138da51a",
+            "size": 216
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/project-2086e038275d/proposed-plans"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/project-2086e038275d/proposed-plans/conversation-compat.json",
+            "sha256": "f03860661d14b80aed48be9f52dd7fa3990b9d3d74109bf90fbca354873d4553",
+            "size": 173
+          }
+        ],
+        "exists": true,
+        "root": "__SPARK_HOME__"
+      }
+    }
+  },
+  "fixture_id": "cli/server-backed/trigger-create",
+  "item_id": "M0-I02-CLI-FILESYSTEM-FIXTURES",
+  "normalization": {
+    "tokens": {
+      "__API_BASE_URL__": "__API_BASE_URL__",
+      "__CODEX_HOME__": "__CODEX_HOME__",
+      "__CODEX_RUNTIME_ROOT__": "__CODEX_RUNTIME_ROOT__",
+      "__FLOWS_DIR__": "__FLOWS_DIR__",
+      "__OUTPUT_DIR__": "__COMPAT_FIXTURE_ROOT__/cli/server-backed",
+      "__OUTPUT__": "__COMPAT_FIXTURE_ROOT__/cli/server-backed/trigger-create.json",
+      "__PROJECT_DIR__": "__PROJECT_DIR__",
+      "__SPARK_HOME__": "__SPARK_HOME__",
+      "__WORKTREE__": "__WORKTREE__"
+    }
+  },
+  "paths": {
+    "attractor_codex_runtime_root": "__CODEX_RUNTIME_ROOT__",
+    "codex_home": "__CODEX_HOME__",
+    "output": "__COMPAT_FIXTURE_ROOT__/cli/server-backed/trigger-create.json",
+    "spark_flows_dir": "__FLOWS_DIR__",
+    "spark_home": "__SPARK_HOME__"
+  },
+  "process": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "{\n  \"action\": {\n    \"flow_name\": \"software-development/implement-change-request.dot\",\n    \"project_path\": \"__PROJECT_DIR__\",\n    \"static_context\": {\n      \"origin\": \"compat\"\n    }\n  },\n  \"created_at\": \"2026-06-22T16:16:07Z\",\n  \"enabled\": true,\n  \"id\": \"trigger-a321ddf469ee\",\n  \"name\": \"Compat webhook\",\n  \"protected\": false,\n  \"source\": {\n    \"webhook_key\": \"v-5BslKeyCjZLW8s\"\n  },\n  \"source_type\": \"webhook\",\n  \"state\": {\n    \"last_error\": null,\n    \"last_fired_at\": null,\n    \"last_result\": null,\n    \"next_run_at\": null,\n    \"recent_history\": []\n  },\n  \"updated_at\": \"2026-06-22T16:16:07Z\",\n  \"webhook_secret\": \"b7IBkZnXQOBvtOkNFi5hvND3LYZpNbSH\"\n}\n"
+  },
+  "provenance": {
+    "capture_tool": "scripts/compat_capture.py",
+    "captured_at_utc": "2026-06-22T16:16:07.524723Z",
+    "oracle": "python-worktree",
+    "worktree_path": "__WORKTREE__"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": 1
+}

@@ -2,7 +2,7 @@
 
 ## Source of Truth
 
-This architecture implements `.spark/spec-implementation/current/spec/source.md` and the requirement ledger in `.spark/spec-implementation/current/spec/requirements.json`. The current repository is a post-M7 implementation with package code, tests, and spec ledgers already present. This run is a remediation pass for `REQ-024`, which belongs to the already-completed M3 high-level generation, streaming, retry, tools, and structured-output scope. It must not introduce a new M8 milestone.
+This architecture implements the committed unified LLM specification files under `specs/` and the committed requirement and decision manifests in this directory. The current repository is a post-M7 implementation with package code, tests, and spec ledgers already present. This run is a remediation pass for `REQ-024`, which belongs to the already-completed M3 high-level generation, streaming, retry, tools, and structured-output scope. It must not introduce a new M8 milestone.
 
 ## Canonical Repository Topology
 
@@ -196,7 +196,7 @@ uv run pytest -q
 uv run ruff check .
 ```
 
-Tests are behavior-first and avoid assertions against source, prompt, documentation, or spec strings. Coverage is organized by public API behavior, fake adapters, mocked HTTP transports, synthetic provider payloads, filesystem effects for local media preparation, stream event sequences, state transitions, and logging/error outcomes.
+Tests are behavior-first and avoid assertions against source, prompt, generated workflow metadata, or incidental spec strings. Coverage is organized by public API behavior, fake adapters, mocked HTTP transports, synthetic provider payloads, filesystem effects for local media preparation, stream event sequences, state transitions, command output, committed manifests, committed documentation when documentation is the artifact under test, and logging/error outcomes. Repo-hygiene validation should not read generated `.spark` workflow current directories as ordinary validation inputs.
 
 REQ-024 remediation tests must cover observable `Request.model` values seen by fake clients or fake adapters for `generate`, `stream`, `generate_object`, and `stream_object`. Each high-level API needs both explicit-provider and default-provider omitted-model coverage, explicit model pass-through coverage, and failure coverage for unresolved provider or absent latest catalog entry.
 

@@ -1,0 +1,50 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {},
+  "fixture_id": "runtime/handler-wait-human-answer",
+  "input": {
+    "dot": "\ndigraph HumanGate {\n  gate [shape=hexagon, prompt=\"Choose\"];\n  ship [shape=box];\n  fix [shape=box];\n  gate -> ship [label=\"[S] Ship\"];\n  gate -> fix [label=\"[F] Fix\"];\n}\n"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "selected": {
+      "context_updates": {
+        "human.gate.label": "[S] Ship",
+        "human.gate.selected": "S"
+      },
+      "failure_reason": "",
+      "notes": "human selection applied",
+      "preferred_label": "[S] Ship",
+      "status": "success",
+      "suggested_next_ids": [
+        "ship"
+      ]
+    },
+    "skipped": {
+      "context_updates": {},
+      "failure_reason": "human skipped interaction",
+      "notes": "",
+      "preferred_label": "",
+      "status": "fail",
+      "suggested_next_ids": []
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "attractor.handlers.HandlerRunner",
+      "built-in handler protocol",
+      "deterministic fake backend/interviewer/child launcher"
+    ],
+    "oracle": "python-handler-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "handler_wait_human_answer",
+  "schema_version": "compat-runtime-v1"
+}

@@ -1,166 +1,161 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+import subprocess
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STATE_PATH = REPO_ROOT / ".spark" / "rust-rewrite" / "current" / "state.json"
-ARTIFACT_PATH = (
-    REPO_ROOT
-    / ".spark"
-    / "rust-rewrite"
-    / "current"
-    / "validation"
-    / "final-validation-artifacts.json"
+
+FORBIDDEN_DIRECTORY_COMPONENTS = {
+    ".idea",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pycache__",
+    "build",
+    "dist",
+    "htmlcov",
+    "node_modules",
+    "target",
+    "venv",
+}
+FORBIDDEN_PATH_PREFIXES = (
+    ".spark/",
+    ".planflow/",
+    "artifacts/",
+    "codex-app-server.schema/",
+    "frontend/.tmp-",
+    "frontend/src/__tests__/.tmp-compat-probes/",
+    "src/spark/ui_dist/",
+    "tests/compat/.server-logs/",
+    "tests/compat/.tmp/",
+    "tests/compat/_generated/",
+)
+FORBIDDEN_BASENAMES = {
+    ".coverage",
+    ".ds_store",
+    ".env",
+    ".envrc",
+    ".netrc",
+    "auth.json",
+    "compose.override.yaml",
+    "compose.override.yml",
+    "final-validation-artifacts.json",
+    "latest-exit-code.txt",
+    "latest-stderr.txt",
+    "latest-stdout.txt",
+    "m0-coverage-ledger.json",
+    "m0-validation-gate.json",
+    "provider.env",
+    "requirement-decision-coverage-review.json",
+    "validation-result.json",
+}
+FORBIDDEN_SUFFIXES = {
+    ".egg-info",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".pyc",
+    ".pyo",
+}
+SECRET_DATA_SUFFIXES = {
+    ".env",
+    ".ini",
+    ".json",
+    ".pem",
+    ".toml",
+    ".yaml",
+    ".yml",
+}
+SECRET_STEM_TOKENS = {
+    "apikey",
+    "api_key",
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+    "token",
+    "tokens",
+}
+SECRET_STEM_SUFFIXES = (
+    "_apikey",
+    "_api_key",
+    "_credentials",
+    "_secrets",
+    "_tokens",
 )
 
-ITEM_ID = "M7-I04-FINAL-VALIDATION-ARTIFACTS"
-MILESTONE_ID = "M7-DOCS-VALIDATION"
-BOUND_REQUIREMENTS = {
-    "RR-VAL-001",
-    "RR-VAL-002",
-    "RR-VAL-003",
-    "RR-VAL-004",
-    "RR-VAL-005",
-}
-BOUND_DECISIONS = {"CD-RR-001", "CD-RR-013", "CD-RR-015"}
-ACTIVE_COMMANDS = {
-    "cargo fmt --check",
-    "cargo test --workspace --all-features",
-    "uv run pytest -q",
-    "npm --prefix frontend run test:unit",
-    "npm --prefix frontend run build",
-    "npm --prefix frontend run ui:smoke",
-    "just deliverable",
-}
-FINAL_STATUSES = {"pass", "fail", "prerequisite_limited"}
-IN_PROGRESS_STATUSES = FINAL_STATUSES | {"in_progress", "not_run"}
+
+def test_git_tracked_paths_exclude_runtime_generated_build_cache_and_secret_files() -> None:
+    violations = {
+        path: violation
+        for path in _git_ls_files()
+        if (violation := _tracked_path_violation(path)) is not None
+    }
+
+    assert violations == {}
 
 
-def test_final_validation_artifact_is_bound_to_active_item_contracts() -> None:
-    artifact = _load_artifact()
+def test_git_tracked_path_hygiene_allows_legitimate_credentials_source_modules() -> None:
+    assert _tracked_path_violation("crates/example/src/credentials.rs") is None
+    assert _tracked_path_violation("src/spark/auth/token.py") is None
 
-    assert artifact["schema_version"] == "rust-rewrite-final-validation-artifacts-v1"
-    assert artifact["item_id"] == ITEM_ID
-    assert artifact["milestone_id"] == MILESTONE_ID
-    assert set(artifact["requirements"]) == BOUND_REQUIREMENTS
-    assert set(artifact["decisions"]) == BOUND_DECISIONS
-    assert Path(artifact["worktree_path"]).resolve() == REPO_ROOT
+    assert _tracked_path_violation(".spark/spec-implementation/current/state.json")
+    assert _tracked_path_violation("target/debug/spark-server")
+    assert _tracked_path_violation("config/credentials.json")
+    assert _tracked_path_violation("config/secrets.toml")
+    assert _tracked_path_violation("src/package/__pycache__/module.cpython-313.pyc")
 
 
-def test_active_validation_commands_have_structured_records_and_evidence() -> None:
-    artifact = _load_artifact()
-    records = {record["command"]: record for record in artifact["command_records"]}
+def _tracked_path_violation(path: str) -> str | None:
+    posix_path = PurePosixPath(path)
+    parts = posix_path.parts
+    name = posix_path.name
+    lower_name = name.lower()
 
-    assert set(records) == ACTIVE_COMMANDS
-    assert len(artifact["command_records"]) == len(ACTIVE_COMMANDS)
+    if path.startswith(FORBIDDEN_PATH_PREFIXES):
+        return "runtime/generated repository path"
 
-    allowed_statuses = (
-        IN_PROGRESS_STATUSES
-        if artifact["status"] == "in_progress"
-        else FINAL_STATUSES
+    forbidden_components = FORBIDDEN_DIRECTORY_COMPONENTS.intersection(parts)
+    if forbidden_components:
+        return f"build/cache/IDE directory component: {sorted(forbidden_components)}"
+
+    if lower_name in FORBIDDEN_BASENAMES:
+        return "generated validation, local config, or credential file"
+
+    if any(lower_name.endswith(suffix) for suffix in FORBIDDEN_SUFFIXES):
+        return "cache, build, or private key suffix"
+
+    if _looks_like_secret_data_file(posix_path):
+        return "credential or secret data file"
+
+    return None
+
+
+def _looks_like_secret_data_file(path: PurePosixPath) -> bool:
+    name = path.name.lower()
+    if name.startswith(".env."):
+        return True
+
+    suffix = path.suffix.lower()
+    if suffix not in SECRET_DATA_SUFFIXES:
+        return False
+
+    normalized_stem = path.stem.lower().replace("-", "_")
+    return normalized_stem in SECRET_STEM_TOKENS or normalized_stem.endswith(
+        SECRET_STEM_SUFFIXES
     )
-    for command, record in records.items():
-        assert record["domain"]
-        assert record["status"] in allowed_statuses
-        assert record["summary"]
-        assert record["first_actionable_triage"]
-        assert record["evidence_paths"], command
-        for evidence_path in record["evidence_paths"]:
-            _assert_path_is_rewrite_evidence(evidence_path)
-
-        if record["status"] == "pass":
-            assert record["exit_code"] == 0
-            assert record["missing_prerequisites"] == []
-        elif record["status"] == "prerequisite_limited":
-            assert record["exit_code"] is None
-            assert record["missing_prerequisites"]
-        elif record["status"] == "fail":
-            assert isinstance(record["exit_code"], int)
-            assert record["exit_code"] != 0
 
 
-def test_python_validation_records_use_uv_pytest() -> None:
-    artifact = _load_artifact()
-
-    python_records = [
-        record
-        for record in artifact["command_records"]
-        if record["domain"] == "python"
-    ]
-
-    assert python_records
-    for record in python_records:
-        assert record["command"].startswith("uv run pytest")
-
-
-def test_validation_domains_cover_frontend_packaging_acceptance_and_hygiene() -> None:
-    artifact = _load_artifact()
-    coverage = artifact["validation_domain_coverage"]
-
-    assert {
-        "rust_tests",
-        "python_pytest",
-        "frontend_unit",
-        "frontend_build",
-        "frontend_smoke",
-        "packaging_deliverable",
-        "acceptance_workflows",
-        "artifact_hygiene",
-    } <= set(coverage)
-
-    for domain_name, domain in coverage.items():
-        assert domain["status"] in {
-            "pass",
-            "fail",
-            "prerequisite_limited",
-            "in_progress",
-            "not_run",
-            "missing",
-        }, domain_name
-        assert domain["requirements"], domain_name
-        assert domain["evidence_paths"], domain_name
-        for evidence_path in domain["evidence_paths"]:
-            _assert_path_is_rewrite_evidence(evidence_path)
-
-
-def test_prerequisite_limited_evidence_is_not_counted_as_passing() -> None:
-    artifact = _load_artifact()
-
-    limited_records = [
-        record
-        for record in artifact["command_records"]
-        if record["status"] == "prerequisite_limited"
-    ]
-    for record in limited_records:
-        assert record["status"] != "pass"
-        assert record["missing_prerequisites"]
-
-    acceptance = artifact["acceptance_workflow_status"]
-    if acceptance["status"] == "prerequisite_limited":
-        assert acceptance["counts_as_passing"] is False
-        assert acceptance["missing_prerequisites"]
-
-
-def _load_artifact() -> dict[str, Any]:
-    return json.loads(ARTIFACT_PATH.read_text(encoding="utf-8"))
-
-
-def _assert_path_is_rewrite_evidence(path_value: str) -> None:
-    path = Path(path_value)
-    assert path.is_absolute(), path_value
-    assert path.exists(), path_value
-    path.resolve().relative_to(REPO_ROOT)
-
-    source_repo = Path(
-        json.loads(STATE_PATH.read_text(encoding="utf-8"))["source_repo_path"]
-    ).resolve()
-    if source_repo != REPO_ROOT:
-        try:
-            path.resolve().relative_to(source_repo)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"evidence path points at source repo: {path}")
+def _git_ls_files() -> list[str]:
+    result = subprocess.run(
+        ["git", "ls-files"],
+        cwd=REPO_ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]

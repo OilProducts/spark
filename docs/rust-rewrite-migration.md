@@ -1,14 +1,22 @@
-# Rust Rewrite Migration Records
+# Rust Rewrite Migration Source Of Truth
 
-This note summarizes the migration records for Rust-backed Spark. The structured source of truth is `.spark/rust-rewrite/current/migration-records.json`; this page is the human-readable companion. It records adapter ownership, retained Python modules, deprecated compatibility surfaces, explicit non-goals, and future decision candidates. It does not change any user command, HTTP route, SSE payload, storage layout, package name, service workflow, or frontend contract.
+This committed document is the migration source of truth for Rust-backed Spark. It records adapter ownership, retained Python modules, deprecated compatibility surfaces, explicit non-goals, and future decision candidates using committed repository files: docs, specs, manifests, crates, and tests. Validation of this document uses committed repository files only. It does not change any user command, HTTP route, SSE payload, storage layout, package name, service workflow, or frontend contract.
 
 ## Scope
 
 - Public commands remain `spark` and `spark-server`.
 - Rust crates own the contracts already implemented and validated through the rewrite milestones.
-- Python modules remain valid where the record classifies them as retained behavior.
-- Deprecated compatibility routes remain supported until a later contract decision records an incompatible change.
+- Python modules remain valid where this document classifies them as retained behavior.
+- Deprecated compatibility routes remain supported until a later contract decision and validation update approve an incompatible change.
 - No open policy gaps remain after the post-gap spec/API drift audit. Explicit non-goals and future compatibility-break candidates are still not counted as closed parity.
+
+## Binding Unified LLM Contract Decisions
+
+| Decision | Documentation boundary |
+| --- | --- |
+| `CD-ULLM-RUST-001` | Normal Spark server and CLI unified LLM execution is Rust-owned through `crates/spark-server`, `crates/spark-cli`, `crates/attractor-runtime`, `crates/spark-agent-adapter`, and `crates/unified-llm-adapter`; it does not import, shell out to, or wrap `src.unified_llm` provider clients, including `src.unified_llm.adapters` or `src.unified_llm.provider_utils`, for normal provider execution. |
+| `CD-ULLM-RUST-015` | Python `unified_llm` checks in `tests/compat/providers` and `tests/adapters` are retained oracle or compatibility support; they do not replace Rust-owned behavioral validation through Rust crate tests and `uv run pytest -q`. |
+| `CD-ULLM-RUST-016` | Rust-owned surfaces are model catalog/profile resolution, request DTOs, provider routing, native/compatible provider adapters, streaming, errors, retry, tools, structured output, middleware, timeout, usage, launch/profile wiring, and HTTP transport in `crates/unified-llm-adapter` plus Rust consumers. Retained Python surfaces are compatibility tests, oracle fixture generation, historical adapter checks, and package data under `src/unified_llm`. Unsupported/deferred provider capabilities are live SDK/network error-shape parity beyond normalized public errors, persistent provider cache resources, compatible-provider advisory latest-model defaults, Responses-only compatible-provider features, and currently rejected audio/document inputs. Optional live smoke prerequisites are explicit pytest or Rust live-smoke selection plus provider credentials supplied through process environment variables. |
 
 ## Agent Boundary
 
@@ -34,6 +42,8 @@ M5 records the normal Rust-owned runtime path for Spark LLM calls. `crates/spark
 
 Normal M5 Spark server, CLI, Attractor, codergen, agent-turn, profile, and high-level generation paths do not import, shell out to, or wrap `src.unified_llm.adapters` or `src.unified_llm.provider_utils` for provider execution. The retained Python `src/unified_llm` package remains valid only for compatibility tests, oracle fixture generation, and package data such as the model catalog. Those Python surfaces are retained compatibility/oracle/package-data surfaces, not normal provider execution paths for this milestone.
 
+Source-checkout `uv run spark` and `uv run spark-server` commands are development entry points for the public command surface. They do not change the CD-ULLM-RUST-001 runtime ownership boundary: when normal Spark server or CLI execution reaches unified LLM provider work, that execution remains Rust-owned, while retained Python `unified_llm` code remains compatibility/oracle/package-data support.
+
 Spark profile loading is Rust-owned through `llm-profiles.toml` under the Spark config directory. Supported entries are `[profiles.<id>]` tables with `provider = "openai_compatible"`, a non-empty `base_url`, a non-empty `models` list, optional `label`, optional `api_key_env`, and optional `default_model` constrained to the profile's model list. Public profile metadata exposes only `id`, `label`, `provider`, `models`, `default_model`, and `configured`; it redacts `base_url`, `api_key_env`, and secret values. Profiles with `api_key_env` are configured only when the referenced process environment value is non-empty. Profile-backed adapter construction uses the OpenAI-compatible Chat Completions adapter with the profile endpoint, requires an API key only when `api_key_env` is present, permits local no-key profiles with `require_api_key = false`, and surfaces missing or malformed profile fields as configuration errors.
 
 Launch context resolution is Rust-owned for `_attractor.runtime.launch_model`, `_attractor.runtime.launch_provider`, `_attractor.runtime.launch_profile`, and `_attractor.runtime.launch_reasoning_effort`. Node/style values win before launch context, launch context wins before run/backend fallback values, and fallbacks win before defaults. Provider and reasoning values are normalized lowercase. The display model placeholder `codex default (config/profile)` is treated as omitted for model selection, and generated default reasoning placeholders do not override launch-time reasoning because the runtime carries an explicit default-placeholder marker.
@@ -44,9 +54,9 @@ M5 validation evidence is behavioral and credential-free. Rust-facing coverage i
 
 M7 closes the M5-adjacent production transport gap for normal Rust provider execution. Remaining adjacent capabilities are broader live SDK/network error-shape parity, keeping credential-backed smoke execution outside ordinary validation, and future provider feature expansion beyond the current Rust adapters.
 
-## M6 Migration Record Closure
+## M6 Unified LLM Boundary Closure
 
-M6 closes the unified LLM migration record for the currently delivered runtime boundary. Normal Spark server and CLI execution is Rust-owned: `spark-server` and `spark-cli` send launch/profile/model/provider inputs into `crates/attractor-runtime`, `crates/spark-agent-adapter` lowers generation requests to `unified_llm_adapter::Request`, and `crates/unified-llm-adapter` performs provider/profile/model resolution, request translation, stream translation, error normalization, retry policy support, usage accounting, tools, structured output, middleware, timeouts, and provider dispatch through Rust `ProviderAdapter` implementations. That path does not import, shell out to, or wrap `src.unified_llm` provider clients for normal Spark provider execution.
+M6 closes the unified LLM migration documentation for the currently delivered runtime boundary. Normal Spark server and CLI execution is Rust-owned: `spark-server` and `spark-cli` send launch/profile/model/provider inputs into `crates/attractor-runtime`, `crates/spark-agent-adapter` lowers generation requests to `unified_llm_adapter::Request`, and `crates/unified-llm-adapter` performs provider/profile/model resolution, request translation, stream translation, error normalization, retry policy support, usage accounting, tools, structured output, middleware, timeouts, and provider dispatch through Rust `ProviderAdapter` implementations. That path does not import, shell out to, or wrap `src.unified_llm` provider clients for normal Spark provider execution.
 
 The retained Python `src/unified_llm` package remains intentionally present in three roles. First, `tests/compat/providers` uses it as an oracle for fixture-backed parity observations such as model catalog/profile resources, request/tool/structured-output DTOs, retry/error/usage/stream behavior, and package-data compatibility. Second, `tests/adapters` guards historical provider adapter behavior as compatibility evidence, including optional comparison smoke runs. Third, `src/unified_llm/data/models.json` and related loaders remain package-data support while Rust mirrors the model catalog and provider profile behavior. These retained surfaces are not the binding normal runtime path for Spark server or CLI provider execution.
 
@@ -136,13 +146,13 @@ The following routes are compatibility surfaces, not cleanup leftovers. They rem
 
 ## Closed Gaps, Non-Goals, And Audit Result
 
-The structured record now carries all prior policy gaps as closed with implementation or audit evidence:
+This document treats prior policy gaps as closed only where implementation or audit evidence is listed:
 
 - Acceptance workflow assets are covered by an executable pytest harness.
 - First-class subgraph and scoped `node[...]` / `edge[...]` default authoring is available through Graph Settings.
 - The post-gap spec/API drift audit found no remaining unintended runtime, editor, or API drift and records all remaining differences as intentional policy decisions, explicit non-goals, or future compatibility-break candidates.
 
-The structured record carries these as explicit non-goals, with `counts_as_closed_parity` set to `false`:
+The following remain explicit non-goals and are not counted as closed parity:
 
 - M7 does not remove Python `agent` or `unified_llm` modules.
 - M7 does not reintroduce remote-worker execution; native and local-container execution remain the supported modes.

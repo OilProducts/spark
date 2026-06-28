@@ -1,0 +1,70 @@
+{
+  "decisions": [
+    "CD-RR-006",
+    "CD-RR-013"
+  ],
+  "fixture_id": "providers/request-tool-structured-output",
+  "input": {},
+  "item_id": "M3-I05-CODERGEN-AGENT-LLM-ADAPTERS",
+  "observation": {
+    "request": {
+      "messages": [
+        {
+          "role": "user",
+          "text": "hello"
+        }
+      ],
+      "metadata": {
+        "run_id": "run-1"
+      },
+      "model": "gpt-5.2",
+      "provider": "openai",
+      "provider_options": {
+        "trace": "enabled"
+      },
+      "reasoning_effort": "medium",
+      "response_format": {
+        "json_schema": {
+          "name": "Decision",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "strict": true,
+        "type": "json_schema"
+      }
+    },
+    "tool_call": {
+      "arguments": {
+        "city": "NYC"
+      },
+      "id": "call-1",
+      "name": "weather",
+      "raw_arguments": null,
+      "type": "function"
+    },
+    "tool_result": {
+      "content": {
+        "forecast": "sunny"
+      },
+      "is_error": false,
+      "tool_call_id": "call-1"
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "unified_llm.Client.from_env",
+      "unified_llm.models",
+      "unified_llm.retry",
+      "unified_llm.errors",
+      "unified_llm.StreamAccumulator",
+      "unified_llm.Request"
+    ],
+    "oracle": "python-unified-llm-public-interfaces"
+  },
+  "requirements": [
+    "RR-EXE-006"
+  ],
+  "scenario": "request_tool_structured_output",
+  "schema_version": "compat-provider-v1"
+}

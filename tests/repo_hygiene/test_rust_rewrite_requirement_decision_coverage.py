@@ -1,294 +1,202 @@
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
-from typing import Any
+import re
+import subprocess
+import tomllib
+from typing import Any, Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CURRENT = REPO_ROOT / ".spark" / "rust-rewrite" / "current"
-STATE_PATH = CURRENT / "state.json"
-REQUIREMENTS_PATH = CURRENT / "requirements.json"
-DECISIONS_PATH = CURRENT / "contract-decisions.json"
-ARTIFACT_PATH = CURRENT / "validation" / "requirement-decision-coverage-review.json"
-
-ITEM_ID = "M7-I05-REQUIREMENT-DECISION-COVERAGE-REVIEW"
-MILESTONE_ID = "M7-DOCS-VALIDATION"
-BOUND_REQUIREMENTS = {
-    "RR-DOC-001",
-    "RR-DOC-002",
-    "RR-DOC-003",
-    "RR-VAL-001",
-    "RR-VAL-002",
-    "RR-VAL-003",
-    "RR-VAL-004",
-    "RR-VAL-005",
+RUST_RUNTIME_CRATE_PATHS = (
+    "crates/spark-server",
+    "crates/spark-cli",
+    "crates/spark-http",
+    "crates/attractor-runtime",
+    "crates/spark-agent-adapter",
+    "crates/unified-llm-adapter",
+)
+RUST_SOURCE_SUFFIXES = {".rs", ".toml"}
+RUST_UNIFIED_LLM_VALIDATION_TESTS = {
+    "crates/unified-llm-adapter/tests/adapter_contracts.rs",
+    "crates/unified-llm-adapter/tests/compatible_provider_parity_matrix.rs",
+    "crates/unified-llm-adapter/tests/http_transport_contracts.rs",
+    "crates/unified-llm-adapter/tests/llm_profile_contracts.rs",
+    "crates/unified-llm-adapter/tests/native_provider_parity_matrix.rs",
+    "crates/unified-llm-adapter/tests/native_request_contracts.rs",
+    "crates/unified-llm-adapter/tests/openai_compatible_contracts.rs",
+    "crates/unified-llm-adapter/tests/public_surface_contracts.rs",
+    "crates/unified-llm-adapter/tests/runtime_boundary_contracts.rs",
+    "crates/spark-agent-adapter/tests/llm_backend_contracts.rs",
+    "crates/attractor-runtime/tests/core_handler_contracts.rs",
+    "crates/spark-cli/tests/cli_shell_contracts.rs",
+    "crates/spark-server/tests/server_shell_contracts.rs",
 }
-BOUND_DECISIONS = {"CD-RR-001", "CD-RR-013", "CD-RR-014", "CD-RR-015"}
-SPLIT_GATES = {
-    "RR-DSL-006__RR-STO-004",
-    "RR-STO-005__RR-STO-003",
-    "RR-EXE-006__RR-PKG-005",
-    "RR-EXE-008__RR-WKF-005",
-    "RR-WKF-005__RR-WKF-004",
-    "RR-API-004__RR-WKF-004",
-    "RR-API-001__RR-WKF-004",
-    "RR-API-003__RR-PKG-002",
-    "RR-STO-004__RR-PKG-002",
+RETAINED_PYTHON_ORACLE_TESTS = {
+    "tests/adapters/test_anthropic_adapter.py",
+    "tests/adapters/test_cross_provider_parity.py",
+    "tests/adapters/test_gemini_adapter.py",
+    "tests/adapters/test_openai_adapter.py",
+    "tests/adapters/test_openai_compatible_adapter.py",
+    "tests/compat/providers/test_unified_llm_adapter_fixtures.py",
+    "tests/compat/providers/test_unified_llm_runtime_boundary.py",
 }
-ALLOWED_STATUSES = {
-    "pass",
-    "boundary_documented",
-    "prerequisite_limited",
-    "pending_ledger_status",
-    "missing_evidence",
-    "fail",
-}
+COMMITTED_UNIFIED_LLM_MANIFESTS = (
+    REPO_ROOT / "specs" / "unified-llm-rust-runtime" / "requirements.json",
+    REPO_ROOT / "specs" / "unified-llm-rust-runtime" / "contract-decisions.json",
+    REPO_ROOT / "specs" / "unified-llm-spec-md" / "requirements.json",
+    REPO_ROOT / "specs" / "unified-llm-spec-md" / "contract-decisions.json",
+)
+PROHIBITED_PROVIDER_CLIENT_REFERENCE = re.compile(
+    r"\b(?:src\.)?unified_llm\.(?:adapters|provider_utils)\b"
+    r"|\bfrom\s+(?:src\.)?unified_llm\s+import\s+[^#\n]*\b(?:adapters|provider_utils)\b"
+)
+WORKFLOW_CURRENT_ALIASES = (
+    ".spark/rust-rewrite/current/",
+    ".spark/spec-implementation/current/",
+)
 
 
-def test_coverage_review_is_bound_to_active_item_contracts() -> None:
-    artifact = _load_artifact()
+def test_cd_ullm_rust_001_runtime_reaches_rust_adapter_through_manifests() -> None:
+    workspace = _load_toml(REPO_ROOT / "Cargo.toml")
+    assert set(RUST_RUNTIME_CRATE_PATHS) <= set(workspace["workspace"]["members"])
 
-    assert artifact["schema_version"] == "rust-rewrite-requirement-decision-coverage-review-v1"
-    assert artifact["item_id"] == ITEM_ID
-    assert artifact["milestone_id"] == MILESTONE_ID
-    assert set(artifact["requirements"]) == BOUND_REQUIREMENTS
-    assert set(artifact["decisions"]) == BOUND_DECISIONS
-    assert Path(artifact["worktree_path"]).resolve() == REPO_ROOT
-    assert artifact["status"] in ALLOWED_STATUSES
+    manifests = {
+        crate_path: _load_toml(REPO_ROOT / crate_path / "Cargo.toml")
+        for crate_path in RUST_RUNTIME_CRATE_PATHS
+    }
 
-
-def test_every_requirement_has_evidence_or_an_explicit_non_passing_note() -> None:
-    artifact = _load_artifact()
-    requirements = _load_json(REQUIREMENTS_PATH)["requirements"]
-    coverage = artifact["requirement_coverage"]
-
-    assert set(coverage) == {requirement["id"] for requirement in requirements}
-
-    pending_ids = set()
-    for requirement in requirements:
-        entry = coverage[requirement["id"]]
-        assert entry["ledger_status"] == requirement["status"]
-        assert entry["status"] in ALLOWED_STATUSES
-        assert isinstance(entry["counts_as_passing"], bool)
-        _assert_evidence_or_note(entry)
-        if entry["status"] == "pending_ledger_status":
-            pending_ids.add(requirement["id"])
-            assert entry["counts_as_passing"] is False
-
-    assert pending_ids == set()
+    assert _dependency_names(manifests["crates/spark-server"]) >= {
+        "attractor-runtime",
+        "spark-http",
+        "unified-llm-adapter",
+    }
+    assert _dependency_names(manifests["crates/spark-http"]) >= {
+        "unified-llm-adapter",
+    }
+    assert _dependency_names(manifests["crates/attractor-runtime"]) >= {
+        "spark-agent-adapter",
+        "unified-llm-adapter",
+    }
+    assert _dependency_names(manifests["crates/spark-agent-adapter"]) >= {
+        "unified-llm-adapter",
+    }
 
 
-def test_every_contract_decision_has_review_evidence() -> None:
-    artifact = _load_artifact()
-    decisions = _load_json(DECISIONS_PATH)["decisions"]
-    coverage = artifact["decision_coverage"]
+def test_cd_ullm_rust_001_public_commands_are_rust_launcher_entry_points() -> None:
+    pyproject = _load_toml(REPO_ROOT / "pyproject.toml")
 
-    assert set(coverage) == {decision["id"] for decision in decisions}
+    assert pyproject["project"]["scripts"] == {
+        "spark": "spark._rust_launcher:spark_main",
+        "spark-server": "spark._rust_launcher:spark_server_main",
+    }
+    assert "bin/*" in pyproject["tool"]["setuptools"]["package-data"]["spark"]
 
-    for decision in decisions:
-        entry = coverage[decision["id"]]
-        assert entry["status"] in ALLOWED_STATUSES
-        assert isinstance(entry["counts_as_passing"], bool)
-        assert entry["related_requirements"] == decision["requirement_ids"]
-        _assert_evidence_or_note(entry)
+    launcher_imports = _python_import_modules(
+        REPO_ROOT / "src" / "spark" / "_rust_launcher.py"
+    )
+    assert not any(
+        module == "unified_llm" or module.startswith("unified_llm.")
+        for module in launcher_imports
+    )
 
 
-def test_architecture_split_gates_are_represented_with_evidence_or_notes() -> None:
-    artifact = _load_artifact()
-    split_gates = {entry["id"]: entry for entry in artifact["split_gate_coverage"]}
-
-    assert set(split_gates) == SPLIT_GATES
-
-    for entry in split_gates.values():
-        assert len(entry["requirements"]) >= 2
-        assert entry["status"] in ALLOWED_STATUSES
-        assert isinstance(entry["counts_as_passing"], bool)
-        if entry["status"] == "pending_ledger_status":
-            assert entry["counts_as_passing"] is False
-            assert entry["notes"]
-        _assert_evidence_or_note(
-            {
-                "evidence": entry["observed_evidence"],
-                "notes": entry["notes"],
-            }
+def test_cd_ullm_rust_001_rust_runtime_sources_do_not_import_python_provider_clients() -> None:
+    violations = [
+        f"{path.relative_to(REPO_ROOT)}:{line_number}: {line.strip()}"
+        for path in _rust_runtime_source_files()
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            start=1,
         )
-
-
-def test_referenced_evidence_paths_are_scoped_to_the_rewrite_worktree() -> None:
-    artifact = _load_artifact()
-
-    for path_value in artifact["generated_evidence_paths"].values():
-        _assert_rewrite_path(path_value)
-
-    for entry in artifact["requirement_coverage"].values():
-        _assert_evidence_paths(entry["evidence"])
-
-    for entry in artifact["decision_coverage"].values():
-        _assert_evidence_paths(entry["evidence"])
-
-    for entry in artifact["split_gate_coverage"]:
-        _assert_evidence_paths(entry["observed_evidence"])
-
-    for note in artifact["retained_boundary_notes"]:
-        _assert_evidence_paths(note["evidence"])
-
-
-def test_prerequisite_limited_and_pending_entries_do_not_count_as_passing() -> None:
-    artifact = _load_artifact()
-
-    pending = artifact["pending_ledger_notes"]
-    limited = artifact["prerequisite_limited_notes"]
-
-    assert pending == []
-    assert limited == []
-
-    for entry in artifact["requirement_coverage"].values():
-        if entry["status"] in {"pending_ledger_status", "prerequisite_limited", "missing_evidence", "fail"}:
-            assert entry["counts_as_passing"] is False
-
-    for note in [*artifact["retained_boundary_notes"], *limited]:
-        if note["status"] in {"prerequisite_limited", "open_policy_gap", "non_goal", "future_decision_candidate"}:
-            assert note["counts_as_passing"] is False
-
-
-def test_acceptance_workflow_harness_coverage_is_closed_when_final_validation_passes() -> None:
-    artifact = _load_artifact()
-    final_validation = _load_json(CURRENT / "validation" / "final-validation-artifacts.json")
-
-    assert final_validation["acceptance_workflow_status"]["status"] == "pass"
-    assert final_validation["acceptance_workflow_status"]["counts_as_passing"] is True
-
-    rr_val_005 = artifact["requirement_coverage"]["RR-VAL-005"]
-    assert rr_val_005["status"] == "pass"
-    assert rr_val_005["counts_as_passing"] is True
-    assert final_validation["acceptance_workflow_status"]["missing_prerequisites"] == []
-    assert all(record["status"] != "prerequisite_limited" for record in rr_val_005["evidence"])
-
-    closed = [
-        note
-        for note in artifact["retained_boundary_notes"]
-        if note["id"] == "acceptance_workflow_harness"
-        and note["classification"] == "closed_policy_gaps"
+        if PROHIBITED_PROVIDER_CLIENT_REFERENCE.search(line)
     ]
-    assert closed
-    assert all(note["counts_as_passing"] is True for note in closed)
 
-    post_gap_closed = [
-        note
-        for note in artifact["retained_boundary_notes"]
-        if note["id"] == "post_gap_spec_api_drift_audit"
-        and note["classification"] == "closed_policy_gaps"
+    assert violations == []
+
+
+def test_cd_ullm_rust_015_validation_surfaces_are_committed_behavior_tests() -> None:
+    tracked_paths = set(_git_ls_files())
+    decision = _contract_decisions()["CD-ULLM-RUST-015"]
+
+    assert set(decision["requirement_ids"]) == {"REQ-001", "REQ-023", "REQ-024"}
+    assert RUST_UNIFIED_LLM_VALIDATION_TESTS <= tracked_paths
+    assert RETAINED_PYTHON_ORACLE_TESTS <= tracked_paths
+
+
+def test_committed_unified_llm_manifests_do_not_depend_on_workflow_current_aliases() -> None:
+    manifest_strings = [
+        value
+        for manifest_path in COMMITTED_UNIFIED_LLM_MANIFESTS
+        for value in _walk_json_strings(json.loads(manifest_path.read_text(encoding="utf-8")))
     ]
-    post_gap_open = [
-        note
-        for note in artifact["retained_boundary_notes"]
-        if note["id"] == "post_gap_spec_api_drift_audit"
-        and note["classification"] == "policy_gaps"
-    ]
-    assert post_gap_closed
-    assert post_gap_open == []
-    assert all(note["counts_as_passing"] is True for note in post_gap_closed)
+
+    assert [
+        value
+        for value in manifest_strings
+        if any(alias in value for alias in WORKFLOW_CURRENT_ALIASES)
+    ] == []
 
 
-def test_python_validation_command_evidence_uses_uv_pytest() -> None:
-    artifact = _load_artifact()
-    command_path = artifact["generated_evidence_paths"]["item_validation_commands"]
-    commands = json.loads(Path(command_path).read_text(encoding="utf-8"))
-
-    assert commands
-    for command in commands:
-        assert command.startswith("uv run pytest")
+def _load_toml(path: Path) -> dict[str, Any]:
+    return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
-def test_prior_milestone_completion_uses_approved_evidence_and_records_stale_state() -> None:
-    artifact = _load_artifact()
-    prior_path = Path(artifact["generated_evidence_paths"]["prior_milestone_evidence"])
-    prior = _load_json(prior_path)
-
-    assert prior["status"] == "pass"
-    assert prior["errors"] == []
-
-    stale_notes = prior["stale_state_notes"]
-    assert stale_notes
-
-    for record in prior["milestones"]:
-        assert record["completion_status"] == "completed"
-        assert record["milestones_json_status"] == "completed"
-        assert record["result_status"] == "completed"
-        assert record["completed_item_count"] == record["item_count"]
-        assert record["counts_as_passing"] is True
-        if record["state_status"] != "completed":
-            assert record["notes"]
+def _dependency_names(manifest: dict[str, Any]) -> set[str]:
+    return set(manifest.get("dependencies", {}))
 
 
-def test_pass_review_and_result_do_not_reference_failed_generated_evidence() -> None:
-    artifact = _load_artifact()
-
-    failed_supporting = [
-        status
-        for status in artifact["supporting_artifact_statuses"]
-        if status["status"] == "fail"
-    ]
-    failed_generated = []
-    for path_value in artifact["generated_evidence_paths"].values():
-        path = Path(path_value)
-        if path.suffix != ".json":
-            continue
-        payload = _load_json(path)
-        if not isinstance(payload, dict):
-            continue
-        if payload.get("status") == "fail":
-            failed_generated.append(str(path))
-
-    if artifact["status"] == "pass":
-        assert failed_supporting == []
-        assert failed_generated == []
-
-    result = _load_json(CURRENT / "validation-result.json")
-    if result["status"] == "pass":
-        assert result["coverage_review_status"] == "pass"
-        assert [
-            status
-            for status in result["supporting_artifact_statuses"]
-            if status["status"] == "fail"
-        ] == []
+def _python_import_modules(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+    return modules
 
 
-def _load_artifact() -> dict[str, Any]:
-    return _load_json(ARTIFACT_PATH)
+def _rust_runtime_source_files() -> list[Path]:
+    return sorted(
+        path
+        for crate_path in RUST_RUNTIME_CRATE_PATHS
+        for path in (REPO_ROOT / crate_path).rglob("*")
+        if path.is_file() and path.suffix in RUST_SOURCE_SUFFIXES
+    )
 
 
-def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+def _contract_decisions() -> dict[str, dict[str, Any]]:
+    payload = json.loads(
+        (
+            REPO_ROOT
+            / "specs"
+            / "unified-llm-rust-runtime"
+            / "contract-decisions.json"
+        ).read_text(encoding="utf-8")
+    )
+    return {decision["id"]: decision for decision in payload["decisions"]}
 
 
-def _assert_evidence_or_note(entry: dict[str, Any]) -> None:
-    if entry.get("evidence"):
-        _assert_evidence_paths(entry["evidence"])
-        return
-    assert entry.get("notes")
-    assert entry.get("status") != "pass"
+def _walk_json_strings(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_json_strings(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _walk_json_strings(item)
 
 
-def _assert_evidence_paths(evidence: list[dict[str, Any]]) -> None:
-    for record in evidence:
-        path_value = record.get("path")
-        if path_value:
-            _assert_rewrite_path(path_value)
-
-
-def _assert_rewrite_path(path_value: str) -> None:
-    path = Path(path_value)
-    assert path.is_absolute(), path_value
-    assert path.exists(), path_value
-    path.resolve().relative_to(REPO_ROOT)
-
-    source_repo = Path(_load_json(STATE_PATH)["source_repo_path"]).resolve()
-    if source_repo != REPO_ROOT:
-        try:
-            path.resolve().relative_to(source_repo)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"evidence path points at source repo: {path}")
+def _git_ls_files() -> list[str]:
+    result = subprocess.run(
+        ["git", "ls-files"],
+        cwd=REPO_ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]

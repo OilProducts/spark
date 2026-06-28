@@ -1,0 +1,89 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "dsl/parse-reject-unsupported-constructs",
+  "input": {
+    "cases": {
+      "html_label": "digraph A { a [label=<b>bad</b>] }",
+      "invalid_bare_node": "digraph A { 123bad [shape=box] }",
+      "malformed_attrs": "digraph A { a [shape=box,,] }",
+      "multiple_graphs": "digraph A { a } digraph B { b }",
+      "port": "digraph A { a:port -> b }",
+      "strict": "strict digraph A { a -> b }",
+      "undirected": "graph A { a -- b }"
+    }
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "cases": [
+      {
+        "case_id": "html_label",
+        "error_type": "DotParseError",
+        "line": 1,
+        "message": "line 1: HTML-like labels are not supported",
+        "result": "rejected"
+      },
+      {
+        "case_id": "invalid_bare_node",
+        "error_type": "DotParseError",
+        "line": 1,
+        "message": "line 1: unexpected token INT:123",
+        "result": "rejected"
+      },
+      {
+        "case_id": "malformed_attrs",
+        "error_type": "DotParseError",
+        "line": 1,
+        "message": "line 1: expected IDENT, got COMMA",
+        "result": "rejected"
+      },
+      {
+        "case_id": "multiple_graphs",
+        "error_type": "DotParseError",
+        "line": 1,
+        "message": "line 1: multiple graph declarations are not supported",
+        "result": "rejected"
+      },
+      {
+        "case_id": "port",
+        "error_type": "DotParseError",
+        "line": 1,
+        "message": "line 1: port and compass point syntax is not supported",
+        "result": "rejected"
+      },
+      {
+        "case_id": "strict",
+        "error_type": "DotParseError",
+        "line": 1,
+        "message": "line 1: strict modifier is not supported",
+        "result": "rejected"
+      },
+      {
+        "case_id": "undirected",
+        "error_type": "DotParseError",
+        "line": 1,
+        "message": "line 1: undirected edges ('--') are not supported",
+        "result": "rejected"
+      }
+    ]
+  },
+  "operation": "parse_rejections",
+  "provenance": {
+    "interfaces": [
+      "attractor.dsl.parse_dot",
+      "attractor.dsl.formatter.format_readable_dot",
+      "attractor.dsl.validate_graph",
+      "attractor.validation_preview.preview_dot_source",
+      "attractor.api.flow_sources.normalize_flow_name"
+    ],
+    "oracle": "python-dsl-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": "compat-dsl-v1"
+}

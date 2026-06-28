@@ -6,12 +6,12 @@
       "summary": "Implement the SDK as a src-layout Python package named unified_llm with async-first public operations and no required synchronous duplicate layer.",
       "requirement_ids": ["REQ-001", "REQ-005", "REQ-006", "REQ-011", "REQ-012", "REQ-013"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:52",
-        ".spark/spec-implementation/current/spec/source.md:159",
-        ".spark/spec-implementation/current/spec/source.md:798",
-        ".spark/spec-implementation/current/spec/source.md:846",
-        ".spark/spec-implementation/current/spec/source.md:911",
-        ".spark/spec-implementation/current/spec/source.md:1986"
+        "specs/unified-llm-spec-md/source.md:52",
+        "specs/unified-llm-spec-md/source.md:159",
+        "specs/unified-llm-spec-md/source.md:798",
+        "specs/unified-llm-spec-md/source.md:846",
+        "specs/unified-llm-spec-md/source.md:911",
+        "specs/unified-llm-spec-md/source.md:1986"
       ],
       "architecture_refs": [
         "architecture.md#canonical-repository-topology",
@@ -27,11 +27,11 @@
       "summary": "Map the spec's four-layer architecture to concrete Python modules with provider-native adapters at the integration boundary.",
       "requirement_ids": ["REQ-001", "REQ-005", "REQ-009", "REQ-011", "REQ-012", "REQ-018", "REQ-020", "REQ-021"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:54",
-        ".spark/spec-implementation/current/spec/source.md:1479",
-        ".spark/spec-implementation/current/spec/source.md:1608",
-        ".spark/spec-implementation/current/spec/source.md:1986",
-        ".spark/spec-implementation/current/spec/source.md:1997"
+        "specs/unified-llm-spec-md/source.md:54",
+        "specs/unified-llm-spec-md/source.md:1479",
+        "specs/unified-llm-spec-md/source.md:1608",
+        "specs/unified-llm-spec-md/source.md:1986",
+        "specs/unified-llm-spec-md/source.md:1997"
       ],
       "architecture_refs": [
         "architecture.md#implementation-boundaries",
@@ -47,11 +47,11 @@
       "summary": "Represent the unified data model with dataclasses and str enums while allowing provider-specific content and event type strings.",
       "requirement_ids": ["REQ-002", "REQ-003", "REQ-015"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:346",
-        ".spark/spec-implementation/current/spec/source.md:416",
-        ".spark/spec-implementation/current/spec/source.md:547",
-        ".spark/spec-implementation/current/spec/source.md:707",
-        ".spark/spec-implementation/current/spec/source.md:1052"
+        "specs/unified-llm-spec-md/source.md:346",
+        "specs/unified-llm-spec-md/source.md:416",
+        "specs/unified-llm-spec-md/source.md:547",
+        "specs/unified-llm-spec-md/source.md:707",
+        "specs/unified-llm-spec-md/source.md:1052"
       ],
       "architecture_refs": [
         "architecture.md#data-model-and-validation-rules",
@@ -67,11 +67,11 @@
       "summary": "Provider resolution is explicit/default-provider based only; the model catalog is advisory, never restricts native model strings, and supplies defaults only when high-level model selection omits a model.",
       "requirement_ids": ["REQ-006", "REQ-008", "REQ-024"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:96",
-        ".spark/spec-implementation/current/spec/source.md:114",
-        ".spark/spec-implementation/current/spec/source.md:254",
-        ".spark/spec-implementation/current/spec/source.md:281",
-        ".spark/spec-implementation/current/spec/source.md:330"
+        "specs/unified-llm-spec-md/source.md:96",
+        "specs/unified-llm-spec-md/source.md:114",
+        "specs/unified-llm-spec-md/source.md:254",
+        "specs/unified-llm-spec-md/source.md:281",
+        "specs/unified-llm-spec-md/source.md:330"
       ],
       "architecture_refs": [
         "architecture.md#documented-public-interface",
@@ -87,9 +87,9 @@
       "summary": "Middleware uses onion-style execution for both non-streaming responses and streaming event iterators.",
       "requirement_ids": ["REQ-007", "REQ-011"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:122",
-        ".spark/spec-implementation/current/spec/source.md:1933",
-        ".spark/spec-implementation/current/spec/source.md:2022"
+        "specs/unified-llm-spec-md/source.md:122",
+        "specs/unified-llm-spec-md/source.md:1933",
+        "specs/unified-llm-spec-md/source.md:2022"
       ],
       "architecture_refs": [
         "architecture.md#implementation-boundaries",
@@ -105,11 +105,11 @@
       "summary": "The provider_options escape hatch passes only the selected provider's options into that provider adapter.",
       "requirement_ids": ["REQ-006", "REQ-009", "REQ-018", "REQ-020", "REQ-021", "REQ-022"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:210",
-        ".spark/spec-implementation/current/spec/source.md:222",
-        ".spark/spec-implementation/current/spec/source.md:589",
-        ".spark/spec-implementation/current/spec/source.md:1608",
-        ".spark/spec-implementation/current/spec/source.md:2083"
+        "specs/unified-llm-spec-md/source.md:210",
+        "specs/unified-llm-spec-md/source.md:222",
+        "specs/unified-llm-spec-md/source.md:589",
+        "specs/unified-llm-spec-md/source.md:1608",
+        "specs/unified-llm-spec-md/source.md:2083"
       ],
       "architecture_refs": [
         "architecture.md#provider-adapter-contracts",
@@ -125,12 +125,12 @@
       "summary": "Primary provider adapters use native APIs; Chat Completions compatibility is confined to a separate OpenAICompatibleAdapter.",
       "requirement_ids": ["REQ-018", "REQ-019", "REQ-020", "REQ-021", "REQ-022"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:222",
-        ".spark/spec-implementation/current/spec/source.md:1523",
-        ".spark/spec-implementation/current/spec/source.md:1549",
-        ".spark/spec-implementation/current/spec/source.md:1575",
-        ".spark/spec-implementation/current/spec/source.md:1741",
-        ".spark/spec-implementation/current/spec/source.md:1997"
+        "specs/unified-llm-spec-md/source.md:222",
+        "specs/unified-llm-spec-md/source.md:1523",
+        "specs/unified-llm-spec-md/source.md:1549",
+        "specs/unified-llm-spec-md/source.md:1575",
+        "specs/unified-llm-spec-md/source.md:1741",
+        "specs/unified-llm-spec-md/source.md:1997"
       ],
       "architecture_refs": [
         "architecture.md#provider-adapter-contracts",
@@ -146,11 +146,11 @@
       "summary": "Use httpx for async HTTP and jsonschema for complete JSON Schema validation rather than custom protocol or schema implementations.",
       "requirement_ids": ["REQ-001", "REQ-009", "REQ-014", "REQ-018", "REQ-020", "REQ-021", "REQ-023"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:685",
-        ".spark/spec-implementation/current/spec/source.md:961",
-        ".spark/spec-implementation/current/spec/source.md:1905",
-        ".spark/spec-implementation/current/spec/source.md:1986",
-        ".spark/spec-implementation/current/spec/source.md:2022"
+        "specs/unified-llm-spec-md/source.md:685",
+        "specs/unified-llm-spec-md/source.md:961",
+        "specs/unified-llm-spec-md/source.md:1905",
+        "specs/unified-llm-spec-md/source.md:1986",
+        "specs/unified-llm-spec-md/source.md:2022"
       ],
       "architecture_refs": [
         "architecture.md#canonical-repository-topology",
@@ -166,11 +166,11 @@
       "summary": "All provider streams normalize to start/delta/end StreamEvent lifecycles, with high-level tool streaming using the extension type string step_finish.",
       "requirement_ids": ["REQ-003", "REQ-010", "REQ-013", "REQ-016"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:707",
-        ".spark/spec-implementation/current/spec/source.md:767",
-        ".spark/spec-implementation/current/spec/source.md:936",
-        ".spark/spec-implementation/current/spec/source.md:993",
-        ".spark/spec-implementation/current/spec/source.md:1664"
+        "specs/unified-llm-spec-md/source.md:707",
+        "specs/unified-llm-spec-md/source.md:767",
+        "specs/unified-llm-spec-md/source.md:936",
+        "specs/unified-llm-spec-md/source.md:993",
+        "specs/unified-llm-spec-md/source.md:1664"
       ],
       "architecture_refs": [
         "architecture.md#generation-streaming-tools-and-structured-output",
@@ -186,11 +186,11 @@
       "summary": "Active tools execute concurrently and tool execution failures are returned to the model as error ToolResult values.",
       "requirement_ids": ["REQ-012", "REQ-015", "REQ-016"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1052",
-        ".spark/spec-implementation/current/spec/source.md:1182",
-        ".spark/spec-implementation/current/spec/source.md:1229",
-        ".spark/spec-implementation/current/spec/source.md:1258",
-        ".spark/spec-implementation/current/spec/source.md:2057"
+        "specs/unified-llm-spec-md/source.md:1052",
+        "specs/unified-llm-spec-md/source.md:1182",
+        "specs/unified-llm-spec-md/source.md:1229",
+        "specs/unified-llm-spec-md/source.md:1258",
+        "specs/unified-llm-spec-md/source.md:2057"
       ],
       "architecture_refs": [
         "architecture.md#generation-streaming-tools-and-structured-output",
@@ -206,11 +206,11 @@
       "summary": "Low-level client calls never retry automatically; high-level generation retries individual LLM calls according to RetryPolicy.",
       "requirement_ids": ["REQ-011", "REQ-012", "REQ-013", "REQ-017"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:822",
-        ".spark/spec-implementation/current/spec/source.md:897",
-        ".spark/spec-implementation/current/spec/source.md:1403",
-        ".spark/spec-implementation/current/spec/source.md:1435",
-        ".spark/spec-implementation/current/spec/source.md:2022"
+        "specs/unified-llm-spec-md/source.md:822",
+        "specs/unified-llm-spec-md/source.md:897",
+        "specs/unified-llm-spec-md/source.md:1403",
+        "specs/unified-llm-spec-md/source.md:1435",
+        "specs/unified-llm-spec-md/source.md:2022"
       ],
       "architecture_refs": [
         "architecture.md#generation-streaming-tools-and-structured-output",
@@ -226,10 +226,10 @@
       "summary": "Structured output requests use native provider mechanisms where available and raise NoObjectGeneratedError for parse or validation failures.",
       "requirement_ids": ["REQ-013", "REQ-014"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:961",
-        ".spark/spec-implementation/current/spec/source.md:993",
-        ".spark/spec-implementation/current/spec/source.md:1905",
-        ".spark/spec-implementation/current/spec/source.md:2022"
+        "specs/unified-llm-spec-md/source.md:961",
+        "specs/unified-llm-spec-md/source.md:993",
+        "specs/unified-llm-spec-md/source.md:1905",
+        "specs/unified-llm-spec-md/source.md:2022"
       ],
       "architecture_refs": [
         "architecture.md#generation-streaming-tools-and-structured-output",
@@ -245,10 +245,10 @@
       "summary": "Anthropic cache_control support is mandatory, automatic breakpoint injection is enabled by default, and callers can disable it through provider_options.",
       "requirement_ids": ["REQ-020", "REQ-022"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:330",
-        ".spark/spec-implementation/current/spec/source.md:1599",
-        ".spark/spec-implementation/current/spec/source.md:2035",
-        ".spark/spec-implementation/current/spec/source.md:2044"
+        "specs/unified-llm-spec-md/source.md:330",
+        "specs/unified-llm-spec-md/source.md:1599",
+        "specs/unified-llm-spec-md/source.md:2035",
+        "specs/unified-llm-spec-md/source.md:2044"
       ],
       "architecture_refs": [
         "architecture.md#provider-adapter-contracts",
@@ -264,10 +264,10 @@
       "summary": "Gemini function calls without provider IDs receive synthetic IDs that can be mapped back to function names for continuation requests.",
       "requirement_ids": ["REQ-021", "REQ-022"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:685",
-        ".spark/spec-implementation/current/spec/source.md:1575",
-        ".spark/spec-implementation/current/spec/source.md:1723",
-        ".spark/spec-implementation/current/spec/source.md:2035"
+        "specs/unified-llm-spec-md/source.md:685",
+        "specs/unified-llm-spec-md/source.md:1575",
+        "specs/unified-llm-spec-md/source.md:1723",
+        "specs/unified-llm-spec-md/source.md:2035"
       ],
       "architecture_refs": [
         "architecture.md#provider-adapter-contracts",
@@ -283,11 +283,11 @@
       "summary": "The SDK uses standard library logging for diagnostics, avoids direct prints, and preserves actionable exceptions or converts them only where the spec requires.",
       "requirement_ids": ["REQ-001", "REQ-004", "REQ-006", "REQ-007", "REQ-009", "REQ-015", "REQ-023"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1283",
-        ".spark/spec-implementation/current/spec/source.md:1364",
-        ".spark/spec-implementation/current/spec/source.md:1394",
-        ".spark/spec-implementation/current/spec/source.md:1986",
-        ".spark/spec-implementation/current/spec/source.md:2071"
+        "specs/unified-llm-spec-md/source.md:1283",
+        "specs/unified-llm-spec-md/source.md:1364",
+        "specs/unified-llm-spec-md/source.md:1394",
+        "specs/unified-llm-spec-md/source.md:1986",
+        "specs/unified-llm-spec-md/source.md:2071"
       ],
       "architecture_refs": [
         "architecture.md#repository-hygiene-expectations",
@@ -303,9 +303,9 @@
       "summary": "The required validation suite never depends on provider credentials or live network access; live coverage is optional and explicitly marked.",
       "requirement_ids": ["REQ-022", "REQ-023"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1982",
-        ".spark/spec-implementation/current/spec/source.md:2083",
-        ".spark/spec-implementation/current/spec/source.md:2105"
+        "specs/unified-llm-spec-md/source.md:1982",
+        "specs/unified-llm-spec-md/source.md:2083",
+        "specs/unified-llm-spec-md/source.md:2105"
       ],
       "architecture_refs": [
         "architecture.md#validation-strategy",
@@ -321,14 +321,14 @@
       "summary": "Treat omitted or None model values in high-level generation and structured-output APIs as a supported selection path only when the provider is explicit or available from the selected client's default_provider.",
       "requirement_ids": ["REQ-006", "REQ-008", "REQ-012", "REQ-013", "REQ-014", "REQ-024"],
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:116",
-        ".spark/spec-implementation/current/spec/source.md:193",
-        ".spark/spec-implementation/current/spec/source.md:281",
-        ".spark/spec-implementation/current/spec/source.md:320",
-        ".spark/spec-implementation/current/spec/source.md:846",
-        ".spark/spec-implementation/current/spec/source.md:929",
-        ".spark/spec-implementation/current/spec/source.md:961",
-        ".spark/spec-implementation/current/spec/source.md:2111"
+        "specs/unified-llm-spec-md/source.md:116",
+        "specs/unified-llm-spec-md/source.md:193",
+        "specs/unified-llm-spec-md/source.md:281",
+        "specs/unified-llm-spec-md/source.md:320",
+        "specs/unified-llm-spec-md/source.md:846",
+        "specs/unified-llm-spec-md/source.md:929",
+        "specs/unified-llm-spec-md/source.md:961",
+        "specs/unified-llm-spec-md/source.md:2111"
       ],
       "architecture_refs": [
         "architecture.md#documented-public-interface",

@@ -1,0 +1,146 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "dsl/format-canonical-branching",
+  "input": {
+    "dot": "\ndigraph Workflow {\n  done [shape=Msquare];\n  review [shape=diamond, prompt=\"Review \\\"quoted\\\" result\"];\n  build [shape=box, prompt=\"Build\\nNow\"];\n  start [shape=Mdiamond];\n  start -> build;\n  build -> review [label=\"review\", weight=5];\n  review -> build [label=\"again\", condition=\"preferred_label=again\"];\n  review -> done [label=\"ship\", condition=\"preferred_label=ship\"];\n}\n"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "canonical_dot": "digraph Workflow {\n\n  start [shape=\"Mdiamond\"];\n  start -> build;\n\n  build [prompt=\"Build\\nNow\", shape=\"box\"];\n  build -> review [label=\"review\", weight=5];\n\n  review [prompt=\"Review \\\"quoted\\\" result\", shape=\"diamond\"];\n  review -> build [condition=\"preferred_label=again\", label=\"again\"];\n  review -> done [condition=\"preferred_label=ship\", label=\"ship\"];\n\n  done [shape=\"Msquare\"];\n}\n",
+    "reparsed_graph": {
+      "defaults": {
+        "edge": {},
+        "node": {}
+      },
+      "edges": [
+        {
+          "attrs": {},
+          "source": "start",
+          "target": "build"
+        },
+        {
+          "attrs": {
+            "label": {
+              "value": "review",
+              "value_type": "string"
+            },
+            "weight": {
+              "value": 5,
+              "value_type": "integer"
+            }
+          },
+          "source": "build",
+          "target": "review"
+        },
+        {
+          "attrs": {
+            "condition": {
+              "value": "preferred_label=again",
+              "value_type": "string"
+            },
+            "label": {
+              "value": "again",
+              "value_type": "string"
+            }
+          },
+          "source": "review",
+          "target": "build"
+        },
+        {
+          "attrs": {
+            "condition": {
+              "value": "preferred_label=ship",
+              "value_type": "string"
+            },
+            "label": {
+              "value": "ship",
+              "value_type": "string"
+            }
+          },
+          "source": "review",
+          "target": "done"
+        }
+      ],
+      "graph_attrs": {},
+      "graph_id": "Workflow",
+      "nodes": {
+        "build": {
+          "attrs": {
+            "prompt": {
+              "value": "Build\nNow",
+              "value_type": "string"
+            },
+            "shape": {
+              "value": "box",
+              "value_type": "string"
+            }
+          },
+          "explicit_attr_keys": [
+            "prompt",
+            "shape"
+          ]
+        },
+        "done": {
+          "attrs": {
+            "shape": {
+              "value": "Msquare",
+              "value_type": "string"
+            }
+          },
+          "explicit_attr_keys": [
+            "shape"
+          ]
+        },
+        "review": {
+          "attrs": {
+            "prompt": {
+              "value": "Review \"quoted\" result",
+              "value_type": "string"
+            },
+            "shape": {
+              "value": "diamond",
+              "value_type": "string"
+            }
+          },
+          "explicit_attr_keys": [
+            "prompt",
+            "shape"
+          ]
+        },
+        "start": {
+          "attrs": {
+            "shape": {
+              "value": "Mdiamond",
+              "value_type": "string"
+            }
+          },
+          "explicit_attr_keys": [
+            "shape"
+          ]
+        }
+      },
+      "subgraphs": []
+    },
+    "stable_after_reparse": true
+  },
+  "operation": "format_readable",
+  "provenance": {
+    "interfaces": [
+      "attractor.dsl.parse_dot",
+      "attractor.dsl.formatter.format_readable_dot",
+      "attractor.dsl.validate_graph",
+      "attractor.validation_preview.preview_dot_source",
+      "attractor.api.flow_sources.normalize_flow_name"
+    ],
+    "oracle": "python-dsl-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": "compat-dsl-v1"
+}

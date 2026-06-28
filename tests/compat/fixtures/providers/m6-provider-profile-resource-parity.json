@@ -1,0 +1,172 @@
+{
+  "decisions": [
+    "CD-RR-006",
+    "CD-RR-012",
+    "CD-RR-013"
+  ],
+  "fixture_id": "providers/m6-provider-profile-resource-parity",
+  "input": {
+    "env_keys": [
+      "OPENAI_API_KEY",
+      "OPENAI_BASE_URL",
+      "OPENAI_ORG_ID",
+      "OPENAI_PROJECT_ID",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_BASE_URL",
+      "GEMINI_API_KEY",
+      "GOOGLE_API_KEY",
+      "GEMINI_BASE_URL",
+      "OPENROUTER_API_KEY",
+      "OPENROUTER_BASE_URL",
+      "OPENROUTER_HTTP_REFERER",
+      "OPENROUTER_TITLE",
+      "LITELLM_BASE_URL",
+      "LITELLM_API_KEY",
+      "OPENAI_COMPATIBLE_BASE_URL",
+      "OPENAI_COMPATIBLE_API_KEY"
+    ],
+    "profile_config": "llm-profiles.toml"
+  },
+  "item_id": "M6-I09-PROVIDER-MODEL-RESOURCE-PARITY",
+  "observation": {
+    "model_catalog": {
+      "codex_alias": "gpt-5.2-codex",
+      "provider_counts": {
+        "anthropic": 2,
+        "gemini": 2,
+        "litellm": 0,
+        "openai": 3,
+        "openrouter": 0
+      }
+    },
+    "profiles": {
+      "with_process_env": [
+        {
+          "configured": true,
+          "default_model": "local-large",
+          "id": "local",
+          "label": "Local",
+          "models": [
+            "local-small",
+            "local-large"
+          ],
+          "provider": "openai_compatible"
+        },
+        {
+          "configured": true,
+          "default_model": null,
+          "id": "no_key",
+          "label": null,
+          "models": [
+            "no-key-model"
+          ],
+          "provider": "openai_compatible"
+        }
+      ],
+      "without_process_env": [
+        {
+          "configured": false,
+          "default_model": "local-large",
+          "id": "local",
+          "label": "Local",
+          "models": [
+            "local-small",
+            "local-large"
+          ],
+          "provider": "openai_compatible"
+        },
+        {
+          "configured": true,
+          "default_model": null,
+          "id": "no_key",
+          "label": null,
+          "models": [
+            "no-key-model"
+          ],
+          "provider": "openai_compatible"
+        }
+      ]
+    },
+    "provider_environment": {
+      "automatic_default_provider": "openai",
+      "explicit_default_provider": "openrouter",
+      "provider_keys": [
+        "anthropic",
+        "gemini",
+        "litellm",
+        "openai",
+        "openai_compatible",
+        "openrouter"
+      ],
+      "providers": {
+        "anthropic": {
+          "config": {
+            "api_key": "anthropic-key",
+            "base_url": "https://anthropic.example/v1"
+          },
+          "default_headers": {},
+          "require_api_key": null
+        },
+        "gemini": {
+          "config": {
+            "api_key": "google-key",
+            "base_url": "https://gemini.example/v1beta"
+          },
+          "default_headers": {},
+          "require_api_key": null
+        },
+        "litellm": {
+          "config": {
+            "api_key": null,
+            "base_url": "https://litellm.example/api/v1"
+          },
+          "default_headers": {},
+          "require_api_key": false
+        },
+        "openai": {
+          "config": {
+            "api_key": "openai-key",
+            "base_url": "https://openai.example/responses",
+            "organization": "org-1",
+            "project": "project-1"
+          },
+          "default_headers": {},
+          "require_api_key": null
+        },
+        "openai_compatible": {
+          "config": {
+            "api_key": null,
+            "base_url": "https://compatible.example/custom/v1"
+          },
+          "default_headers": {},
+          "require_api_key": false
+        },
+        "openrouter": {
+          "config": {
+            "api_key": "openrouter-key",
+            "base_url": "https://openrouter.ai/api/v1"
+          },
+          "default_headers": {
+            "HTTP-Referer": "https://spark.example",
+            "X-Title": "Spark"
+          },
+          "require_api_key": true
+        }
+      }
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "unified_llm.Client.from_env",
+      "spark.llm_profiles.public_llm_profiles",
+      "unified_llm.models"
+    ],
+    "oracle": "python-unified-llm-public-interfaces"
+  },
+  "requirements": [
+    "RR-PKG-005",
+    "RR-PKG-002"
+  ],
+  "scenario": "m6_provider_profile_resource_parity",
+  "schema_version": "compat-provider-v1"
+}

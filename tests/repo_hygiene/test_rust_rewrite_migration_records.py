@@ -2,188 +2,161 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RECORD_PATH = REPO_ROOT / ".spark" / "rust-rewrite" / "current" / "migration-records.json"
-COMPAT_FIXTURE_ROOT = REPO_ROOT / ".spark" / "rust-rewrite" / "current" / "compat-fixtures"
-
-ITEM_ID = "M7-I03-MIGRATION-ADAPTER-NONGOAL-RECORDS"
-MILESTONE_ID = "M7-DOCS-VALIDATION"
-BOUND_REQUIREMENTS = {"RR-DOC-003", "RR-VAL-001", "RR-VAL-002", "RR-VAL-005"}
-BOUND_DECISIONS = {"CD-RR-001", "CD-RR-013", "CD-RR-014", "CD-RR-015"}
-ALLOWED_CLASSIFICATIONS = {
-    "native_rust",
-    "rust_owned_adapter",
-    "retained_python_module",
+MIGRATION_DOC = REPO_ROOT / "docs" / "rust-rewrite-migration.md"
+CONTRACT_DECISIONS = (
+    REPO_ROOT / "specs" / "unified-llm-rust-runtime" / "contract-decisions.json"
+)
+BOUND_UNIFIED_LLM_DECISIONS = {
+    "CD-ULLM-RUST-001",
+    "CD-ULLM-RUST-015",
+    "CD-ULLM-RUST-016",
 }
 
 
-def test_migration_record_is_bound_to_active_item_requirements_and_decisions() -> None:
-    record = _load_record()
+def test_committed_migration_doc_is_self_contained_source_of_truth() -> None:
+    document = MIGRATION_DOC.read_text(encoding="utf-8")
 
-    assert record["schema_version"] == "rust-rewrite-migration-records-v1"
-    assert record["item_id"] == ITEM_ID
-    assert record["milestone_id"] == MILESTONE_ID
-    assert set(record["requirements"]) == BOUND_REQUIREMENTS
-    assert set(record["decisions"]) == BOUND_DECISIONS
-    assert set(record["classification_values"]) == ALLOWED_CLASSIFICATIONS
-    assert record["behavior_change"] == "none"
-
-    change_record_id = record["change_record_id"]
-    change_record = REPO_ROOT / "changes" / change_record_id
-    assert change_record.joinpath("request.md").is_file()
-    assert change_record.joinpath("result.md").is_file()
-
-
-def test_agent_and_unified_llm_records_classify_each_boundary_with_evidence() -> None:
-    record = _load_record()
-    surfaces = {surface["surface_id"]: surface for surface in record["surface_records"]}
-
-    assert set(surfaces) == {"agent", "unified_llm"}
-    for surface in surfaces.values():
-        boundaries = surface["boundaries"]
-        assert boundaries
-        classifications = {boundary["classification"] for boundary in boundaries}
-        assert classifications <= ALLOWED_CLASSIFICATIONS
-        assert "retained_python_module" in classifications
-        assert classifications & {"native_rust", "rust_owned_adapter"}
-        for boundary in boundaries:
-            assert boundary["id"]
-            assert boundary["current_owner"]
-            assert boundary["retained_python_status"]
-            assert boundary["observable_contracts"]
-            _assert_evidence(boundary["evidence"])
+    assert "This committed document is the migration source of truth" in document
+    assert "Validation of this document uses committed repository files only" in document
+    for forbidden_text in (
+        ".spark/rust-rewrite/current/migration-records.json",
+        ".spark/spec-implementation/current",
+        "generated workflow ledger",
+        "generated workflow ledgers",
+        "workflow ledger",
+        "workflow ledgers",
+        "structured source of truth",
+        "structured record",
+    ):
+        assert forbidden_text not in document
 
 
-def test_deprecated_surfaces_are_preserved_until_future_contract_decision() -> None:
-    record = _load_record()
-    surfaces = {surface["id"]: surface for surface in record["deprecated_surfaces"]}
-
-    assert {
-        "attractor_runs_events",
-        "workspace_conversation_events",
-        "attractor_pipeline_events",
-    } <= set(surfaces)
-
-    for surface in surfaces.values():
-        assert surface["status"] == "preserved_compatibility"
-        assert surface["replacement_surface"]
-        assert surface["removal_allowed_without_contract_decision"] is False
-        assert surface["requires_new_contract_decision"] is True
-        _assert_evidence(surface["evidence"])
-
-
-def test_policy_gaps_and_non_goals_are_not_counted_as_closed_parity() -> None:
-    record = _load_record()
-    policy_gaps = {entry["id"]: entry for entry in record["policy_gaps"]}
-    non_goals = {entry["id"]: entry for entry in record["explicit_non_goals"]}
-
-    assert "post_gap_spec_api_drift_audit" not in policy_gaps
-    assert "subgraph_and_scoped_defaults_ui_authoring" not in policy_gaps
-    assert "acceptance_workflow_harness" not in policy_gaps
-    assert "manager_loop_telemetry_ingestion" not in policy_gaps
-    assert {
-        "full_agent_python_removal_in_m7",
-        "full_unified_llm_python_removal_in_m7",
-        "remote_worker_reintroduction",
-    } <= set(non_goals)
-    assert "acceptance_workflow_harness_closure_in_m7" not in non_goals
-
-    for entry in [*policy_gaps.values(), *non_goals.values()]:
-        assert entry["status"] in {"open_policy_gap", "non_goal"}
-        assert entry["counts_as_closed_parity"] is False
-        _assert_evidence(entry["evidence"])
-
-
-def test_acceptance_workflow_harness_is_closed_with_executable_evidence() -> None:
-    record = _load_record()
-    closed_gaps = {entry["id"]: entry for entry in record["closed_policy_gaps"]}
-
-    harness = closed_gaps["acceptance_workflow_harness"]
-    assert harness["status"] == "implemented"
-    assert harness["counts_as_closed_parity"] is True
-    assert "pytest harness" in harness["current_boundary"]
-    _assert_evidence(harness["evidence"])
-
-    subgraph_defaults = closed_gaps["subgraph_and_scoped_defaults_ui_authoring"]
-    assert subgraph_defaults["status"] == "implemented"
-    assert subgraph_defaults["counts_as_closed_parity"] is True
-    assert "Graph Settings" in subgraph_defaults["current_boundary"]
-    assert "scoped node/edge defaults" in subgraph_defaults["current_boundary"]
-    _assert_evidence(subgraph_defaults["evidence"])
-
-    post_gap_audit = closed_gaps["post_gap_spec_api_drift_audit"]
-    assert post_gap_audit["status"] == "implemented"
-    assert post_gap_audit["counts_as_closed_parity"] is True
-    _assert_evidence(post_gap_audit["evidence"])
-
-
-def test_future_compatibility_break_candidates_require_new_decisions() -> None:
-    record = _load_record()
-    candidates = {
-        candidate["id"]: candidate
-        for candidate in record["future_compatibility_break_candidates"]
+def test_committed_migration_doc_binds_unified_llm_contract_decisions() -> None:
+    committed_decisions = _contract_decisions()
+    rows = _table_rows("Binding Unified LLM Contract Decisions")
+    documented_boundaries = {
+        _code_value(row["Decision"]): row["Documentation boundary"] for row in rows
     }
 
-    assert {
-        "remove_deprecated_event_routes",
-    } <= set(candidates)
+    assert BOUND_UNIFIED_LLM_DECISIONS <= set(committed_decisions)
+    assert BOUND_UNIFIED_LLM_DECISIONS <= set(documented_boundaries)
 
-    for candidate in candidates.values():
-        assert candidate["status"] == "future_decision_candidate"
-        assert candidate["counts_as_closed_parity"] is False
-        assert candidate["requires_new_contract_decision"] is True
-        assert candidate["affected_surfaces"]
-        _assert_evidence(candidate["evidence"])
+    runtime_boundary = documented_boundaries["CD-ULLM-RUST-001"]
+    assert "Normal Spark server and CLI unified LLM execution is Rust-owned" in runtime_boundary
+    assert "does not import, shell out to, or wrap `src.unified_llm` provider clients" in runtime_boundary
+
+    validation_boundary = documented_boundaries["CD-ULLM-RUST-015"]
+    assert "retained oracle or compatibility support" in validation_boundary
+    assert "do not replace Rust-owned behavioral validation" in validation_boundary
+
+    retained_surface_boundary = documented_boundaries["CD-ULLM-RUST-016"]
+    assert "Rust-owned surfaces are" in retained_surface_boundary
+    assert "Retained Python surfaces are" in retained_surface_boundary
+    assert "Unsupported/deferred provider capabilities are" in retained_surface_boundary
+    assert "Optional live smoke prerequisites are" in retained_surface_boundary
 
 
-def test_approved_policy_decisions_are_counted_as_closed_parity() -> None:
-    record = _load_record()
-    decisions = {
-        decision["id"]: decision for decision in record["approved_policy_decisions"]
+def test_committed_migration_doc_records_unified_llm_runtime_ownership() -> None:
+    rows = _table_rows("Unified LLM Boundary")
+
+    classifications = {_code_value(row["Classification"]) for row in rows}
+    assert {"native_rust", "rust_owned_adapter", "retained_python_module"} <= classifications
+
+    request_boundary = _row_containing(rows, "Surface", "Request DTOs")
+    assert request_boundary["Current owner"] == "`crates/unified-llm-adapter`"
+    assert request_boundary["Classification"] == "`native_rust`"
+    assert "normal Spark server and CLI contract" in request_boundary["Retained Python status"]
+
+    routing_boundary = _row_containing(rows, "Surface", "Provider adapter routing")
+    assert routing_boundary["Current owner"] == "`crates/unified-llm-adapter`"
+    assert routing_boundary["Classification"] == "`rust_owned_adapter`"
+    assert "not wrappers used by Spark server or CLI execution" in routing_boundary[
+        "Retained Python status"
+    ]
+
+
+def test_committed_migration_doc_keeps_python_unified_llm_as_compatibility_surface() -> None:
+    rows = _table_rows("Unified LLM Boundary")
+
+    retained = _row_containing(rows, "Surface", "Provider-specific clients")
+    assert retained["Classification"] == "`retained_python_module`"
+    assert retained["Current owner"] == "`src/unified_llm`"
+    assert "compatibility, oracle, and package-data support" in retained[
+        "Retained Python status"
+    ]
+
+    document = MIGRATION_DOC.read_text(encoding="utf-8")
+    assert "Retained Python checks remain `uv run pytest tests/compat/providers -q`" in document
+    assert "they do not replace the Rust-owned runtime validation" in document
+
+
+def test_committed_migration_doc_records_deprecated_surfaces_as_contract_boundaries() -> None:
+    rows = _table_rows("Deprecated Compatibility Surfaces")
+
+    by_surface = {row["Surface"]: row for row in rows}
+    assert by_surface["`GET /attractor/runs/events`"]["Current status"] == (
+        "Preserved compatibility route"
+    )
+    assert by_surface["`GET /workspace/api/conversations/{conversation_id}/events`"][
+        "Preferred replacement"
+    ] == "`GET /workspace/api/live/events`"
+    assert by_surface["`GET /attractor/pipelines/{id}/events`"]["Evidence"]
+
+
+def test_committed_migration_doc_records_non_goals_and_future_decisions() -> None:
+    document = MIGRATION_DOC.read_text(encoding="utf-8")
+
+    assert "Credential-backed smoke execution in ordinary validation is an explicit non-goal" in document
+    assert "M7 does not remove Python `agent` or `unified_llm` modules" in document
+    assert "Any removal of deprecated event routes" in document
+    assert "requires a new contract decision before implementation depends on it" in document
+
+
+def _table_rows(heading: str) -> list[dict[str, str]]:
+    lines = MIGRATION_DOC.read_text(encoding="utf-8").splitlines()
+    heading_line = f"## {heading}"
+    start = lines.index(heading_line) + 1
+    table_lines = []
+    for line in lines[start:]:
+        if line.startswith("## ") and table_lines:
+            break
+        if line.startswith("|"):
+            table_lines.append(line)
+        elif table_lines:
+            break
+
+    assert len(table_lines) >= 3, heading
+    headers = _split_row(table_lines[0])
+    body = [
+        _split_row(line)
+        for line in table_lines[2:]
+        if set(line.replace("|", "").strip()) != {"-"}
+    ]
+    return [dict(zip(headers, row, strict=True)) for row in body]
+
+
+def _split_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _row_containing(rows: list[dict[str, str]], column: str, text: str) -> dict[str, str]:
+    for row in rows:
+        if text in row[column]:
+            return row
+    raise AssertionError(f"missing row containing {text!r}")
+
+
+def _code_value(value: str) -> str:
+    return value.strip("`")
+
+
+def _contract_decisions() -> dict[str, dict]:
+    return {
+        decision["id"]: decision
+        for decision in json.loads(CONTRACT_DECISIONS.read_text(encoding="utf-8"))[
+            "decisions"
+        ]
     }
-
-    decision = decisions["trigger_repository_mutation_policy"]
-    assert decision["status"] == "approved_current_behavior"
-    assert decision["counts_as_closed_parity"] is True
-    assert "project_path" in decision["current_boundary"]
-    _assert_evidence(decision["evidence"])
-
-    manager_authoring = decisions["manager_loop_authoring_surface_completeness"]
-    assert manager_authoring["status"] == "approved_current_behavior"
-    assert manager_authoring["counts_as_closed_parity"] is True
-    assert "manager.steer_cooldown" in manager_authoring["current_boundary"]
-    assert "stack.child_autostart" in manager_authoring["current_boundary"]
-    _assert_evidence(manager_authoring["evidence"])
-
-    manager_telemetry = decisions["manager_loop_telemetry_ingestion"]
-    assert manager_telemetry["status"] == "approved_current_behavior"
-    assert manager_telemetry["counts_as_closed_parity"] is True
-    assert "context.stack.child.*" in manager_telemetry["current_boundary"]
-    assert "failure context" in manager_telemetry["current_boundary"]
-    _assert_evidence(manager_telemetry["evidence"])
-
-    outgoing_edge_rule = decisions["non_exit_outgoing_edge_rule"]
-    assert outgoing_edge_rule["status"] == "approved_current_behavior"
-    assert outgoing_edge_rule["counts_as_closed_parity"] is True
-    assert "node_has_outgoing_edge" in outgoing_edge_rule["current_boundary"]
-    _assert_evidence(outgoing_edge_rule["evidence"])
-
-
-def _load_record() -> dict[str, Any]:
-    return json.loads(RECORD_PATH.read_text(encoding="utf-8"))
-
-
-def _assert_evidence(evidence: list[dict[str, Any]]) -> None:
-    assert evidence
-    for reference in evidence:
-        kind = reference["kind"]
-        if kind == "fixture":
-            fixture_id = reference["fixture_id"]
-            assert (COMPAT_FIXTURE_ROOT / f"{fixture_id}.json").is_file(), fixture_id
-            continue
-
-        path = reference["path"]
-        assert (REPO_ROOT / path).exists(), path

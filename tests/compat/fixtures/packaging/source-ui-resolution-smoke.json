@@ -1,0 +1,118 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "packaging/source-ui-resolution-smoke",
+  "item_id": "M0-I05-FRONTEND-PACKAGING-FIXTURES",
+  "provenance": {
+    "interfaces": [
+      "spark-server serve --ui-dir",
+      "GET /",
+      "GET /assets/{asset_path}",
+      "GET /favicon.ico",
+      "GET /workspace/api/missing"
+    ],
+    "oracle": "python-packaging-smoke"
+  },
+  "requests": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/"
+      },
+      "response": {
+        "body": {
+          "kind": "text",
+          "text": "<!doctype html>\n<html>\n  <head><title>Spark Compat UI</title></head>\n  <body><main id=\"root\">Spark compatibility UI</main></body>\n</html>\n"
+        },
+        "headers": {
+          "content-type": "text/html; charset=utf-8"
+        },
+        "status_code": 200
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/assets/compat-app.js"
+      },
+      "response": {
+        "body": {
+          "kind": "text",
+          "text": "window.__sparkCompatAsset = { status: 'ok' };\n"
+        },
+        "headers": {
+          "content-type": "text/javascript; charset=utf-8"
+        },
+        "status_code": 200
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/favicon.ico"
+      },
+      "response": {
+        "body": {
+          "kind": "bytes",
+          "sha256": "187ada8dca5370d3e28f4e7d512625785fde6d5c1a29f3759edb7d796e65edc4",
+          "size": 21
+        },
+        "headers": {
+          "content-type": "image/png"
+        },
+        "status_code": 200
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/assets/missing.png"
+      },
+      "response": {
+        "body": {
+          "json": {
+            "detail": "Asset not found"
+          },
+          "kind": "json"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 404
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/workspace/api/missing"
+      },
+      "response": {
+        "body": {
+          "json": {
+            "detail": "Not Found"
+          },
+          "kind": "json"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 404
+      }
+    }
+  ],
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "source_ui_resolution_smoke",
+  "schema_version": "compat-packaging-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "spark_home": "__SPARK_HOME__",
+    "ui_dir": "__SPARK_UI_DIR__"
+  }
+}

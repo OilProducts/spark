@@ -7,23 +7,25 @@ new manifest or assertion format.
 
 ## Layout
 
-- `.spark/rust-rewrite/current/compat-fixtures/` holds intentionally reviewed
-  golden fixture manifests and payload snapshots.
-- `.spark/rust-rewrite/current/validation/` holds generated captures,
-  temporary Spark homes, command logs, caches, package artifacts, and frontend
-  build output used during local validation.
+- `tests/compat/fixtures/` holds intentionally reviewed golden fixture
+  manifests and payload snapshots committed with the repository.
+- Pytest temporary directories and ignored `tests/compat/.tmp/` paths hold
+  generated captures, temporary Spark homes, command logs, caches, package
+  artifacts, and frontend build output used during local validation.
 - `tests/compat/_generated/` and `tests/compat/.tmp/` are scratch locations for
   compatibility tests and are ignored.
 
 Golden fixture names should include the domain and scenario, for example
 `cli/flow-validate-success` or `http/workspace-project-not-found`. Generated
-captures should stay under `validation/generated/` unless a later item promotes
-them into reviewed fixtures.
+captures should stay in pytest temp directories or ignored scratch paths unless
+a later item promotes them into reviewed fixtures. Promoted fixtures must use
+stable tokens for worktree, temp, runtime, and local server paths rather than
+machine-local absolute paths or ignored workflow-current provenance.
 
 ## CLI And Filesystem Fixtures
 
-M0-I02 adds reviewed CLI fixtures under `compat-fixtures/cli/` and durable
-filesystem fixtures under `compat-fixtures/filesystem/`. Local CLI fixtures run
+M0-I02 adds reviewed CLI fixtures under `fixtures/cli/` and durable filesystem
+fixtures under `fixtures/filesystem/`. Local CLI fixtures run
 real `uv run spark` and `uv run spark-server` commands against temporary
 `SPARK_HOME`, flow, runtime, and Codex homes. Server-backed CLI fixtures start a
 local Python `spark-server serve` process on an ephemeral localhost port and do
@@ -37,8 +39,8 @@ temporary paths, and ephemeral localhost ports are normalized before comparison.
 
 ## HTTP And SSE Fixtures
 
-M0-I03 adds reviewed HTTP route fixtures under `compat-fixtures/http/` and
-app-shell live stream fixtures under `compat-fixtures/sse/`. These tests start
+M0-I03 adds reviewed HTTP route fixtures under `fixtures/http/` and app-shell
+live stream fixtures under `fixtures/sse/`. These tests start
 a real local Python `spark-server serve` process from the isolated rewrite
 worktree and issue requests through `httpx`; they do not inspect source,
 private route objects, prompt text, docs, external provider credentials, package
@@ -61,8 +63,8 @@ packaging milestones.
 
 ## Frontend Contract And Packaging Fixtures
 
-M0-I05 adds frontend contract fixtures under `compat-fixtures/frontend/` and
-packaging smoke fixtures under `compat-fixtures/packaging/`. The frontend
+M0-I05 adds frontend contract fixtures under `fixtures/frontend/` and packaging
+smoke fixtures under `fixtures/packaging/`. The frontend
 fixtures run the existing behavior-contract Vitest file and compact TypeScript
 probes through public parser, request builder, API error, canonical flow model,
 and live-event URL helpers. They do not inspect frontend source text.
@@ -72,9 +74,9 @@ deliverable build output, installed command init behavior, public
 `spark-server service install|status|remove` behavior through a temporary
 `XDG_CONFIG_HOME` and fake `systemctl`, and package resource presence. Build
 output, virtual environments, wheelhouses, source UI scratch directories, and
-service smoke data stay in pytest temp directories or validation generated
-roots. M0-I05 records source and smoke evidence only; installed bundled asset
-parity remains an M6 gate.
+service smoke data stay in pytest temp directories or ignored scratch roots.
+M0-I05 records source and smoke evidence only; installed bundled asset parity
+remains an M6 gate.
 
 ## Commands
 
@@ -145,16 +147,12 @@ Manual M0-I05 fixture regeneration:
 uv run pytest -q tests/compat/frontend-contracts tests/compat/packaging --compat-update-goldens
 ```
 
-## M0 Coverage Ledger And Validation Gate
+## M0 Coverage And Validation Gate
 
-M0-I06 adds the milestone coverage ledger at
-`.spark/rust-rewrite/current/validation/m0-coverage-ledger.json` and the gate
-record at `.spark/rust-rewrite/current/validation/m0-validation-gate.json`.
-The ledger maps M0 fixture groups, requirement ids, contract-decision ids,
-representative fixture ids, validation suites, explicit gaps, and closure
-evidence. The gate record names the required guardrail commands, first-failure
-triage commands, future Rust command expectations, generated-artifact hygiene
-rules, and the no-retired-Python closure statement.
+M0 coverage validation derives from the committed fixture manifests in
+`tests/compat/fixtures/`, public harness coverage checks, and git ignore
+behavior for scratch roots. It does not require generated workflow ledgers,
+preexisting captures, or runtime validation directories.
 
 Focused M0-I06 validation:
 
@@ -192,9 +190,9 @@ later gates.
 
 ## DSL, Runtime, Handler, And Journal Fixtures
 
-M0-I04 adds reviewed DSL fixtures under `compat-fixtures/dsl/` and runtime,
+M0-I04 adds reviewed DSL fixtures under `fixtures/dsl/` and runtime,
 handler, API-journal, durable-state, and execution-profile fixtures under
-`compat-fixtures/runtime/`. These tests use public parser, formatter,
+`fixtures/runtime/`. These tests use public parser, formatter,
 validator, preview, transform, `PipelineExecutor`, `HandlerRunner`, execution
 profile, real local HTTP API, and durable run-file interfaces. Fake LLM,
 interviewer, custom handler, and child-run backends are deterministic local
@@ -207,8 +205,8 @@ child-run ids. They keep the observable graph payloads, canonical DOT,
 diagnostics, route traces, outcomes, context, checkpoint state, journal entries,
 API payloads, handler outputs, artifact files, and selected durable JSON/JSONL
 records as the parity oracle. Generated run directories remain in pytest temp
-locations or `validation/generated/`; only compact reviewed manifests are
-promoted to `compat-fixtures/dsl/` and `compat-fixtures/runtime/`.
+locations or ignored scratch paths; only compact reviewed manifests are
+promoted to `fixtures/dsl/` and `fixtures/runtime/`.
 
 Focused M0-I04 validation:
 

@@ -1,0 +1,66 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "frontend/api-wrapper-error-shapes",
+  "input": {
+    "http_statuses": [
+      403,
+      500
+    ],
+    "schema_endpoints": [
+      "/workspace/api/flows/{name}",
+      "/attractor/preview"
+    ]
+  },
+  "item_id": "M0-I05-FRONTEND-PACKAGING-FIXTURES",
+  "observation": {
+    "detailExtraction": [
+      "top-level error",
+      "detail string",
+      "nested detail",
+      null
+    ],
+    "httpJson": {
+      "detail": "Webhook secret mismatch",
+      "endpoint": "/workspace/api/webhooks",
+      "message": "/workspace/api/webhooks responded with HTTP 403: Webhook secret mismatch",
+      "name": "ApiHttpError",
+      "status": 403
+    },
+    "httpText": {
+      "detail": "plain failure",
+      "endpoint": "/attractor/preview",
+      "message": "/attractor/preview responded with HTTP 500: plain failure",
+      "name": "ApiHttpError",
+      "status": 500
+    },
+    "schemaFlow": {
+      "endpoint": "/workspace/api/flows/{name}",
+      "message": "/workspace/api/flows/{name}: Expected \"name\" to be a string.",
+      "name": "ApiSchemaError"
+    },
+    "schemaPreview": {
+      "endpoint": "/attractor/preview",
+      "message": "/attractor/preview: Expected \"graph.nodes\" and \"graph.edges\" to be arrays.",
+      "name": "ApiSchemaError"
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "frontend Vitest contract runner",
+      "public TypeScript API parser functions",
+      "public TypeScript request builder functions",
+      "workspace live-event URL helper"
+    ],
+    "oracle": "python-backed-typescript-frontend-contract"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "api_wrapper_error_shapes",
+  "schema_version": "compat-frontend-v1"
+}

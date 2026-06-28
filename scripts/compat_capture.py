@@ -49,14 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     repo_root = Path(__file__).resolve().parents[1]
-    state_path = repo_root / ".spark" / "rust-rewrite" / "current" / "state.json"
-    try:
-        state = _read_json(state_path)
-    except OSError as exc:
-        print(f"compat_capture.py: cannot read rewrite state: {exc}", file=sys.stderr)
-        return 2
-
-    configured_worktree = Path(str(state["worktree_path"])).resolve(strict=False)
+    configured_worktree = repo_root.resolve(strict=False)
     detected_worktree = _detect_git_worktree(Path.cwd())
     if detected_worktree != configured_worktree:
         print(
@@ -66,10 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    runtime_dir = Path(str(state.get("current_alias") or state["runtime_path"])).resolve(
-        strict=False
-    )
-    validation_root = runtime_dir / "validation"
+    validation_root = _validation_root(args.validation_root, repo_root=repo_root)
     fixture_slug = _fixture_slug(args.fixture_id)
     generated_root = validation_root / "generated" / fixture_slug
     paths = _capture_paths(args, generated_root)
@@ -142,9 +132,8 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         manifest = _manifest(
             args=args,
-            state=state,
-            state_path=state_path,
             configured_worktree=configured_worktree,
+            validation_root=validation_root,
             output_path=output_path,
             paths=paths,
             command=command,
@@ -167,9 +156,8 @@ def main(argv: list[str] | None = None) -> int:
         stderr = exc.stderr if isinstance(exc.stderr, str) else ""
         manifest = _manifest(
             args=args,
-            state=state,
-            state_path=state_path,
             configured_worktree=configured_worktree,
+            validation_root=validation_root,
             output_path=output_path,
             paths=paths,
             command=command,
@@ -191,9 +179,8 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = _manifest(
         args=args,
-        state=state,
-        state_path=state_path,
         configured_worktree=configured_worktree,
+        validation_root=validation_root,
         output_path=output_path,
         paths=paths,
         command=command,
@@ -226,6 +213,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--flows-dir")
     parser.add_argument("--runtime-root")
     parser.add_argument("--codex-home")
+    parser.add_argument(
+        "--validation-root",
+        help=(
+            "Root for generated captures when --spark-home, --flows-dir, "
+            "--runtime-root, --codex-home, or --output are omitted. Defaults "
+            "to tests/compat/.tmp/capture-validation."
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--fail-on-command-error", action="store_true")
     parser.add_argument(
@@ -272,16 +267,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    with path.open(encoding="utf-8") as fh:
-        loaded = json.load(fh)
-    if not isinstance(loaded, dict):
-        raise ValueError(f"expected object in {path}")
-    return loaded
-
-
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _validation_root(raw_root: str | None, *, repo_root: Path) -> Path:
+    if raw_root:
+        return Path(raw_root).expanduser().resolve(strict=False)
+    return (repo_root / "tests" / "compat" / ".tmp" / "capture-validation").resolve(
+        strict=False
+    )
 
 
 def _detect_git_worktree(cwd: Path) -> Path:
@@ -540,9 +535,8 @@ def _state_snapshot(path: Path) -> dict[str, Any]:
 def _manifest(
     *,
     args: argparse.Namespace,
-    state: dict[str, Any],
-    state_path: Path,
     configured_worktree: Path,
+    validation_root: Path,
     output_path: Path,
     paths: dict[str, Path],
     command: list[str],
@@ -562,9 +556,8 @@ def _manifest(
             "captured_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "oracle": "python-worktree",
             "capture_tool": "scripts/compat_capture.py",
-            "state_path": str(state_path),
             "worktree_path": str(configured_worktree),
-            "runtime_path": str(Path(str(state["runtime_path"])).resolve(strict=False)),
+            "validation_root": str(validation_root),
         },
         "command": {
             "argv": command,

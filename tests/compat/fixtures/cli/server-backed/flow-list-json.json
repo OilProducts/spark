@@ -1,0 +1,100 @@
+{
+  "command": {
+    "argv": [
+      "uv",
+      "run",
+      "spark",
+      "flow",
+      "list",
+      "--base-url",
+      "__API_BASE_URL__"
+    ],
+    "cwd": "__WORKTREE__",
+    "normalized_argv": [
+      "uv",
+      "run",
+      "spark",
+      "flow",
+      "list",
+      "--base-url",
+      "__API_BASE_URL__"
+    ]
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "after": {},
+    "before": {}
+  },
+  "environment": {
+    "selected": {
+      "ANTHROPIC_API_KEY": "<redacted>",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__CODEX_RUNTIME_ROOT__",
+      "CODEX_CI": "1",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "CODEX_MANAGED_BY_NPM": "1",
+      "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
+      "CODEX_THREAD_ID": "019ef013-15bd-7d11-a48e-cad8977bd59e",
+      "SPARK_API_BASE_URL": "__API_BASE_URL__",
+      "SPARK_FLOWS_DIR": "__FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "selected_keys": [
+      "ANTHROPIC_API_KEY",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT",
+      "CODEX_CI",
+      "CODEX_HOME",
+      "CODEX_MANAGED_BY_NPM",
+      "CODEX_MANAGED_PACKAGE_ROOT",
+      "CODEX_THREAD_ID",
+      "SPARK_API_BASE_URL",
+      "SPARK_FLOWS_DIR",
+      "SPARK_HOME"
+    ]
+  },
+  "filesystem": {
+    "after": {},
+    "before": {}
+  },
+  "fixture_id": "cli/server-backed/flow-list-json",
+  "item_id": "M0-I02-CLI-FILESYSTEM-FIXTURES",
+  "normalization": {
+    "tokens": {
+      "__API_BASE_URL__": "__API_BASE_URL__",
+      "__CODEX_HOME__": "__CODEX_HOME__",
+      "__CODEX_RUNTIME_ROOT__": "__CODEX_RUNTIME_ROOT__",
+      "__FLOWS_DIR__": "__FLOWS_DIR__",
+      "__OUTPUT_DIR__": "__COMPAT_FIXTURE_ROOT__/cli/server-backed",
+      "__OUTPUT__": "__COMPAT_FIXTURE_ROOT__/cli/server-backed/flow-list-json.json",
+      "__PROJECT_DIR__": "__PROJECT_DIR__",
+      "__SPARK_HOME__": "__SPARK_HOME__",
+      "__WORKTREE__": "__WORKTREE__"
+    }
+  },
+  "paths": {
+    "attractor_codex_runtime_root": "__CODEX_RUNTIME_ROOT__",
+    "codex_home": "__CODEX_HOME__",
+    "output": "__COMPAT_FIXTURE_ROOT__/cli/server-backed/flow-list-json.json",
+    "spark_flows_dir": "__FLOWS_DIR__",
+    "spark_home": "__SPARK_HOME__"
+  },
+  "process": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "[\n  {\n    \"description\": \"A minimal starter flow that plans a small change, executes it, and summarizes the outcome.\",\n    \"effective_launch_policy\": \"agent_requestable\",\n    \"execution_lock\": null,\n    \"graph_goal\": \"Inspect the repository, make one targeted improvement, and summarize the result.\",\n    \"graph_label\": \"Simple Linear Workflow\",\n    \"launch_policy\": \"agent_requestable\",\n    \"name\": \"examples/simple-linear.dot\",\n    \"title\": \"Simple Linear Workflow\"\n  },\n  {\n    \"description\": \"Read an approved change request from changes/<CR-id>/request.md, keep runtime state under .spark/change-requests/<CR-id>/, implement the required work, evaluate completion against the durable request, and write changes/<CR-id>/result.md when the repository is ready.\",\n    \"effective_launch_policy\": \"agent_requestable\",\n    \"execution_lock\": null,\n    \"graph_goal\": \"Implement an approved durable change request in the repository, evaluate whether the requested change is completed in full, record the shipped result, and iterate until the result is ready.\",\n    \"graph_label\": \"Implement Change Request\",\n    \"launch_policy\": \"agent_requestable\",\n    \"name\": \"software-development/implement-change-request.dot\",\n    \"title\": \"Implement Change Request\"\n  },\n  {\n    \"description\": \"A greenfield software-development program flow. It creates committed spec packages under specs/<slug>/, stores workflow state under .spark/spec-implementation/<slug>/, refreshes .spark/spec-implementation/current/ as a stable runtime alias to the active workspace, surfaces the committed spec package through current/spec/, extracts a requirement ledger, proposes an architecture, plans milestones, dispatches a milestone worker as a child flow, and audits conformance until the specification is covered or the effort is blocked.\",\n    \"effective_launch_policy\": \"agent_requestable\",\n    \"execution_lock\": null,\n    \"graph_goal\": \"Implement a written specification in the repository by turning the spec into requirements, architecture, milestones, and validated milestone deliveries until all in-scope requirements are covered or the effort is blocked.\",\n    \"graph_label\": \"Implement Spec Program\",\n    \"launch_policy\": \"agent_requestable\",\n    \"name\": \"software-development/spec-implementation/implement-spec.dot\",\n    \"title\": \"Implement Spec Program\"\n  }\n]\n"
+  },
+  "provenance": {
+    "capture_tool": "scripts/compat_capture.py",
+    "captured_at_utc": "2026-06-22T16:16:06.708234Z",
+    "oracle": "python-worktree",
+    "worktree_path": "__WORKTREE__"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": 1
+}

@@ -1,0 +1,1402 @@
+{
+  "api": {
+    "journal": {
+      "request": {
+        "body": null,
+        "method": "GET",
+        "path": "/attractor/pipelines/run-m0-i04-api/journal"
+      },
+      "response": {
+        "body": {
+          "json": {
+            "entries": [
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-22",
+                "kind": "lifecycle",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "phase": "FINALIZE",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 22,
+                  "source_scope": "root",
+                  "type": "lifecycle"
+                },
+                "question_id": null,
+                "raw_type": "lifecycle",
+                "sequence": 22,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Lifecycle phase: FINALIZE"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-21",
+                "kind": "log",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "msg": "Pipeline completed (success)",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 21,
+                  "source_scope": "root",
+                  "type": "log"
+                },
+                "question_id": null,
+                "raw_type": "log",
+                "sequence": 21,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Pipeline completed (success)"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-20",
+                "kind": "runtime",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "last_error": null,
+                  "outcome": "success",
+                  "outcome_reason_code": null,
+                  "outcome_reason_message": null,
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 20,
+                  "source_scope": "root",
+                  "status": "completed",
+                  "type": "runtime"
+                },
+                "question_id": null,
+                "raw_type": "runtime",
+                "sequence": 20,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Run status: completed (success)"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-19",
+                "kind": "lifecycle",
+                "node_id": "done",
+                "payload": {
+                  "artifact_count": 2,
+                  "current_node": "done",
+                  "duration": 0.001729232957586646,
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "outcome": "success",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 19,
+                  "source_scope": "root",
+                  "status": "completed",
+                  "type": "PipelineCompleted"
+                },
+                "question_id": null,
+                "raw_type": "PipelineCompleted",
+                "sequence": 19,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Pipeline completed at done (success)"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-18",
+                "kind": "checkpoint",
+                "node_id": "done",
+                "payload": {
+                  "completed_nodes": [
+                    "start"
+                  ],
+                  "current_node": "done",
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "persisted": true,
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 18,
+                  "source_scope": "root",
+                  "type": "CheckpointSaved"
+                },
+                "question_id": null,
+                "raw_type": "CheckpointSaved",
+                "sequence": 18,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Checkpoint saved at done"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-17",
+                "kind": "checkpoint",
+                "node_id": "done",
+                "payload": {
+                  "completed_nodes": [
+                    "start"
+                  ],
+                  "current_node": "done",
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "persisted": true,
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 17,
+                  "source_scope": "root",
+                  "type": "CheckpointSaved"
+                },
+                "question_id": null,
+                "raw_type": "CheckpointSaved",
+                "sequence": 17,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Checkpoint saved at done"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-16",
+                "kind": "stage",
+                "node_id": "start",
+                "payload": {
+                  "duration": 0.00033779710065573454,
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "index": 0,
+                  "name": "start",
+                  "node_id": "start",
+                  "outcome": "success",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 16,
+                  "source_scope": "root",
+                  "type": "StageCompleted"
+                },
+                "question_id": null,
+                "raw_type": "StageCompleted",
+                "sequence": 16,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": 0,
+                "summary": "Stage start completed (success)"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-15",
+                "kind": "state",
+                "node_id": "start",
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "node": "start",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 15,
+                  "source_scope": "root",
+                  "status": "success",
+                  "type": "state"
+                },
+                "question_id": null,
+                "raw_type": "state",
+                "sequence": 15,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Node start status: success"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-14",
+                "kind": "log",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "msg": "[start] running",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 14,
+                  "source_scope": "root",
+                  "type": "log"
+                },
+                "question_id": null,
+                "raw_type": "log",
+                "sequence": 14,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "[start] running"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-13",
+                "kind": "state",
+                "node_id": "start",
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "node": "start",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 13,
+                  "source_scope": "root",
+                  "status": "running",
+                  "type": "state"
+                },
+                "question_id": null,
+                "raw_type": "state",
+                "sequence": 13,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Node start status: running"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-12",
+                "kind": "stage",
+                "node_id": "start",
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "index": 0,
+                  "name": "start",
+                  "node_id": "start",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 12,
+                  "source_scope": "root",
+                  "type": "StageStarted"
+                },
+                "question_id": null,
+                "raw_type": "StageStarted",
+                "sequence": 12,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": 0,
+                "summary": "Stage start started"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-11",
+                "kind": "lifecycle",
+                "node_id": "ApiRuntimeFixture",
+                "payload": {
+                  "current_node": "start",
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "id": "ApiRuntimeFixture",
+                  "name": "ApiRuntimeFixture",
+                  "resumed": true,
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 11,
+                  "source_scope": "root",
+                  "type": "PipelineStarted"
+                },
+                "question_id": null,
+                "raw_type": "PipelineStarted",
+                "sequence": 11,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Pipeline started at ApiRuntimeFixture"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-10",
+                "kind": "lifecycle",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "phase": "EXECUTE",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 10,
+                  "source_scope": "root",
+                  "type": "lifecycle"
+                },
+                "question_id": null,
+                "raw_type": "lifecycle",
+                "sequence": 10,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Lifecycle phase: EXECUTE"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-9",
+                "kind": "log",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "msg": "[System] Launching run run-m0-i04-api in __PROJECT_DIR__ with model: compat-model",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 9,
+                  "source_scope": "root",
+                  "type": "log"
+                },
+                "question_id": null,
+                "raw_type": "log",
+                "sequence": 9,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "[System] Launching run run-m0-i04-api in __PROJECT_DIR__ with model: compat-model"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-8",
+                "kind": "log",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "msg": "[System] Graph render unavailable: Graphviz 'dot' binary not found",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 8,
+                  "source_scope": "root",
+                  "type": "log"
+                },
+                "question_id": null,
+                "raw_type": "log",
+                "sequence": 8,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "[System] Graph render unavailable: Graphviz 'dot' binary not found"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-7",
+                "kind": "metadata",
+                "node_id": null,
+                "payload": {
+                  "continued_from_flow_mode": null,
+                  "continued_from_flow_name": null,
+                  "continued_from_node": null,
+                  "continued_from_run_id": null,
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "execution_container_image": null,
+                  "execution_mode": "native",
+                  "execution_profile_capabilities": {},
+                  "execution_profile_id": "native",
+                  "flow_name": "",
+                  "graph_dot_path": "__SPARK_HOME__/attractor/runs/project-e92b7db607bd/run-m0-i04-api/artifacts/graphviz/pipeline.dot",
+                  "graph_render_path": null,
+                  "graph_source_path": "__SPARK_HOME__/attractor/runs/project-e92b7db607bd/run-m0-i04-api/artifacts/graphviz/pipeline-source.dot",
+                  "llm_profile": null,
+                  "llm_provider": "codex",
+                  "model": "compat-model",
+                  "provider": "codex",
+                  "reasoning_effort": null,
+                  "root_run_id": "run-m0-i04-api",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 7,
+                  "source_scope": "root",
+                  "type": "run_meta",
+                  "working_directory": "__PROJECT_DIR__"
+                },
+                "question_id": null,
+                "raw_type": "run_meta",
+                "sequence": 7,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Run metadata captured"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-6",
+                "kind": "runtime",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "outcome": null,
+                  "outcome_reason_code": null,
+                  "outcome_reason_message": null,
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 6,
+                  "source_scope": "root",
+                  "status": "running",
+                  "type": "runtime"
+                },
+                "question_id": null,
+                "raw_type": "runtime",
+                "sequence": 6,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Run status: running"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-5",
+                "kind": "other",
+                "node_id": null,
+                "payload": {
+                  "defaults": {
+                    "edge": {},
+                    "node": {}
+                  },
+                  "edges": [
+                    {
+                      "condition": null,
+                      "fidelity": null,
+                      "from": "start",
+                      "label": null,
+                      "loop_restart": null,
+                      "thread_id": null,
+                      "to": "done",
+                      "weight": null
+                    }
+                  ],
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "graph_attrs": {
+                    "default_fidelity": null,
+                    "default_max_retries": null,
+                    "fallback_retry_target": null,
+                    "goal": "Capture API runtime durability",
+                    "label": "",
+                    "model_stylesheet": null,
+                    "release": "compat",
+                    "retry_target": null,
+                    "stack.child_dotfile": null,
+                    "stack.child_workdir": null,
+                    "tool.hooks.post": null,
+                    "tool.hooks.pre": null,
+                    "ui_default_llm_model": null,
+                    "ui_default_llm_profile": null,
+                    "ui_default_llm_provider": null,
+                    "ui_default_reasoning_effort": null
+                  },
+                  "nodes": [
+                    {
+                      "allow_partial": null,
+                      "auto_status": null,
+                      "class": null,
+                      "error_policy": null,
+                      "fallback_retry_target": null,
+                      "fidelity": null,
+                      "goal_gate": null,
+                      "id": "start",
+                      "join_k": null,
+                      "join_policy": null,
+                      "join_quorum": null,
+                      "label": "start",
+                      "llm_model": "",
+                      "llm_profile": "",
+                      "llm_provider": "",
+                      "manager.actions": null,
+                      "manager.max_cycles": null,
+                      "manager.poll_interval": null,
+                      "manager.steer_cooldown": null,
+                      "manager.stop_condition": null,
+                      "max_parallel": null,
+                      "max_retries": null,
+                      "prompt": null,
+                      "reasoning_effort": "high",
+                      "retry_target": null,
+                      "shape": "Mdiamond",
+                      "stack.child_autostart": null,
+                      "thread_id": null,
+                      "timeout": null,
+                      "tool.artifacts.paths": null,
+                      "tool.artifacts.stderr": null,
+                      "tool.artifacts.stdout": null,
+                      "tool.command": null,
+                      "tool.hooks.post": null,
+                      "tool.hooks.pre": null,
+                      "type": null
+                    },
+                    {
+                      "allow_partial": null,
+                      "auto_status": null,
+                      "class": null,
+                      "error_policy": null,
+                      "fallback_retry_target": null,
+                      "fidelity": null,
+                      "goal_gate": null,
+                      "id": "done",
+                      "join_k": null,
+                      "join_policy": null,
+                      "join_quorum": null,
+                      "label": "done",
+                      "llm_model": "",
+                      "llm_profile": "",
+                      "llm_provider": "",
+                      "manager.actions": null,
+                      "manager.max_cycles": null,
+                      "manager.poll_interval": null,
+                      "manager.steer_cooldown": null,
+                      "manager.stop_condition": null,
+                      "max_parallel": null,
+                      "max_retries": null,
+                      "prompt": null,
+                      "reasoning_effort": "high",
+                      "retry_target": null,
+                      "shape": "Msquare",
+                      "stack.child_autostart": null,
+                      "thread_id": null,
+                      "timeout": null,
+                      "tool.artifacts.paths": null,
+                      "tool.artifacts.stderr": null,
+                      "tool.artifacts.stdout": null,
+                      "tool.command": null,
+                      "tool.hooks.post": null,
+                      "tool.hooks.pre": null,
+                      "type": null
+                    }
+                  ],
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 5,
+                  "source_scope": "root",
+                  "subgraphs": [],
+                  "type": "graph"
+                },
+                "question_id": null,
+                "raw_type": "graph",
+                "sequence": 5,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "graph"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-4",
+                "kind": "lifecycle",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "phase": "INITIALIZE",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 4,
+                  "source_scope": "root",
+                  "type": "lifecycle"
+                },
+                "question_id": null,
+                "raw_type": "lifecycle",
+                "sequence": 4,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Lifecycle phase: INITIALIZE"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-3",
+                "kind": "lifecycle",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "phase": "VALIDATE",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 3,
+                  "source_scope": "root",
+                  "type": "lifecycle"
+                },
+                "question_id": null,
+                "raw_type": "lifecycle",
+                "sequence": 3,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Lifecycle phase: VALIDATE"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-2",
+                "kind": "lifecycle",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "phase": "TRANSFORM",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 2,
+                  "source_scope": "root",
+                  "type": "lifecycle"
+                },
+                "question_id": null,
+                "raw_type": "lifecycle",
+                "sequence": 2,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Lifecycle phase: TRANSFORM"
+              },
+              {
+                "emitted_at": "2026-06-25T04:43:47Z",
+                "id": "journal-1",
+                "kind": "lifecycle",
+                "node_id": null,
+                "payload": {
+                  "emitted_at": "2026-06-25T04:43:47Z",
+                  "phase": "PARSE",
+                  "run_id": "run-m0-i04-api",
+                  "sequence": 1,
+                  "source_scope": "root",
+                  "type": "lifecycle"
+                },
+                "question_id": null,
+                "raw_type": "lifecycle",
+                "sequence": 1,
+                "severity": "info",
+                "source_flow_name": null,
+                "source_parent_node_id": null,
+                "source_scope": "root",
+                "stage_index": null,
+                "summary": "Lifecycle phase: PARSE"
+              }
+            ],
+            "has_older": false,
+            "newest_sequence": 22,
+            "oldest_sequence": 1,
+            "pipeline_id": "run-m0-i04-api"
+          },
+          "kind": "json"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 200
+      }
+    },
+    "launch": {
+      "request": {
+        "body": {
+          "json": {
+            "flow_content": "\ndigraph ApiRuntimeFixture {\n  graph [goal=\"Capture API runtime durability\", release=\"compat\"];\n  start [shape=Mdiamond];\n  done [shape=Msquare];\n  start -> done;\n}\n",
+            "launch_context": {
+              "context.topic": "compat"
+            },
+            "model": "compat-model",
+            "run_id": "run-m0-i04-api",
+            "working_directory": "__PROJECT_DIR__"
+          },
+          "kind": "json"
+        },
+        "method": "POST",
+        "path": "/attractor/pipelines"
+      },
+      "response": {
+        "body": {
+          "json": {
+            "diagnostics": [],
+            "errors": [],
+            "execution_container_image": null,
+            "execution_lock": null,
+            "execution_mode": "native",
+            "execution_profile_capabilities": {},
+            "execution_profile_id": "native",
+            "graph_dot_path": "__SPARK_HOME__/attractor/runs/project-e92b7db607bd/run-m0-i04-api/artifacts/graphviz/pipeline.dot",
+            "graph_render_path": null,
+            "llm_profile": null,
+            "llm_provider": "codex",
+            "model": "compat-model",
+            "pipeline_id": "run-m0-i04-api",
+            "provider": "codex",
+            "reasoning_effort": null,
+            "run_id": "run-m0-i04-api",
+            "status": "started",
+            "working_directory": "__PROJECT_DIR__"
+          },
+          "kind": "json"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 200
+      }
+    },
+    "terminal": {
+      "request": {
+        "body": null,
+        "method": "GET",
+        "path": "/attractor/pipelines/run-m0-i04-api"
+      },
+      "response": {
+        "body": {
+          "json": {
+            "child_invocation_index": null,
+            "completed_nodes": [
+              "start"
+            ],
+            "continued_from_flow_mode": null,
+            "continued_from_flow_name": null,
+            "continued_from_node": null,
+            "continued_from_run_id": null,
+            "current_node": "done",
+            "ended_at": "2026-06-25T04:43:47Z",
+            "estimated_model_cost": null,
+            "execution_mode": "native",
+            "execution_profile_capabilities": {},
+            "execution_profile_id": "native",
+            "flow_name": "",
+            "git_branch": null,
+            "git_commit": null,
+            "last_error": "",
+            "llm_profile": null,
+            "llm_provider": "codex",
+            "model": "compat-model",
+            "outcome": "success",
+            "outcome_reason_code": null,
+            "outcome_reason_message": null,
+            "parent_node_id": null,
+            "parent_run_id": null,
+            "pipeline_id": "run-m0-i04-api",
+            "plan_id": null,
+            "progress": {
+              "completed_count": 1,
+              "completed_nodes": [
+                "start"
+              ],
+              "current_node": "done"
+            },
+            "project_path": "__PROJECT_DIR__",
+            "provider": "codex",
+            "reasoning_effort": null,
+            "root_run_id": "run-m0-i04-api",
+            "run_id": "run-m0-i04-api",
+            "spec_id": null,
+            "started_at": "2026-06-25T04:43:47Z",
+            "status": "completed",
+            "token_usage": null,
+            "token_usage_breakdown": null,
+            "working_directory": "__PROJECT_DIR__"
+          },
+          "kind": "json"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 200
+      }
+    }
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "run_root": {
+      "parsed": {
+        "checkpoint.json": {
+          "exists": false
+        },
+        "events.jsonl": {
+          "exists": true,
+          "records": [
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "phase": "PARSE",
+              "run_id": "run-m0-i04-api",
+              "sequence": 1,
+              "source_scope": "root",
+              "type": "lifecycle"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "phase": "TRANSFORM",
+              "run_id": "run-m0-i04-api",
+              "sequence": 2,
+              "source_scope": "root",
+              "type": "lifecycle"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "phase": "VALIDATE",
+              "run_id": "run-m0-i04-api",
+              "sequence": 3,
+              "source_scope": "root",
+              "type": "lifecycle"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "phase": "INITIALIZE",
+              "run_id": "run-m0-i04-api",
+              "sequence": 4,
+              "source_scope": "root",
+              "type": "lifecycle"
+            },
+            {
+              "defaults": {
+                "edge": {},
+                "node": {}
+              },
+              "edges": [
+                {
+                  "condition": null,
+                  "fidelity": null,
+                  "from": "start",
+                  "label": null,
+                  "loop_restart": null,
+                  "thread_id": null,
+                  "to": "done",
+                  "weight": null
+                }
+              ],
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "graph_attrs": {
+                "default_fidelity": null,
+                "default_max_retries": null,
+                "fallback_retry_target": null,
+                "goal": "Capture API runtime durability",
+                "label": "",
+                "model_stylesheet": null,
+                "release": "compat",
+                "retry_target": null,
+                "stack.child_dotfile": null,
+                "stack.child_workdir": null,
+                "tool.hooks.post": null,
+                "tool.hooks.pre": null,
+                "ui_default_llm_model": null,
+                "ui_default_llm_profile": null,
+                "ui_default_llm_provider": null,
+                "ui_default_reasoning_effort": null
+              },
+              "nodes": [
+                {
+                  "allow_partial": null,
+                  "auto_status": null,
+                  "class": null,
+                  "error_policy": null,
+                  "fallback_retry_target": null,
+                  "fidelity": null,
+                  "goal_gate": null,
+                  "id": "start",
+                  "join_k": null,
+                  "join_policy": null,
+                  "join_quorum": null,
+                  "label": "start",
+                  "llm_model": "",
+                  "llm_profile": "",
+                  "llm_provider": "",
+                  "manager.actions": null,
+                  "manager.max_cycles": null,
+                  "manager.poll_interval": null,
+                  "manager.steer_cooldown": null,
+                  "manager.stop_condition": null,
+                  "max_parallel": null,
+                  "max_retries": null,
+                  "prompt": null,
+                  "reasoning_effort": "high",
+                  "retry_target": null,
+                  "shape": "Mdiamond",
+                  "stack.child_autostart": null,
+                  "thread_id": null,
+                  "timeout": null,
+                  "tool.artifacts.paths": null,
+                  "tool.artifacts.stderr": null,
+                  "tool.artifacts.stdout": null,
+                  "tool.command": null,
+                  "tool.hooks.post": null,
+                  "tool.hooks.pre": null,
+                  "type": null
+                },
+                {
+                  "allow_partial": null,
+                  "auto_status": null,
+                  "class": null,
+                  "error_policy": null,
+                  "fallback_retry_target": null,
+                  "fidelity": null,
+                  "goal_gate": null,
+                  "id": "done",
+                  "join_k": null,
+                  "join_policy": null,
+                  "join_quorum": null,
+                  "label": "done",
+                  "llm_model": "",
+                  "llm_profile": "",
+                  "llm_provider": "",
+                  "manager.actions": null,
+                  "manager.max_cycles": null,
+                  "manager.poll_interval": null,
+                  "manager.steer_cooldown": null,
+                  "manager.stop_condition": null,
+                  "max_parallel": null,
+                  "max_retries": null,
+                  "prompt": null,
+                  "reasoning_effort": "high",
+                  "retry_target": null,
+                  "shape": "Msquare",
+                  "stack.child_autostart": null,
+                  "thread_id": null,
+                  "timeout": null,
+                  "tool.artifacts.paths": null,
+                  "tool.artifacts.stderr": null,
+                  "tool.artifacts.stdout": null,
+                  "tool.command": null,
+                  "tool.hooks.post": null,
+                  "tool.hooks.pre": null,
+                  "type": null
+                }
+              ],
+              "run_id": "run-m0-i04-api",
+              "sequence": 5,
+              "source_scope": "root",
+              "subgraphs": [],
+              "type": "graph"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "outcome": null,
+              "outcome_reason_code": null,
+              "outcome_reason_message": null,
+              "run_id": "run-m0-i04-api",
+              "sequence": 6,
+              "source_scope": "root",
+              "status": "running",
+              "type": "runtime"
+            },
+            {
+              "continued_from_flow_mode": null,
+              "continued_from_flow_name": null,
+              "continued_from_node": null,
+              "continued_from_run_id": null,
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "execution_container_image": null,
+              "execution_mode": "native",
+              "execution_profile_capabilities": {},
+              "execution_profile_id": "native",
+              "flow_name": "",
+              "graph_dot_path": "__RUN_ROOT__/artifacts/graphviz/pipeline.dot",
+              "graph_render_path": null,
+              "graph_source_path": "__RUN_ROOT__/artifacts/graphviz/pipeline-source.dot",
+              "llm_profile": null,
+              "llm_provider": "codex",
+              "model": "compat-model",
+              "provider": "codex",
+              "reasoning_effort": null,
+              "root_run_id": "run-m0-i04-api",
+              "run_id": "run-m0-i04-api",
+              "sequence": 7,
+              "source_scope": "root",
+              "type": "run_meta",
+              "working_directory": "__PROJECT_DIR__"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "msg": "[System] Graph render unavailable: Graphviz 'dot' binary not found",
+              "run_id": "run-m0-i04-api",
+              "sequence": 8,
+              "source_scope": "root",
+              "type": "log"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "msg": "[System] Launching run run-m0-i04-api in __PROJECT_DIR__ with model: compat-model",
+              "run_id": "run-m0-i04-api",
+              "sequence": 9,
+              "source_scope": "root",
+              "type": "log"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "phase": "EXECUTE",
+              "run_id": "run-m0-i04-api",
+              "sequence": 10,
+              "source_scope": "root",
+              "type": "lifecycle"
+            },
+            {
+              "current_node": "start",
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "id": "ApiRuntimeFixture",
+              "name": "ApiRuntimeFixture",
+              "resumed": true,
+              "run_id": "run-m0-i04-api",
+              "sequence": 11,
+              "source_scope": "root",
+              "type": "PipelineStarted"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "index": 0,
+              "name": "start",
+              "node_id": "start",
+              "run_id": "run-m0-i04-api",
+              "sequence": 12,
+              "source_scope": "root",
+              "type": "StageStarted"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "node": "start",
+              "run_id": "run-m0-i04-api",
+              "sequence": 13,
+              "source_scope": "root",
+              "status": "running",
+              "type": "state"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "msg": "[start] running",
+              "run_id": "run-m0-i04-api",
+              "sequence": 14,
+              "source_scope": "root",
+              "type": "log"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "node": "start",
+              "run_id": "run-m0-i04-api",
+              "sequence": 15,
+              "source_scope": "root",
+              "status": "success",
+              "type": "state"
+            },
+            {
+              "duration": 0.00033779710065573454,
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "index": 0,
+              "name": "start",
+              "node_id": "start",
+              "outcome": "success",
+              "run_id": "run-m0-i04-api",
+              "sequence": 16,
+              "source_scope": "root",
+              "type": "StageCompleted"
+            },
+            {
+              "completed_nodes": [
+                "start"
+              ],
+              "current_node": "done",
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "persisted": true,
+              "run_id": "run-m0-i04-api",
+              "sequence": 17,
+              "source_scope": "root",
+              "type": "CheckpointSaved"
+            },
+            {
+              "completed_nodes": [
+                "start"
+              ],
+              "current_node": "done",
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "persisted": true,
+              "run_id": "run-m0-i04-api",
+              "sequence": 18,
+              "source_scope": "root",
+              "type": "CheckpointSaved"
+            },
+            {
+              "artifact_count": 2,
+              "current_node": "done",
+              "duration": 0.001729232957586646,
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "outcome": "success",
+              "run_id": "run-m0-i04-api",
+              "sequence": 19,
+              "source_scope": "root",
+              "status": "completed",
+              "type": "PipelineCompleted"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "last_error": null,
+              "outcome": "success",
+              "outcome_reason_code": null,
+              "outcome_reason_message": null,
+              "run_id": "run-m0-i04-api",
+              "sequence": 20,
+              "source_scope": "root",
+              "status": "completed",
+              "type": "runtime"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "msg": "Pipeline completed (success)",
+              "run_id": "run-m0-i04-api",
+              "sequence": 21,
+              "source_scope": "root",
+              "type": "log"
+            },
+            {
+              "emitted_at": "2026-06-25T04:43:47Z",
+              "phase": "FINALIZE",
+              "run_id": "run-m0-i04-api",
+              "sequence": 22,
+              "source_scope": "root",
+              "type": "lifecycle"
+            }
+          ]
+        },
+        "manifest.json": {
+          "exists": false
+        },
+        "run.json": {
+          "data": {
+            "child_invocation_index": null,
+            "continued_from_flow_mode": null,
+            "continued_from_flow_name": null,
+            "continued_from_node": null,
+            "continued_from_run_id": null,
+            "ended_at": "2026-06-25T04:43:47Z",
+            "estimated_model_cost": null,
+            "execution_mode": "native",
+            "execution_profile_capabilities": {},
+            "execution_profile_id": "native",
+            "flow_name": "",
+            "git_branch": null,
+            "git_commit": null,
+            "last_error": "",
+            "llm_profile": null,
+            "llm_provider": "codex",
+            "model": "compat-model",
+            "outcome": "success",
+            "outcome_reason_code": null,
+            "outcome_reason_message": null,
+            "parent_node_id": null,
+            "parent_run_id": null,
+            "plan_id": null,
+            "project_path": "__PROJECT_DIR__",
+            "provider": "codex",
+            "reasoning_effort": null,
+            "root_run_id": "run-m0-i04-api",
+            "run_id": "run-m0-i04-api",
+            "spec_id": null,
+            "started_at": "2026-06-25T04:43:47Z",
+            "status": "completed",
+            "token_usage": null,
+            "token_usage_breakdown": null,
+            "working_directory": "__PROJECT_DIR__"
+          },
+          "exists": true
+        },
+        "state.json": {
+          "data": {
+            "completed_nodes": [
+              "start"
+            ],
+            "context": {
+              "_attractor.node_outcomes": {
+                "start": "success"
+              },
+              "_attractor.runtime.context_carryover": "carryover:compact\ngoal=Capture API runtime durability\nrun_id=run-m0-i04-api\n- context.topic=compat\n- current_node=start\n- execution_mode=native\n- execution_profile_capabilities={}\n- execution_profile_id=native\n- graph.default_max_retries=0\n- graph.release=compat\n- outcome=",
+              "_attractor.runtime.execution_mode": "native",
+              "_attractor.runtime.execution_profile_capabilities": {},
+              "_attractor.runtime.execution_profile_id": "native",
+              "_attractor.runtime.execution_profile_selection_source": "implementation_default",
+              "_attractor.runtime.fidelity": "compact",
+              "_attractor.runtime.launch_model": "compat-model",
+              "_attractor.runtime.launch_profile": "",
+              "_attractor.runtime.launch_provider": "codex",
+              "_attractor.runtime.launch_reasoning_effort": "",
+              "_attractor.runtime.retry.attempt": 0,
+              "_attractor.runtime.retry.failure_reason": "",
+              "_attractor.runtime.retry.max_attempts": 0,
+              "_attractor.runtime.retry.node_id": "",
+              "_attractor.runtime.thread_id": "",
+              "context.topic": "compat",
+              "current_node": "done",
+              "execution_mode": "native",
+              "execution_profile_capabilities": {},
+              "execution_profile_id": "native",
+              "graph.default_max_retries": 0,
+              "graph.goal": "Capture API runtime durability",
+              "graph.release": "compat",
+              "internal.root_run_id": "run-m0-i04-api",
+              "internal.run_id": "run-m0-i04-api",
+              "internal.run_workdir": "__PROJECT_DIR__",
+              "outcome": "success",
+              "preferred_label": ""
+            },
+            "current_node": "done",
+            "logs": [],
+            "retry_counts": {},
+            "timestamp": "2026-06-25T04:43:47.800186+00:00"
+          },
+          "exists": true
+        }
+      },
+      "root": "__RUN_ROOT__",
+      "tree": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "artifacts"
+          },
+          {
+            "kind": "dir",
+            "path": "artifacts/graphviz"
+          },
+          {
+            "kind": "file",
+            "path": "artifacts/graphviz/pipeline-source.dot",
+            "sha256": "5185bfefab68691471c75be55a64cbbbe013f2564968b97fa1b88a873460413e",
+            "size": 163
+          },
+          {
+            "kind": "file",
+            "path": "artifacts/graphviz/pipeline.dot",
+            "sha256": "5185bfefab68691471c75be55a64cbbbe013f2564968b97fa1b88a873460413e",
+            "size": 163
+          },
+          {
+            "kind": "file",
+            "path": "events.jsonl",
+            "sha256": "dc15864a417f0d2d95b47221ce9be23ce91577815b8035505c721b699d48ca4a",
+            "size": 7218
+          },
+          {
+            "kind": "dir",
+            "path": "logs"
+          },
+          {
+            "kind": "dir",
+            "path": "logs/artifacts"
+          },
+          {
+            "kind": "file",
+            "path": "logs/checkpoint.json",
+            "sha256": "cfd017cf2cf2ca955168d35594020a8495ab652e6f29a13e8253eb5f629da88b",
+            "size": 1852
+          },
+          {
+            "kind": "dir",
+            "path": "logs/done"
+          },
+          {
+            "kind": "file",
+            "path": "logs/done/prompt.md",
+            "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+            "size": 1
+          },
+          {
+            "kind": "file",
+            "path": "logs/done/response.md",
+            "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+            "size": 1
+          },
+          {
+            "kind": "file",
+            "path": "logs/done/status.json",
+            "sha256": "03c5d77eff9edb085ad4abbf59f1e1402a2639803fdd9c3ab7023740f1ea44b8",
+            "size": 164
+          },
+          {
+            "kind": "file",
+            "path": "logs/manifest.json",
+            "sha256": "a284cf73e40f6b567842e8811fa704e8c80e88e760ed7f04641e6bda59ef8cb6",
+            "size": 158
+          },
+          {
+            "kind": "dir",
+            "path": "logs/start"
+          },
+          {
+            "kind": "file",
+            "path": "logs/start/prompt.md",
+            "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+            "size": 1
+          },
+          {
+            "kind": "file",
+            "path": "logs/start/response.md",
+            "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+            "size": 1
+          },
+          {
+            "kind": "file",
+            "path": "logs/start/status.json",
+            "sha256": "03c5d77eff9edb085ad4abbf59f1e1402a2639803fdd9c3ab7023740f1ea44b8",
+            "size": 164
+          },
+          {
+            "kind": "dir",
+            "path": "result"
+          },
+          {
+            "kind": "file",
+            "path": "result/result.json",
+            "sha256": "036647931a4666e2b044456cef79252da07e8e6e5c4dc62f8150e98e9bfd9f01",
+            "size": 285
+          },
+          {
+            "kind": "file",
+            "path": "result/result.md",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "size": 0
+          },
+          {
+            "kind": "file",
+            "path": "run.json",
+            "sha256": "b5cfccef426b7efe84538d57f92dc66b872b25e3b1390449e63fe9cfcc387d16",
+            "size": 1144
+          },
+          {
+            "kind": "file",
+            "path": "run.log",
+            "sha256": "0428f8f8052ec8fd281fdf53d045852cf9c45fb5be08518734d3be48a0868460",
+            "size": 369
+          },
+          {
+            "kind": "file",
+            "path": "state.json",
+            "sha256": "cfd017cf2cf2ca955168d35594020a8495ab652e6f29a13e8253eb5f629da88b",
+            "size": 1852
+          }
+        ],
+        "root": "__RUN_ROOT__"
+      }
+    }
+  },
+  "fixture_id": "runtime/api-run-lifecycle-journal",
+  "input": {
+    "dot": "\ndigraph ApiRuntimeFixture {\n  graph [goal=\"Capture API runtime durability\", release=\"compat\"];\n  start [shape=Mdiamond];\n  done [shape=Msquare];\n  start -> done;\n}\n",
+    "run_id": "run-m0-i04-api"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "provenance": {
+    "interfaces": [
+      "POST /attractor/pipelines",
+      "GET /attractor/pipelines/{id}",
+      "GET /attractor/pipelines/{id}/journal",
+      "GET /attractor/pipelines/{id}/checkpoint",
+      "GET /attractor/pipelines/{id}/context",
+      "GET /attractor/pipelines/{id}/result",
+      "GET /attractor/pipelines/{id}/artifacts",
+      "durable run root files"
+    ],
+    "oracle": "python-attractor-api-runtime"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "api_run_lifecycle_journal",
+  "schema_version": "compat-runtime-v1"
+}

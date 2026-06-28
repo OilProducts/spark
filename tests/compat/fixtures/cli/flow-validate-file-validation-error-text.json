@@ -1,0 +1,99 @@
+{
+  "command": {
+    "argv": [
+      "uv",
+      "run",
+      "spark",
+      "flow",
+      "validate",
+      "--file",
+      "__PROJECT_DIR__/validation-error-flow.dot",
+      "--text"
+    ],
+    "cwd": "__WORKTREE__",
+    "normalized_argv": [
+      "uv",
+      "run",
+      "spark",
+      "flow",
+      "validate",
+      "--file",
+      "__PROJECT_DIR__/validation-error-flow.dot",
+      "--text"
+    ]
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "after": {},
+    "before": {}
+  },
+  "environment": {
+    "selected": {
+      "ANTHROPIC_API_KEY": "<redacted>",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__CODEX_RUNTIME_ROOT__",
+      "CODEX_CI": "1",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "CODEX_MANAGED_BY_NPM": "1",
+      "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
+      "CODEX_THREAD_ID": "019ef013-15bd-7d11-a48e-cad8977bd59e",
+      "SPARK_FLOWS_DIR": "__FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "selected_keys": [
+      "ANTHROPIC_API_KEY",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT",
+      "CODEX_CI",
+      "CODEX_HOME",
+      "CODEX_MANAGED_BY_NPM",
+      "CODEX_MANAGED_PACKAGE_ROOT",
+      "CODEX_THREAD_ID",
+      "SPARK_FLOWS_DIR",
+      "SPARK_HOME"
+    ]
+  },
+  "filesystem": {
+    "after": {},
+    "before": {}
+  },
+  "fixture_id": "cli/flow-validate-file-validation-error-text",
+  "item_id": "M0-I02-CLI-FILESYSTEM-FIXTURES",
+  "normalization": {
+    "tokens": {
+      "__CODEX_HOME__": "__CODEX_HOME__",
+      "__CODEX_RUNTIME_ROOT__": "__CODEX_RUNTIME_ROOT__",
+      "__FLOWS_DIR__": "__FLOWS_DIR__",
+      "__OUTPUT_DIR__": "__COMPAT_FIXTURE_ROOT__/cli",
+      "__OUTPUT__": "__COMPAT_FIXTURE_ROOT__/cli/flow-validate-file-validation-error-text.json",
+      "__PROJECT_DIR__": "__PROJECT_DIR__",
+      "__SPARK_HOME__": "__SPARK_HOME__",
+      "__WORKTREE__": "__WORKTREE__"
+    }
+  },
+  "paths": {
+    "attractor_codex_runtime_root": "__CODEX_RUNTIME_ROOT__",
+    "codex_home": "__CODEX_HOME__",
+    "output": "__COMPAT_FIXTURE_ROOT__/cli/flow-validate-file-validation-error-text.json",
+    "spark_flows_dir": "__FLOWS_DIR__",
+    "spark_home": "__SPARK_HOME__"
+  },
+  "process": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "Name: validation-error-flow.dot\nPath: __PROJECT_DIR__/validation-error-flow.dot\nStatus: validation_error\nDiagnostics: 3\nErrors: 3\n- ERROR start_node: pipeline must have exactly one start node, found 0\n- ERROR terminal_node: pipeline must have exactly one exit node, found 0\n- ERROR node_has_outgoing_edge line 2: node 'task' must declare at least one outgoing edge\n"
+  },
+  "provenance": {
+    "capture_tool": "scripts/compat_capture.py",
+    "captured_at_utc": "2026-06-22T16:16:04.515407Z",
+    "oracle": "python-worktree",
+    "worktree_path": "__WORKTREE__"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": 1
+}

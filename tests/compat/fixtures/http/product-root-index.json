@@ -1,0 +1,61 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "http/product-root-index",
+  "item_id": "M0-I03-HTTP-SSE-FIXTURES",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "python-spark-server",
+    "server_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "58923",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": null,
+    "headers": {},
+    "method": "GET",
+    "path": "/",
+    "query": {}
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "response": {
+    "body": {
+      "kind": "text",
+      "text": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <link rel=\"icon\" type=\"image/png\" href=\"/assets/spark-app-icon.png?v=20260507\" />\n    <link rel=\"shortcut icon\" type=\"image/png\" href=\"/favicon.ico?v=20260507\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Spark</title>\n    <script type=\"module\" crossorigin src=\"/assets/index-CQNqc0In.js\"></script>\n    <link rel=\"stylesheet\" crossorigin href=\"/assets/index-C7BV1XH8.css\">\n  </head>\n  <body>\n    <div id=\"root\"></div>\n  </body>\n</html>\n"
+    },
+    "headers": {
+      "content-type": "text/html; charset=utf-8"
+    },
+    "status_code": 200
+  },
+  "schema_version": "compat-http-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

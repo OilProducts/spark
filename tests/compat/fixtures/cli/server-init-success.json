@@ -1,0 +1,248 @@
+{
+  "command": {
+    "argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "init",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__FLOWS_DIR__"
+    ],
+    "cwd": "__WORKTREE__",
+    "normalized_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "init",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__FLOWS_DIR__"
+    ]
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "after": {
+      "flow_catalog": {
+        "data": {
+          "flows": {
+            "software-development/implement-change-request.dot": {
+              "launch_policy": "agent_requestable"
+            },
+            "software-development/spec-implementation/implement-spec.dot": {
+              "launch_policy": "agent_requestable"
+            }
+          }
+        },
+        "exists": true,
+        "format": "toml",
+        "path": "__SPARK_HOME__/config/flow-catalog.toml"
+      }
+    },
+    "before": {
+      "flow_catalog": {
+        "exists": false,
+        "path": "__SPARK_HOME__/config/flow-catalog.toml"
+      }
+    }
+  },
+  "environment": {
+    "selected": {
+      "ANTHROPIC_API_KEY": "<redacted>",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__CODEX_RUNTIME_ROOT__",
+      "CODEX_CI": "1",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "CODEX_MANAGED_BY_NPM": "1",
+      "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
+      "CODEX_THREAD_ID": "019ef013-15bd-7d11-a48e-cad8977bd59e",
+      "SPARK_FLOWS_DIR": "__FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "selected_keys": [
+      "ANTHROPIC_API_KEY",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT",
+      "CODEX_CI",
+      "CODEX_HOME",
+      "CODEX_MANAGED_BY_NPM",
+      "CODEX_MANAGED_PACKAGE_ROOT",
+      "CODEX_THREAD_ID",
+      "SPARK_FLOWS_DIR",
+      "SPARK_HOME"
+    ]
+  },
+  "filesystem": {
+    "after": {
+      "flows": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "examples"
+          },
+          {
+            "kind": "file",
+            "path": "examples/human-review-loop.dot",
+            "sha256": "a5fdc051054ce1d7ba391d051d7a1dfeb85b80a5b195702373db0afa5f139161",
+            "size": 2311
+          },
+          {
+            "kind": "file",
+            "path": "examples/implement-review-loop.dot",
+            "sha256": "3e7e3fae17267851d20d63a48ad5f54f94e71ded3228ab9ec4e9d9532a80f40e",
+            "size": 4320
+          },
+          {
+            "kind": "file",
+            "path": "examples/parallel-review.dot",
+            "sha256": "9079bab488eabddfb8ee601f0a7059a76b8c2eb539a352a8b9ff3eaa7eb39076",
+            "size": 3144
+          },
+          {
+            "kind": "file",
+            "path": "examples/simple-linear.dot",
+            "sha256": "c701ac12d25c9aa3452d0b3b5e7de7d117724e6679e20746669c82d77ee0f78f",
+            "size": 1859
+          },
+          {
+            "kind": "dir",
+            "path": "examples/supervision"
+          },
+          {
+            "kind": "file",
+            "path": "examples/supervision/implementation-worker.dot",
+            "sha256": "e0d4d4a7098cc5383c791ef87b0a2f2fca178b2c3cda7930afa1e50814004a57",
+            "size": 3468
+          },
+          {
+            "kind": "file",
+            "path": "examples/supervision/supervised-implementation.dot",
+            "sha256": "aedb0e21a5cd887d5d41b24454a5d45017feda37b4a7781e717bdd783719730e",
+            "size": 2862
+          },
+          {
+            "kind": "dir",
+            "path": "software-development"
+          },
+          {
+            "kind": "file",
+            "path": "software-development/implement-change-request.dot",
+            "sha256": "306fed23bee3fd5506f747483a632967757936fab939758f91d9c6e770953fd7",
+            "size": 11702
+          },
+          {
+            "kind": "dir",
+            "path": "software-development/spec-implementation"
+          },
+          {
+            "kind": "file",
+            "path": "software-development/spec-implementation/implement-milestone.dot",
+            "sha256": "a322f9ea40b1f64f54af6fb215f964078d3eed7ed16cb5eca430bca1d8b60d38",
+            "size": 52880
+          },
+          {
+            "kind": "file",
+            "path": "software-development/spec-implementation/implement-spec.dot",
+            "sha256": "f2ef48d186144aeb539c1aeba210439f880bc8ad2a87eb67497455d5febcca17",
+            "size": 37554
+          }
+        ],
+        "exists": true,
+        "root": "__FLOWS_DIR__"
+      },
+      "spark_home": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "attractor"
+          },
+          {
+            "kind": "dir",
+            "path": "attractor/runs"
+          },
+          {
+            "kind": "dir",
+            "path": "config"
+          },
+          {
+            "kind": "file",
+            "path": "config/flow-catalog.toml",
+            "sha256": "46c19623b50a5cfd9dc7a137b50afbd3cb4ecf8078884b00fbcc60a1b2c2efe4",
+            "size": 203
+          },
+          {
+            "kind": "dir",
+            "path": "logs"
+          },
+          {
+            "kind": "dir",
+            "path": "runtime"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects"
+          }
+        ],
+        "exists": true,
+        "root": "__SPARK_HOME__"
+      }
+    },
+    "before": {
+      "flows": {
+        "entries": [],
+        "exists": true,
+        "root": "__FLOWS_DIR__"
+      },
+      "spark_home": {
+        "entries": [],
+        "exists": true,
+        "root": "__SPARK_HOME__"
+      }
+    }
+  },
+  "fixture_id": "cli/server-init-success",
+  "item_id": "M0-I02-CLI-FILESYSTEM-FIXTURES",
+  "normalization": {
+    "tokens": {
+      "__CODEX_HOME__": "__CODEX_HOME__",
+      "__CODEX_RUNTIME_ROOT__": "__CODEX_RUNTIME_ROOT__",
+      "__FLOWS_DIR__": "__FLOWS_DIR__",
+      "__OUTPUT_DIR__": "__COMPAT_FIXTURE_ROOT__/cli",
+      "__OUTPUT__": "__COMPAT_FIXTURE_ROOT__/cli/server-init-success.json",
+      "__PROJECT_DIR__": "__PROJECT_DIR__",
+      "__SPARK_HOME__": "__SPARK_HOME__",
+      "__WORKTREE__": "__WORKTREE__"
+    }
+  },
+  "paths": {
+    "attractor_codex_runtime_root": "__CODEX_RUNTIME_ROOT__",
+    "codex_home": "__CODEX_HOME__",
+    "output": "__COMPAT_FIXTURE_ROOT__/cli/server-init-success.json",
+    "spark_flows_dir": "__FLOWS_DIR__",
+    "spark_home": "__SPARK_HOME__"
+  },
+  "process": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "Initialized Spark at __SPARK_HOME__\nSeeded flows: __FLOWS_DIR__\ncreated=9 updated=0 skipped=0\n"
+  },
+  "provenance": {
+    "capture_tool": "scripts/compat_capture.py",
+    "captured_at_utc": "2026-06-22T16:16:05.457412Z",
+    "oracle": "python-worktree",
+    "worktree_path": "__WORKTREE__"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": 1
+}

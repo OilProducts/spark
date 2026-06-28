@@ -1,0 +1,50 @@
+{
+  "decisions": [
+    "CD-RR-005",
+    "CD-RR-006",
+    "CD-RR-013"
+  ],
+  "fixture_id": "agent/codergen-simulation-artifacts",
+  "input": {
+    "dot": "\n    digraph G {\n      task [shape=box, prompt=\"Plan for $goal\"];\n    }\n    "
+  },
+  "item_id": "M3-I05-CODERGEN-AGENT-LLM-ADAPTERS",
+  "observation": {
+    "outcome": {
+      "context_updates": {
+        "last_response": "[Simulated] Response for stage: task",
+        "last_stage": "task"
+      },
+      "failure_reason": "",
+      "notes": "Stage completed: task",
+      "preferred_label": "",
+      "status": "success",
+      "suggested_next_ids": []
+    },
+    "response_md": "[Simulated] Response for stage: task",
+    "status_json": {
+      "context_updates": {
+        "last_response": "[Simulated] Response for stage: task",
+        "last_stage": "task"
+      },
+      "notes": "Stage completed: task",
+      "outcome": "success",
+      "preferred_label": "",
+      "suggested_next_ids": []
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "attractor.handlers.HandlerRunner",
+      "attractor.handlers.build_default_registry",
+      "attractor.handlers.builtin.CodergenHandler"
+    ],
+    "oracle": "python-codergen-handler-public-interfaces"
+  },
+  "requirements": [
+    "RR-EXE-002",
+    "RR-EXE-006"
+  ],
+  "scenario": "simulation_artifacts",
+  "schema_version": "compat-agent-v1"
+}

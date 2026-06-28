@@ -1,0 +1,104 @@
+{
+  "command": {
+    "argv": [
+      "uv",
+      "run",
+      "spark",
+      "flow",
+      "get",
+      "--flow",
+      "software-development/implement-change-request.dot",
+      "--base-url",
+      "__API_BASE_URL__"
+    ],
+    "cwd": "__WORKTREE__",
+    "normalized_argv": [
+      "uv",
+      "run",
+      "spark",
+      "flow",
+      "get",
+      "--flow",
+      "software-development/implement-change-request.dot",
+      "--base-url",
+      "__API_BASE_URL__"
+    ]
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "after": {},
+    "before": {}
+  },
+  "environment": {
+    "selected": {
+      "ANTHROPIC_API_KEY": "<redacted>",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__CODEX_RUNTIME_ROOT__",
+      "CODEX_CI": "1",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "CODEX_MANAGED_BY_NPM": "1",
+      "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
+      "CODEX_THREAD_ID": "019ef013-15bd-7d11-a48e-cad8977bd59e",
+      "SPARK_API_BASE_URL": "__API_BASE_URL__",
+      "SPARK_FLOWS_DIR": "__FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "selected_keys": [
+      "ANTHROPIC_API_KEY",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT",
+      "CODEX_CI",
+      "CODEX_HOME",
+      "CODEX_MANAGED_BY_NPM",
+      "CODEX_MANAGED_PACKAGE_ROOT",
+      "CODEX_THREAD_ID",
+      "SPARK_API_BASE_URL",
+      "SPARK_FLOWS_DIR",
+      "SPARK_HOME"
+    ]
+  },
+  "filesystem": {
+    "after": {},
+    "before": {}
+  },
+  "fixture_id": "cli/server-backed/flow-get-json",
+  "item_id": "M0-I02-CLI-FILESYSTEM-FIXTURES",
+  "normalization": {
+    "tokens": {
+      "__API_BASE_URL__": "__API_BASE_URL__",
+      "__CODEX_HOME__": "__CODEX_HOME__",
+      "__CODEX_RUNTIME_ROOT__": "__CODEX_RUNTIME_ROOT__",
+      "__FLOWS_DIR__": "__FLOWS_DIR__",
+      "__OUTPUT_DIR__": "__COMPAT_FIXTURE_ROOT__/cli/server-backed",
+      "__OUTPUT__": "__COMPAT_FIXTURE_ROOT__/cli/server-backed/flow-get-json.json",
+      "__PROJECT_DIR__": "__PROJECT_DIR__",
+      "__SPARK_HOME__": "__SPARK_HOME__",
+      "__WORKTREE__": "__WORKTREE__"
+    }
+  },
+  "paths": {
+    "attractor_codex_runtime_root": "__CODEX_RUNTIME_ROOT__",
+    "codex_home": "__CODEX_HOME__",
+    "output": "__COMPAT_FIXTURE_ROOT__/cli/server-backed/flow-get-json.json",
+    "spark_flows_dir": "__FLOWS_DIR__",
+    "spark_home": "__SPARK_HOME__"
+  },
+  "process": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "{\n  \"content\": \"digraph implement_change_request {\\n  graph [default_fidelity=\\\"summary:high\\\", goal=\\\"Implement an approved durable change request in the repository, evaluate whether the requested change is completed in full, record the shipped result, and iterate until the result is ready.\\\", label=\\\"Implement Change Request\\\", spark.description=\\\"Read an approved change request from changes/<CR-id>/request.md, keep runtime state under .spark/change-requests/<CR-id>/, implement the required work, evaluate completion against the durable request, and write changes/<CR-id>/result.md when the repository is ready.\\\", spark.launch_inputs=\\\"[{\\\\\\\"key\\\\\\\":\\\\\\\"context.request.change_request_path\\\\\\\",\\\\\\\"label\\\\\\\":\\\\\\\"Change Request Path\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"string\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"Path to the durable change request document inside the project repository, usually changes/<CR-id>/request.md.\\\\\\\",\\\\\\\"required\\\\\\\":true},{\\\\\\\"key\\\\\\\":\\\\\\\"context.request.change_request_id\\\\\\\",\\\\\\\"label\\\\\\\":\\\\\\\"Change Request ID\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"string\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"Optional durable change request id. If omitted, derive it from the parent directory of the request path.\\\\\\\",\\\\\\\"required\\\\\\\":false},{\\\\\\\"key\\\\\\\":\\\\\\\"context.request.target_paths\\\\\\\",\\\\\\\"label\\\\\\\":\\\\\\\"Target Paths\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"string[]\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"Optional files or directories the change request or implementation should focus on.\\\\\\\",\\\\\\\"required\\\\\\\":false},{\\\\\\\"key\\\\\\\":\\\\\\\"context.request.acceptance_criteria\\\\\\\",\\\\\\\"label\\\\\\\":\\\\\\\"Acceptance Criteria\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"string[]\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"Optional completion criteria to enforce alongside the change request.\\\\\\\",\\\\\\\"required\\\\\\\":false},{\\\\\\\"key\\\\\\\":\\\\\\\"context.request.validation_command\\\\\\\",\\\\\\\"label\\\\\\\":\\\\\\\"Validation Command\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"string\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"Optional preferred repo-wide validation command. Use it as the primary deterministic gate when it is truthful and available.\\\\\\\",\\\\\\\"required\\\\\\\":false}]\\\", spark.title=\\\"Implement Change Request\\\", ui_default_llm_model=\\\"gpt-5.5\\\", ui_default_llm_provider=\\\"codex\\\"];\\n  done [allow_partial=false, auto_status=false, error_policy=\\\"continue\\\", goal_gate=false, join_policy=\\\"wait_all\\\", label=\\\"Done\\\", max_parallel=4, reasoning_effort=\\\"high\\\", shape=\\\"Msquare\\\"];\\n  evaluate [allow_partial=false, auto_status=false, codergen.response_contract=\\\"status_envelope\\\", error_policy=\\\"continue\\\", goal_gate=false, join_policy=\\\"wait_all\\\", label=\\\"Evaluate\\\", llm_model=\\\"gpt-5.5\\\", max_parallel=4, prompt=\\\"Goal: decide whether the approved change request is fully complete and the repository is ready. Authoritative inputs: read context.change_request.id, context.change_request.runtime_dir, context.change_request.request_path, context.change_request.result_path, context.change_request.state_path, <runtime_dir>/change/request.md, and <runtime_dir>/state.json. Success criteria: the requested implementation is present in full; validation is truthful; request.validation_command from state.json was used when present unless a stronger deterministic repo-wide gate was available; touched docs, exports, manifests, bootstrap paths, and ignore rules remain coherent when applicable; no material correctness, validation, repository-integrity, duplicate-validator, or mixed-responsibility issue remains. External-boundary criteria: when the change touches an adapter, parser, protocol boundary, SDK or client wrapper, CLI integration, or external service response, do not accept mocks alone as contract proof. Verify that tests use recorded or realistic payload shapes, an existing contract fixture, or a live/dry-run probe when practical. Treat mocked external responses without evidence of real boundary compatibility as a validation gap. Read-only rule: you may read files and run validation commands needed to judge readiness, but do not edit files, apply patches, create or delete repository files, stage changes, commit changes, or otherwise perform implementation work. Failure output: if any material issue exists, return outcome fail with failure_reason plus context_updates for context.review.summary, context.review.required_changes, and context.review.blockers. Name concrete missing work or deficiencies in context.review.required_changes, and use context.review.blockers only for genuine blockers. Success output: return outcome success only when the full request is complete and no material issue remains; include context_updates setting context.review.summary, context.review.required_changes, and context.review.blockers to JSON null so stale review feedback is cleared. Respond with ONLY a JSON status envelope.\\\", reasoning_effort=\\\"high\\\", shape=\\\"box\\\", spark.reads_context=\\\"[\\\\\\\"context.change_request.id\\\\\\\",\\\\\\\"context.change_request.runtime_dir\\\\\\\",\\\\\\\"context.change_request.request_path\\\\\\\",\\\\\\\"context.change_request.result_path\\\\\\\",\\\\\\\"context.change_request.state_path\\\\\\\"]\\\", spark.writes_context=\\\"[\\\\\\\"context.review.summary\\\\\\\",\\\\\\\"context.review.required_changes\\\\\\\",\\\\\\\"context.review.blockers\\\\\\\",\\\\\\\"context_updates\\\\\\\"]\\\"];\\n  implement [allow_partial=false, auto_status=false, codergen.response_contract=\\\"status_envelope\\\", error_policy=\\\"continue\\\", goal_gate=false, join_policy=\\\"wait_all\\\", label=\\\"Implement\\\", llm_model=\\\"gpt-5.5\\\", max_parallel=4, prompt=\\\"Goal: complete the remaining repository work required by the approved change request. Authoritative inputs: read context.change_request.id, context.change_request.runtime_dir, context.change_request.request_path, context.change_request.state_path, <runtime_dir>/change/request.md, and <runtime_dir>/state.json. Treat <runtime_dir>/change/request.md and <runtime_dir>/state.json as the source of truth for this run; do not use context.inputs.change_request_path or another duplicate request copy as the authority after runtime preparation. Repository scope: read and edit only files inside the current cwd, the repository root. Implementation criteria: make the smallest coherent repository change that satisfies the durable request and any acceptance criteria in state.json; keep touched docs, exports, manifests, bootstrap paths, and ignore rules coherent when applicable; do not stage or commit. Review feedback: if context.review.summary, context.review.required_changes, or context.review.blockers are present from a prior evaluation pass, address them directly before considering the work complete. Validation: validate touched surfaces truthfully, and use request.validation_command from <runtime_dir>/state.json as the preferred deterministic gate when present unless a stronger deterministic repo-wide gate is available. Output: respond with ONLY a JSON status envelope after implementation and validation are complete.\\\", reasoning_effort=\\\"high\\\", shape=\\\"box\\\", spark.reads_context=\\\"[\\\\\\\"context.change_request.id\\\\\\\",\\\\\\\"context.change_request.runtime_dir\\\\\\\",\\\\\\\"context.change_request.request_path\\\\\\\",\\\\\\\"context.change_request.state_path\\\\\\\",\\\\\\\"context.review.summary\\\\\\\",\\\\\\\"context.review.required_changes\\\\\\\",\\\\\\\"context.review.blockers\\\\\\\"]\\\"];\\n  prepare_change_runtime [allow_partial=false, auto_status=false, codergen.response_contract=\\\"status_envelope\\\", error_policy=\\\"continue\\\", goal_gate=false, join_policy=\\\"wait_all\\\", label=\\\"Prepare Change Runtime\\\", llm_model=\\\"gpt-5.5\\\", max_parallel=4, max_retries=1, prompt=\\\"Goal: create the durable runtime workspace for one approved change request. Inputs: use context.inputs.change_request_path, optional context.inputs.change_request_id, context.inputs.target_paths, context.inputs.acceptance_criteria, and context.inputs.validation_command. Path rules: treat context.inputs.change_request_path as repository-relative; reject absolute paths and paths that resolve outside the current cwd; require the file to exist as changes/<CR-id>/request.md; when context.inputs.change_request_id is present, require it to match <CR-id>, otherwise derive the id from that directory. Workspace steps: create .spark/change-requests/ if needed; create or refresh .spark/change-requests/<CR-id>/; inside it create or refresh a change symlink to changes/<CR-id>/; write .spark/change-requests/<CR-id>/state.json as valid JSON with keys change_request, request, runtime, and updated_at. The state must include change_request.id, change_request.change_dir, change_request.request_path, change_request.result_path, request.target_paths, request.acceptance_criteria, request.validation_command, runtime.path, and runtime.change_alias. Ignore rule: if .gitignore exists, ensure it contains exactly one .spark/ line by appending it only when missing and removing duplicate .spark/ lines without disturbing unrelated rules. Success criteria: return outcome success only after the workspace, symlink, state file, and context_updates for context.change_request.id, context.change_request.runtime_dir, context.change_request.request_path, context.change_request.result_path, and context.change_request.state_path are all correct. Failure criteria: if the request path is missing, unreadable, absolute, outside cwd, not named request.md, or not under changes/<CR-id>/, return outcome fail with a clear failure_reason and do not create misleading partial state.\\\", reasoning_effort=\\\"high\\\", shape=\\\"box\\\", spark.reads_context=\\\"[\\\\\\\"context.request.change_request_path\\\\\\\",\\\\\\\"context.request.change_request_id\\\\\\\",\\\\\\\"context.request.target_paths\\\\\\\",\\\\\\\"context.request.acceptance_criteria\\\\\\\",\\\\\\\"context.request.validation_command\\\\\\\"]\\\", spark.writes_context=\\\"[\\\\\\\"context.change_request.id\\\\\\\",\\\\\\\"context.change_request.runtime_dir\\\\\\\",\\\\\\\"context.change_request.request_path\\\\\\\",\\\\\\\"context.change_request.result_path\\\\\\\",\\\\\\\"context.change_request.state_path\\\\\\\",\\\\\\\"failure_reason\\\\\\\"]\\\"];\\n  record_result [allow_partial=false, auto_status=false, codergen.response_contract=\\\"status_envelope\\\", error_policy=\\\"continue\\\", goal_gate=false, join_policy=\\\"wait_all\\\", label=\\\"Record Result\\\", llm_model=\\\"gpt-5.5\\\", max_parallel=4, prompt=\\\"Goal: record the completed shipped result for the approved change request. Inputs: read context.change_request.id, context.change_request.runtime_dir, context.change_request.request_path, context.change_request.result_path, context.change_request.state_path, <runtime_dir>/change/request.md, <runtime_dir>/state.json, and the current repository state as needed. Write: create or replace <runtime_dir>/change/result.md. Required format: markdown with YAML frontmatter containing at least id, title, status=completed, type, and changelog. Choose the smallest truthful type from feature, bugfix, refactor, docs, or internal. Use changelog=public only when the shipped change is suitable for external release notes; otherwise use changelog=internal. Body: include concise sections named Summary, Validation, and Shipped Changes. Summarize what was actually delivered, what validation was used, and which repository surfaces changed. Success criteria: result.md is written, grounded in the approved request and repository state, and avoids optimistic claims. Output: respond with ONLY a JSON status envelope and return outcome success only after result.md is written.\\\", reasoning_effort=\\\"high\\\", shape=\\\"box\\\", spark.reads_context=\\\"[\\\\\\\"context.change_request.id\\\\\\\",\\\\\\\"context.change_request.runtime_dir\\\\\\\",\\\\\\\"context.change_request.request_path\\\\\\\",\\\\\\\"context.change_request.result_path\\\\\\\",\\\\\\\"context.change_request.state_path\\\\\\\"]\\\"];\\n  start [allow_partial=false, auto_status=false, error_policy=\\\"continue\\\", goal_gate=false, join_policy=\\\"wait_all\\\", label=\\\"Start\\\", max_parallel=4, reasoning_effort=\\\"high\\\", shape=\\\"Mdiamond\\\"];\\n  evaluate -> implement [condition=\\\"outcome=fail\\\", label=\\\"Fix\\\", loop_restart=false];\\n  evaluate -> record_result [condition=\\\"outcome=success\\\", label=\\\"Ready\\\", loop_restart=false];\\n  implement -> evaluate [loop_restart=false];\\n  prepare_change_runtime -> implement [loop_restart=false];\\n  record_result -> done [condition=\\\"outcome=success\\\", label=\\\"Recorded\\\", loop_restart=false];\\n  start -> prepare_change_runtime [loop_restart=false];\\n}\\n\",\n  \"name\": \"software-development/implement-change-request.dot\"\n}\n"
+  },
+  "provenance": {
+    "capture_tool": "scripts/compat_capture.py",
+    "captured_at_utc": "2026-06-22T16:16:07.062163Z",
+    "oracle": "python-worktree",
+    "worktree_path": "__WORKTREE__"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": 1
+}

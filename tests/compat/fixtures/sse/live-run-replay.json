@@ -1,0 +1,144 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "sse/live-run-replay",
+  "frames": [
+    {
+      "data": {
+        "cursor": {
+          "kind": "run_sequence",
+          "value": 1
+        },
+        "payload": {
+          "emitted_at": "2026-06-22T17:08:22Z",
+          "id": "journal-1",
+          "kind": "lifecycle",
+          "node_id": null,
+          "payload": {
+            "emitted_at": "2026-06-22T17:08:22Z",
+            "phase": "PARSE",
+            "run_id": "run-000000000001",
+            "sequence": 1,
+            "source_scope": "root",
+            "type": "lifecycle"
+          },
+          "question_id": null,
+          "raw_type": "lifecycle",
+          "sequence": 1,
+          "severity": "info",
+          "source_flow_name": null,
+          "source_parent_node_id": null,
+          "source_scope": "root",
+          "stage_index": null,
+          "summary": "Lifecycle phase: PARSE"
+        },
+        "project_path": null,
+        "resource": {
+          "id": "run-000000000001",
+          "kind": "run"
+        },
+        "type": "run.journal_entry"
+      },
+      "data_text": "{\"type\": \"run.journal_entry\", \"project_path\": null, \"resource\": {\"kind\": \"run\", \"id\": \"run-000000000001\"}, \"cursor\": {\"kind\": \"run_sequence\", \"value\": 1}, \"payload\": {\"id\": \"journal-1\", \"sequence\": 1, \"emitted_at\": \"2026-06-22T17:08:22Z\", \"kind\": \"lifecycle\", \"raw_type\": \"lifecycle\", \"severity\": \"info\", \"summary\": \"Lifecycle phase: PARSE\", \"node_id\": null, \"stage_index\": null, \"source_scope\": \"root\", \"source_parent_node_id\": null, \"source_flow_name\": null, \"question_id\": null, \"payload\": {\"emitted_at\": \"2026-06-22T17:08:22Z\", \"phase\": \"PARSE\", \"run_id\": \"run-000000000001\", \"sequence\": 1, \"source_scope\": \"root\", \"type\": \"lifecycle\"}}}",
+      "event": "message",
+      "kind": "event"
+    },
+    {
+      "data": {
+        "cursor": {
+          "kind": "run_sequence",
+          "value": 2
+        },
+        "payload": {
+          "emitted_at": "2026-06-22T17:08:22Z",
+          "id": "journal-2",
+          "kind": "lifecycle",
+          "node_id": null,
+          "payload": {
+            "emitted_at": "2026-06-22T17:08:22Z",
+            "phase": "TRANSFORM",
+            "run_id": "run-000000000001",
+            "sequence": 2,
+            "source_scope": "root",
+            "type": "lifecycle"
+          },
+          "question_id": null,
+          "raw_type": "lifecycle",
+          "sequence": 2,
+          "severity": "info",
+          "source_flow_name": null,
+          "source_parent_node_id": null,
+          "source_scope": "root",
+          "stage_index": null,
+          "summary": "Lifecycle phase: TRANSFORM"
+        },
+        "project_path": null,
+        "resource": {
+          "id": "run-000000000001",
+          "kind": "run"
+        },
+        "type": "run.journal_entry"
+      },
+      "data_text": "{\"type\": \"run.journal_entry\", \"project_path\": null, \"resource\": {\"kind\": \"run\", \"id\": \"run-000000000001\"}, \"cursor\": {\"kind\": \"run_sequence\", \"value\": 2}, \"payload\": {\"id\": \"journal-2\", \"sequence\": 2, \"emitted_at\": \"2026-06-22T17:08:22Z\", \"kind\": \"lifecycle\", \"raw_type\": \"lifecycle\", \"severity\": \"info\", \"summary\": \"Lifecycle phase: TRANSFORM\", \"node_id\": null, \"stage_index\": null, \"source_scope\": \"root\", \"source_parent_node_id\": null, \"source_flow_name\": null, \"question_id\": null, \"payload\": {\"emitted_at\": \"2026-06-22T17:08:22Z\", \"phase\": \"TRANSFORM\", \"run_id\": \"run-000000000001\", \"sequence\": 2, \"source_scope\": \"root\", \"type\": \"lifecycle\"}}}",
+      "event": "message",
+      "kind": "event"
+    }
+  ],
+  "item_id": "M0-I03-HTTP-SSE-FIXTURES",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "python-spark-server",
+    "server_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "45515",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": null,
+    "headers": {},
+    "method": "GET",
+    "path": "/workspace/api/live/events",
+    "query": {
+      "run_id": "run-000000000001",
+      "run_sequence": 0
+    }
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "response": {
+    "headers": {
+      "cache-control": "no-cache",
+      "connection": "keep-alive",
+      "content-type": "text/event-stream; charset=utf-8"
+    },
+    "status_code": 200
+  },
+  "schema_version": "compat-sse-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

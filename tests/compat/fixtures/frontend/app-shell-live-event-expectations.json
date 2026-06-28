@@ -1,0 +1,95 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "frontend/app-shell-live-event-expectations",
+  "input": {
+    "live_payload_types": [
+      "turn_upsert",
+      "segment_upsert",
+      "missing-resource"
+    ],
+    "query_params": {
+      "conversation_id": "conversation-frontend-compat",
+      "cursor": "42",
+      "run_id": "run-frontend-compat",
+      "trigger_id": "trigger-frontend-compat"
+    }
+  },
+  "item_id": "M0-I05-FRONTEND-PACKAGING-FIXTURES",
+  "observation": {
+    "invalidMissingResource": null,
+    "segmentEvent": {
+      "conversation_id": "conversation-frontend-compat",
+      "flow_run_requests": [
+        {
+          "conversation_id": "conversation-frontend-compat",
+          "created_at": "2026-01-01T00:00:03Z",
+          "flow_name": "compat/frontend-flow.dot",
+          "id": "flow-run-request-live",
+          "launch_context": null,
+          "project_path": "/workspace/project",
+          "run_id": "run-frontend-compat",
+          "source_turn_id": "turn-2",
+          "status": "approved",
+          "summary": "Run frontend fixture",
+          "updated_at": "2026-01-01T00:00:03Z"
+        }
+      ],
+      "project_path": "/workspace/project",
+      "revision": 5,
+      "segment": {
+        "content": "Run requested",
+        "id": "segment-2",
+        "kind": "flow_run_request",
+        "order": 2,
+        "request_user_input": null,
+        "role": "assistant",
+        "source": null,
+        "status": "complete",
+        "timestamp": "2026-01-01T00:00:03Z",
+        "tool_call": null,
+        "turn_id": "turn-2",
+        "updated_at": "2026-01-01T00:00:03Z"
+      },
+      "title": "Frontend compat",
+      "type": "segment_upsert",
+      "updated_at": "2026-01-01T00:00:03Z"
+    },
+    "turnEvent": {
+      "conversation_id": "conversation-frontend-compat",
+      "project_path": "/workspace/project",
+      "revision": 4,
+      "title": "Frontend compat",
+      "turn": {
+        "content": "Updated",
+        "id": "turn-2",
+        "kind": "message",
+        "role": "assistant",
+        "status": "complete",
+        "timestamp": "2026-01-01T00:00:02Z",
+        "token_usage": null
+      },
+      "type": "turn_upsert",
+      "updated_at": "2026-01-01T00:00:02Z"
+    },
+    "url": "/workspace/api/live/events?conversation_id=conversation-frontend-compat&run_id=run-frontend-compat&trigger_id=trigger-frontend-compat&cursor=42"
+  },
+  "provenance": {
+    "interfaces": [
+      "frontend Vitest contract runner",
+      "public TypeScript API parser functions",
+      "public TypeScript request builder functions",
+      "workspace live-event URL helper"
+    ],
+    "oracle": "python-backed-typescript-frontend-contract"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "app_shell_live_event_expectations",
+  "schema_version": "compat-frontend-v1"
+}

@@ -87,6 +87,8 @@ class CompatSandbox:
             str(self.runtime_root),
             "--codex-home",
             str(self.codex_home),
+            "--validation-root",
+            str(self.root / "validation"),
             "--timeout",
             str(timeout),
             "--output",
@@ -384,36 +386,20 @@ class CompatSourceUi:
 
 
 @pytest.fixture(scope="session")
-def rewrite_state() -> dict[str, object]:
-    repo_root = Path(__file__).resolve().parents[2]
-    state_path = repo_root / ".spark" / "rust-rewrite" / "current" / "state.json"
-    loaded = json.loads(state_path.read_text(encoding="utf-8"))
-    assert isinstance(loaded, dict)
-    return loaded
+def rewrite_worktree_path() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(scope="session")
-def rewrite_worktree_path(rewrite_state: dict[str, object]) -> Path:
-    return Path(str(rewrite_state["worktree_path"])).resolve(strict=False)
-
-
-@pytest.fixture(scope="session")
-def rewrite_runtime_dir(rewrite_state: dict[str, object]) -> Path:
-    return Path(str(rewrite_state.get("current_alias") or rewrite_state["runtime_path"])).resolve(
-        strict=False
-    )
-
-
-@pytest.fixture(scope="session")
-def compat_fixture_root(rewrite_runtime_dir: Path) -> Path:
-    root = rewrite_runtime_dir / "compat-fixtures"
-    root.mkdir(parents=True, exist_ok=True)
+def compat_fixture_root(rewrite_worktree_path: Path) -> Path:
+    root = rewrite_worktree_path / "tests" / "compat" / "fixtures"
+    assert root.is_dir(), f"missing committed compatibility fixture root: {root}"
     return root
 
 
-@pytest.fixture(scope="session")
-def compat_validation_root(rewrite_runtime_dir: Path) -> Path:
-    root = rewrite_runtime_dir / "validation"
+@pytest.fixture
+def compat_validation_root(tmp_path: Path) -> Path:
+    root = tmp_path / "compat-validation"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -460,8 +446,11 @@ def compat_source_ui_dir(tmp_path: Path) -> CompatSourceUi:
 
 
 @pytest.fixture
-def compat_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CompatSandbox:
-    root = tmp_path / "compat-sandbox"
+def compat_sandbox(
+    compat_validation_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> CompatSandbox:
+    root = compat_validation_root / "sandbox"
     spark_home = root / "spark-home"
     flows_dir = root / "flows"
     runtime_root = root / "codex-runtime"

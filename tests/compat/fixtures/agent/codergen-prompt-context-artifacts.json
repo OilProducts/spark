@@ -1,0 +1,72 @@
+{
+  "decisions": [
+    "CD-RR-005",
+    "CD-RR-006",
+    "CD-RR-013"
+  ],
+  "fixture_id": "agent/codergen-prompt-context-artifacts",
+  "input": {
+    "dot": "\n    digraph G {\n      graph [goal=\"Ship graph fallback\"];\n      task [\n        shape=box,\n        prompt=\"Plan for $goal\",\n        label=\"Label loses\",\n        spark.reads_context=\"[\\\"context.request.summary\\\",\\\"context.missing\\\"]\"\n      ];\n    }\n    "
+  },
+  "item_id": "M3-I05-CODERGEN-AGENT-LLM-ADAPTERS",
+  "observation": {
+    "artifacts": {
+      "prompt_md": "Context carryover:\n\ncarryover:summary:high\n\nDeclared context reads:\n\ncontext.missing=<missing>\ncontext.request.summary=Ship docs safely\n\nCurrent stage task:\n\nPlan for ship",
+      "response_md": "backend text response",
+      "status_json": {
+        "context_updates": {
+          "last_response": "backend text response",
+          "last_stage": "task"
+        },
+        "notes": "backend text response",
+        "outcome": "success",
+        "preferred_label": "",
+        "suggested_next_ids": []
+      }
+    },
+    "backend_calls": [
+      {
+        "context": {
+          "_attractor.runtime.context_carryover": "carryover:summary:high",
+          "context.request.summary": "Ship docs safely",
+          "graph.goal": "ship"
+        },
+        "contract_repair_attempts": 0,
+        "llm_profile": null,
+        "model": null,
+        "node_id": "task",
+        "prompt": "Context carryover:\n\ncarryover:summary:high\n\nDeclared context reads:\n\ncontext.missing=<missing>\ncontext.request.summary=Ship docs safely\n\nCurrent stage task:\n\nPlan for ship",
+        "provider": "codex",
+        "reasoning_effort": null,
+        "response_contract": "",
+        "timeout": null,
+        "write_contract_allowed_keys": []
+      }
+    ],
+    "outcome": {
+      "context_updates": {
+        "last_response": "backend text response",
+        "last_stage": "task"
+      },
+      "failure_reason": "",
+      "notes": "backend text response",
+      "preferred_label": "",
+      "status": "success",
+      "suggested_next_ids": []
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "attractor.handlers.HandlerRunner",
+      "attractor.handlers.build_default_registry",
+      "attractor.handlers.builtin.CodergenHandler"
+    ],
+    "oracle": "python-codergen-handler-public-interfaces"
+  },
+  "requirements": [
+    "RR-EXE-002",
+    "RR-EXE-006"
+  ],
+  "scenario": "prompt_context_artifacts",
+  "schema_version": "compat-agent-v1"
+}

@@ -1,0 +1,59 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "dsl/transform-graph-attrs-context-mirror",
+  "input": {
+    "dot": "\ndigraph ContextMirror {\n  graph [goal=\"Mirror attrs\", default_max_retries=3, release=\"2026.06\"];\n  start [shape=Mdiamond];\n  done [shape=Msquare];\n  start -> done;\n}\n",
+    "launch_context": {
+      "context.release": "launch",
+      "graph.goal": "launch should not win"
+    }
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "context_seed": {
+      "graph.default_max_retries": 3,
+      "graph.goal": "Mirror attrs",
+      "graph.release": "2026.06"
+    },
+    "graph_attrs": {
+      "default_max_retries": {
+        "value": 3,
+        "value_type": "integer"
+      },
+      "goal": {
+        "value": "Mirror attrs",
+        "value_type": "string"
+      },
+      "release": {
+        "value": "2026.06",
+        "value_type": "string"
+      }
+    },
+    "merged_context": {
+      "context.release": "launch",
+      "graph.default_max_retries": 3,
+      "graph.goal": "launch should not win",
+      "graph.release": "2026.06"
+    }
+  },
+  "operation": "graph_attr_context_seed",
+  "provenance": {
+    "interfaces": [
+      "attractor.transforms.AttributeDefaultsTransform",
+      "attractor.transforms.GoalVariableTransform",
+      "attractor.transforms.ModelStylesheetTransform",
+      "attractor.transforms.RuntimePreambleTransform",
+      "attractor.graph_prep.graph_attr_context_seed"
+    ],
+    "oracle": "python-transform-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": "compat-dsl-v1"
+}

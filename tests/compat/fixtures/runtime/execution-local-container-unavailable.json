@@ -1,0 +1,66 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "runtime/execution-local-container-unavailable",
+  "input": {
+    "absent_config_dir": "__ABSENT_CONFIG_DIR__",
+    "invalid_config_dir": "__CONFIG_DIR__"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "local_container_missing_image": {
+      "error_type": "ExecutionProfileConfigError",
+      "field_errors": [
+        {
+          "field": "profiles.container.image",
+          "message": "image is required for local_container profiles",
+          "profile_id": "container"
+        }
+      ],
+      "message": "invalid execution profile config: profiles.container.image: image is required for local_container profiles"
+    },
+    "public_settings_view": {
+      "config": {
+        "exists": true,
+        "filename": "execution-profiles.toml",
+        "loaded": false,
+        "path": "__CONFIG_DIR__/execution-profiles.toml",
+        "synthesized_native_default": false
+      },
+      "default_execution_profile_id": null,
+      "execution_modes": [
+        "native",
+        "local_container"
+      ],
+      "profiles": [],
+      "validation_errors": [
+        {
+          "field": "profiles.container.image",
+          "message": "image is required for local_container profiles",
+          "profile_id": "container"
+        }
+      ]
+    },
+    "selected_without_config": {
+      "error_type": "ExecutionProfileSelectionError",
+      "message": "execution profile 'container' was selected, but execution-profiles.toml does not exist"
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "attractor.execution.load_execution_profile_config",
+      "attractor.execution.resolve_execution_profile_by_id",
+      "attractor.execution.public_execution_placement_settings"
+    ],
+    "oracle": "python-execution-profile-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "execution_local_container_unavailable",
+  "schema_version": "compat-runtime-v1"
+}

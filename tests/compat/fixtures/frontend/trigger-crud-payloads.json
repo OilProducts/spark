@@ -1,0 +1,195 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "frontend/trigger-crud-payloads",
+  "input": {
+    "create_payload": {
+      "action": {
+        "flow_name": "compat/webhook-flow.dot",
+        "project_path": null,
+        "static_context": {
+          "source": "frontend"
+        }
+      },
+      "enabled": true,
+      "name": "Created webhook trigger",
+      "source": {},
+      "source_type": "webhook"
+    },
+    "trigger_ids": [
+      "trigger-protected",
+      "trigger-schedule",
+      "trigger-poll",
+      "trigger-webhook"
+    ],
+    "update_payload": {
+      "enabled": false,
+      "name": "Webhook trigger renamed",
+      "regenerate_webhook_secret": true
+    }
+  },
+  "item_id": "M0-I05-FRONTEND-PACKAGING-FIXTURES",
+  "observation": {
+    "capturedRequests": [
+      {
+        "body": null,
+        "headers": {},
+        "method": "GET",
+        "url": "/workspace/api/triggers"
+      },
+      {
+        "body": null,
+        "headers": {},
+        "method": "GET",
+        "url": "/workspace/api/triggers/trigger-webhook"
+      },
+      {
+        "body": {
+          "action": {
+            "flow_name": "compat/webhook-flow.dot",
+            "project_path": null,
+            "static_context": {
+              "source": "frontend"
+            }
+          },
+          "enabled": true,
+          "name": "Created webhook trigger",
+          "source": {},
+          "source_type": "webhook"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "url": "/workspace/api/triggers"
+      },
+      {
+        "body": {
+          "enabled": false,
+          "name": "Webhook trigger renamed",
+          "regenerate_webhook_secret": true
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "method": "PATCH",
+        "url": "/workspace/api/triggers/trigger-webhook"
+      },
+      {
+        "body": null,
+        "headers": {},
+        "method": "DELETE",
+        "url": "/workspace/api/triggers/trigger-custom"
+      }
+    ],
+    "fetchResults": {
+      "createdWebhookId": "trigger-created-webhook",
+      "deleteResult": {
+        "id": "trigger-custom",
+        "status": "deleted"
+      },
+      "fetchedWebhookId": "trigger-webhook",
+      "listCount": 4,
+      "updatedEnabled": false
+    },
+    "formPayloads": {
+      "flowEventSource": {
+        "flow_name": "compat/observed-flow.dot",
+        "statuses": [
+          "completed",
+          "failed"
+        ]
+      },
+      "pollSource": {
+        "headers": {
+          "Authorization": "Bearer token"
+        },
+        "interval_seconds": 300,
+        "item_id_path": "id",
+        "items_path": "items",
+        "url": "https://example.com/items.json"
+      },
+      "protectedForm": {
+        "enabled": false,
+        "flowEventFlowName": "compat/observed-flow.dot",
+        "flowEventStatuses": "completed,failed",
+        "flowName": "compat/protected-flow.dot",
+        "name": "Protected flow-event trigger",
+        "pollHeadersText": "{}",
+        "pollIntervalSeconds": "300",
+        "pollItemIdPath": "id",
+        "pollItemsPath": "items",
+        "pollUrl": "https://example.com/data.json",
+        "projectPath": "/workspace/project",
+        "scheduleHour": "9",
+        "scheduleIntervalSeconds": "300",
+        "scheduleKind": "interval",
+        "scheduleMinute": "0",
+        "scheduleRunAt": "",
+        "scheduleWeekdays": "mon,fri",
+        "sourceType": "flow_event",
+        "staticContextText": "{\n  \"protected\": true\n}",
+        "targetMode": "active"
+      },
+      "scheduleAction": {
+        "flow_name": "compat/frontend-flow.dot",
+        "project_path": "/workspace/project",
+        "static_context": {
+          "ticket": "SPARK-123"
+        }
+      },
+      "scheduleSource": {
+        "hour": 9,
+        "kind": "weekly",
+        "minute": 30,
+        "weekdays": [
+          "mon",
+          "fri"
+        ]
+      }
+    },
+    "parsedSourceTypes": [
+      "flow_event",
+      "schedule",
+      "poll",
+      "webhook"
+    ],
+    "parserRedaction": {
+      "createWebhookSecret": "created-secret",
+      "describeHasSecretHash": false,
+      "describeHasWebhookSecret": null,
+      "updateWebhookSecret": "rotated-secret",
+      "webhookKeyPreservedOnRegeneration": true
+    },
+    "summaries": {
+      "flow_event": "Flow event \u00b7 compat/observed-flow.dot",
+      "poll": "Poll \u00b7 https://example.com/items.json",
+      "schedule": "Schedule \u00b7 weekly",
+      "target": "Targets active project",
+      "webhook": "Webhook \u00b7 key webhook-key-123"
+    },
+    "unsupportedSourceError": {
+      "endpoint": "/workspace/api/triggers",
+      "message": "/workspace/api/triggers: Unsupported trigger source_type \"unknown\".",
+      "name": "ApiSchemaError"
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "frontend Vitest contract runner",
+      "public TypeScript API parser functions",
+      "public TypeScript request builder functions",
+      "workspace live-event URL helper"
+    ],
+    "oracle": "python-backed-typescript-frontend-contract"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "trigger_crud_payloads",
+  "schema_version": "compat-frontend-v1"
+}

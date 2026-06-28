@@ -3,9 +3,9 @@
     {
       "id": "REQ-001",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:52",
-        ".spark/spec-implementation/current/spec/source.md:54",
-        ".spark/spec-implementation/current/spec/source.md:1986"
+        "specs/unified-llm-spec-md/source.md:52",
+        "specs/unified-llm-spec-md/source.md:54",
+        "specs/unified-llm-spec-md/source.md:1986"
       ],
       "title": "Python package scaffold and public module layout",
       "summary": "Create a Python package implementation of the unified LLM client with a pyproject.toml, uv-managed validation, pytest tests, ruff lint configuration, and a public API organized around the four-layer architecture.",
@@ -30,12 +30,12 @@
     {
       "id": "REQ-002",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:346",
-        ".spark/spec-implementation/current/spec/source.md:360",
-        ".spark/spec-implementation/current/spec/source.md:393",
-        ".spark/spec-implementation/current/spec/source.md:416",
-        ".spark/spec-implementation/current/spec/source.md:436",
-        ".spark/spec-implementation/current/spec/source.md:463"
+        "specs/unified-llm-spec-md/source.md:346",
+        "specs/unified-llm-spec-md/source.md:360",
+        "specs/unified-llm-spec-md/source.md:393",
+        "specs/unified-llm-spec-md/source.md:416",
+        "specs/unified-llm-spec-md/source.md:436",
+        "specs/unified-llm-spec-md/source.md:463"
       ],
       "title": "Unified message and content data model",
       "summary": "Implement the conversation primitives: Message, Role, ContentPart, ContentKind, multimodal data structures, tool call/result content data, thinking data, convenience constructors, and text accessors.",
@@ -62,15 +62,15 @@
     {
       "id": "REQ-003",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:547",
-        ".spark/spec-implementation/current/spec/source.md:589",
-        ".spark/spec-implementation/current/spec/source.md:612",
-        ".spark/spec-implementation/current/spec/source.md:653",
-        ".spark/spec-implementation/current/spec/source.md:707",
-        ".spark/spec-implementation/current/spec/source.md:716",
-        ".spark/spec-implementation/current/spec/source.md:724",
-        ".spark/spec-implementation/current/spec/source.md:737",
-        ".spark/spec-implementation/current/spec/source.md:767"
+        "specs/unified-llm-spec-md/source.md:547",
+        "specs/unified-llm-spec-md/source.md:589",
+        "specs/unified-llm-spec-md/source.md:612",
+        "specs/unified-llm-spec-md/source.md:653",
+        "specs/unified-llm-spec-md/source.md:707",
+        "specs/unified-llm-spec-md/source.md:716",
+        "specs/unified-llm-spec-md/source.md:724",
+        "specs/unified-llm-spec-md/source.md:737",
+        "specs/unified-llm-spec-md/source.md:767"
       ],
       "title": "Request, response, usage, and stream event types",
       "summary": "Implement the unified Request, Response, FinishReason, Usage, ResponseFormat, Warning, RateLimitInfo, StreamEvent, and StreamEventType records with the required accessors and aggregation behavior.",
@@ -98,14 +98,14 @@
     {
       "id": "REQ-004",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1283",
-        ".spark/spec-implementation/current/spec/source.md:1285",
-        ".spark/spec-implementation/current/spec/source.md:1321",
-        ".spark/spec-implementation/current/spec/source.md:1333",
-        ".spark/spec-implementation/current/spec/source.md:1364",
-        ".spark/spec-implementation/current/spec/source.md:1394",
-        ".spark/spec-implementation/current/spec/source.md:2012",
-        ".spark/spec-implementation/current/spec/source.md:2071"
+        "specs/unified-llm-spec-md/source.md:1283",
+        "specs/unified-llm-spec-md/source.md:1285",
+        "specs/unified-llm-spec-md/source.md:1321",
+        "specs/unified-llm-spec-md/source.md:1333",
+        "specs/unified-llm-spec-md/source.md:1364",
+        "specs/unified-llm-spec-md/source.md:1394",
+        "specs/unified-llm-spec-md/source.md:2012",
+        "specs/unified-llm-spec-md/source.md:2071"
       ],
       "title": "SDK error hierarchy and classification",
       "summary": "Implement the complete SDK error taxonomy, provider error metadata, retryability flags, HTTP/gRPC status mapping, and message-body classification helpers.",
@@ -132,12 +132,12 @@
     {
       "id": "REQ-005",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:159",
-        ".spark/spec-implementation/current/spec/source.md:178",
-        ".spark/spec-implementation/current/spec/source.md:204",
-        ".spark/spec-implementation/current/spec/source.md:1479",
-        ".spark/spec-implementation/current/spec/source.md:1483",
-        ".spark/spec-implementation/current/spec/source.md:1767"
+        "specs/unified-llm-spec-md/source.md:159",
+        "specs/unified-llm-spec-md/source.md:178",
+        "specs/unified-llm-spec-md/source.md:204",
+        "specs/unified-llm-spec-md/source.md:1479",
+        "specs/unified-llm-spec-md/source.md:1483",
+        "specs/unified-llm-spec-md/source.md:1767"
       ],
       "title": "Provider adapter protocol and registration contract",
       "summary": "Define the ProviderAdapter contract and optional lifecycle/capability hooks used by all provider adapters and the core client.",
@@ -166,13 +166,13 @@
     {
       "id": "REQ-006",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:76",
-        ".spark/spec-implementation/current/spec/source.md:78",
-        ".spark/spec-implementation/current/spec/source.md:96",
-        ".spark/spec-implementation/current/spec/source.md:114",
-        ".spark/spec-implementation/current/spec/source.md:118",
-        ".spark/spec-implementation/current/spec/source.md:193",
-        ".spark/spec-implementation/current/spec/source.md:1986"
+        "specs/unified-llm-spec-md/source.md:76",
+        "specs/unified-llm-spec-md/source.md:78",
+        "specs/unified-llm-spec-md/source.md:96",
+        "specs/unified-llm-spec-md/source.md:114",
+        "specs/unified-llm-spec-md/source.md:118",
+        "specs/unified-llm-spec-md/source.md:193",
+        "specs/unified-llm-spec-md/source.md:1986"
       ],
       "title": "Core client configuration, routing, and default client",
       "summary": "Implement Client setup from environment variables and explicit adapters, provider resolution, default-provider behavior, model string pass-through, module-level default client, and lifecycle closing.",
@@ -202,9 +202,9 @@
     {
       "id": "REQ-007",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:122",
-        ".spark/spec-implementation/current/spec/source.md:1986",
-        ".spark/spec-implementation/current/spec/source.md:1933"
+        "specs/unified-llm-spec-md/source.md:122",
+        "specs/unified-llm-spec-md/source.md:1986",
+        "specs/unified-llm-spec-md/source.md:1933"
       ],
       "title": "Middleware for non-streaming and streaming calls",
       "summary": "Implement onion-style middleware that wraps provider calls, can inspect or transform requests and responses, and works for both complete and stream operations.",
@@ -230,10 +230,10 @@
     {
       "id": "REQ-008",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:254",
-        ".spark/spec-implementation/current/spec/source.md:330",
-        ".spark/spec-implementation/current/spec/source.md:1986",
-        ".spark/spec-implementation/current/spec/source.md:2044"
+        "specs/unified-llm-spec-md/source.md:254",
+        "specs/unified-llm-spec-md/source.md:330",
+        "specs/unified-llm-spec-md/source.md:1986",
+        "specs/unified-llm-spec-md/source.md:2044"
       ],
       "title": "Advisory model catalog and lookup helpers",
       "summary": "Ship an updatable advisory model catalog with known provider models, capability metadata, and helper functions for lookup, listing, and latest model selection.",
@@ -262,14 +262,14 @@
     {
       "id": "REQ-009",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:210",
-        ".spark/spec-implementation/current/spec/source.md:222",
-        ".spark/spec-implementation/current/spec/source.md:330",
-        ".spark/spec-implementation/current/spec/source.md:685",
-        ".spark/spec-implementation/current/spec/source.md:1479",
-        ".spark/spec-implementation/current/spec/source.md:1503",
-        ".spark/spec-implementation/current/spec/source.md:1608",
-        ".spark/spec-implementation/current/spec/source.md:1618"
+        "specs/unified-llm-spec-md/source.md:210",
+        "specs/unified-llm-spec-md/source.md:222",
+        "specs/unified-llm-spec-md/source.md:330",
+        "specs/unified-llm-spec-md/source.md:685",
+        "specs/unified-llm-spec-md/source.md:1479",
+        "specs/unified-llm-spec-md/source.md:1503",
+        "specs/unified-llm-spec-md/source.md:1608",
+        "specs/unified-llm-spec-md/source.md:1618"
       ],
       "title": "Shared provider utilities",
       "summary": "Implement reusable provider utilities for native request construction support, response normalization, provider options, caching metrics, rate-limit metadata, image/file preparation, and provider error handling.",
@@ -297,11 +297,11 @@
     {
       "id": "REQ-010",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1648",
-        ".spark/spec-implementation/current/spec/source.md:1652",
-        ".spark/spec-implementation/current/spec/source.md:1664",
-        ".spark/spec-implementation/current/spec/source.md:1698",
-        ".spark/spec-implementation/current/spec/source.md:1723"
+        "specs/unified-llm-spec-md/source.md:1648",
+        "specs/unified-llm-spec-md/source.md:1652",
+        "specs/unified-llm-spec-md/source.md:1664",
+        "specs/unified-llm-spec-md/source.md:1698",
+        "specs/unified-llm-spec-md/source.md:1723"
       ],
       "title": "SSE and stream accumulation utilities",
       "summary": "Implement a correct Server-Sent Events parser, provider stream event normalization helpers, and a StreamAccumulator that reconstructs a Response from StreamEvent sequences.",
@@ -328,11 +328,11 @@
     {
       "id": "REQ-011",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:798",
-        ".spark/spec-implementation/current/spec/source.md:822",
-        ".spark/spec-implementation/current/spec/source.md:946",
-        ".spark/spec-implementation/current/spec/source.md:1986",
-        ".spark/spec-implementation/current/spec/source.md:2022"
+        "specs/unified-llm-spec-md/source.md:798",
+        "specs/unified-llm-spec-md/source.md:822",
+        "specs/unified-llm-spec-md/source.md:946",
+        "specs/unified-llm-spec-md/source.md:1986",
+        "specs/unified-llm-spec-md/source.md:2022"
       ],
       "title": "Low-level complete and stream client operations",
       "summary": "Implement Client.complete and Client.stream as the fundamental low-level operations that route to adapters, apply middleware, and return unified responses or async stream events without automatic retries.",
@@ -362,11 +362,11 @@
     {
       "id": "REQ-012",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:846",
-        ".spark/spec-implementation/current/spec/source.md:881",
-        ".spark/spec-implementation/current/spec/source.md:897",
-        ".spark/spec-implementation/current/spec/source.md:1013",
-        ".spark/spec-implementation/current/spec/source.md:2022"
+        "specs/unified-llm-spec-md/source.md:846",
+        "specs/unified-llm-spec-md/source.md:881",
+        "specs/unified-llm-spec-md/source.md:897",
+        "specs/unified-llm-spec-md/source.md:1013",
+        "specs/unified-llm-spec-md/source.md:2022"
       ],
       "title": "High-level generate operation",
       "summary": "Implement generate() as the primary non-streaming high-level API with prompt standardization, system-message prepending, active tool loops, automatic retries, cancellation, timeouts, usage aggregation, and detailed step results.",
@@ -397,13 +397,13 @@
     {
       "id": "REQ-013",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:911",
-        ".spark/spec-implementation/current/spec/source.md:936",
-        ".spark/spec-implementation/current/spec/source.md:946",
-        ".spark/spec-implementation/current/spec/source.md:993",
-        ".spark/spec-implementation/current/spec/source.md:1013",
-        ".spark/spec-implementation/current/spec/source.md:1269",
-        ".spark/spec-implementation/current/spec/source.md:2022"
+        "specs/unified-llm-spec-md/source.md:911",
+        "specs/unified-llm-spec-md/source.md:936",
+        "specs/unified-llm-spec-md/source.md:946",
+        "specs/unified-llm-spec-md/source.md:993",
+        "specs/unified-llm-spec-md/source.md:1013",
+        "specs/unified-llm-spec-md/source.md:1269",
+        "specs/unified-llm-spec-md/source.md:2022"
       ],
       "title": "High-level streaming operations",
       "summary": "Implement stream() and stream_object() high-level APIs with StreamResult conveniences, continuous multi-step event streams, cancellation, timeouts, and structured partial output support.",
@@ -437,10 +437,10 @@
     {
       "id": "REQ-014",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:961",
-        ".spark/spec-implementation/current/spec/source.md:993",
-        ".spark/spec-implementation/current/spec/source.md:2022",
-        ".spark/spec-implementation/current/spec/source.md:1905"
+        "specs/unified-llm-spec-md/source.md:961",
+        "specs/unified-llm-spec-md/source.md:993",
+        "specs/unified-llm-spec-md/source.md:2022",
+        "specs/unified-llm-spec-md/source.md:1905"
       ],
       "title": "Structured output generation",
       "summary": "Implement generate_object() with JSON/schema response formatting, provider strategy selection, parsing, validation, and structured output in GenerateResult.",
@@ -468,13 +468,13 @@
     {
       "id": "REQ-015",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1052",
-        ".spark/spec-implementation/current/spec/source.md:1054",
-        ".spark/spec-implementation/current/spec/source.md:1093",
-        ".spark/spec-implementation/current/spec/source.md:1120",
-        ".spark/spec-implementation/current/spec/source.md:1150",
-        ".spark/spec-implementation/current/spec/source.md:1171",
-        ".spark/spec-implementation/current/spec/source.md:2057"
+        "specs/unified-llm-spec-md/source.md:1052",
+        "specs/unified-llm-spec-md/source.md:1054",
+        "specs/unified-llm-spec-md/source.md:1093",
+        "specs/unified-llm-spec-md/source.md:1120",
+        "specs/unified-llm-spec-md/source.md:1150",
+        "specs/unified-llm-spec-md/source.md:1171",
+        "specs/unified-llm-spec-md/source.md:2057"
       ],
       "title": "Tool definitions, choices, and execution handlers",
       "summary": "Implement tool definition validation, active/passive tool behavior, execute handler invocation, context injection, ToolChoice, ToolCall, and ToolResult models.",
@@ -503,12 +503,12 @@
     {
       "id": "REQ-016",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1182",
-        ".spark/spec-implementation/current/spec/source.md:1229",
-        ".spark/spec-implementation/current/spec/source.md:1258",
-        ".spark/spec-implementation/current/spec/source.md:1269",
-        ".spark/spec-implementation/current/spec/source.md:1273",
-        ".spark/spec-implementation/current/spec/source.md:2057"
+        "specs/unified-llm-spec-md/source.md:1182",
+        "specs/unified-llm-spec-md/source.md:1229",
+        "specs/unified-llm-spec-md/source.md:1258",
+        "specs/unified-llm-spec-md/source.md:1269",
+        "specs/unified-llm-spec-md/source.md:1273",
+        "specs/unified-llm-spec-md/source.md:2057"
       ],
       "title": "Multi-step and parallel tool loop behavior",
       "summary": "Implement the automatic tool loop used by generate and stream, including concurrent execution of multiple tool calls, ordered result collection, validation/repair hooks, unknown-tool handling, and provider-ready tool result messages.",
@@ -538,14 +538,14 @@
     {
       "id": "REQ-017",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1403",
-        ".spark/spec-implementation/current/spec/source.md:1415",
-        ".spark/spec-implementation/current/spec/source.md:1435",
-        ".spark/spec-implementation/current/spec/source.md:1442",
-        ".spark/spec-implementation/current/spec/source.md:1450",
-        ".spark/spec-implementation/current/spec/source.md:1461",
-        ".spark/spec-implementation/current/spec/source.md:1465",
-        ".spark/spec-implementation/current/spec/source.md:2071"
+        "specs/unified-llm-spec-md/source.md:1403",
+        "specs/unified-llm-spec-md/source.md:1415",
+        "specs/unified-llm-spec-md/source.md:1435",
+        "specs/unified-llm-spec-md/source.md:1442",
+        "specs/unified-llm-spec-md/source.md:1450",
+        "specs/unified-llm-spec-md/source.md:1461",
+        "specs/unified-llm-spec-md/source.md:1465",
+        "specs/unified-llm-spec-md/source.md:2071"
       ],
       "title": "Retry policy and rate-limit handling",
       "summary": "Implement RetryPolicy, exponential backoff with jitter, Retry-After handling, retry eligibility, high-level retry integration, and rate-limit behavior.",
@@ -575,15 +575,15 @@
     {
       "id": "REQ-018",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:210",
-        ".spark/spec-implementation/current/spec/source.md:222",
-        ".spark/spec-implementation/current/spec/source.md:330",
-        ".spark/spec-implementation/current/spec/source.md:685",
-        ".spark/spec-implementation/current/spec/source.md:1523",
-        ".spark/spec-implementation/current/spec/source.md:1608",
-        ".spark/spec-implementation/current/spec/source.md:1664",
-        ".spark/spec-implementation/current/spec/source.md:1741",
-        ".spark/spec-implementation/current/spec/source.md:1997"
+        "specs/unified-llm-spec-md/source.md:210",
+        "specs/unified-llm-spec-md/source.md:222",
+        "specs/unified-llm-spec-md/source.md:330",
+        "specs/unified-llm-spec-md/source.md:685",
+        "specs/unified-llm-spec-md/source.md:1523",
+        "specs/unified-llm-spec-md/source.md:1608",
+        "specs/unified-llm-spec-md/source.md:1664",
+        "specs/unified-llm-spec-md/source.md:1741",
+        "specs/unified-llm-spec-md/source.md:1997"
       ],
       "title": "OpenAI Responses API adapter",
       "summary": "Implement the primary OpenAI adapter using the native Responses API with request, response, streaming, errors, reasoning tokens, caching usage, tools, images, structured output, and provider options support.",
@@ -618,10 +618,10 @@
     {
       "id": "REQ-019",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1549",
-        ".spark/spec-implementation/current/spec/source.md:1698",
-        ".spark/spec-implementation/current/spec/source.md:1741",
-        ".spark/spec-implementation/current/spec/source.md:1781"
+        "specs/unified-llm-spec-md/source.md:1549",
+        "specs/unified-llm-spec-md/source.md:1698",
+        "specs/unified-llm-spec-md/source.md:1741",
+        "specs/unified-llm-spec-md/source.md:1781"
       ],
       "title": "OpenAI-compatible Chat Completions adapter",
       "summary": "Implement a separate adapter for third-party OpenAI-compatible endpoints that use the Chat Completions protocol and expose the limitations called out in the spec.",
@@ -647,16 +647,16 @@
     {
       "id": "REQ-020",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:222",
-        ".spark/spec-implementation/current/spec/source.md:330",
-        ".spark/spec-implementation/current/spec/source.md:685",
-        ".spark/spec-implementation/current/spec/source.md:1549",
-        ".spark/spec-implementation/current/spec/source.md:1599",
-        ".spark/spec-implementation/current/spec/source.md:1698",
-        ".spark/spec-implementation/current/spec/source.md:1741",
-        ".spark/spec-implementation/current/spec/source.md:1997",
-        ".spark/spec-implementation/current/spec/source.md:2035",
-        ".spark/spec-implementation/current/spec/source.md:2044"
+        "specs/unified-llm-spec-md/source.md:222",
+        "specs/unified-llm-spec-md/source.md:330",
+        "specs/unified-llm-spec-md/source.md:685",
+        "specs/unified-llm-spec-md/source.md:1549",
+        "specs/unified-llm-spec-md/source.md:1599",
+        "specs/unified-llm-spec-md/source.md:1698",
+        "specs/unified-llm-spec-md/source.md:1741",
+        "specs/unified-llm-spec-md/source.md:1997",
+        "specs/unified-llm-spec-md/source.md:2035",
+        "specs/unified-llm-spec-md/source.md:2044"
       ],
       "title": "Anthropic Messages API adapter",
       "summary": "Implement the Anthropic adapter using the native Messages API with strict role handling, beta headers, thinking blocks, prompt caching, tools, images, streaming, errors, and usage normalization.",
@@ -693,16 +693,16 @@
     {
       "id": "REQ-021",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:222",
-        ".spark/spec-implementation/current/spec/source.md:330",
-        ".spark/spec-implementation/current/spec/source.md:685",
-        ".spark/spec-implementation/current/spec/source.md:1575",
-        ".spark/spec-implementation/current/spec/source.md:1599",
-        ".spark/spec-implementation/current/spec/source.md:1723",
-        ".spark/spec-implementation/current/spec/source.md:1741",
-        ".spark/spec-implementation/current/spec/source.md:1997",
-        ".spark/spec-implementation/current/spec/source.md:2035",
-        ".spark/spec-implementation/current/spec/source.md:2044"
+        "specs/unified-llm-spec-md/source.md:222",
+        "specs/unified-llm-spec-md/source.md:330",
+        "specs/unified-llm-spec-md/source.md:685",
+        "specs/unified-llm-spec-md/source.md:1575",
+        "specs/unified-llm-spec-md/source.md:1599",
+        "specs/unified-llm-spec-md/source.md:1723",
+        "specs/unified-llm-spec-md/source.md:1741",
+        "specs/unified-llm-spec-md/source.md:1997",
+        "specs/unified-llm-spec-md/source.md:2035",
+        "specs/unified-llm-spec-md/source.md:2044"
       ],
       "title": "Gemini native API adapter",
       "summary": "Implement the Gemini adapter using the native Gemini generateContent API with system handling, synthetic tool call IDs, provider options, thinking tokens, caching usage, streaming, errors, and response normalization.",
@@ -738,12 +738,12 @@
     {
       "id": "REQ-022",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:330",
-        ".spark/spec-implementation/current/spec/source.md:685",
-        ".spark/spec-implementation/current/spec/source.md:2012",
-        ".spark/spec-implementation/current/spec/source.md:2035",
-        ".spark/spec-implementation/current/spec/source.md:2044",
-        ".spark/spec-implementation/current/spec/source.md:2083"
+        "specs/unified-llm-spec-md/source.md:330",
+        "specs/unified-llm-spec-md/source.md:685",
+        "specs/unified-llm-spec-md/source.md:2012",
+        "specs/unified-llm-spec-md/source.md:2035",
+        "specs/unified-llm-spec-md/source.md:2044",
+        "specs/unified-llm-spec-md/source.md:2083"
       ],
       "title": "Cross-provider multimodal, reasoning, and caching parity",
       "summary": "Ensure all provider adapters expose equivalent observable behavior for multimodal content, tool round-tripping, reasoning token reporting, and prompt cache metrics wherever the provider supports them.",
@@ -776,14 +776,14 @@
     {
       "id": "REQ-023",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:1982",
-        ".spark/spec-implementation/current/spec/source.md:1986",
-        ".spark/spec-implementation/current/spec/source.md:1997",
-        ".spark/spec-implementation/current/spec/source.md:2022",
-        ".spark/spec-implementation/current/spec/source.md:2057",
-        ".spark/spec-implementation/current/spec/source.md:2071",
-        ".spark/spec-implementation/current/spec/source.md:2083",
-        ".spark/spec-implementation/current/spec/source.md:2105"
+        "specs/unified-llm-spec-md/source.md:1982",
+        "specs/unified-llm-spec-md/source.md:1986",
+        "specs/unified-llm-spec-md/source.md:1997",
+        "specs/unified-llm-spec-md/source.md:2022",
+        "specs/unified-llm-spec-md/source.md:2057",
+        "specs/unified-llm-spec-md/source.md:2071",
+        "specs/unified-llm-spec-md/source.md:2083",
+        "specs/unified-llm-spec-md/source.md:2105"
       ],
       "title": "Automated test suite and optional live integration smoke tests",
       "summary": "Provide pytest coverage for all observable SDK behavior and optional live smoke tests matching the Definition of Done validation matrix.",
@@ -821,14 +821,14 @@
     {
       "id": "REQ-024",
       "spec_refs": [
-        ".spark/spec-implementation/current/spec/source.md:116",
-        ".spark/spec-implementation/current/spec/source.md:193",
-        ".spark/spec-implementation/current/spec/source.md:281",
-        ".spark/spec-implementation/current/spec/source.md:320",
-        ".spark/spec-implementation/current/spec/source.md:846",
-        ".spark/spec-implementation/current/spec/source.md:929",
-        ".spark/spec-implementation/current/spec/source.md:961",
-        ".spark/spec-implementation/current/spec/source.md:2111"
+        "specs/unified-llm-spec-md/source.md:116",
+        "specs/unified-llm-spec-md/source.md:193",
+        "specs/unified-llm-spec-md/source.md:281",
+        "specs/unified-llm-spec-md/source.md:320",
+        "specs/unified-llm-spec-md/source.md:846",
+        "specs/unified-llm-spec-md/source.md:929",
+        "specs/unified-llm-spec-md/source.md:961",
+        "specs/unified-llm-spec-md/source.md:2111"
       ],
       "title": "High-level omitted-model defaulting",
       "summary": "Repair high-level model selection so supported calls that omit model use the latest catalog model for the explicitly requested provider or the selected client's default_provider.",

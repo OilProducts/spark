@@ -79,6 +79,8 @@ def test_capture_cli_records_self_check_manifest(
             DECISIONS[1],
             "--decision",
             DECISIONS[2],
+            "--validation-root",
+            str(compat_validation_root),
             "--output",
             str(output),
             "--",
