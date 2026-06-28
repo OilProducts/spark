@@ -2,9 +2,14 @@ use serde_json::{json, Value};
 
 use crate::client::Client;
 use crate::errors::{AdapterError, AdapterErrorKind};
-use crate::generation::{generate_with_policy, generate_with_policy_and_hooks, GenerateResult};
-use crate::request::{Request, Response, ResponseFormat};
+use crate::generation::{
+    generate_with_policy, generate_with_policy_and_hooks, stream_with_policy,
+    stream_with_policy_and_hooks, GenerateRequest, GenerateResult, StreamResult,
+};
+use crate::request::{Response, ResponseFormat, ToolCall};
 use crate::retry::RetryPolicy;
+
+pub(crate) const STRUCTURED_OUTPUT_TOOL_NAME: &str = "structured_output";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenerateObjectResult {
@@ -14,29 +19,39 @@ pub struct GenerateObjectResult {
     pub generation: GenerateResult,
 }
 
+pub struct StreamObjectResult {
+    stream: StreamResult,
+    schema: Value,
+    final_value: Option<Value>,
+    last_partial_value: Option<Value>,
+    final_response: Option<Response>,
+    terminal_error: Option<AdapterError>,
+    finished: bool,
+}
+
 pub fn generate_object(
     client: &Client,
-    request: Request,
+    input: impl Into<GenerateRequest>,
     schema: Value,
 ) -> Result<GenerateObjectResult, AdapterError> {
-    generate_object_with_policy(client, request, schema, &RetryPolicy::default())
+    generate_object_with_policy(client, input, schema, &RetryPolicy::default())
 }
 
 pub fn generate_object_with_policy(
     client: &Client,
-    request: Request,
+    input: impl Into<GenerateRequest>,
     schema: Value,
     policy: &RetryPolicy,
 ) -> Result<GenerateObjectResult, AdapterError> {
     validate_schema_shape(&schema)?;
-    let request = request_with_schema_response_format(request, &schema);
+    let request = request_with_schema_response_format(input, &schema);
     let generation = generate_with_policy(client, request, policy)?;
     finish_structured_generation(generation, schema)
 }
 
 pub fn generate_object_with_policy_and_hooks<R, S>(
     client: &Client,
-    request: Request,
+    input: impl Into<GenerateRequest>,
     schema: Value,
     policy: &RetryPolicy,
     random_multiplier: R,
@@ -47,10 +62,48 @@ where
     S: FnMut(f64),
 {
     validate_schema_shape(&schema)?;
-    let request = request_with_schema_response_format(request, &schema);
+    let request = request_with_schema_response_format(input, &schema);
     let generation =
         generate_with_policy_and_hooks(client, request, policy, random_multiplier, sleeper)?;
     finish_structured_generation(generation, schema)
+}
+
+pub fn stream_object(
+    client: &Client,
+    input: impl Into<GenerateRequest>,
+    schema: Value,
+) -> Result<StreamObjectResult, AdapterError> {
+    stream_object_with_policy(client, input, schema, &RetryPolicy::default())
+}
+
+pub fn stream_object_with_policy(
+    client: &Client,
+    input: impl Into<GenerateRequest>,
+    schema: Value,
+    policy: &RetryPolicy,
+) -> Result<StreamObjectResult, AdapterError> {
+    validate_schema_shape(&schema)?;
+    let request = request_with_schema_response_format(input, &schema);
+    let stream = stream_with_policy(client, request, policy)?;
+    Ok(StreamObjectResult::new(stream, schema))
+}
+
+pub fn stream_object_with_policy_and_hooks<R, S>(
+    client: &Client,
+    input: impl Into<GenerateRequest>,
+    schema: Value,
+    policy: &RetryPolicy,
+    random_multiplier: R,
+    sleeper: S,
+) -> Result<StreamObjectResult, AdapterError>
+where
+    R: FnMut() -> f64 + Send + 'static,
+    S: FnMut(f64) + Send + 'static,
+{
+    validate_schema_shape(&schema)?;
+    let request = request_with_schema_response_format(input, &schema);
+    let stream = stream_with_policy_and_hooks(client, request, policy, random_multiplier, sleeper)?;
+    Ok(StreamObjectResult::new(stream, schema))
 }
 
 pub fn parse_structured_output(
@@ -82,7 +135,132 @@ pub fn parse_structured_output(
     Ok(value)
 }
 
-fn request_with_schema_response_format(mut request: Request, schema: &Value) -> Request {
+impl StreamObjectResult {
+    fn new(stream: StreamResult, schema: Value) -> Self {
+        Self {
+            stream,
+            schema,
+            final_value: None,
+            last_partial_value: None,
+            final_response: None,
+            terminal_error: None,
+            finished: false,
+        }
+    }
+
+    pub fn partial_response(&self) -> Response {
+        self.stream.partial_response()
+    }
+
+    pub fn partial_object(&self) -> Option<Value> {
+        self.final_value
+            .clone()
+            .or_else(|| self.last_partial_value.clone())
+    }
+
+    pub fn response(&mut self) -> Result<Response, AdapterError> {
+        if let Some(error) = self.terminal_error.clone() {
+            return Err(error);
+        }
+        if let Some(response) = self.final_response.clone() {
+            return Ok(response);
+        }
+
+        let response = self.stream.response()?;
+        match parse_structured_response(&response, &self.schema) {
+            Ok((value, _raw_text)) => {
+                self.final_value = Some(value);
+                self.final_response = Some(response.clone());
+                self.finished = true;
+                Ok(response)
+            }
+            Err(error) => {
+                self.terminal_error = Some(error.clone());
+                self.finished = true;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn object(&mut self) -> Result<Value, AdapterError> {
+        if let Some(error) = self.terminal_error.clone() {
+            return Err(error);
+        }
+        if let Some(value) = self.final_value.clone() {
+            return Ok(value);
+        }
+
+        self.response()?;
+        self.final_value.clone().ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::NoObjectGenerated,
+                "no structured object was generated",
+            )
+        })
+    }
+
+    pub fn close(&mut self) -> Result<(), AdapterError> {
+        self.finished = true;
+        match self.stream.close() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.terminal_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+}
+
+impl Iterator for StreamObjectResult {
+    type Item = Result<Value, AdapterError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        loop {
+            match self.stream.next() {
+                Some(Ok(_event)) => {
+                    let partial_response = self.stream.partial_response();
+                    let source = structured_output_tool_raw_text(&partial_response)
+                        .unwrap_or_else(|| partial_response.text());
+                    let Some(value) = parse_partial_json_value(&source) else {
+                        continue;
+                    };
+                    if self.last_partial_value.as_ref() == Some(&value) {
+                        continue;
+                    }
+                    self.last_partial_value = Some(value.clone());
+                    return Some(Ok(value));
+                }
+                Some(Err(error)) => {
+                    self.terminal_error = Some(error.clone());
+                    self.finished = true;
+                    return Some(Err(error));
+                }
+                None => match self.response() {
+                    Ok(_) => {
+                        let value = self.final_value.clone()?;
+                        self.finished = true;
+                        if self.last_partial_value.as_ref() == Some(&value) {
+                            return None;
+                        }
+                        self.last_partial_value = Some(value.clone());
+                        return Some(Ok(value));
+                    }
+                    Err(error) => return Some(Err(error)),
+                },
+            }
+        }
+    }
+}
+
+fn request_with_schema_response_format<I>(input: I, schema: &Value) -> GenerateRequest
+where
+    I: Into<GenerateRequest>,
+{
+    let mut request = input.into();
     request.response_format = Some(ResponseFormat::JsonSchema {
         json_schema: schema.clone(),
         strict: true,
@@ -91,11 +269,11 @@ fn request_with_schema_response_format(mut request: Request, schema: &Value) -> 
 }
 
 fn finish_structured_generation(
-    generation: GenerateResult,
+    mut generation: GenerateResult,
     schema: Value,
 ) -> Result<GenerateObjectResult, AdapterError> {
-    let raw_text = generation.response.text();
-    let value = parse_structured_output(&raw_text, &schema, Some(&generation.response))?;
+    let (value, raw_text) = parse_structured_response(&generation.response, &schema)?;
+    generation.output = Some(value.clone());
     Ok(GenerateObjectResult {
         value,
         raw_text,
@@ -105,223 +283,165 @@ fn finish_structured_generation(
 }
 
 fn validate_schema_shape(schema: &Value) -> Result<(), AdapterError> {
-    let Some(object) = schema.as_object() else {
+    if !schema.is_object() {
         return Err(invalid_request_error("schema must be a JSON object"));
-    };
-
-    if let Some(schema_type) = object.get("type") {
-        validate_type_spec(schema_type)?;
     }
 
-    if let Some(required) = object.get("required") {
-        let Some(required) = required.as_array() else {
-            return Err(invalid_request_error("schema required must be an array"));
-        };
-        if required.iter().any(|field| !field.is_string()) {
-            return Err(invalid_request_error(
-                "schema required entries must be strings",
-            ));
-        }
-    }
-
-    if let Some(properties) = object.get("properties") {
-        let Some(properties) = properties.as_object() else {
-            return Err(invalid_request_error("schema properties must be an object"));
-        };
-        for property_schema in properties.values() {
-            validate_schema_shape(property_schema)?;
-        }
-    }
-
-    if let Some(items) = object.get("items") {
-        validate_schema_shape(items)?;
-    }
-
-    Ok(())
+    jsonschema::meta::validate(schema).map_err(|error| {
+        invalid_request_error(format!("schema must be a valid JSON Schema: {error}"))
+    })
 }
 
-fn validate_type_spec(schema_type: &Value) -> Result<(), AdapterError> {
-    match schema_type {
-        Value::String(value) => {
-            if is_supported_type(value) {
-                Ok(())
-            } else {
-                Err(invalid_request_error(format!(
-                    "unsupported schema type {value:?}"
-                )))
-            }
-        }
-        Value::Array(values) => {
-            if values.is_empty() {
-                return Err(invalid_request_error("schema type array must not be empty"));
-            }
-            for value in values {
-                let Some(schema_type) = value.as_str() else {
-                    return Err(invalid_request_error(
-                        "schema type array entries must be strings",
-                    ));
-                };
-                if !is_supported_type(schema_type) {
-                    return Err(invalid_request_error(format!(
-                        "unsupported schema type {schema_type:?}"
-                    )));
-                }
-            }
-            Ok(())
-        }
-        _ => Err(invalid_request_error(
-            "schema type must be a string or array of strings",
-        )),
-    }
-}
-
-fn validate_json_value(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
-    let Some(schema_object) = schema.as_object() else {
-        return Err(format!("{path} schema must be an object"));
-    };
-
-    if let Some(schema_type) = schema_object.get("type") {
-        validate_value_type(value, schema_type, path)?;
-    }
-
-    if let Some(enum_values) = schema_object.get("enum") {
-        let Some(enum_values) = enum_values.as_array() else {
-            return Err(format!("{path} schema enum must be an array"));
-        };
-        if !enum_values.iter().any(|candidate| candidate == value) {
-            return Err(format!("{path} value is not one of the schema enum values"));
-        }
-    }
-
-    if schema_object.contains_key("required")
-        || schema_object.contains_key("properties")
-        || schema_object.contains_key("additionalProperties")
-    {
-        validate_object_value(value, schema_object, path)?;
-    }
-
-    if let Some(items_schema) = schema_object.get("items") {
-        let Some(values) = value.as_array() else {
-            return Err(format!("{path} must be an array"));
-        };
-        for (index, item) in values.iter().enumerate() {
-            validate_json_value(item, items_schema, &format!("{path}[{index}]"))?;
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_value_type(value: &Value, schema_type: &Value, path: &str) -> Result<(), String> {
-    let matches = match schema_type {
-        Value::String(schema_type) => value_matches_type(value, schema_type),
-        Value::Array(schema_types) => schema_types
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|schema_type| value_matches_type(value, schema_type)),
-        _ => false,
-    };
-    if matches {
-        Ok(())
-    } else {
-        Err(format!(
-            "{path} expected {}, got {}",
-            describe_type_spec(schema_type),
-            json_type_name(value)
-        ))
-    }
-}
-
-fn validate_object_value(
-    value: &Value,
-    schema_object: &serde_json::Map<String, Value>,
-    path: &str,
-) -> Result<(), String> {
-    let Some(value_object) = value.as_object() else {
-        return Err(format!("{path} must be an object"));
-    };
-
-    if let Some(required) = schema_object.get("required").and_then(Value::as_array) {
-        for field in required.iter().filter_map(Value::as_str) {
-            if !value_object.contains_key(field) {
-                return Err(format!("{path}.{field} is required"));
-            }
-        }
-    }
-
-    let properties = schema_object.get("properties").and_then(Value::as_object);
-    if let Some(properties) = properties {
-        for (field, property_schema) in properties {
-            if let Some(field_value) = value_object.get(field) {
-                validate_json_value(field_value, property_schema, &format!("{path}.{field}"))?;
-            }
-        }
-    }
-
-    if schema_object
-        .get("additionalProperties")
-        .and_then(Value::as_bool)
-        == Some(false)
-    {
-        for field in value_object.keys() {
-            let is_known_property = properties
-                .map(|properties| properties.contains_key(field))
-                .unwrap_or(false);
-            if !is_known_property {
-                return Err(format!("{path}.{field} is not allowed by the schema"));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn value_matches_type(value: &Value, schema_type: &str) -> bool {
-    match schema_type {
-        "object" => value.is_object(),
-        "array" => value.is_array(),
-        "string" => value.is_string(),
-        "number" => value.is_number(),
-        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-        "boolean" => value.is_boolean(),
-        "null" => value.is_null(),
-        _ => false,
-    }
-}
-
-fn json_type_name(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "null",
-        Value::Bool(_) => "boolean",
-        Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
-    }
-}
-
-fn describe_type_spec(schema_type: &Value) -> String {
-    match schema_type {
-        Value::String(value) => value.clone(),
-        Value::Array(values) => values
-            .iter()
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>()
-            .join(" or "),
-        _ => "valid JSON type".to_string(),
-    }
-}
-
-fn is_supported_type(schema_type: &str) -> bool {
-    matches!(
-        schema_type,
-        "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
-    )
+pub(crate) fn validate_json_value(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
+    validate_schema_shape(schema)
+        .map_err(|error| format!("{path} schema is invalid: {}", error.message))?;
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|error| format!("{path} schema is invalid: {error}"))?;
+    validator
+        .validate(value)
+        .map_err(|error| format!("{path} {error}"))
 }
 
 fn invalid_request_error(message: impl Into<String>) -> AdapterError {
     AdapterError::new(AdapterErrorKind::InvalidRequest, message)
+}
+
+fn parse_structured_response(
+    response: &Response,
+    schema: &Value,
+) -> Result<(Value, String), AdapterError> {
+    if let Some((value, raw_text)) = structured_output_tool_value(response, schema)? {
+        return Ok((value, raw_text));
+    }
+
+    let raw_text = response.text();
+    let value = parse_structured_output(&raw_text, schema, Some(response))?;
+    Ok((value, raw_text))
+}
+
+fn structured_output_tool_value(
+    response: &Response,
+    schema: &Value,
+) -> Result<Option<(Value, String)>, AdapterError> {
+    let Some(raw_text) = structured_output_tool_raw_text(response) else {
+        return Ok(None);
+    };
+    let value = parse_structured_output(&raw_text, schema, Some(response))?;
+    Ok(Some((value, raw_text)))
+}
+
+fn structured_output_tool_raw_text(response: &Response) -> Option<String> {
+    response
+        .tool_calls()
+        .into_iter()
+        .find(|tool_call| tool_call.name == STRUCTURED_OUTPUT_TOOL_NAME)
+        .map(|tool_call| structured_output_tool_call_raw_text(&tool_call))
+}
+
+fn structured_output_tool_call_raw_text(tool_call: &ToolCall) -> String {
+    if let Some(raw_arguments) = tool_call.raw_arguments.clone() {
+        return raw_arguments;
+    }
+    if let Value::String(raw_arguments) = &tool_call.arguments {
+        return raw_arguments.clone();
+    }
+    json_compact(&tool_call.arguments)
+}
+
+fn parse_partial_json_value(text: &str) -> Option<Value> {
+    let text = text.trim_start();
+    if text.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(text) {
+        return Some(value);
+    }
+    if !matches!(text.chars().next(), Some('{') | Some('[')) {
+        return None;
+    }
+
+    let mut cuts = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    cuts.push(text.len());
+    for end in cuts.into_iter().rev() {
+        if end == 0 {
+            continue;
+        }
+        let Some(candidate) = repair_json_prefix(&text[..end]) else {
+            continue;
+        };
+        if let Ok(value) = serde_json::from_str::<Value>(&candidate) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn repair_json_prefix(prefix: &str) -> Option<String> {
+    let mut candidate = prefix.trim_end().to_string();
+    if candidate.is_empty() {
+        return None;
+    }
+
+    while candidate.ends_with(',') || candidate.ends_with(':') {
+        candidate.pop();
+        candidate = candidate.trim_end().to_string();
+    }
+
+    let mut stack = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in candidate.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' | '[' => stack.push(ch),
+            '}' => {
+                if stack.pop() != Some('{') {
+                    return None;
+                }
+            }
+            ']' => {
+                if stack.pop() != Some('[') {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if in_string {
+        if escaped && candidate.ends_with('\\') {
+            candidate.pop();
+        }
+        candidate.push('"');
+    }
+
+    for opener in stack.into_iter().rev() {
+        match opener {
+            '{' => candidate.push('}'),
+            '[' => candidate.push(']'),
+            _ => {}
+        }
+    }
+
+    Some(candidate)
+}
+
+fn json_compact(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
 }
 
 fn no_object_generated_error(

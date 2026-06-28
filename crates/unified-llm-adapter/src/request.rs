@@ -5,6 +5,8 @@ use serde::de::{self, DeserializeOwned};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
+use crate::timeouts::{AbortSignal, TimeoutConfig};
+use crate::tools::{validate_tool_name, Tool, ToolChoice};
 use crate::usage::Usage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -510,9 +512,55 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<Value>,
+    ) -> Self {
+        let arguments = arguments.into();
+        let raw_arguments = match &arguments {
+            Value::String(text) => Some(text.clone()),
+            _ => None,
+        };
+        let arguments = match &arguments {
+            Value::String(text) => {
+                serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.clone()))
+            }
+            _ => arguments,
+        };
+        Self {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+            raw_arguments,
+            r#type: default_function_type(),
+        }
+    }
+
+    pub fn from_raw_arguments(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        raw_arguments: impl Into<String>,
+    ) -> Self {
+        let raw_arguments = raw_arguments.into();
+        let arguments = if raw_arguments.trim().is_empty() {
+            Value::Object(Map::new())
+        } else {
+            serde_json::from_str(&raw_arguments)
+                .unwrap_or_else(|_| Value::String(raw_arguments.clone()))
+        };
+        Self {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+            raw_arguments: Some(raw_arguments),
+            r#type: default_function_type(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         validate_non_empty("tool call id", &self.id)?;
-        validate_non_empty("tool call name", &self.name)?;
+        validate_tool_name(&self.name, "tool call name")?;
         validate_non_empty("tool call type", &self.r#type)
     }
 }
@@ -774,9 +822,9 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default)]
-    pub tools: Vec<Value>,
+    pub tools: Vec<Tool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<Value>,
+    pub tool_choice: Option<ToolChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -793,6 +841,10 @@ pub struct Request {
     pub metadata: BTreeMap<String, Value>,
     #[serde(default)]
     pub provider_options: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<TimeoutConfig>,
+    #[serde(skip)]
+    pub abort_signal: Option<AbortSignal>,
 }
 
 impl Default for Request {
@@ -811,6 +863,8 @@ impl Default for Request {
             reasoning_effort: None,
             metadata: BTreeMap::new(),
             provider_options: BTreeMap::new(),
+            timeout: None,
+            abort_signal: None,
         }
     }
 }
@@ -829,13 +883,43 @@ impl Request {
         for message in &self.messages {
             message.validate()?;
         }
+        for tool in &self.tools {
+            tool.validate()?;
+        }
+        if let Some(tool_choice) = self.tool_choice.as_ref() {
+            tool_choice.validate_request_shape()?;
+        }
+        if let Some(response_format) = self.response_format.as_ref() {
+            response_format.validate_request_shape()?;
+        }
         if let Some(temperature) = self.temperature {
             validate_finite("temperature", temperature)?;
         }
         if let Some(top_p) = self.top_p {
             validate_finite("top_p", top_p)?;
         }
+        if let Some(timeout) = self.timeout {
+            timeout.validate()?;
+        }
         Ok(())
+    }
+}
+
+impl ResponseFormat {
+    fn validate_request_shape(&self) -> Result<(), String> {
+        match self {
+            Self::Text | Self::JsonObject => Ok(()),
+            Self::JsonSchema { json_schema, .. } => {
+                if json_schema.is_object() {
+                    Ok(())
+                } else {
+                    Err(
+                        "json_schema response_format requires a root JSON Schema object"
+                            .to_string(),
+                    )
+                }
+            }
+        }
     }
 }
 

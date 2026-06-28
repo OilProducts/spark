@@ -47,6 +47,12 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
             .as_deref(),
         Some("gemini-3.1-pro-preview")
     );
+    assert_eq!(
+        get_latest_model("openai", Some("structured_output"))
+            .map(|model| model.id)
+            .as_deref(),
+        Some("gpt-5.2")
+    );
     assert_eq!(get_latest_model("openai", Some("audio")), None);
 }
 
@@ -108,6 +114,55 @@ fn latest_model_defaults_are_native_provider_only_even_if_resource_contains_comp
     assert_eq!(catalog.get_latest_model("openrouter", None), None);
     assert_eq!(catalog.get_latest_model("litellm", Some("tools")), None);
     assert_eq!(catalog.get_latest_model("openai_compatible", None), None);
+}
+
+#[test]
+fn catalog_structured_output_capability_uses_tool_capable_defaults() {
+    let catalog = ModelCatalog::from_json(
+        &json!([
+            {
+                "id": "no-structured-default",
+                "provider": "openai",
+                "display_name": "No Structured Default",
+                "context_window": null,
+                "max_output": null,
+                "supports_tools": false,
+                "supports_vision": true,
+                "supports_reasoning": true,
+                "input_cost_per_million": null,
+                "output_cost_per_million": null,
+                "aliases": []
+            },
+            {
+                "id": "structured-default",
+                "provider": "openai",
+                "display_name": "Structured Default",
+                "context_window": null,
+                "max_output": null,
+                "supports_tools": true,
+                "supports_vision": false,
+                "supports_reasoning": false,
+                "input_cost_per_million": null,
+                "output_cost_per_million": null,
+                "aliases": []
+            }
+        ])
+        .to_string(),
+    )
+    .expect("catalog json");
+
+    assert_eq!(
+        catalog
+            .get_latest_model("openai", Some("structured_output"))
+            .map(|model| model.id),
+        Some("structured-default".to_string())
+    );
+    assert_eq!(
+        catalog
+            .get_latest_model("openai", Some("supports_structured"))
+            .map(|model| model.id),
+        Some("structured-default".to_string())
+    );
 }
 
 #[test]

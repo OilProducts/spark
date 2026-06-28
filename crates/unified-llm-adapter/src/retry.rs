@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::errors::AdapterError;
+use crate::errors::{AdapterError, AdapterErrorKind};
 use crate::events::{StreamEvent, StreamEventStream, StreamEvents};
 
 pub type RetryCallback = Arc<dyn Fn(&AdapterError, u32, f64) + Send + Sync + 'static>;
@@ -18,6 +18,7 @@ pub struct RetryPolicy {
     pub max_delay: f64,
     pub backoff_multiplier: f64,
     pub jitter: bool,
+    pub retry_timeouts: bool,
     pub on_retry: Option<RetryCallback>,
 }
 
@@ -30,6 +31,7 @@ impl fmt::Debug for RetryPolicy {
             .field("max_delay", &self.max_delay)
             .field("backoff_multiplier", &self.backoff_multiplier)
             .field("jitter", &self.jitter)
+            .field("retry_timeouts", &self.retry_timeouts)
             .field("on_retry", &self.on_retry.is_some())
             .finish()
     }
@@ -42,6 +44,7 @@ impl PartialEq for RetryPolicy {
             && self.max_delay == other.max_delay
             && self.backoff_multiplier == other.backoff_multiplier
             && self.jitter == other.jitter
+            && self.retry_timeouts == other.retry_timeouts
             && self.on_retry.is_some() == other.on_retry.is_some()
     }
 }
@@ -51,12 +54,16 @@ impl Serialize for RetryPolicy {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RetryPolicy", 6)?;
+        let field_count = if self.retry_timeouts { 7 } else { 6 };
+        let mut state = serializer.serialize_struct("RetryPolicy", field_count)?;
         state.serialize_field("max_retries", &self.max_retries)?;
         state.serialize_field("base_delay", &self.base_delay)?;
         state.serialize_field("max_delay", &self.max_delay)?;
         state.serialize_field("backoff_multiplier", &self.backoff_multiplier)?;
         state.serialize_field("jitter", &self.jitter)?;
+        if self.retry_timeouts {
+            state.serialize_field("retry_timeouts", &self.retry_timeouts)?;
+        }
         state.serialize_field("on_retry", &Option::<()>::None)?;
         state.end()
     }
@@ -75,6 +82,8 @@ struct RetryPolicyWire {
     #[serde(default = "default_jitter")]
     jitter: bool,
     #[serde(default)]
+    retry_timeouts: bool,
+    #[serde(default)]
     on_retry: Option<serde_json::Value>,
 }
 
@@ -91,6 +100,7 @@ impl<'de> Deserialize<'de> for RetryPolicy {
             max_delay: wire.max_delay,
             backoff_multiplier: wire.backoff_multiplier,
             jitter: wire.jitter,
+            retry_timeouts: wire.retry_timeouts,
             on_retry: None,
         })
     }
@@ -104,6 +114,7 @@ impl Default for RetryPolicy {
             max_delay: default_max_delay(),
             backoff_multiplier: default_backoff_multiplier(),
             jitter: default_jitter(),
+            retry_timeouts: false,
             on_retry: None,
         }
     }
@@ -147,6 +158,10 @@ impl RetryPolicy {
             on_retry(error, attempt, delay);
         }
     }
+
+    pub fn is_retryable_error(&self, error: &AdapterError) -> bool {
+        error.retryable || (self.retry_timeouts && error.kind == AdapterErrorKind::RequestTimeout)
+    }
 }
 
 pub fn calculate_retry_delay(
@@ -185,7 +200,7 @@ where
         match operation() {
             Ok(value) => return Ok(value),
             Err(error) => {
-                if !is_retryable_error(&error) || attempt >= policy.max_retries {
+                if !policy.is_retryable_error(&error) || attempt >= policy.max_retries {
                     return Err(error);
                 }
 
@@ -268,7 +283,7 @@ where
         match open_stream() {
             Ok(stream) => return Ok((stream, attempt)),
             Err(error) => {
-                if !is_retryable_error(&error) || attempt >= policy.max_retries {
+                if !policy.is_retryable_error(&error) || attempt >= policy.max_retries {
                     return Err(error);
                 }
 
@@ -331,7 +346,7 @@ where
                 }
                 Some(Err(error)) => {
                     if self.yielded_any
-                        || !is_retryable_error(&error)
+                        || !self.policy.is_retryable_error(&error)
                         || self.attempt >= self.policy.max_retries
                     {
                         self.finished = true;
@@ -355,6 +370,7 @@ where
                     (self.sleeper)(delay);
                     self.attempt += 1;
 
+                    let _ = stream.close();
                     self.current = None;
                     match retry_open_stream(
                         &self.policy,

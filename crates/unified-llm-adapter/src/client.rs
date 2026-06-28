@@ -8,6 +8,7 @@ use crate::middleware::{run_complete_chain, run_stream_chain, Middleware};
 use crate::native::NativeProviderAdapter;
 use crate::openai_compatible::{LiteLLMAdapter, OpenAICompatibleAdapter, OpenRouterAdapter};
 use crate::request::{Request, Response};
+use crate::timeouts::check_abort;
 
 pub trait ProviderAdapter: Send + Sync {
     fn name(&self) -> &str;
@@ -155,6 +156,7 @@ impl Client {
     }
 
     pub fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        check_abort(request.abort_signal.as_ref())?;
         request
             .validate_for_client()
             .map_err(invalid_request_error)?;
@@ -164,12 +166,17 @@ impl Client {
         let mut request = request;
         request.provider = Some(provider_name.clone());
         run_complete_chain(request, &self.middleware, move |mut request| {
+            check_abort(request.abort_signal.as_ref())?;
             request.provider = Some(provider_name.clone());
+            request
+                .validate_for_client()
+                .map_err(invalid_request_error)?;
             adapter.complete(request)
         })
     }
 
     pub fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
+        check_abort(request.abort_signal.as_ref())?;
         request
             .validate_for_client()
             .map_err(invalid_request_error)?;
@@ -179,7 +186,11 @@ impl Client {
         let mut request = request;
         request.provider = Some(provider_name.clone());
         run_stream_chain(request, &self.middleware, move |mut request| {
+            check_abort(request.abort_signal.as_ref())?;
             request.provider = Some(provider_name.clone());
+            request
+                .validate_for_client()
+                .map_err(invalid_request_error)?;
             adapter.stream(request)
         })
     }

@@ -11,7 +11,8 @@ use unified_llm_adapter::native::{
 };
 use unified_llm_adapter::{
     AdapterErrorKind, AudioData, ContentPart, DocumentData, FinishReasonKind, ImageData, Message,
-    MessageRole, NativeRequestConfig, Request, ResponseFormat, ThinkingData, ToolCall,
+    MessageRole, NativeRequestConfig, Request, ResponseFormat, ThinkingData, Tool, ToolCall,
+    ToolChoice,
 };
 
 #[test]
@@ -37,7 +38,7 @@ fn openai_complete_request_uses_responses_api_and_native_body_shape() {
             Message::tool_result("call_1", json!({"answer": "72F"}), false),
         ],
         tools: vec![tool("lookup")],
-        tool_choice: Some(json!({"mode": "named", "tool_name": "lookup"})),
+        tool_choice: Some(ToolChoice::named("lookup").unwrap()),
         response_format: Some(ResponseFormat::JsonSchema {
             json_schema: json!({
                 "type": "object",
@@ -80,6 +81,7 @@ fn openai_complete_request_uses_responses_api_and_native_body_shape() {
         ]),
         organization: Some("org-123".to_string()),
         project: Some("project-456".to_string()),
+        ..NativeRequestConfig::default()
     };
 
     let prepared = build_openai_responses_request(&request, &config).unwrap();
@@ -220,6 +222,89 @@ fn openai_provider_options_ignore_unsupported_active_keys_without_breaking_reque
 }
 
 #[test]
+fn native_tool_definitions_validate_names_and_schema_roots_before_translation() {
+    for invalid_name in ["", "1lookup", "lookup-weather", &"a".repeat(65)] {
+        let error = build_openai_responses_request(
+            &Request {
+                model: "gpt-5.2".to_string(),
+                messages: vec![Message::user("hello")],
+                tools: vec![Tool {
+                    name: invalid_name.to_string(),
+                    description: None,
+                    parameters: None,
+                    provider_metadata: BTreeMap::new(),
+                    execute_handler: None,
+                }],
+                ..Request::default()
+            },
+            NativeRequestConfig::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, AdapterErrorKind::InvalidRequest);
+        assert_eq!(error.provider.as_deref(), Some("openai"));
+        assert!(error.message.contains("tool name"));
+    }
+
+    let error = build_gemini_generate_content_request(
+        &Request {
+            model: "gemini-3.1-pro-preview".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![Tool {
+                name: "lookup".to_string(),
+                description: None,
+                parameters: Some(json!({"type": "array"})),
+                provider_metadata: BTreeMap::new(),
+                execute_handler: None,
+            }],
+            ..Request::default()
+        },
+        NativeRequestConfig::default(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::InvalidRequest);
+    assert_eq!(error.provider.as_deref(), Some("gemini"));
+    assert!(error.message.contains("root type must be object"));
+}
+
+#[test]
+fn native_tool_choice_none_and_unsupported_modes_use_canonical_errors() {
+    let none_request = Request {
+        model: "claude-sonnet-4-5".to_string(),
+        messages: vec![Message::user("hello")],
+        tools: vec![tool("lookup")],
+        tool_choice: Some(ToolChoice::none()),
+        ..Request::default()
+    };
+
+    let prepared =
+        build_anthropic_messages_request(&none_request, NativeRequestConfig::default()).unwrap();
+
+    assert!(prepared.body.get("tools").is_none());
+    assert!(prepared.body.get("tool_choice").is_none());
+
+    let error = build_openai_responses_request(
+        &Request {
+            model: "gpt-5.2".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![tool("lookup")],
+            tool_choice: Some(ToolChoice {
+                mode: "sometimes".to_string(),
+                tool_name: None,
+            }),
+            ..Request::default()
+        },
+        NativeRequestConfig::default(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::UnsupportedToolChoice);
+    assert_eq!(error.provider.as_deref(), Some("openai"));
+    assert!(error.message.contains("tool_choice mode"));
+}
+
+#[test]
 fn anthropic_complete_request_uses_messages_api_headers_and_role_translation() {
     let request = Request {
         model: "claude-sonnet-4-5".to_string(),
@@ -238,7 +323,7 @@ fn anthropic_complete_request_uses_messages_api_headers_and_role_translation() {
             Message::user("follow up"),
         ],
         tools: vec![tool("lookup")],
-        tool_choice: Some(json!({"mode": "named", "tool_name": "lookup"})),
+        tool_choice: Some(ToolChoice::named("lookup").unwrap()),
         response_format: Some(ResponseFormat::JsonObject),
         temperature: Some(0.3),
         top_p: Some(0.8),
@@ -290,13 +375,18 @@ fn anthropic_complete_request_uses_messages_api_headers_and_role_translation() {
     assert_eq!(body["top_p"], json!(0.8));
     assert_eq!(body["stop_sequences"], json!(["STOP"]));
     assert_eq!(body["metadata"], json!({"run_id": "run-2"}));
+    let system_blocks = body["system"]
+        .as_array()
+        .expect("cached Anthropic system should be block content");
+    let system_text = system_blocks[0]["text"]
+        .as_str()
+        .expect("system text block should include text");
+    assert!(system_text.contains("system instructions"));
+    assert!(system_text.contains("developer instructions"));
+    assert!(system_text.contains("JSON"));
     assert_eq!(
-        body["system"],
-        json!([{
-            "type": "text",
-            "text": "system instructions\n\ndeveloper instructions\n\nReturn only valid JSON.",
-            "cache_control": {"type": "ephemeral"},
-        }])
+        system_blocks[0]["cache_control"],
+        json!({"type": "ephemeral"})
     );
     assert_eq!(
         body["thinking"],
@@ -351,6 +441,48 @@ fn anthropic_complete_request_uses_messages_api_headers_and_role_translation() {
     assert!(!prepared.body.to_string().contains("parallel_tool_calls"));
     assert!(!prepared.body.to_string().contains("topK"));
     assert_eq!(count_key(&prepared.body, "cache_control"), 3);
+}
+
+#[test]
+fn anthropic_json_schema_response_format_uses_structured_output_tool_when_supported() {
+    let schema = json!({
+        "type": "object",
+        "required": ["answer"],
+        "properties": {"answer": {"type": "string"}},
+        "additionalProperties": false,
+    });
+    let request = Request {
+        model: "claude-sonnet-4-5".to_string(),
+        messages: vec![
+            Message::system("system instructions"),
+            Message::user("hello"),
+        ],
+        response_format: Some(ResponseFormat::JsonSchema {
+            json_schema: schema.clone(),
+            strict: true,
+        }),
+        provider_options: BTreeMap::from([("anthropic".to_string(), json!({"auto_cache": false}))]),
+        ..Request::default()
+    };
+
+    let prepared =
+        build_anthropic_messages_request(&request, NativeRequestConfig::default()).unwrap();
+    let body = object(&prepared.body);
+
+    assert_eq!(body["system"], json!("system instructions"));
+    assert_eq!(
+        body["tool_choice"],
+        json!({"type": "tool", "name": "structured_output"})
+    );
+    assert_eq!(
+        body["tools"],
+        json!([{
+            "name": "structured_output",
+            "description": "Return the final structured response.",
+            "input_schema": schema,
+        }])
+    );
+    assert!(body.get("response_format").is_none());
 }
 
 #[test]
@@ -566,7 +698,7 @@ fn signed_or_redacted_thinking_requires_source_provenance_for_native_continuatio
 #[test]
 fn anthropic_cache_control_preserves_explicit_annotations_when_auto_cache_is_disabled() {
     let mut explicit_tool = tool("lookup");
-    explicit_tool.as_object_mut().unwrap().insert(
+    explicit_tool.provider_metadata.insert(
         "cache_control".to_string(),
         json!({"type": "ephemeral", "ttl": "1h"}),
     );
@@ -715,7 +847,7 @@ fn gemini_complete_request_uses_generate_content_endpoint_key_and_native_parts()
             Message::tool_result("call_1", json!("72F"), false),
         ],
         tools: vec![tool("lookup")],
-        tool_choice: Some(json!("required")),
+        tool_choice: Some(ToolChoice::required()),
         response_format: Some(ResponseFormat::JsonSchema {
             json_schema: json!({
                 "type": "object",
@@ -846,6 +978,30 @@ fn gemini_complete_request_uses_generate_content_endpoint_key_and_native_parts()
     );
     assert!(!prepared.body.to_string().contains("parallel_tool_calls"));
     assert!(!prepared.body.to_string().contains("should-not-leak"));
+}
+
+#[test]
+fn gemini_named_tool_choice_limits_allowed_function_names() {
+    let request = Request {
+        model: "gemini-3.1-pro-preview".to_string(),
+        messages: vec![Message::user("lookup only")],
+        tools: vec![tool("lookup"), tool("search")],
+        tool_choice: Some(ToolChoice::named("lookup").unwrap()),
+        ..Request::default()
+    };
+
+    let prepared =
+        build_gemini_generate_content_request(&request, NativeRequestConfig::default()).unwrap();
+
+    assert_eq!(
+        prepared.body["toolConfig"],
+        json!({
+            "functionCallingConfig": {
+                "mode": "ANY",
+                "allowedFunctionNames": ["lookup"],
+            },
+        })
+    );
 }
 
 #[test]
@@ -1316,6 +1472,28 @@ fn openai_response_translation_maps_cached_input_tokens_to_cache_read_usage() {
 }
 
 #[test]
+fn native_response_translation_uses_invalid_tool_call_for_malformed_arguments() {
+    let error = translate_native_complete_response(
+        "openai",
+        json!({
+            "id": "resp_bad_tool_args",
+            "model": "gpt-5.2",
+            "output": [{
+                "type": "function_call",
+                "id": "call_bad",
+                "name": "lookup",
+                "arguments": "{not json",
+            }],
+        }),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::InvalidToolCall);
+    assert_eq!(error.provider.as_deref(), Some("openai"));
+    assert!(error.message.contains("arguments must be valid JSON"));
+}
+
+#[test]
 fn openai_response_translation_maps_non_stop_finish_reasons_and_preserves_raw_values() {
     for (payload, expected_reason, expected_raw) in [
         (
@@ -1772,15 +1950,16 @@ fn gemini_tool_result_translation_recovers_function_name_after_serialized_replay
     );
 }
 
-fn tool(name: &str) -> Value {
-    json!({
-        "name": name,
-        "description": "Lookup a fact",
-        "parameters": {
+fn tool(name: &str) -> Tool {
+    Tool::passive_with_schema(
+        name,
+        Some("Lookup a fact".to_string()),
+        Some(json!({
             "type": "object",
             "properties": {"query": {"type": "string"}},
-        },
-    })
+        })),
+    )
+    .unwrap()
 }
 
 fn tool_call(id: &str, name: &str, arguments: Value) -> ToolCall {

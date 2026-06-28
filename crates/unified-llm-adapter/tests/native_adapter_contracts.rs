@@ -6,7 +6,7 @@ use unified_llm_adapter::{
     AdapterError, AdapterErrorKind, Client, ContentPart, FinishReasonKind, ImageData, Message,
     NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport, NativeProviderAdapter,
     NativeRequestConfig, NativeStreamResponse, ProviderAdapter, Request, StreamAccumulator,
-    StreamEventType,
+    StreamEventType, Tool,
 };
 
 #[test]
@@ -42,6 +42,7 @@ fn openai_native_adapter_complete_uses_responses_transport_and_normalizes_respon
         default_headers: BTreeMap::from([("X-Trace".to_string(), "trace-1".to_string())]),
         organization: Some("org-123".to_string()),
         project: Some("project-456".to_string()),
+        ..NativeRequestConfig::default()
     };
     let native_transport: Arc<dyn NativeCompleteTransport> = transport.clone();
     let adapter: Arc<dyn ProviderAdapter> =
@@ -1550,13 +1551,14 @@ impl NativeCompleteTransport for RecordingTransport {
     }
 }
 
-fn tool(name: &str) -> Value {
-    json!({
-        "name": name,
-        "description": "Lookup a fact",
-        "parameters": {
+fn tool(name: &str) -> Tool {
+    Tool::passive_with_schema(
+        name,
+        Some("Lookup a fact".to_string()),
+        Some(json!({
             "type": "object",
             "properties": {"query": {"type": "string"}},
-        },
-    })
+        })),
+    )
+    .unwrap()
 }

@@ -339,7 +339,7 @@
       ],
       "dependencies": ["REQ-002", "REQ-007", "REQ-014", "REQ-015"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M4-high-level-tools-structured-output",
       "notes": "Low-level client calls stay no-retry; high-level APIs apply retry behavior."
     },
@@ -358,7 +358,7 @@
       ],
       "dependencies": ["REQ-013", "REQ-014", "REQ-017"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M4-high-level-tools-structured-output",
       "notes": "Adapters may expose async-native APIs and sync wrappers where appropriate, but behavior must match the spec."
     },
@@ -380,7 +380,7 @@
       ],
       "dependencies": ["REQ-005", "REQ-008", "REQ-013"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M4-high-level-tools-structured-output",
       "notes": "ToolCall preserves raw_arguments before parsing for debugging and repair."
     },
@@ -404,7 +404,7 @@
       ],
       "dependencies": ["REQ-017", "REQ-019"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M4-high-level-tools-structured-output",
       "notes": "Parallel execution and single continuation batching are required for coding-agent correctness."
     },
@@ -425,7 +425,7 @@
       ],
       "dependencies": ["REQ-007", "REQ-017"],
       "target_paths": ["crates/unified-llm-adapter", "tests/adapters", "tests/compat/providers"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M4-high-level-tools-structured-output",
       "notes": "Schema validation failures are model-output failures and are not retried by default."
     },

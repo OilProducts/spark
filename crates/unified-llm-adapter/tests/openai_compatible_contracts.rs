@@ -3,11 +3,12 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use unified_llm_adapter::{
-    build_openai_compatible_chat_request, AdapterError, AdapterErrorKind, Client, ContentPart,
-    FinishReasonKind, ImageData, LiteLLMAdapter, Message, MessageRole, NativeCompleteRequest,
-    NativeCompleteResponse, NativeCompleteTransport, NativeStreamResponse, OpenAICompatibleAdapter,
-    OpenAICompatibleRequestConfig, OpenRouterAdapter, ProviderAdapter, ProviderEnvironment,
-    Request, ResponseFormat, StreamAccumulator, StreamEventType, ToolCall,
+    build_openai_compatible_chat_request, translate_chat_completions_response, AdapterError,
+    AdapterErrorKind, Client, ContentPart, FinishReasonKind, ImageData, LiteLLMAdapter, Message,
+    MessageRole, NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport,
+    NativeStreamResponse, OpenAICompatibleAdapter, OpenAICompatibleRequestConfig,
+    OpenRouterAdapter, ProviderAdapter, ProviderEnvironment, Request, ResponseFormat,
+    StreamAccumulator, StreamEventType, Tool, ToolCall, ToolChoice,
 };
 
 #[test]
@@ -52,7 +53,7 @@ fn compatible_request_uses_chat_completions_and_active_provider_options_only() {
             Message::tool_result("call_123", json!({"temperature": 72, "unit": "F"}), false),
         ],
         tools: vec![tool("lookup_weather")],
-        tool_choice: Some(json!({"mode": "named", "tool_name": "lookup_weather"})),
+        tool_choice: Some(ToolChoice::named("lookup_weather").unwrap()),
         response_format: Some(ResponseFormat::JsonSchema {
             json_schema: json!({
                 "type": "object",
@@ -91,6 +92,7 @@ fn compatible_request_uses_chat_completions_and_active_provider_options_only() {
             ("X-Custom".to_string(), "value".to_string()),
         ]),
         require_api_key: true,
+        ..OpenAICompatibleRequestConfig::default()
     };
 
     let prepared =
@@ -174,6 +176,82 @@ fn compatible_request_uses_chat_completions_and_active_provider_options_only() {
         request.provider_options["openai"]["reasoning"]["effort"],
         "high"
     );
+}
+
+#[test]
+fn compatible_tool_choice_modes_translate_and_unsupported_modes_error() {
+    for (tool_choice, expected) in [
+        (ToolChoice::auto(), json!("auto")),
+        (ToolChoice::none(), json!("none")),
+        (ToolChoice::required(), json!("required")),
+        (
+            ToolChoice::named("lookup_weather").unwrap(),
+            json!({"type": "function", "function": {"name": "lookup_weather"}}),
+        ),
+    ] {
+        let prepared = build_openai_compatible_chat_request(
+            "openai_compatible",
+            &Request {
+                model: "team-model".to_string(),
+                messages: vec![Message::user("hello")],
+                tools: vec![tool("lookup_weather")],
+                tool_choice: Some(tool_choice),
+                ..Request::default()
+            },
+            OpenAICompatibleRequestConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(prepared.body["tool_choice"], expected);
+    }
+
+    let error = build_openai_compatible_chat_request(
+        "openai_compatible",
+        &Request {
+            model: "team-model".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![tool("lookup_weather")],
+            tool_choice: Some(ToolChoice {
+                mode: "sometimes".to_string(),
+                tool_name: None,
+            }),
+            ..Request::default()
+        },
+        OpenAICompatibleRequestConfig::default(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::UnsupportedToolChoice);
+    assert_eq!(error.provider.as_deref(), Some("openai_compatible"));
+}
+
+#[test]
+fn compatible_response_translation_uses_invalid_tool_call_for_malformed_arguments() {
+    let error = translate_chat_completions_response(
+        "openai_compatible",
+        json!({
+            "id": "chatcmpl_bad_tool_args",
+            "model": "team-model",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_bad",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup_weather",
+                            "arguments": "{not json",
+                        },
+                    }],
+                },
+            }],
+        }),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::InvalidToolCall);
+    assert_eq!(error.provider.as_deref(), Some("openai_compatible"));
+    assert!(error.message.contains("arguments must be valid JSON"));
 }
 
 #[test]
@@ -787,15 +865,16 @@ impl NativeCompleteTransport for RecordingTransport {
     }
 }
 
-fn tool(name: &str) -> Value {
-    json!({
-        "name": name,
-        "description": "Lookup a fact",
-        "parameters": {
+fn tool(name: &str) -> Tool {
+    Tool::passive_with_schema(
+        name,
+        Some("Lookup a fact".to_string()),
+        Some(json!({
             "type": "object",
             "properties": {"query": {"type": "string"}},
-        },
-    })
+        })),
+    )
+    .unwrap()
 }
 
 fn tool_call(id: &str, name: &str, arguments: Value) -> ToolCall {

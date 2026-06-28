@@ -342,6 +342,8 @@ fn request_tool_structured_output_observation() -> Value {
         stop_sequences: Vec::new(),
         provider_options: BTreeMap::from([("trace".to_string(), json!("enabled"))]),
         metadata: BTreeMap::from([("run_id".to_string(), json!("run-1"))]),
+        timeout: None,
+        abort_signal: None,
     };
     let tool_call = ToolCall {
         id: "call-1".to_string(),

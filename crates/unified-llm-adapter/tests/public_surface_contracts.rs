@@ -1,20 +1,29 @@
 use std::any::TypeId;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::Duration;
 
-use serde_json::json;
+use serde::ser::{Error as SerdeError, Serialize, Serializer};
+use serde_json::{json, Value};
 use unified_llm_adapter::{
     classify_grpc_code, classify_http_status_code, classify_provider_error_message,
-    error_from_grpc_code, error_from_status_code, generate_object_with_policy_and_hooks,
-    generate_steps_with_policy_and_hooks, get_default_client, managed_stream, parse_sse_stream,
-    retry_after_from_headers, retry_stream_before_first_event_with_hooks, retry_with_hooks,
-    set_default_client, stream_events, AdapterError, AdapterErrorKind, AudioData, Client,
-    ContentKind, ContentPart, DocumentData, FinishReason, FinishReasonKind, ImageData, LlmRequest,
-    LlmResponse, Message, MessageRole, Middleware, ProviderAdapter, ProviderError, RateLimitInfo,
-    Request, Response, ResponseFormat, RetryPolicy, Role, SDKError, SDKErrorKind, SseParser,
-    StreamAccumulator, StreamEvent, StreamEventType, StreamEvents, ThinkingData, ToolCall,
-    ToolCallData, Usage, Warning,
+    error_from_grpc_code, error_from_status_code, generate, generate_object,
+    generate_object_with_policy_and_hooks, generate_steps_with_policy_and_hooks,
+    generate_with_policy_and_hooks, get_default_client, get_latest_model, managed_stream,
+    parse_sse_stream, resolve_high_level_provider_and_model, retry_after_from_headers,
+    retry_stream_before_first_event_with_hooks, retry_with_hooks, set_default_client, stream,
+    stream_events, stream_object, stream_object_with_policy_and_hooks,
+    stream_with_policy_and_hooks, AbortController, ActiveLlmProfile, AdapterError,
+    AdapterErrorKind, AdapterTimeout, AudioData, Client, ContentKind, ContentPart, DocumentData,
+    FinishReason, FinishReasonKind, GenerateRequest, HighLevelLlmResolutionInputs, ImageData,
+    LlmRequest, LlmResponse, Message, MessageRole, Middleware, ModelCapabilities,
+    NativeRequestConfig, OpenAICompatibleRequestConfig, ProviderAdapter, ProviderError,
+    RateLimitInfo, Request, Response, ResponseFormat, RetryPolicy, Role, SDKError, SDKErrorKind,
+    SseParser, StopWhen, StreamAccumulator, StreamEvent, StreamEventType, StreamEvents,
+    ThinkingData, TimeoutConfig, Tool, ToolCall, ToolCallData, ToolChoice, ToolInvocation,
+    ToolRepair, ToolRepairInvocation, Usage, Warning, DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_STREAM_READ_TIMEOUT_SECONDS,
 };
 
 static DEFAULT_CLIENT_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -37,8 +46,8 @@ fn canonical_public_surface_round_trips_with_legacy_aliases() {
             tool_call_id: None,
             provider_metadata: BTreeMap::from([("source".to_string(), json!("test"))]),
         }],
-        tools: vec![json!({"type": "function", "function": {"name": "lookup"}})],
-        tool_choice: Some(json!("auto")),
+        tools: vec![Tool::passive("lookup").unwrap()],
+        tool_choice: Some(ToolChoice::auto()),
         response_format: Some(ResponseFormat::JsonObject),
         temperature: Some(0.2),
         top_p: Some(0.9),
@@ -47,6 +56,8 @@ fn canonical_public_surface_round_trips_with_legacy_aliases() {
         reasoning_effort: Some("medium".to_string()),
         metadata: BTreeMap::from([("run_id".to_string(), json!("run-1"))]),
         provider_options: BTreeMap::from([("openai".to_string(), json!({"trace": true}))]),
+        timeout: None,
+        abort_signal: None,
     };
     let legacy_request: LlmRequest = request.clone();
 
@@ -488,6 +499,7 @@ fn retry_policy_preserves_retry_after_cutoffs_and_zero_retry_budget() {
 #[test]
 fn retry_stream_helper_only_reissues_before_first_yielded_event() {
     let opens = Arc::new(Mutex::new(0));
+    let abandoned_closes = Arc::new(Mutex::new(0));
     let mut stream = retry_stream_before_first_event_with_hooks(
         RetryPolicy {
             max_retries: 1,
@@ -496,12 +508,18 @@ fn retry_stream_helper_only_reissues_before_first_yielded_event() {
         },
         {
             let opens = Arc::clone(&opens);
+            let abandoned_closes = Arc::clone(&abandoned_closes);
             move || {
                 let mut opens = opens.lock().expect("open count");
                 *opens += 1;
                 if *opens == 1 {
-                    Ok(stream_events(
+                    let abandoned_closes = Arc::clone(&abandoned_closes);
+                    Ok(managed_stream(
                         vec![Err(retryable_rate_limit_error("first event failed"))].into_iter(),
+                        move || {
+                            *abandoned_closes.lock().expect("abandoned close count") += 1;
+                            Ok(())
+                        },
                     ))
                 } else {
                     Ok(stream_events(
@@ -517,6 +535,7 @@ fn retry_stream_helper_only_reissues_before_first_yielded_event() {
     let events = stream.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
     assert_eq!(events, vec![StreamEvent::text_delta("after retry")]);
     assert_eq!(*opens.lock().expect("open count"), 2);
+    assert_eq!(*abandoned_closes.lock().expect("abandoned close count"), 1);
 
     let post_partial_opens = Arc::new(Mutex::new(0));
     let mut post_partial_stream = retry_stream_before_first_event_with_hooks(
@@ -1193,6 +1212,51 @@ fn provider_adapter_registration_uses_rust_trait_objects_and_lifecycle_hooks() {
 }
 
 #[test]
+fn low_level_client_rejects_malformed_named_tool_choice_but_defers_unsupported_modes() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("default", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("default")).unwrap();
+
+    let error = client
+        .complete(Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![Tool::passive("lookup").unwrap()],
+            tool_choice: Some(ToolChoice {
+                mode: "named".to_string(),
+                tool_name: None,
+            }),
+            ..Request::default()
+        })
+        .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::InvalidRequest);
+    assert!(error
+        .message
+        .contains("named tool_choice requires tool_name"));
+    assert_eq!(call_log(&calls), vec!["initialize:default"]);
+
+    let response = client
+        .complete(Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("hello")],
+            tool_choice: Some(ToolChoice {
+                mode: "provider_native".to_string(),
+                tool_name: None,
+            }),
+            ..Request::default()
+        })
+        .unwrap();
+
+    assert_eq!(response.text(), "default complete");
+    assert_eq!(
+        call_log(&calls),
+        vec!["initialize:default", "complete:default:tool-model"]
+    );
+}
+
+#[test]
 fn low_level_client_complete_and_stream_do_not_retry_retryable_adapter_errors() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(RetryableErrorAdapter {
@@ -1294,6 +1358,2339 @@ fn high_level_generate_retries_each_llm_step_without_restarting_completed_steps(
 }
 
 #[test]
+fn high_level_generate_does_not_report_request_history_tool_results_or_aggregate_steps() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message::tool_result("generated_step_1", json!({"ok": true}), false),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("final"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+
+    let result = generate_steps_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "step-1".to_string(),
+            messages: vec![
+                Message::user("continue"),
+                Message::tool_result("historical", json!({"from": "caller"}), false),
+            ],
+            ..Request::default()
+        },
+        &RetryPolicy::default(),
+        |steps| {
+            if steps.len() == 1 {
+                return Ok(Some(Request {
+                    model: "step-2".to_string(),
+                    messages: vec![
+                        Message::user("continue"),
+                        Message::tool_result("historical", json!({"from": "caller"}), false),
+                        Message::tool_result("generated_step_1", json!({"ok": true}), false),
+                    ],
+                    ..Request::default()
+                }));
+            }
+            Ok(None)
+        },
+        || 1.0,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(
+        result.steps[0].tool_results,
+        vec![unified_llm_adapter::ToolResult::success(
+            "generated_step_1",
+            json!({"ok": true})
+        )]
+    );
+    assert!(result.steps[1].tool_results.is_empty());
+    assert!(result.tool_results.is_empty());
+    assert_eq!(result.text, "final");
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:high:step-1:2", "complete:high:step-2:3"]
+    );
+}
+
+#[test]
+fn high_level_generate_honors_zero_retry_budget_and_retry_after_delay() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut retry_after_error = retryable_rate_limit_error("retry after");
+    retry_after_error.retry_after = Some(12.5);
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Err(retry_after_error),
+            Ok(Response {
+                message: Message::assistant("done"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let policy = RetryPolicy {
+        max_retries: 1,
+        max_delay: 30.0,
+        jitter: false,
+        ..RetryPolicy::default()
+    };
+    let mut sleep_durations = Vec::new();
+
+    let result = generate_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "retry-after-model".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        },
+        &policy,
+        || 1.0,
+        |delay| sleep_durations.push(delay),
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "done");
+    assert_eq!(sleep_durations, vec![12.5]);
+    assert_eq!(
+        call_log(&calls),
+        vec![
+            "complete:high:retry-after-model:1",
+            "complete:high:retry-after-model:1",
+        ]
+    );
+
+    let zero_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&zero_calls),
+        vec![
+            Err(retryable_rate_limit_error("first error stays visible")),
+            Ok(Response {
+                message: Message::assistant("late success"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let zero_policy = RetryPolicy {
+        max_retries: 0,
+        jitter: false,
+        ..RetryPolicy::default()
+    };
+
+    let error = generate_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "zero-retry-model".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        },
+        &zero_policy,
+        || 1.0,
+        |_| panic!("max_retries=0 must not sleep"),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::RateLimit);
+    assert_eq!(error.message, "first error stays visible");
+    assert_eq!(
+        call_log(&zero_calls),
+        vec!["complete:high:zero-retry-model:1"]
+    );
+}
+
+#[test]
+fn high_level_generate_normalizes_prompt_system_and_projects_result_fields() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(HighLevelBoundaryAdapter::new("openai", Arc::clone(&calls)));
+    let middleware_calls = Arc::new(Mutex::new(Vec::new()));
+    let middleware: Arc<dyn Middleware> = Arc::new(RequestRecordingMiddleware {
+        calls: Arc::clone(&middleware_calls),
+    });
+    let client = Client::from_adapters(vec![adapter], Some("openai"))
+        .unwrap()
+        .with_middleware(vec![middleware]);
+
+    let result = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            system: Some("answer tersely".to_string()),
+            model: Some("explicit-model".to_string()),
+            tools: vec![Tool::passive("lookup").unwrap()],
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "boundary text");
+    assert_eq!(result.reasoning.as_deref(), Some("boundary reasoning"));
+    assert_eq!(result.tool_calls.len(), 1);
+    assert!(result.tool_results.is_empty());
+    assert_eq!(result.finish_reason, FinishReason::Stop);
+    assert_eq!(result.usage.input_tokens, 3);
+    assert_eq!(result.total_usage.total_tokens, 8);
+    assert_eq!(result.warnings[0].code.as_deref(), Some("boundary_warning"));
+    assert_eq!(result.output, None);
+    assert_eq!(result.steps.len(), 1);
+    assert_eq!(result.steps[0].text, "boundary text");
+    assert_eq!(
+        result.steps[0]
+            .request
+            .messages
+            .iter()
+            .map(|message| (message.role, message.text()))
+            .collect::<Vec<_>>(),
+        vec![
+            (MessageRole::System, "answer tersely".to_string()),
+            (MessageRole::User, "hello".to_string()),
+        ]
+    );
+    assert_eq!(
+        call_log(&middleware_calls),
+        vec!["middleware-complete:openai:explicit-model"]
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:openai:explicit-model:system=answer tersely|user=hello",]
+    );
+}
+
+#[test]
+fn high_level_generate_prepends_system_to_messages_without_reordering_history() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(HighLevelBoundaryAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("openai")).unwrap();
+
+    let result = generate(
+        &client,
+        GenerateRequest {
+            messages: Some(vec![
+                Message::user("first"),
+                Message::assistant("second"),
+                Message::user("third"),
+            ]),
+            system: Some("system first".to_string()),
+            model: Some("ordered-model".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        result.steps[0]
+            .request
+            .messages
+            .iter()
+            .map(|message| (message.role, message.text()))
+            .collect::<Vec<_>>(),
+        vec![
+            (MessageRole::System, "system first".to_string()),
+            (MessageRole::User, "first".to_string()),
+            (MessageRole::Assistant, "second".to_string()),
+            (MessageRole::User, "third".to_string()),
+        ]
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec![
+            "complete:openai:ordered-model:system=system first|user=first|assistant=second|user=third"
+        ]
+    );
+}
+
+#[test]
+fn high_level_generate_executes_active_tools_with_invocation_contract() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let invocation_log = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![
+                        ContentPart::Text {
+                            text: "checking".to_string(),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new(
+                                "call_weather",
+                                "weather",
+                                json!({"city": "Paris"}),
+                            ),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new(
+                                "call_time",
+                                "local_time",
+                                json!({"city": "Paris"}),
+                            ),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new("call_echo", "echo", json!({})),
+                        },
+                    ],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("final answer"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+
+    let weather_log = Arc::clone(&invocation_log);
+    let weather = Tool::active_with_schema(
+        "weather",
+        Some("Lookup weather".to_string()),
+        Some(json!({
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+        })),
+        move |invocation: ToolInvocation| {
+            weather_log.lock().expect("invocation log").push((
+                invocation.tool_call_id.clone(),
+                invocation.arguments.clone(),
+                invocation.messages.clone(),
+            ));
+            Ok(vec!["sunny", "72F"])
+        },
+    )
+    .unwrap();
+    let local_time = Tool::active("local_time", |_invocation: ToolInvocation| {
+        Ok(BTreeMap::from([(
+            "timezone".to_string(),
+            "Europe/Paris".to_string(),
+        )]))
+    })
+    .unwrap();
+    let echo = Tool::active("echo", |invocation: ToolInvocation| {
+        Ok(format!("echo:{}", invocation.tool_call_id))
+    })
+    .unwrap();
+
+    let result = generate(
+        &client,
+        Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("weather and time?")],
+            tools: vec![weather, local_time, echo],
+            ..Request::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "final answer");
+    assert_eq!(result.steps.len(), 2);
+    assert_eq!(
+        result.steps[0].tool_results,
+        vec![
+            unified_llm_adapter::ToolResult::success("call_weather", json!(["sunny", "72F"]),),
+            unified_llm_adapter::ToolResult::success(
+                "call_time",
+                json!({"timezone": "Europe/Paris"}),
+            ),
+            unified_llm_adapter::ToolResult::success("call_echo", json!("echo:call_echo")),
+        ]
+    );
+    assert!(result.tool_results.is_empty());
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:high:tool-model:1", "complete:high:tool-model:5"]
+    );
+
+    let invocation_log = invocation_log.lock().expect("invocation log").clone();
+    assert_eq!(invocation_log.len(), 1);
+    assert_eq!(invocation_log[0].0, "call_weather");
+    assert_eq!(invocation_log[0].1, json!({"city": "Paris"}));
+    assert_eq!(
+        invocation_log[0].2,
+        vec![Message::user("weather and time?")]
+    );
+}
+
+#[test]
+fn high_level_generate_with_active_tools_retries_continuation_without_reexecuting_tool_batch() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![
+                        ContentPart::Text {
+                            text: "checking".to_string(),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new(
+                                "call_weather",
+                                "weather",
+                                json!({"city": "Paris"}),
+                            ),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new(
+                                "call_time",
+                                "local_time",
+                                json!({"city": "Paris"}),
+                            ),
+                        },
+                    ],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Err(retryable_rate_limit_error("retry continuation only")),
+            Ok(Response {
+                message: Message::assistant("final after retry"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let weather_executions = Arc::new(Mutex::new(0usize));
+    let time_executions = Arc::new(Mutex::new(0usize));
+    let invocation_messages = Arc::new(Mutex::new(Vec::new()));
+    let weather = Tool::active("weather", {
+        let weather_executions = Arc::clone(&weather_executions);
+        let invocation_messages = Arc::clone(&invocation_messages);
+        move |invocation: ToolInvocation| {
+            *weather_executions.lock().expect("weather executions") += 1;
+            invocation_messages
+                .lock()
+                .expect("invocation messages")
+                .push((invocation.tool_call_id.clone(), invocation.messages.len()));
+            Ok(json!({"forecast": "sunny"}))
+        }
+    })
+    .unwrap();
+    let local_time = Tool::active("local_time", {
+        let time_executions = Arc::clone(&time_executions);
+        let invocation_messages = Arc::clone(&invocation_messages);
+        move |invocation: ToolInvocation| {
+            *time_executions.lock().expect("time executions") += 1;
+            invocation_messages
+                .lock()
+                .expect("invocation messages")
+                .push((invocation.tool_call_id.clone(), invocation.messages.len()));
+            Ok(json!({"timezone": "Europe/Paris"}))
+        }
+    })
+    .unwrap();
+    let policy = RetryPolicy {
+        max_retries: 1,
+        jitter: false,
+        ..RetryPolicy::default()
+    };
+    let mut sleep_durations = Vec::new();
+
+    let result = generate_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("weather and time?")],
+            tools: vec![weather, local_time],
+            ..Request::default()
+        },
+        &policy,
+        || 1.0,
+        |delay| sleep_durations.push(delay),
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "final after retry");
+    assert_eq!(result.steps.len(), 2);
+    assert_eq!(*weather_executions.lock().expect("weather executions"), 1);
+    assert_eq!(*time_executions.lock().expect("time executions"), 1);
+    assert_eq!(sleep_durations, vec![1.0]);
+    assert_eq!(
+        result.steps[0].tool_results,
+        vec![
+            unified_llm_adapter::ToolResult::success("call_weather", json!({"forecast": "sunny"}),),
+            unified_llm_adapter::ToolResult::success(
+                "call_time",
+                json!({"timezone": "Europe/Paris"}),
+            ),
+        ]
+    );
+    assert!(result.steps[1].tool_results.is_empty());
+    assert_eq!(
+        call_log(&calls),
+        vec![
+            "complete:high:tool-model:1",
+            "complete:high:tool-model:4",
+            "complete:high:tool-model:4",
+        ]
+    );
+    let mut invocation_messages = invocation_messages
+        .lock()
+        .expect("invocation messages")
+        .clone();
+    invocation_messages.sort();
+    assert_eq!(
+        invocation_messages,
+        vec![
+            ("call_time".to_string(), 1),
+            ("call_weather".to_string(), 1),
+        ]
+    );
+}
+
+#[test]
+fn high_level_generate_turns_active_tool_handler_errors_into_tool_results() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentPart::ToolCall {
+                        tool_call: ToolCall::new("call_boom", "boom", json!({})),
+                    }],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("recovered"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let boom = Tool::active(
+        "boom",
+        |_invocation: ToolInvocation| -> Result<Value, AdapterError> {
+            Err(AdapterError::new(
+                AdapterErrorKind::InvalidToolCall,
+                "handler failed",
+            ))
+        },
+    )
+    .unwrap();
+
+    let result = generate(
+        &client,
+        Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("run tool")],
+            tools: vec![boom],
+            ..Request::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "recovered");
+    assert_eq!(
+        result.steps[0].tool_results,
+        vec![unified_llm_adapter::ToolResult::error(
+            "call_boom",
+            json!("handler failed"),
+        )]
+    );
+    assert!(result.steps[0].tool_results[0].is_error);
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:high:tool-model:1", "complete:high:tool-model:3"]
+    );
+}
+
+#[test]
+fn high_level_generate_turns_non_serializable_tool_returns_into_error_results() {
+    struct FailingSerialize;
+
+    impl Serialize for FailingSerialize {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            Err(S::Error::custom("not JSON serializable"))
+        }
+    }
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentPart::ToolCall {
+                        tool_call: ToolCall::new("call_bad", "bad_return", json!({})),
+                    }],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("continued"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let bad_return = Tool::active("bad_return", |_invocation: ToolInvocation| {
+        Ok(FailingSerialize)
+    })
+    .unwrap();
+
+    let result = generate(
+        &client,
+        Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("run tool")],
+            tools: vec![bad_return],
+            ..Request::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "continued");
+    assert_eq!(result.steps[0].tool_results.len(), 1);
+    let tool_result = &result.steps[0].tool_results[0];
+    assert_eq!(tool_result.tool_call_id, "call_bad");
+    assert!(tool_result.is_error);
+    assert!(tool_result
+        .content
+        .as_str()
+        .is_some_and(|message| message.contains("tool handler returned non-serializable content")));
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:high:tool-model:1", "complete:high:tool-model:3"]
+    );
+}
+
+#[test]
+fn high_level_generate_keeps_successful_siblings_when_argument_parsing_or_validation_fails() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::from_raw_arguments(
+                                "call_ok",
+                                "weather",
+                                "{\"city\":\"Paris\"}",
+                            ),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::from_raw_arguments(
+                                "call_parse",
+                                "weather",
+                                "{not json",
+                            ),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::from_raw_arguments(
+                                "call_schema",
+                                "weather",
+                                "{\"city\":7}",
+                            ),
+                        },
+                    ],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("continued"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let executions = Arc::new(Mutex::new(Vec::new()));
+    let execution_log = Arc::clone(&executions);
+    let weather = Tool::active_with_schema(
+        "weather",
+        Some("Lookup weather".to_string()),
+        Some(json!({
+            "type": "object",
+            "required": ["city"],
+            "properties": {"city": {"type": "string"}},
+        })),
+        move |invocation: ToolInvocation| {
+            execution_log
+                .lock()
+                .expect("execution log")
+                .push(invocation.tool_call_id.clone());
+            Ok(invocation.arguments)
+        },
+    )
+    .unwrap();
+
+    let result = generate(
+        &client,
+        Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("run tools")],
+            tools: vec![weather],
+            ..Request::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "continued");
+    assert_eq!(
+        result.steps[0].tool_results[0],
+        unified_llm_adapter::ToolResult::success("call_ok", json!({"city": "Paris"}))
+    );
+    assert_eq!(result.steps[0].tool_results[1].tool_call_id, "call_parse");
+    assert!(result.steps[0].tool_results[1].is_error);
+    assert!(result.steps[0].tool_results[1]
+        .content
+        .as_str()
+        .is_some_and(|message| message.contains("Invalid JSON arguments")));
+    assert_eq!(result.steps[0].tool_results[2].tool_call_id, "call_schema");
+    assert!(result.steps[0].tool_results[2].is_error);
+    let schema_error = result.steps[0].tool_results[2]
+        .content
+        .as_str()
+        .expect("schema validation failure should be reported as text");
+    assert!(schema_error.contains("Invalid arguments for tool 'weather'"));
+    assert!(schema_error.contains("string"));
+    assert_eq!(
+        executions.lock().expect("execution log").clone(),
+        vec!["call_ok".to_string()]
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:high:tool-model:1", "complete:high:tool-model:5"]
+    );
+}
+
+#[test]
+fn high_level_generate_repairs_invalid_tool_arguments_before_ordered_batched_continuation() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::from_raw_arguments(
+                                "call_weather",
+                                "weather",
+                                "{not json",
+                            ),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::from_raw_arguments(
+                                "call_time",
+                                "local_time",
+                                "{\"city\":\"Paris\"}",
+                            ),
+                        },
+                    ],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("continued after repair"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let repair_observations = Arc::new(Mutex::new(Vec::new()));
+    let repair_log = Arc::clone(&repair_observations);
+    let repair_tool_call = ToolRepair::new(move |invocation: ToolRepairInvocation| {
+        repair_log.lock().expect("repair log").push((
+            invocation.tool_call_id.clone(),
+            invocation.tool_definition.name.clone(),
+            invocation.messages.len(),
+            invocation.validation_error.clone(),
+        ));
+        Ok(json!({"city": "Paris"}))
+    });
+    let weather = Tool::active_with_schema(
+        "weather",
+        Some("Lookup weather".to_string()),
+        Some(json!({
+            "type": "object",
+            "required": ["city"],
+            "properties": {"city": {"type": "string"}},
+        })),
+        |invocation: ToolInvocation| Ok(json!({"weather_city": invocation.arguments["city"]})),
+    )
+    .unwrap();
+    let local_time = Tool::active_with_schema(
+        "local_time",
+        Some("Lookup time".to_string()),
+        Some(json!({
+            "type": "object",
+            "required": ["city"],
+            "properties": {"city": {"type": "string"}},
+        })),
+        |invocation: ToolInvocation| Ok(json!({"time_city": invocation.arguments["city"]})),
+    )
+    .unwrap();
+
+    let result = generate(
+        &client,
+        GenerateRequest {
+            model: Some("tool-model".to_string()),
+            messages: Some(vec![Message::user("run repaired tools")]),
+            tools: vec![weather, local_time],
+            repair_tool_call: Some(repair_tool_call),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "continued after repair");
+    assert_eq!(
+        result.steps[0].tool_results,
+        vec![
+            unified_llm_adapter::ToolResult::success(
+                "call_weather",
+                json!({"weather_city": "Paris"}),
+            ),
+            unified_llm_adapter::ToolResult::success("call_time", json!({"time_city": "Paris"}),),
+        ]
+    );
+    let repairs = repair_observations.lock().expect("repair log").clone();
+    assert_eq!(repairs.len(), 1);
+    assert_eq!(repairs[0].0, "call_weather");
+    assert_eq!(repairs[0].1, "weather");
+    assert_eq!(repairs[0].2, 1);
+    assert!(repairs[0].3.contains("Invalid JSON arguments"));
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:high:tool-model:1", "complete:high:tool-model:4"]
+    );
+}
+
+#[test]
+fn high_level_generate_returns_passive_tool_calls_without_auto_execution() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![Ok(Response {
+            message: Message {
+                role: MessageRole::Assistant,
+                content: vec![ContentPart::ToolCall {
+                    tool_call: ToolCall::new("call_lookup", "lookup", json!({"query": "Paris"})),
+                }],
+                ..Message::default()
+            },
+            finish_reason: FinishReason::ToolCalls,
+            ..Response::default()
+        })],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+
+    let result = generate(
+        &client,
+        Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("lookup")],
+            tools: vec![Tool::passive("lookup").unwrap()],
+            ..Request::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.steps.len(), 1);
+    assert_eq!(result.tool_calls.len(), 1);
+    assert_eq!(result.tool_calls[0].name, "lookup");
+    assert!(result.tool_results.is_empty());
+    assert_eq!(call_log(&calls), vec!["complete:high:tool-model:1"]);
+}
+
+#[test]
+fn high_level_generate_executes_active_tool_calls_concurrently_and_batches_ordered_results() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new("call_slow", "slow", json!({})),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new("call_fast", "fast", json!({})),
+                        },
+                    ],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("done"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let rendezvous = Arc::new((Mutex::new(0usize), Condvar::new()));
+
+    let slow_rendezvous = Arc::clone(&rendezvous);
+    let slow = Tool::active("slow", move |_invocation: ToolInvocation| {
+        let (lock, cvar) = &*slow_rendezvous;
+        let mut started = lock.lock().expect("rendezvous lock");
+        *started += 1;
+        cvar.notify_all();
+        let (started, _) = cvar
+            .wait_timeout_while(started, Duration::from_secs(2), |started| *started < 2)
+            .expect("rendezvous wait");
+        Ok(json!({"tool": "slow", "saw_parallel_peer": *started >= 2}))
+    })
+    .unwrap();
+    let fast_rendezvous = Arc::clone(&rendezvous);
+    let fast = Tool::active("fast", move |_invocation: ToolInvocation| {
+        let (lock, cvar) = &*fast_rendezvous;
+        let mut started = lock.lock().expect("rendezvous lock");
+        *started += 1;
+        cvar.notify_all();
+        let (started, _) = cvar
+            .wait_timeout_while(started, Duration::from_secs(2), |started| *started < 2)
+            .expect("rendezvous wait");
+        Ok(json!({"tool": "fast", "saw_parallel_peer": *started >= 2}))
+    })
+    .unwrap();
+
+    let result = generate(
+        &client,
+        Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("run both")],
+            tools: vec![slow, fast],
+            ..Request::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "done");
+    assert_eq!(
+        result.steps[0].tool_results,
+        vec![
+            unified_llm_adapter::ToolResult::success(
+                "call_slow",
+                json!({"tool": "slow", "saw_parallel_peer": true}),
+            ),
+            unified_llm_adapter::ToolResult::success(
+                "call_fast",
+                json!({"tool": "fast", "saw_parallel_peer": true}),
+            ),
+        ]
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:high:tool-model:1", "complete:high:tool-model:4"]
+    );
+}
+
+#[test]
+fn high_level_generate_converts_unknown_tool_calls_to_error_results_and_continues() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentPart::ToolCall {
+                        tool_call: ToolCall::new("call_missing", "missing", json!({})),
+                    }],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("continued after tool error"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+
+    let result = generate(
+        &client,
+        Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("run missing")],
+            ..Request::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "continued after tool error");
+    assert_eq!(
+        result.steps[0].tool_results,
+        vec![unified_llm_adapter::ToolResult::error(
+            "call_missing",
+            json!("Unknown tool 'missing'"),
+        )]
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:high:tool-model:1", "complete:high:tool-model:3"]
+    );
+}
+
+#[test]
+fn high_level_generate_respects_max_tool_rounds_zero_and_multiple_rounds() {
+    let zero_calls = Arc::new(Mutex::new(Vec::new()));
+    let zero_adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&zero_calls),
+        vec![Ok(Response {
+            message: Message {
+                role: MessageRole::Assistant,
+                content: vec![ContentPart::ToolCall {
+                    tool_call: ToolCall::new("call_lookup", "lookup", json!({})),
+                }],
+                ..Message::default()
+            },
+            finish_reason: FinishReason::ToolCalls,
+            ..Response::default()
+        })],
+    ));
+    let zero_client = Client::from_adapters(vec![zero_adapter], Some("high")).unwrap();
+    let zero_executions = Arc::new(Mutex::new(0usize));
+    let zero_execution_log = Arc::clone(&zero_executions);
+    let zero_tool = Tool::active("lookup", move |_invocation: ToolInvocation| {
+        *zero_execution_log.lock().expect("execution lock") += 1;
+        Ok("should not run")
+    })
+    .unwrap();
+
+    let zero_result = generate(
+        &zero_client,
+        GenerateRequest {
+            model: Some("tool-model".to_string()),
+            messages: Some(vec![Message::user("lookup")]),
+            tools: vec![zero_tool],
+            max_tool_rounds: 0,
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(zero_result.steps.len(), 1);
+    assert_eq!(zero_result.tool_calls.len(), 1);
+    assert!(zero_result.tool_results.is_empty());
+    assert_eq!(*zero_executions.lock().expect("execution lock"), 0);
+    assert_eq!(call_log(&zero_calls), vec!["complete:high:tool-model:1"]);
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentPart::ToolCall {
+                        tool_call: ToolCall::new("call_first", "lookup", json!({})),
+                    }],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentPart::ToolCall {
+                        tool_call: ToolCall::new("call_second", "lookup", json!({})),
+                    }],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("done after two rounds"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let tool = Tool::active("lookup", |invocation: ToolInvocation| {
+        Ok(invocation.tool_call_id)
+    })
+    .unwrap();
+
+    let result = generate(
+        &client,
+        GenerateRequest {
+            model: Some("tool-model".to_string()),
+            messages: Some(vec![Message::user("lookup twice")]),
+            tools: vec![tool],
+            max_tool_rounds: 2,
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "done after two rounds");
+    assert_eq!(result.steps.len(), 3);
+    assert_eq!(
+        result.steps[0].tool_results,
+        vec![unified_llm_adapter::ToolResult::success(
+            "call_first",
+            json!("call_first"),
+        )]
+    );
+    assert_eq!(
+        result.steps[1].tool_results,
+        vec![unified_llm_adapter::ToolResult::success(
+            "call_second",
+            json!("call_second"),
+        )]
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec![
+            "complete:high:tool-model:1",
+            "complete:high:tool-model:3",
+            "complete:high:tool-model:5",
+        ]
+    );
+}
+
+#[test]
+fn high_level_generate_respects_stop_when_after_recording_tool_results() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentPart::ToolCall {
+                        tool_call: ToolCall::new("call_lookup", "lookup", json!({})),
+                    }],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("should not be requested"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let stop_observations = Arc::new(Mutex::new(Vec::new()));
+    let stop_log = Arc::clone(&stop_observations);
+    let tool = Tool::active("lookup", |_invocation: ToolInvocation| Ok("tool result")).unwrap();
+
+    let result = generate(
+        &client,
+        GenerateRequest {
+            model: Some("tool-model".to_string()),
+            messages: Some(vec![Message::user("lookup")]),
+            tools: vec![tool],
+            max_tool_rounds: 2,
+            stop_when: Some(StopWhen::new(move |steps| {
+                stop_log.lock().expect("stop log").push(steps.len());
+                steps.len() == 1
+            })),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.steps.len(), 1);
+    assert_eq!(
+        result.tool_results,
+        vec![unified_llm_adapter::ToolResult::success(
+            "call_lookup",
+            json!("tool result"),
+        )]
+    );
+    assert_eq!(*stop_observations.lock().expect("stop log"), vec![1]);
+    assert_eq!(call_log(&calls), vec!["complete:high:tool-model:1"]);
+}
+
+#[test]
+fn high_level_generate_and_stream_reject_prompt_and_messages_before_client_call() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(HighLevelBoundaryAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("openai")).unwrap();
+
+    let error = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            messages: Some(vec![Message::user("hello")]),
+            model: Some("gpt-5.2".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap_err();
+    let stream_error = match stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            messages: Some(vec![Message::user("hello")]),
+            model: Some("gpt-5.2".to_string()),
+            ..GenerateRequest::default()
+        },
+    ) {
+        Ok(_) => panic!("stream should reject prompt and messages together"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind, AdapterErrorKind::InvalidRequest);
+    assert_eq!(stream_error.kind, AdapterErrorKind::InvalidRequest);
+    assert!(error.message.contains("either prompt or messages"));
+    assert!(stream_error.message.contains("either prompt or messages"));
+    assert!(call_log(&calls).is_empty());
+}
+
+#[test]
+fn high_level_generate_and_stream_require_prompt_or_messages_before_client_call() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(HighLevelBoundaryAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("openai")).unwrap();
+
+    let generate_error = generate(
+        &client,
+        GenerateRequest {
+            model: Some("gpt-5.2".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap_err();
+    let stream_error = match stream(
+        &client,
+        GenerateRequest {
+            model: Some("gpt-5.2".to_string()),
+            ..GenerateRequest::default()
+        },
+    ) {
+        Ok(_) => panic!("stream should reject missing prompt/messages"),
+        Err(error) => error,
+    };
+
+    assert_eq!(generate_error.kind, AdapterErrorKind::InvalidRequest);
+    assert_eq!(stream_error.kind, AdapterErrorKind::InvalidRequest);
+    assert!(generate_error
+        .message
+        .contains("either prompt or messages must be provided"));
+    assert!(stream_error
+        .message
+        .contains("either prompt or messages must be provided"));
+    assert!(call_log(&calls).is_empty());
+}
+
+#[test]
+fn high_level_model_resolution_handles_profiles_capabilities_and_compatible_omissions() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("openai")).unwrap();
+
+    let defaulted = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        defaulted.steps[0].request.provider.as_deref(),
+        Some("openai")
+    );
+    assert_eq!(
+        defaulted.steps[0].request.model,
+        get_latest_model("openai", None).unwrap().id
+    );
+
+    let reasoning_defaulted = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("think briefly".to_string()),
+            reasoning_effort: Some("medium".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        reasoning_defaulted.steps[0].request.model,
+        get_latest_model("openai", Some("reasoning")).unwrap().id
+    );
+
+    let combined_capabilities =
+        ModelCapabilities::reasoning().union(ModelCapabilities::structured_output());
+    assert!(combined_capabilities.reasoning);
+    assert!(combined_capabilities.structured_output);
+    let resolved = resolve_high_level_provider_and_model(&HighLevelLlmResolutionInputs {
+        provider: Some("openai".to_string()),
+        required_capabilities: combined_capabilities,
+        ..HighLevelLlmResolutionInputs::default()
+    })
+    .unwrap();
+    assert_eq!(
+        resolved.model,
+        get_latest_model("openai", Some("reasoning")).unwrap().id
+    );
+
+    let explicit_unknown = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            model: Some("not-in-catalog-2026-06-27".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        explicit_unknown.steps[0].request.model,
+        "not-in-catalog-2026-06-27"
+    );
+
+    let explicit_provider_ignores_other_profile_default =
+        resolve_high_level_provider_and_model(&HighLevelLlmResolutionInputs {
+            provider: Some("openai".to_string()),
+            active_profile: Some(ActiveLlmProfile::new(
+                "openai_compatible",
+                Some("local-large".to_string()),
+            )),
+            ..HighLevelLlmResolutionInputs::default()
+        })
+        .unwrap();
+    assert_eq!(
+        explicit_provider_ignores_other_profile_default.provider,
+        "openai"
+    );
+    assert_eq!(
+        explicit_provider_ignores_other_profile_default.model,
+        get_latest_model("openai", None).unwrap().id
+    );
+
+    let compatible_with_other_profile_default =
+        resolve_high_level_provider_and_model(&HighLevelLlmResolutionInputs {
+            provider: Some("openrouter".to_string()),
+            active_profile: Some(ActiveLlmProfile::new("openai", Some("gpt-5.2".to_string()))),
+            ..HighLevelLlmResolutionInputs::default()
+        })
+        .unwrap_err();
+    assert_eq!(
+        compatible_with_other_profile_default.kind,
+        AdapterErrorKind::Configuration
+    );
+    assert!(compatible_with_other_profile_default
+        .message
+        .contains("No model configured"));
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], None).unwrap();
+    let profiled = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            active_profile: Some(ActiveLlmProfile::new(
+                "openai_compatible",
+                Some("local-large".to_string()),
+            )),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        profiled.steps[0].request.provider.as_deref(),
+        Some("openai_compatible")
+    );
+    assert_eq!(profiled.steps[0].request.model, "local-large");
+
+    for provider in ["openrouter", "litellm", "openai_compatible"] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let adapter: Arc<dyn ProviderAdapter> =
+            Arc::new(HighLevelBoundaryAdapter::new(provider, Arc::clone(&calls)));
+        let client = Client::from_adapters(vec![adapter], Some(provider)).unwrap();
+        let error = generate(
+            &client,
+            GenerateRequest {
+                prompt: Some("hello".to_string()),
+                ..GenerateRequest::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, AdapterErrorKind::Configuration);
+        assert!(error.message.contains("No model configured"));
+        assert!(call_log(&calls).is_empty());
+    }
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("gemini", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("gemini")).unwrap();
+    let vision = generate(
+        &client,
+        GenerateRequest {
+            messages: Some(vec![Message {
+                role: MessageRole::User,
+                content: vec![ContentPart::Image {
+                    image: ImageData::url("https://example.test/image.png"),
+                }],
+                ..Message::default()
+            }]),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        vision.steps[0].request.model,
+        get_latest_model("gemini", Some("vision")).unwrap().id
+    );
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("anthropic", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("anthropic")).unwrap();
+    let structured = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("json please".to_string()),
+            response_format: Some(ResponseFormat::JsonObject),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        structured.steps[0].request.model,
+        get_latest_model("anthropic", None).unwrap().id
+    );
+}
+
+#[test]
+fn high_level_stream_routes_through_middleware_and_reconstructs_response() {
+    fn assert_async_stream<T: futures_core::Stream<Item = Result<StreamEvent, AdapterError>>>() {}
+    assert_async_stream::<unified_llm_adapter::StreamResult>();
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(HighLevelBoundaryAdapter::new("openai", Arc::clone(&calls)));
+    let middleware_calls = Arc::new(Mutex::new(Vec::new()));
+    let middleware: Arc<dyn Middleware> = Arc::new(RequestRecordingMiddleware {
+        calls: Arc::clone(&middleware_calls),
+    });
+    let client = Client::from_adapters(vec![adapter], Some("openai"))
+        .unwrap()
+        .with_middleware(vec![middleware]);
+
+    let mut result = stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("stream please".to_string()),
+            model: Some("stream-model".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result.next().unwrap().unwrap(),
+        StreamEvent::text_delta("hel")
+    );
+    assert_eq!(result.partial_response().text(), "hel");
+    let response = result.response().unwrap();
+    assert_eq!(response.text(), "hello");
+    assert_eq!(response.finish_reason, FinishReason::Stop);
+
+    let mut text_result = stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("stream please".to_string()),
+            model: Some("stream-model".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    let chunks = text_result
+        .text_stream()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(chunks, vec!["hel".to_string(), "lo".to_string()]);
+    assert_eq!(text_result.response().unwrap().text(), "hello");
+
+    assert_eq!(
+        call_log(&middleware_calls),
+        vec![
+            "middleware-stream:openai:stream-model",
+            "middleware-stream:openai:stream-model",
+        ]
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec![
+            "stream:openai:stream-model:user=stream please",
+            "stream:openai:stream-model:user=stream please",
+        ]
+    );
+}
+
+#[test]
+fn high_level_stream_continues_active_tool_loop_with_step_finish_boundary() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter = Arc::new(ScriptedStreamAdapter::new(
+        "streaming",
+        Arc::clone(&calls),
+        vec![
+            Ok(vec![
+                Ok(StreamEvent::text_delta("Need tools")),
+                Ok(tool_call_stream_event(
+                    StreamEventType::ToolCallEnd,
+                    ToolCall::from_raw_arguments("call_weather", "weather", "{\"city\":\"Paris\"}"),
+                )),
+                Ok(tool_call_stream_event(
+                    StreamEventType::ToolCallEnd,
+                    ToolCall::from_raw_arguments("call_time", "local_time", "{\"city\":\"Paris\"}"),
+                )),
+                Ok(StreamEvent::finish(FinishReason::ToolCalls, None)),
+            ]),
+            Ok(vec![
+                Ok(StreamEvent::text_delta("final answer")),
+                Ok(StreamEvent::finish(FinishReason::Stop, None)),
+            ]),
+        ],
+    ));
+    let request_log = adapter.requests();
+    let adapter: Arc<dyn ProviderAdapter> = adapter;
+    let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+    let weather = Tool::active_with_schema(
+        "weather",
+        Some("Lookup weather".to_string()),
+        Some(json!({
+            "type": "object",
+            "required": ["city"],
+            "properties": {"city": {"type": "string"}},
+        })),
+        |invocation: ToolInvocation| Ok(json!({"weather_city": invocation.arguments["city"]})),
+    )
+    .unwrap();
+    let local_time = Tool::active("local_time", |invocation: ToolInvocation| {
+        Ok(json!({"time_city": invocation.arguments["city"]}))
+    })
+    .unwrap();
+
+    let mut result = stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("what should I do?".to_string()),
+            model: Some("stream-model".to_string()),
+            tools: vec![weather, local_time],
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    let events = result.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+    let response = result.response().unwrap();
+
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.r#type.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            StreamEventType::TextDelta,
+            StreamEventType::ToolCallEnd,
+            StreamEventType::ToolCallEnd,
+            StreamEventType::Finish,
+            StreamEventType::Custom("step_finish".to_string()),
+            StreamEventType::TextDelta,
+            StreamEventType::Finish,
+        ]
+    );
+    assert_eq!(
+        events[4].response.as_ref().expect("step response").text(),
+        "Need tools"
+    );
+    assert_eq!(
+        events[4]
+            .finish_reason
+            .as_ref()
+            .expect("step finish reason")
+            .reason,
+        FinishReasonKind::ToolCalls
+    );
+    assert_eq!(response.text(), "final answer");
+    assert_eq!(result.partial_response().text(), "final answer");
+    assert_eq!(
+        call_log(&calls),
+        vec![
+            "stream:streaming:stream-model:1",
+            "stream:streaming:stream-model:4",
+        ]
+    );
+
+    let requests = request_log.lock().expect("request log").clone();
+    assert!(requests[0]
+        .tool_choice
+        .as_ref()
+        .is_some_and(ToolChoice::is_auto));
+    assert_eq!(
+        requests[1]
+            .messages
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>(),
+        vec![
+            MessageRole::User,
+            MessageRole::Assistant,
+            MessageRole::Tool,
+            MessageRole::Tool,
+        ]
+    );
+    assert_eq!(
+        requests[1].messages[2].tool_call_id.as_deref(),
+        Some("call_weather")
+    );
+    assert_eq!(
+        requests[1].messages[3].tool_call_id.as_deref(),
+        Some("call_time")
+    );
+}
+
+#[test]
+fn high_level_stream_retries_only_before_first_delivered_event() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter::new(
+        "streaming",
+        Arc::clone(&calls),
+        vec![
+            Err(retryable_rate_limit_error("open failed")),
+            Ok(vec![Ok(StreamEvent::text_delta("after retry"))]),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+    let policy = RetryPolicy {
+        max_retries: 2,
+        jitter: false,
+        ..RetryPolicy::default()
+    };
+    let sleep_durations = Arc::new(Mutex::new(Vec::new()));
+
+    let mut result = stream_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "stream-model".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        },
+        &policy,
+        || 1.0,
+        {
+            let sleep_durations = Arc::clone(&sleep_durations);
+            move |delay| sleep_durations.lock().expect("sleep durations").push(delay)
+        },
+    )
+    .unwrap();
+
+    let events = result.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(events, vec![StreamEvent::text_delta("after retry")]);
+    assert_eq!(result.response().unwrap().text(), "after retry");
+    assert_eq!(
+        sleep_durations.lock().expect("sleep durations").clone(),
+        vec![1.0]
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec![
+            "stream:streaming:stream-model:1",
+            "stream:streaming:stream-model:1",
+        ]
+    );
+
+    let first_event_error_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter::new(
+        "streaming",
+        Arc::clone(&first_event_error_calls),
+        vec![
+            Ok(vec![Err(retryable_rate_limit_error("first event failed"))]),
+            Ok(vec![Ok(StreamEvent::text_delta("late success"))]),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+    let first_event_sleeps = Arc::new(Mutex::new(Vec::new()));
+    let mut result = stream_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "stream-model".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        },
+        &policy,
+        || 1.0,
+        {
+            let first_event_sleeps = Arc::clone(&first_event_sleeps);
+            move |delay| {
+                first_event_sleeps
+                    .lock()
+                    .expect("first event sleeps")
+                    .push(delay)
+            }
+        },
+    )
+    .unwrap();
+
+    let events = result.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(events, vec![StreamEvent::text_delta("late success")]);
+    assert_eq!(
+        first_event_sleeps
+            .lock()
+            .expect("first event sleeps")
+            .clone(),
+        vec![1.0]
+    );
+    assert_eq!(
+        call_log(&first_event_error_calls),
+        vec![
+            "stream:streaming:stream-model:1",
+            "stream:streaming:stream-model:1",
+        ]
+    );
+
+    let zero_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter::new(
+        "streaming",
+        Arc::clone(&zero_calls),
+        vec![
+            Err(retryable_rate_limit_error("zero retry stream open")),
+            Ok(vec![Ok(StreamEvent::text_delta("late success"))]),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+    let zero_policy = RetryPolicy {
+        max_retries: 0,
+        jitter: false,
+        ..RetryPolicy::default()
+    };
+    let error = match stream_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "stream-model".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        },
+        &zero_policy,
+        || 1.0,
+        |_| panic!("max_retries=0 must not sleep"),
+    ) {
+        Ok(_) => panic!("max_retries=0 must surface the opening error"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, AdapterErrorKind::RateLimit);
+    assert_eq!(error.message, "zero retry stream open");
+    assert_eq!(
+        call_log(&zero_calls),
+        vec!["stream:streaming:stream-model:1"]
+    );
+
+    let partial_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter::new(
+        "streaming",
+        Arc::clone(&partial_calls),
+        vec![Ok(vec![
+            Ok(StreamEvent::text_delta("partial")),
+            Err(retryable_rate_limit_error("after partial")),
+        ])],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+    let partial_sleeps = Arc::new(Mutex::new(Vec::new()));
+    let mut result = stream_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "stream-model".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        },
+        &policy,
+        || 1.0,
+        {
+            let partial_sleeps = Arc::clone(&partial_sleeps);
+            move |delay| partial_sleeps.lock().expect("partial sleeps").push(delay)
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        result.next().expect("partial event").unwrap(),
+        StreamEvent::text_delta("partial")
+    );
+    let error = result
+        .next()
+        .expect("post-partial stream error")
+        .unwrap_err();
+    assert_eq!(error.kind, AdapterErrorKind::RateLimit);
+    assert_eq!(error.message, "after partial");
+    assert!(result.next().is_none());
+    assert!(partial_sleeps.lock().expect("partial sleeps").is_empty());
+    assert_eq!(
+        call_log(&partial_calls),
+        vec!["stream:streaming:stream-model:1"]
+    );
+}
+
+#[test]
+fn high_level_stream_closes_provider_resources_on_close_drop_and_terminal_error() {
+    let explicit_close_calls = Arc::new(Mutex::new(0));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ClosableStreamAdapter::new(
+        "streaming",
+        Arc::clone(&explicit_close_calls),
+        vec![
+            Ok(StreamEvent::text_delta("partial")),
+            Ok(StreamEvent::text_delta("unused")),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+    let mut result = stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            model: Some("stream-model".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result.next().expect("partial event").unwrap(),
+        StreamEvent::text_delta("partial")
+    );
+    result.close().unwrap();
+    assert!(result.next().is_none());
+    result.close().unwrap();
+    assert_eq!(*explicit_close_calls.lock().expect("close count"), 1);
+
+    let drop_close_calls = Arc::new(Mutex::new(0));
+    {
+        let adapter: Arc<dyn ProviderAdapter> = Arc::new(ClosableStreamAdapter::new(
+            "streaming",
+            Arc::clone(&drop_close_calls),
+            vec![
+                Ok(StreamEvent::text_delta("partial")),
+                Ok(StreamEvent::text_delta("unused")),
+            ],
+        ));
+        let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+        let mut result = stream(
+            &client,
+            GenerateRequest {
+                prompt: Some("hello".to_string()),
+                model: Some("stream-model".to_string()),
+                ..GenerateRequest::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            result.next().expect("partial event").unwrap(),
+            StreamEvent::text_delta("partial")
+        );
+    }
+    assert_eq!(*drop_close_calls.lock().expect("drop close count"), 1);
+
+    let error_close_calls = Arc::new(Mutex::new(0));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ClosableStreamAdapter::new(
+        "streaming",
+        Arc::clone(&error_close_calls),
+        vec![
+            Ok(StreamEvent::text_delta("partial")),
+            Err(AdapterError::new(AdapterErrorKind::Stream, "stream broke")),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+    let mut result = stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            model: Some("stream-model".to_string()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result.next().expect("partial event").unwrap(),
+        StreamEvent::text_delta("partial")
+    );
+    let error = result.next().expect("terminal stream error").unwrap_err();
+    assert_eq!(error.kind, AdapterErrorKind::Stream);
+    assert_eq!(error.message, "stream broke");
+    assert_eq!(*error_close_calls.lock().expect("error close count"), 1);
+    assert_eq!(result.response().unwrap_err().message, "stream broke");
+}
+
+#[test]
+fn high_level_generate_checks_abort_before_and_between_llm_steps() {
+    let pre_aborted_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(HighLevelBoundaryAdapter::new(
+        "high",
+        Arc::clone(&pre_aborted_calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let controller = AbortController::new();
+    controller.abort("caller cancelled");
+
+    let error = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            model: Some("abort-model".to_string()),
+            abort_signal: Some(controller.signal()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::Abort);
+    assert_eq!(error.message, "caller cancelled");
+    assert!(call_log(&pre_aborted_calls).is_empty());
+
+    let between_step_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&between_step_calls),
+        vec![
+            Ok(Response {
+                message: Message::assistant("first"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("second should not run"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let controller = AbortController::new();
+    let signal = controller.signal();
+    let error = generate_steps_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "step-1".to_string(),
+            messages: vec![Message::user("hello")],
+            abort_signal: Some(signal),
+            ..Request::default()
+        },
+        &RetryPolicy::default(),
+        |steps| {
+            if steps.len() == 1 {
+                controller.abort("stop before continuation");
+                return Ok(Some(Request {
+                    model: "step-2".to_string(),
+                    messages: vec![Message::user("continue")],
+                    ..Request::default()
+                }));
+            }
+            Ok(None)
+        },
+        || 1.0,
+        |_| {},
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::Abort);
+    assert_eq!(error.message, "stop before continuation");
+    assert_eq!(
+        call_log(&between_step_calls),
+        vec!["complete:high:step-1:1"]
+    );
+}
+
+#[test]
+fn high_level_stream_abort_closes_provider_resources_once() {
+    let close_calls = Arc::new(Mutex::new(0));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ClosableStreamAdapter::new(
+        "streaming",
+        Arc::clone(&close_calls),
+        vec![
+            Ok(StreamEvent::text_delta("partial")),
+            Ok(StreamEvent::text_delta("late")),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+    let controller = AbortController::new();
+    let mut result = stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            model: Some("stream-model".to_string()),
+            abort_signal: Some(controller.signal()),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        result.next().expect("first event").unwrap(),
+        StreamEvent::text_delta("partial")
+    );
+    controller.abort("stop stream");
+    let error = result.next().expect("abort event").unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::Abort);
+    assert_eq!(error.message, "stop stream");
+    assert_eq!(*close_calls.lock().expect("close count"), 1);
+    assert!(result.next().is_none());
+    assert_eq!(result.response().unwrap_err().message, "stop stream");
+    result.close().unwrap();
+    assert_eq!(*close_calls.lock().expect("close count"), 1);
+}
+
+#[test]
+fn total_timeout_fails_high_level_generation_and_stream_without_provider_calls() {
+    let generate_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(HighLevelBoundaryAdapter::new(
+        "timed",
+        Arc::clone(&generate_calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("timed")).unwrap();
+
+    let error = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            model: Some("timed-model".to_string()),
+            timeout: Some(TimeoutConfig::total(0.0)),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::RequestTimeout);
+    assert!(error.message.contains("generation timed out"));
+    assert!(call_log(&generate_calls).is_empty());
+
+    let stream_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(HighLevelBoundaryAdapter::new(
+        "timed",
+        Arc::clone(&stream_calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("timed")).unwrap();
+    let stream_error = match stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            model: Some("timed-model".to_string()),
+            timeout: Some(TimeoutConfig::total(0.0)),
+            ..GenerateRequest::default()
+        },
+    ) {
+        Ok(_) => panic!("total timeout should fail before stream open"),
+        Err(error) => error,
+    };
+
+    assert_eq!(stream_error.kind, AdapterErrorKind::RequestTimeout);
+    assert!(stream_error.message.contains("stream timed out"));
+    assert!(call_log(&stream_calls).is_empty());
+}
+
+#[test]
+fn timeout_config_applies_to_each_llm_step_and_retry_policy_can_opt_in() {
+    let timeout = TimeoutConfig {
+        total: Some(30.0),
+        per_step: Some(5.0),
+        stream_read: Some(2.0),
+    };
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(TimeoutRecordingAdapter::new(
+        "timed",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message::assistant("first"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("done"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("timed")).unwrap();
+
+    let result = generate_steps_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "step-1".to_string(),
+            messages: vec![Message::user("hello")],
+            timeout: Some(timeout),
+            ..Request::default()
+        },
+        &RetryPolicy::default(),
+        |steps| {
+            if steps.len() == 1 {
+                return Ok(Some(Request {
+                    model: "step-2".to_string(),
+                    messages: vec![Message::user("continue")],
+                    ..Request::default()
+                }));
+            }
+            Ok(None)
+        },
+        || 1.0,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "done");
+    assert_eq!(
+        calls.lock().expect("timeout calls").clone(),
+        vec![
+            ("step-1".to_string(), Some(timeout)),
+            ("step-2".to_string(), Some(timeout)),
+        ]
+    );
+
+    let zero_timeout_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(TimeoutRecordingAdapter::new(
+        "timed",
+        Arc::clone(&zero_timeout_calls),
+        vec![Ok(Response {
+            message: Message::assistant("should not run"),
+            finish_reason: FinishReason::Stop,
+            ..Response::default()
+        })],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("timed")).unwrap();
+    let error = generate(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            model: Some("timed-model".to_string()),
+            timeout: Some(TimeoutConfig::per_step(0.0)),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, AdapterErrorKind::RequestTimeout);
+    assert!(error.message.contains("generation step timed out"));
+    assert!(zero_timeout_calls
+        .lock()
+        .expect("zero timeout calls")
+        .is_empty());
+
+    let timeout_error = unified_llm_adapter::timeout_error("generation step", Some(1.0));
+    assert!(!timeout_error.retryable);
+    let default_retry_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "timed",
+        Arc::clone(&default_retry_calls),
+        vec![
+            Err(timeout_error.clone()),
+            Ok(Response {
+                message: Message::assistant("late success"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("timed")).unwrap();
+    let error = generate_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "timed-model".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        },
+        &RetryPolicy {
+            max_retries: 1,
+            jitter: false,
+            ..RetryPolicy::default()
+        },
+        || 1.0,
+        |_| panic!("timeouts must not retry by default"),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, AdapterErrorKind::RequestTimeout);
+    assert_eq!(
+        call_log(&default_retry_calls),
+        vec!["complete:timed:timed-model:1"]
+    );
+
+    let opt_in_retry_calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "timed",
+        Arc::clone(&opt_in_retry_calls),
+        vec![
+            Err(timeout_error),
+            Ok(Response {
+                message: Message::assistant("retried"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("timed")).unwrap();
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let result = generate_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "timed-model".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        },
+        &RetryPolicy {
+            max_retries: 1,
+            jitter: false,
+            retry_timeouts: true,
+            ..RetryPolicy::default()
+        },
+        || 1.0,
+        {
+            let sleeps = Arc::clone(&sleeps);
+            move |delay| sleeps.lock().expect("timeout sleeps").push(delay)
+        },
+    )
+    .unwrap();
+    assert_eq!(result.text, "retried");
+    assert_eq!(sleeps.lock().expect("timeout sleeps").clone(), vec![1.0]);
+    assert_eq!(
+        call_log(&opt_in_retry_calls),
+        vec![
+            "complete:timed:timed-model:1",
+            "complete:timed:timed-model:1",
+        ]
+    );
+}
+
+#[test]
+fn stream_timeout_and_adapter_timeout_defaults_are_observable_without_live_providers() {
+    let close_calls = Arc::new(Mutex::new(0));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ClosableStreamAdapter::new(
+        "streaming",
+        Arc::clone(&close_calls),
+        vec![Ok(StreamEvent::text_delta("should not read"))],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("streaming")).unwrap();
+    let mut result = stream(
+        &client,
+        GenerateRequest {
+            prompt: Some("hello".to_string()),
+            model: Some("stream-model".to_string()),
+            timeout: Some(TimeoutConfig::default().with_stream_read(Some(0.0))),
+            ..GenerateRequest::default()
+        },
+    )
+    .unwrap();
+
+    let error = result.next().expect("stream timeout").unwrap_err();
+    assert_eq!(error.kind, AdapterErrorKind::RequestTimeout);
+    assert!(error.message.contains("stream_read timed out"));
+    assert_eq!(*close_calls.lock().expect("close count"), 1);
+
+    let adapter_timeout = AdapterTimeout::default();
+    assert_eq!(adapter_timeout.connect, DEFAULT_CONNECT_TIMEOUT_SECONDS);
+    assert_eq!(adapter_timeout.request, DEFAULT_REQUEST_TIMEOUT_SECONDS);
+    assert_eq!(
+        adapter_timeout.stream_read,
+        DEFAULT_STREAM_READ_TIMEOUT_SECONDS
+    );
+    assert_eq!(NativeRequestConfig::default().timeout, adapter_timeout);
+    assert_eq!(
+        OpenAICompatibleRequestConfig::default().timeout,
+        adapter_timeout
+    );
+}
+
+#[test]
+fn tool_invocation_carries_same_abort_signal_without_keyword_introspection() {
+    let controller = AbortController::new();
+    let signal = controller.signal();
+    let tool_call = ToolCall {
+        id: "call-1".to_string(),
+        name: "lookup".to_string(),
+        arguments: json!({"city": "Paris"}),
+        raw_arguments: None,
+        r#type: "function".to_string(),
+    };
+    let invocation = ToolInvocation::new(
+        tool_call.clone(),
+        vec![Message::user("weather?")],
+        Some(signal.clone()),
+    );
+
+    assert_eq!(invocation.tool_call, tool_call);
+    assert_eq!(invocation.tool_call_id, "call-1");
+    assert_eq!(invocation.arguments, json!({"city": "Paris"}));
+    assert_eq!(invocation.messages, vec![Message::user("weather?")]);
+    assert_eq!(invocation.abort_signal, Some(signal));
+    assert!(invocation.check_abort().is_ok());
+
+    controller.abort("tool cancelled");
+    let error = invocation.check_abort().unwrap_err();
+    assert_eq!(error.kind, AdapterErrorKind::Abort);
+    assert_eq!(error.message, "tool cancelled");
+}
+
+#[test]
 fn high_level_generate_object_retries_provider_errors_then_parses_successful_response() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
@@ -1331,6 +3728,7 @@ fn high_level_generate_object_retries_provider_errors_then_parses_successful_res
 
     assert_eq!(result.value, json!({"answer": "yes"}));
     assert_eq!(result.raw_text, "{\"answer\":\"yes\"}");
+    assert_eq!(result.generation.output, Some(json!({"answer": "yes"})));
     assert_eq!(
         call_log(&calls),
         vec![
@@ -1338,6 +3736,47 @@ fn high_level_generate_object_retries_provider_errors_then_parses_successful_res
             "complete:structured:object-model:1",
         ]
     );
+}
+
+#[test]
+fn high_level_generate_object_preserves_zero_retry_budget() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![
+            Err(retryable_rate_limit_error("object call should not retry")),
+            Ok(Response {
+                message: Message::assistant("{\"answer\":\"late success\"}"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+    let policy = RetryPolicy {
+        max_retries: 0,
+        jitter: false,
+        ..RetryPolicy::default()
+    };
+
+    let error = generate_object_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "object-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            ..Request::default()
+        },
+        object_schema(),
+        &policy,
+        || 1.0,
+        |_| panic!("max_retries=0 must not sleep"),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::RateLimit);
+    assert_eq!(error.message, "object call should not retry");
+    assert_eq!(call_log(&calls), vec!["complete:structured:object-model:1"]);
 }
 
 #[test]
@@ -1400,6 +3839,684 @@ fn high_level_generate_object_does_not_retry_no_object_generated_failures() {
         );
         assert_eq!(call_log(&calls), vec!["complete:structured:object-model:1"]);
     }
+}
+
+#[test]
+fn high_level_generate_object_validates_full_json_schema_keywords_locally() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![Ok(Response {
+            message: Message::assistant("{\"answer\":\"no\"}"),
+            finish_reason: FinishReason::Stop,
+            ..Response::default()
+        })],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+
+    let error = generate_object(
+        &client,
+        Request {
+            model: "object-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            ..Request::default()
+        },
+        json!({
+            "type": "object",
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string", "minLength": 3}
+            }
+        }),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::NoObjectGenerated);
+    assert_eq!(
+        error.message,
+        "structured output did not match the provided JSON Schema"
+    );
+    assert_eq!(call_log(&calls), vec!["complete:structured:object-model:1"]);
+}
+
+#[test]
+fn high_level_generate_object_accepts_structured_output_tool_arguments() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![Ok(Response {
+            message: Message {
+                role: MessageRole::Assistant,
+                content: vec![ContentPart::ToolCall {
+                    tool_call: ToolCall {
+                        id: "call_structured".to_string(),
+                        name: "structured_output".to_string(),
+                        arguments: json!({"answer": "yes"}),
+                        raw_arguments: Some("{\"answer\":\"yes\"}".to_string()),
+                        r#type: "function".to_string(),
+                    },
+                }],
+                ..Message::default()
+            },
+            finish_reason: FinishReason::ToolCalls,
+            ..Response::default()
+        })],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+
+    let result = generate_object(
+        &client,
+        Request {
+            model: "object-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            tools: vec![Tool::passive_with_schema(
+                "structured_output",
+                None::<String>,
+                Some(object_schema()),
+            )
+            .unwrap()],
+            ..Request::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+
+    assert_eq!(result.value, json!({"answer": "yes"}));
+    assert_eq!(result.raw_text, "{\"answer\":\"yes\"}");
+    assert_eq!(result.generation.output, Some(json!({"answer": "yes"})));
+    assert_eq!(call_log(&calls), vec!["complete:structured:object-model:1"]);
+}
+
+#[test]
+fn high_level_generate_object_prefers_structured_output_tool_over_mixed_text() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![Ok(Response {
+            message: Message {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentPart::Text {
+                        text: "I found a valid object.".to_string(),
+                    },
+                    ContentPart::ToolCall {
+                        tool_call: ToolCall::from_raw_arguments(
+                            "call_structured",
+                            "structured_output",
+                            "{\"answer\":\"yes\"}",
+                        ),
+                    },
+                ],
+                ..Message::default()
+            },
+            finish_reason: FinishReason::ToolCalls,
+            ..Response::default()
+        })],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+
+    let result = generate_object(
+        &client,
+        Request {
+            model: "object-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            ..Request::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+
+    assert_eq!(result.value, json!({"answer": "yes"}));
+    assert_eq!(result.raw_text, "{\"answer\":\"yes\"}");
+    assert_eq!(result.generation.output, Some(json!({"answer": "yes"})));
+    assert_eq!(result.generation.text, "I found a valid object.");
+    assert_eq!(call_log(&calls), vec!["complete:structured:object-model:1"]);
+}
+
+#[test]
+fn high_level_generate_object_treats_injected_structured_output_tool_as_terminal() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![Ok(Response {
+            message: Message {
+                role: MessageRole::Assistant,
+                content: vec![ContentPart::ToolCall {
+                    tool_call: ToolCall::from_raw_arguments(
+                        "call_structured",
+                        "structured_output",
+                        "{\"answer\":\"yes\"}",
+                    ),
+                }],
+                ..Message::default()
+            },
+            finish_reason: FinishReason::ToolCalls,
+            ..Response::default()
+        })],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+
+    let result = generate_object(
+        &client,
+        Request {
+            model: "object-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            ..Request::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+
+    assert_eq!(result.value, json!({"answer": "yes"}));
+    assert_eq!(result.raw_text, "{\"answer\":\"yes\"}");
+    assert_eq!(result.generation.steps.len(), 1);
+    assert!(result.generation.steps[0].tool_results.is_empty());
+    assert_eq!(result.generation.output, Some(json!({"answer": "yes"})));
+    assert_eq!(call_log(&calls), vec!["complete:structured:object-model:1"]);
+}
+
+#[test]
+fn high_level_stream_object_treats_injected_structured_output_tool_as_terminal() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter = Arc::new(ScriptedStreamAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![Ok(vec![
+            Ok(tool_call_stream_event(
+                StreamEventType::ToolCallEnd,
+                ToolCall::from_raw_arguments(
+                    "call_structured",
+                    "structured_output",
+                    "{\"answer\":\"yes\"}",
+                ),
+            )),
+            Ok(StreamEvent::finish(FinishReason::ToolCalls, None)),
+        ])],
+    ));
+    let request_log = adapter.requests();
+    let adapter: Arc<dyn ProviderAdapter> = adapter;
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+
+    let mut result = stream_object(
+        &client,
+        Request {
+            model: "object-stream-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            ..Request::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+
+    assert_eq!(result.object().unwrap(), json!({"answer": "yes"}));
+    assert_eq!(result.partial_object(), Some(json!({"answer": "yes"})));
+    assert_eq!(result.response().unwrap().tool_calls().len(), 1);
+    assert_eq!(
+        call_log(&calls),
+        vec!["stream:structured:object-stream-model:1"]
+    );
+
+    let requests = request_log.lock().expect("request log").clone();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].tools.is_empty());
+}
+
+#[test]
+fn high_level_stream_object_retries_provider_errors_but_not_local_parse_or_schema_failures() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![
+            Err(retryable_rate_limit_error("retry object stream")),
+            Ok(vec![Ok(StreamEvent::text_delta("{\"answer\":\"yes\"}"))]),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+    let policy = RetryPolicy {
+        max_retries: 1,
+        jitter: false,
+        ..RetryPolicy::default()
+    };
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+
+    let mut result = stream_object_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "object-stream-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            ..Request::default()
+        },
+        object_schema(),
+        &policy,
+        || 1.0,
+        {
+            let sleeps = Arc::clone(&sleeps);
+            move |delay| sleeps.lock().expect("sleeps").push(delay)
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.object().unwrap(), json!({"answer": "yes"}));
+    assert_eq!(result.partial_object(), Some(json!({"answer": "yes"})));
+    assert_eq!(sleeps.lock().expect("sleeps").clone(), vec![1.0]);
+    assert_eq!(
+        call_log(&calls),
+        vec![
+            "stream:structured:object-stream-model:1",
+            "stream:structured:object-stream-model:1",
+        ]
+    );
+
+    for (response_text, expected_message) in [
+        ("not json", "failed to parse structured output as JSON"),
+        (
+            "{\"answer\":7}",
+            "structured output did not match the provided JSON Schema",
+        ),
+    ] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter::new(
+            "structured",
+            Arc::clone(&calls),
+            vec![
+                Ok(vec![Ok(StreamEvent::text_delta(response_text))]),
+                Ok(vec![Ok(StreamEvent::text_delta(
+                    "{\"answer\":\"late success\"}",
+                ))]),
+            ],
+        ));
+        let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+        let mut result = stream_object_with_policy_and_hooks(
+            &client,
+            Request {
+                model: "object-stream-model".to_string(),
+                messages: vec![Message::user("answer as JSON")],
+                ..Request::default()
+            },
+            object_schema(),
+            &RetryPolicy {
+                max_retries: 2,
+                jitter: false,
+                ..RetryPolicy::default()
+            },
+            || 1.0,
+            |_| panic!("local structured parse failures must not sleep or retry"),
+        )
+        .unwrap();
+
+        let error = result.object().unwrap_err();
+        assert_eq!(error.kind, AdapterErrorKind::NoObjectGenerated);
+        assert_eq!(error.message, expected_message);
+        assert!(!error.retryable);
+        assert_eq!(
+            error
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("raw_text"))
+                .and_then(serde_json::Value::as_str),
+            Some(response_text)
+        );
+        assert_eq!(
+            call_log(&calls),
+            vec!["stream:structured:object-stream-model:1"]
+        );
+    }
+}
+
+#[test]
+fn high_level_stream_object_yields_partial_updates_before_complete_json() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![Ok(vec![
+            Ok(StreamEvent::text_delta("{\"answer\":\"hel")),
+            Ok(StreamEvent::text_delta("lo\"}")),
+        ])],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+
+    let mut result = stream_object(
+        &client,
+        Request {
+            model: "object-stream-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            ..Request::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+
+    let first = result.next().unwrap().unwrap();
+    assert_eq!(first, json!({"answer": "hel"}));
+    assert_eq!(result.partial_object(), Some(json!({"answer": "hel"})));
+    assert_eq!(result.partial_response().text(), "{\"answer\":\"hel");
+
+    let second = result.next().unwrap().unwrap();
+    assert_eq!(second, json!({"answer": "hello"}));
+    assert_eq!(result.object().unwrap(), json!({"answer": "hello"}));
+    assert_eq!(
+        call_log(&calls),
+        vec!["stream:structured:object-stream-model:1"]
+    );
+}
+
+#[test]
+fn high_level_stream_object_yields_partial_updates_from_structured_output_tool_deltas() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![Ok(vec![
+            Ok(StreamEvent::text_delta("The object is coming.")),
+            Ok(tool_call_stream_event(
+                StreamEventType::ToolCallStart,
+                ToolCall::from_raw_arguments("call_structured", "structured_output", ""),
+            )),
+            Ok(tool_call_stream_event(
+                StreamEventType::ToolCallDelta,
+                ToolCall::from_raw_arguments("call_structured", "", "{\"answer\":\"he"),
+            )),
+            Ok(tool_call_stream_event(
+                StreamEventType::ToolCallDelta,
+                ToolCall::from_raw_arguments("call_structured", "", "llo\"}"),
+            )),
+            Ok(StreamEvent::finish(FinishReason::ToolCalls, None)),
+        ])],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+
+    let mut result = stream_object(
+        &client,
+        Request {
+            model: "object-stream-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            ..Request::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+
+    let first = result.next().unwrap().unwrap();
+    assert_eq!(first, json!({"answer": "he"}));
+    assert_eq!(result.partial_object(), Some(json!({"answer": "he"})));
+    assert_eq!(result.partial_response().text(), "The object is coming.");
+    assert_eq!(
+        result.partial_response().tool_calls()[0]
+            .raw_arguments
+            .as_deref(),
+        Some("{\"answer\":\"he")
+    );
+
+    let second = result.next().unwrap().unwrap();
+    assert_eq!(second, json!({"answer": "hello"}));
+    assert_eq!(result.object().unwrap(), json!({"answer": "hello"}));
+    assert_eq!(result.partial_object(), Some(json!({"answer": "hello"})));
+    assert_eq!(
+        call_log(&calls),
+        vec!["stream:structured:object-stream-model:1"]
+    );
+}
+
+#[test]
+fn high_level_stream_object_preserves_zero_retry_budget() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter::new(
+        "structured",
+        Arc::clone(&calls),
+        vec![
+            Err(retryable_rate_limit_error("object stream should not retry")),
+            Ok(vec![Ok(StreamEvent::text_delta(
+                "{\"answer\":\"late success\"}",
+            ))]),
+        ],
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
+    let policy = RetryPolicy {
+        max_retries: 0,
+        jitter: false,
+        ..RetryPolicy::default()
+    };
+
+    let error = match stream_object_with_policy_and_hooks(
+        &client,
+        Request {
+            model: "object-stream-model".to_string(),
+            messages: vec![Message::user("answer as JSON")],
+            ..Request::default()
+        },
+        object_schema(),
+        &policy,
+        || 1.0,
+        |_| panic!("max_retries=0 must not sleep"),
+    ) {
+        Ok(_) => panic!("max_retries=0 should surface the first stream open error"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind, AdapterErrorKind::RateLimit);
+    assert_eq!(error.message, "object stream should not retry");
+    assert_eq!(
+        call_log(&calls),
+        vec!["stream:structured:object-stream-model:1"]
+    );
+}
+
+#[test]
+fn high_level_generate_object_resolves_models_before_low_level_request_construction() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+        "openai",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("openai")).unwrap();
+    let result = generate_object(
+        &client,
+        GenerateRequest {
+            prompt: Some("answer as JSON".to_string()),
+            ..GenerateRequest::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+    let structured_openai = get_latest_model("openai", Some("structured_output"))
+        .expect("openai structured default")
+        .id;
+
+    assert_eq!(result.value, json!({"answer": "yes"}));
+    assert_eq!(result.generation.steps[0].request.model, structured_openai);
+    assert!(matches!(
+        result.generation.steps[0].request.response_format.as_ref(),
+        Some(ResponseFormat::JsonSchema { strict: true, .. })
+    ));
+    assert_eq!(
+        call_log(&calls),
+        vec![format!(
+            "complete:openai:{}:1:json_schema_strict",
+            result.generation.steps[0].request.model
+        )]
+    );
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], None).unwrap();
+    let profiled = generate_object(
+        &client,
+        GenerateRequest {
+            prompt: Some("answer as JSON".to_string()),
+            active_profile: Some(ActiveLlmProfile::new(
+                "openai_compatible",
+                Some("local-large".to_string()),
+            )),
+            ..GenerateRequest::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+    assert_eq!(
+        profiled.generation.steps[0].request.provider.as_deref(),
+        Some("openai_compatible")
+    );
+    assert_eq!(profiled.generation.steps[0].request.model, "local-large");
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:openai_compatible:local-large:1:json_schema_strict"]
+    );
+
+    for provider in ["openrouter", "litellm", "openai_compatible"] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+            provider,
+            Arc::clone(&calls),
+        ));
+        let client = Client::from_adapters(vec![adapter], Some(provider)).unwrap();
+        let error = generate_object(
+            &client,
+            GenerateRequest {
+                prompt: Some("answer as JSON".to_string()),
+                ..GenerateRequest::default()
+            },
+            object_schema(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, AdapterErrorKind::Configuration);
+        assert!(error.message.contains("No model configured"));
+        assert!(call_log(&calls).is_empty());
+    }
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+        "openai",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("openai")).unwrap();
+    let explicit_unknown = generate_object(
+        &client,
+        GenerateRequest {
+            prompt: Some("answer as JSON".to_string()),
+            model: Some("unknown-structured-model-2026-06-27".to_string()),
+            ..GenerateRequest::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+    assert_eq!(
+        explicit_unknown.generation.steps[0].request.model,
+        "unknown-structured-model-2026-06-27"
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:openai:unknown-structured-model-2026-06-27:1:json_schema_strict"]
+    );
+}
+
+#[test]
+fn high_level_stream_object_resolves_models_before_low_level_request_construction() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+        "gemini",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("gemini")).unwrap();
+    let mut result = stream_object(
+        &client,
+        GenerateRequest {
+            prompt: Some("answer as JSON".to_string()),
+            ..GenerateRequest::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+    let structured_gemini = get_latest_model("gemini", Some("structured_output"))
+        .expect("gemini structured default")
+        .id;
+    assert_eq!(result.object().unwrap(), json!({"answer": "yes"}));
+    assert_eq!(
+        call_log(&calls),
+        vec![format!(
+            "stream:gemini:{structured_gemini}:1:json_schema_strict"
+        )]
+    );
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], None).unwrap();
+    let mut profiled = stream_object(
+        &client,
+        GenerateRequest {
+            prompt: Some("answer as JSON".to_string()),
+            active_profile: Some(ActiveLlmProfile::new(
+                "openai_compatible",
+                Some("local-large".to_string()),
+            )),
+            ..GenerateRequest::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+    assert_eq!(profiled.object().unwrap(), json!({"answer": "yes"}));
+    assert_eq!(
+        call_log(&calls),
+        vec!["stream:openai_compatible:local-large:1:json_schema_strict"]
+    );
+
+    for provider in ["openrouter", "litellm", "openai_compatible"] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+            provider,
+            Arc::clone(&calls),
+        ));
+        let client = Client::from_adapters(vec![adapter], Some(provider)).unwrap();
+        let error = match stream_object(
+            &client,
+            GenerateRequest {
+                prompt: Some("answer as JSON".to_string()),
+                ..GenerateRequest::default()
+            },
+            object_schema(),
+        ) {
+            Ok(_) => panic!("stream_object should reject an omitted compatible model"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind, AdapterErrorKind::Configuration);
+        assert!(error.message.contains("No model configured"));
+        assert!(call_log(&calls).is_empty());
+    }
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StructuredRecordingAdapter::new(
+        "openai",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], Some("openai")).unwrap();
+    let mut explicit_unknown = stream_object(
+        &client,
+        GenerateRequest {
+            prompt: Some("answer as JSON".to_string()),
+            model: Some("unknown-structured-stream-model-2026-06-27".to_string()),
+            ..GenerateRequest::default()
+        },
+        object_schema(),
+    )
+    .unwrap();
+    assert_eq!(explicit_unknown.object().unwrap(), json!({"answer": "yes"}));
+    assert_eq!(
+        call_log(&calls),
+        vec!["stream:openai:unknown-structured-stream-model-2026-06-27:1:json_schema_strict"]
+    );
 }
 
 #[test]
@@ -1915,6 +5032,19 @@ fn core_dto_validation_rejects_known_invalid_payload_boundaries() {
     .validate()
     .unwrap_err();
     assert!(document_error.contains("document content is not allowed"));
+
+    let response_format_error = Request {
+        model: "model".to_string(),
+        messages: vec![Message::user("hello")],
+        response_format: Some(ResponseFormat::JsonSchema {
+            json_schema: json!("not a schema object"),
+            strict: true,
+        }),
+        ..Request::default()
+    }
+    .validate_for_client()
+    .unwrap_err();
+    assert!(response_format_error.contains("root JSON Schema object"));
 }
 
 #[test]
@@ -1936,6 +5066,65 @@ fn low_level_client_rejects_empty_model_before_provider_call() {
         unified_llm_adapter::AdapterErrorKind::InvalidRequest
     );
     assert!(error.message.contains("request model"));
+}
+
+#[test]
+fn low_level_client_rejects_invalid_json_schema_response_format_before_provider_call() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("fake", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("fake")).unwrap();
+
+    let error = client
+        .complete(Request {
+            model: "model".to_string(),
+            messages: vec![Message::user("hello")],
+            response_format: Some(ResponseFormat::JsonSchema {
+                json_schema: json!(["not", "a", "schema", "object"]),
+                strict: true,
+            }),
+            ..Request::default()
+        })
+        .unwrap_err();
+
+    assert_eq!(error.kind, AdapterErrorKind::InvalidRequest);
+    assert!(error.message.contains("root JSON Schema object"));
+    assert!(!call_log(&calls)
+        .iter()
+        .any(|call| call.starts_with("complete:")));
+}
+
+#[test]
+fn low_level_client_rejects_empty_model_after_middleware_before_provider_call() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("fake", Arc::clone(&calls)));
+    let middleware: Arc<dyn Middleware> = Arc::new(EmptyModelMiddleware);
+    let client = Client::from_adapters(vec![adapter], Some("fake"))
+        .unwrap()
+        .with_middleware(vec![middleware]);
+
+    let complete_error = client
+        .complete(Request {
+            model: "valid-before-middleware".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        })
+        .unwrap_err();
+    let stream_error = match client.stream(Request {
+        model: "valid-before-middleware".to_string(),
+        messages: vec![Message::user("hello")],
+        ..Request::default()
+    }) {
+        Ok(_) => panic!("stream should reject an empty post-middleware model"),
+        Err(error) => error,
+    };
+
+    assert_eq!(complete_error.kind, AdapterErrorKind::InvalidRequest);
+    assert_eq!(stream_error.kind, AdapterErrorKind::InvalidRequest);
+    assert!(complete_error.message.contains("request model"));
+    assert!(stream_error.message.contains("request model"));
+    assert_eq!(call_log(&calls), vec!["initialize:fake"]);
 }
 
 #[test]
@@ -2108,6 +5297,28 @@ impl Middleware for ProviderOverrideMiddleware {
     }
 }
 
+struct EmptyModelMiddleware;
+
+impl Middleware for EmptyModelMiddleware {
+    fn complete(
+        &self,
+        mut request: Request,
+        next: &unified_llm_adapter::CompleteNext<'_>,
+    ) -> Result<Response, unified_llm_adapter::AdapterError> {
+        request.model.clear();
+        next(request)
+    }
+
+    fn stream(
+        &self,
+        mut request: Request,
+        next: &unified_llm_adapter::StreamNext<'_>,
+    ) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
+        request.model.clear();
+        next(request)
+    }
+}
+
 struct StreamTransformMiddleware {
     name: &'static str,
     calls: Arc<Mutex<Vec<String>>>,
@@ -2194,6 +5405,164 @@ impl Middleware for RequestRecordingMiddleware {
     ) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
         self.record("middleware-stream", &request);
         next(request)
+    }
+}
+
+struct HighLevelBoundaryAdapter {
+    name: &'static str,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl HighLevelBoundaryAdapter {
+    fn new(name: &'static str, calls: Arc<Mutex<Vec<String>>>) -> Self {
+        Self { name, calls }
+    }
+
+    fn record(&self, operation: &str, request: &Request) {
+        self.calls.lock().expect("call log lock").push(format!(
+            "{operation}:{}:{}:{}",
+            request.provider.as_deref().unwrap_or_default(),
+            request.model,
+            message_summary(&request.messages)
+        ));
+    }
+}
+
+impl ProviderAdapter for HighLevelBoundaryAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, unified_llm_adapter::AdapterError> {
+        self.record("complete", &request);
+        Ok(Response {
+            model: request.model,
+            provider: request.provider.unwrap_or_default(),
+            message: Message {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentPart::Text {
+                        text: "boundary text".to_string(),
+                    },
+                    ContentPart::Thinking {
+                        thinking: ThinkingData {
+                            text: "boundary reasoning".to_string(),
+                            signature: None,
+                            redacted: false,
+                            source_provider: None,
+                            source_model: None,
+                        },
+                    },
+                    ContentPart::ToolCall {
+                        tool_call: ToolCall {
+                            id: "call_lookup".to_string(),
+                            name: "lookup".to_string(),
+                            arguments: json!({"city": "Paris"}),
+                            raw_arguments: None,
+                            r#type: "function".to_string(),
+                        },
+                    },
+                ],
+                ..Message::default()
+            },
+            finish_reason: FinishReason::Stop,
+            usage: Usage {
+                input_tokens: 3,
+                output_tokens: 5,
+                total_tokens: 8,
+                ..Usage::default()
+            },
+            warnings: vec![Warning {
+                message: "boundary warning".to_string(),
+                code: Some("boundary_warning".to_string()),
+            }],
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
+        self.record("stream", &request);
+        Ok(stream_events(
+            vec![
+                Ok(StreamEvent::text_delta("hel")),
+                Ok(StreamEvent::text_delta("lo")),
+                Ok(StreamEvent::finish(FinishReason::Stop, None)),
+            ]
+            .into_iter(),
+        ))
+    }
+}
+
+struct StructuredRecordingAdapter {
+    name: &'static str,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl StructuredRecordingAdapter {
+    fn new(name: &'static str, calls: Arc<Mutex<Vec<String>>>) -> Self {
+        Self { name, calls }
+    }
+
+    fn record(&self, operation: &str, request: &Request) {
+        self.calls.lock().expect("call log lock").push(format!(
+            "{operation}:{}:{}:{}:{}",
+            request.provider.as_deref().unwrap_or_default(),
+            request.model,
+            request.messages.len(),
+            response_format_label(request.response_format.as_ref())
+        ));
+    }
+}
+
+impl ProviderAdapter for StructuredRecordingAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, unified_llm_adapter::AdapterError> {
+        self.record("complete", &request);
+        Ok(Response {
+            model: request.model,
+            provider: request.provider.unwrap_or_default(),
+            message: Message::assistant("{\"answer\":\"yes\"}"),
+            finish_reason: FinishReason::Stop,
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
+        self.record("stream", &request);
+        Ok(stream_events(
+            vec![Ok(StreamEvent::text_delta("{\"answer\":\"yes\"}"))].into_iter(),
+        ))
+    }
+}
+
+fn response_format_label(response_format: Option<&ResponseFormat>) -> &'static str {
+    match response_format {
+        Some(ResponseFormat::JsonSchema { strict: true, .. }) => "json_schema_strict",
+        Some(ResponseFormat::JsonSchema { .. }) => "json_schema",
+        Some(ResponseFormat::JsonObject) => "json",
+        Some(ResponseFormat::Text) => "text",
+        None => "none",
+    }
+}
+
+fn message_summary(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .map(|message| format!("{}={}", role_label(message.role), message.text()))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn role_label(role: MessageRole) -> &'static str {
+    match role {
+        MessageRole::System => "system",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+        MessageRole::Developer => "developer",
     }
 }
 
@@ -2297,6 +5666,173 @@ impl ProviderAdapter for ScriptedCompleteAdapter {
     }
 }
 
+struct TimeoutRecordingAdapter {
+    name: &'static str,
+    calls: Arc<Mutex<Vec<(String, Option<TimeoutConfig>)>>>,
+    results: Mutex<VecDeque<Result<Response, unified_llm_adapter::AdapterError>>>,
+}
+
+impl TimeoutRecordingAdapter {
+    fn new(
+        name: &'static str,
+        calls: Arc<Mutex<Vec<(String, Option<TimeoutConfig>)>>>,
+        results: Vec<Result<Response, unified_llm_adapter::AdapterError>>,
+    ) -> Self {
+        Self {
+            name,
+            calls,
+            results: Mutex::new(VecDeque::from(results)),
+        }
+    }
+}
+
+impl ProviderAdapter for TimeoutRecordingAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, unified_llm_adapter::AdapterError> {
+        self.calls
+            .lock()
+            .expect("timeout call log")
+            .push((request.model.clone(), request.timeout));
+        self.results
+            .lock()
+            .expect("timeout recording result lock")
+            .pop_front()
+            .unwrap_or_else(|| {
+                Err(unified_llm_adapter::AdapterError::new(
+                    unified_llm_adapter::AdapterErrorKind::Configuration,
+                    "no timeout recording response",
+                ))
+            })
+            .map(|mut response| {
+                if response.provider.is_empty() {
+                    response.provider = request.provider.unwrap_or_default();
+                }
+                if response.model.is_empty() {
+                    response.model = request.model;
+                }
+                response
+            })
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
+        Err(unified_llm_adapter::AdapterError::new(
+            unified_llm_adapter::AdapterErrorKind::Configuration,
+            "timeout recording adapter does not implement stream",
+        ))
+    }
+}
+
+struct ScriptedStreamAdapter {
+    name: &'static str,
+    calls: Arc<Mutex<Vec<String>>>,
+    requests: Arc<Mutex<Vec<Request>>>,
+    results: Mutex<VecDeque<Result<Vec<Result<StreamEvent, AdapterError>>, AdapterError>>>,
+}
+
+impl ScriptedStreamAdapter {
+    fn new(
+        name: &'static str,
+        calls: Arc<Mutex<Vec<String>>>,
+        results: Vec<Result<Vec<Result<StreamEvent, AdapterError>>, AdapterError>>,
+    ) -> Self {
+        Self {
+            name,
+            calls,
+            requests: Arc::new(Mutex::new(Vec::new())),
+            results: Mutex::new(VecDeque::from(results)),
+        }
+    }
+
+    fn requests(&self) -> Arc<Mutex<Vec<Request>>> {
+        Arc::clone(&self.requests)
+    }
+
+    fn record(&self, call: impl Into<String>) {
+        self.calls.lock().expect("call log lock").push(call.into());
+    }
+}
+
+impl ProviderAdapter for ScriptedStreamAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, _request: Request) -> Result<Response, unified_llm_adapter::AdapterError> {
+        Err(unified_llm_adapter::AdapterError::new(
+            unified_llm_adapter::AdapterErrorKind::Configuration,
+            "scripted stream adapter does not implement complete",
+        ))
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
+        self.requests
+            .lock()
+            .expect("scripted stream request lock")
+            .push(request.clone());
+        self.record(format!(
+            "stream:{}:{}:{}",
+            request.provider.as_deref().unwrap_or_default(),
+            request.model,
+            request.messages.len()
+        ));
+        self.results
+            .lock()
+            .expect("scripted stream result lock")
+            .pop_front()
+            .unwrap_or_else(|| {
+                Err(unified_llm_adapter::AdapterError::new(
+                    unified_llm_adapter::AdapterErrorKind::Configuration,
+                    "no scripted stream response",
+                ))
+            })
+            .map(|events| stream_events(events.into_iter()))
+    }
+}
+
+struct ClosableStreamAdapter {
+    name: &'static str,
+    close_calls: Arc<Mutex<usize>>,
+    events: Vec<Result<StreamEvent, AdapterError>>,
+}
+
+impl ClosableStreamAdapter {
+    fn new(
+        name: &'static str,
+        close_calls: Arc<Mutex<usize>>,
+        events: Vec<Result<StreamEvent, AdapterError>>,
+    ) -> Self {
+        Self {
+            name,
+            close_calls,
+            events,
+        }
+    }
+}
+
+impl ProviderAdapter for ClosableStreamAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, _request: Request) -> Result<Response, unified_llm_adapter::AdapterError> {
+        Err(unified_llm_adapter::AdapterError::new(
+            unified_llm_adapter::AdapterErrorKind::Configuration,
+            "closable stream adapter does not implement complete",
+        ))
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
+        let close_calls = Arc::clone(&self.close_calls);
+        Ok(managed_stream(self.events.clone().into_iter(), move || {
+            *close_calls.lock().expect("close call count") += 1;
+            Ok(())
+        }))
+    }
+}
+
 fn empty_request() -> Request {
     Request {
         model: String::new(),
@@ -2312,6 +5848,8 @@ fn empty_request() -> Request {
         reasoning_effort: None,
         metadata: BTreeMap::new(),
         provider_options: BTreeMap::new(),
+        timeout: None,
+        abort_signal: None,
     }
 }
 
@@ -2409,6 +5947,14 @@ impl ProviderAdapter for RecordingAdapter {
 
 fn call_log(calls: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
     calls.lock().expect("call log lock").clone()
+}
+
+fn tool_call_stream_event(event_type: StreamEventType, tool_call: ToolCall) -> StreamEvent {
+    StreamEvent {
+        r#type: event_type.clone(),
+        tool_call: Some(tool_call),
+        ..StreamEvent::new(event_type)
+    }
 }
 
 fn retryable_rate_limit_error(message: impl Into<String>) -> AdapterError {

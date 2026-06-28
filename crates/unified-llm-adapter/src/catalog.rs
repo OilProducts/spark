@@ -99,6 +99,7 @@ fn model_supports(model: &ModelInfo, capability: Option<&str>) -> bool {
         "tools" => model.supports_tools,
         "vision" => model.supports_vision,
         "reasoning" => model.supports_reasoning,
+        "structured" | "structured_output" => model.supports_tools,
         _ => false,
     }
 }

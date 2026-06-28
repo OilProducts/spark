@@ -23,6 +23,8 @@ use crate::request::{
     ContentPart, FinishReason, FinishReasonKind, ImageData, Message, MessageRole, RateLimitInfo,
     Request, Response, ResponseFormat, ToolCall, Warning,
 };
+use crate::timeouts::AdapterTimeout;
+use crate::tools::{Tool, ToolChoice, ToolChoiceKind};
 use crate::usage::Usage;
 
 const DEFAULT_COMPATIBLE_BASE_URL: &str = "https://api.openai.com";
@@ -66,7 +68,7 @@ const RESPONSES_ONLY_OPTION_KEYS: &[&str] = &[
     "truncation",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpenAICompatibleRequestConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
@@ -76,6 +78,8 @@ pub struct OpenAICompatibleRequestConfig {
     pub default_headers: BTreeMap<String, String>,
     #[serde(default)]
     pub require_api_key: bool,
+    #[serde(default)]
+    pub timeout: AdapterTimeout,
 }
 
 impl Default for OpenAICompatibleRequestConfig {
@@ -85,6 +89,7 @@ impl Default for OpenAICompatibleRequestConfig {
             base_url: None,
             default_headers: BTreeMap::new(),
             require_api_key: false,
+            timeout: AdapterTimeout::default(),
         }
     }
 }
@@ -123,6 +128,7 @@ impl From<&ProviderConfig> for OpenAICompatibleRequestConfig {
             base_url: config.base_url.clone(),
             default_headers,
             require_api_key,
+            timeout: AdapterTimeout::default(),
         }
     }
 }
@@ -458,6 +464,7 @@ where
             method: "POST".to_string(),
             url: chat_completions_url(config.base_url.as_deref()),
             headers,
+            timeout: config.timeout,
             body: Value::Object(body),
         },
         warnings,
@@ -485,7 +492,7 @@ fn chat_completions_body(
     if let Some(tool_choice) = request.tool_choice.as_ref() {
         body.insert(
             "tool_choice".to_string(),
-            chat_tool_choice_value(tool_choice),
+            chat_tool_choice_value(provider, tool_choice)?,
         );
     }
     if let Some(temperature) = request.temperature {
@@ -524,7 +531,7 @@ fn chat_completions_body(
         selected.remove("headers");
         let mut merged = deep_merge(Value::Object(body), Value::Object(selected));
         if let Some(Value::Array(tools)) = provider_tools {
-            let tools = chat_tools(provider, &tools, warnings)?;
+            let tools = chat_provider_tools(provider, &tools, warnings)?;
             append_array_field(&mut merged, "tools", tools);
         } else if provider_tools.is_some() {
             return Err(invalid_request_error(
@@ -737,6 +744,32 @@ fn chat_tool_call_payload(provider: &str, tool_call: &ToolCall) -> Result<Value,
 
 fn chat_tools(
     provider: &str,
+    tools: &[Tool],
+    warnings: &mut Vec<Warning>,
+) -> Result<Vec<Value>, AdapterError> {
+    let _ = warnings;
+    tools.iter().map(|tool| chat_tool(provider, tool)).collect()
+}
+
+fn chat_tool(provider: &str, tool: &Tool) -> Result<Value, AdapterError> {
+    tool.validate()
+        .map_err(|message| invalid_request_error(provider, message))?;
+    let mut function_payload = Map::new();
+    function_payload.insert("name".to_string(), json!(tool.name));
+    if let Some(description) = tool.description.as_ref() {
+        function_payload.insert("description".to_string(), json!(description));
+    }
+    if let Some(parameters) = tool.parameters.as_ref() {
+        function_payload.insert("parameters".to_string(), parameters.clone());
+    }
+    Ok(json!({
+        "type": "function",
+        "function": Value::Object(function_payload),
+    }))
+}
+
+fn chat_provider_tools(
+    provider: &str,
     tools: &[Value],
     warnings: &mut Vec<Warning>,
 ) -> Result<Vec<Value>, AdapterError> {
@@ -792,81 +825,21 @@ fn chat_tools(
     Ok(payloads)
 }
 
-fn chat_tool_choice_value(value: &Value) -> Value {
-    match parse_tool_choice(value) {
-        Ok(ToolChoiceSpec::Named(name)) => json!({
-            "type": "function",
-            "function": {"name": name},
-        }),
-        Ok(ToolChoiceSpec::Required) => json!("required"),
-        Ok(ToolChoiceSpec::Auto) => json!("auto"),
-        Ok(ToolChoiceSpec::None) => json!("none"),
-        Ok(ToolChoiceSpec::RawObject) | Err(_) => value.clone(),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ToolChoiceSpec {
-    Auto,
-    None,
-    Required,
-    Named(String),
-    RawObject,
-}
-
-fn parse_tool_choice(value: &Value) -> Result<ToolChoiceSpec, AdapterError> {
-    match value {
-        Value::String(mode) => tool_choice_from_mode(mode, None),
-        Value::Object(object) => {
-            if let Some(function_name) = object
-                .get("function")
-                .and_then(Value::as_object)
-                .and_then(|function| function.get("name"))
-                .and_then(Value::as_str)
-                .and_then(non_empty_str)
-            {
-                return Ok(ToolChoiceSpec::Named(function_name.to_string()));
-            }
-            let mode = object
-                .get("mode")
-                .or_else(|| object.get("type"))
-                .and_then(Value::as_str);
-            let tool_name = object
-                .get("tool_name")
-                .or_else(|| object.get("tool"))
-                .or_else(|| object.get("name"))
-                .and_then(Value::as_str)
-                .and_then(non_empty_str);
-            if let Some(mode) = mode {
-                return tool_choice_from_mode(mode, tool_name);
-            }
-            Ok(ToolChoiceSpec::RawObject)
-        }
-        _ => Err(invalid_request_error(
-            "openai_compatible",
-            "tool_choice must be a string or object",
-        )),
-    }
-}
-
-fn tool_choice_from_mode(
-    mode: &str,
-    tool_name: Option<&str>,
-) -> Result<ToolChoiceSpec, AdapterError> {
-    match mode.trim().to_ascii_lowercase().as_str() {
-        "auto" => Ok(ToolChoiceSpec::Auto),
-        "none" => Ok(ToolChoiceSpec::None),
-        "required" | "any" => Ok(ToolChoiceSpec::Required),
-        "named" | "function" | "tool" => tool_name
-            .map(|name| ToolChoiceSpec::Named(name.to_string()))
-            .ok_or_else(|| {
-                invalid_request_error(
-                    "openai_compatible",
-                    "named tool_choice requires a tool name",
-                )
+fn chat_tool_choice_value(provider: &str, value: &ToolChoice) -> Result<Value, AdapterError> {
+    Ok(
+        match value
+            .kind()
+            .map_err(|error| error.into_adapter_error(provider))?
+        {
+            ToolChoiceKind::Named(name) => json!({
+                "type": "function",
+                "function": {"name": name},
             }),
-        _ => Ok(ToolChoiceSpec::RawObject),
-    }
+            ToolChoiceKind::Required => json!("required"),
+            ToolChoiceKind::Auto => json!("auto"),
+            ToolChoiceKind::None => json!("none"),
+        },
+    )
 }
 
 fn chat_response_format(response_format: &ResponseFormat) -> Value {
@@ -1044,7 +1017,7 @@ fn chat_response_tool_call(provider: &str, value: &Value) -> Result<ToolCall, Ad
         .get("arguments")
         .map(chat_arguments_raw)
         .unwrap_or_else(|| "{}".to_string());
-    let arguments = parse_chat_arguments(&raw_arguments);
+    let arguments = parse_chat_arguments_result(provider, &raw_arguments)?;
     Ok(ToolCall {
         id,
         name,
@@ -1690,6 +1663,19 @@ fn parse_chat_arguments(raw_arguments: &str) -> Value {
     }
 }
 
+fn parse_chat_arguments_result(provider: &str, raw_arguments: &str) -> Result<Value, AdapterError> {
+    if raw_arguments.trim().is_empty() {
+        Ok(json!({}))
+    } else {
+        serde_json::from_str(raw_arguments).map_err(|error| {
+            invalid_tool_call_error(
+                provider,
+                format!("OpenAI-compatible function_call arguments must be valid JSON: {error}"),
+            )
+        })
+    }
+}
+
 fn chat_arguments_raw(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
@@ -1991,6 +1977,14 @@ fn invalid_response_error(provider: &str, message: impl Into<String>) -> Adapter
     )
 }
 
+fn invalid_tool_call_error(provider: &str, message: impl Into<String>) -> AdapterError {
+    AdapterError::provider(
+        AdapterErrorKind::InvalidToolCall,
+        message,
+        Some(provider.to_string()),
+    )
+}
+
 fn configuration_error(provider: &str, message: impl Into<String>) -> AdapterError {
     AdapterError::provider(
         AdapterErrorKind::Configuration,
@@ -2039,5 +2033,9 @@ fn validate_config(
         };
         return Err(configuration_error(provider, message));
     }
+    config
+        .timeout
+        .validate()
+        .map_err(|message| configuration_error(provider, message))?;
     Ok(())
 }

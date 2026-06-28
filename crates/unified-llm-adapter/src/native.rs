@@ -22,6 +22,9 @@ use crate::request::{
     ContentPart, FinishReason, FinishReasonKind, ImageData, Message, MessageRole, RateLimitInfo,
     Request, Response, ResponseFormat, ThinkingData, ToolCall, ToolResultData,
 };
+use crate::structured::STRUCTURED_OUTPUT_TOOL_NAME;
+use crate::timeouts::AdapterTimeout;
+use crate::tools::{Tool, ToolChoice, ToolChoiceKind};
 use crate::usage::Usage;
 
 const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com";
@@ -85,7 +88,7 @@ const GEMINI_GENERATION_OPTION_KEYS: &[&str] = &[
     "topP",
 ];
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NativeRequestConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
@@ -97,6 +100,8 @@ pub struct NativeRequestConfig {
     pub organization: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    #[serde(default)]
+    pub timeout: AdapterTimeout,
 }
 
 impl NativeRequestConfig {
@@ -122,6 +127,7 @@ impl From<&ProviderConfig> for NativeRequestConfig {
             default_headers: BTreeMap::new(),
             organization: config.options.get("organization").cloned(),
             project: config.options.get("project").cloned(),
+            timeout: AdapterTimeout::default(),
         }
     }
 }
@@ -133,6 +139,8 @@ pub struct NativeCompleteRequest {
     pub url: String,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    #[serde(default)]
+    pub timeout: AdapterTimeout,
     pub body: Value,
 }
 
@@ -212,9 +220,17 @@ impl NativeProviderAdapter {
     ) -> Result<Self, AdapterError> {
         let provider = normalize_provider(provider.as_ref());
         validate_native_provider(&provider)?;
+        let config = config.into();
+        config.timeout.validate().map_err(|message| {
+            AdapterError::provider(
+                AdapterErrorKind::Configuration,
+                message,
+                Some(provider.clone()),
+            )
+        })?;
         Ok(Self {
             provider,
-            config: config.into(),
+            config,
             transport,
         })
     }
@@ -225,12 +241,20 @@ impl NativeProviderAdapter {
     ) -> Result<Self, AdapterError> {
         let provider = normalize_provider(provider.as_ref());
         validate_native_provider(&provider)?;
+        let config = config.into();
+        config.timeout.validate().map_err(|message| {
+            AdapterError::provider(
+                AdapterErrorKind::Configuration,
+                message,
+                Some(provider.clone()),
+            )
+        })?;
         Ok(Self {
             transport: Arc::new(MissingNativeCompleteTransport {
                 provider: provider.clone(),
             }),
             provider,
-            config: config.into(),
+            config,
         })
     }
 
@@ -293,6 +317,13 @@ impl ProviderAdapter for NativeProviderAdapter {
             native_response.body,
             &native_response.headers,
         ))
+    }
+
+    fn supports_tool_choice(&self, mode: &str) -> bool {
+        matches!(
+            mode.trim().to_ascii_lowercase().as_str(),
+            "auto" | "none" | "required" | "named"
+        )
     }
 }
 
@@ -380,11 +411,13 @@ where
     }
 
     let body = openai_responses_body(request)?;
+    let timeout = config.timeout;
     Ok(NativeCompleteRequest {
         provider: "openai".to_string(),
         method: "POST".to_string(),
         url: openai_responses_url(config.base_url.as_deref()),
         headers,
+        timeout,
         body,
     })
 }
@@ -433,11 +466,13 @@ where
         headers.insert("anthropic-beta".to_string(), beta_headers.join(","));
     }
 
+    let timeout = config.timeout;
     Ok(NativeCompleteRequest {
         provider: "anthropic".to_string(),
         method: "POST".to_string(),
         url: anthropic_messages_url(config.base_url.as_deref()),
         headers,
+        timeout,
         body,
     })
 }
@@ -476,11 +511,13 @@ where
         url = append_query_pair(&url, "key", api_key);
     }
 
+    let timeout = config.timeout;
     Ok(NativeCompleteRequest {
         provider: "gemini".to_string(),
         method: "POST".to_string(),
         url,
         headers,
+        timeout,
         body: gemini_generate_content_body(request)?,
     })
 }
@@ -508,11 +545,13 @@ where
         url = append_query_pair(&url, "key", api_key);
     }
 
+    let timeout = config.timeout;
     Ok(NativeCompleteRequest {
         provider: "gemini".to_string(),
         method: "POST".to_string(),
         url,
         headers,
+        timeout,
         body: gemini_generate_content_body(request)?,
     })
 }
@@ -2213,7 +2252,7 @@ fn openai_response_arguments(value: &Value) -> Result<(Value, String), AdapterEr
                 json!({})
             } else {
                 serde_json::from_str(text).map_err(|error| {
-                    invalid_response_error(
+                    invalid_tool_call_error(
                         "openai",
                         format!("OpenAI function_call arguments must be valid JSON: {error}"),
                     )
@@ -2523,7 +2562,7 @@ fn gemini_function_call_arguments(
                 json!({})
             } else {
                 serde_json::from_str(text).map_err(|error| {
-                    invalid_response_error(
+                    invalid_tool_call_error(
                         "gemini",
                         format!("Gemini functionCall arguments must be valid JSON: {error}"),
                     )
@@ -2852,7 +2891,7 @@ fn openai_responses_body(request: &Request) -> Result<Value, AdapterError> {
     if let Some(tool_choice) = request.tool_choice.as_ref() {
         body.insert(
             "tool_choice".to_string(),
-            openai_tool_choice_value(tool_choice),
+            openai_tool_choice_value(tool_choice)?,
         );
     }
     insert_generation_fields(&mut body, request, ProviderGenerationShape::OpenAiResponses);
@@ -3062,8 +3101,14 @@ fn anthropic_messages_body(
     active_options: Option<&Map<String, Value>>,
 ) -> Result<Value, AdapterError> {
     let (mut messages, mut system_blocks) = anthropic_message_payloads(&request.messages)?;
-    if let Some(instruction) = anthropic_structured_output_instruction(request, active_options)? {
+    if let Some(instruction) = anthropic_system_instruction(active_options) {
         append_anthropic_system_text(&mut system_blocks, instruction);
+    }
+    let structured_output_tool = anthropic_structured_output_tool(request)?;
+    if structured_output_tool.is_none() {
+        if let Some(instruction) = anthropic_structured_output_instruction(request)? {
+            append_anthropic_system_text(&mut system_blocks, instruction);
+        }
     }
 
     let mut body = Map::new();
@@ -3100,10 +3145,10 @@ fn anthropic_messages_body(
     let tool_choice = request
         .tool_choice
         .as_ref()
-        .map(parse_tool_choice)
+        .map(|choice| tool_choice_kind(choice, "anthropic"))
         .transpose()?;
-    let tool_names = tool_names(&request.tools)?;
-    if !request.tools.is_empty() && !matches!(tool_choice, Some(ToolChoiceSpec::None)) {
+    let mut tool_names = tool_names(&request.tools)?;
+    if !request.tools.is_empty() && !matches!(tool_choice, Some(ToolChoiceKind::None)) {
         let tools = request
             .tools
             .iter()
@@ -3111,7 +3156,18 @@ fn anthropic_messages_body(
             .collect::<Result<Vec<_>, _>>()?;
         body.insert("tools".to_string(), Value::Array(tools));
     }
-    if let Some(choice) = anthropic_tool_choice_payload(tool_choice.as_ref(), &tool_names)? {
+    if let Some(tool) = structured_output_tool {
+        body.entry("tools".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+            tools.push(tool);
+        }
+        tool_names.insert(STRUCTURED_OUTPUT_TOOL_NAME.to_string());
+        body.insert(
+            "tool_choice".to_string(),
+            json!({"type": "tool", "name": STRUCTURED_OUTPUT_TOOL_NAME}),
+        );
+    } else if let Some(choice) = anthropic_tool_choice_payload(tool_choice.as_ref(), &tool_names)? {
         body.insert("tool_choice".to_string(), choice);
     }
 
@@ -3872,15 +3928,15 @@ fn tool_call_arguments_object(
     }
 }
 
-fn openai_tool_definition(tool: &Value) -> Result<Value, AdapterError> {
-    let definition = parse_tool_definition(tool, "openai")?;
+fn openai_tool_definition(tool: &Tool) -> Result<Value, AdapterError> {
+    validate_tool_definition(tool, "openai")?;
     let mut function = Map::new();
-    function.insert("name".to_string(), json!(definition.name));
-    if let Some(description) = definition.description {
+    function.insert("name".to_string(), json!(tool.name));
+    if let Some(description) = tool.description.as_ref() {
         function.insert("description".to_string(), json!(description));
     }
-    if let Some(parameters) = definition.parameters {
-        function.insert("parameters".to_string(), parameters);
+    if let Some(parameters) = tool.parameters.as_ref() {
+        function.insert("parameters".to_string(), parameters.clone());
     }
     Ok(json!({
         "type": "function",
@@ -3888,17 +3944,17 @@ fn openai_tool_definition(tool: &Value) -> Result<Value, AdapterError> {
     }))
 }
 
-fn anthropic_tool_definition(tool: &Value) -> Result<Value, AdapterError> {
-    let definition = parse_tool_definition(tool, "anthropic")?;
+fn anthropic_tool_definition(tool: &Tool) -> Result<Value, AdapterError> {
+    validate_tool_definition(tool, "anthropic")?;
     let mut payload = Map::new();
-    payload.insert("name".to_string(), json!(definition.name));
+    payload.insert("name".to_string(), json!(tool.name));
     payload.insert(
         "description".to_string(),
-        json!(definition.description.unwrap_or_default()),
+        json!(tool.description.clone().unwrap_or_default()),
     );
     payload.insert(
         "input_schema".to_string(),
-        definition.parameters.unwrap_or_else(|| {
+        tool.parameters.clone().unwrap_or_else(|| {
             json!({
                 "type": "object",
                 "properties": {},
@@ -3911,155 +3967,62 @@ fn anthropic_tool_definition(tool: &Value) -> Result<Value, AdapterError> {
     Ok(Value::Object(payload))
 }
 
-fn gemini_tool_declaration(tool: &Value) -> Result<Value, AdapterError> {
-    let definition = parse_tool_definition(tool, "gemini")?;
+fn gemini_tool_declaration(tool: &Tool) -> Result<Value, AdapterError> {
+    validate_tool_definition(tool, "gemini")?;
     let mut declaration = Map::new();
-    declaration.insert("name".to_string(), json!(definition.name));
-    if let Some(description) = definition.description {
+    declaration.insert("name".to_string(), json!(tool.name));
+    if let Some(description) = tool.description.as_ref() {
         declaration.insert("description".to_string(), json!(description));
     }
-    if let Some(parameters) = definition.parameters {
-        declaration.insert("parametersJsonSchema".to_string(), parameters);
+    if let Some(parameters) = tool.parameters.as_ref() {
+        declaration.insert("parametersJsonSchema".to_string(), parameters.clone());
     }
     Ok(Value::Object(declaration))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ToolDefinition {
-    name: String,
-    description: Option<String>,
-    parameters: Option<Value>,
+fn validate_tool_definition(tool: &Tool, provider: &'static str) -> Result<(), AdapterError> {
+    tool.validate()
+        .map_err(|message| invalid_request_error(provider, message))
 }
 
-fn parse_tool_definition(
-    tool: &Value,
+fn tool_choice_kind(
+    value: &ToolChoice,
     provider: &'static str,
-) -> Result<ToolDefinition, AdapterError> {
-    let object = tool.as_object().ok_or_else(|| {
-        invalid_request_error(
-            provider,
-            format!("{provider} tool definitions must be objects"),
-        )
-    })?;
-    let function = object.get("function").and_then(Value::as_object);
-    let source = function.unwrap_or(object);
-    let name = source
-        .get("name")
-        .and_then(Value::as_str)
-        .and_then(non_empty_str)
-        .ok_or_else(|| {
-            invalid_request_error(
-                provider,
-                format!("{provider} tool definitions require a string name"),
-            )
-        })?
-        .to_string();
-    let description = source
-        .get("description")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let parameters = source
-        .get("parameters")
-        .or_else(|| source.get("parametersJsonSchema"))
-        .cloned();
-    Ok(ToolDefinition {
-        name,
-        description,
-        parameters,
-    })
+) -> Result<ToolChoiceKind, AdapterError> {
+    value
+        .kind()
+        .map_err(|error| error.into_adapter_error(provider))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ToolChoiceSpec {
-    Auto,
-    None,
-    Required,
-    Named(String),
-    RawObject,
-}
-
-fn parse_tool_choice(value: &Value) -> Result<ToolChoiceSpec, AdapterError> {
-    match value {
-        Value::String(mode) => tool_choice_from_mode(mode, None),
-        Value::Object(object) => {
-            if let Some(function_name) = object
-                .get("function")
-                .and_then(Value::as_object)
-                .and_then(|function| function.get("name"))
-                .and_then(Value::as_str)
-                .and_then(non_empty_str)
-            {
-                return Ok(ToolChoiceSpec::Named(function_name.to_string()));
-            }
-            let mode = object
-                .get("mode")
-                .or_else(|| object.get("type"))
-                .and_then(Value::as_str);
-            let tool_name = object
-                .get("tool_name")
-                .or_else(|| object.get("tool"))
-                .or_else(|| object.get("name"))
-                .and_then(Value::as_str)
-                .and_then(non_empty_str);
-            if let Some(mode) = mode {
-                return tool_choice_from_mode(mode, tool_name);
-            }
-            Ok(ToolChoiceSpec::RawObject)
-        }
-        _ => Err(invalid_request_error(
-            "native",
-            "tool_choice must be a string or object",
-        )),
-    }
-}
-
-fn tool_choice_from_mode(
-    mode: &str,
-    tool_name: Option<&str>,
-) -> Result<ToolChoiceSpec, AdapterError> {
-    match mode.trim().to_ascii_lowercase().as_str() {
-        "auto" => Ok(ToolChoiceSpec::Auto),
-        "none" => Ok(ToolChoiceSpec::None),
-        "required" | "any" => Ok(ToolChoiceSpec::Required),
-        "named" | "function" | "tool" => tool_name
-            .map(|name| ToolChoiceSpec::Named(name.to_string()))
-            .ok_or_else(|| {
-                invalid_request_error("native", "named tool_choice requires a tool name")
-            }),
-        _ => Ok(ToolChoiceSpec::RawObject),
-    }
-}
-
-fn openai_tool_choice_value(value: &Value) -> Value {
-    match parse_tool_choice(value) {
-        Ok(ToolChoiceSpec::Named(name)) => json!({
+fn openai_tool_choice_value(value: &ToolChoice) -> Result<Value, AdapterError> {
+    Ok(match tool_choice_kind(value, "openai")? {
+        ToolChoiceKind::Named(name) => json!({
             "type": "function",
             "function": {"name": name},
         }),
-        Ok(ToolChoiceSpec::Required) => json!("required"),
-        Ok(ToolChoiceSpec::Auto) => json!("auto"),
-        Ok(ToolChoiceSpec::None) => json!("none"),
-        Ok(ToolChoiceSpec::RawObject) | Err(_) => value.clone(),
-    }
+        ToolChoiceKind::Required => json!("required"),
+        ToolChoiceKind::Auto => json!("auto"),
+        ToolChoiceKind::None => json!("none"),
+    })
 }
 
 fn anthropic_tool_choice_payload(
-    value: Option<&ToolChoiceSpec>,
+    value: Option<&ToolChoiceKind>,
     tool_names: &BTreeSet<String>,
 ) -> Result<Option<Value>, AdapterError> {
     let Some(value) = value else {
         return Ok(None);
     };
     match value {
-        ToolChoiceSpec::None => Ok(None),
-        ToolChoiceSpec::Auto => {
+        ToolChoiceKind::None => Ok(None),
+        ToolChoiceKind::Auto => {
             if tool_names.is_empty() {
                 Ok(None)
             } else {
                 Ok(Some(json!({"type": "auto"})))
             }
         }
-        ToolChoiceSpec::Required => {
+        ToolChoiceKind::Required => {
             if tool_names.is_empty() {
                 return Err(unsupported_tool_choice(
                     "anthropic",
@@ -4068,7 +4031,7 @@ fn anthropic_tool_choice_payload(
             }
             Ok(Some(json!({"type": "any"})))
         }
-        ToolChoiceSpec::Named(name) => {
+        ToolChoiceKind::Named(name) => {
             if !tool_names.contains(name) {
                 return Err(unsupported_tool_choice(
                     "anthropic",
@@ -4077,28 +4040,29 @@ fn anthropic_tool_choice_payload(
             }
             Ok(Some(json!({"type": "tool", "name": name})))
         }
-        ToolChoiceSpec::RawObject => Ok(None),
     }
 }
 
 fn gemini_tool_config(
-    value: Option<&Value>,
+    value: Option<&ToolChoice>,
     tool_names: &BTreeSet<String>,
 ) -> Result<Option<Value>, AdapterError> {
-    let choice = value.map(parse_tool_choice).transpose()?;
+    let choice = value
+        .map(|choice| tool_choice_kind(choice, "gemini"))
+        .transpose()?;
     let choice = match choice {
         Some(choice) => choice,
         None if tool_names.is_empty() => return Ok(None),
-        None => ToolChoiceSpec::Auto,
+        None => ToolChoiceKind::Auto,
     };
     match choice {
-        ToolChoiceSpec::Auto => Ok(Some(json!({
+        ToolChoiceKind::Auto => Ok(Some(json!({
             "functionCallingConfig": {"mode": "AUTO"},
         }))),
-        ToolChoiceSpec::None => Ok(Some(json!({
+        ToolChoiceKind::None => Ok(Some(json!({
             "functionCallingConfig": {"mode": "NONE"},
         }))),
-        ToolChoiceSpec::Required => {
+        ToolChoiceKind::Required => {
             if tool_names.is_empty() {
                 return Err(unsupported_tool_choice(
                     "gemini",
@@ -4109,7 +4073,7 @@ fn gemini_tool_config(
                 "functionCallingConfig": {"mode": "ANY"},
             })))
         }
-        ToolChoiceSpec::Named(name) => {
+        ToolChoiceKind::Named(name) => {
             if !tool_names.contains(&name) {
                 return Err(unsupported_tool_choice(
                     "gemini",
@@ -4123,14 +4087,16 @@ fn gemini_tool_config(
                 },
             })))
         }
-        ToolChoiceSpec::RawObject => Ok(None),
     }
 }
 
-fn tool_names(tools: &[Value]) -> Result<BTreeSet<String>, AdapterError> {
+fn tool_names(tools: &[Tool]) -> Result<BTreeSet<String>, AdapterError> {
     tools
         .iter()
-        .map(|tool| parse_tool_definition(tool, "native").map(|definition| definition.name))
+        .map(|tool| {
+            validate_tool_definition(tool, "native")?;
+            Ok(tool.name.clone())
+        })
         .collect()
 }
 
@@ -4280,17 +4246,74 @@ fn openai_response_format(response_format: &ResponseFormat) -> Value {
     }
 }
 
-fn anthropic_structured_output_instruction(
-    request: &Request,
-    active_options: Option<&Map<String, Value>>,
-) -> Result<Option<String>, AdapterError> {
-    let system_instruction = active_options
+fn anthropic_system_instruction(active_options: Option<&Map<String, Value>>) -> Option<String> {
+    active_options
         .and_then(|options| options.get("system_instruction"))
         .and_then(Value::as_str)
         .and_then(non_empty_str)
-        .map(str::to_string);
+        .map(str::to_string)
+}
+
+fn anthropic_structured_output_tool(request: &Request) -> Result<Option<Value>, AdapterError> {
+    let Some(input_schema) = anthropic_structured_output_tool_schema(request) else {
+        return Ok(None);
+    };
+    if request
+        .tools
+        .iter()
+        .any(|tool| tool.name == STRUCTURED_OUTPUT_TOOL_NAME)
+    {
+        return Ok(None);
+    }
+
+    let tool_choice = request
+        .tool_choice
+        .as_ref()
+        .map(|choice| tool_choice_kind(choice, "anthropic"))
+        .transpose()?;
+    if !matches!(tool_choice, None | Some(ToolChoiceKind::Auto)) {
+        return Ok(None);
+    }
+
+    Ok(Some(json!({
+        "name": STRUCTURED_OUTPUT_TOOL_NAME,
+        "description": "Return the final structured response.",
+        "input_schema": input_schema,
+    })))
+}
+
+fn anthropic_structured_output_tool_schema(request: &Request) -> Option<Value> {
+    match request.response_format.as_ref()? {
+        ResponseFormat::JsonObject => Some(json!({"type": "object"})),
+        ResponseFormat::JsonSchema { json_schema, .. }
+            if schema_supports_anthropic_tool_input(json_schema) =>
+        {
+            Some(json_schema.clone())
+        }
+        ResponseFormat::JsonSchema { .. } | ResponseFormat::Text => None,
+    }
+}
+
+fn schema_supports_anthropic_tool_input(schema: &Value) -> bool {
+    let Some(object) = schema.as_object() else {
+        return false;
+    };
+    match object.get("type") {
+        None => true,
+        Some(Value::String(schema_type)) => schema_type == "object",
+        Some(Value::Array(schema_types)) => schema_types
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|schema_type| schema_type == "object"),
+        Some(_) => false,
+    }
+}
+
+fn anthropic_structured_output_instruction(
+    request: &Request,
+) -> Result<Option<String>, AdapterError> {
     let Some(response_format) = request.response_format.as_ref() else {
-        return Ok(system_instruction);
+        return Ok(None);
     };
     let schema_instruction = match response_format {
         ResponseFormat::JsonSchema { json_schema, .. } => {
@@ -4307,12 +4330,7 @@ fn anthropic_structured_output_instruction(
         ResponseFormat::JsonObject => Some("Return only valid JSON.".to_string()),
         ResponseFormat::Text => None,
     };
-    Ok(match (system_instruction, schema_instruction) {
-        (Some(system), Some(schema)) => Some(format!("{system}\n\n{schema}")),
-        (Some(system), None) => Some(system),
-        (None, Some(schema)) => Some(schema),
-        (None, None) => None,
-    })
+    Ok(schema_instruction)
 }
 
 fn instruction_text(
@@ -4403,8 +4421,8 @@ fn anthropic_cache_control_object(
     }
 }
 
-fn explicit_tool_cache_control(tool: &Value) -> Result<Option<Value>, AdapterError> {
-    let Some(value) = tool.get("cache_control") else {
+fn explicit_tool_cache_control(tool: &Tool) -> Result<Option<Value>, AdapterError> {
+    let Some(value) = tool.provider_metadata.get("cache_control") else {
         return Ok(None);
     };
     anthropic_cache_control_object(value, "Anthropic tool cache_control must be an object")
@@ -5039,6 +5057,14 @@ fn invalid_request_error(provider: &'static str, message: impl Into<String>) -> 
 fn invalid_response_error(provider: &'static str, message: impl Into<String>) -> AdapterError {
     AdapterError::provider(
         AdapterErrorKind::Provider,
+        message,
+        Some(provider.to_string()),
+    )
+}
+
+fn invalid_tool_call_error(provider: &'static str, message: impl Into<String>) -> AdapterError {
+    AdapterError::provider(
+        AdapterErrorKind::InvalidToolCall,
         message,
         Some(provider.to_string()),
     )

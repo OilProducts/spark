@@ -349,6 +349,8 @@ pub struct StreamAccumulator {
     active_tool_calls: BTreeMap<String, ToolCall>,
     #[serde(default, skip)]
     active_tool_call_order: Vec<String>,
+    #[serde(default, skip)]
+    reset_after_step_finish: bool,
 }
 
 impl StreamAccumulator {
@@ -361,6 +363,10 @@ impl StreamAccumulator {
     }
 
     pub fn push(&mut self, event: StreamEvent) {
+        if self.reset_after_step_finish && event_starts_next_model_step(&event) {
+            self.reset_model_step_state();
+        }
+
         if let Some(raw) = event.raw.clone() {
             self.raw_provider_events.push(raw);
         }
@@ -389,7 +395,12 @@ impl StreamAccumulator {
             StreamEventType::ToolCallDelta => self.merge_tool_call(event.tool_call.clone(), false),
             StreamEventType::ToolCallEnd => self.end_tool_call(event.tool_call.clone()),
             StreamEventType::Finish | StreamEventType::Error => self.finish(event.clone()),
-            StreamEventType::ProviderEvent | StreamEventType::Custom(_) => {}
+            StreamEventType::ProviderEvent => {}
+            StreamEventType::Custom(_) => {
+                if is_step_finish_event(&event) {
+                    self.reset_after_step_finish = true;
+                }
+            }
         }
 
         self.events.push(event);
@@ -719,6 +730,24 @@ impl StreamAccumulator {
         }
     }
 
+    fn reset_model_step_state(&mut self) {
+        self.final_text.clear();
+        self.reasoning_text.clear();
+        self.tool_calls.clear();
+        self.finish_reason = None;
+        self.usage = None;
+        self.raw_provider_events.clear();
+        self.finish_event = None;
+        self.active_text.clear();
+        self.active_reasoning = None;
+        self.active_reasoning_metadata = None;
+        self.reasoning_parts.clear();
+        self.active_tool_calls.clear();
+        self.active_tool_call_order.clear();
+        self.response = Response::default();
+        self.reset_after_step_finish = false;
+    }
+
     fn rebuild_response(&mut self) {
         if let Some(reason) = self.finish_reason.clone() {
             self.response.finish_reason = reason;
@@ -729,8 +758,9 @@ impl StreamAccumulator {
         if !self.final_text.is_empty() {
             self.response.text = self.final_text.clone();
         }
-        if !self.tool_calls.is_empty() {
-            self.response.tool_calls = self.tool_calls.clone();
+        let current_tool_calls = self.current_tool_calls();
+        if !current_tool_calls.is_empty() {
+            self.response.tool_calls = current_tool_calls.clone();
         }
         self.response.raw_provider_events = self.raw_provider_events.clone();
         if self.response.raw.is_none() {
@@ -750,7 +780,7 @@ impl StreamAccumulator {
                 content.push(ContentPart::Thinking { thinking });
             }
         }
-        for tool_call in &self.tool_calls {
+        for tool_call in &current_tool_calls {
             content.push(ContentPart::ToolCall {
                 tool_call: tool_call.clone(),
             });
@@ -800,6 +830,21 @@ impl StreamAccumulator {
         }
         parts
     }
+
+    fn current_tool_calls(&self) -> Vec<ToolCall> {
+        let mut tool_calls = self.tool_calls.clone();
+        for key in &self.active_tool_call_order {
+            if let Some(tool_call) = self.active_tool_calls.get(key) {
+                tool_calls.push(tool_call.clone());
+            }
+        }
+        for (key, tool_call) in &self.active_tool_calls {
+            if !self.active_tool_call_order.contains(key) {
+                tool_calls.push(tool_call.clone());
+            }
+        }
+        tool_calls
+    }
 }
 
 fn raw_payload_from_events(events: &[Value]) -> Option<Value> {
@@ -841,6 +886,18 @@ fn default_thinking_metadata() -> ThinkingData {
         source_provider: None,
         source_model: None,
     }
+}
+
+fn is_step_finish_event(event: &StreamEvent) -> bool {
+    matches!(&event.r#type, StreamEventType::Custom(kind) if kind == "step_finish")
+}
+
+fn event_starts_next_model_step(event: &StreamEvent) -> bool {
+    !is_step_finish_event(event)
+        && !matches!(
+            event.r#type,
+            StreamEventType::Error | StreamEventType::Custom(_)
+        )
 }
 
 fn merge_tool_calls(current: ToolCall, incoming: ToolCall, final_fragment: bool) -> ToolCall {
