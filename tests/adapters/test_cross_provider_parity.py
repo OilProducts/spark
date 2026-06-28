@@ -1620,7 +1620,7 @@ def _live_chat_request() -> unified_llm.Request:
     )
 
 
-def _live_tool_call_tools() -> list[unified_llm.Tool]:
+def _live_weather_tool() -> unified_llm.Tool:
     weather_schema = {
         "type": "object",
         "properties": {
@@ -1629,6 +1629,14 @@ def _live_tool_call_tools() -> list[unified_llm.Tool]:
         "required": ["city"],
         "additionalProperties": False,
     }
+    return unified_llm.Tool.passive(
+        "lookup_weather",
+        "Return the weather for a city.",
+        weather_schema,
+    )
+
+
+def _live_tool_call_tools() -> list[unified_llm.Tool]:
     time_schema = {
         "type": "object",
         "properties": {
@@ -1638,11 +1646,7 @@ def _live_tool_call_tools() -> list[unified_llm.Tool]:
         "additionalProperties": False,
     }
     return [
-        unified_llm.Tool.passive(
-            "lookup_weather",
-            "Return the weather for a city.",
-            weather_schema,
-        ),
+        _live_weather_tool(),
         unified_llm.Tool.passive(
             "lookup_time",
             "Return the local time for a city.",
@@ -1673,6 +1677,45 @@ def _live_parallel_tool_request() -> unified_llm.Request:
                 "temperature": 0.25,
             },
         },
+    )
+
+
+def _live_tool_request(provider: str) -> unified_llm.Request:
+    return unified_llm.Request(
+        model=_live_model(provider),
+        messages=[
+            unified_llm.Message.user(
+                "Use the lookup_weather tool to answer: what is the weather in Paris?"
+            )
+        ],
+        tools=[_live_weather_tool()],
+        tool_choice=unified_llm.ToolChoice.required(),
+        temperature=0,
+        provider_options=_live_provider_options(provider),
+    )
+
+
+def _live_tool_result_request(
+    provider: str,
+    first_response: unified_llm.Response,
+) -> unified_llm.Request:
+    tool_call = first_response.tool_calls[0]
+    return unified_llm.Request(
+        model=_live_model(provider),
+        messages=[
+            unified_llm.Message.user(
+                "Use the lookup_weather tool to answer: what is the weather in Paris?"
+            ),
+            first_response.message,
+            unified_llm.Message.tool_result(
+                tool_call.id,
+                TOOL_RESULT_CONTENT,
+                name=tool_call.name,
+            ),
+        ],
+        tools=[_live_weather_tool()],
+        temperature=0,
+        provider_options=_live_provider_options(provider),
     )
 
 
@@ -1742,7 +1785,28 @@ async def test_live_native_structured_output(
 
 @pytest.mark.live
 @pytest.mark.asyncio
-async def test_live_native_parallel_tool_calling() -> None:
+@pytest.mark.parametrize("provider", PROVIDERS, ids=PROVIDERS)
+async def test_live_native_tool_calling(provider: str) -> None:
+    adapter = _live_adapter(provider)
+    request = _live_tool_request(provider)
+
+    first_response = await adapter.complete(request)
+    tool_calls = first_response.tool_calls
+    assert len(tool_calls) >= 1
+    assert tool_calls[0].name == "lookup_weather"
+    assert tool_calls[0].id
+
+    second_response = await adapter.complete(
+        _live_tool_result_request(provider, first_response)
+    )
+
+    assert second_response.provider == provider
+    assert second_response.text.strip()
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_live_openai_parallel_tool_calling() -> None:
     adapter = _live_adapter("openai")
     request = _live_parallel_tool_request()
 

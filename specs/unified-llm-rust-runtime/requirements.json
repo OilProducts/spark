@@ -467,7 +467,7 @@
       ],
       "dependencies": ["REQ-008", "REQ-012", "REQ-016", "REQ-017", "REQ-020", "REQ-021"],
       "target_paths": ["tests/adapters", "tests/compat/providers", "crates/unified-llm-adapter", "docs/rust-rewrite-migration.md"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M6-parity-validation-migration-closure",
       "notes": "Tests should assert observable behavior rather than source strings or prompt text."
     },
@@ -486,7 +486,7 @@
       ],
       "dependencies": ["REQ-001", "REQ-023"],
       "target_paths": ["docs/rust-rewrite-migration.md", "specs/unified-llm-spec-md", "tests/adapters", "tests/compat/providers", "crates/unified-llm-adapter"],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M6-parity-validation-migration-closure",
       "notes": "This closes the spec by tying delivered behavior to the Rust rewrite migration record."
     }

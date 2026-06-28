@@ -2250,7 +2250,7 @@ fn high_level_generate_returns_passive_tool_calls_without_auto_execution() {
 #[test]
 fn high_level_generate_executes_active_tool_calls_concurrently_and_batches_ordered_results() {
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+    let adapter = Arc::new(ScriptedCompleteAdapter::new(
         "high",
         Arc::clone(&calls),
         vec![
@@ -2277,10 +2277,16 @@ fn high_level_generate_executes_active_tool_calls_concurrently_and_batches_order
             }),
         ],
     ));
+    let request_log = adapter.requests();
+    let adapter: Arc<dyn ProviderAdapter> = adapter;
     let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
     let rendezvous = Arc::new((Mutex::new(0usize), Condvar::new()));
+    let fast_completed = Arc::new((Mutex::new(false), Condvar::new()));
+    let completion_log = Arc::new(Mutex::new(Vec::new()));
 
     let slow_rendezvous = Arc::clone(&rendezvous);
+    let slow_fast_completed = Arc::clone(&fast_completed);
+    let slow_completion_log = Arc::clone(&completion_log);
     let slow = Tool::active("slow", move |_invocation: ToolInvocation| {
         let (lock, cvar) = &*slow_rendezvous;
         let mut started = lock.lock().expect("rendezvous lock");
@@ -2289,10 +2295,32 @@ fn high_level_generate_executes_active_tool_calls_concurrently_and_batches_order
         let (started, _) = cvar
             .wait_timeout_while(started, Duration::from_secs(2), |started| *started < 2)
             .expect("rendezvous wait");
-        Ok(json!({"tool": "slow", "saw_parallel_peer": *started >= 2}))
+        let saw_parallel_peer = *started >= 2;
+        drop(started);
+        let (completed_lock, completed_cvar) = &*slow_fast_completed;
+        let (fast_completed, _) = completed_cvar
+            .wait_timeout_while(
+                completed_lock.lock().expect("fast completion lock"),
+                Duration::from_secs(2),
+                |completed| !*completed,
+            )
+            .expect("fast completion wait");
+        let fast_finished_first = *fast_completed;
+        drop(fast_completed);
+        slow_completion_log
+            .lock()
+            .expect("completion log")
+            .push("slow".to_string());
+        Ok(json!({
+            "tool": "slow",
+            "saw_parallel_peer": saw_parallel_peer,
+            "fast_finished_first": fast_finished_first,
+        }))
     })
     .unwrap();
     let fast_rendezvous = Arc::clone(&rendezvous);
+    let fast_completed_signal = Arc::clone(&fast_completed);
+    let fast_completion_log = Arc::clone(&completion_log);
     let fast = Tool::active("fast", move |_invocation: ToolInvocation| {
         let (lock, cvar) = &*fast_rendezvous;
         let mut started = lock.lock().expect("rendezvous lock");
@@ -2301,7 +2329,16 @@ fn high_level_generate_executes_active_tool_calls_concurrently_and_batches_order
         let (started, _) = cvar
             .wait_timeout_while(started, Duration::from_secs(2), |started| *started < 2)
             .expect("rendezvous wait");
-        Ok(json!({"tool": "fast", "saw_parallel_peer": *started >= 2}))
+        let saw_parallel_peer = *started >= 2;
+        drop(started);
+        fast_completion_log
+            .lock()
+            .expect("completion log")
+            .push("fast".to_string());
+        let (completed_lock, completed_cvar) = &*fast_completed_signal;
+        *completed_lock.lock().expect("fast completion lock") = true;
+        completed_cvar.notify_all();
+        Ok(json!({"tool": "fast", "saw_parallel_peer": saw_parallel_peer}))
     })
     .unwrap();
 
@@ -2322,7 +2359,7 @@ fn high_level_generate_executes_active_tool_calls_concurrently_and_batches_order
         vec![
             unified_llm_adapter::ToolResult::success(
                 "call_slow",
-                json!({"tool": "slow", "saw_parallel_peer": true}),
+                json!({"tool": "slow", "saw_parallel_peer": true, "fast_finished_first": true}),
             ),
             unified_llm_adapter::ToolResult::success(
                 "call_fast",
@@ -2331,8 +2368,23 @@ fn high_level_generate_executes_active_tool_calls_concurrently_and_batches_order
         ]
     );
     assert_eq!(
+        completion_log.lock().expect("completion log").clone(),
+        vec!["fast".to_string(), "slow".to_string()]
+    );
+    assert_eq!(
         call_log(&calls),
         vec!["complete:high:tool-model:1", "complete:high:tool-model:4"]
+    );
+    let requests = request_log.lock().expect("request log").clone();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]
+            .messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Tool)
+            .map(|message| message.tool_call_id.as_deref().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["call_slow", "call_fast"]
     );
 }
 
@@ -2384,6 +2436,105 @@ fn high_level_generate_converts_unknown_tool_calls_to_error_results_and_continue
     assert_eq!(
         call_log(&calls),
         vec!["complete:high:tool-model:1", "complete:high:tool-model:3"]
+    );
+}
+
+#[test]
+fn high_level_generate_keeps_successful_siblings_with_unknown_and_handler_failure_results() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::clone(&calls),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new("call_ok", "ok_tool", json!({})),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new("call_missing", "missing_tool", json!({})),
+                        },
+                        ContentPart::ToolCall {
+                            tool_call: ToolCall::new("call_boom", "boom_tool", json!({})),
+                        },
+                    ],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("continued after mixed tool results"),
+                finish_reason: FinishReason::Stop,
+                ..Response::default()
+            }),
+        ],
+    ));
+    let request_log = adapter.requests();
+    let adapter: Arc<dyn ProviderAdapter> = adapter;
+    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
+    let ok_tool = Tool::active("ok_tool", |_invocation: ToolInvocation| {
+        Ok(json!({"ok": true}))
+    })
+    .unwrap();
+    let boom_tool = Tool::active(
+        "boom_tool",
+        |_invocation: ToolInvocation| -> Result<Value, AdapterError> {
+            Err(AdapterError::new(
+                AdapterErrorKind::InvalidToolCall,
+                "boom handler failed",
+            ))
+        },
+    )
+    .unwrap();
+
+    let result = generate(
+        &client,
+        Request {
+            model: "tool-model".to_string(),
+            messages: vec![Message::user("run mixed tools")],
+            tools: vec![ok_tool, boom_tool],
+            ..Request::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "continued after mixed tool results");
+    assert_eq!(
+        result.steps[0].tool_results,
+        vec![
+            unified_llm_adapter::ToolResult::success("call_ok", json!({"ok": true})),
+            unified_llm_adapter::ToolResult::error(
+                "call_missing",
+                json!("Unknown tool 'missing_tool'"),
+            ),
+            unified_llm_adapter::ToolResult::error("call_boom", json!("boom handler failed")),
+        ]
+    );
+    assert_eq!(
+        result.steps[0]
+            .tool_results
+            .iter()
+            .map(|result| result.is_error)
+            .collect::<Vec<_>>(),
+        vec![false, true, true]
+    );
+    let requests = request_log.lock().expect("request log").clone();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]
+            .messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Tool)
+            .map(|message| message.tool_call_id.as_deref().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["call_ok", "call_missing", "call_boom"]
+    );
+    assert_eq!(
+        call_log(&calls),
+        vec!["complete:high:tool-model:1", "complete:high:tool-model:5"]
     );
 }
 
@@ -2460,7 +2611,18 @@ fn high_level_generate_respects_max_tool_rounds_zero_and_multiple_rounds() {
                 ..Response::default()
             }),
             Ok(Response {
-                message: Message::assistant("done after two rounds"),
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentPart::ToolCall {
+                        tool_call: ToolCall::new("call_third", "lookup", json!({})),
+                    }],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response {
+                message: Message::assistant("done after three rounds"),
                 finish_reason: FinishReason::Stop,
                 ..Response::default()
             }),
@@ -2476,16 +2638,16 @@ fn high_level_generate_respects_max_tool_rounds_zero_and_multiple_rounds() {
         &client,
         GenerateRequest {
             model: Some("tool-model".to_string()),
-            messages: Some(vec![Message::user("lookup twice")]),
+            messages: Some(vec![Message::user("lookup three times")]),
             tools: vec![tool],
-            max_tool_rounds: 2,
+            max_tool_rounds: 3,
             ..GenerateRequest::default()
         },
     )
     .unwrap();
 
-    assert_eq!(result.text, "done after two rounds");
-    assert_eq!(result.steps.len(), 3);
+    assert_eq!(result.text, "done after three rounds");
+    assert_eq!(result.steps.len(), 4);
     assert_eq!(
         result.steps[0].tool_results,
         vec![unified_llm_adapter::ToolResult::success(
@@ -2501,11 +2663,19 @@ fn high_level_generate_respects_max_tool_rounds_zero_and_multiple_rounds() {
         )]
     );
     assert_eq!(
+        result.steps[2].tool_results,
+        vec![unified_llm_adapter::ToolResult::success(
+            "call_third",
+            json!("call_third"),
+        )]
+    );
+    assert_eq!(
         call_log(&calls),
         vec![
             "complete:high:tool-model:1",
             "complete:high:tool-model:3",
             "complete:high:tool-model:5",
+            "complete:high:tool-model:7",
         ]
     );
 }
@@ -5794,6 +5964,7 @@ impl ProviderAdapter for RetryableErrorAdapter {
 struct ScriptedCompleteAdapter {
     name: &'static str,
     calls: Arc<Mutex<Vec<String>>>,
+    requests: Arc<Mutex<Vec<Request>>>,
     results: Mutex<VecDeque<Result<Response, unified_llm_adapter::AdapterError>>>,
 }
 
@@ -5806,8 +5977,13 @@ impl ScriptedCompleteAdapter {
         Self {
             name,
             calls,
+            requests: Arc::new(Mutex::new(Vec::new())),
             results: Mutex::new(VecDeque::from(results)),
         }
+    }
+
+    fn requests(&self) -> Arc<Mutex<Vec<Request>>> {
+        Arc::clone(&self.requests)
     }
 
     fn record(&self, call: impl Into<String>) {
@@ -5821,6 +5997,10 @@ impl ProviderAdapter for ScriptedCompleteAdapter {
     }
 
     fn complete(&self, request: Request) -> Result<Response, unified_llm_adapter::AdapterError> {
+        self.requests
+            .lock()
+            .expect("scripted complete request lock")
+            .push(request.clone());
         self.record(format!(
             "complete:{}:{}:{}",
             request.provider.as_deref().unwrap_or_default(),
