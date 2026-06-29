@@ -13,6 +13,32 @@ async def _next_event(stream) -> agent.SessionEvent:
     return await asyncio.wait_for(anext(stream), timeout=1)
 
 
+def _assert_structured_model_error(
+    payload: dict,
+    *,
+    kind: str,
+    name: str,
+    message: str,
+    retryable: bool,
+    provider: str = "fake-provider",
+    model: str = "fake-model",
+) -> None:
+    error = payload["error"]
+    assert payload["message"] == message
+    assert payload["error_kind"] == kind
+    assert payload["name"] == name
+    assert payload["code"] == error.get("error_code", kind)
+    assert payload["retryable"] is retryable
+    assert payload["provider"] == provider
+    assert payload["model"] == model
+    assert error["kind"] == kind
+    assert error["name"] == name
+    assert error["message"] == message
+    assert error["retryable"] is retryable
+    assert error["provider"] == provider
+    assert error["model"] == model
+
+
 class _PromptProfile(agent.ProviderProfile):
     def build_system_prompt(self, environment, project_docs):
         return "Session system prompt"
@@ -80,7 +106,15 @@ async def test_session_process_input_authentication_error_emits_error_and_closes
     assert user_input_event.data == {"content": "Question"}
     error_event = await _next_event(stream)
     assert error_event.kind == agent.EventKind.ERROR
-    assert error_event.data == {"error": "invalid key"}
+    _assert_structured_model_error(
+        error_event.data,
+        kind="authentication",
+        name="AuthenticationError",
+        message="invalid key",
+        retryable=False,
+    )
+    assert error_event.data["final_state"]["state"] == "closed"
+    assert error_event.data["final_state"]["reason"] == "unrecoverable_error"
     end_event = await _next_event(stream)
     assert end_event.kind == agent.EventKind.SESSION_END
     assert end_event.data == {"state": "closed"}
@@ -123,7 +157,14 @@ async def test_session_process_input_context_length_error_emits_warning_and_stay
     assert user_input_event.data == {"content": "Question"}
     warning_event = await _next_event(stream)
     assert warning_event.kind == agent.EventKind.WARNING
-    assert warning_event.data == {"message": "too many tokens in the prompt"}
+    _assert_structured_model_error(
+        warning_event.data,
+        kind="context_length",
+        name="ContextLengthError",
+        message="too many tokens in the prompt",
+        retryable=False,
+    )
+    assert "final_state" not in warning_event.data
     processing_end_event = await _next_event(stream)
     assert processing_end_event.kind == agent.EventKind.PROCESSING_END
     assert processing_end_event.data == {"state": "idle"}
@@ -172,6 +213,17 @@ async def test_session_process_input_transient_sdk_errors_do_not_trigger_retry_l
     with pytest.raises(type(error), match=str(error)):
         await session.process_input("Question")
 
+    user_input_event = await _next_event(stream)
+    assert user_input_event.kind == agent.EventKind.USER_INPUT
+    warning_event = await _next_event(stream)
+    assert warning_event.kind == agent.EventKind.WARNING
+    assert warning_event.data["message"] == str(error)
+    assert warning_event.data["retryable"] is True
+    assert warning_event.data["provider"] == "fake-provider"
+    assert warning_event.data["model"] == "fake-model"
+    processing_end_event = await _next_event(stream)
+    assert processing_end_event.kind == agent.EventKind.PROCESSING_END
+    assert processing_end_event.data == {"state": "idle"}
     assert len(client.requests) == 1
     assert session.state == agent.SessionState.IDLE
     assert [turn.text for turn in session.history] == ["Question"]
@@ -207,6 +259,19 @@ async def test_session_process_input_stream_errors_do_not_retry_locally(
     with pytest.raises(type(error), match=str(error)):
         await session.process_input("Question")
 
+    user_input_event = await _next_event(stream)
+    assert user_input_event.kind == agent.EventKind.USER_INPUT
+    text_start_event = await _next_event(stream)
+    assert text_start_event.kind == agent.EventKind.ASSISTANT_TEXT_START
+    text_delta_event = await _next_event(stream)
+    assert text_delta_event.kind == agent.EventKind.ASSISTANT_TEXT_DELTA
+    assert text_delta_event.data["delta"] == "partial"
+    warning_event = await _next_event(stream)
+    assert warning_event.kind == agent.EventKind.WARNING
+    assert warning_event.data["message"] == str(error)
+    assert warning_event.data["retryable"] is True
+    processing_end_event = await _next_event(stream)
+    assert processing_end_event.kind == agent.EventKind.PROCESSING_END
     assert len(client.requests) == 1
     assert session.state == agent.SessionState.IDLE
     assert [turn.text for turn in session.history] == ["Question"]
@@ -235,7 +300,15 @@ async def test_session_process_input_unexpected_exception_logs_and_closes(
     assert user_input_event.data == {"content": "Question"}
     error_event = await _next_event(stream)
     assert error_event.kind == agent.EventKind.ERROR
-    assert error_event.data == {"error": "boom"}
+    _assert_structured_model_error(
+        error_event.data,
+        kind="runtime",
+        name="RuntimeError",
+        message="boom",
+        retryable=False,
+    )
+    assert error_event.data["final_state"]["state"] == "closed"
+    assert error_event.data["final_state"]["reason"] == "unrecoverable_error"
     end_event = await _next_event(stream)
     assert end_event.kind == agent.EventKind.SESSION_END
     assert end_event.data == {"state": "closed"}

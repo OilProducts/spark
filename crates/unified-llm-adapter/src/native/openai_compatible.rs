@@ -471,6 +471,7 @@ where
             url: chat_completions_url(config.base_url.as_deref()),
             headers,
             timeout: config.timeout,
+            abort_signal: request.abort_signal.clone(),
             body: Value::Object(body),
         },
         warnings,

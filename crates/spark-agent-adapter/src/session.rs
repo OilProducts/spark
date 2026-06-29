@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -10,8 +11,8 @@ use crate::context::{context_usage_warning_payload, estimate_context_usage, Cont
 use crate::environment::ExecutionEnvironment;
 use crate::events::{EventKind, SessionEvent};
 use unified_llm_adapter::{
-    AdapterError, AdapterErrorKind, Client, Message, Request, Response, StreamAccumulator,
-    StreamEventType, ToolChoice,
+    AbortController, AbortSignal, AdapterError, AdapterErrorKind, Client, Message, Request,
+    Response, StreamAccumulator, StreamEventType, ToolChoice,
 };
 
 use crate::history::{
@@ -37,6 +38,25 @@ struct ModelResponseOutput {
     emitted_assistant_events: bool,
     emitted_model_tool_events: bool,
     stream_error: Option<AdapterError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelRequestContext {
+    provider: Option<String>,
+    model: Option<String>,
+}
+
+impl ModelRequestContext {
+    fn from_request(request: &Request) -> Self {
+        Self {
+            provider: request
+                .provider
+                .as_deref()
+                .and_then(non_empty)
+                .map(str::to_string),
+            model: non_empty(&request.model).map(str::to_string),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -103,6 +123,60 @@ pub struct Session {
     pub pending_question: Option<String>,
     #[serde(default)]
     pub abort_signaled: bool,
+    #[serde(default, skip)]
+    abort_controller: AbortController,
+    #[serde(default, skip)]
+    cleanup_state: SessionCleanupState,
+}
+
+#[derive(Debug, Clone)]
+struct SessionCleanupState {
+    completed: Arc<AtomicBool>,
+}
+
+impl Default for SessionCleanupState {
+    fn default() -> Self {
+        Self {
+            completed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl PartialEq for SessionCleanupState {
+    fn eq(&self, other: &Self) -> bool {
+        self.completed.load(Ordering::SeqCst) == other.completed.load(Ordering::SeqCst)
+    }
+}
+
+impl SessionCleanupState {
+    fn cleanup(&self, environment: &ExecutionEnvironment) {
+        if !self.completed.swap(true, Ordering::SeqCst) {
+            let _ = environment.cleanup();
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionAbortHandle {
+    signal: AbortSignal,
+    execution_environment: ExecutionEnvironment,
+    cleanup_state: SessionCleanupState,
+}
+
+impl SessionAbortHandle {
+    pub fn abort(&self) {
+        self.signal.abort("session is aborted");
+        self.cleanup_state.cleanup(&self.execution_environment);
+    }
+
+    pub fn abort_with_reason(&self, reason: impl Into<String>) {
+        self.signal.abort(reason.into());
+        self.cleanup_state.cleanup(&self.execution_environment);
+    }
+
+    pub fn aborted(&self) -> bool {
+        self.signal.aborted()
+    }
 }
 
 impl Default for Session {
@@ -137,6 +211,8 @@ impl Session {
             system_prompt_snapshot,
             pending_question: None,
             abort_signaled: false,
+            abort_controller: AbortController::new(),
+            cleanup_state: SessionCleanupState::default(),
         };
         session.emit_kind(EventKind::SessionStart, state_payload(session.state));
         session
@@ -180,6 +256,7 @@ impl Session {
             reasoning_effort: self.config.reasoning_effort.clone(),
             metadata: self.execution_environment.metadata.clone(),
             provider_options: self.provider_profile.request_provider_options(&self.config),
+            abort_signal: Some(self.abort_signal()),
             ..Request::default()
         }
     }
@@ -230,18 +307,23 @@ impl Session {
 
                 let request = self.build_request(system_prompt.clone());
                 self.check_context_usage(&request);
+                let request_context = ModelRequestContext::from_request(&request);
                 let model_output = match self.model_response(client, request) {
                     Ok(model_output) => model_output,
                     Err(error) => {
-                        self.mark_unrecoverable_adapter_error(&error);
+                        self.mark_model_request_error(&error, Some(&request_context));
                         return Err(error);
                     }
                 };
                 let stream_error = model_output.stream_error.clone();
                 let assistant_turn = self.record_model_response(model_output);
                 if let Some(error) = stream_error {
-                    self.mark_unrecoverable_adapter_error(&error);
+                    self.mark_model_request_error(&error, Some(&request_context));
                     return Err(error);
+                }
+                if self.abort_requested() {
+                    self.close_for_abort();
+                    return Ok(());
                 }
 
                 if assistant_turn.tool_calls.is_empty() {
@@ -254,6 +336,10 @@ impl Session {
 
                 round_count += 1;
                 let tool_results = self.execute_tool_calls(assistant_turn.tool_calls);
+                if self.abort_requested() {
+                    self.close_for_abort();
+                    return Ok(());
+                }
                 self.history.push(HistoryTurn::ToolResults(
                     crate::history::ToolResultsTurn::new(tool_results),
                 ));
@@ -261,8 +347,8 @@ impl Session {
                 self.maybe_emit_loop_detection_warning();
             }
 
+            self.mark_natural_completion();
             let Some(follow_up) = self.follow_up_queue.pop_front() else {
-                self.mark_natural_completion();
                 return Ok(());
             };
             current_input = Some(follow_up.content);
@@ -292,6 +378,22 @@ impl Session {
 
     pub fn next_event(&mut self) -> Option<SessionEvent> {
         self.event_queue.pop_front()
+    }
+
+    pub fn abort_handle(&self) -> SessionAbortHandle {
+        SessionAbortHandle {
+            signal: self.abort_signal(),
+            execution_environment: self.execution_environment.clone(),
+            cleanup_state: self.cleanup_state.clone(),
+        }
+    }
+
+    fn abort_signal(&self) -> AbortSignal {
+        self.abort_controller.signal()
+    }
+
+    fn abort_requested(&self) -> bool {
+        self.abort_signaled || self.abort_controller.signal.aborted()
     }
 
     pub fn mark_processing(&mut self) {
@@ -387,39 +489,97 @@ impl Session {
             return;
         }
         self.abort_signaled = true;
+        self.abort_controller.abort("session is aborted");
         self.close_for_abort();
     }
 
     pub fn mark_unrecoverable_error(&mut self, error: impl Into<String>) {
         let mut error = AdapterError::new(AdapterErrorKind::Provider, error.into());
         error.retryable = false;
-        self.mark_unrecoverable_adapter_error(&error);
+        self.mark_unrecoverable_adapter_error(&error, None);
     }
 
-    fn mark_unrecoverable_adapter_error(&mut self, error: &AdapterError) {
+    fn mark_unrecoverable_adapter_error(
+        &mut self,
+        error: &AdapterError,
+        context: Option<&ModelRequestContext>,
+    ) {
         if self.state == SessionState::Closed {
             return;
         }
-        let error_payload = adapter_error_value(error);
-        self.emit_kind(EventKind::Error, error_event_payload(error));
+        let reason = "unrecoverable_error";
+        let error_payload = adapter_error_value(error, context);
+        let final_state =
+            self.final_state_value(SessionState::Closed, reason, Some(error_payload.clone()));
+        self.emit_kind(
+            EventKind::Error,
+            error_event_payload(error, error_payload.clone(), Some(final_state)),
+        );
         self.cleanup_execution_environment();
-        self.close_with_reason("unrecoverable_error", Some(error_payload));
+        self.close_with_reason(reason, Some(error_payload));
+    }
+
+    fn mark_model_request_error(
+        &mut self,
+        error: &AdapterError,
+        context: Option<&ModelRequestContext>,
+    ) {
+        if error.kind == AdapterErrorKind::Abort || self.abort_requested() {
+            self.close_for_abort_with_error(error);
+        } else if is_recoverable_model_error(error) {
+            self.mark_recoverable_model_error(error, context);
+        } else {
+            self.mark_unrecoverable_adapter_error(error, context);
+        }
+    }
+
+    fn mark_recoverable_model_error(
+        &mut self,
+        error: &AdapterError,
+        context: Option<&ModelRequestContext>,
+    ) {
+        if self.state == SessionState::Closed {
+            return;
+        }
+        self.emit_kind(EventKind::Warning, warning_event_payload(error, context));
+        self.mark_natural_completion();
     }
 
     fn close_for_abort(&mut self) {
+        let error = self.abort_adapter_error();
+        self.close_for_abort_with_error(&error);
+    }
+
+    fn close_for_abort_with_error(&mut self, error: &AdapterError) {
         if self.state == SessionState::Closed {
             return;
         }
         self.abort_signaled = true;
-        let error = AdapterError::new(AdapterErrorKind::Abort, "session is aborted");
-        let error_payload = adapter_error_value(&error);
-        self.emit_kind(EventKind::Error, error_event_payload(&error));
+        self.abort_controller.abort(error.message.clone());
+        let reason = "abort";
+        let error_payload = adapter_error_value(error, None);
+        let final_state =
+            self.final_state_value(SessionState::Closed, reason, Some(error_payload.clone()));
+        self.emit_kind(
+            EventKind::Error,
+            error_event_payload(error, error_payload.clone(), Some(final_state)),
+        );
         self.cleanup_execution_environment();
-        self.close_with_reason("abort", Some(error_payload));
+        self.close_with_reason(reason, Some(error_payload));
+    }
+
+    fn abort_adapter_error(&self) -> AdapterError {
+        let message = self
+            .abort_controller
+            .signal
+            .reason()
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or_else(|| "session is aborted".to_string());
+        AdapterError::new(AdapterErrorKind::Abort, message)
     }
 
     fn cleanup_execution_environment(&self) {
-        let _ = self.execution_environment.cleanup();
+        self.cleanup_state.cleanup(&self.execution_environment);
     }
 
     fn close_with_reason(&mut self, reason: &'static str, error: Option<Value>) {
@@ -439,19 +599,9 @@ impl Session {
         reason: &'static str,
         error: Option<Value>,
     ) -> BTreeMap<String, Value> {
-        let mut final_state = json!({
-            "state": state_value(self.state),
-            "reason": reason,
-            "abort_signaled": self.abort_signaled,
-            "history_turns": self.history.len(),
-            "active_subagents": self.active_subagents.len(),
-            "pending_question": self.pending_question.clone(),
-        });
+        let final_state = self.final_state_value(self.state, reason, error.clone());
         if let Some(error) = error {
-            if let Some(object) = final_state.as_object_mut() {
-                object.insert("error".to_string(), error.clone());
-            }
-            let payload = BTreeMap::from([
+            return BTreeMap::from([
                 (
                     "state".to_string(),
                     Value::String(state_value(self.state).to_string()),
@@ -460,7 +610,6 @@ impl Session {
                 ("error".to_string(), error),
                 ("final_state".to_string(), final_state),
             ]);
-            return payload;
         }
 
         BTreeMap::from([
@@ -471,6 +620,28 @@ impl Session {
             ("reason".to_string(), Value::String(reason.to_string())),
             ("final_state".to_string(), final_state),
         ])
+    }
+
+    fn final_state_value(
+        &self,
+        state: SessionState,
+        reason: &'static str,
+        error: Option<Value>,
+    ) -> Value {
+        let mut final_state = json!({
+            "state": state_value(state),
+            "reason": reason,
+            "abort_signaled": self.abort_signaled,
+            "history_turns": self.history.len(),
+            "active_subagents": self.active_subagents.len(),
+            "pending_question": self.pending_question.clone(),
+        });
+        if let Some(error) = error {
+            if let Some(object) = final_state.as_object_mut() {
+                object.insert("error".to_string(), error.clone());
+            }
+        }
+        final_state
     }
 
     fn start_processing_input(&mut self, content: impl Into<TurnContent>) {
@@ -520,7 +691,7 @@ impl Session {
     }
 
     fn limit_reached_before_model_request(&mut self, round_count: u32) -> bool {
-        if self.abort_signaled {
+        if self.abort_requested() {
             self.close_for_abort();
             return true;
         }
@@ -566,6 +737,7 @@ impl Session {
     ) -> Result<ModelResponseOutput, AdapterError> {
         let model = request.model.clone();
         let provider = request.provider.clone().unwrap_or_default();
+        let abort_signal = request.abort_signal.clone();
         let mut stream = client.stream(request)?;
         let mut accumulator = StreamAccumulator::default();
         let mut response_id: Option<String> = None;
@@ -580,10 +752,21 @@ impl Session {
             let event = match event {
                 Ok(event) => event,
                 Err(error) => {
+                    if error.kind == AdapterErrorKind::Abort
+                        || abort_signal.as_ref().is_some_and(AbortSignal::aborted)
+                    {
+                        let _ = stream.close();
+                        return Err(error);
+                    }
                     stream_error = Some(error);
                     break;
                 }
             };
+
+            if abort_signal.as_ref().is_some_and(AbortSignal::aborted) {
+                let _ = stream.close();
+                return Err(self.abort_adapter_error());
+            }
 
             accumulator.push(event.clone());
             let current_response_id = non_empty_string(accumulator.response.id.clone());
@@ -654,9 +837,19 @@ impl Session {
                     );
                 }
                 StreamEventType::Error => {
-                    stream_error = Some(event.error.clone().unwrap_or_else(|| {
+                    pending_usage_events.extend(
+                        SessionEvent::from_stream_event(&event, self.id, response_id.as_deref())
+                            .into_iter()
+                            .filter(|event| event.kind == EventKind::ModelUsageUpdate),
+                    );
+                    let error = event.error.clone().unwrap_or_else(|| {
                         AdapterError::new(AdapterErrorKind::Stream, "model stream error")
-                    }));
+                    });
+                    if error.kind == AdapterErrorKind::Abort {
+                        let _ = stream.close();
+                        return Err(error);
+                    }
+                    stream_error = Some(error);
                     break;
                 }
                 StreamEventType::StreamStart
@@ -664,7 +857,14 @@ impl Session {
                 | StreamEventType::Custom(_) => {}
             }
         }
+        if abort_signal.as_ref().is_some_and(AbortSignal::aborted) {
+            let _ = stream.close();
+            return Err(self.abort_adapter_error());
+        }
         if let Err(error) = stream.close() {
+            if error.kind == AdapterErrorKind::Abort {
+                return Err(error);
+            }
             if stream_error.is_none() {
                 stream_error = Some(error);
             }
@@ -800,6 +1000,9 @@ impl Session {
         for event in events {
             self.emit_kind(event.kind, event.data);
         }
+        if self.abort_requested() {
+            return results;
+        }
         self.steering_queue.extend(
             queued_steering
                 .lock()
@@ -925,6 +1128,11 @@ fn reasoning_end_payload(
     payload
 }
 
+fn non_empty(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
+}
+
 fn non_empty_string(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
@@ -933,17 +1141,102 @@ fn session_state_error(message: impl Into<String>) -> AdapterError {
     AdapterError::new(AdapterErrorKind::InvalidRequest, message)
 }
 
-fn error_event_payload(error: &AdapterError) -> BTreeMap<String, Value> {
-    BTreeMap::from([("error".to_string(), adapter_error_value(error))])
+fn is_recoverable_model_error(error: &AdapterError) -> bool {
+    error.kind == AdapterErrorKind::ContextLength || is_delegated_transient_provider_error(error)
 }
 
-fn adapter_error_value(error: &AdapterError) -> Value {
+fn is_delegated_transient_provider_error(error: &AdapterError) -> bool {
+    matches!(
+        error.kind,
+        AdapterErrorKind::RateLimit | AdapterErrorKind::Network
+    ) || matches!(error.status_code, Some(429 | 500..=503))
+        || (error.kind == AdapterErrorKind::Server
+            && error
+                .status_code
+                .map(|status_code| (500..=503).contains(&status_code))
+                .unwrap_or(true))
+}
+
+fn warning_event_payload(
+    error: &AdapterError,
+    context: Option<&ModelRequestContext>,
+) -> BTreeMap<String, Value> {
+    let error_payload = adapter_error_value(error, context);
+    let mut payload = BTreeMap::from([
+        ("message".to_string(), Value::String(error.message.clone())),
+        ("error".to_string(), error_payload.clone()),
+    ]);
+    copy_error_summary_fields(&mut payload, &error_payload);
+    payload
+}
+
+fn error_event_payload(
+    error: &AdapterError,
+    error_payload: Value,
+    final_state: Option<Value>,
+) -> BTreeMap<String, Value> {
+    let mut payload = BTreeMap::from([
+        ("message".to_string(), Value::String(error.message.clone())),
+        ("error".to_string(), error_payload.clone()),
+    ]);
+    copy_error_summary_fields(&mut payload, &error_payload);
+    if let Some(final_state) = final_state {
+        payload.insert("final_state".to_string(), final_state);
+    }
+    payload
+}
+
+fn copy_error_summary_fields(payload: &mut BTreeMap<String, Value>, error_payload: &Value) {
+    let Some(error_object) = error_payload.as_object() else {
+        return;
+    };
+    for (source_key, target_key) in [
+        ("kind", "error_kind"),
+        ("name", "name"),
+        ("code", "code"),
+        ("error_code", "error_code"),
+        ("provider", "provider"),
+        ("model", "model"),
+        ("retryable", "retryable"),
+        ("status_code", "status_code"),
+        ("retry_after", "retry_after"),
+    ] {
+        if let Some(value) = error_object.get(source_key) {
+            payload.insert(target_key.to_string(), value.clone());
+        }
+    }
+    if !payload.contains_key("error_code") {
+        if let Some(code) = error_object.get("code") {
+            payload.insert("error_code".to_string(), code.clone());
+        }
+    }
+}
+
+fn adapter_error_value(error: &AdapterError, context: Option<&ModelRequestContext>) -> Value {
     let mut value = serde_json::to_value(error).expect("adapter error is serializable");
     if let Some(object) = value.as_object_mut() {
         object.insert(
             "name".to_string(),
             Value::String(error.kind.spec_error_name().to_string()),
         );
+        let kind_value = serde_json::to_value(error.kind).expect("error kind is serializable");
+        let code = error
+            .error_code
+            .clone()
+            .or_else(|| kind_value.as_str().map(str::to_string));
+        if let Some(code) = code {
+            object
+                .entry("code".to_string())
+                .or_insert(Value::String(code));
+        }
+        if error.provider.is_none() {
+            if let Some(provider) = context.and_then(|context| context.provider.clone()) {
+                object.insert("provider".to_string(), Value::String(provider));
+            }
+        }
+        if let Some(model) = context.and_then(|context| context.model.clone()) {
+            object.insert("model".to_string(), Value::String(model));
+        }
     }
     value
 }

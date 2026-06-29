@@ -703,9 +703,33 @@ fn terminate_process_group(process_group_id: u32, mut child: Option<&mut Child>)
 
     #[cfg(windows)]
     {
-        let _ = process_group_id;
+        let _ = Command::new("taskkill")
+            .arg("/PID")
+            .arg(process_group_id.to_string())
+            .arg("/T")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let deadline = Instant::now() + TERMINATION_GRACE_PERIOD;
+        while Instant::now() < deadline {
+            if let Some(child) = child.as_deref_mut() {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let _ = Command::new("taskkill")
+            .arg("/PID")
+            .arg(process_group_id.to_string())
+            .arg("/T")
+            .arg("/F")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
         if let Some(child) = child.as_deref_mut() {
-            let _ = child.kill();
             let _ = child.wait();
         }
     }

@@ -16,7 +16,7 @@ use crate::codergen::{
 };
 use crate::config::SessionConfig;
 use crate::environment::ExecutionEnvironment;
-use crate::events::{workspace_token_usage_payload_from_usage, SessionEvent};
+use crate::events::{workspace_token_usage_payload_from_usage, EventKind, SessionEvent};
 use crate::history::HistoryTurn;
 use crate::profiles::{
     create_provider_profile, normalize_provider_selector as normalize_profile_selector,
@@ -110,9 +110,9 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         let prompt = request.prompt.clone();
         let mut session =
             build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
-        session
-            .process_input(&self.client, prompt)
-            .map_err(agent_adapter_error)?;
+        if let Err(error) = session.process_input(&self.client, prompt) {
+            return Err(agent_adapter_error_from_session(error, &mut session));
+        }
 
         Ok(agent_output_from_session(&mut session))
     }
@@ -246,6 +246,10 @@ fn raw_log_line_from_event(event: &SessionEvent) -> Option<AgentRawLogLine> {
 }
 
 fn thread_resume_failure_from_event(event: &SessionEvent) -> Option<AgentThreadResumeFailure> {
+    if event.kind == EventKind::Error {
+        return thread_resume_failure_from_error_event(event);
+    }
+
     if event.kind.as_str() != "thread_resume_failure"
         && !event.data.contains_key("thread_resume_failure")
     {
@@ -264,6 +268,22 @@ fn thread_resume_failure_from_event(event: &SessionEvent) -> Option<AgentThreadR
     let details = nested
         .and_then(|object| object.get("details").cloned())
         .or_else(|| event.data.get("details").cloned());
+
+    Some(AgentThreadResumeFailure {
+        message,
+        error_code,
+        details,
+    })
+}
+
+fn thread_resume_failure_from_error_event(event: &SessionEvent) -> Option<AgentThreadResumeFailure> {
+    let nested = event.data.get("error").and_then(Value::as_object);
+    let message = object_string(nested, &["message"])
+        .or_else(|| data_string(&event.data, &["message", "error"]))
+        .unwrap_or_else(|| "agent turn failed".to_string());
+    let error_code = object_string(nested, &["error_code", "code", "kind", "name"])
+        .or_else(|| data_string(&event.data, &["error_code", "code", "error_kind", "name"]));
+    let details = Some(Value::Object(event.data.clone().into_iter().collect()));
 
     Some(AgentThreadResumeFailure {
         message,
@@ -503,6 +523,36 @@ fn agent_adapter_error(error: AdapterError) -> AgentError {
         message: format_adapter_error(&error),
         retryable: error.retryable,
         raw: serde_json::to_value(error).ok(),
+    }
+}
+
+fn agent_adapter_error_from_session(error: AdapterError, session: &mut Session) -> AgentError {
+    let message = format_adapter_error(&error);
+    let retryable = error.retryable;
+    let adapter_error = serde_json::to_value(&error).ok();
+    let mut session_events = Vec::new();
+    let mut thread_resume_failure = None;
+
+    while let Some(event) = session.next_event() {
+        if thread_resume_failure.is_none() {
+            thread_resume_failure = thread_resume_failure_from_event(&event);
+        }
+        if let Ok(value) = serde_json::to_value(&event) {
+            session_events.push(value);
+        }
+    }
+
+    let raw = Some(json!({
+        "adapter_error": adapter_error,
+        "session_state": format!("{:?}", session.state).to_ascii_lowercase(),
+        "session_events": session_events,
+        "thread_resume_failure": thread_resume_failure,
+    }));
+
+    AgentError {
+        message,
+        retryable,
+        raw,
     }
 }
 

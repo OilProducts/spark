@@ -71,6 +71,7 @@ where
         url,
         headers,
         timeout,
+        abort_signal: request.abort_signal.clone(),
         body: gemini_generate_content_body(request)?,
     })
 }
@@ -105,6 +106,7 @@ where
         url,
         headers,
         timeout,
+        abort_signal: request.abort_signal.clone(),
         body: gemini_generate_content_body(request)?,
     })
 }

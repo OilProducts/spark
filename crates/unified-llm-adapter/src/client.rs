@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::env::{ProviderConfig, ProviderEnvironment, PROVIDER_REGISTRATION_ORDER};
 use crate::errors::{AdapterError, AdapterErrorKind};
-use crate::events::StreamEvents;
+use crate::events::{StreamEvent, StreamEventStream, StreamEvents};
 use crate::http_transport::NativeHttpTransport;
 use crate::middleware::{run_complete_chain, run_stream_chain, Middleware};
 use crate::native::NativeProviderAdapter;
@@ -12,7 +12,7 @@ use crate::openai_compatible::{LiteLLMAdapter, OpenAICompatibleAdapter, OpenRout
 use crate::profiles::{load_llm_profiles, LlmProfile, LlmProfileEnvironment};
 use crate::request::{Request, Response};
 use crate::resolution::ActiveLlmProfile;
-use crate::timeouts::check_abort;
+use crate::timeouts::{abort_error, check_abort, AbortSignal};
 
 pub trait ProviderAdapter: Send + Sync {
     fn name(&self) -> &str;
@@ -285,18 +285,23 @@ impl Client {
         request
             .validate_for_client()
             .map_err(invalid_request_error)?;
+        let abort_signal = request.abort_signal.clone();
         let resolved = self.resolve_provider(request.provider.as_deref())?;
         let provider_name = resolved.provider_name.to_string();
         let adapter = Arc::clone(resolved.adapter);
         let mut request = request;
         request.provider = Some(provider_name.clone());
-        run_stream_chain(request, &self.middleware, move |mut request| {
+        let stream = run_stream_chain(request, &self.middleware, move |mut request| {
             check_abort(request.abort_signal.as_ref())?;
             request.provider = Some(provider_name.clone());
             request
                 .validate_for_client()
                 .map_err(invalid_request_error)?;
             adapter.stream(request)
+        })?;
+        Ok(match abort_signal {
+            Some(signal) => abortable_stream(stream, signal),
+            None => stream,
         })
     }
 
@@ -440,6 +445,89 @@ impl Client {
                 adapter,
             })
             .ok_or_else(|| configuration_error(format!("Unknown provider {provider:?}")))
+    }
+}
+
+fn abortable_stream(stream: StreamEvents, signal: AbortSignal) -> StreamEvents {
+    Box::new(AbortableStream {
+        stream: Some(stream),
+        signal,
+        finished: false,
+    })
+}
+
+struct AbortableStream {
+    stream: Option<StreamEvents>,
+    signal: AbortSignal,
+    finished: bool,
+}
+
+impl AbortableStream {
+    fn close_stream(&mut self) -> Result<(), AdapterError> {
+        let Some(mut stream) = self.stream.take() else {
+            return Ok(());
+        };
+        stream.close()
+    }
+
+    fn abort_error(&self) -> AdapterError {
+        abort_error("stream", self.signal.reason())
+    }
+
+    fn finish_with_error(&mut self, error: AdapterError) -> Result<StreamEvent, AdapterError> {
+        self.finished = true;
+        let _ = self.close_stream();
+        Err(error)
+    }
+}
+
+impl Iterator for AbortableStream {
+    type Item = Result<StreamEvent, AdapterError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        if self.signal.aborted() {
+            return Some(self.finish_with_error(self.abort_error()));
+        }
+
+        let Some(stream) = self.stream.as_mut() else {
+            self.finished = true;
+            return None;
+        };
+        match stream.next() {
+            Some(Ok(event)) => {
+                if self.signal.aborted() {
+                    return Some(self.finish_with_error(self.abort_error()));
+                }
+                Some(Ok(event))
+            }
+            Some(Err(error)) => {
+                if error.kind == AdapterErrorKind::Abort || self.signal.aborted() {
+                    return Some(self.finish_with_error(error));
+                }
+                self.finished = true;
+                Some(Err(error))
+            }
+            None => {
+                self.finished = true;
+                None
+            }
+        }
+    }
+}
+
+impl StreamEventStream for AbortableStream {
+    fn close(&mut self) -> Result<(), AdapterError> {
+        self.finished = true;
+        self.close_stream()
+    }
+}
+
+impl Drop for AbortableStream {
+    fn drop(&mut self) {
+        let _ = self.close_stream();
     }
 }
 

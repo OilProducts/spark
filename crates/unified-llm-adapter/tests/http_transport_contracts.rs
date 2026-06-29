@@ -39,6 +39,7 @@ fn http_transport_executes_prepared_complete_request_and_returns_json_with_heade
                 ("X-Trace".to_string(), "trace-1".to_string()),
             ]),
             timeout: AdapterTimeout::new(1.0, 2.0, 3.0),
+            abort_signal: None,
             body: json!({
                 "model": "gpt-5.2",
                 "input": [{"role": "user", "content": "hello"}],
@@ -144,6 +145,7 @@ fn http_transport_malformed_success_preserves_raw_body_and_response_headers() {
             url: server.url("/v1/responses"),
             headers: BTreeMap::new(),
             timeout: AdapterTimeout::new(1.0, 2.0, 3.0),
+            abort_signal: None,
             body: json!({"model": "gpt-5.2"}),
         })
         .unwrap_err();
@@ -590,6 +592,7 @@ fn http_transport_request_timeout_reports_request_scope_and_supplied_timeout() {
             url: server.url("/slow"),
             headers: BTreeMap::new(),
             timeout: AdapterTimeout::new(1.0, 0.05, 3.0),
+            abort_signal: None,
             body: json!({"model": "gpt-5.2"}),
         })
         .unwrap_err();
@@ -616,6 +619,7 @@ fn http_transport_network_errors_preserve_request_metadata_without_response_stat
             url: url.clone(),
             headers: BTreeMap::from([("X-Trace".to_string(), "network-error".to_string())]),
             timeout: AdapterTimeout::new(0.2, 0.2, 0.2),
+            abort_signal: None,
             body: json!({"model": "gpt-5.2"}),
         })
         .unwrap_err();

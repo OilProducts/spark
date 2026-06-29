@@ -1,6 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use spark_agent_adapter::{
@@ -13,9 +18,10 @@ use spark_agent_adapter::{
 };
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
 use unified_llm_adapter::{
-    stream_events, AdapterError, AdapterErrorKind, Client, ContentPart, FinishReason, Message,
-    MessageRole, ProviderAdapter, Request, Response, StreamEvent, StreamEventType, StreamEvents,
-    Tool, ToolCall, ToolResult, ToolResultData, Usage,
+    managed_stream, stream_events, AbortSignal, AdapterError, AdapterErrorKind, AdapterTimeout,
+    Client, ContentPart, FinishReason, Message, MessageRole, NativeHttpTransport,
+    NativeProviderAdapter, NativeRequestConfig, ProviderAdapter, Request, Response, StreamEvent,
+    StreamEventType, StreamEvents, Tool, ToolCall, ToolResult, ToolResultData, Usage,
 };
 use uuid::Uuid;
 
@@ -675,6 +681,7 @@ fn process_input_delays_follow_ups_until_natural_completion_and_preserves_histor
             EventKind::AssistantTextStart,
             EventKind::AssistantTextDelta,
             EventKind::AssistantTextEnd,
+            EventKind::ProcessingEnd,
             EventKind::UserInput,
             EventKind::AssistantTextStart,
             EventKind::AssistantTextDelta,
@@ -684,8 +691,8 @@ fn process_input_delays_follow_ups_until_natural_completion_and_preserves_histor
     );
     assert_eq!(events[0].data["content"], json!("Yes please"));
     assert_eq!(events[0].data["answer_to"], json!("Need more info?"));
-    assert_eq!(events[4].data["content"], json!("Queued follow-up"));
-    assert!(events[4].data.get("answer_to").is_none());
+    assert_eq!(events[5].data["content"], json!("Queued follow-up"));
+    assert!(events[5].data.get("answer_to").is_none());
 }
 
 #[test]
@@ -1116,6 +1123,12 @@ fn process_input_streaming_error_records_partial_turn_before_error_close() {
         StreamEvent::text_delta("partial"),
         StreamEvent {
             error: Some(stream_error.clone()),
+            usage: Some(Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+                total_tokens: 2,
+                ..Usage::default()
+            }),
             raw: Some(json!({"error": "boom"})),
             ..StreamEvent::new(StreamEventType::Error)
         },
@@ -1152,19 +1165,21 @@ fn process_input_streaming_error_records_partial_turn_before_error_close() {
             EventKind::AssistantTextStart,
             EventKind::AssistantTextDelta,
             EventKind::AssistantTextEnd,
+            EventKind::ModelUsageUpdate,
             EventKind::Error,
             EventKind::SessionEnd,
         ]
     );
     assert_eq!(events[2].data["delta"], json!("partial"));
     assert_eq!(events[3].data["text"], json!("partial"));
-    assert_eq!(events[4].data["error"]["kind"], json!("stream"));
-    assert_eq!(events[4].data["error"]["name"], json!("StreamError"));
-    assert_eq!(events[4].data["error"]["message"], json!("boom"));
-    assert_eq!(events[5].data["error"], events[4].data["error"]);
+    assert_eq!(events[4].data["usage"]["total_tokens"], json!(2));
+    assert_eq!(events[5].data["error"]["kind"], json!("stream"));
+    assert_eq!(events[5].data["error"]["name"], json!("StreamError"));
+    assert_eq!(events[5].data["error"]["message"], json!("boom"));
+    assert_eq!(events[6].data["error"], events[5].data["error"]);
     assert_eq!(
-        events[5].data["final_state"]["error"],
-        events[4].data["error"]
+        events[6].data["final_state"]["error"],
+        events[5].data["error"]
     );
 
     assert_eq!(
@@ -1185,6 +1200,249 @@ fn process_input_streaming_error_records_partial_turn_before_error_close() {
         panic!("assistant turn recorded");
     };
     assert_eq!(assistant_turn.text(), "partial");
+    assert_eq!(
+        assistant_turn.usage,
+        Some(Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            ..Usage::default()
+        })
+    );
+}
+
+#[test]
+fn process_input_streaming_abort_cancels_in_flight_stream_without_natural_completion() {
+    let adapter = Arc::new(BlockingAbortStreamAdapter::new());
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut profile = ProviderProfile::new("fake-provider", "fake-model");
+    profile.supports_streaming = true;
+    let mut session = Session::new(
+        profile,
+        ExecutionEnvironment::default(),
+        SessionConfig::default(),
+    );
+    session.next_event();
+    session.follow_up("Queued follow-up");
+    let abort_handle = session.abort_handle();
+
+    let worker = thread::spawn(move || {
+        let result = session.process_input(&client, "Question");
+        (session, result)
+    });
+    adapter.wait_until_blocked();
+    abort_handle.abort();
+    let (mut session, result) = worker.join().expect("session worker joins");
+    let error = result.expect_err("streaming abort surfaces as an adapter error");
+
+    assert_eq!(error.kind, AdapterErrorKind::Abort);
+    assert_eq!(error.message, "session is aborted");
+    assert_eq!(session.state, SessionState::Closed);
+    assert!(session.abort_signaled);
+    assert_eq!(adapter.close_calls(), 1);
+    assert_eq!(adapter.stream_requests().len(), 1);
+    assert!(adapter.stream_requests()[0].abort_signal.is_some());
+    assert_eq!(session.follow_up_queue.len(), 1);
+    assert_eq!(turn_names(&session.history), ["UserTurn"]);
+
+    let events = drain_events(&mut session);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            EventKind::UserInput,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::Error,
+            EventKind::SessionEnd,
+        ]
+    );
+    assert_eq!(events[2].data["delta"], json!("partial"));
+    assert_eq!(events[3].data["error"]["kind"], json!("abort"));
+    assert_eq!(events[3].data["error"]["name"], json!("AbortError"));
+    assert_eq!(
+        events[3].data["error"]["message"],
+        json!("session is aborted")
+    );
+    assert_eq!(events[4].data["reason"], json!("abort"));
+    assert_eq!(events[4].data["error"], events[3].data["error"]);
+    assert_eq!(events[4].data["final_state"]["abort_signaled"], json!(true));
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::AssistantTextEnd));
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::ProcessingEnd));
+    assert!(
+        !events.iter().any(|event| event.kind == EventKind::UserInput
+            && event.data["content"] == json!("Queued follow-up"))
+    );
+}
+
+#[test]
+fn process_input_native_http_stream_abort_interrupts_blocked_read_and_closes_session() {
+    let server = AbortableNativeStreamServer::new(openai_stream_delta_chunk("partial"));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(NativeProviderAdapter::openai(
+        NativeRequestConfig {
+            api_key: Some("stream-key".to_string()),
+            base_url: Some(server.base_url.clone()),
+            timeout: AdapterTimeout::new(1.0, 5.0, 30.0),
+            ..NativeRequestConfig::default()
+        },
+        Arc::new(NativeHttpTransport::new()),
+    ));
+    let client = Client::from_adapters([adapter], Some("openai")).expect("client");
+    let mut profile = ProviderProfile::new("openai", "gpt-5.2");
+    profile.supports_streaming = true;
+    let mut session = Session::new(
+        profile,
+        ExecutionEnvironment::default(),
+        SessionConfig::default(),
+    );
+    session.next_event();
+    session.follow_up("Queued follow-up");
+    let abort_handle = session.abort_handle();
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || {
+        let result = session.process_input(&client, "Question");
+        sender.send((session, result)).expect("send session result");
+    });
+
+    server.wait_for_first_chunk();
+    thread::sleep(Duration::from_millis(100));
+    let abort_started_at = Instant::now();
+    abort_handle.abort();
+    let (mut session, result) = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("native stream abort returns promptly");
+    let abort_elapsed = abort_started_at.elapsed();
+    server.wait_for_client_close();
+    let captured = server.captured();
+
+    let error = result.expect_err("streaming abort surfaces as an adapter error");
+    assert_eq!(error.kind, AdapterErrorKind::Abort);
+    assert_eq!(error.message, "session is aborted");
+    assert!(
+        abort_elapsed < Duration::from_millis(1500),
+        "abort took {abort_elapsed:?}"
+    );
+    assert_eq!(captured.path, "/v1/responses");
+    assert_eq!(session.state, SessionState::Closed);
+    assert!(session.abort_signaled);
+    assert_eq!(session.follow_up_queue.len(), 1);
+    assert_eq!(turn_names(&session.history), ["UserTurn"]);
+
+    let events = drain_events(&mut session);
+    assert!(events.iter().any(|event| {
+        event.kind == EventKind::AssistantTextDelta && event.data["delta"] == json!("partial")
+    }));
+    let error_event = events
+        .iter()
+        .find(|event| event.kind == EventKind::Error)
+        .expect("abort ERROR event");
+    assert_eq!(error_event.data["error"]["kind"], json!("abort"));
+    assert_eq!(
+        error_event.data["error"]["message"],
+        json!("session is aborted")
+    );
+    let end_event = events
+        .iter()
+        .find(|event| event.kind == EventKind::SessionEnd)
+        .expect("SESSION_END event");
+    assert_eq!(end_event.data["reason"], json!("abort"));
+    assert_eq!(end_event.data["final_state"]["abort_signaled"], json!(true));
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::ProcessingEnd));
+    assert!(
+        !events.iter().any(|event| event.kind == EventKind::UserInput
+            && event.data["content"] == json!("Queued follow-up"))
+    );
+}
+
+#[test]
+fn process_input_command_abort_runs_cleanup_closes_and_skips_queued_followups() {
+    let command_state = Arc::new(BlockingExecState::default());
+    let environment =
+        ExecutionEnvironment::from_backend(BlockingExecBackend::new(command_state.clone()));
+    let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
+        tool_call_response_with_call(
+            "resp-tool",
+            "Need tool",
+            ToolCall::new("call-1", "blocking_shell", json!({})),
+        ),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut session = Session::new(
+        profile_with_blocking_shell_tool(),
+        environment,
+        SessionConfig::default(),
+    );
+    session.next_event();
+    session.follow_up("Queued follow-up");
+    let abort_handle = session.abort_handle();
+
+    let worker = thread::spawn(move || {
+        let result = session.process_input(&client, "Run the command");
+        (session, result)
+    });
+    command_state.wait_until_exec_started();
+    abort_handle.abort();
+    let (mut session, result) = worker.join().expect("session worker joins");
+
+    result.expect("command abort closes the session without surfacing a tool error");
+    assert_eq!(command_state.cleanup_calls(), 1);
+    assert_eq!(session.state, SessionState::Closed);
+    assert!(session.abort_signaled);
+    assert_eq!(turn_names(&session.history), ["UserTurn", "AssistantTurn"]);
+    assert_eq!(session.follow_up_queue.len(), 1);
+    assert_eq!(session.follow_up_queue[0].text(), "Queued follow-up");
+
+    let events = drain_events(&mut session);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            EventKind::UserInput,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::AssistantTextEnd,
+            EventKind::ModelToolCallEnd,
+            EventKind::ToolCallStart,
+            EventKind::ToolCallEnd,
+            EventKind::Error,
+            EventKind::SessionEnd,
+        ]
+    );
+    assert_eq!(events[0].data["content"], json!("Run the command"));
+    assert_eq!(events[6].data["output"]["exit_code"], json!(130));
+    assert_eq!(events[7].data["error"]["kind"], json!("abort"));
+    assert_eq!(
+        events[7].data["error"]["message"],
+        json!("session is aborted")
+    );
+    assert_eq!(events[8].data["reason"], json!("abort"));
+    assert_eq!(events[8].data["final_state"]["abort_signaled"], json!(true));
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::ProcessingEnd));
+    assert!(
+        !events.iter().any(|event| event.kind == EventKind::UserInput
+            && event.data["content"] == json!("Queued follow-up"))
+    );
+    assert!(
+        !events.iter().any(|event| event.kind == EventKind::UserInput
+            && event.data["content"] == json!("Tool queued follow-up"))
+    );
 }
 
 #[test]
@@ -1312,14 +1570,14 @@ fn abort_emits_structured_error_before_session_end_and_runs_cleanup_once() {
 fn process_input_provider_error_emits_structured_payload_closes_and_runs_cleanup() {
     let cleanup_calls = Arc::new(Mutex::new(0));
     let mut provider_error = AdapterError::provider(
-        AdapterErrorKind::RateLimit,
-        "rate limit",
+        AdapterErrorKind::Authentication,
+        "invalid key",
         Some("fake-provider".to_string()),
     );
-    provider_error.status_code = Some(429);
-    provider_error.error_code = Some("rate_limit".to_string());
-    provider_error.retry_after = Some(2.5);
-    provider_error.raw = Some(json!({"error": {"message": "rate limit", "code": "rate_limit"}}));
+    provider_error.status_code = Some(401);
+    provider_error.error_code = Some("invalid_api_key".to_string());
+    provider_error.raw =
+        Some(json!({"error": {"message": "invalid key", "code": "invalid_api_key"}}));
     let adapter = Arc::new(ErrorAdapter::new(provider_error.clone()));
     let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
     let client =
@@ -1353,17 +1611,26 @@ fn process_input_provider_error_emits_structured_payload_closes_and_runs_cleanup
             EventKind::SessionEnd
         ]
     );
-    assert_eq!(events[1].data["error"]["kind"], json!("rate_limit"));
-    assert_eq!(events[1].data["error"]["name"], json!("RateLimitError"));
-    assert_eq!(events[1].data["error"]["message"], json!("rate limit"));
+    assert_eq!(events[1].data["error"]["kind"], json!("authentication"));
+    assert_eq!(events[1].data["error"]["name"], json!("AuthenticationError"));
+    assert_eq!(events[1].data["error"]["message"], json!("invalid key"));
     assert_eq!(events[1].data["error"]["provider"], json!("fake-provider"));
-    assert_eq!(events[1].data["error"]["status_code"], json!(429));
-    assert_eq!(events[1].data["error"]["error_code"], json!("rate_limit"));
-    assert_eq!(events[1].data["error"]["retryable"], json!(true));
-    assert_eq!(events[1].data["error"]["retry_after"], json!(2.5));
+    assert_eq!(events[1].data["error"]["model"], json!("fake-model"));
+    assert_eq!(events[1].data["error"]["status_code"], json!(401));
+    assert_eq!(
+        events[1].data["error"]["error_code"],
+        json!("invalid_api_key")
+    );
+    assert_eq!(events[1].data["error"]["code"], json!("invalid_api_key"));
+    assert_eq!(events[1].data["error"]["retryable"], json!(false));
     assert_eq!(
         events[1].data["error"]["raw"],
-        json!({"error": {"message": "rate limit", "code": "rate_limit"}})
+        json!({"error": {"message": "invalid key", "code": "invalid_api_key"}})
+    );
+    assert_eq!(events[1].data["final_state"]["state"], json!("closed"));
+    assert_eq!(
+        events[1].data["final_state"]["reason"],
+        json!("unrecoverable_error")
     );
     assert_eq!(events[2].data["reason"], json!("unrecoverable_error"));
     assert_eq!(events[2].data["error"], events[1].data["error"]);
@@ -1371,6 +1638,140 @@ fn process_input_provider_error_emits_structured_payload_closes_and_runs_cleanup
         events[2].data["final_state"]["error"],
         events[1].data["error"]
     );
+}
+
+#[test]
+fn process_input_context_length_error_warns_and_keeps_session_reusable() {
+    let cleanup_calls = Arc::new(Mutex::new(0));
+    let mut context_error = AdapterError::provider(
+        AdapterErrorKind::ContextLength,
+        "too many tokens",
+        Some("fake-provider".to_string()),
+    );
+    context_error.status_code = Some(413);
+    let adapter = Arc::new(ErrorAdapter::new(context_error.clone()));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let environment =
+        ExecutionEnvironment::from_backend(CleanupCountingBackend::new(cleanup_calls.clone()));
+    let mut session = Session::new(
+        ProviderProfile::new("fake-provider", "fake-model"),
+        environment,
+        SessionConfig::default(),
+    );
+    session.next_event();
+
+    let error = session
+        .process_input(&client, "Question")
+        .expect_err("context length error");
+
+    assert_eq!(error, context_error);
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(*cleanup_calls.lock().expect("cleanup calls"), 0);
+    assert_eq!(adapter.complete_requests().len(), 1);
+    let events = drain_events(&mut session);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            EventKind::UserInput,
+            EventKind::Warning,
+            EventKind::ProcessingEnd
+        ]
+    );
+    assert_eq!(events[1].data["message"], json!("too many tokens"));
+    assert_eq!(events[1].data["error"]["kind"], json!("context_length"));
+    assert_eq!(events[1].data["error"]["name"], json!("ContextLengthError"));
+    assert_eq!(events[1].data["error"]["provider"], json!("fake-provider"));
+    assert_eq!(events[1].data["error"]["model"], json!("fake-model"));
+    assert_eq!(events[1].data["error"]["retryable"], json!(false));
+    assert_eq!(events[2].data["state"], json!("idle"));
+}
+
+#[test]
+fn process_input_does_not_replay_after_tool_side_effect_when_adapter_error_is_retryable() {
+    let retryable_error = AdapterError::new(AdapterErrorKind::Network, "temporary network failure");
+    assert!(retryable_error.retryable);
+    let adapter = Arc::new(CompleteOutcomeAdapter::new(vec![
+        Ok(tool_call_response_with_call(
+            "resp-tool",
+            "Need a tool",
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+        )),
+        Err(retryable_error.clone()),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut session = Session::new(
+        profile_with_lookup_tool(),
+        ExecutionEnvironment::default(),
+        SessionConfig::default(),
+    );
+    session.next_event();
+
+    let error = session
+        .process_input(&client, "Needs a tool")
+        .expect_err("retryable adapter error surfaces without replaying side effects");
+
+    assert_eq!(error, retryable_error);
+    assert_eq!(session.state, SessionState::Idle);
+    let calls = adapter.complete_requests();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].messages.len(), 2);
+    assert_eq!(calls[0].messages[0].role, MessageRole::System);
+    assert_eq!(calls[0].messages[1], Message::user("Needs a tool"));
+    assert_eq!(calls[1].messages[0].role, MessageRole::System);
+    let expected_history_messages = history_to_messages(&session.history);
+    assert_eq!(
+        &calls[1].messages[1..],
+        expected_history_messages.as_slice()
+    );
+    assert_eq!(
+        turn_names(&session.history),
+        ["UserTurn", "AssistantTurn", "ToolResultsTurn"]
+    );
+    let HistoryTurn::ToolResults(tool_results) = session.history.last().expect("tool results")
+    else {
+        panic!("tool results recorded");
+    };
+    assert_eq!(tool_results.result_list.len(), 1);
+    assert_eq!(tool_results.result_list[0].tool_call_id, "call-1");
+    assert_eq!(tool_results.result_list[0].content, json!("tool result"));
+
+    let events = drain_events(&mut session);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == EventKind::ToolCallEnd)
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == EventKind::Error)
+            .count(),
+        0
+    );
+    let warning = events
+        .iter()
+        .find(|event| event.kind == EventKind::Warning)
+        .expect("retryable warning");
+    assert_eq!(warning.data["message"], json!("temporary network failure"));
+    assert_eq!(warning.data["error"]["kind"], json!("network"));
+    assert_eq!(warning.data["error"]["name"], json!("NetworkError"));
+    assert_eq!(warning.data["error"]["model"], json!("fake-model"));
+    assert_eq!(warning.data["retryable"], json!(true));
+    assert!(events
+        .iter()
+        .any(|event| event.kind == EventKind::ProcessingEnd));
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::SessionEnd));
 }
 
 #[test]
@@ -1961,6 +2362,44 @@ fn profile_with_lookup_tool() -> ProviderProfile {
     profile
 }
 
+fn profile_with_blocking_shell_tool() -> ProviderProfile {
+    let mut profile = ProviderProfile::new("fake-provider", "fake-model");
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredTool::new_with_executor(
+        ToolDefinition::new(
+            "blocking_shell",
+            "Run a blocking command",
+            Some(json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+        )
+        .expect("tool definition"),
+        Arc::new(|execution| {
+            let _ = execution.host_controls.follow_up("Tool queued follow-up");
+            let result = execution
+                .execution_environment
+                .exec_command("blocked", CommandOptions::default())
+                .map_err(|error| {
+                    AdapterError::new(
+                        AdapterErrorKind::InvalidToolCall,
+                        format!("command failed: {error}"),
+                    )
+                })?;
+            Ok(ToolExecutionOutput::success(json!({
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.exit_code,
+                "timed_out": result.timed_out,
+                "duration_ms": result.duration_ms
+            })))
+        }),
+    ));
+    profile.set_tool_registry(registry);
+    profile
+}
+
 fn history_from_tool_calls(tool_calls: impl IntoIterator<Item = ToolCall>) -> Vec<HistoryTurn> {
     let mut history = Vec::new();
     for tool_call in tool_calls {
@@ -2084,6 +2523,348 @@ impl ProviderAdapter for ScriptedAdapter {
 }
 
 #[derive(Debug)]
+struct CapturedNativeStreamRequest {
+    path: String,
+}
+
+struct AbortableNativeStreamServer {
+    base_url: String,
+    captured_receiver: Receiver<CapturedNativeStreamRequest>,
+    first_chunk_receiver: Receiver<()>,
+    client_close_receiver: Receiver<()>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl AbortableNativeStreamServer {
+    fn new(first_chunk: Vec<u8>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("native stream listener");
+        let address = listener.local_addr().expect("native stream address");
+        let (captured_sender, captured_receiver) = mpsc::channel();
+        let (first_chunk_sender, first_chunk_receiver) = mpsc::channel();
+        let (client_close_sender, client_close_receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("native stream accept");
+            let captured = read_native_stream_request(&mut stream);
+            captured_sender
+                .send(captured)
+                .expect("send captured native stream request");
+            write_native_stream_headers(&mut stream).expect("write native stream headers");
+            stream
+                .write_all(&first_chunk)
+                .expect("write native stream chunk");
+            stream.flush().expect("flush native stream chunk");
+            first_chunk_sender
+                .send(())
+                .expect("send native stream first chunk signal");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set native stream close timeout");
+            let mut buffer = [0_u8; 1];
+            match stream.read(&mut buffer) {
+                Ok(0) => client_close_sender
+                    .send(())
+                    .expect("send native stream close signal"),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::UnexpectedEof
+                    ) =>
+                {
+                    client_close_sender
+                        .send(())
+                        .expect("send native stream close signal");
+                }
+                Ok(_) | Err(_) => {}
+            }
+        });
+        Self {
+            base_url: format!("http://{address}"),
+            captured_receiver,
+            first_chunk_receiver,
+            client_close_receiver,
+            handle: Some(handle),
+        }
+    }
+
+    fn wait_for_first_chunk(&self) {
+        self.first_chunk_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("native stream first chunk sent");
+    }
+
+    fn wait_for_client_close(&self) {
+        self.client_close_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("native stream client closed");
+    }
+
+    fn captured(mut self) -> CapturedNativeStreamRequest {
+        let captured = self
+            .captured_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured native stream request");
+        self.handle
+            .take()
+            .expect("native stream server handle")
+            .join()
+            .expect("native stream server joined");
+        captured
+    }
+}
+
+fn read_native_stream_request(stream: &mut TcpStream) -> CapturedNativeStreamRequest {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set native stream read timeout");
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    let header_end = loop {
+        let count = stream
+            .read(&mut buffer)
+            .expect("read native stream request");
+        assert!(
+            count > 0,
+            "client closed before sending native stream request"
+        );
+        bytes.extend_from_slice(&buffer[..count]);
+        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index;
+        }
+    };
+    let header_text = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
+    let request_line = header_text.lines().next().unwrap_or_default();
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
+    let content_length = header_text
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    let body_start = header_end + 4;
+    while bytes.len().saturating_sub(body_start) < content_length {
+        let count = stream.read(&mut buffer).expect("read native stream body");
+        assert!(count > 0, "client closed before sending native stream body");
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+    CapturedNativeStreamRequest { path }
+}
+
+fn write_native_stream_headers(stream: &mut TcpStream) -> std::io::Result<()> {
+    write!(stream, "HTTP/1.1 200 OK\r\n")?;
+    write!(stream, "Content-Type: text/event-stream\r\n")?;
+    write!(stream, "Connection: close\r\n")?;
+    write!(stream, "\r\n")?;
+    stream.flush()
+}
+
+fn openai_stream_delta_chunk(delta: &str) -> Vec<u8> {
+    format!(
+        "data: {}\n\ndata: {}\n\n",
+        json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp-native-abort",
+                "model": "gpt-5.2",
+                "status": "in_progress",
+                "output": []
+            }
+        }),
+        json!({
+            "type": "response.output_text.delta",
+            "item_id": "text_0",
+            "delta": delta
+        })
+    )
+    .into_bytes()
+}
+
+struct BlockingAbortStreamAdapter {
+    stream_requests: Mutex<Vec<Request>>,
+    close_calls: Arc<Mutex<u32>>,
+    blocked: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl BlockingAbortStreamAdapter {
+    fn new() -> Self {
+        Self {
+            stream_requests: Mutex::new(Vec::new()),
+            close_calls: Arc::new(Mutex::new(0)),
+            blocked: Arc::new((Mutex::new(false), Condvar::new())),
+        }
+    }
+
+    fn stream_requests(&self) -> Vec<Request> {
+        self.stream_requests
+            .lock()
+            .expect("stream requests")
+            .clone()
+    }
+
+    fn close_calls(&self) -> u32 {
+        *self.close_calls.lock().expect("close calls")
+    }
+
+    fn wait_until_blocked(&self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (blocked, ready) = &*self.blocked;
+        let mut blocked = blocked.lock().expect("blocked flag");
+        while !*blocked {
+            if Instant::now() >= deadline {
+                panic!("stream did not block waiting for abort");
+            }
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            let (guard, wait_result) = ready
+                .wait_timeout(blocked, timeout)
+                .expect("blocked flag wait");
+            blocked = guard;
+            if wait_result.timed_out() && !*blocked {
+                panic!("stream did not block waiting for abort");
+            }
+        }
+    }
+}
+
+impl ProviderAdapter for BlockingAbortStreamAdapter {
+    fn name(&self) -> &str {
+        "fake-provider"
+    }
+
+    fn complete(&self, _request: Request) -> Result<Response, AdapterError> {
+        Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "complete not supported",
+        ))
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
+        self.stream_requests
+            .lock()
+            .expect("stream requests")
+            .push(request.clone());
+        let signal = request.abort_signal.clone().ok_or_else(|| {
+            AdapterError::new(AdapterErrorKind::InvalidRequest, "missing abort signal")
+        })?;
+        let blocked = Arc::clone(&self.blocked);
+        let close_calls = Arc::clone(&self.close_calls);
+
+        Ok(managed_stream(
+            BlockingAbortStream {
+                signal,
+                blocked,
+                stage: 0,
+            },
+            move || {
+                *close_calls.lock().expect("close calls") += 1;
+                Ok(())
+            },
+        ))
+    }
+}
+
+struct BlockingAbortStream {
+    signal: AbortSignal,
+    blocked: Arc<(Mutex<bool>, Condvar)>,
+    stage: u8,
+}
+
+impl Iterator for BlockingAbortStream {
+    type Item = Result<StreamEvent, AdapterError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.stage {
+            0 => {
+                self.stage = 1;
+                Some(Ok(StreamEvent {
+                    response: Some(Response {
+                        id: "resp-abort".to_string(),
+                        model: "fake-model".to_string(),
+                        provider: "fake-provider".to_string(),
+                        ..Response::default()
+                    }),
+                    ..StreamEvent::new(StreamEventType::StreamStart)
+                }))
+            }
+            1 => {
+                self.stage = 2;
+                Some(Ok(StreamEvent::text_delta("partial")))
+            }
+            _ => {
+                let (blocked, ready) = &*self.blocked;
+                {
+                    let mut blocked = blocked.lock().expect("blocked flag");
+                    *blocked = true;
+                    ready.notify_all();
+                }
+                while !self.signal.aborted() {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                let message = self
+                    .signal
+                    .reason()
+                    .unwrap_or_else(|| "session is aborted".to_string());
+                Some(Err(AdapterError::new(AdapterErrorKind::Abort, message)))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CompleteOutcomeAdapter {
+    complete_requests: Mutex<Vec<Request>>,
+    complete_outcomes: Mutex<VecDeque<Result<Response, AdapterError>>>,
+}
+
+impl CompleteOutcomeAdapter {
+    fn new(outcomes: Vec<Result<Response, AdapterError>>) -> Self {
+        Self {
+            complete_requests: Mutex::new(Vec::new()),
+            complete_outcomes: Mutex::new(outcomes.into_iter().collect()),
+        }
+    }
+
+    fn complete_requests(&self) -> Vec<Request> {
+        self.complete_requests
+            .lock()
+            .expect("complete requests")
+            .clone()
+    }
+}
+
+impl ProviderAdapter for CompleteOutcomeAdapter {
+    fn name(&self) -> &str {
+        "fake-provider"
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        self.complete_requests
+            .lock()
+            .expect("complete requests")
+            .push(request);
+        self.complete_outcomes
+            .lock()
+            .expect("complete outcomes")
+            .pop_front()
+            .ok_or_else(|| AdapterError::new(AdapterErrorKind::Configuration, "missing outcome"))?
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
+        Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "stream not supported",
+        ))
+    }
+}
+
+#[derive(Debug)]
 struct ErrorAdapter {
     error: AdapterError,
     complete_requests: Mutex<Vec<Request>>,
@@ -2126,6 +2907,177 @@ impl ProviderAdapter for ErrorAdapter {
             .expect("stream requests")
             .push(request);
         Err(self.error.clone())
+    }
+}
+
+#[derive(Default)]
+struct BlockingExecState {
+    inner: Mutex<BlockingExecInner>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct BlockingExecInner {
+    exec_started: bool,
+    cleanup_calls: usize,
+}
+
+impl BlockingExecState {
+    fn wait_until_exec_started(&self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut inner = self.inner.lock().expect("blocking exec state");
+        while !inner.exec_started {
+            if Instant::now() >= deadline {
+                panic!("command did not start");
+            }
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            let (guard, wait_result) = self
+                .ready
+                .wait_timeout(inner, timeout)
+                .expect("blocking exec wait");
+            inner = guard;
+            if wait_result.timed_out() && !inner.exec_started {
+                panic!("command did not start");
+            }
+        }
+    }
+
+    fn cleanup_calls(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("blocking exec state")
+            .cleanup_calls
+    }
+}
+
+struct BlockingExecBackend {
+    state: Arc<BlockingExecState>,
+}
+
+impl BlockingExecBackend {
+    fn new(state: Arc<BlockingExecState>) -> Self {
+        Self { state }
+    }
+}
+
+impl std::fmt::Debug for BlockingExecBackend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BlockingExecBackend")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExecutionEnvironmentBackend for BlockingExecBackend {
+    fn read_file(
+        &self,
+        path: &Path,
+        _offset: Option<usize>,
+        _limit: Option<usize>,
+    ) -> EnvironmentResult<String> {
+        Err(EnvironmentError::FileNotFound(path.to_path_buf()))
+    }
+
+    fn read_file_bytes(&self, path: &Path) -> EnvironmentResult<Vec<u8>> {
+        Err(EnvironmentError::FileNotFound(path.to_path_buf()))
+    }
+
+    fn write_file(&self, _path: &Path, _content: &str) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn file_exists(&self, _path: &Path) -> bool {
+        false
+    }
+
+    fn is_directory(&self, _path: &Path) -> bool {
+        false
+    }
+
+    fn delete_file(&self, _path: &Path) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn rename_file(&self, _source_path: &Path, _destination_path: &Path) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn list_directory(&self, _path: &Path, _depth: usize) -> EnvironmentResult<Vec<DirEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn exec_command(
+        &self,
+        command: &str,
+        _options: CommandOptions,
+    ) -> EnvironmentResult<ExecResult> {
+        if command != "blocked" {
+            return Ok(ExecResult {
+                exit_code: 1,
+                ..ExecResult::default()
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut inner = self.state.inner.lock().expect("blocking exec state");
+        inner.exec_started = true;
+        self.state.ready.notify_all();
+        while inner.cleanup_calls == 0 {
+            if Instant::now() >= deadline {
+                return Err(EnvironmentError::Other(
+                    "cleanup was not called while command was blocked".to_string(),
+                ));
+            }
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            let (guard, _wait_result) = self
+                .state
+                .ready
+                .wait_timeout(inner, timeout)
+                .expect("blocking exec cleanup wait");
+            inner = guard;
+        }
+        Ok(ExecResult {
+            stdout: "command interrupted\n".to_string(),
+            stderr: String::new(),
+            exit_code: 130,
+            timed_out: false,
+            duration_ms: 0,
+        })
+    }
+
+    fn grep(
+        &self,
+        _pattern: &str,
+        _path: &Path,
+        _options: &GrepOptions,
+    ) -> EnvironmentResult<String> {
+        Ok(String::new())
+    }
+
+    fn glob(&self, _pattern: &str, _path: &Path) -> EnvironmentResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    fn initialize(&self) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn cleanup(&self) -> EnvironmentResult<()> {
+        let mut inner = self.state.inner.lock().expect("blocking exec state");
+        inner.cleanup_calls += 1;
+        self.state.ready.notify_all();
+        Ok(())
+    }
+
+    fn working_directory(&self) -> String {
+        ".".to_string()
+    }
+
+    fn platform(&self) -> String {
+        "test".to_string()
+    }
+
+    fn os_version(&self) -> String {
+        "test".to_string()
     }
 }
 

@@ -123,6 +123,9 @@ async def test_session_process_input_pauses_on_question_and_delays_follow_ups() 
         "reasoning": None,
         "response_id": "resp-2",
     }
+    answer_processing_end = await _next_event(stream)
+    assert answer_processing_end.kind == agent.EventKind.PROCESSING_END
+    assert answer_processing_end.data == {"state": "idle"}
     follow_up_event = await _next_event(stream)
     assert follow_up_event.kind == agent.EventKind.USER_INPUT
     assert follow_up_event.data == {"content": "Queued follow-up"}
@@ -230,6 +233,9 @@ async def test_session_process_input_replays_follow_ups_after_natural_completion
         "reasoning": None,
         "response_id": "resp-1",
     }
+    first_processing_end = await _next_event(stream)
+    assert first_processing_end.kind == agent.EventKind.PROCESSING_END
+    assert first_processing_end.data == {"state": "idle"}
     first_follow_up = await _next_event(stream)
     assert first_follow_up.kind == agent.EventKind.USER_INPUT
     assert first_follow_up.data == {"content": "First queued follow-up"}
@@ -248,6 +254,9 @@ async def test_session_process_input_replays_follow_ups_after_natural_completion
         "reasoning": None,
         "response_id": "resp-2",
     }
+    second_processing_end = await _next_event(stream)
+    assert second_processing_end.kind == agent.EventKind.PROCESSING_END
+    assert second_processing_end.data == {"state": "idle"}
     second_follow_up = await _next_event(stream)
     assert second_follow_up.kind == agent.EventKind.USER_INPUT
     assert second_follow_up.data == {"content": "Second queued follow-up"}

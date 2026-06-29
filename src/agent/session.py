@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -61,6 +62,14 @@ def _coerce_state(value: SessionState | str) -> SessionState:
         except ValueError:
             return SessionState[value]
     raise TypeError("state must be a SessionState or string")
+
+
+def _error_kind_from_name(error_name: str) -> str:
+    name = error_name.removesuffix("Error")
+    if name.isupper():
+        return name.lower()
+    words = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+    return words or "error"
 
 
 def _normalize_active_subagents(
@@ -343,6 +352,77 @@ class Session:
             return
         self._emit_event(EventKind.WARNING, {"message": message})
 
+    def _model_error_value(self, error: BaseException | str) -> dict[str, Any]:
+        message = str(error)
+        error_name = error.__class__.__name__ if isinstance(error, BaseException) else "Error"
+        error_kind = _error_kind_from_name(error_name)
+        retryable = bool(getattr(error, "retryable", False))
+        error_code = getattr(error, "error_code", None) or error_kind
+        payload: dict[str, Any] = {
+            "kind": error_kind,
+            "name": error_name,
+            "code": error_code,
+            "message": message,
+            "retryable": retryable,
+            "provider": getattr(error, "provider", None) or self.provider_profile.id,
+            "model": self.provider_profile.model,
+        }
+        for field_name in ("status_code", "error_code", "retry_after", "raw"):
+            value = getattr(error, field_name, None)
+            if value is not None:
+                payload[field_name] = value
+        return payload
+
+    def _final_state_payload(
+        self,
+        *,
+        state: SessionState,
+        reason: str,
+        error: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "state": state.value,
+            "reason": reason,
+            "abort_signaled": self.abort_signaled,
+            "history_turns": len(self.history),
+            "active_subagents": len(self.active_subagents),
+            "pending_question": self.pending_user_question,
+        }
+        if error is not None:
+            payload["error"] = dict(error)
+        return payload
+
+    def _model_error_event_payload(
+        self,
+        error: BaseException | str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        error_payload = self._model_error_value(error)
+        payload: dict[str, Any] = {
+            "message": error_payload["message"],
+            "error": error_payload,
+            "error_kind": error_payload["kind"],
+            "name": error_payload["name"],
+            "code": error_payload["code"],
+            "error_code": error_payload.get("error_code", error_payload["code"]),
+            "retryable": error_payload["retryable"],
+            "provider": error_payload.get("provider"),
+            "model": error_payload.get("model"),
+        }
+        if reason is not None:
+            payload["final_state"] = self._final_state_payload(
+                state=SessionState.CLOSED,
+                reason=reason,
+                error=error_payload,
+            )
+        return payload
+
+    def _emit_model_warning(self, error: BaseException | str) -> None:
+        if self.state == SessionState.CLOSED:
+            return
+        self._emit_event(EventKind.WARNING, self._model_error_event_payload(error))
+
     async def _cancel_processing_task(self) -> None:
         processing_task = self._processing_task
         current_task = asyncio.current_task()
@@ -381,19 +461,19 @@ class Session:
 
         if is_authentication_error(error):
             logger.error("Authentication error while processing session input: %s", error)
-            self._emit_event(EventKind.ERROR, {"error": str(error)})
-            await self.close()
+            await self.mark_unrecoverable_error(error)
             return
 
         if is_context_length_error(error):
             logger.warning("Context length error while processing session input: %s", error)
-            self._emit_session_warning(str(error))
+            self._emit_model_warning(error)
             self.mark_natural_completion()
             return
 
         if isinstance(error, SDKError):
             if is_transient_sdk_error(error):
                 logger.warning("Transient SDK error while processing session input: %s", error)
+                self._emit_model_warning(error)
                 self.mark_natural_completion()
                 return
 
@@ -487,6 +567,25 @@ class Session:
             "cache_write_tokens": getattr(usage, "cache_write_tokens", None),
             "raw": getattr(usage, "raw", None),
         }
+
+    def _stream_usage_payload(self, stream_event: Any) -> dict[str, Any] | None:
+        usage = getattr(stream_event, "usage", None)
+        if usage is None and getattr(stream_event, "response", None) is not None:
+            usage = getattr(stream_event.response, "usage", None)
+        if usage is None or not self._usage_has_observations(usage):
+            return None
+        return self._usage_payload(usage)
+
+    def _usage_has_observations(self, usage: Any) -> bool:
+        return (
+            int(getattr(usage, "input_tokens", 0) or 0) != 0
+            or int(getattr(usage, "output_tokens", 0) or 0) != 0
+            or int(getattr(usage, "total_tokens", 0) or 0) != 0
+            or getattr(usage, "reasoning_tokens", None) is not None
+            or getattr(usage, "cache_read_tokens", None) is not None
+            or getattr(usage, "cache_write_tokens", None) is not None
+            or getattr(usage, "raw", None) is not None
+        )
 
     def _assistant_turn_from_response(
         self,
@@ -675,8 +774,10 @@ class Session:
     async def mark_unrecoverable_error(self, error: BaseException | str) -> SessionState:
         if self.state == SessionState.CLOSED:
             raise SessionClosedError("session is closed")
-        error_message = str(error)
-        self._emit_event(EventKind.ERROR, {"error": error_message})
+        self._emit_event(
+            EventKind.ERROR,
+            self._model_error_event_payload(error, reason="unrecoverable_error"),
+        )
         await self.close()
         return self.state
 
@@ -764,9 +865,13 @@ class Session:
                 self._emit_event(EventKind.MODEL_TOOL_CALL_END, self._model_tool_call_payload(stream_event, response_id))
                 continue
 
-            if stream_event.type == StreamEventType.FINISH and stream_event.usage is not None:
-                pending_usage_payload = self._usage_payload(stream_event.usage)
+            if stream_event.type == StreamEventType.FINISH:
+                pending_usage_payload = self._stream_usage_payload(stream_event)
                 continue
+
+            if stream_event.type == StreamEventType.ERROR:
+                pending_usage_payload = self._stream_usage_payload(stream_event)
+                break
 
         if assistant_text_started:
             self._emit_assistant_text_end(
@@ -869,9 +974,9 @@ class Session:
                     self._drain_steering_queue()
                     self._maybe_emit_loop_detection_warning()
 
+                self.mark_natural_completion()
                 next_follow_up = self._next_follow_up()
                 if next_follow_up is None:
-                    self.mark_natural_completion()
                     return
                 current_input = next_follow_up
         except asyncio.CancelledError as exc:

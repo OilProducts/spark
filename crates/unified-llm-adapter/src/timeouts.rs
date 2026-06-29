@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::Notify;
 
 use crate::errors::{AdapterError, AdapterErrorKind};
 
@@ -16,10 +17,20 @@ pub struct AbortSignal {
     state: Arc<AbortState>,
 }
 
-#[derive(Default)]
 struct AbortState {
     aborted: AtomicBool,
     reason: Mutex<Option<String>>,
+    notify: Notify,
+}
+
+impl Default for AbortState {
+    fn default() -> Self {
+        Self {
+            aborted: AtomicBool::new(false),
+            reason: Mutex::new(None),
+            notify: Notify::new(),
+        }
+    }
 }
 
 impl AbortSignal {
@@ -39,10 +50,24 @@ impl AbortSignal {
     where
         R: IntoAbortReason,
     {
+        let reason = reason.into_abort_reason();
+        let mut stored_reason = self.state.reason.lock().expect("abort reason lock");
         if self.state.aborted.swap(true, Ordering::SeqCst) {
             return;
         }
-        *self.state.reason.lock().expect("abort reason lock") = reason.into_abort_reason();
+        *stored_reason = reason;
+        drop(stored_reason);
+        self.state.notify.notify_waiters();
+    }
+
+    pub async fn cancelled(&self) {
+        loop {
+            let notified = self.state.notify.notified();
+            if self.aborted() {
+                return;
+            }
+            notified.await;
+        }
     }
 
     pub fn throw_if_aborted(&self) -> Result<(), AdapterError> {

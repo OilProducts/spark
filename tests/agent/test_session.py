@@ -294,7 +294,13 @@ async def test_session_unrecoverable_error_emits_error_and_closes() -> None:
 
     error_event = await asyncio.wait_for(anext(stream), timeout=1)
     assert error_event.kind == agent.EventKind.ERROR
-    assert error_event.data == {"error": "boom"}
+    assert error_event.data["message"] == "boom"
+    assert error_event.data["error"]["kind"] == "runtime"
+    assert error_event.data["error"]["name"] == "RuntimeError"
+    assert error_event.data["error"]["message"] == "boom"
+    assert error_event.data["error"]["retryable"] is False
+    assert error_event.data["final_state"]["state"] == "closed"
+    assert error_event.data["final_state"]["reason"] == "unrecoverable_error"
 
     end_event = await asyncio.wait_for(anext(stream), timeout=1)
     assert end_event.kind == agent.EventKind.SESSION_END

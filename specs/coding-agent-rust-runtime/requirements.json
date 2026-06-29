@@ -366,9 +366,9 @@
         "tests/agent",
         "tests/compat/agent"
       ],
-      "status": "pending",
-      "milestone_id": "M5-subagents-shared-environment",
-      "notes": "The distinction between recoverable ToolResult errors and session-closing errors is required for agent self-recovery."
+      "status": "completed",
+      "milestone_id": "M4-core-loop-error-shutdown",
+      "notes": "M4 completed recoverable tool errors, provider error taxonomy, context warnings, turn-limit behavior, command and stream abort cleanup, event flushing, and Spark-compatible structured error payloads. Subagent-specific shutdown behavior remains tied to M5 where active subagent handles are implemented."
     },
     {
       "id": "REQ-015",

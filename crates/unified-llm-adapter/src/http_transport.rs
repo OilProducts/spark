@@ -13,7 +13,7 @@ use crate::native::{
     NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport, NativeStreamBody,
     NativeStreamChunkResponse, NativeStreamResponse,
 };
-use crate::timeouts::AdapterTimeout;
+use crate::timeouts::{abort_error, check_abort, AbortSignal, AdapterTimeout};
 
 #[derive(Debug, Clone, Default)]
 pub struct NativeHttpTransport;
@@ -47,6 +47,7 @@ impl NativeCompleteTransport for NativeHttpTransport {
 fn execute_complete_request(
     request: NativeCompleteRequest,
 ) -> Result<NativeCompleteResponse, AdapterError> {
+    check_abort(request.abort_signal.as_ref())?;
     request.timeout.validate().map_err(|message| {
         AdapterError::provider(
             AdapterErrorKind::Configuration,
@@ -80,6 +81,7 @@ fn execute_complete_request(
 fn execute_stream_request(
     request: NativeCompleteRequest,
 ) -> Result<NativeStreamChunkResponse, AdapterError> {
+    check_abort(request.abort_signal.as_ref())?;
     request.timeout.validate().map_err(|message| {
         AdapterError::provider(
             AdapterErrorKind::Configuration,
@@ -99,18 +101,26 @@ fn execute_stream_request(
     let runtime = build_stream_runtime(&request.provider)?;
     let headers = header_map(&request)?;
     let body = request_body(&request)?;
+    let abort_signal = request.abort_signal.clone();
 
-    let response = runtime
-        .block_on(async {
-            client
-                .request(method, &request.url)
-                .headers(headers)
-                .timeout(seconds_duration(request.timeout.request))
-                .body(body)
-                .send()
-                .await
-        })
-        .map_err(|error| transport_error(&request, error))?;
+    let response = runtime.block_on(async {
+        let send = client
+            .request(method, &request.url)
+            .headers(headers)
+            .timeout(seconds_duration(request.timeout.request))
+            .body(body)
+            .send();
+        match abort_signal.clone() {
+            Some(signal) => {
+                let wait_for_abort = signal.clone();
+                tokio::select! {
+                    result = send => result.map_err(|error| transport_error(&request, error)),
+                    _ = wait_for_abort.cancelled() => Err(abort_error("request", signal.reason())),
+                }
+            }
+            None => send.await.map_err(|error| transport_error(&request, error)),
+        }
+    })?;
 
     let status = response.status().as_u16();
     if !(200..=299).contains(&status) {
@@ -129,6 +139,7 @@ fn execute_stream_request(
         method: request.method,
         url: request.url,
         timeout: request.timeout,
+        abort_signal: request.abort_signal,
         status,
         headers: headers.clone(),
         response: Some(response),
@@ -375,9 +386,16 @@ struct HttpStreamBody {
     method: String,
     url: String,
     timeout: AdapterTimeout,
+    abort_signal: Option<AbortSignal>,
     status: u16,
     headers: BTreeMap<String, String>,
     response: Option<AsyncReqwestResponse>,
+}
+
+enum StreamReadOutcome {
+    Chunk(Option<String>),
+    Error(reqwest::Error),
+    Abort(Option<String>),
 }
 
 impl Iterator for HttpStreamBody {
@@ -386,21 +404,48 @@ impl Iterator for HttpStreamBody {
     fn next(&mut self) -> Option<Self::Item> {
         let response = self.response.as_mut()?;
         let read_started_at = Instant::now();
-        match self.runtime.block_on(async { response.chunk().await }) {
-            Ok(Some(chunk)) => Some(Ok(Value::String(
-                String::from_utf8_lossy(&chunk).into_owned(),
-            ))),
-            Ok(None) => {
+        let outcome = match self.abort_signal.clone() {
+            Some(signal) => {
+                let wait_for_abort = signal.clone();
+                self.runtime.block_on(async {
+                    tokio::select! {
+                        result = response.chunk() => match result {
+                            Ok(Some(chunk)) => StreamReadOutcome::Chunk(Some(
+                                String::from_utf8_lossy(&chunk).into_owned(),
+                            )),
+                            Ok(None) => StreamReadOutcome::Chunk(None),
+                            Err(error) => StreamReadOutcome::Error(error),
+                        },
+                        _ = wait_for_abort.cancelled() => StreamReadOutcome::Abort(signal.reason()),
+                    }
+                })
+            }
+            None => match self.runtime.block_on(async { response.chunk().await }) {
+                Ok(Some(chunk)) => {
+                    StreamReadOutcome::Chunk(Some(String::from_utf8_lossy(&chunk).into_owned()))
+                }
+                Ok(None) => StreamReadOutcome::Chunk(None),
+                Err(error) => StreamReadOutcome::Error(error),
+            },
+        };
+
+        match outcome {
+            StreamReadOutcome::Chunk(Some(chunk)) => Some(Ok(Value::String(chunk))),
+            StreamReadOutcome::Chunk(None) => {
                 self.response = None;
                 None
             }
-            Err(error) => {
+            StreamReadOutcome::Error(error) => {
                 self.response = None;
                 Some(Err(stream_read_error(
                     self,
                     error,
                     read_started_at.elapsed(),
                 )))
+            }
+            StreamReadOutcome::Abort(reason) => {
+                self.response = None;
+                Some(Err(abort_error("stream", reason)))
             }
         }
     }

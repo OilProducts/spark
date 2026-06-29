@@ -17,7 +17,7 @@ serde_json = "1.0"
 spark-assets = { path = "../spark-assets" }
 thiserror = "1.0"
 time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["net", "rt", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 toml = "0.8"
 
 [dev-dependencies]

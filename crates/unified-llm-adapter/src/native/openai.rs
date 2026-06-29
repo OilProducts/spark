@@ -78,6 +78,7 @@ where
         url: openai_responses_url(config.base_url.as_deref()),
         headers,
         timeout,
+        abort_signal: request.abort_signal.clone(),
         body,
     })
 }

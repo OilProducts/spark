@@ -707,6 +707,11 @@ async def test_session_process_input_streaming_error_closes_session_and_records_
                 unified_llm.StreamEvent(
                     type=unified_llm.StreamEventType.ERROR,
                     error=error,
+                    usage=unified_llm.Usage(
+                        input_tokens=1,
+                        output_tokens=1,
+                        total_tokens=2,
+                    ),
                     raw={"error": "boom"},
                     response=unified_llm.Response(
                         id="resp-err",
@@ -747,9 +752,20 @@ async def test_session_process_input_streaming_error_closes_session_and_records_
     assistant_end_event = await _next_event(stream)
     assert assistant_end_event.kind == agent.EventKind.ASSISTANT_TEXT_END
     assert assistant_end_event.data == {"text": "partial", "reasoning": None, "response_id": "resp-err"}
+    usage_event = await _next_event(stream)
+    assert usage_event.kind == agent.EventKind.MODEL_USAGE_UPDATE
+    assert usage_event.data["usage"]["total_tokens"] == 2
     error_event = await _next_event(stream)
     assert error_event.kind == agent.EventKind.ERROR
-    assert error_event.data == {"error": "boom"}
+    assert error_event.data["message"] == "boom"
+    assert error_event.data["error"]["kind"] == "sdk"
+    assert error_event.data["error"]["name"] == "SDKError"
+    assert error_event.data["error"]["message"] == "boom"
+    assert error_event.data["error"]["retryable"] is False
+    assert error_event.data["error"]["provider"] == "fake-provider"
+    assert error_event.data["error"]["model"] == "fake-model"
+    assert error_event.data["final_state"]["state"] == "closed"
+    assert error_event.data["final_state"]["reason"] == "unrecoverable_error"
     end_event = await _next_event(stream)
     assert end_event.kind == agent.EventKind.SESSION_END
     assert end_event.data == {"state": "closed"}
@@ -763,5 +779,10 @@ async def test_session_process_input_streaming_error_closes_session_and_records_
     assert assistant_turn.text == "partial"
     assert assistant_turn.response_id == "resp-err"
     assert assistant_turn.finish_reason.reason == "error"
+    assert assistant_turn.usage == unified_llm.Usage(
+        input_tokens=1,
+        output_tokens=1,
+        total_tokens=2,
+    )
     assert assistant_turn.raw == {"partial": True}
     assert assistant_turn.error is error

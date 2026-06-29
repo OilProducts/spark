@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::env::ProviderConfig;
 use crate::errors::{AdapterError, AdapterErrorKind};
-use crate::timeouts::AdapterTimeout;
+use crate::timeouts::{AbortSignal, AdapterTimeout};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NativeRequestConfig {
@@ -60,6 +60,8 @@ pub struct NativeCompleteRequest {
     pub headers: BTreeMap<String, String>,
     #[serde(default)]
     pub timeout: AdapterTimeout,
+    #[serde(default, skip)]
+    pub abort_signal: Option<AbortSignal>,
     pub body: Value,
 }
 

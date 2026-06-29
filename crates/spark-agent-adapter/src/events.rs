@@ -243,7 +243,7 @@ impl SessionEvent {
         };
         let message = content_delta.clone().or_else(|| {
             if self.kind == EventKind::Error {
-                data_string(&self.data, &["error", "message"])
+                session_error_message(&self.data)
             } else {
                 None
             }
@@ -259,7 +259,7 @@ impl SessionEvent {
             request_user_input: self.turn_stream_request_user_input_payload(),
             token_usage: self.turn_stream_token_usage_payload(),
             error: if self.kind == EventKind::Error {
-                data_string(&self.data, &["error", "message"])
+                session_error_message(&self.data)
             } else {
                 None
             },
@@ -316,6 +316,12 @@ fn data_string(data: &BTreeMap<String, Value>, keys: &[&str]) -> Option<String> 
             other => Some(other.to_string()),
         }
     })
+}
+
+fn session_error_message(data: &BTreeMap<String, Value>) -> Option<String> {
+    data_string(data, &["message"])
+        .or_else(|| object_string(data.get("error").and_then(Value::as_object), &["message"]))
+        .or_else(|| data_string(data, &["error"]))
 }
 
 fn actual_tool_call_payload(kind: &EventKind, data: &BTreeMap<String, Value>) -> Value {
