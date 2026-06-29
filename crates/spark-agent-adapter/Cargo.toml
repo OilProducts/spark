@@ -15,6 +15,8 @@ unified-llm-adapter = { path = "../unified-llm-adapter" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
+time = { version = "0.3", features = ["formatting", "parsing", "serde", "serde-well-known"] }
+uuid = { version = "1", features = ["serde", "v4"] }
 
 [dev-dependencies]
 attractor-dsl = { path = "../attractor-dsl" }

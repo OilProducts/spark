@@ -6,6 +6,7 @@ use spark_agent_adapter::{
     AgentTurnBackend, AgentTurnRequest, CodergenBackend, CodergenBackendRequest,
     RustLlmAgentTurnBackend, RustLlmCodergenBackend,
 };
+use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
 use unified_llm_adapter::{
     ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter, Request,
     Response, StreamEvents, Usage,
@@ -101,7 +102,7 @@ fn codergen_backend_treats_display_provider_placeholder_as_missing_provider() {
 }
 
 #[test]
-fn agent_turn_backend_uses_client_default_provider_and_preserves_metadata() {
+fn agent_turn_backend_builds_session_and_preserves_metadata_and_output_contract() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> =
         Arc::new(RecordingAdapter::new("openai", Arc::clone(&calls)));
@@ -126,13 +127,55 @@ fn agent_turn_backend_uses_client_default_provider_and_preserves_metadata() {
         output.final_assistant_text.as_deref(),
         Some("adapter response for gpt-agent")
     );
-    assert_eq!(output.token_usage.expect("usage")["total_tokens"], json!(7));
+    let token_usage = output.token_usage.expect("usage");
+    assert_eq!(
+        token_usage,
+        json!({
+            "total": {
+                "inputTokens": 3,
+                "cachedInputTokens": 3,
+                "outputTokens": 4,
+                "totalTokens": 7
+            }
+        })
+    );
+    assert!(token_usage.get("total_tokens").is_none());
+    assert!(output.raw_log_lines.is_empty());
+    assert!(output.thread_resume_failure.is_none());
+    assert_eq!(
+        output
+            .events
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            TurnStreamEventKind::ContentDelta,
+            TurnStreamEventKind::ContentCompleted,
+            TurnStreamEventKind::TurnCompleted
+        ]
+    );
+    assert_eq!(output.events[0].channel, Some(TurnStreamChannel::Assistant));
+    assert_eq!(
+        output.events[0].content_delta.as_deref(),
+        Some("adapter response for gpt-agent")
+    );
+    assert_eq!(
+        output.events[0].source.backend.as_deref(),
+        Some("agent_session")
+    );
+    assert_eq!(
+        output.events[0].source.raw_kind.as_deref(),
+        Some("assistant_text_delta")
+    );
     let requests = calls.lock().expect("calls");
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
     assert_eq!(request.provider.as_deref(), Some("openai"));
     assert_eq!(request.model, "gpt-agent");
-    assert_eq!(request.messages, vec![Message::user("Plan the next step")]);
+    assert_eq!(
+        request.messages,
+        vec![Message::system(""), Message::user("Plan the next step")]
+    );
     assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
     assert_eq!(request.metadata["caller"], json!("workspace"));
     assert_eq!(
@@ -149,6 +192,79 @@ fn agent_turn_backend_uses_client_default_provider_and_preserves_metadata() {
     assert_eq!(
         request.metadata["spark.runtime.conversation_id"],
         json!("conversation-1")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.project_path"],
+        json!("/repo")
+    );
+    assert_eq!(request.metadata["spark.runtime.chat_mode"], json!("agent"));
+    assert_eq!(
+        request.metadata["spark.runtime.model_selector"],
+        json!("gpt-agent")
+    );
+}
+
+#[test]
+fn agent_turn_backend_routes_llm_profile_through_session_boundary() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "implementation",
+            ActiveLlmProfile::new("openai_compatible", Some("local-default".to_string())),
+            adapter,
+        )
+        .expect("profile client");
+    let backend = RustLlmAgentTurnBackend::new(client);
+
+    let output = backend
+        .run_turn(AgentTurnRequest {
+            conversation_id: "conversation-2".to_string(),
+            project_path: "/repo".to_string(),
+            prompt: "Use the selected profile".to_string(),
+            provider: Some("codex".to_string()),
+            model: None,
+            llm_profile: Some("implementation".to_string()),
+            reasoning_effort: None,
+            chat_mode: Some("chat".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("agent output");
+
+    assert_eq!(
+        output.final_assistant_text.as_deref(),
+        Some("adapter response for local-default")
+    );
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.provider.as_deref(), Some("openai_compatible"));
+    assert_eq!(request.model, "local-default");
+    assert_eq!(
+        request.messages,
+        vec![
+            Message::system(""),
+            Message::user("Use the selected profile")
+        ]
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.provider"],
+        json!("openai_compatible")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.llm_profile"],
+        json!("implementation")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.llm_profile_selector"],
+        json!("implementation")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.conversation_id"],
+        json!("conversation-2")
     );
 }
 
@@ -362,6 +478,7 @@ impl ProviderAdapter for RecordingAdapter {
                 input_tokens: 3,
                 output_tokens: 4,
                 total_tokens: 7,
+                cache_read_tokens: Some(5),
                 ..Usage::default()
             },
             ..Response::default()

@@ -1,16 +1,25 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use unified_llm_adapter::{
     is_display_model_placeholder, resolve_high_level_provider_and_model, AdapterError, Client,
-    HighLevelLlmResolutionInputs, LlmProfileRoute, Message, ModelCapabilities, Request, Usage,
+    HighLevelLlmResolutionInputs, LlmProfileRoute, Message, ModelCapabilities, Request,
 };
 
-use crate::agent::{AgentError, AgentTurnBackend, AgentTurnOutput, AgentTurnRequest};
+use crate::agent::{
+    AgentError, AgentRawLogLine, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput,
+    AgentTurnRequest,
+};
 use crate::codergen::{
     CodergenBackend, CodergenBackendOutput, CodergenBackendRequest, CodergenBackendResponse,
     CodergenError, CodergenEvent,
 };
+use crate::config::SessionConfig;
+use crate::events::{workspace_token_usage_payload_from_usage, SessionEvent};
+use crate::history::HistoryTurn;
+use crate::profiles::ProviderProfile;
+use crate::session::{ExecutionEnvironment, Session};
 
 const BACKEND_NAME: &str = "rust_unified_llm_adapter";
 const PROVIDER_PLACEHOLDERS: &[&str] = &["codex", "codex default (config/profile)"];
@@ -96,44 +105,166 @@ impl RustLlmAgentTurnBackend {
 
 impl AgentTurnBackend for RustLlmAgentTurnBackend {
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
-        let profile = normalize_optional(request.llm_profile.as_deref());
-        let reasoning_effort = normalize_lower_optional(request.reasoning_effort.as_deref());
-        let metadata_chat_mode = normalize_optional(request.chat_mode.as_deref());
-        let mut metadata = request.metadata.clone();
-        metadata.extend(llm_metadata(
-            "agent_turn",
-            [
-                ("conversation_id", Some(request.conversation_id.as_str())),
-                ("project_path", Some(request.project_path.as_str())),
-                ("chat_mode", metadata_chat_mode.as_deref()),
-            ],
-        ));
-        let llm_request = build_llm_request(
-            &self.client,
-            vec![Message::user(request.prompt)],
-            RequestSelection {
-                provider: normalize_provider_selector(request.provider.as_deref().unwrap_or("")),
-                model: normalize_model_selector(request.model.as_deref()),
-                llm_profile: profile,
-                reasoning_effort,
-                required_capabilities: ModelCapabilities::default(),
-            },
-            metadata,
-        )
-        .map_err(agent_adapter_error)?;
-        let response = self
-            .client
-            .complete(llm_request.request)
+        let prompt = request.prompt.clone();
+        let mut session =
+            build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
+        session
+            .process_input(&self.client, prompt)
             .map_err(agent_adapter_error)?;
 
-        Ok(AgentTurnOutput {
-            events: Vec::new(),
-            final_assistant_text: Some(response.text()),
-            token_usage: usage_json(&response.usage),
-            raw_log_lines: Vec::new(),
-            thread_resume_failure: None,
-        })
+        Ok(agent_output_from_session(&mut session))
     }
+}
+
+#[derive(Debug, Clone)]
+struct AgentSessionSelection {
+    provider: Option<String>,
+    model: Option<String>,
+    llm_profile: Option<String>,
+    reasoning_effort: Option<String>,
+}
+
+fn build_agent_session(
+    client: &Client,
+    request: AgentTurnRequest,
+) -> Result<Session, AdapterError> {
+    let AgentTurnRequest {
+        conversation_id,
+        project_path,
+        prompt: _,
+        provider,
+        model,
+        llm_profile,
+        reasoning_effort,
+        chat_mode,
+        metadata,
+    } = request;
+
+    let selection = AgentSessionSelection {
+        provider: normalize_provider_selector(provider.as_deref().unwrap_or("")),
+        model: normalize_model_selector(model.as_deref()),
+        llm_profile: normalize_optional(llm_profile.as_deref()),
+        reasoning_effort: normalize_lower_optional(reasoning_effort.as_deref()),
+    };
+    let mut metadata = metadata;
+    let metadata_chat_mode = normalize_optional(chat_mode.as_deref());
+    let metadata_provider = normalize_optional(provider.as_deref());
+    let metadata_model = normalize_optional(model.as_deref());
+    let metadata_llm_profile = normalize_optional(llm_profile.as_deref());
+    metadata.extend(llm_metadata(
+        "agent_turn",
+        [
+            ("conversation_id", Some(conversation_id.as_str())),
+            ("project_path", Some(project_path.as_str())),
+            ("chat_mode", metadata_chat_mode.as_deref()),
+            ("provider_selector", metadata_provider.as_deref()),
+            ("model_selector", metadata_model.as_deref()),
+            ("llm_profile_selector", metadata_llm_profile.as_deref()),
+        ],
+    ));
+    let llm_request = build_llm_request(
+        client,
+        Vec::new(),
+        RequestSelection {
+            provider: selection.provider.clone(),
+            model: selection.model.clone(),
+            llm_profile: selection.llm_profile.clone(),
+            reasoning_effort: selection.reasoning_effort.clone(),
+            required_capabilities: ModelCapabilities::default(),
+        },
+        metadata,
+    )?;
+
+    let request_provider = llm_request.request.provider.clone().unwrap_or_default();
+    let mut profile = ProviderProfile::new(request_provider, llm_request.request.model.clone());
+    profile.provider_options = llm_request.request.provider_options.clone();
+    let execution_environment = ExecutionEnvironment {
+        working_dir: Some(PathBuf::from(project_path)),
+        env: BTreeMap::new(),
+        metadata: llm_request.request.metadata,
+    };
+    let config = SessionConfig {
+        reasoning_effort: selection.reasoning_effort,
+        ..SessionConfig::default()
+    };
+
+    Ok(Session::new(profile, execution_environment, config))
+}
+
+fn agent_output_from_session(session: &mut Session) -> AgentTurnOutput {
+    let mut output = AgentTurnOutput::default();
+    while let Some(event) = session.next_event() {
+        if let Some(raw_line) = raw_log_line_from_event(&event) {
+            output.raw_log_lines.push(raw_line);
+        }
+        if let Some(failure) = thread_resume_failure_from_event(&event) {
+            output.thread_resume_failure = Some(failure);
+        }
+        if let Some(turn_stream_event) = event.to_turn_stream_event() {
+            if let Some(token_usage) = turn_stream_event.token_usage.as_ref() {
+                output.token_usage = Some(token_usage.clone());
+            }
+            output.events.push(turn_stream_event);
+        }
+    }
+
+    if let Some(assistant) = session.history.iter().rev().find_map(|turn| match turn {
+        HistoryTurn::Assistant(assistant) => Some(assistant),
+        _ => None,
+    }) {
+        output.final_assistant_text = Some(assistant.text());
+        if output.token_usage.is_none() {
+            output.token_usage = assistant
+                .usage
+                .as_ref()
+                .and_then(workspace_token_usage_payload_from_usage);
+        }
+    }
+
+    output
+}
+
+fn raw_log_line_from_event(event: &SessionEvent) -> Option<AgentRawLogLine> {
+    if event.kind.as_str() != "raw_log_line" && !event.data.contains_key("raw_log_line") {
+        return None;
+    }
+
+    let nested = event.data.get("raw_log_line").and_then(Value::as_object);
+    let direction = object_string(nested, &["direction"])
+        .or_else(|| data_string(&event.data, &["direction"]))
+        .unwrap_or_else(|| "incoming".to_string());
+    let line = object_string(nested, &["line"])
+        .or_else(|| data_string(&event.data, &["line"]))
+        .or_else(|| event.data.get("raw").map(Value::to_string))?;
+
+    Some(AgentRawLogLine { direction, line })
+}
+
+fn thread_resume_failure_from_event(event: &SessionEvent) -> Option<AgentThreadResumeFailure> {
+    if event.kind.as_str() != "thread_resume_failure"
+        && !event.data.contains_key("thread_resume_failure")
+    {
+        return None;
+    }
+
+    let nested = event
+        .data
+        .get("thread_resume_failure")
+        .and_then(Value::as_object);
+    let message = object_string(nested, &["message"])
+        .or_else(|| data_string(&event.data, &["message", "error"]))
+        .unwrap_or_else(|| "thread could not resume".to_string());
+    let error_code = object_string(nested, &["error_code"])
+        .or_else(|| data_string(&event.data, &["error_code"]));
+    let details = nested
+        .and_then(|object| object.get("details").cloned())
+        .or_else(|| event.data.get("details").cloned());
+
+    Some(AgentThreadResumeFailure {
+        message,
+        error_code,
+        details,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +410,28 @@ fn non_empty(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
+fn data_string(data: &BTreeMap<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        let value = data.get(*key)?;
+        match value {
+            Value::Null => None,
+            Value::String(text) => Some(text.clone()),
+            other => Some(other.to_string()),
+        }
+    })
+}
+
+fn object_string(object: Option<&Map<String, Value>>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        let value = object?.get(*key)?;
+        match value {
+            Value::Null => None,
+            Value::String(text) => Some(text.clone()),
+            other => Some(other.to_string()),
+        }
+    })
+}
+
 fn llm_metadata<const N: usize>(
     source: &str,
     entries: [(&'static str, Option<&str>); N],
@@ -306,10 +459,6 @@ fn llm_selection_metadata<const N: usize>(
                 .map(|value| (format!("spark.runtime.{key}"), json!(value)))
         })
         .collect()
-}
-
-fn usage_json(usage: &Usage) -> Option<Value> {
-    serde_json::to_value(usage).ok()
 }
 
 fn codergen_adapter_error(error: AdapterError) -> CodergenError {
