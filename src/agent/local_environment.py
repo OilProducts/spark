@@ -24,6 +24,7 @@ from .environment import (
 
 logger = logging.getLogger(__name__)
 
+_TERMINATION_GRACE_PERIOD_SECONDS = 2
 _SENSITIVE_ENV_PATTERN = re.compile(
     r".*(?:_API_KEY|_SECRET|_TOKEN|_PASSWORD|_CREDENTIAL)$",
     re.IGNORECASE,
@@ -108,6 +109,13 @@ def _coerce_output(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="surrogateescape")
     return value
+
+
+def _timeout_message(timeout_ms: int) -> str:
+    return (
+        f"[ERROR: Command timed out after {timeout_ms}ms. Partial output is shown above.\n"
+        "You can retry with a longer timeout by setting the timeout_ms parameter.]"
+    )
 
 
 class LocalExecutionEnvironment:
@@ -346,6 +354,7 @@ class LocalExecutionEnvironment:
             errors="surrogateescape",
             creationflags=creationflags,
             start_new_session=start_new_session,
+            executable=None if os.name == "nt" else "/bin/bash",
         )
         self._register_process(proc)
         try:
@@ -356,8 +365,10 @@ class LocalExecutionEnvironment:
             stderr = _coerce_output(exc.stderr)
             timed_out = True
             self._terminate_process(proc)
-            timeout_message = f"Command timed out after {effective_timeout_ms} ms"
-            stderr = self._append_timeout_message(stderr, timeout_message)
+            stderr = self._append_timeout_message(
+                stderr,
+                _timeout_message(effective_timeout_ms),
+            )
         except BaseException:
             self._terminate_process(proc)
             raise
@@ -441,12 +452,11 @@ class LocalExecutionEnvironment:
                 proc.wait()
             return
 
-        grace_period_seconds = 2
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-        deadline = time.monotonic() + grace_period_seconds
+        deadline = time.monotonic() + _TERMINATION_GRACE_PERIOD_SECONDS
         while proc.poll() is None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

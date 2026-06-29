@@ -1,0 +1,1680 @@
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use spark_agent_adapter::{
+    create_anthropic_profile, create_gemini_profile, create_openai_profile, CommandOptions,
+    DirEntry, EnvironmentError, EnvironmentResult, EventKind, ExecResult, ExecutionEnvironment,
+    ExecutionEnvironmentBackend, GrepOptions, RegisteredTool, SessionConfig, ToolDefinition,
+    ToolDispatchContext, ToolDispatchEvent, ToolExecutionOutput, ToolRegistry,
+};
+use tempfile::tempdir;
+use unified_llm_adapter::{AdapterError, AdapterErrorKind, Tool, ToolCall, ToolResult};
+
+const PNG_BYTES: &[u8] = &[
+    0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0x00, 0x00, 0x00, 0x0d, b'I', b'H', b'D',
+    b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15,
+    0xc4, 0x89, 0x00, 0x00, 0x00, 0x0c, b'I', b'D', b'A', b'T', 0x08, 0xd7, b'c', 0xf8, 0x0f, 0x00,
+    0x01, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d, 0x18, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D',
+    0xae, b'B', b'`', 0x82,
+];
+
+fn definition(name: &str, description: &str, parameters: Value) -> ToolDefinition {
+    ToolDefinition::new(name, description, Some(parameters)).expect("valid tool definition")
+}
+
+fn dispatch_with_recorded_events(
+    registry: &ToolRegistry,
+    tool_call: ToolCall,
+) -> (ToolResult, Vec<ToolDispatchEvent>) {
+    let events = Arc::new(Mutex::new(Vec::<ToolDispatchEvent>::new()));
+    let captured_events = events.clone();
+    let result = registry.dispatch(
+        tool_call,
+        ToolDispatchContext {
+            event_hook: Some(Arc::new(move |event| {
+                captured_events.lock().expect("events").push(event);
+            })),
+            ..ToolDispatchContext::default()
+        },
+    );
+    let events = events.lock().expect("events").clone();
+    (result, events)
+}
+
+fn assert_single_start_end(
+    events: &[ToolDispatchEvent],
+    tool_call_id: &str,
+    tool_name: &str,
+    arguments: Value,
+    raw_arguments: Option<&str>,
+) {
+    assert_eq!(events.len(), 2, "events for {tool_call_id}: {events:?}");
+    assert_eq!(events[0].kind, EventKind::ToolCallStart);
+    assert_eq!(events[1].kind, EventKind::ToolCallEnd);
+    for event in events {
+        assert_eq!(event.data["tool_call_id"], json!(tool_call_id));
+        assert_eq!(event.data["tool_name"], json!(tool_name));
+    }
+    assert_eq!(events[0].data["arguments"], arguments);
+    match raw_arguments {
+        Some(raw_arguments) => assert_eq!(events[0].data["raw_arguments"], json!(raw_arguments)),
+        None => assert!(!events[0].data.contains_key("raw_arguments")),
+    }
+}
+
+#[test]
+fn tool_definition_requires_object_root_json_schema_and_defaults_to_empty_object() {
+    let definition = ToolDefinition::new("lookup", "Lookup values", None).expect("definition");
+    assert_eq!(definition.parameters, json!({"type": "object"}));
+
+    let error = ToolDefinition::new("lookup", "Lookup values", Some(json!({"type": "string"})))
+        .expect_err("non-object root rejected");
+    assert!(error.contains("root type must be object"));
+}
+
+#[test]
+fn registry_register_unregister_get_definitions_and_names_are_latest_wins() {
+    let first_definition = definition("lookup", "first", json!({"type": "object"}));
+    let second_definition = definition("lookup", "second", json!({"type": "object"}));
+
+    let mut registry = ToolRegistry::new();
+    let previous = registry.register(RegisteredTool::new::<Value, _>(
+        first_definition.clone(),
+        |_| Ok(json!("first")),
+    ));
+    assert!(previous.is_none());
+
+    let previous = registry.register(RegisteredTool::new::<Value, _>(
+        second_definition.clone(),
+        |_| Ok(json!("second")),
+    ));
+    assert_eq!(
+        previous.expect("replaced").definition.description,
+        first_definition.description
+    );
+    assert_eq!(registry.names(), ["lookup"]);
+    assert_eq!(registry.definitions(), [second_definition.clone()]);
+    assert_eq!(
+        registry
+            .dispatch(
+                ToolCall::new("call-1", "lookup", json!({})),
+                ToolDispatchContext::default(),
+            )
+            .content,
+        json!("second")
+    );
+
+    let removed = registry.unregister("lookup").expect("removed");
+    assert_eq!(removed.definition, second_definition);
+    assert!(registry.get("lookup").is_none());
+    assert!(registry.definitions().is_empty());
+    assert!(registry.names().is_empty());
+}
+
+#[test]
+fn dispatch_executes_valid_calls_then_invokes_truncation_and_event_hooks_before_result() {
+    let observations = Arc::new(Mutex::new(Vec::<String>::new()));
+    let executor_observations = observations.clone();
+    let definition = definition(
+        "lookup",
+        "Lookup values",
+        json!({
+            "type": "object",
+            "properties": {"value": {"type": "integer"}},
+            "required": ["value"],
+            "additionalProperties": false
+        }),
+    );
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredTool::new::<Value, _>(
+        definition,
+        move |invocation| {
+            assert_eq!(invocation.tool_call_id, "call-ok");
+            assert_eq!(invocation.arguments, json!({"value": 7}));
+            executor_observations
+                .lock()
+                .expect("observations")
+                .push("execute".to_string());
+            Ok(json!("0123456789"))
+        },
+    ));
+
+    let truncation_observations = observations.clone();
+    let event_observations = observations.clone();
+    let mut config = SessionConfig::default();
+    config.tool_output_limits.insert("lookup".to_string(), 4);
+    let context = ToolDispatchContext {
+        config,
+        truncation_hook: Some(Arc::new(move |truncation| {
+            assert_eq!(truncation.full_content, json!("0123456789"));
+            assert!(truncation
+                .default_model_content
+                .as_str()
+                .expect("string content")
+                .contains("Tool output was truncated"));
+            truncation_observations
+                .lock()
+                .expect("observations")
+                .push("truncate".to_string());
+            json!("hook-truncated")
+        })),
+        event_hook: Some(Arc::new(move |event| match event.kind {
+            EventKind::ToolCallStart => {
+                assert_eq!(event.data["tool_call_id"], json!("call-ok"));
+                assert_eq!(event.data["tool_name"], json!("lookup"));
+                assert_eq!(event.data["arguments"], json!({"value": 7}));
+                assert_eq!(event.data["raw_arguments"], json!(r#"{"value": 7}"#));
+                event_observations
+                    .lock()
+                    .expect("observations")
+                    .push("event-start".to_string());
+            }
+            EventKind::ToolCallEnd => {
+                assert_eq!(event.data["tool_call_id"], json!("call-ok"));
+                assert_eq!(event.data["tool_name"], json!("lookup"));
+                assert_eq!(event.data["output"], json!("0123456789"));
+                assert_eq!(event.data["model_content"], json!("hook-truncated"));
+                event_observations
+                    .lock()
+                    .expect("observations")
+                    .push("event-end".to_string());
+            }
+            other => panic!("unexpected tool dispatch event: {other:?}"),
+        })),
+        ..ToolDispatchContext::default()
+    };
+
+    let result = registry.dispatch(
+        ToolCall::from_raw_arguments("call-ok", "lookup", r#"{"value": 7}"#),
+        context,
+    );
+
+    assert_eq!(result.tool_call_id, "call-ok");
+    assert!(!result.is_error);
+    assert_eq!(result.content, json!("hook-truncated"));
+    assert_eq!(
+        observations.lock().expect("observations").as_slice(),
+        ["event-start", "execute", "truncate", "event-end"]
+    );
+}
+
+#[test]
+fn dispatch_emits_one_start_then_one_end_for_each_outcome() {
+    let lookup_definition = definition(
+        "lookup",
+        "Lookup values",
+        json!({
+            "type": "object",
+            "properties": {"value": {"type": "integer"}},
+            "required": ["value"],
+            "additionalProperties": false
+        }),
+    );
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredTool::new::<Value, _>(lookup_definition, |_| {
+        Ok(json!("ok"))
+    }));
+    registry.register(RegisteredTool::new::<Value, _>(
+        definition("fails", "Always fails", json!({"type": "object"})),
+        |_| {
+            Err(AdapterError::new(
+                AdapterErrorKind::InvalidToolCall,
+                "permission denied",
+            ))
+        },
+    ));
+
+    let (success, events) = dispatch_with_recorded_events(
+        &registry,
+        ToolCall::from_raw_arguments("call-ok", "lookup", r#"{"value": 7}"#),
+    );
+    assert!(!success.is_error);
+    assert_eq!(success.content, json!("ok"));
+    assert_single_start_end(
+        &events,
+        "call-ok",
+        "lookup",
+        json!({"value": 7}),
+        Some(r#"{"value": 7}"#),
+    );
+    assert_eq!(events[1].data["output"], json!("ok"));
+
+    let (unknown, events) = dispatch_with_recorded_events(
+        &registry,
+        ToolCall::new("call-unknown", "missing", json!({"value": 7})),
+    );
+    assert!(unknown.is_error);
+    assert_eq!(unknown.content, json!("Unknown tool: missing"));
+    assert_single_start_end(
+        &events,
+        "call-unknown",
+        "missing",
+        json!({"value": 7}),
+        None,
+    );
+    assert_eq!(events[1].data["error"], json!("Unknown tool: missing"));
+
+    let (invalid_json, events) = dispatch_with_recorded_events(
+        &registry,
+        ToolCall::from_raw_arguments("call-json", "lookup", "{not json"),
+    );
+    assert!(invalid_json.is_error);
+    assert_single_start_end(
+        &events,
+        "call-json",
+        "lookup",
+        json!("{not json"),
+        Some("{not json"),
+    );
+    assert!(events[1].data["error"]
+        .as_str()
+        .expect("error content")
+        .starts_with("Invalid arguments for tool: lookup"));
+
+    let (schema_failure, events) =
+        dispatch_with_recorded_events(&registry, ToolCall::new("call-schema", "lookup", json!({})));
+    assert!(schema_failure.is_error);
+    assert_single_start_end(&events, "call-schema", "lookup", json!({}), None);
+    assert!(events[1].data["error"]
+        .as_str()
+        .expect("error content")
+        .starts_with("Invalid arguments for tool: lookup"));
+
+    let (executor_failure, events) =
+        dispatch_with_recorded_events(&registry, ToolCall::new("call-fails", "fails", json!({})));
+    assert!(executor_failure.is_error);
+    assert_eq!(
+        executor_failure.content,
+        json!("Tool error (fails): permission denied")
+    );
+    assert_single_start_end(&events, "call-fails", "fails", json!({}), None);
+    assert_eq!(
+        events[1].data["error"],
+        json!("Tool error (fails): permission denied")
+    );
+}
+
+#[test]
+fn dispatch_returns_recoverable_errors_without_executing_invalid_calls() {
+    let called = Arc::new(AtomicBool::new(false));
+    let called_by_executor = called.clone();
+    let definition = definition(
+        "lookup",
+        "Lookup values",
+        json!({
+            "type": "object",
+            "properties": {"value": {"type": "integer"}},
+            "required": ["value"],
+            "additionalProperties": false
+        }),
+    );
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredTool::new::<Value, _>(definition, move |_| {
+        called_by_executor.store(true, Ordering::SeqCst);
+        Ok(json!("unexpected"))
+    }));
+
+    let unknown = registry.dispatch(
+        ToolCall::new("call-unknown", "missing", json!({})),
+        ToolDispatchContext::default(),
+    );
+    assert_eq!(unknown.tool_call_id, "call-unknown");
+    assert!(unknown.is_error);
+    assert_eq!(unknown.content, json!("Unknown tool: missing"));
+
+    let invalid_json = registry.dispatch(
+        ToolCall::from_raw_arguments("call-json", "lookup", "{not json"),
+        ToolDispatchContext::default(),
+    );
+    assert!(invalid_json.is_error);
+    assert!(invalid_json
+        .content
+        .as_str()
+        .expect("error content")
+        .starts_with("Invalid arguments for tool: lookup"));
+
+    let schema_failure = registry.dispatch(
+        ToolCall::new("call-schema", "lookup", json!({})),
+        ToolDispatchContext::default(),
+    );
+    assert!(schema_failure.is_error);
+    assert!(schema_failure
+        .content
+        .as_str()
+        .expect("error content")
+        .starts_with("Invalid arguments for tool: lookup"));
+    assert!(!called.load(Ordering::SeqCst));
+}
+
+#[test]
+fn dispatch_converts_executor_failures_to_recoverable_tool_results() {
+    let definition = definition("shell", "Run a command", json!({"type": "object"}));
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredTool::new::<Value, _>(definition, |_| {
+        Err(AdapterError::new(
+            AdapterErrorKind::InvalidToolCall,
+            "permission denied",
+        ))
+    }));
+
+    let result = registry.dispatch(
+        ToolCall::new("call-error", "shell", json!({})),
+        ToolDispatchContext::default(),
+    );
+
+    assert_eq!(result.tool_call_id, "call-error");
+    assert!(result.is_error);
+    assert_eq!(
+        result.content,
+        json!("Tool error (shell): permission denied")
+    );
+}
+
+#[test]
+fn parallel_dispatch_preserves_result_order_and_tool_call_id_association() {
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Arc::new(Mutex::new(release_rx));
+    let events = Arc::new(Mutex::new(Vec::<ToolDispatchEvent>::new()));
+    let mut registry = ToolRegistry::new();
+
+    let first_release_rx = release_rx.clone();
+    registry.register(RegisteredTool::new::<Value, _>(
+        definition("first", "First tool", json!({"type": "object"})),
+        move |_| {
+            first_release_rx
+                .lock()
+                .expect("release receiver")
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|error| {
+                    AdapterError::new(
+                        AdapterErrorKind::InvalidToolCall,
+                        format!("parallel dispatch did not start the second tool: {error}"),
+                    )
+                })?;
+            Ok(json!("first-result"))
+        },
+    ));
+    registry.register(RegisteredTool::new::<Value, _>(
+        definition("second", "Second tool", json!({"type": "object"})),
+        move |_| {
+            release_tx.send(()).expect("release first tool");
+            Ok(json!("second-result"))
+        },
+    ));
+
+    let results = registry.dispatch_many(
+        [
+            ToolCall::new("call-first", "first", json!({})),
+            ToolCall::new("call-second", "second", json!({})),
+        ],
+        ToolDispatchContext {
+            supports_parallel_tool_calls: true,
+            event_hook: Some(Arc::new({
+                let events = events.clone();
+                move |event| {
+                    events.lock().expect("events").push(event);
+                }
+            })),
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].tool_call_id, "call-first");
+    assert_eq!(results[0].content, json!("first-result"));
+    assert!(!results[0].is_error);
+    assert_eq!(results[1].tool_call_id, "call-second");
+    assert_eq!(results[1].content, json!("second-result"));
+    assert!(!results[1].is_error);
+
+    let events = events.lock().expect("events");
+    assert_eq!(events.len(), 4, "parallel dispatch events: {events:?}");
+    for (tool_call_id, tool_name) in [("call-first", "first"), ("call-second", "second")] {
+        let call_events = events
+            .iter()
+            .filter(|event| event.data.get("tool_call_id") == Some(&json!(tool_call_id)))
+            .collect::<Vec<_>>();
+        assert_eq!(call_events.len(), 2, "events for {tool_call_id}");
+        assert_eq!(call_events[0].kind, EventKind::ToolCallStart);
+        assert_eq!(call_events[1].kind, EventKind::ToolCallEnd);
+        assert_eq!(call_events[0].data["tool_name"], json!(tool_name));
+        assert_eq!(call_events[0].data["arguments"], json!({}));
+        assert_eq!(call_events[1].data["tool_name"], json!(tool_name));
+    }
+}
+
+#[test]
+fn registered_tools_can_return_recoverable_error_outputs_directly() {
+    let definition = definition("lookup", "Lookup values", json!({"type": "object"}));
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredTool::new_with_executor(
+        definition,
+        Arc::new(|_| Ok(ToolExecutionOutput::error(json!("not found")))),
+    ));
+
+    let result = registry.dispatch(
+        ToolCall::new("call-direct-error", "lookup", json!({})),
+        ToolDispatchContext::default(),
+    );
+
+    assert_eq!(result.tool_call_id, "call-direct-error");
+    assert!(result.is_error);
+    assert_eq!(result.content, json!("not found"));
+}
+
+#[test]
+fn openai_read_file_dispatch_formats_text_and_gates_image_results_by_capability() {
+    let tempdir = tempdir().expect("tempdir");
+    let environment = ExecutionEnvironment::local(tempdir.path());
+    environment
+        .write_file("notes.txt", "alpha\nbeta\ngamma\n")
+        .expect("write notes");
+    std::fs::write(tempdir.path().join("image.png"), PNG_BYTES).expect("write image");
+
+    let registry = create_openai_profile("gpt-5.2").registry();
+    let read_text = registry.dispatch(
+        ToolCall::new(
+            "call-read-text",
+            "read_file",
+            json!({"path": "notes.txt", "offset": 2, "limit": 1}),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            capabilities: BTreeMap::from([
+                ("vision".to_string(), false),
+                ("multimodal".to_string(), false),
+                ("image".to_string(), false),
+            ]),
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!read_text.is_error);
+    assert_eq!(read_text.content, json!("002 | beta"));
+    assert_eq!(read_text.image_data, None);
+
+    let missing = registry.dispatch(
+        ToolCall::new("call-missing", "read_file", json!({"path": "missing.txt"})),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(missing.is_error);
+    assert_eq!(missing.content, json!("File not found: missing.txt"));
+
+    let image_without_vision = registry.dispatch(
+        ToolCall::new(
+            "call-image-denied",
+            "read_file",
+            json!({"path": "image.png"}),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            capabilities: BTreeMap::from([
+                ("vision".to_string(), false),
+                ("multimodal".to_string(), false),
+                ("image".to_string(), false),
+            ]),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(image_without_vision.is_error);
+    assert_eq!(
+        image_without_vision.content,
+        json!("Binary file not supported: image.png")
+    );
+    assert_eq!(image_without_vision.image_data, None);
+
+    let image_with_vision = registry.dispatch(
+        ToolCall::new("call-image", "read_file", json!({"path": "image.png"})),
+        ToolDispatchContext {
+            execution_environment: environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(!image_with_vision.is_error);
+    assert!(image_with_vision
+        .content
+        .as_str()
+        .expect("image summary")
+        .contains("image.png"));
+    assert_eq!(image_with_vision.image_data.as_deref(), Some(PNG_BYTES));
+    assert_eq!(
+        image_with_vision.image_media_type.as_deref(),
+        Some("image/png")
+    );
+}
+
+#[test]
+fn gemini_write_edit_and_read_many_dispatch_use_provider_native_argument_shapes() {
+    let tempdir = tempdir().expect("tempdir");
+    let environment = ExecutionEnvironment::local(tempdir.path());
+    let registry = create_gemini_profile("gemini-3.1-pro-preview").registry();
+
+    let write_result = registry.dispatch(
+        ToolCall::new(
+            "call-write",
+            "write_file",
+            json!({"file_path": "notes.txt", "content": "alpha\nbeta\nalpha\n"}),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(!write_result.is_error);
+    assert_eq!(
+        write_result.content,
+        json!({"path": "notes.txt", "bytes_written": 17})
+    );
+
+    let duplicate_without_allow_multiple = registry.dispatch(
+        ToolCall::new(
+            "call-duplicate",
+            "edit_file",
+            json!({
+                "file_path": "notes.txt",
+                "instruction": "Replace one alpha",
+                "old_string": "alpha",
+                "new_string": "gamma"
+            }),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(duplicate_without_allow_multiple.is_error);
+    assert_eq!(
+        duplicate_without_allow_multiple.content,
+        json!("old_string is not unique in notes.txt: 2 matches")
+    );
+
+    let edit_result = registry.dispatch(
+        ToolCall::new(
+            "call-edit",
+            "edit_file",
+            json!({
+                "file_path": "notes.txt",
+                "instruction": "Replace all alpha with gamma",
+                "old_string": "alpha",
+                "new_string": "gamma",
+                "allow_multiple": true
+            }),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(!edit_result.is_error);
+    assert_eq!(edit_result.content["path"], json!("notes.txt"));
+    assert_eq!(edit_result.content["replacements"], json!(2));
+    assert_eq!(
+        environment
+            .read_file("notes.txt", None, None)
+            .expect("read edited file"),
+        "gamma\nbeta\ngamma\n"
+    );
+
+    let not_found = registry.dispatch(
+        ToolCall::new(
+            "call-not-found",
+            "edit_file",
+            json!({
+                "file_path": "notes.txt",
+                "instruction": "Replace missing text",
+                "old_string": "delta",
+                "new_string": "epsilon"
+            }),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(not_found.is_error);
+    assert_eq!(
+        not_found.content,
+        json!("old_string not found in notes.txt")
+    );
+
+    environment
+        .write_file("other.txt", "delta\n")
+        .expect("write other file");
+    let read_many = registry.dispatch(
+        ToolCall::new(
+            "call-read-many",
+            "read_many_files",
+            json!({"paths": ["notes.txt", "other.txt"]}),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(!read_many.is_error);
+    assert_eq!(read_many.content["count"], json!(2));
+    assert_eq!(read_many.content["files"][0]["path"], json!("notes.txt"));
+    assert_eq!(
+        read_many.content["files"][0]["content"],
+        json!("001 | gamma\n002 | beta\n003 | gamma")
+    );
+    assert_eq!(read_many.content["files"][1]["path"], json!("other.txt"));
+}
+
+#[test]
+fn grep_glob_and_list_dir_dispatch_return_structured_results_and_recoverable_errors() {
+    let tempdir = tempdir().expect("tempdir");
+    let environment = ExecutionEnvironment::local(tempdir.path());
+    environment
+        .write_file("notes.txt", "Alpha\nignored\nALPHA\n")
+        .expect("write notes");
+    environment
+        .write_file("nested/ignore.md", "alpha\n")
+        .expect("write nested ignore");
+    environment
+        .write_file("nested/readme.txt", "beta\n")
+        .expect("write nested readme");
+
+    let old_file = tempdir.path().join("old.txt");
+    let new_file = tempdir.path().join("new.txt");
+    environment.write_file(&old_file, "old").expect("write old");
+    environment.write_file(&new_file, "new").expect("write new");
+    filetime::set_file_mtime(&old_file, filetime::FileTime::from_unix_time(1, 0))
+        .expect("old mtime");
+    filetime::set_file_mtime(&new_file, filetime::FileTime::from_unix_time(2, 0))
+        .expect("new mtime");
+    filetime::set_file_mtime(
+        tempdir.path().join("notes.txt"),
+        filetime::FileTime::from_unix_time(0, 0),
+    )
+    .expect("notes mtime");
+
+    let registry = create_gemini_profile("gemini-3.1-pro-preview").registry();
+    let grep = registry.dispatch(
+        ToolCall::new(
+            "call-grep",
+            "grep",
+            json!({
+                "pattern": "alpha",
+                "path": ".",
+                "glob_filter": "*.txt",
+                "case_insensitive": true,
+                "max_results": 2
+            }),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(!grep.is_error);
+    assert_eq!(
+        grep.content,
+        json!({
+            "matches": [
+                {"path": "notes.txt", "line_number": 1, "line": "Alpha"},
+                {"path": "notes.txt", "line_number": 3, "line": "ALPHA"}
+            ]
+        })
+    );
+
+    let invalid_regex = registry.dispatch(
+        ToolCall::new(
+            "call-invalid-regex",
+            "grep",
+            json!({"pattern": "(", "path": "."}),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(invalid_regex.is_error);
+    assert!(invalid_regex
+        .content
+        .as_str()
+        .expect("regex error")
+        .starts_with("Invalid regex pattern:"));
+
+    let glob = registry.dispatch(
+        ToolCall::new(
+            "call-glob",
+            "glob",
+            json!({"pattern": "*.txt", "path": "."}),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(!glob.is_error);
+    assert_eq!(glob.content, json!(["new.txt", "old.txt", "notes.txt"]));
+
+    let missing_glob_base = registry.dispatch(
+        ToolCall::new(
+            "call-missing-glob",
+            "glob",
+            json!({"pattern": "*.txt", "path": "missing"}),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(missing_glob_base.is_error);
+    assert_eq!(missing_glob_base.content, json!("File not found: missing"));
+
+    let list_dir = registry.dispatch(
+        ToolCall::new("call-list", "list_dir", json!({"path": ".", "depth": 1})),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(!list_dir.is_error);
+    assert_eq!(list_dir.content["path"], json!("."));
+    assert_eq!(list_dir.content["depth"], json!(1));
+    assert!(list_dir.content["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .any(|entry| entry["name"] == json!("nested/readme.txt")));
+
+    let list_missing = registry.dispatch(
+        ToolCall::new("call-list-missing", "list_dir", json!({"path": "missing"})),
+        ToolDispatchContext {
+            execution_environment: environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(list_missing.is_error);
+    assert_eq!(list_missing.content, json!("File not found: missing"));
+}
+
+#[test]
+fn shell_dispatch_uses_provider_defaults_explicit_timeouts_and_maximum_cap() {
+    let backend = RecordingShellEnvironment::default();
+    let calls = backend.calls.clone();
+    let environment = ExecutionEnvironment::from_backend(backend);
+    let mut config = SessionConfig::default();
+    config.max_command_timeout_ms = 60_000;
+
+    let openai = create_openai_profile("gpt-5.2").registry().dispatch(
+        ToolCall::new("call-openai-shell", "shell", json!({"command": "openai"})),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            config: config.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(!openai.is_error);
+    assert_eq!(openai.content["stdout"], json!("openai"));
+
+    let anthropic = create_anthropic_profile("claude-sonnet-4-5")
+        .registry()
+        .dispatch(
+            ToolCall::new(
+                "call-anthropic-shell",
+                "shell",
+                json!({"command": "anthropic"}),
+            ),
+            ToolDispatchContext {
+                execution_environment: environment.clone(),
+                config: config.clone(),
+                ..ToolDispatchContext::default()
+            },
+        );
+    assert!(!anthropic.is_error);
+    assert_eq!(anthropic.content["stdout"], json!("anthropic"));
+
+    let gemini = create_gemini_profile("gemini-3.1-pro-preview")
+        .registry()
+        .dispatch(
+            ToolCall::new(
+                "call-gemini-shell",
+                "shell",
+                json!({"command": "gemini", "timeout_ms": 40}),
+            ),
+            ToolDispatchContext {
+                execution_environment: environment.clone(),
+                config: config.clone(),
+                ..ToolDispatchContext::default()
+            },
+        );
+    assert!(!gemini.is_error);
+    assert_eq!(gemini.content["stdout"], json!("gemini"));
+
+    config.max_command_timeout_ms = 50;
+    let capped = create_anthropic_profile("claude-sonnet-4-5")
+        .registry()
+        .dispatch(
+            ToolCall::new("call-capped-shell", "shell", json!({"command": "capped"})),
+            ToolDispatchContext {
+                execution_environment: environment,
+                config,
+                ..ToolDispatchContext::default()
+            },
+        );
+    assert!(!capped.is_error);
+
+    assert_eq!(
+        calls.lock().expect("shell calls").as_slice(),
+        [
+            ("openai".to_string(), 10_000),
+            ("anthropic".to_string(), 60_000),
+            ("gemini".to_string(), 40),
+            ("capped".to_string(), 50),
+        ]
+    );
+}
+
+#[test]
+fn registry_preserves_unified_active_tool_executors_for_compatibility() {
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        Tool::active_with_schema(
+            "lookup",
+            Some("Lookup values".to_string()),
+            Some(json!({"type": "object"})),
+            |invocation| {
+                Ok(json!({
+                    "tool_call_id": invocation.tool_call_id,
+                    "arguments": invocation.arguments
+                }))
+            },
+        )
+        .expect("active tool"),
+    );
+
+    let result = registry.dispatch(
+        ToolCall::new("call-active", "lookup", json!({"value": 7})),
+        ToolDispatchContext::default(),
+    );
+
+    assert_eq!(result.tool_call_id, "call-active");
+    assert!(!result.is_error);
+    assert_eq!(
+        result.content,
+        json!({
+            "tool_call_id": "call-active",
+            "arguments": {"value": 7}
+        })
+    );
+}
+
+#[test]
+fn openai_apply_patch_dispatch_applies_add_delete_update_rename_and_eof_marker() {
+    let tempdir = tempdir().expect("tempdir");
+    let environment = ExecutionEnvironment::local(tempdir.path());
+    environment
+        .write_file(
+            "src/app.py",
+            "def main():\n    print(\"Hello\")\n    return 0\n# trailing\n",
+        )
+        .expect("write app");
+    environment
+        .write_file(
+            "src/old_name.py",
+            "import os\nimport old_dep\n\ndef main():\n    return 0\n",
+        )
+        .expect("write old name");
+    environment
+        .write_file("src/remove_me.txt", "delete me\n")
+        .expect("write remove me");
+
+    let patch = [
+        "*** Begin Patch",
+        "*** Add File: src/new_file.py",
+        "+first line",
+        "+second line",
+        "*** Delete File: src/remove_me.txt",
+        "*** Update File: src/app.py",
+        "@@ def main():",
+        " def main():",
+        "     print(\"Hello\")",
+        "-    return 0",
+        "+    return 1",
+        "@@ # trailing",
+        "-# trailing",
+        "+# updated trailing",
+        "*** End of File",
+        "*** Update File: src/old_name.py",
+        "*** Move to: src/new_name.py",
+        "@@ import old_dep",
+        " import os",
+        "-import old_dep",
+        "+import new_dep",
+        "*** End Patch",
+    ]
+    .join("\n");
+
+    let result = create_openai_profile("gpt-5.2").registry().dispatch(
+        ToolCall::new("call-apply", "apply_patch", json!({"patch": patch})),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!result.is_error);
+    assert_eq!(
+        result.content,
+        json!([
+            {"operation": "add", "path": "src/new_file.py"},
+            {"operation": "delete", "path": "src/remove_me.txt"},
+            {"operation": "update", "path": "src/app.py", "hunks": 2},
+            {
+                "operation": "update+rename",
+                "path": "src/old_name.py",
+                "new_path": "src/new_name.py",
+                "hunks": 1
+            }
+        ])
+    );
+    assert_eq!(
+        environment
+            .read_file("src/new_file.py", None, None)
+            .expect("read new file"),
+        "first line\nsecond line\n"
+    );
+    assert!(!environment.file_exists("src/remove_me.txt"));
+    assert_eq!(
+        environment
+            .read_file("src/app.py", None, None)
+            .expect("read app"),
+        "def main():\n    print(\"Hello\")\n    return 1\n# updated trailing\n"
+    );
+    assert_eq!(
+        environment
+            .read_file("src/new_name.py", None, None)
+            .expect("read renamed"),
+        "import os\nimport new_dep\n\ndef main():\n    return 0\n"
+    );
+    assert!(!environment.file_exists("src/old_name.py"));
+}
+
+#[test]
+fn openai_apply_patch_dispatch_creates_empty_file() {
+    let tempdir = tempdir().expect("tempdir");
+    let environment = ExecutionEnvironment::local(tempdir.path());
+    let patch = [
+        "*** Begin Patch",
+        "*** Add File: src/empty.py",
+        "*** End Patch",
+    ]
+    .join("\n");
+
+    let result = create_openai_profile("gpt-5.2").registry().dispatch(
+        ToolCall::new("call-empty-add", "apply_patch", json!({"patch": patch})),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!result.is_error);
+    assert_eq!(
+        result.content,
+        json!([{"operation": "add", "path": "src/empty.py"}])
+    );
+    assert_eq!(
+        environment
+            .read_file("src/empty.py", None, None)
+            .expect("read empty file"),
+        ""
+    );
+}
+
+#[test]
+fn openai_apply_patch_uses_context_hints_and_fuzzy_matching() {
+    let tempdir = tempdir().expect("tempdir");
+    let environment = ExecutionEnvironment::local(tempdir.path());
+    environment
+        .write_file(
+            "duplicate.py",
+            "def one():\n    value = \"alpha\"\n    return value\n\n\
+             def two():\n    value = \"alpha\"\n    return value\n",
+        )
+        .expect("write duplicate");
+    environment
+        .write_file("notes.txt", "answer = \"Cost \u{2013} benefit\"\n")
+        .expect("write notes");
+
+    let patch = [
+        "*** Begin Patch",
+        "*** Update File: duplicate.py",
+        "@@ def two():",
+        "-    value = \"alpha\"",
+        "+    value = \"beta\"",
+        "*** Update File: notes.txt",
+        "@@ answer = \"Cost - benefit\"",
+        "-answer   =   \"Cost - benefit\"",
+        "+answer = \"Cost - benefit!\"",
+        "*** End Patch",
+    ]
+    .join("\n");
+
+    let result = create_openai_profile("gpt-5.2").registry().dispatch(
+        ToolCall::new("call-fuzzy", "apply_patch", json!({"patch": patch})),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!result.is_error);
+    assert_eq!(
+        result.content,
+        json!([
+            {"operation": "update", "path": "duplicate.py", "hunks": 1},
+            {"operation": "update", "path": "notes.txt", "hunks": 1}
+        ])
+    );
+    assert_eq!(
+        environment
+            .read_file("duplicate.py", None, None)
+            .expect("read duplicate"),
+        "def one():\n    value = \"alpha\"\n    return value\n\n\
+         def two():\n    value = \"beta\"\n    return value\n"
+    );
+    assert_eq!(
+        environment
+            .read_file("notes.txt", None, None)
+            .expect("read notes"),
+        "answer = \"Cost - benefit!\"\n"
+    );
+}
+
+#[test]
+fn openai_apply_patch_returns_recoverable_parse_missing_and_verification_errors() {
+    let tempdir = tempdir().expect("tempdir");
+    let environment = ExecutionEnvironment::local(tempdir.path());
+    environment
+        .write_file("verify.txt", "old\n")
+        .expect("write verify");
+    let registry = create_openai_profile("gpt-5.2").registry();
+
+    let parse_error = registry.dispatch(
+        ToolCall::new(
+            "call-parse",
+            "apply_patch",
+            json!({"patch": "*** Update File: verify.txt\n@@ verify.txt\n-old\n+new\n*** End Patch"}),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(parse_error.is_error);
+    assert_eq!(
+        parse_error.content,
+        json!("Patch parse error: missing *** Begin Patch marker")
+    );
+    assert_eq!(
+        environment
+            .read_file("verify.txt", None, None)
+            .expect("read after parse error"),
+        "old\n"
+    );
+
+    let missing_patch = [
+        "*** Begin Patch",
+        "*** Update File: missing.txt",
+        "@@ missing.txt",
+        "-missing",
+        "+present",
+        "*** End Patch",
+    ]
+    .join("\n");
+    let missing_error = registry.dispatch(
+        ToolCall::new(
+            "call-missing",
+            "apply_patch",
+            json!({"patch": missing_patch}),
+        ),
+        ToolDispatchContext {
+            execution_environment: environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(missing_error.is_error);
+    assert_eq!(missing_error.content, json!("File not found: missing.txt"));
+
+    let backend = RecordingPatchEnvironment::default();
+    let files = backend.files.clone();
+    let noop_writes = backend.noop_writes.clone();
+    files
+        .lock()
+        .expect("files")
+        .insert("verify.txt".to_string(), "old\n".to_string());
+    noop_writes.store(true, Ordering::SeqCst);
+    let verification_environment = ExecutionEnvironment::from_backend(backend);
+
+    let verification_patch = [
+        "*** Begin Patch",
+        "*** Update File: verify.txt",
+        "@@ verify.txt",
+        "-old",
+        "+new",
+        "*** End Patch",
+    ]
+    .join("\n");
+    let verification_error = registry.dispatch(
+        ToolCall::new(
+            "call-verification",
+            "apply_patch",
+            json!({"patch": verification_patch}),
+        ),
+        ToolDispatchContext {
+            execution_environment: verification_environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(verification_error.is_error);
+    assert_eq!(
+        verification_error.content,
+        json!("Patch verification failed: verify.txt")
+    );
+    assert_eq!(
+        files.lock().expect("files").get("verify.txt"),
+        Some(&"old\n".to_string())
+    );
+}
+
+#[test]
+fn openai_apply_patch_routes_filesystem_operations_through_execution_environment() {
+    let backend = RecordingPatchEnvironment::default();
+    let files = backend.files.clone();
+    let calls = backend.calls.clone();
+    files.lock().expect("files").extend([
+        (
+            "src/app.py".to_string(),
+            "def main():\n    print(\"Hello\")\n    return 0\n# trailing\n".to_string(),
+        ),
+        (
+            "src/old_name.py".to_string(),
+            "import os\nimport old_dep\n\ndef main():\n    return 0\n".to_string(),
+        ),
+        ("src/remove_me.txt".to_string(), "delete me\n".to_string()),
+    ]);
+    let environment = ExecutionEnvironment::from_backend(backend);
+
+    let patch = [
+        "*** Begin Patch",
+        "*** Add File: src/new_file.py",
+        "+first line",
+        "+second line",
+        "*** Delete File: src/remove_me.txt",
+        "*** Update File: src/app.py",
+        "@@ def main():",
+        " def main():",
+        "     print(\"Hello\")",
+        "-    return 0",
+        "+    return 1",
+        "*** Update File: src/old_name.py",
+        "*** Move to: src/new_name.py",
+        "@@ import old_dep",
+        " import os",
+        "-import old_dep",
+        "+import new_dep",
+        "*** End Patch",
+    ]
+    .join("\n");
+
+    let result = create_openai_profile("gpt-5.2").registry().dispatch(
+        ToolCall::new("call-recording", "apply_patch", json!({"patch": patch})),
+        ToolDispatchContext {
+            execution_environment: environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!result.is_error);
+    assert_eq!(
+        files.lock().expect("files").clone(),
+        BTreeMap::from([
+            (
+                "src/app.py".to_string(),
+                "def main():\n    print(\"Hello\")\n    return 1\n# trailing\n".to_string()
+            ),
+            (
+                "src/new_file.py".to_string(),
+                "first line\nsecond line\n".to_string()
+            ),
+            (
+                "src/new_name.py".to_string(),
+                "import os\nimport new_dep\n\ndef main():\n    return 0\n".to_string()
+            ),
+        ])
+    );
+    let calls = calls.lock().expect("calls");
+    assert!(calls.contains(&vec![
+        "delete_file".to_string(),
+        "src/remove_me.txt".to_string()
+    ]));
+    assert!(calls.contains(&vec![
+        "rename_file".to_string(),
+        "src/old_name.py".to_string(),
+        "src/new_name.py".to_string()
+    ]));
+    assert!(calls.contains(&vec!["read_file".to_string(), "src/app.py".to_string()]));
+    assert!(calls.contains(&vec![
+        "read_file".to_string(),
+        "src/new_name.py".to_string()
+    ]));
+}
+
+#[test]
+fn openai_apply_patch_dispatch_applies_pure_rename() {
+    let tempdir = tempdir().expect("tempdir");
+    let environment = ExecutionEnvironment::local(tempdir.path());
+    environment
+        .write_file("src/old_name.py", "print('old')\n")
+        .expect("write rename source");
+
+    let patch = [
+        "*** Begin Patch",
+        "*** Update File: src/old_name.py",
+        "*** Move to: src/new_name.py",
+        "*** End Patch",
+    ]
+    .join("\n");
+
+    let result = create_openai_profile("gpt-5.2").registry().dispatch(
+        ToolCall::new("call-rename", "apply_patch", json!({"patch": patch})),
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!result.is_error);
+    assert_eq!(
+        result.content,
+        json!([{
+            "operation": "rename",
+            "path": "src/old_name.py",
+            "new_path": "src/new_name.py"
+        }])
+    );
+    assert!(!environment.file_exists("src/old_name.py"));
+    assert_eq!(
+        environment
+            .read_file("src/new_name.py", None, None)
+            .expect("read renamed"),
+        "print('old')\n"
+    );
+}
+
+#[test]
+fn openai_apply_patch_pure_rename_returns_recoverable_errors() {
+    let registry = create_openai_profile("gpt-5.2").registry();
+
+    let missing_tempdir = tempdir().expect("tempdir");
+    let missing_environment = ExecutionEnvironment::local(missing_tempdir.path());
+    let missing_patch = [
+        "*** Begin Patch",
+        "*** Update File: src/missing.py",
+        "*** Move to: src/new_name.py",
+        "*** End Patch",
+    ]
+    .join("\n");
+    let missing_result = registry.dispatch(
+        ToolCall::new(
+            "call-rename-missing",
+            "apply_patch",
+            json!({"patch": missing_patch}),
+        ),
+        ToolDispatchContext {
+            execution_environment: missing_environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(missing_result.is_error);
+    assert_eq!(
+        missing_result.content,
+        json!("File not found: src/missing.py")
+    );
+
+    let existing_tempdir = tempdir().expect("tempdir");
+    let existing_environment = ExecutionEnvironment::local(existing_tempdir.path());
+    existing_environment
+        .write_file("src/old_name.py", "old\n")
+        .expect("write old");
+    existing_environment
+        .write_file("src/new_name.py", "new\n")
+        .expect("write new");
+    let existing_patch = [
+        "*** Begin Patch",
+        "*** Update File: src/old_name.py",
+        "*** Move to: src/new_name.py",
+        "*** End Patch",
+    ]
+    .join("\n");
+    let existing_result = registry.dispatch(
+        ToolCall::new(
+            "call-rename-existing",
+            "apply_patch",
+            json!({"patch": existing_patch}),
+        ),
+        ToolDispatchContext {
+            execution_environment: existing_environment.clone(),
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(existing_result.is_error);
+    assert_eq!(
+        existing_result.content,
+        json!("File already exists: src/new_name.py")
+    );
+    assert_eq!(
+        existing_environment
+            .read_file("src/old_name.py", None, None)
+            .expect("read old"),
+        "old\n"
+    );
+    assert_eq!(
+        existing_environment
+            .read_file("src/new_name.py", None, None)
+            .expect("read new"),
+        "new\n"
+    );
+
+    let backend = RecordingPatchEnvironment::default();
+    let files = backend.files.clone();
+    let fail_renames = backend.fail_renames.clone();
+    files
+        .lock()
+        .expect("files")
+        .insert("src/old_name.py".to_string(), "old\n".to_string());
+    fail_renames.store(true, Ordering::SeqCst);
+    let failing_environment = ExecutionEnvironment::from_backend(backend);
+    let failing_result = registry.dispatch(
+        ToolCall::new(
+            "call-rename-failure",
+            "apply_patch",
+            json!({"patch": existing_patch}),
+        ),
+        ToolDispatchContext {
+            execution_environment: failing_environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+    assert!(failing_result.is_error);
+    assert_eq!(
+        failing_result.content,
+        json!(
+            "Patch apply error: failed to rename src/old_name.py to src/new_name.py: operation failed: rename failed"
+        )
+    );
+    assert_eq!(
+        files.lock().expect("files").clone(),
+        BTreeMap::from([("src/old_name.py".to_string(), "old\n".to_string())])
+    );
+}
+
+#[derive(Debug, Default)]
+struct RecordingPatchEnvironment {
+    files: Arc<Mutex<BTreeMap<String, String>>>,
+    calls: Arc<Mutex<Vec<Vec<String>>>>,
+    noop_writes: Arc<AtomicBool>,
+    fail_renames: Arc<AtomicBool>,
+}
+
+impl RecordingPatchEnvironment {
+    fn key(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    fn record(&self, call: Vec<String>) {
+        self.calls.lock().expect("calls").push(call);
+    }
+}
+
+impl ExecutionEnvironmentBackend for RecordingPatchEnvironment {
+    fn read_file(
+        &self,
+        path: &Path,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> EnvironmentResult<String> {
+        let key = Self::key(path);
+        self.record(vec!["read_file".to_string(), key.clone()]);
+        let content = self
+            .files
+            .lock()
+            .expect("files")
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| EnvironmentError::FileNotFound(PathBuf::from(&key)))?;
+        if matches!(offset, Some(0)) {
+            return Err(EnvironmentError::InvalidInput(
+                "offset must be at least 1".to_string(),
+            ));
+        }
+        let Some(start) = offset.map(|value| value.saturating_sub(1)) else {
+            return Ok(content);
+        };
+        let end = limit.map(|value| start.saturating_add(value));
+        Ok(content
+            .split_inclusive('\n')
+            .enumerate()
+            .filter_map(|(index, line)| {
+                if index < start || end.is_some_and(|end| index >= end) {
+                    None
+                } else {
+                    Some(line)
+                }
+            })
+            .collect())
+    }
+
+    fn read_file_bytes(&self, path: &Path) -> EnvironmentResult<Vec<u8>> {
+        Ok(self.read_file(path, None, None)?.into_bytes())
+    }
+
+    fn write_file(&self, path: &Path, content: &str) -> EnvironmentResult<()> {
+        let key = Self::key(path);
+        self.record(vec!["write_file".to_string(), key.clone()]);
+        if !self.noop_writes.load(Ordering::SeqCst) {
+            self.files
+                .lock()
+                .expect("files")
+                .insert(key, content.to_string());
+        }
+        Ok(())
+    }
+
+    fn file_exists(&self, path: &Path) -> bool {
+        let key = Self::key(path);
+        self.record(vec!["file_exists".to_string(), key.clone()]);
+        self.files.lock().expect("files").contains_key(&key)
+    }
+
+    fn is_directory(&self, path: &Path) -> bool {
+        let key = Self::key(path);
+        self.record(vec!["is_directory".to_string(), key]);
+        false
+    }
+
+    fn delete_file(&self, path: &Path) -> EnvironmentResult<()> {
+        let key = Self::key(path);
+        self.record(vec!["delete_file".to_string(), key.clone()]);
+        self.files
+            .lock()
+            .expect("files")
+            .remove(&key)
+            .map(|_| ())
+            .ok_or_else(|| EnvironmentError::FileNotFound(PathBuf::from(key)))
+    }
+
+    fn rename_file(&self, source_path: &Path, destination_path: &Path) -> EnvironmentResult<()> {
+        let source = Self::key(source_path);
+        let destination = Self::key(destination_path);
+        self.record(vec![
+            "rename_file".to_string(),
+            source.clone(),
+            destination.clone(),
+        ]);
+        if self.fail_renames.load(Ordering::SeqCst) {
+            return Err(EnvironmentError::Other("rename failed".to_string()));
+        }
+        let mut files = self.files.lock().expect("files");
+        if !files.contains_key(&source) {
+            return Err(EnvironmentError::FileNotFound(PathBuf::from(source)));
+        }
+        if files.contains_key(&destination) {
+            return Err(EnvironmentError::AlreadyExists(PathBuf::from(destination)));
+        }
+        let content = files.remove(&source).expect("source checked");
+        files.insert(destination, content);
+        Ok(())
+    }
+
+    fn list_directory(&self, _path: &Path, _depth: usize) -> EnvironmentResult<Vec<DirEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn exec_command(
+        &self,
+        _command: &str,
+        _options: CommandOptions,
+    ) -> EnvironmentResult<ExecResult> {
+        Ok(ExecResult::default())
+    }
+
+    fn grep(
+        &self,
+        _pattern: &str,
+        _path: &Path,
+        _options: &GrepOptions,
+    ) -> EnvironmentResult<String> {
+        Ok(String::new())
+    }
+
+    fn glob(&self, _pattern: &str, _path: &Path) -> EnvironmentResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    fn initialize(&self) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn cleanup(&self) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn working_directory(&self) -> String {
+        "workspace".to_string()
+    }
+
+    fn platform(&self) -> String {
+        "test".to_string()
+    }
+
+    fn os_version(&self) -> String {
+        "test".to_string()
+    }
+}
+
+#[derive(Debug, Default)]
+struct RecordingShellEnvironment {
+    calls: Arc<Mutex<Vec<(String, u64)>>>,
+}
+
+impl ExecutionEnvironmentBackend for RecordingShellEnvironment {
+    fn read_file(
+        &self,
+        _path: &Path,
+        _offset: Option<usize>,
+        _limit: Option<usize>,
+    ) -> EnvironmentResult<String> {
+        Ok(String::new())
+    }
+
+    fn read_file_bytes(&self, _path: &Path) -> EnvironmentResult<Vec<u8>> {
+        Ok(Vec::new())
+    }
+
+    fn write_file(&self, _path: &Path, _content: &str) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn file_exists(&self, _path: &Path) -> bool {
+        false
+    }
+
+    fn is_directory(&self, _path: &Path) -> bool {
+        false
+    }
+
+    fn delete_file(&self, _path: &Path) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn rename_file(&self, _source_path: &Path, _destination_path: &Path) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn list_directory(&self, _path: &Path, _depth: usize) -> EnvironmentResult<Vec<DirEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn exec_command(
+        &self,
+        command: &str,
+        options: CommandOptions,
+    ) -> EnvironmentResult<ExecResult> {
+        self.calls.lock().expect("calls").push((
+            command.to_string(),
+            options.timeout_ms.expect("tool sets timeout"),
+        ));
+        Ok(ExecResult {
+            stdout: command.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+            duration_ms: 1,
+        })
+    }
+
+    fn grep(
+        &self,
+        _pattern: &str,
+        _path: &Path,
+        _options: &GrepOptions,
+    ) -> EnvironmentResult<String> {
+        Ok(String::new())
+    }
+
+    fn glob(&self, _pattern: &str, _path: &Path) -> EnvironmentResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    fn initialize(&self) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn cleanup(&self) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn working_directory(&self) -> String {
+        ".".to_string()
+    }
+
+    fn platform(&self) -> String {
+        "test".to_string()
+    }
+
+    fn os_version(&self) -> String {
+        "test".to_string()
+    }
+}

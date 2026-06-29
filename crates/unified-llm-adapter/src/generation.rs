@@ -16,7 +16,7 @@ use crate::events::{
 };
 use crate::request::{
     ContentPart, FinishReason, FinishReasonKind, Message, MessageRole, Request, Response,
-    ResponseFormat, ToolCall, ToolResult, Warning,
+    ResponseFormat, ToolCall, ToolResult, ToolResultData, Warning,
 };
 use crate::resolution::{
     resolve_high_level_provider_and_model, ActiveLlmProfile, HighLevelLlmResolutionInputs,
@@ -1390,11 +1390,22 @@ fn assistant_message_for_tool_round(response: &Response, tool_calls: &[ToolCall]
 }
 
 fn tool_result_message(result: &ToolResult) -> Message {
-    Message::tool_result(
-        result.tool_call_id.clone(),
-        result.content.clone(),
-        result.is_error,
-    )
+    let tool_call_id = result.tool_call_id.clone();
+    Message {
+        role: MessageRole::Tool,
+        content: vec![ContentPart::ToolResult {
+            tool_result: ToolResultData {
+                tool_call_id: tool_call_id.clone(),
+                content: result.content.clone(),
+                is_error: result.is_error,
+                image_data: result.image_data.clone(),
+                image_media_type: result.image_media_type.clone(),
+            },
+        }],
+        name: None,
+        tool_call_id: Some(tool_call_id),
+        provider_metadata: BTreeMap::new(),
+    }
 }
 
 fn is_control_flow_error(error: &AdapterError) -> bool {

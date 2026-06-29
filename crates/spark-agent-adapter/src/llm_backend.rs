@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use serde_json::{json, Map, Value};
 use unified_llm_adapter::{
@@ -16,13 +15,16 @@ use crate::codergen::{
     CodergenError, CodergenEvent,
 };
 use crate::config::SessionConfig;
+use crate::environment::ExecutionEnvironment;
 use crate::events::{workspace_token_usage_payload_from_usage, SessionEvent};
 use crate::history::HistoryTurn;
-use crate::profiles::ProviderProfile;
-use crate::session::{ExecutionEnvironment, Session};
+use crate::profiles::{
+    create_provider_profile, normalize_provider_selector as normalize_profile_selector,
+};
+use crate::session::Session;
 
 const BACKEND_NAME: &str = "rust_unified_llm_adapter";
-const PROVIDER_PLACEHOLDERS: &[&str] = &["codex", "codex default (config/profile)"];
+const PROVIDER_PLACEHOLDERS: &[&str] = &["codex default (config/profile)"];
 
 #[derive(Clone)]
 pub struct RustLlmCodergenBackend {
@@ -48,7 +50,7 @@ impl CodergenBackend for RustLlmCodergenBackend {
             &self.client,
             vec![Message::user(request.prompt.clone())],
             RequestSelection {
-                provider: normalize_provider_selector(&request.provider),
+                provider: normalize_request_provider_selector(&request.provider),
                 model: normalize_model_selector(request.model.as_deref()),
                 llm_profile: profile.clone(),
                 reasoning_effort: reasoning_effort.clone(),
@@ -141,7 +143,7 @@ fn build_agent_session(
     } = request;
 
     let selection = AgentSessionSelection {
-        provider: normalize_provider_selector(provider.as_deref().unwrap_or("")),
+        provider: normalize_request_provider_selector(provider.as_deref().unwrap_or("")),
         model: normalize_model_selector(model.as_deref()),
         llm_profile: normalize_optional(llm_profile.as_deref()),
         reasoning_effort: normalize_lower_optional(reasoning_effort.as_deref()),
@@ -176,13 +178,16 @@ fn build_agent_session(
     )?;
 
     let request_provider = llm_request.request.provider.clone().unwrap_or_default();
-    let mut profile = ProviderProfile::new(request_provider, llm_request.request.model.clone());
+    let mut profile = create_provider_profile(
+        &llm_request.provider_profile_selector,
+        llm_request.request.model.clone(),
+    );
+    if !request_provider.trim().is_empty() && request_provider.trim() != profile.id {
+        profile.request_provider = Some(request_provider);
+    }
     profile.provider_options = llm_request.request.provider_options.clone();
-    let execution_environment = ExecutionEnvironment {
-        working_dir: Some(PathBuf::from(project_path)),
-        env: BTreeMap::new(),
-        metadata: llm_request.request.metadata,
-    };
+    let execution_environment =
+        ExecutionEnvironment::local(project_path).with_metadata(llm_request.request.metadata);
     let config = SessionConfig {
         reasoning_effort: selection.reasoning_effort,
         ..SessionConfig::default()
@@ -280,6 +285,7 @@ struct BuiltLlmRequest {
     request: Request,
     llm_profile: Option<String>,
     reasoning_effort: Option<String>,
+    provider_profile_selector: String,
 }
 
 fn build_llm_request(
@@ -319,6 +325,7 @@ fn build_llm_request(
         client_default_provider,
         required_capabilities: selection.required_capabilities,
     })?;
+    let provider_profile_selector = resolved.provider.clone();
     let request_provider = selected_profile
         .as_ref()
         .map(|profile| profile.id.clone())
@@ -341,6 +348,7 @@ fn build_llm_request(
         },
         llm_profile: selected_profile_id,
         reasoning_effort: selection.reasoning_effort,
+        provider_profile_selector,
     })
 }
 
@@ -377,7 +385,7 @@ fn capabilities_for_codergen(request: &CodergenBackendRequest) -> ModelCapabilit
     }
 }
 
-fn normalize_provider_selector(provider: &str) -> Option<String> {
+fn normalize_request_provider_selector(provider: &str) -> Option<String> {
     let provider = provider.trim();
     if provider.is_empty()
         || PROVIDER_PLACEHOLDERS
@@ -386,7 +394,32 @@ fn normalize_provider_selector(provider: &str) -> Option<String> {
     {
         return None;
     }
+    if is_builtin_provider_alias(provider) {
+        return Some(normalize_profile_selector(provider).id);
+    }
     Some(provider.to_ascii_lowercase())
+}
+
+fn is_builtin_provider_alias(provider: &str) -> bool {
+    matches!(
+        provider
+            .trim()
+            .to_ascii_lowercase()
+            .replace('-', "_")
+            .as_str(),
+        "openai"
+            | "anthropic"
+            | "claude"
+            | "claude_code"
+            | "gemini"
+            | "google"
+            | "google_gemini"
+            | "openrouter"
+            | "litellm"
+            | "codex"
+            | "openai_compatible"
+            | "compatible"
+    )
 }
 
 fn normalize_model_selector(model: Option<&str>) -> Option<String> {

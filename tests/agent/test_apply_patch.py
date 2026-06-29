@@ -265,6 +265,32 @@ async def test_apply_patch_applies_add_delete_update_and_rename_with_multiple_hu
 
 
 @pytest.mark.asyncio
+async def test_apply_patch_creates_empty_file_through_openai_dispatch(
+    tmp_path: Path,
+) -> None:
+    environment = agent.LocalExecutionEnvironment(working_dir=tmp_path)
+    session = _make_openai_session(tmp_path, environment=environment)
+
+    result = await _execute_tool(
+        session,
+        "apply_patch",
+        {
+            "patch": "\n".join(
+                [
+                    "*** Begin Patch",
+                    "*** Add File: src/empty.py",
+                    "*** End Patch",
+                ]
+            ),
+        },
+    )
+
+    assert result.is_error is False
+    assert result.content == [{"operation": "add", "path": "src/empty.py"}]
+    assert environment.read_file("src/empty.py") == ""
+
+
+@pytest.mark.asyncio
 async def test_apply_patch_uses_context_hints_to_disambiguate_repeated_content(
     tmp_path: Path,
 ) -> None:

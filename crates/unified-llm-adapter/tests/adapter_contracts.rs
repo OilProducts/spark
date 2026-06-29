@@ -370,6 +370,8 @@ fn request_tool_structured_output_observation() -> Value {
         tool_call_id: tool_call.id.clone(),
         content: json!({"forecast": "sunny"}),
         is_error: false,
+        image_data: None,
+        image_media_type: None,
     };
     let response_format = serde_json::to_value(request.response_format.as_ref().unwrap()).unwrap();
     let _round_tripped_response_format: ResponseFormat =

@@ -128,7 +128,7 @@
         "tests/agent",
         "tests/compat/agent"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M2-provider-registry-environment-tools",
       "notes": "Provider alignment means preserving model-facing affordances, not forcing a universal tool schema."
     },
@@ -154,7 +154,7 @@
         "tests/agent",
         "tests/compat/agent"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M2-provider-registry-environment-tools",
       "notes": "Recoverable tool-level failures must be visible to the model so it can retry or choose another approach."
     },
@@ -180,7 +180,7 @@
         "tests/agent",
         "tests/compat/agent"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M2-provider-registry-environment-tools",
       "notes": "Tool schemas may differ by profile when needed to preserve provider-native behavior."
     },
@@ -206,7 +206,7 @@
         "tests/agent",
         "tests/compat/agent"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M2-provider-registry-environment-tools",
       "notes": "The default implementation is local, but the architecture must keep tool logic independent from execution location."
     },

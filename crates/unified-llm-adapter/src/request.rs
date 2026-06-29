@@ -573,6 +573,10 @@ pub struct ToolResult {
     pub content: Value,
     #[serde(default)]
     pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_data: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_media_type: Option<String>,
 }
 
 impl ToolResult {
@@ -581,6 +585,8 @@ impl ToolResult {
             tool_call_id: tool_call_id.into(),
             content: content.into(),
             is_error: false,
+            image_data: None,
+            image_media_type: None,
         }
     }
 
@@ -589,7 +595,19 @@ impl ToolResult {
             tool_call_id: tool_call_id.into(),
             content: content.into(),
             is_error: true,
+            image_data: None,
+            image_media_type: None,
         }
+    }
+
+    pub fn with_image(
+        mut self,
+        image_data: impl Into<Vec<u8>>,
+        image_media_type: impl Into<Option<String>>,
+    ) -> Self {
+        self.image_data = Some(image_data.into());
+        self.image_media_type = image_media_type.into();
+        self
     }
 }
 
@@ -617,8 +635,8 @@ impl From<ToolResult> for ToolResultData {
             tool_call_id: result.tool_call_id,
             content: result.content,
             is_error: result.is_error,
-            image_data: None,
-            image_media_type: None,
+            image_data: result.image_data,
+            image_media_type: result.image_media_type,
         }
     }
 }
@@ -629,6 +647,8 @@ impl From<ToolResultData> for ToolResult {
             tool_call_id: result.tool_call_id,
             content: result.content,
             is_error: result.is_error,
+            image_data: result.image_data,
+            image_media_type: result.image_media_type,
         }
     }
 }

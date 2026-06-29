@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::config::SessionConfig;
+use crate::environment::ExecutionEnvironment;
 use crate::events::{EventKind, SessionEvent};
 use unified_llm_adapter::{
     AdapterError, AdapterErrorKind, Client, Message, Request, Response, StreamAccumulator,
@@ -16,35 +16,6 @@ use crate::history::{
     history_to_messages, AssistantTurn, HistoryTurn, SteeringTurn, TurnContent, UserTurn,
 };
 use crate::profiles::ProviderProfile;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ExecutionEnvironment {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub working_dir: Option<PathBuf>,
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
-    #[serde(default)]
-    pub metadata: BTreeMap<String, Value>,
-}
-
-impl Default for ExecutionEnvironment {
-    fn default() -> Self {
-        Self {
-            working_dir: None,
-            env: BTreeMap::new(),
-            metadata: BTreeMap::new(),
-        }
-    }
-}
-
-impl ExecutionEnvironment {
-    pub fn local(working_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            working_dir: Some(working_dir.into()),
-            ..Self::default()
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmClientHandle {
@@ -744,8 +715,7 @@ fn state_value(state: SessionState) -> &'static str {
 }
 
 fn provider_id(profile: &ProviderProfile) -> Option<String> {
-    let id = profile.id.trim();
-    (!id.is_empty()).then(|| id.to_string())
+    profile.request_provider_id()
 }
 
 fn response_payload(response_id: Option<&str>) -> BTreeMap<String, Value> {

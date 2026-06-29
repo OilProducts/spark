@@ -24,6 +24,13 @@ def _python_command(code: str) -> str:
     return _shell_command(sys.executable, "-c", code)
 
 
+def _timeout_message(timeout_ms: int) -> str:
+    return (
+        f"[ERROR: Command timed out after {timeout_ms}ms. Partial output is shown above.\n"
+        "You can retry with a longer timeout by setting the timeout_ms parameter.]"
+    )
+
+
 def test_local_environment_resolves_paths_and_handles_lifecycle(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     environment = agent.LocalExecutionEnvironment(working_dir=workspace)
@@ -90,11 +97,12 @@ def test_local_environment_exec_command_uses_platform_default_shell(
         assert result.exit_code == 0
         assert result.stdout.strip().lower().endswith("cmd.exe")
     else:
-        result = environment.exec_command("echo $0", timeout_ms=1000)
+        result = environment.exec_command(
+            '[[ -n "$BASH_VERSION" ]] && printf "bash:%s" "$BASH_VERSION"',
+            timeout_ms=1000,
+        )
         assert result.exit_code == 0
-        shell_name = result.stdout.strip().lower()
-        assert shell_name.endswith("sh")
-        assert "bash" not in shell_name
+        assert result.stdout.startswith("bash:")
 
 
 def test_local_environment_exec_command_separates_stdout_stderr_and_exit_code(
@@ -132,7 +140,7 @@ def test_local_environment_exec_command_times_out_and_returns_partial_output(
 
     assert result.timed_out is True
     assert result.stdout == "start\n"
-    assert result.stderr == "Command timed out after 50 ms"
+    assert result.stderr == _timeout_message(50)
     assert result.exit_code != 0
 
 
@@ -150,7 +158,7 @@ def test_local_environment_exec_command_caps_timeout_at_maximum(
     )
 
     assert result.timed_out is True
-    assert result.stderr == "Command timed out after 50 ms"
+    assert result.stderr == _timeout_message(50)
     assert result.duration_ms < 1000
 
 
@@ -191,7 +199,7 @@ def test_local_environment_exec_command_terminates_process_group_on_timeout(
         time.sleep(0.05)
 
     assert marker.read_text(encoding="utf-8") == "terminated"
-    assert result.stderr == "Command timed out after 50 ms"
+    assert result.stderr == _timeout_message(50)
 
 
 def test_local_environment_exec_command_kills_ignoring_child_after_timeout_grace_period(
@@ -221,7 +229,7 @@ def test_local_environment_exec_command_kills_ignoring_child_after_timeout_grace
     result = environment.exec_command(command, env_vars={"MARKER": str(marker)})
 
     assert result.timed_out is True
-    assert result.stderr == "Command timed out after 50 ms"
+    assert result.stderr == _timeout_message(50)
     assert result.duration_ms >= 50
 
     deadline = time.monotonic() + 3.5

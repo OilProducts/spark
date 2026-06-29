@@ -14,6 +14,13 @@ async def _next_event(stream) -> agent.SessionEvent:
     return await asyncio.wait_for(anext(stream), timeout=1)
 
 
+def _timeout_message(timeout_ms: int) -> str:
+    return (
+        f"[ERROR: Command timed out after {timeout_ms}ms. Partial output is shown above.\n"
+        "You can retry with a longer timeout by setting the timeout_ms parameter.]"
+    )
+
+
 def _make_builtin_session(
     tmp_path,
     *,
@@ -841,7 +848,7 @@ async def test_execute_tool_call_converts_timed_out_exec_result_into_recoverable
     )
     exec_result = agent.ExecResult(
         stdout="start",
-        stderr="Command timed out after 50 ms",
+        stderr=_timeout_message(50),
         exit_code=124,
         timed_out=True,
         duration_ms=53,
@@ -883,7 +890,7 @@ async def test_execute_tool_call_converts_timed_out_exec_result_into_recoverable
     assert result.tool_call_id == "call-exec-timeout"
     assert result.is_error is True
     assert result.content == (
-        "start\nCommand timed out after 50 ms\n"
+        f"start\n{_timeout_message(50)}\n"
         "[exit_code=124, timed_out=True, duration_ms=53]"
     )
     assert any(
@@ -903,7 +910,7 @@ async def test_execute_tool_call_converts_timed_out_exec_result_into_recoverable
         "tool_name": "shell",
         "error": {
             "stdout": "start",
-            "stderr": "Command timed out after 50 ms",
+            "stderr": _timeout_message(50),
             "exit_code": 124,
             "timed_out": True,
             "duration_ms": 53,

@@ -12,6 +12,10 @@ attractor-core = { path = "../attractor-core" }
 spark-common = { path = "../spark-common" }
 spark-storage = { path = "../spark-storage" }
 unified-llm-adapter = { path = "../unified-llm-adapter" }
+jsonschema = { version = "0.46", default-features = false }
+glob = "0.3"
+regex = "1.10"
+rustix = { version = "1.1.4", features = ["process"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
@@ -20,4 +24,5 @@ uuid = { version = "1", features = ["serde", "v4"] }
 
 [dev-dependencies]
 attractor-dsl = { path = "../attractor-dsl" }
+filetime = "0.2"
 tempfile = "3.10"
