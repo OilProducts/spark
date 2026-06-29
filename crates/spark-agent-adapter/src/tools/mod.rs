@@ -16,12 +16,14 @@ use unified_llm_adapter::{
 use crate::config::SessionConfig;
 use crate::environment::ExecutionEnvironment;
 use crate::events::EventKind;
+use crate::history::TurnContent;
 use crate::truncation::truncate_tool_output;
 
 pub type ToolExecutor =
     Arc<dyn Fn(ToolExecution) -> Result<ToolExecutionOutput, AdapterError> + Send + Sync + 'static>;
 pub type ToolTruncationHook = Arc<dyn Fn(ToolTruncation) -> Value + Send + Sync + 'static>;
 pub type ToolEventHook = Arc<dyn Fn(ToolDispatchEvent) + Send + Sync + 'static>;
+pub type ToolHostControlHook = Arc<dyn Fn(TurnContent) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
@@ -197,6 +199,74 @@ pub struct ToolExecution {
     pub execution_environment: ExecutionEnvironment,
     pub config: SessionConfig,
     pub capabilities: BTreeMap<String, bool>,
+    pub host_controls: ToolHostControls,
+}
+
+#[derive(Clone, Default)]
+pub struct ToolHostControls {
+    steering_hook: Option<ToolHostControlHook>,
+    follow_up_hook: Option<ToolHostControlHook>,
+}
+
+impl ToolHostControls {
+    pub fn new(
+        steering_hook: impl Into<Option<ToolHostControlHook>>,
+        follow_up_hook: impl Into<Option<ToolHostControlHook>>,
+    ) -> Self {
+        Self {
+            steering_hook: steering_hook.into(),
+            follow_up_hook: follow_up_hook.into(),
+        }
+    }
+
+    pub fn steer(&self, content: impl Into<TurnContent>) -> bool {
+        let Some(hook) = self.steering_hook.as_ref() else {
+            return false;
+        };
+        hook(content.into());
+        true
+    }
+
+    pub fn follow_up(&self, content: impl Into<TurnContent>) -> bool {
+        let Some(hook) = self.follow_up_hook.as_ref() else {
+            return false;
+        };
+        hook(content.into());
+        true
+    }
+
+    pub fn supports_steering(&self) -> bool {
+        self.steering_hook.is_some()
+    }
+
+    pub fn supports_follow_up(&self) -> bool {
+        self.follow_up_hook.is_some()
+    }
+}
+
+impl fmt::Debug for ToolHostControls {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ToolHostControls")
+            .field("supports_steering", &self.supports_steering())
+            .field("supports_follow_up", &self.supports_follow_up())
+            .finish()
+    }
+}
+
+impl PartialEq for ToolHostControls {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.steering_hook, &other.steering_hook) {
+            (Some(left), Some(right)) if !Arc::ptr_eq(left, right) => return false,
+            (None, None) | (Some(_), Some(_)) => {}
+            _ => return false,
+        }
+        match (&self.follow_up_hook, &other.follow_up_hook) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -319,6 +389,7 @@ pub struct ToolDispatchContext {
     pub config: SessionConfig,
     pub capabilities: BTreeMap<String, bool>,
     pub supports_parallel_tool_calls: bool,
+    pub host_controls: ToolHostControls,
     pub truncation_hook: Option<ToolTruncationHook>,
     pub event_hook: Option<ToolEventHook>,
 }
@@ -331,6 +402,7 @@ impl Default for ToolDispatchContext {
             config: SessionConfig::default(),
             capabilities: BTreeMap::new(),
             supports_parallel_tool_calls: false,
+            host_controls: ToolHostControls::default(),
             truncation_hook: None,
             event_hook: None,
         }
@@ -349,6 +421,7 @@ impl fmt::Debug for ToolDispatchContext {
                 "supports_parallel_tool_calls",
                 &self.supports_parallel_tool_calls,
             )
+            .field("host_controls", &self.host_controls)
             .field("has_truncation_hook", &self.truncation_hook.is_some())
             .field("has_event_hook", &self.event_hook.is_some())
             .finish()
@@ -548,6 +621,7 @@ fn dispatch_one(
         execution_environment: context.execution_environment.clone(),
         config: context.config.clone(),
         capabilities: context.capabilities.clone(),
+        host_controls: context.host_controls.clone(),
     };
     let executor = registered.executor.clone();
     let execution = catch_unwind(AssertUnwindSafe(|| (executor)(invocation)));
@@ -650,6 +724,53 @@ fn finalize_tool_result(
 fn default_truncated_content(content: &Value, tool_name: &str, config: &SessionConfig) -> Value {
     match content {
         Value::String(output) => Value::String(truncate_tool_output(output, tool_name, config)),
-        _ => content.clone(),
+        _ => {
+            let model_text = structured_model_text(content);
+            let truncated = truncate_tool_output(&model_text, tool_name, config);
+            if truncated == model_text {
+                content.clone()
+            } else {
+                Value::String(truncated)
+            }
+        }
+    }
+}
+
+fn structured_model_text(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => value.clone(),
+        Value::Array(values) => {
+            if values.is_empty() {
+                "[]".to_string()
+            } else {
+                values
+                    .iter()
+                    .map(structured_model_text)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+        Value::Object(object) => {
+            if object.is_empty() {
+                return "{}".to_string();
+            }
+            let mut entries = object.iter().collect::<Vec<_>>();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let rendered = structured_model_text(value);
+                    if rendered.contains('\n') {
+                        format!("{key}:\n{rendered}")
+                    } else {
+                        format!("{key}: {rendered}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
     }
 }

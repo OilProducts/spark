@@ -232,7 +232,7 @@
         "tests/agent",
         "tests/compat/agent"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M3-context-controls-truncation-loop-guards",
       "notes": "The model must be told when it is seeing incomplete output."
     },
@@ -260,7 +260,7 @@
         "README.md",
         "docs/rust-rewrite-migration.md"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M3-context-controls-truncation-loop-guards",
       "notes": "AGENTS.md instructions in this repository remain input to the runtime, not implementation source text for tests."
     },
@@ -287,7 +287,7 @@
         "tests/agent",
         "tests/compat/agent"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M3-context-controls-truncation-loop-guards",
       "notes": "Steering is a programmable library feature and must not require restarting the session."
     },
@@ -313,7 +313,7 @@
         "tests/agent",
         "tests/compat/agent"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M3-context-controls-truncation-loop-guards",
       "notes": "Loop detection should steer recovery without silently changing model output."
     },

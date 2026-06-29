@@ -11,7 +11,8 @@ import spark.app as product_app
 
 @pytest.fixture(autouse=True)
 def _reset_api_server_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.delenv("SPARK_HOME", raising=False)
+    spark_home = tmp_path / ".spark"
+    monkeypatch.setenv("SPARK_HOME", str(spark_home))
     monkeypatch.delenv("SPARK_FLOWS_DIR", raising=False)
     monkeypatch.delenv("SPARK_PROJECT_ROOTS", raising=False)
     monkeypatch.delenv("SPARK_UI_DIR", raising=False)
@@ -26,7 +27,7 @@ def _reset_api_server_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     monkeypatch.setenv("ATTRACTOR_CODEX_RUNTIME_ROOT", str(codex_runtime_root))
     server.shutdown_attractor_runtime()
     product_app.configure_settings(
-        data_dir=tmp_path / ".spark",
+        data_dir=spark_home,
         flows_dir=tmp_path / "flows",
         ui_dir=None,
     )

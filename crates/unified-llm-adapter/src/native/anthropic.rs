@@ -550,6 +550,16 @@ fn anthropic_messages_body(
                 ));
             }
         }
+        if let Some(output_config) = options.get("output_config") {
+            if output_config.is_object() {
+                body.insert("output_config".to_string(), output_config.clone());
+            } else {
+                return Err(invalid_request_error(
+                    "anthropic",
+                    "Anthropic provider_options.output_config must be an object",
+                ));
+            }
+        }
     }
     if let Some(system) = anthropic_system_payload(system_blocks) {
         body.insert("system".to_string(), system);

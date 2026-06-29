@@ -29,22 +29,23 @@ pub const DEFAULT_TOOL_LINE_LIMITS: &[(&str, u64)] =
 
 const HEAD_TAIL_WARNING: &str = "[WARNING: Tool output was truncated. {removed} characters were removed from the middle. The full output is available in the event stream. If you need to see specific parts, re-run the tool with more targeted parameters.]";
 const TAIL_WARNING: &str = "[WARNING: Tool output was truncated. First {removed} characters were removed. The full output is available in the event stream.]";
+const LINE_WARNING: &str = "[WARNING: Tool output was truncated. {omitted} lines omitted. The full output is available in the event stream.]";
 
 pub fn truncate_tool_output(output: &str, tool_name: &str, config: &SessionConfig) -> String {
     let char_limits = default_output_limits();
     let line_limits = default_line_limits();
     let modes = default_truncation_modes();
 
-    let mut output = if let Some(max_chars) = config
+    let (mut output, character_warning) = if let Some(max_chars) = config
         .tool_output_limits
         .get(tool_name)
         .copied()
         .or_else(|| char_limits.get(tool_name).copied())
     {
         let mode = modes.get(tool_name).copied().unwrap_or("tail");
-        truncate_output(output, max_chars, mode)
+        truncate_output_with_warning(output, max_chars, mode)
     } else {
-        output.to_string()
+        (output.to_string(), None)
     };
 
     if let Some(max_lines) = config
@@ -54,17 +55,30 @@ pub fn truncate_tool_output(output: &str, tool_name: &str, config: &SessionConfi
         .or_else(|| line_limits.get(tool_name).copied())
     {
         output = truncate_lines(&output, max_lines);
+        if let Some(warning) = character_warning.as_ref() {
+            if !output.contains(warning) {
+                output = format!("{warning}\n\n{output}");
+            }
+        }
     }
 
     output
 }
 
 pub fn truncate_output(output: &str, max_chars: u64, mode: &str) -> String {
+    truncate_output_with_warning(output, max_chars, mode).0
+}
+
+fn truncate_output_with_warning(
+    output: &str,
+    max_chars: u64,
+    mode: &str,
+) -> (String, Option<String>) {
     assert!(max_chars >= 1, "max_chars must be at least 1");
     let chars = output.chars().collect::<Vec<_>>();
     let max_chars = usize::try_from(max_chars).unwrap_or(usize::MAX);
     if chars.len() <= max_chars {
-        return output.to_string();
+        return (output.to_string(), None);
     }
 
     let removed = chars.len() - max_chars;
@@ -74,17 +88,13 @@ pub fn truncate_output(output: &str, max_chars: u64, mode: &str) -> String {
             let tail_chars = max_chars - head_chars;
             let head = chars[..head_chars].iter().collect::<String>();
             let tail = chars[chars.len() - tail_chars..].iter().collect::<String>();
-            format!(
-                "{head}\n\n{}\n\n{tail}",
-                HEAD_TAIL_WARNING.replace("{removed}", &removed.to_string())
-            )
+            let warning = HEAD_TAIL_WARNING.replace("{removed}", &removed.to_string());
+            (format!("{head}\n\n{warning}\n\n{tail}"), Some(warning))
         }
         "tail" => {
             let tail = chars[chars.len() - max_chars..].iter().collect::<String>();
-            format!(
-                "{}\n\n{tail}",
-                TAIL_WARNING.replace("{removed}", &removed.to_string())
-            )
+            let warning = TAIL_WARNING.replace("{removed}", &removed.to_string());
+            (format!("{warning}\n\n{tail}"), Some(warning))
         }
         other => panic!("unsupported truncation mode: {other}"),
     }
@@ -103,7 +113,7 @@ pub fn truncate_lines(output: &str, max_lines: u64) -> String {
     let omitted = lines.len() - head_count - tail_count;
     let mut output = Vec::with_capacity(max_lines + 1);
     output.extend(lines[..head_count].iter().copied().map(str::to_string));
-    output.push(format!("[... {omitted} lines omitted ...]"));
+    output.push(LINE_WARNING.replace("{omitted}", &omitted.to_string()));
     output.extend(
         lines[lines.len() - tail_count..]
             .iter()
@@ -123,4 +133,58 @@ fn default_truncation_modes() -> BTreeMap<&'static str, &'static str> {
 
 fn default_line_limits() -> BTreeMap<&'static str, u64> {
     DEFAULT_TOOL_LINE_LIMITS.iter().copied().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn head_tail_truncation_preserves_utf8_boundaries() {
+        let output = (0..10)
+            .map(|offset| char::from_u32(0x03B1 + offset).expect("greek lowercase letter"))
+            .collect::<String>();
+
+        let truncated = truncate_output(&output, 5, "head_tail");
+
+        assert!(truncated.starts_with(&output.chars().take(2).collect::<String>()));
+        assert!(truncated.ends_with(&output.chars().skip(7).collect::<String>()));
+        assert!(truncated.contains("5 characters were removed from the middle"));
+        assert!(truncated.contains("The full output is available in the event stream."));
+    }
+
+    #[test]
+    fn line_truncation_does_not_drop_character_truncation_notice() {
+        let output = (0..12)
+            .map(|line| format!("line-{line:02}-{}", "X".repeat(30)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut config = SessionConfig::default();
+        config.tool_output_limits.insert("shell".to_string(), 80);
+        config.line_limits.insert("shell".to_string(), 2);
+
+        let truncated = truncate_tool_output(&output, "shell", &config);
+
+        assert!(truncated.contains("characters were removed from the middle"));
+        assert!(truncated.contains("The full output is available in the event stream."));
+        assert!(truncated.contains("lines omitted"));
+        assert!(truncated.contains(&output[..30]));
+        assert!(truncated.contains(&output[output.len() - 30..]));
+    }
+
+    #[test]
+    fn long_line_output_is_bounded_by_character_truncation_before_line_counting() {
+        let output = format!("{}\n{}", "A".repeat(5_000), "B".repeat(5_000));
+        let mut config = SessionConfig::default();
+        config.tool_output_limits.insert("shell".to_string(), 40);
+        config.line_limits.insert("shell".to_string(), 1);
+
+        let truncated = truncate_tool_output(&output, "shell", &config);
+
+        assert!(truncated.len() < 800);
+        assert!(!truncated.contains(&"A".repeat(100)));
+        assert!(!truncated.contains(&"B".repeat(100)));
+        assert!(truncated.contains("The full output is available in the event stream."));
+        assert!(truncated.contains("lines omitted"));
+    }
 }

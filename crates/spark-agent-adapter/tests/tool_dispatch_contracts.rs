@@ -30,6 +30,14 @@ fn dispatch_with_recorded_events(
     registry: &ToolRegistry,
     tool_call: ToolCall,
 ) -> (ToolResult, Vec<ToolDispatchEvent>) {
+    dispatch_with_context_recorded_events(registry, tool_call, ToolDispatchContext::default())
+}
+
+fn dispatch_with_context_recorded_events(
+    registry: &ToolRegistry,
+    tool_call: ToolCall,
+    context: ToolDispatchContext,
+) -> (ToolResult, Vec<ToolDispatchEvent>) {
     let events = Arc::new(Mutex::new(Vec::<ToolDispatchEvent>::new()));
     let captured_events = events.clone();
     let result = registry.dispatch(
@@ -38,7 +46,7 @@ fn dispatch_with_recorded_events(
             event_hook: Some(Arc::new(move |event| {
                 captured_events.lock().expect("events").push(event);
             })),
-            ..ToolDispatchContext::default()
+            ..context
         },
     );
     let events = events.lock().expect("events").clone();
@@ -876,6 +884,160 @@ fn shell_dispatch_uses_provider_defaults_explicit_timeouts_and_maximum_cap() {
 }
 
 #[test]
+fn shell_dispatch_truncates_structured_model_content_with_default_limit_and_keeps_raw_event_output()
+{
+    let full_stdout = format!("shell-start\n{}\nshell-end", "A".repeat(35_000));
+    let backend = RecordingShellEnvironment::default();
+    *backend.exec_result.lock().expect("exec result") = Some(ExecResult {
+        stdout: full_stdout.clone(),
+        stderr: String::new(),
+        exit_code: 0,
+        timed_out: false,
+        duration_ms: 1,
+    });
+    let environment = ExecutionEnvironment::from_backend(backend);
+    let registry = create_openai_profile("gpt-5.2").registry();
+
+    let (result, events) = dispatch_with_context_recorded_events(
+        &registry,
+        ToolCall::new("call-shell-large", "shell", json!({"command": "large"})),
+        ToolDispatchContext {
+            execution_environment: environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!result.is_error);
+    let model_content = result.content.as_str().expect("truncated shell model text");
+    assert!(model_content.contains("[WARNING: Tool output was truncated."));
+    assert!(model_content.contains("characters were removed from the middle"));
+    assert!(model_content.contains("The full output is available in the event stream."));
+    assert!(model_content.contains("shell-start"));
+    assert!(model_content.contains("shell-end"));
+    assert!(model_content.len() < full_stdout.len());
+    assert_single_start_end(
+        &events,
+        "call-shell-large",
+        "shell",
+        json!({"command": "large"}),
+        None,
+    );
+    assert_eq!(events[1].data["output"]["stdout"], json!(full_stdout));
+    assert_eq!(events[1].data.get("model_content"), Some(&result.content));
+}
+
+#[test]
+fn shell_dispatch_truncates_structured_error_payloads_with_overrides_and_keeps_raw_event_error() {
+    let full_stderr = format!("error-start\n{}\nerror-end", "E".repeat(2_000));
+    let backend = RecordingShellEnvironment::default();
+    *backend.exec_result.lock().expect("exec result") = Some(ExecResult {
+        stdout: String::new(),
+        stderr: full_stderr.clone(),
+        exit_code: 2,
+        timed_out: false,
+        duration_ms: 1,
+    });
+    let environment = ExecutionEnvironment::from_backend(backend);
+    let registry = create_openai_profile("gpt-5.2").registry();
+    let mut config = SessionConfig::default();
+    config.tool_output_limits.insert("shell".to_string(), 120);
+
+    let (result, events) = dispatch_with_context_recorded_events(
+        &registry,
+        ToolCall::new("call-shell-error", "shell", json!({"command": "fail"})),
+        ToolDispatchContext {
+            execution_environment: environment,
+            config,
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(result.is_error);
+    let model_content = result.content.as_str().expect("truncated shell error text");
+    assert!(model_content.contains("[WARNING: Tool output was truncated."));
+    assert!(model_content.contains("characters were removed from the middle"));
+    assert!(model_content.contains("The full output is available in the event stream."));
+    assert!(model_content.contains("error-start"));
+    assert!(model_content.contains("error-end"));
+    assert!(model_content.len() < full_stderr.len());
+    assert_single_start_end(
+        &events,
+        "call-shell-error",
+        "shell",
+        json!({"command": "fail"}),
+        None,
+    );
+    assert_eq!(events[1].data["error"]["stderr"], json!(full_stderr));
+    assert_eq!(events[1].data.get("model_content"), Some(&result.content));
+}
+
+#[test]
+fn glob_dispatch_truncates_structured_model_content_with_default_and_override_limits() {
+    let glob_matches = (0..900)
+        .map(|index| format!("file-{index:04}.txt"))
+        .collect::<Vec<_>>();
+    let backend = RecordingShellEnvironment::default();
+    *backend.glob_matches.lock().expect("glob matches") = Some(glob_matches.clone());
+    let environment = ExecutionEnvironment::from_backend(backend);
+    let registry = create_openai_profile("gpt-5.2").registry();
+
+    let (default_result, default_events) = dispatch_with_context_recorded_events(
+        &registry,
+        ToolCall::new("call-glob-default", "glob", json!({"pattern": "**/*.txt"})),
+        ToolDispatchContext {
+            execution_environment: environment,
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!default_result.is_error);
+    let default_content = default_result
+        .content
+        .as_str()
+        .expect("default glob truncation text");
+    assert!(default_content.contains("[WARNING: Tool output was truncated. 400 lines omitted."));
+    assert!(default_content.contains("The full output is available in the event stream."));
+    assert!(default_content.starts_with("file-0000.txt"));
+    assert!(default_content.contains("file-0899.txt"));
+    assert_single_start_end(
+        &default_events,
+        "call-glob-default",
+        "glob",
+        json!({"pattern": "**/*.txt"}),
+        None,
+    );
+    assert_eq!(default_events[1].data["output"], json!(glob_matches));
+    assert_eq!(
+        default_events[1].data.get("model_content"),
+        Some(&default_result.content)
+    );
+
+    let backend = RecordingShellEnvironment::default();
+    *backend.glob_matches.lock().expect("glob matches") = Some(glob_matches);
+    let environment = ExecutionEnvironment::from_backend(backend);
+    let mut config = SessionConfig::default();
+    config.tool_output_limits.insert("glob".to_string(), 120);
+    let override_result = registry.dispatch(
+        ToolCall::new("call-glob-override", "glob", json!({"pattern": "**/*.txt"})),
+        ToolDispatchContext {
+            execution_environment: environment,
+            config,
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!override_result.is_error);
+    let override_content = override_result
+        .content
+        .as_str()
+        .expect("override glob truncation text");
+    assert!(override_content.starts_with("[WARNING: Tool output was truncated. First "));
+    assert!(override_content.contains("characters were removed."));
+    assert!(override_content.contains("file-0899.txt"));
+    assert!(override_content.len() < default_content.len());
+}
+
+#[test]
 fn registry_preserves_unified_active_tool_executors_for_compatibility() {
     let mut registry = ToolRegistry::new();
     registry.register(
@@ -1587,6 +1749,9 @@ impl ExecutionEnvironmentBackend for RecordingPatchEnvironment {
 #[derive(Debug, Default)]
 struct RecordingShellEnvironment {
     calls: Arc<Mutex<Vec<(String, u64)>>>,
+    exec_result: Arc<Mutex<Option<ExecResult>>>,
+    grep_output: Arc<Mutex<Option<String>>>,
+    glob_matches: Arc<Mutex<Option<Vec<String>>>>,
 }
 
 impl ExecutionEnvironmentBackend for RecordingShellEnvironment {
@@ -1636,13 +1801,18 @@ impl ExecutionEnvironmentBackend for RecordingShellEnvironment {
             command.to_string(),
             options.timeout_ms.expect("tool sets timeout"),
         ));
-        Ok(ExecResult {
-            stdout: command.to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            timed_out: false,
-            duration_ms: 1,
-        })
+        Ok(self
+            .exec_result
+            .lock()
+            .expect("exec result")
+            .clone()
+            .unwrap_or_else(|| ExecResult {
+                stdout: command.to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+                duration_ms: 1,
+            }))
     }
 
     fn grep(
@@ -1651,11 +1821,21 @@ impl ExecutionEnvironmentBackend for RecordingShellEnvironment {
         _path: &Path,
         _options: &GrepOptions,
     ) -> EnvironmentResult<String> {
-        Ok(String::new())
+        Ok(self
+            .grep_output
+            .lock()
+            .expect("grep output")
+            .clone()
+            .unwrap_or_default())
     }
 
     fn glob(&self, _pattern: &str, _path: &Path) -> EnvironmentResult<Vec<String>> {
-        Ok(Vec::new())
+        Ok(self
+            .glob_matches
+            .lock()
+            .expect("glob matches")
+            .clone()
+            .unwrap_or_default())
     }
 
     fn initialize(&self) -> EnvironmentResult<()> {

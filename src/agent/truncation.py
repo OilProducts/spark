@@ -50,27 +50,42 @@ _TAIL_WARNING = (
     "[WARNING: Tool output was truncated. First {removed} characters were removed. "
     "The full output is available in the event stream.]"
 )
+_LINE_WARNING = (
+    "[WARNING: Tool output was truncated. {omitted} lines omitted. "
+    "The full output is available in the event stream.]"
+)
 
 
 def truncate_output(output: str, max_chars: int, mode: str) -> str:
+    truncated, _ = _truncate_output_with_warning(output, max_chars, mode)
+    return truncated
+
+
+def _truncate_output_with_warning(
+    output: str,
+    max_chars: int,
+    mode: str,
+) -> tuple[str, str | None]:
     if max_chars < 1:
         raise ValueError("max_chars must be at least 1")
     if len(output) <= max_chars:
-        return output
+        return output, None
 
     removed = len(output) - max_chars
     if mode == "head_tail":
         head_chars = max_chars // 2
         tail_chars = max_chars - head_chars
+        warning = _HEAD_TAIL_WARNING.format(removed=removed)
         return (
             output[:head_chars]
             + "\n\n"
-            + _HEAD_TAIL_WARNING.format(removed=removed)
+            + warning
             + "\n\n"
             + output[-tail_chars:]
-        )
+        ), warning
     if mode == "tail":
-        return _TAIL_WARNING.format(removed=removed) + "\n\n" + output[-max_chars:]
+        warning = _TAIL_WARNING.format(removed=removed)
+        return warning + "\n\n" + output[-max_chars:], warning
     raise ValueError(f"unsupported truncation mode: {mode}")
 
 
@@ -86,19 +101,22 @@ def truncate_lines(output: str, max_lines: int) -> str:
     tail_count = max_lines - head_count
     omitted = len(lines) - head_count - tail_count
     return "\n".join(
-        [*lines[:head_count], f"[... {omitted} lines omitted ...]", *lines[-tail_count:]]
+        [*lines[:head_count], _LINE_WARNING.format(omitted=omitted), *lines[-tail_count:]]
     )
 
 
 def truncate_tool_output(output: str, tool_name: str, config: SessionConfig) -> str:
     max_chars = config.tool_output_limits.get(tool_name, DEFAULT_TOOL_LIMITS.get(tool_name))
+    character_warning = None
     if max_chars is not None:
         mode = DEFAULT_TRUNCATION_MODES.get(tool_name, "tail")
-        output = truncate_output(output, max_chars, mode)
+        output, character_warning = _truncate_output_with_warning(output, max_chars, mode)
 
     max_lines = config.tool_line_limits.get(tool_name, DEFAULT_LINE_LIMITS.get(tool_name))
     if max_lines is not None:
         output = truncate_lines(output, max_lines)
+        if character_warning is not None and character_warning not in output:
+            output = character_warning + "\n\n" + output
     return output
 
 

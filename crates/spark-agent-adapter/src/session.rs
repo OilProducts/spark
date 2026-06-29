@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::config::SessionConfig;
+use crate::context::{context_usage_warning_payload, estimate_context_usage, ContextUsageEstimate};
 use crate::environment::ExecutionEnvironment;
 use crate::events::{EventKind, SessionEvent};
 use unified_llm_adapter::{
@@ -16,6 +18,10 @@ use crate::history::{
     history_to_messages, AssistantTurn, HistoryTurn, SteeringTurn, TurnContent, UserTurn,
 };
 use crate::profiles::ProviderProfile;
+use crate::tools::{ToolDispatchContext, ToolDispatchEvent, ToolHostControlHook, ToolHostControls};
+use unified_llm_adapter::ToolCall;
+
+pub const LOOP_DETECTION_WARNING: &str = "Repeated tool-call loop detected. Try a different approach instead of repeating the same tool calls.";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmClientHandle {
@@ -31,6 +37,12 @@ struct ModelResponseOutput {
     emitted_assistant_events: bool,
     emitted_model_tool_events: bool,
     stream_error: Option<AdapterError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ToolCallSignature {
+    pub name: String,
+    pub arguments_hash: String,
 }
 
 impl Default for LlmClientHandle {
@@ -85,6 +97,8 @@ pub struct Session {
     pub follow_up_queue: VecDeque<UserTurn>,
     #[serde(default)]
     pub active_subagents: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub system_prompt_snapshot: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_question: Option<String>,
     #[serde(default)]
@@ -107,6 +121,7 @@ impl Session {
         execution_environment: ExecutionEnvironment,
         config: SessionConfig,
     ) -> Self {
+        let system_prompt_snapshot = provider_profile.build_system_prompt(&execution_environment);
         let mut session = Self {
             id: Uuid::new_v4(),
             provider_profile,
@@ -119,6 +134,7 @@ impl Session {
             steering_queue: VecDeque::new(),
             follow_up_queue: VecDeque::new(),
             active_subagents: BTreeMap::new(),
+            system_prompt_snapshot,
             pending_question: None,
             abort_signaled: false,
         };
@@ -168,6 +184,23 @@ impl Session {
         }
     }
 
+    pub fn context_usage_estimate(&self, request: &Request) -> Option<ContextUsageEstimate> {
+        let context_window_size = self.provider_profile.context_window_size?;
+        (context_window_size > 0)
+            .then(|| estimate_context_usage(&request.messages, context_window_size))
+    }
+
+    pub fn check_context_usage(&mut self, request: &Request) -> bool {
+        let Some(estimate) = self.context_usage_estimate(request) else {
+            return false;
+        };
+        if !estimate.exceeds_threshold {
+            return false;
+        }
+        self.emit_kind(EventKind::Warning, context_usage_warning_payload(&estimate));
+        true
+    }
+
     pub fn process_input(
         &mut self,
         client: &Client,
@@ -183,49 +216,57 @@ impl Session {
             return Err(session_state_error("session is not ready for input"));
         }
 
-        self.start_processing_input(content);
-        self.drain_steering_queue();
+        let system_prompt = self.current_system_prompt();
+        let mut current_input = Some(content.into());
+        while let Some(input) = current_input.take() {
+            self.start_processing_input(input);
+            self.drain_steering_queue();
 
-        let round_count = 0;
-        if self.limit_reached_before_model_request(round_count) {
-            return Ok(());
-        }
+            let mut round_count = 0;
+            loop {
+                if self.limit_reached_before_model_request(round_count) {
+                    return Ok(());
+                }
 
-        let system_prompt = self
-            .provider_profile
-            .build_system_prompt(&self.execution_environment);
-        let request = self.build_request(system_prompt);
-        let model_output = match self.model_response(client, request) {
-            Ok(model_output) => model_output,
-            Err(error) => {
-                self.mark_unrecoverable_error(error.message.clone());
-                return Err(error);
+                let request = self.build_request(system_prompt.clone());
+                self.check_context_usage(&request);
+                let model_output = match self.model_response(client, request) {
+                    Ok(model_output) => model_output,
+                    Err(error) => {
+                        self.mark_unrecoverable_adapter_error(&error);
+                        return Err(error);
+                    }
+                };
+                let stream_error = model_output.stream_error.clone();
+                let assistant_turn = self.record_model_response(model_output);
+                if let Some(error) = stream_error {
+                    self.mark_unrecoverable_adapter_error(&error);
+                    return Err(error);
+                }
+
+                if assistant_turn.tool_calls.is_empty() {
+                    if self.assistant_response_is_open_question(&assistant_turn) {
+                        self.mark_awaiting_input(assistant_turn.text());
+                        return Ok(());
+                    }
+                    break;
+                }
+
+                round_count += 1;
+                let tool_results = self.execute_tool_calls(assistant_turn.tool_calls);
+                self.history.push(HistoryTurn::ToolResults(
+                    crate::history::ToolResultsTurn::new(tool_results),
+                ));
+                self.drain_steering_queue();
+                self.maybe_emit_loop_detection_warning();
             }
-        };
-        let stream_error = model_output.stream_error.clone();
-        self.record_model_response(model_output);
-        if let Some(error) = stream_error {
-            self.mark_unrecoverable_error(error.message.clone());
-            return Err(error);
-        }
 
-        let recorded_tool_rounds = self
-            .history
-            .last()
-            .and_then(|turn| match turn {
-                HistoryTurn::Assistant(assistant) if !assistant.tool_calls.is_empty() => Some(1),
-                _ => None,
-            })
-            .unwrap_or(0);
-        if recorded_tool_rounds > 0
-            && self.config.max_tool_rounds_per_input > 0
-            && recorded_tool_rounds >= self.config.max_tool_rounds_per_input
-        {
-            self.mark_turn_limit(Some(recorded_tool_rounds), Some(self.history.len()));
-            return Ok(());
+            let Some(follow_up) = self.follow_up_queue.pop_front() else {
+                self.mark_natural_completion();
+                return Ok(());
+            };
+            current_input = Some(follow_up.content);
         }
-
-        self.mark_natural_completion();
         Ok(())
     }
 
@@ -234,6 +275,15 @@ impl Session {
             event.session_id = Some(self.id);
         }
         self.event_queue.push_back(event);
+    }
+
+    fn current_system_prompt(&self) -> String {
+        if self.system_prompt_snapshot.is_empty() {
+            return self
+                .provider_profile
+                .build_system_prompt(&self.execution_environment);
+        }
+        self.system_prompt_snapshot.clone()
     }
 
     pub fn emit_kind(&mut self, kind: EventKind, data: BTreeMap<String, Value>) {
@@ -316,8 +366,16 @@ impl Session {
         self.steering_queue.push_back(SteeringTurn::new(content));
     }
 
+    pub fn steer(&mut self, content: impl Into<crate::history::TurnContent>) {
+        self.queue_steering(content);
+    }
+
     pub fn queue_follow_up(&mut self, content: impl Into<crate::history::TurnContent>) {
         self.follow_up_queue.push_back(UserTurn::new(content));
+    }
+
+    pub fn follow_up(&mut self, content: impl Into<crate::history::TurnContent>) {
+        self.queue_follow_up(content);
     }
 
     pub fn close(&mut self) {
@@ -325,23 +383,46 @@ impl Session {
     }
 
     pub fn abort(&mut self) {
-        self.abort_signaled = true;
-        self.close_with_reason("abort", None);
-    }
-
-    pub fn mark_unrecoverable_error(&mut self, error: impl Into<String>) {
         if self.state == SessionState::Closed {
             return;
         }
-        let error = error.into();
-        self.emit_kind(
-            EventKind::Error,
-            BTreeMap::from([("error".to_string(), Value::String(error.clone()))]),
-        );
-        self.close_with_reason("unrecoverable_error", Some(error));
+        self.abort_signaled = true;
+        self.close_for_abort();
     }
 
-    fn close_with_reason(&mut self, reason: &'static str, error: Option<String>) {
+    pub fn mark_unrecoverable_error(&mut self, error: impl Into<String>) {
+        let mut error = AdapterError::new(AdapterErrorKind::Provider, error.into());
+        error.retryable = false;
+        self.mark_unrecoverable_adapter_error(&error);
+    }
+
+    fn mark_unrecoverable_adapter_error(&mut self, error: &AdapterError) {
+        if self.state == SessionState::Closed {
+            return;
+        }
+        let error_payload = adapter_error_value(error);
+        self.emit_kind(EventKind::Error, error_event_payload(error));
+        self.cleanup_execution_environment();
+        self.close_with_reason("unrecoverable_error", Some(error_payload));
+    }
+
+    fn close_for_abort(&mut self) {
+        if self.state == SessionState::Closed {
+            return;
+        }
+        self.abort_signaled = true;
+        let error = AdapterError::new(AdapterErrorKind::Abort, "session is aborted");
+        let error_payload = adapter_error_value(&error);
+        self.emit_kind(EventKind::Error, error_event_payload(&error));
+        self.cleanup_execution_environment();
+        self.close_with_reason("abort", Some(error_payload));
+    }
+
+    fn cleanup_execution_environment(&self) {
+        let _ = self.execution_environment.cleanup();
+    }
+
+    fn close_with_reason(&mut self, reason: &'static str, error: Option<Value>) {
         if self.state == SessionState::Closed {
             return;
         }
@@ -356,7 +437,7 @@ impl Session {
     fn final_state_payload(
         &self,
         reason: &'static str,
-        error: Option<String>,
+        error: Option<Value>,
     ) -> BTreeMap<String, Value> {
         let mut final_state = json!({
             "state": state_value(self.state),
@@ -368,8 +449,18 @@ impl Session {
         });
         if let Some(error) = error {
             if let Some(object) = final_state.as_object_mut() {
-                object.insert("error".to_string(), Value::String(error));
+                object.insert("error".to_string(), error.clone());
             }
+            let payload = BTreeMap::from([
+                (
+                    "state".to_string(),
+                    Value::String(state_value(self.state).to_string()),
+                ),
+                ("reason".to_string(), Value::String(reason.to_string())),
+                ("error".to_string(), error),
+                ("final_state".to_string(), final_state),
+            ]);
+            return payload;
         }
 
         BTreeMap::from([
@@ -407,9 +498,30 @@ impl Session {
         }
     }
 
+    fn maybe_emit_loop_detection_warning(&mut self) -> bool {
+        if !self.config.enable_loop_detection {
+            return false;
+        }
+        if !detect_loop(&self.history, self.config.loop_detection_window) {
+            return false;
+        }
+
+        self.history.push(HistoryTurn::Steering(SteeringTurn::new(
+            LOOP_DETECTION_WARNING,
+        )));
+        self.emit_kind(
+            EventKind::LoopDetection,
+            BTreeMap::from([(
+                "message".to_string(),
+                Value::String(LOOP_DETECTION_WARNING.to_string()),
+            )]),
+        );
+        true
+    }
+
     fn limit_reached_before_model_request(&mut self, round_count: u32) -> bool {
         if self.abort_signaled {
-            self.mark_turn_limit(Some(round_count), Some(self.history.len()));
+            self.close_for_abort();
             return true;
         }
 
@@ -601,7 +713,7 @@ impl Session {
         })
     }
 
-    fn record_model_response(&mut self, model_output: ModelResponseOutput) {
+    fn record_model_response(&mut self, model_output: ModelResponseOutput) -> AssistantTurn {
         let response = model_output.response;
         let response_text = response.text();
         let response_id = non_empty_string(response.id.clone());
@@ -636,6 +748,80 @@ impl Session {
         }
 
         self.history.push(HistoryTurn::Assistant(assistant_turn));
+        match self.history.last().expect("assistant turn was just pushed") {
+            HistoryTurn::Assistant(assistant_turn) => assistant_turn.clone(),
+            _ => unreachable!("assistant turn was just pushed"),
+        }
+    }
+
+    fn execute_tool_calls(
+        &mut self,
+        tool_calls: impl IntoIterator<Item = ToolCall>,
+    ) -> Vec<unified_llm_adapter::ToolResult> {
+        let events = Arc::new(Mutex::new(Vec::<ToolDispatchEvent>::new()));
+        let captured_events = events.clone();
+        let queued_steering = Arc::new(Mutex::new(Vec::<SteeringTurn>::new()));
+        let captured_steering = queued_steering.clone();
+        let queued_follow_ups = Arc::new(Mutex::new(Vec::<UserTurn>::new()));
+        let captured_follow_ups = queued_follow_ups.clone();
+        let steering_hook: ToolHostControlHook = Arc::new(move |content| {
+            captured_steering
+                .lock()
+                .expect("tool queued steering")
+                .push(SteeringTurn::new(content));
+        });
+        let follow_up_hook: ToolHostControlHook = Arc::new(move |content| {
+            captured_follow_ups
+                .lock()
+                .expect("tool queued follow-up")
+                .push(UserTurn::new(content));
+        });
+        let registry = self.provider_profile.registry();
+        let results = registry.dispatch_many(
+            tool_calls,
+            ToolDispatchContext {
+                execution_environment: self.execution_environment.clone(),
+                messages: self.history_messages(),
+                config: self.config.clone(),
+                capabilities: self.provider_profile.capability_flags().clone(),
+                supports_parallel_tool_calls: self.provider_profile.supports("parallel_tool_calls"),
+                host_controls: ToolHostControls::new(Some(steering_hook), Some(follow_up_hook)),
+                event_hook: Some(Arc::new(move |event| {
+                    captured_events
+                        .lock()
+                        .expect("tool dispatch events")
+                        .push(event);
+                })),
+                ..ToolDispatchContext::default()
+            },
+        );
+
+        let events = events.lock().expect("tool dispatch events").clone();
+        for event in events {
+            self.emit_kind(event.kind, event.data);
+        }
+        self.steering_queue.extend(
+            queued_steering
+                .lock()
+                .expect("tool queued steering")
+                .iter()
+                .cloned(),
+        );
+        self.follow_up_queue.extend(
+            queued_follow_ups
+                .lock()
+                .expect("tool queued follow-up")
+                .iter()
+                .cloned(),
+        );
+
+        results
+    }
+
+    fn assistant_response_is_open_question(&self, assistant_turn: &AssistantTurn) -> bool {
+        let response_text = assistant_turn.text();
+        let response_text = response_text.trim_end();
+        !response_text.is_empty() && response_text.ends_with('?')
     }
 
     fn emit_stream_session_events(
@@ -745,4 +931,135 @@ fn non_empty_string(value: String) -> Option<String> {
 
 fn session_state_error(message: impl Into<String>) -> AdapterError {
     AdapterError::new(AdapterErrorKind::InvalidRequest, message)
+}
+
+fn error_event_payload(error: &AdapterError) -> BTreeMap<String, Value> {
+    BTreeMap::from([("error".to_string(), adapter_error_value(error))])
+}
+
+fn adapter_error_value(error: &AdapterError) -> Value {
+    let mut value = serde_json::to_value(error).expect("adapter error is serializable");
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "name".to_string(),
+            Value::String(error.kind.spec_error_name().to_string()),
+        );
+    }
+    value
+}
+
+pub fn detect_loop(history: &[HistoryTurn], loop_detection_window: u32) -> bool {
+    if loop_detection_window <= 1 {
+        return false;
+    }
+
+    let signatures = tool_call_signatures(history);
+    let window = loop_detection_window as usize;
+    if signatures.len() < window {
+        return false;
+    }
+
+    let recent_signatures = &signatures[signatures.len() - window..];
+    for pattern_length in 1..=3 {
+        if pattern_length * 2 > window {
+            continue;
+        }
+        if window % pattern_length != 0 {
+            continue;
+        }
+        let pattern = &recent_signatures[..pattern_length];
+        if recent_signatures
+            .iter()
+            .enumerate()
+            .all(|(index, signature)| signature == &pattern[index % pattern_length])
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+pub fn tool_call_signature(tool_call: &ToolCall) -> ToolCallSignature {
+    let arguments = if tool_call.arguments.is_null() {
+        tool_call
+            .raw_arguments
+            .as_deref()
+            .map(canonicalize_raw_arguments)
+            .unwrap_or(Value::Null)
+    } else {
+        canonicalize_argument_value(&tool_call.arguments)
+    };
+    ToolCallSignature {
+        name: tool_call.name.clone(),
+        arguments_hash: stable_digest(&stable_json(&arguments)),
+    }
+}
+
+fn tool_call_signatures(history: &[HistoryTurn]) -> Vec<ToolCallSignature> {
+    history
+        .iter()
+        .flat_map(|turn| match turn {
+            HistoryTurn::Assistant(assistant_turn) => assistant_turn.tool_calls.as_slice(),
+            _ => &[],
+        })
+        .map(tool_call_signature)
+        .collect()
+}
+
+fn canonicalize_raw_arguments(raw_arguments: &str) -> Value {
+    serde_json::from_str::<Value>(raw_arguments)
+        .map(|value| canonicalize_argument_value(&value))
+        .unwrap_or_else(|_| Value::String(raw_arguments.to_string()))
+}
+
+fn canonicalize_argument_value(value: &Value) -> Value {
+    match value {
+        Value::String(_) => value.clone(),
+        Value::Array(values) => {
+            Value::Array(values.iter().map(canonicalize_argument_value).collect())
+        }
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), canonicalize_argument_value(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn stable_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string()),
+        Value::Array(values) => {
+            let items = values.iter().map(stable_json).collect::<Vec<_>>().join(",");
+            format!("[{items}]")
+        }
+        Value::Object(object) => {
+            let mut entries = object.iter().collect::<Vec<_>>();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            let items = entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let key = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
+                    format!("{key}:{}", stable_json(value))
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{items}}}")
+        }
+    }
+}
+
+fn stable_digest(value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }

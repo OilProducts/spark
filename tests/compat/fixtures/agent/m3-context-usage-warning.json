@@ -1,0 +1,103 @@
+{
+  "decisions": [
+    "CD-CODING-AGENT-RUST-008",
+    "CD-CODING-AGENT-RUST-012"
+  ],
+  "fixture_id": "agent/m3-context-usage-warning",
+  "input": {
+    "above_threshold_user_characters": 397,
+    "below_threshold_user_characters": 317,
+    "context_window_size": 100,
+    "probe": "public spark-agent-adapter Session context usage API",
+    "system_prompt": "sys"
+  },
+  "item_id": "M3-I4",
+  "observation": {
+    "above_threshold": {
+      "emitted": true,
+      "estimate": {
+        "approximate_characters": 400,
+        "approximate_tokens": 100.0,
+        "context_window_size": 100,
+        "exceeds_threshold": true,
+        "threshold_ratio": 0.8,
+        "threshold_tokens": 80.0,
+        "usage_ratio": 1.0
+      },
+      "events": [
+        {
+          "data": {
+            "content_characters": 397
+          },
+          "kind": "user_input"
+        },
+        {
+          "data": {
+            "message": "Context usage at ~100% of context window",
+            "usage": {
+              "approximate_characters": 400,
+              "approximate_tokens": 100.0,
+              "context_window_size": 100,
+              "threshold_ratio": 0.8,
+              "threshold_tokens": 80.0,
+              "usage_ratio": 1.0
+            }
+          },
+          "kind": "warning"
+        }
+      ],
+      "history_turns_after": 1,
+      "history_turns_before": 1,
+      "request_text_characters": [
+        3,
+        397
+      ],
+      "state_after": "processing",
+      "state_before": "processing"
+    },
+    "below_threshold": {
+      "emitted": false,
+      "estimate": {
+        "approximate_characters": 320,
+        "approximate_tokens": 80.0,
+        "context_window_size": 100,
+        "exceeds_threshold": false,
+        "threshold_ratio": 0.8,
+        "threshold_tokens": 80.0,
+        "usage_ratio": 0.8
+      },
+      "events": [
+        {
+          "data": {
+            "content_characters": 317
+          },
+          "kind": "user_input"
+        }
+      ],
+      "history_turns_after": 1,
+      "history_turns_before": 1,
+      "request_text_characters": [
+        3,
+        317
+      ],
+      "state_after": "processing",
+      "state_before": "processing"
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "spark_agent_adapter::Session",
+      "spark_agent_adapter::ProviderProfile",
+      "spark_agent_adapter::ContextUsageEstimate",
+      "spark_agent_adapter::SessionEvent"
+    ],
+    "oracle": "rust-spark-agent-adapter-public-session-api"
+  },
+  "requirements": [
+    "REQ-008",
+    "REQ-010",
+    "REQ-012"
+  ],
+  "scenario": "m3_context_usage_warning",
+  "schema_version": "compat-agent-v1"
+}

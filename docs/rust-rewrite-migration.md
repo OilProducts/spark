@@ -28,6 +28,22 @@ This committed document is the migration source of truth for Rust-backed Spark. 
 | Status envelope resolution and repair prompt behavior | `native_rust` | `crates/spark-agent-adapter` | Rust owns the status-envelope contract; Python codergen remains retained until all callers are migrated | `agent/codergen-status-envelope-resolution`; Rust codergen contract tests |
 | Agent session loop, tools, environment, project context, provider profiles, and streaming behavior | `retained_python_module` | `src/agent` | Retained Python implementation guarded by the existing agent pytest suite | `tests/agent/test_session.py`; `tests/agent/test_tool_execution.py`; `tests/agent/test_agent_streaming.py` |
 
+## M3 Agent Context And Host Controls Status
+
+M3 records the host-facing controls that shape agent request construction and tool-result delivery. Tool output truncation applies per-tool character limits before line limits and keeps UTF-8 boundaries valid. The `ToolResult` sent back to the model contains the truncated text and visible omission marker, while `TOOL_CALL_END` carries the full untruncated output or recoverable error data plus the model-visible `model_content`.
+
+Prompt context is layered as provider base instructions, environment context, active tool descriptions, project instructions, and user overrides. The session snapshots that prompt context at start, including working directory, git repository status, branch, platform, OS version, current date, model display name, knowledge cutoff when known, modified and untracked counts, and recent commit messages. Project instruction discovery walks root to leaf, always considers `AGENTS.md`, includes only the active provider instruction file among `.codex/instructions.md`, `CLAUDE.md`, and `GEMINI.md`, and applies the 32 KB project instruction budget with the documented truncation marker.
+
+Context warnings use the one-token-per-four-characters estimate and emit `WARNING` above 80 percent of the provider context window without automatic compaction or summarization. `session.steer` queues `SteeringTurn` values for the next model request, including after the current tool round, emits `STEERING_INJECTED`, and converts steering into user-role request messages without restarting history. `session.follow_up` queues another user input after natural completion on the same history and event stream, and close/abort paths prevent later follow-up processing. Runtime `reasoning_effort` values, including `low`, `medium`, `high`, and null, are read from the current session config for each low-level unified LLM `Request` and merged into provider-specific options when the active provider supports them.
+
+Turn limits and repeated tool-call loop detection are observable session controls. Round and session limits emit `TURN_LIMIT` and return the session to idle. Repeating tool-call signatures of pattern length 1, 2, or 3 emit `LOOP_DETECTION` and add recovery steering for the next request without rewriting assistant output. Recoverable tool errors remain tool results; unrecoverable session errors emit `ERROR` and close the session.
+
+M3 validation is behavioral and credential-free. Focused retained-agent coverage is in `tests/agent/test_truncation.py`, `tests/agent/test_prompts.py`, `tests/agent/test_project_docs.py`, `tests/agent/test_context_usage.py`, `tests/agent/test_steering.py`, `tests/agent/test_reasoning_effort.py`, and `tests/agent/test_loop_detection.py`. Rust-facing compatibility fixtures live under `tests/compat/agent`, including `agent/m3-tool-event-truncation` and `agent/m3-context-usage-warning`. Rust adapter contract coverage includes `crates/spark-agent-adapter/tests/tool_dispatch_contracts.rs`, `crates/spark-agent-adapter/tests/prompt_context_contracts.rs`, and `crates/spark-agent-adapter/tests/runtime_contracts.rs`. The repository completion gate remains:
+
+```bash
+uv run pytest -q
+```
+
 ## Unified LLM Boundary
 
 | Surface | Classification | Current owner | Retained Python status | Evidence |

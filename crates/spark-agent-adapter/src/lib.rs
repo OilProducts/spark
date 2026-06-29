@@ -6,12 +6,14 @@ pub mod agent;
 pub mod apply_patch;
 pub mod codergen;
 pub mod config;
+pub mod context;
 pub mod environment;
 pub mod events;
 pub mod history;
 pub mod llm_backend;
 pub mod local_environment;
 pub mod profiles;
+pub mod project_docs;
 pub mod session;
 pub mod status_envelope;
 pub mod tools;
@@ -25,6 +27,13 @@ pub use codergen::{
     CodergenExecution, CodergenHandler, CodergenRequest,
 };
 pub use config::SessionConfig;
+pub use context::{
+    build_environment_context_block, build_provider_base_instructions, build_system_prompt,
+    build_system_prompt_from_snapshot, build_system_prompt_with_user_overrides,
+    build_tool_descriptions, context_usage_warning_payload, estimate_context_usage,
+    snapshot_environment_context, ContextUsageEstimate, EnvironmentContext,
+    CONTEXT_WARNING_THRESHOLD_RATIO,
+};
 pub use environment::{
     CommandOptions, DirEntry, EnvironmentError, EnvironmentInheritancePolicy, EnvironmentResult,
     ExecResult, ExecutionEnvironment, ExecutionEnvironmentBackend, GrepOptions,
@@ -42,7 +51,15 @@ pub use profiles::{
     normalize_provider_selector, GeminiProfileOptions, NormalizedProviderSelector, ProviderFamily,
     ProviderProfile,
 };
-pub use session::{LlmClientHandle, Session, SessionState};
+pub use project_docs::{
+    discover_project_documents, discover_project_documents_with_budget, load_project_documents,
+    render_project_documents, ProjectDocument, ProjectDocuments, PROJECT_INSTRUCTION_BYTE_BUDGET,
+    PROJECT_INSTRUCTION_TRUNCATION_MARKER,
+};
+pub use session::{
+    detect_loop, tool_call_signature, LlmClientHandle, Session, SessionState, ToolCallSignature,
+    LOOP_DETECTION_WARNING,
+};
 pub use status_envelope::{
     build_contract_repair_prompt, build_status_envelope_context_updates_contract_text,
     build_status_envelope_prompt_appendix, coerce_structured_text_outcome,
@@ -52,6 +69,6 @@ pub use status_envelope::{
 };
 pub use tools::{
     RegisteredTool, ToolDefinition, ToolDispatchContext, ToolDispatchEvent, ToolExecution,
-    ToolExecutionOutput, ToolRegistry, ToolTruncation,
+    ToolExecutionOutput, ToolHostControls, ToolRegistry, ToolTruncation,
 };
 pub use truncation::{truncate_lines, truncate_output, truncate_tool_output};

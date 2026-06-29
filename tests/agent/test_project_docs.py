@@ -101,6 +101,48 @@ def test_discover_project_documents_filters_by_provider_and_keeps_root_to_leaf_o
     assert bundle.truncated is False
 
 
+def test_openai_compatible_project_documents_use_profile_identity_over_model_provider(
+    tmp_path,
+) -> None:
+    nested_working_dir = tmp_path / "nested"
+    nested_working_dir.mkdir()
+    environment = agent.LocalExecutionEnvironment(working_dir=nested_working_dir)
+    _initialize_git_repo(environment, working_dir=tmp_path)
+
+    environment.write_file(tmp_path / "AGENTS.md", "root agents")
+    environment.write_file(tmp_path / ".codex/instructions.md", "root openai")
+    environment.write_file(tmp_path / "CLAUDE.md", "root claude")
+    environment.write_file(tmp_path / "GEMINI.md", "root gemini")
+    environment.write_file(nested_working_dir / "AGENTS.md", "nested agents")
+    environment.write_file(
+        nested_working_dir / ".codex/instructions.md",
+        "nested openai",
+    )
+    environment.write_file(nested_working_dir / "CLAUDE.md", "nested claude")
+    environment.write_file(nested_working_dir / "GEMINI.md", "nested gemini")
+
+    profile = agent.create_openrouter_profile(model="anthropic/claude-sonnet-4.5")
+    bundle = project_docs.discover_project_documents(environment, profile)
+    rendered = project_docs.render_project_documents(bundle)
+
+    assert [document.path for document in bundle] == [
+        "AGENTS.md",
+        ".codex/instructions.md",
+        "nested/AGENTS.md",
+        "nested/.codex/instructions.md",
+    ]
+    assert "root agents" in rendered
+    assert "nested agents" in rendered
+    assert "root openai" in rendered
+    assert "nested openai" in rendered
+    assert "root claude" not in rendered
+    assert "nested claude" not in rendered
+    assert "CLAUDE.md" not in rendered
+    assert "root gemini" not in rendered
+    assert "nested gemini" not in rendered
+    assert "GEMINI.md" not in rendered
+
+
 def test_project_documents_rendering_appends_the_truncation_marker_when_budget_overflows(
     tmp_path,
 ) -> None:

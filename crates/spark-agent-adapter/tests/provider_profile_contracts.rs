@@ -180,7 +180,12 @@ fn provider_options_are_mapped_by_native_profile_contract() {
         anthropic.request_provider_options(&config),
         std::collections::BTreeMap::from([(
             "anthropic".to_string(),
-            json!({"beta_headers": ["prompt-caching-2024-07-31"]})
+            json!({
+                "beta_headers": ["prompt-caching-2024-07-31"],
+                "output_config": {
+                    "effort": "high"
+                }
+            })
         )])
     );
 
@@ -194,7 +199,7 @@ fn provider_options_are_mapped_by_native_profile_contract() {
         .insert("groundingConfig".to_string(), json!({"enabled": true}));
     gemini.provider_options.insert(
         "thinkingConfig".to_string(),
-        json!({"thinkingBudget": 1024}),
+        json!({"includeThoughts": true}),
     );
     assert_eq!(
         gemini.request_provider_options(&config),
@@ -206,7 +211,10 @@ fn provider_options_are_mapped_by_native_profile_contract() {
                     "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
                     "threshold": "BLOCK_ONLY_HIGH"
                 }],
-                "thinkingConfig": {"thinkingBudget": 1024}
+                "thinkingConfig": {
+                    "includeThoughts": true,
+                    "thinkingLevel": "high"
+                }
             })
         )])
     );

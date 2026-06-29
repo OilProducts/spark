@@ -25,6 +25,22 @@ class _PromptProfile(agent.ProviderProfile):
         return "Session system prompt"
 
 
+def _assert_usage(
+    data,
+    *,
+    approximate_characters: int,
+    approximate_tokens: float,
+    context_window_size: int,
+) -> None:
+    usage = data["usage"]
+    assert usage["approximate_characters"] == approximate_characters
+    assert usage["approximate_tokens"] == pytest.approx(approximate_tokens)
+    assert usage["threshold_tokens"] == pytest.approx(context_window_size * 0.8)
+    assert usage["threshold_ratio"] == pytest.approx(0.8)
+    assert usage["context_window_size"] == context_window_size
+    assert usage["usage_ratio"] == pytest.approx(approximate_tokens / context_window_size)
+
+
 async def _next_event(stream) -> agent.SessionEvent:
     return await asyncio.wait_for(anext(stream), timeout=1)
 
@@ -33,7 +49,7 @@ async def _next_event(stream) -> agent.SessionEvent:
 async def test_check_context_usage_emits_a_warning_when_history_exceeds_the_threshold(
     tmp_path,
 ) -> None:
-    profile = agent.ProviderProfile(
+    profile = _PromptProfile(
         id="fake-provider",
         model="fake-model",
         context_window_size=100,
@@ -42,22 +58,32 @@ async def test_check_context_usage_emits_a_warning_when_history_exceeds_the_thre
         profile=profile,
         execution_env=agent.LocalExecutionEnvironment(working_dir=tmp_path),
     )
-    session.history = [agent.UserTurn(content="x" * 400)]
+    session.history = [agent.UserTurn(content="x" * 379)]
+    before_history = list(session.history)
+    before_state = session.state
     stream = session.events()
 
     start_event = await _next_event(stream)
     assert start_event.kind == agent.EventKind.SESSION_START
 
     assert agent.check_context_usage(session) is True
+    assert session.history == before_history
+    assert session.state == before_state
 
     warning_event = await _next_event(stream)
     assert warning_event.kind == agent.EventKind.WARNING
-    assert warning_event.data == {"message": "Context usage at ~100% of context window"}
+    assert warning_event.data["message"] == "Context usage at ~100% of context window"
+    _assert_usage(
+        warning_event.data,
+        approximate_characters=400,
+        approximate_tokens=100,
+        context_window_size=100,
+    )
 
 
 @pytest.mark.asyncio
 async def test_check_context_usage_stays_quiet_at_the_80_percent_boundary(tmp_path) -> None:
-    profile = agent.ProviderProfile(
+    profile = _PromptProfile(
         id="fake-provider",
         model="fake-model",
         context_window_size=100,
@@ -66,7 +92,7 @@ async def test_check_context_usage_stays_quiet_at_the_80_percent_boundary(tmp_pa
         profile=profile,
         execution_env=agent.LocalExecutionEnvironment(working_dir=tmp_path),
     )
-    session.history = [agent.UserTurn(content="x" * 320)]
+    session.history = [agent.UserTurn(content="x" * 299)]
     stream = session.events()
 
     start_event = await _next_event(stream)
@@ -162,7 +188,13 @@ async def test_context_warning_is_emitted_after_tool_results_push_history_over_t
     assert tool_end_event.kind == agent.EventKind.TOOL_CALL_END
     warning_event = await _next_event(stream)
     assert warning_event.kind == agent.EventKind.WARNING
-    assert warning_event.data == {"message": "Context usage at ~100% of context window"}
+    assert warning_event.data["message"] == "Context usage at ~105% of context window"
+    _assert_usage(
+        warning_event.data,
+        approximate_characters=421,
+        approximate_tokens=105.25,
+        context_window_size=100,
+    )
     second_assistant_start = await _next_event(stream)
     assert second_assistant_start.kind == agent.EventKind.ASSISTANT_TEXT_START
     second_assistant_delta = await _next_event(stream)

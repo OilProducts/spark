@@ -556,9 +556,7 @@ def test_gemini_profile_provider_options_copy_and_request_mapping(tmp_path: Path
             "grounding": {
                 "search": {"mode": "dynamic"},
             },
-            "thinking": {
-                "thinkingConfig": {"thinkingBudget": 1024},
-            },
+            "thinkingConfig": {"includeThoughts": True},
             "request_options": {
                 "cachedContent": "projects/example/cachedContents/abc123",
             },
@@ -581,9 +579,7 @@ def test_gemini_profile_provider_options_copy_and_request_mapping(tmp_path: Path
         "grounding": {
             "search": {"mode": "dynamic"},
         },
-        "thinking": {
-            "thinkingConfig": {"thinkingBudget": 1024},
-        },
+        "thinkingConfig": {"includeThoughts": True},
         "request_options": {
             "cachedContent": "projects/example/cachedContents/abc123",
         },
@@ -599,8 +595,9 @@ def test_gemini_profile_provider_options_copy_and_request_mapping(tmp_path: Path
             "grounding": {
                 "search": {"mode": "dynamic"},
             },
-            "thinking": {
-                "thinkingConfig": {"thinkingBudget": 1024},
+            "thinkingConfig": {
+                "includeThoughts": True,
+                "thinkingLevel": "medium",
             },
             "request_options": {
                 "cachedContent": "projects/example/cachedContents/abc123",

@@ -171,6 +171,63 @@ def test_detect_loop_matches_repeating_patterns(
     assert detect_loop(history, loop_detection_window=window) is True
 
 
+def test_detect_loop_matches_length_two_cycle_with_default_window() -> None:
+    history = _history_from_tool_calls(
+        [
+            _tool_call(
+                call_id=f"call-{index}",
+                name="lookup" if index % 2 else "summarize",
+                arguments={"value": 1 if index % 2 else 2},
+            )
+            for index in range(1, 11)
+        ]
+    )
+
+    assert (
+        detect_loop(
+            history,
+            loop_detection_window=agent.SessionConfig().loop_detection_window,
+        )
+        is True
+    )
+
+
+def test_detect_loop_rejects_short_repeated_suffix_inside_full_window() -> None:
+    history = _history_from_tool_calls(
+        [
+            *[
+                _tool_call(
+                    call_id=f"call-{index}",
+                    name=f"tool_{index}",
+                    arguments={"value": index},
+                )
+                for index in range(1, 9)
+            ],
+            _tool_call(call_id="call-9", name="lookup", arguments={"value": 1}),
+            _tool_call(call_id="call-10", name="lookup", arguments={"value": 1}),
+        ]
+    )
+
+    assert detect_loop(history, loop_detection_window=10) is False
+
+
+def test_detect_loop_waits_for_configured_window_before_matching_patterns() -> None:
+    history = _history_from_tool_calls(
+        [
+            _tool_call(call_id="call-1", name="lookup", arguments={"value": 1}),
+            _tool_call(call_id="call-2", name="lookup", arguments={"value": 1}),
+        ]
+    )
+
+    assert (
+        detect_loop(
+            history,
+            loop_detection_window=agent.SessionConfig().loop_detection_window,
+        )
+        is False
+    )
+
+
 @pytest.mark.parametrize(
     ("prefix_call", "near_miss_calls", "window"),
     [
@@ -214,6 +271,31 @@ def test_detect_loop_rejects_near_misses(
     history = _history_from_tool_calls(near_miss_calls, prefix=[prefix_call])
 
     assert detect_loop(history, window=window) is False
+
+
+def test_detect_loop_rejects_default_window_length_three_near_miss() -> None:
+    history = _history_from_tool_calls(
+        [
+            _tool_call(call_id="call-1", name="lookup", arguments={"value": 1}),
+            _tool_call(call_id="call-2", name="summarize", arguments={"value": 2}),
+            _tool_call(call_id="call-3", name="expand", arguments={"value": 3}),
+            _tool_call(call_id="call-4", name="lookup", arguments={"value": 1}),
+            _tool_call(call_id="call-5", name="summarize", arguments={"value": 2}),
+            _tool_call(call_id="call-6", name="expand", arguments={"value": 3}),
+            _tool_call(call_id="call-7", name="lookup", arguments={"value": 1}),
+            _tool_call(call_id="call-8", name="summarize", arguments={"value": 2}),
+            _tool_call(call_id="call-9", name="expand", arguments={"value": 3}),
+            _tool_call(call_id="call-10", name="lookup", arguments={"value": 99}),
+        ]
+    )
+
+    assert (
+        detect_loop(
+            history,
+            loop_detection_window=agent.SessionConfig().loop_detection_window,
+        )
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -351,6 +433,81 @@ async def test_session_emits_loop_detection_warning_when_enabled() -> None:
         "AssistantTurn",
     ]
     assert session.history[-2].content == LOOP_DETECTION_WARNING
+    assert session.history[-1].response_id == "resp-3"
+    assert session.history[-1].finish_reason.reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_session_waits_for_configured_loop_detection_window_before_steering_by_default() -> None:
+    client = _FakeCompleteClient(
+        [
+            _tool_call_response(
+                response_id="resp-1",
+                text="Need tool",
+                tool_call=_tool_call(
+                    call_id="call-1",
+                    name="lookup",
+                    arguments={"value": 1},
+                ),
+            ),
+            _tool_call_response(
+                response_id="resp-2",
+                text="Need tool again",
+                tool_call=_tool_call(
+                    call_id="call-2",
+                    name="lookup",
+                    arguments={"value": 1},
+                ),
+            ),
+            _final_response(response_id="resp-3", text="All done"),
+        ]
+    )
+    tool_registry = agent.ToolRegistry()
+    profile = _PromptProfile(
+        id="fake-provider",
+        model="fake-model",
+        tool_registry=tool_registry,
+    )
+    tool_registry.register(
+        agent.ToolDefinition(
+            name="lookup",
+            description="Lookup value",
+            parameters={"type": "object"},
+        ),
+        executor=lambda arguments, environment: "tool result",
+    )
+    session = agent.Session(
+        profile=profile,
+        llm_client=client,
+        config=agent.SessionConfig(),
+    )
+    stream = session.events()
+
+    start_event = await _next_event(stream)
+    assert start_event.kind == agent.EventKind.SESSION_START
+
+    await session.process_input("Question")
+
+    assert len(client.requests) == 3
+
+    observed_kinds: list[agent.EventKind] = []
+    while True:
+        event = await _next_event(stream)
+        observed_kinds.append(event.kind)
+        if event.kind == agent.EventKind.PROCESSING_END:
+            break
+
+    assert agent.EventKind.LOOP_DETECTION not in observed_kinds
+    assert session.state == agent.SessionState.IDLE
+    assert [type(turn).__name__ for turn in session.history] == [
+        "UserTurn",
+        "AssistantTurn",
+        "ToolResultsTurn",
+        "AssistantTurn",
+        "ToolResultsTurn",
+        "AssistantTurn",
+    ]
+    assert not any(isinstance(turn, agent.SteeringTurn) for turn in session.history)
     assert session.history[-1].response_id == "resp-3"
     assert session.history[-1].finish_reason.reason == "stop"
 

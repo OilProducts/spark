@@ -372,23 +372,27 @@ def test_start_turn_return_truncates_historical_tool_output(monkeypatch: pytest.
     state = _seed_tool_output_conversation(output=large_output)
     entered_turn = threading.Event()
     finish_turn = threading.Event()
+    turn_finished = threading.Event()
 
     class BlockingSession:
         def turn(self, *args, **kwargs) -> project_chat.ChatTurnResult:
-            entered_turn.set()
-            assert finish_turn.wait(timeout=2)
-            on_event = kwargs.get("on_event")
-            if on_event is not None:
-                on_event(
-                    project_chat.TurnStreamEvent(
-                        kind="content_completed",
-                        channel="assistant",
-                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
-                        content_delta="Done.",
-                        phase="final_answer",
+            try:
+                entered_turn.set()
+                assert finish_turn.wait(timeout=2)
+                on_event = kwargs.get("on_event")
+                if on_event is not None:
+                    on_event(
+                        project_chat.TurnStreamEvent(
+                            kind="content_completed",
+                            channel="assistant",
+                            source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
+                            content_delta="Done.",
+                            phase="final_answer",
+                        )
                     )
-                )
-            return project_chat.ChatTurnResult(assistant_message="Done.")
+                return project_chat.ChatTurnResult(assistant_message="Done.")
+            finally:
+                turn_finished.set()
 
     service = _project_chat_service()
     monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: BlockingSession())
@@ -398,6 +402,7 @@ def test_start_turn_return_truncates_historical_tool_output(monkeypatch: pytest.
     _assert_ui_tool_output_preview(snapshot, large_output)
     assert entered_turn.wait(timeout=2)
     finish_turn.set()
+    assert turn_finished.wait(timeout=2)
 
 
 def test_send_turn_final_return_truncates_historical_tool_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6104,23 +6109,29 @@ def test_mutation_endpoints_return_bounded_historical_tool_output(
     assert settings_response.status_code == 200
     _assert_ui_tool_output_preview(settings_response.json(), large_output)
 
+    entered_turn = threading.Event()
     finish_turn = threading.Event()
+    turn_finished = threading.Event()
 
     class BlockingSession:
         def turn(self, *args, **kwargs) -> project_chat.ChatTurnResult:
-            assert finish_turn.wait(timeout=2)
-            on_event = kwargs.get("on_event")
-            if on_event is not None:
-                on_event(
-                    project_chat.TurnStreamEvent(
-                        kind="content_completed",
-                        channel="assistant",
-                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
-                        content_delta="Done.",
-                        phase="final_answer",
+            try:
+                entered_turn.set()
+                assert finish_turn.wait(timeout=2)
+                on_event = kwargs.get("on_event")
+                if on_event is not None:
+                    on_event(
+                        project_chat.TurnStreamEvent(
+                            kind="content_completed",
+                            channel="assistant",
+                            source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
+                            content_delta="Done.",
+                            phase="final_answer",
+                        )
                     )
-                )
-            return project_chat.ChatTurnResult(assistant_message="Done.")
+                return project_chat.ChatTurnResult(assistant_message="Done.")
+            finally:
+                turn_finished.set()
 
     monkeypatch.setattr(_project_chat_service(), "_build_session", lambda *args, **kwargs: BlockingSession())
     turn_response = product_api_client.post(
@@ -6132,7 +6143,9 @@ def test_mutation_endpoints_return_bounded_historical_tool_output(
     )
     assert turn_response.status_code == 200
     _assert_ui_tool_output_preview(turn_response.json(), large_output)
+    assert entered_turn.wait(timeout=2)
     finish_turn.set()
+    assert turn_finished.wait(timeout=2)
 
 
 def test_review_endpoints_return_bounded_historical_tool_output(

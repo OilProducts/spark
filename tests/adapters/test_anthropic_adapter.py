@@ -1389,6 +1389,9 @@ async def test_anthropic_adapter_uses_only_anthropic_provider_options_for_cache_
                     "type": "enabled",
                     "budget_tokens": 1234,
                 },
+                "output_config": {
+                    "effort": "high",
+                },
                 "cache_control": {
                     "type": "ephemeral",
                     "ttl": "1h",
@@ -1411,6 +1414,9 @@ async def test_anthropic_adapter_uses_only_anthropic_provider_options_for_cache_
     assert body["thinking"] == {
         "type": "enabled",
         "budget_tokens": 1234,
+    }
+    assert body["output_config"] == {
+        "effort": "high",
     }
     assert body["system"] == [
         {

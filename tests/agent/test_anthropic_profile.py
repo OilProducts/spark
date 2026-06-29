@@ -588,6 +588,22 @@ def test_anthropic_profile_provider_options_copy_and_beta_header_mapping() -> No
         }
     }
 
+    reasoning_session = agent.Session(
+        profile=profile,
+        execution_env=environment,
+        config=agent.SessionConfig(reasoning_effort="high"),
+    )
+    reasoning_request = reasoning_session.build_request("Session system prompt")
+    assert reasoning_request.reasoning_effort == "high"
+    assert reasoning_request.provider_options == {
+        "anthropic": {
+            "beta_headers": ["prompt-caching-2024-07-31"],
+            "output_config": {
+                "effort": "high",
+            },
+        }
+    }
+
 
 @pytest.mark.asyncio
 async def test_anthropic_profile_filters_project_docs_and_builds_requests(

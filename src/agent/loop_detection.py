@@ -147,16 +147,16 @@ def detect_loop(
         return False
 
     recent_signatures = signatures[-window:]
+
     for pattern_length in (1, 2, 3):
-        if pattern_length >= window:
+        if pattern_length * 2 > window:
             continue
         if window % pattern_length != 0:
             continue
-
         pattern = recent_signatures[:pattern_length]
         if all(
-            recent_signatures[index] == pattern[index % pattern_length]
-            for index in range(window)
+            signature == pattern[index % pattern_length]
+            for index, signature in enumerate(recent_signatures)
         ):
             return True
 

@@ -25,6 +25,131 @@ class _PromptProfile(agent.ProviderProfile):
         return "Session system prompt"
 
 
+@pytest.mark.parametrize(
+    ("profile", "expected_options"),
+    [
+        (
+            agent.create_openai_profile(
+                model="gpt-5.2",
+                provider_options_map={"reasoning": {"summary": "auto"}},
+            ),
+            [
+                {"openai": {"reasoning": {"summary": "auto", "effort": "low"}}},
+                {"openai": {"reasoning": {"summary": "auto", "effort": "high"}}},
+            ],
+        ),
+        (
+            agent.create_anthropic_profile(
+                model="claude-sonnet-4-5",
+                provider_options_map={
+                    "beta_headers": ["prompt-caching-2024-07-31"],
+                    "thinking": {"budget_tokens": 128},
+                },
+            ),
+            [
+                {
+                    "anthropic": {
+                        "beta_headers": ["prompt-caching-2024-07-31"],
+                        "thinking": {
+                            "budget_tokens": 128,
+                        },
+                        "output_config": {
+                            "effort": "low",
+                        },
+                    }
+                },
+                {
+                    "anthropic": {
+                        "beta_headers": ["prompt-caching-2024-07-31"],
+                        "thinking": {
+                            "budget_tokens": 128,
+                        },
+                        "output_config": {
+                            "effort": "high",
+                        },
+                    }
+                },
+            ],
+        ),
+        (
+            agent.create_gemini_profile(
+                model="gemini-3.1-pro-preview",
+                provider_options_map={
+                    "topK": 32,
+                    "thinkingConfig": {"includeThoughts": True},
+                },
+            ),
+            [
+                {
+                    "gemini": {
+                        "topK": 32,
+                        "thinkingConfig": {
+                            "includeThoughts": True,
+                            "thinkingLevel": "low",
+                        },
+                    }
+                },
+                {
+                    "gemini": {
+                        "topK": 32,
+                        "thinkingConfig": {
+                            "includeThoughts": True,
+                            "thinkingLevel": "high",
+                        },
+                    }
+                },
+            ],
+        ),
+    ],
+    ids=["openai", "anthropic", "gemini"],
+)
+@pytest.mark.asyncio
+async def test_native_profiles_update_reasoning_provider_options_between_model_calls(
+    profile: agent.ProviderProfile,
+    expected_options: list[dict[str, object]],
+) -> None:
+    client = _FakeCompleteClient(
+        [
+            unified_llm.Response(
+                id="resp-1",
+                model=profile.model,
+                provider=profile.id,
+                message=unified_llm.Message.assistant("First reply"),
+                finish_reason=unified_llm.FinishReason.STOP,
+            ),
+            unified_llm.Response(
+                id="resp-2",
+                model=profile.model,
+                provider=profile.id,
+                message=unified_llm.Message.assistant("Second reply"),
+                finish_reason=unified_llm.FinishReason.STOP,
+            ),
+        ]
+    )
+    session = agent.Session(
+        profile=profile,
+        llm_client=client,
+        config=agent.SessionConfig(reasoning_effort="low"),
+    )
+    stream = session.events()
+    assert (await asyncio.wait_for(anext(stream), timeout=1)).kind == (
+        agent.EventKind.SESSION_START
+    )
+
+    await session.process_input("First input")
+    session.config.reasoning_effort = "high"
+    await session.process_input("Second input")
+
+    assert [request.reasoning_effort for request in client.requests] == ["low", "high"]
+    assert [request.provider_options for request in client.requests] == expected_options
+    assert [turn.text for turn in session.history] == [
+        "First input",
+        "First reply",
+        "Second input",
+        "Second reply",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_session_process_input_uses_current_reasoning_effort_and_provider_options() -> None:
     client = _FakeCompleteClient(

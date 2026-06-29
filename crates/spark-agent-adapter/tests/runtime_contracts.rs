@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use serde_json::json;
+use serde_json::{json, Value};
 use spark_agent_adapter::{
-    history_to_messages, AssistantTurn, EventKind, ExecutionEnvironment, HistoryTurn,
-    LlmClientHandle, ProviderProfile, Session, SessionConfig, SessionEvent, SessionState,
-    SteeringTurn, SystemTurn, ToolResultsTurn, UserTurn,
+    detect_loop, history_to_messages, tool_call_signature, AssistantTurn, CommandOptions, DirEntry,
+    EnvironmentError, EnvironmentResult, EventKind, ExecResult, ExecutionEnvironment,
+    ExecutionEnvironmentBackend, GrepOptions, HistoryTurn, LlmClientHandle, ProviderProfile,
+    RegisteredTool, Session, SessionConfig, SessionEvent, SessionState, SteeringTurn, SystemTurn,
+    ToolDefinition, ToolExecutionOutput, ToolRegistry, ToolResultsTurn, UserTurn,
+    LOOP_DETECTION_WARNING,
 };
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
 use unified_llm_adapter::{
@@ -34,6 +38,7 @@ fn public_runtime_contracts_are_exported_with_session_defaults() {
     assert_eq!(session.execution_environment, environment);
     assert_eq!(session.config.default_command_timeout_ms, 10_000);
     assert_eq!(session.config.max_command_timeout_ms, 600_000);
+    assert!(session.config.enable_loop_detection);
     assert_eq!(session.config.loop_detection_window, 10);
     assert_eq!(session.config.max_subagent_depth, 1);
     assert_eq!(session.llm_client, LlmClientHandle::default());
@@ -122,10 +127,17 @@ fn session_end_is_emitted_once_with_structured_final_state_for_close_paths() {
     aborted.next_event();
     aborted.abort();
     aborted.abort();
+    let error = aborted.next_event().expect("abort ERROR");
+    assert_eq!(error.kind, EventKind::Error);
+    assert_eq!(error.data["error"]["kind"], json!("abort"));
+    assert_eq!(error.data["error"]["name"], json!("AbortError"));
+    assert_eq!(error.data["error"]["message"], json!("session is aborted"));
     let end = aborted.next_event().expect("abort SESSION_END");
     assert_eq!(end.kind, EventKind::SessionEnd);
     assert_eq!(end.data["reason"], json!("abort"));
+    assert_eq!(end.data["error"], error.data["error"]);
     assert_eq!(end.data["final_state"]["abort_signaled"], json!(true));
+    assert_eq!(end.data["final_state"]["error"], error.data["error"]);
     assert!(aborted.next_event().is_none());
 
     let mut failed = Session::default();
@@ -135,11 +147,15 @@ fn session_end_is_emitted_once_with_structured_final_state_for_close_paths() {
 
     let error = failed.next_event().expect("ERROR");
     assert_eq!(error.kind, EventKind::Error);
-    assert_eq!(error.data["error"], json!("boom"));
+    assert_eq!(error.data["error"]["kind"], json!("provider"));
+    assert_eq!(error.data["error"]["name"], json!("ProviderError"));
+    assert_eq!(error.data["error"]["message"], json!("boom"));
+    assert_eq!(error.data["error"]["retryable"], json!(false));
     let end = failed.next_event().expect("error SESSION_END");
     assert_eq!(end.kind, EventKind::SessionEnd);
     assert_eq!(end.data["reason"], json!("unrecoverable_error"));
-    assert_eq!(end.data["final_state"]["error"], json!("boom"));
+    assert_eq!(end.data["error"], error.data["error"]);
+    assert_eq!(end.data["final_state"]["error"], error.data["error"]);
     assert!(failed.next_event().is_none());
 }
 
@@ -486,10 +502,15 @@ fn process_input_builds_low_level_request_and_records_text_completion() {
         None
     );
     assert_eq!(request.messages.len(), 3);
-    assert_eq!(
-        request.messages[0],
-        Message::system("Session system prompt")
-    );
+    assert_eq!(request.messages[0].role, MessageRole::System);
+    let system_prompt = request.messages[0].text();
+    assert!(system_prompt.contains("<provider_base_instructions>"));
+    assert!(system_prompt.contains("Session system prompt"));
+    assert!(system_prompt.contains("<environment>"));
+    assert!(system_prompt.contains("Working directory:"));
+    assert!(system_prompt.contains("<tools>"));
+    assert!(system_prompt.contains("lookup"));
+    assert!(system_prompt.contains("Lookup values"));
     assert_eq!(request.messages[1], Message::user("Answer one"));
     assert_eq!(request.messages[2], Message::user("preloaded steering"));
 
@@ -553,6 +574,348 @@ fn process_input_builds_low_level_request_and_records_text_completion() {
     assert_eq!(processing_end.kind, EventKind::ProcessingEnd);
     assert_eq!(processing_end.data["state"], json!("idle"));
     assert!(session.next_event().is_none());
+}
+
+#[test]
+fn process_input_delays_follow_ups_until_natural_completion_and_preserves_history() {
+    let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
+        assistant_response("resp-question", "Need more info?", None),
+        assistant_response("resp-answer", "Answered", None),
+        assistant_response("resp-follow-up", "Follow-up handled", None),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut profile = ProviderProfile::new("fake-provider", "fake-model");
+    profile.system_prompt = "Session system prompt".to_string();
+    let mut session = Session::new(
+        profile,
+        ExecutionEnvironment::default(),
+        SessionConfig::default(),
+    );
+    session.system_prompt_snapshot = "sys".to_string();
+    session.next_event();
+
+    session.follow_up("Queued follow-up");
+    session
+        .process_input(&client, "Initial input")
+        .expect("first input");
+
+    assert_eq!(adapter.complete_requests().len(), 1);
+    assert_eq!(session.state, SessionState::AwaitingInput);
+    assert_eq!(session.pending_question.as_deref(), Some("Need more info?"));
+    assert_eq!(session.follow_up_queue.len(), 1);
+    assert_eq!(turn_names(&session.history), ["UserTurn", "AssistantTurn"]);
+    let first_events = drain_events(&mut session);
+    assert!(!first_events
+        .iter()
+        .any(|event| event.kind == EventKind::ProcessingEnd));
+
+    session
+        .process_input(&client, "Yes please")
+        .expect("answer and queued follow-up");
+
+    let calls = adapter.complete_requests();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(
+        calls[0].messages,
+        vec![Message::system("sys"), Message::user("Initial input")]
+    );
+    assert_eq!(
+        calls[1].messages,
+        [
+            vec![Message::system("sys")],
+            history_to_messages(&session.history[..3])
+        ]
+        .concat()
+    );
+    assert_eq!(
+        calls[2].messages,
+        [
+            vec![Message::system("sys")],
+            history_to_messages(&session.history[..5])
+        ]
+        .concat()
+    );
+
+    assert_eq!(session.state, SessionState::Idle);
+    assert!(session.pending_question.is_none());
+    assert!(session.follow_up_queue.is_empty());
+    assert_eq!(
+        session
+            .history
+            .iter()
+            .map(|turn| match turn {
+                HistoryTurn::User(turn) => turn.text(),
+                HistoryTurn::Assistant(turn) => turn.text(),
+                HistoryTurn::Steering(turn) => turn.text(),
+                HistoryTurn::System(turn) => turn.text(),
+                HistoryTurn::ToolResults(_) => "<tool-results>".to_string(),
+            })
+            .collect::<Vec<_>>(),
+        [
+            "Initial input",
+            "Need more info?",
+            "Yes please",
+            "Answered",
+            "Queued follow-up",
+            "Follow-up handled",
+        ]
+    );
+
+    let events = drain_events(&mut session);
+    let kinds = events
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            EventKind::UserInput,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::AssistantTextEnd,
+            EventKind::UserInput,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::AssistantTextEnd,
+            EventKind::ProcessingEnd,
+        ]
+    );
+    assert_eq!(events[0].data["content"], json!("Yes please"));
+    assert_eq!(events[0].data["answer_to"], json!("Need more info?"));
+    assert_eq!(events[4].data["content"], json!("Queued follow-up"));
+    assert!(events[4].data.get("answer_to").is_none());
+}
+
+#[test]
+fn process_input_executes_tool_rounds_and_injects_mid_tool_steering_before_next_request() {
+    let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
+        tool_call_response("resp-tool"),
+        assistant_response("resp-final", "All done", None),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut profile = ProviderProfile::new("fake-provider", "fake-model");
+    profile.system_prompt = "Session system prompt".to_string();
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredTool::new_with_executor(
+        ToolDefinition::new(
+            "lookup",
+            "Lookup values",
+            Some(json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": false
+            })),
+        )
+        .expect("tool definition"),
+        Arc::new(|invocation| {
+            assert_eq!(invocation.tool_call_id, "call-1");
+            assert_eq!(invocation.arguments, json!({"query": "rust"}));
+            assert!(invocation.host_controls.steer("tool steering"));
+            Ok(ToolExecutionOutput::success(Value::String(
+                "tool result".to_string(),
+            )))
+        }),
+    ));
+    profile.set_tool_registry(registry);
+    let mut session = Session::new(
+        profile,
+        ExecutionEnvironment::default(),
+        SessionConfig {
+            reasoning_effort: Some("high".to_string()),
+            ..SessionConfig::default()
+        },
+    );
+    session.system_prompt_snapshot = "sys".to_string();
+    session.next_event();
+
+    session.steer("preloaded steering");
+    session
+        .process_input(&client, "Question")
+        .expect("tool input");
+
+    let calls = adapter.complete_requests();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        calls[0].messages,
+        vec![
+            Message::system("sys"),
+            Message::user("Question"),
+            Message::user("preloaded steering"),
+        ]
+    );
+    assert_eq!(
+        calls[1].messages,
+        [
+            vec![Message::system("sys")],
+            history_to_messages(&session.history[..5])
+        ]
+        .concat()
+    );
+    assert_eq!(calls[1].reasoning_effort.as_deref(), Some("high"));
+
+    assert_eq!(
+        turn_names(&session.history),
+        [
+            "UserTurn",
+            "SteeringTurn",
+            "AssistantTurn",
+            "ToolResultsTurn",
+            "SteeringTurn",
+            "AssistantTurn",
+        ]
+    );
+    let HistoryTurn::ToolResults(tool_results) = &session.history[3] else {
+        panic!("tool results recorded");
+    };
+    assert_eq!(tool_results.result_list[0].content, json!("tool result"));
+    let HistoryTurn::Steering(steering) = &session.history[4] else {
+        panic!("tool steering recorded");
+    };
+    assert_eq!(steering.text(), "tool steering");
+
+    let events = drain_events(&mut session);
+    let kinds = events
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            EventKind::UserInput,
+            EventKind::SteeringInjected,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::AssistantTextEnd,
+            EventKind::ModelToolCallEnd,
+            EventKind::ToolCallStart,
+            EventKind::ToolCallEnd,
+            EventKind::SteeringInjected,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::AssistantTextEnd,
+            EventKind::ProcessingEnd,
+        ]
+    );
+    assert_eq!(events[1].data["content"], json!("preloaded steering"));
+    assert_eq!(events[6].data["tool_call_id"], json!("call-1"));
+    assert_eq!(events[7].data["output"], json!("tool result"));
+    assert_eq!(events[8].data["content"], json!("tool steering"));
+    assert_eq!(
+        events.last().expect("processing end").data["state"],
+        json!("idle")
+    );
+}
+
+#[test]
+fn context_usage_stays_quiet_at_the_provider_threshold_boundary() {
+    let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
+        assistant_response("resp-boundary", "Boundary reply", None),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut profile = ProviderProfile::new("fake-provider", "fake-model");
+    profile.context_window_size = Some(100);
+    let mut session = Session::new(
+        profile,
+        ExecutionEnvironment::default(),
+        SessionConfig::default(),
+    );
+    session.system_prompt_snapshot = "sys".to_string();
+    session.next_event();
+
+    session
+        .process_input(&client, "x".repeat(317))
+        .expect("process input");
+
+    let calls = adapter.complete_requests();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].messages[0], Message::system("sys"));
+    assert_eq!(calls[0].messages[1], Message::user("x".repeat(317)));
+
+    let events = drain_events(&mut session);
+    assert!(!events.iter().any(|event| event.kind == EventKind::Warning));
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(session.history.len(), 2);
+}
+
+#[test]
+fn context_usage_warning_includes_structured_estimate_without_mutating_history_or_state() {
+    let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
+        assistant_response("resp-warning", "Warning reply", None),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut profile = ProviderProfile::new("fake-provider", "fake-model");
+    profile.context_window_size = Some(100);
+    let mut session = Session::new(
+        profile,
+        ExecutionEnvironment::default(),
+        SessionConfig::default(),
+    );
+    session.system_prompt_snapshot = "sys".to_string();
+    session.next_event();
+
+    session
+        .process_input(&client, "x".repeat(397))
+        .expect("process input");
+
+    let calls = adapter.complete_requests();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].messages[0], Message::system("sys"));
+    assert_eq!(calls[0].messages[1], Message::user("x".repeat(397)));
+
+    let events = drain_events(&mut session);
+    let kinds = events
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            EventKind::UserInput,
+            EventKind::Warning,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::AssistantTextEnd,
+            EventKind::ProcessingEnd,
+        ]
+    );
+    let warning = &events[1];
+    assert_eq!(
+        warning.data["message"],
+        json!("Context usage at ~100% of context window")
+    );
+    assert_eq!(warning.data["usage"]["approximate_characters"], json!(400));
+    assert_json_f64(&warning.data["usage"]["approximate_tokens"], 100.0);
+    assert_json_f64(&warning.data["usage"]["threshold_tokens"], 80.0);
+    assert_json_f64(&warning.data["usage"]["threshold_ratio"], 0.8);
+    assert_json_f64(&warning.data["usage"]["usage_ratio"], 1.0);
+    assert_eq!(warning.data["usage"]["context_window_size"], json!(100));
+
+    assert_eq!(session.state, SessionState::Idle);
+    assert!(session.pending_question.is_none());
+    assert_eq!(
+        session
+            .history
+            .iter()
+            .map(|turn| match turn {
+                HistoryTurn::User(_) => "UserTurn",
+                HistoryTurn::Steering(_) => "SteeringTurn",
+                HistoryTurn::Assistant(_) => "AssistantTurn",
+                HistoryTurn::System(_) => "SystemTurn",
+                HistoryTurn::ToolResults(_) => "ToolResultsTurn",
+            })
+            .collect::<Vec<_>>(),
+        vec!["UserTurn", "AssistantTurn"]
+    );
 }
 
 #[test]
@@ -665,7 +1028,10 @@ fn process_input_streaming_emits_typed_session_events_in_stream_order() {
     let mut session = Session::new(
         profile,
         ExecutionEnvironment::default(),
-        SessionConfig::default(),
+        SessionConfig {
+            max_tool_rounds_per_input: 1,
+            ..SessionConfig::default()
+        },
     );
     session.next_event();
 
@@ -694,12 +1060,13 @@ fn process_input_streaming_emits_typed_session_events_in_stream_order() {
             EventKind::ModelToolCallEnd,
             EventKind::AssistantTextEnd,
             EventKind::ModelUsageUpdate,
+            EventKind::ToolCallStart,
+            EventKind::ToolCallEnd,
+            EventKind::TurnLimit,
             EventKind::ProcessingEnd,
         ]
     );
-    assert!(!kinds.contains(&EventKind::ToolCallStart));
     assert!(!kinds.contains(&EventKind::ToolCallOutputDelta));
-    assert!(!kinds.contains(&EventKind::ToolCallEnd));
 
     assert_eq!(events[1].data["response_id"], json!("resp-1"));
     assert_eq!(events[2].data["delta"], json!("Hello "));
@@ -711,13 +1078,26 @@ fn process_input_streaming_emits_typed_session_events_in_stream_order() {
     assert_eq!(events[11].data["text"], json!("Hello world"));
     assert_eq!(events[11].data["reasoning"], json!("think more"));
     assert_eq!(events[12].data["usage"]["total_tokens"], json!(6));
+    assert_eq!(events[13].data["tool_call_id"], json!("call-1"));
+    assert_eq!(events[13].data["tool_name"], json!("lookup"));
+    assert_eq!(events[14].data["tool_call_id"], json!("call-1"));
+    assert_eq!(events[14].data["tool_name"], json!("lookup"));
+    assert_eq!(events[14].data["error"], json!("Unknown tool: lookup"));
+    assert_eq!(events[15].data["round_count"], json!(1));
+    assert_eq!(events[15].data["total_turns"], json!(3));
 
-    let HistoryTurn::Assistant(assistant_turn) = session.history.last().expect("assistant") else {
+    let HistoryTurn::Assistant(assistant_turn) = &session.history[1] else {
         panic!("assistant turn recorded");
     };
     assert_eq!(assistant_turn.text(), "Hello world");
     assert_eq!(assistant_turn.reasoning.as_deref(), Some("think more"));
     assert_eq!(assistant_turn.tool_calls[0].id, "call-1");
+    let HistoryTurn::ToolResults(tool_results) = session.history.last().expect("tool results")
+    else {
+        panic!("tool results recorded");
+    };
+    assert_eq!(tool_results.result_list[0].tool_call_id, "call-1");
+    assert!(tool_results.result_list[0].is_error);
 }
 
 #[test]
@@ -778,7 +1158,14 @@ fn process_input_streaming_error_records_partial_turn_before_error_close() {
     );
     assert_eq!(events[2].data["delta"], json!("partial"));
     assert_eq!(events[3].data["text"], json!("partial"));
-    assert_eq!(events[4].data["error"], json!("boom"));
+    assert_eq!(events[4].data["error"]["kind"], json!("stream"));
+    assert_eq!(events[4].data["error"]["name"], json!("StreamError"));
+    assert_eq!(events[4].data["error"]["message"], json!("boom"));
+    assert_eq!(events[5].data["error"], events[4].data["error"]);
+    assert_eq!(
+        events[5].data["final_state"]["error"],
+        events[4].data["error"]
+    );
 
     assert_eq!(
         session
@@ -861,10 +1248,539 @@ fn process_input_limits_stop_before_or_after_the_low_level_request() {
     }
     let turn_limit = observed_turn_limit.expect("TURN_LIMIT");
     assert_eq!(turn_limit.data["round_count"], json!(1));
-    assert_eq!(turn_limit.data["total_turns"], json!(2));
+    assert_eq!(turn_limit.data["total_turns"], json!(3));
     let processing_end = limited_tool_rounds.next_event().expect("PROCESSING_END");
     assert_eq!(processing_end.kind, EventKind::ProcessingEnd);
     assert_eq!(limited_tool_rounds.state, SessionState::Idle);
+    assert_eq!(
+        turn_names(&limited_tool_rounds.history),
+        ["UserTurn", "AssistantTurn", "ToolResultsTurn"]
+    );
+    let HistoryTurn::ToolResults(tool_results) =
+        limited_tool_rounds.history.last().expect("tool results")
+    else {
+        panic!("tool results recorded");
+    };
+    assert_eq!(tool_results.result_list[0].tool_call_id, "call-1");
+    assert!(tool_results.result_list[0].is_error);
+}
+
+#[test]
+fn abort_emits_structured_error_before_session_end_and_runs_cleanup_once() {
+    let cleanup_calls = Arc::new(Mutex::new(0));
+    let environment =
+        ExecutionEnvironment::from_backend(CleanupCountingBackend::new(cleanup_calls.clone()));
+    let mut session = Session::new(
+        ProviderProfile::new("fake-provider", "fake-model"),
+        environment,
+        SessionConfig::default(),
+    );
+    session.next_event();
+
+    session.abort();
+    session.abort();
+    session.close();
+
+    assert_eq!(session.state, SessionState::Closed);
+    assert_eq!(*cleanup_calls.lock().expect("cleanup calls"), 1);
+    let events = drain_events(&mut session);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![EventKind::Error, EventKind::SessionEnd]
+    );
+    assert_eq!(events[0].data["error"]["kind"], json!("abort"));
+    assert_eq!(events[0].data["error"]["name"], json!("AbortError"));
+    assert_eq!(
+        events[0].data["error"]["message"],
+        json!("session is aborted")
+    );
+    assert_eq!(events[1].data["reason"], json!("abort"));
+    assert_eq!(events[1].data["error"], events[0].data["error"]);
+    assert_eq!(
+        events[1].data["final_state"]["error"],
+        events[0].data["error"]
+    );
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::TurnLimit));
+}
+
+#[test]
+fn process_input_provider_error_emits_structured_payload_closes_and_runs_cleanup() {
+    let cleanup_calls = Arc::new(Mutex::new(0));
+    let mut provider_error = AdapterError::provider(
+        AdapterErrorKind::RateLimit,
+        "rate limit",
+        Some("fake-provider".to_string()),
+    );
+    provider_error.status_code = Some(429);
+    provider_error.error_code = Some("rate_limit".to_string());
+    provider_error.retry_after = Some(2.5);
+    provider_error.raw = Some(json!({"error": {"message": "rate limit", "code": "rate_limit"}}));
+    let adapter = Arc::new(ErrorAdapter::new(provider_error.clone()));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let environment =
+        ExecutionEnvironment::from_backend(CleanupCountingBackend::new(cleanup_calls.clone()));
+    let mut session = Session::new(
+        ProviderProfile::new("fake-provider", "fake-model"),
+        environment,
+        SessionConfig::default(),
+    );
+    session.next_event();
+
+    let error = session
+        .process_input(&client, "Question")
+        .expect_err("provider error");
+
+    assert_eq!(error, provider_error);
+    assert_eq!(session.state, SessionState::Closed);
+    assert_eq!(*cleanup_calls.lock().expect("cleanup calls"), 1);
+    assert_eq!(adapter.complete_requests().len(), 1);
+    let events = drain_events(&mut session);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            EventKind::UserInput,
+            EventKind::Error,
+            EventKind::SessionEnd
+        ]
+    );
+    assert_eq!(events[1].data["error"]["kind"], json!("rate_limit"));
+    assert_eq!(events[1].data["error"]["name"], json!("RateLimitError"));
+    assert_eq!(events[1].data["error"]["message"], json!("rate limit"));
+    assert_eq!(events[1].data["error"]["provider"], json!("fake-provider"));
+    assert_eq!(events[1].data["error"]["status_code"], json!(429));
+    assert_eq!(events[1].data["error"]["error_code"], json!("rate_limit"));
+    assert_eq!(events[1].data["error"]["retryable"], json!(true));
+    assert_eq!(events[1].data["error"]["retry_after"], json!(2.5));
+    assert_eq!(
+        events[1].data["error"]["raw"],
+        json!({"error": {"message": "rate limit", "code": "rate_limit"}})
+    );
+    assert_eq!(events[2].data["reason"], json!("unrecoverable_error"));
+    assert_eq!(events[2].data["error"], events[1].data["error"]);
+    assert_eq!(
+        events[2].data["final_state"]["error"],
+        events[1].data["error"]
+    );
+}
+
+#[test]
+fn process_input_abort_signaled_guard_closes_without_turn_limit_or_idle() {
+    let cleanup_calls = Arc::new(Mutex::new(0));
+    let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
+        assistant_response("resp-unused", "unused", None),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let environment =
+        ExecutionEnvironment::from_backend(CleanupCountingBackend::new(cleanup_calls.clone()));
+    let mut session = Session::new(
+        ProviderProfile::new("fake-provider", "fake-model"),
+        environment,
+        SessionConfig::default(),
+    );
+    session.next_event();
+    session.abort_signaled = true;
+
+    session
+        .process_input(&client, "Question")
+        .expect("abort guard stops input");
+
+    assert_eq!(session.state, SessionState::Closed);
+    assert_eq!(*cleanup_calls.lock().expect("cleanup calls"), 1);
+    assert!(adapter.complete_requests().is_empty());
+    let events = drain_events(&mut session);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            EventKind::UserInput,
+            EventKind::Error,
+            EventKind::SessionEnd
+        ]
+    );
+    assert_eq!(events[1].data["error"]["kind"], json!("abort"));
+    assert_eq!(events[2].data["reason"], json!("abort"));
+    assert_eq!(events[2].data["final_state"]["abort_signaled"], json!(true));
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::TurnLimit));
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::ProcessingEnd));
+}
+
+#[test]
+fn tool_call_signatures_ignore_call_ids_and_hash_stable_arguments() {
+    let first = ToolCall::new("call-1", "lookup", json!({"b": 2, "a": {"y": 2, "x": 1}}));
+    let second = ToolCall::from_raw_arguments("call-2", "lookup", r#"{"a":{"x":1,"y":2},"b":2}"#);
+    let different_arguments =
+        ToolCall::new("call-3", "lookup", json!({"b": 2, "a": {"y": 3, "x": 1}}));
+    let different_name = ToolCall::new(
+        "call-4",
+        "summarize",
+        json!({"a": {"x": 1, "y": 2}, "b": 2}),
+    );
+
+    let first_signature = tool_call_signature(&first);
+    let second_signature = tool_call_signature(&second);
+
+    assert_eq!(first_signature, second_signature);
+    assert_eq!(first_signature.name, "lookup");
+    assert_eq!(
+        first_signature.arguments_hash,
+        second_signature.arguments_hash
+    );
+    assert_ne!(
+        first_signature.arguments_hash,
+        tool_call_signature(&different_arguments).arguments_hash
+    );
+    assert_ne!(first_signature, tool_call_signature(&different_name));
+}
+
+#[test]
+fn tool_call_signatures_hash_nested_json_strings_as_strings() {
+    let nested_json_string = ToolCall::new(
+        "call-1",
+        "lookup",
+        json!({"payload": "{\"x\":1}", "stable": true}),
+    );
+    let raw_arguments_with_nested_json_string = ToolCall::from_raw_arguments(
+        "call-2",
+        "lookup",
+        r#"{"stable":true,"payload":"{\"x\":1}"}"#,
+    );
+    let nested_object = ToolCall::new(
+        "call-3",
+        "lookup",
+        json!({"payload": {"x": 1}, "stable": true}),
+    );
+
+    let nested_string_signature = tool_call_signature(&nested_json_string);
+    assert_eq!(
+        nested_string_signature,
+        tool_call_signature(&raw_arguments_with_nested_json_string)
+    );
+    assert_ne!(
+        nested_string_signature.arguments_hash,
+        tool_call_signature(&nested_object).arguments_hash
+    );
+}
+
+#[test]
+fn detect_loop_matches_repeating_tool_call_patterns_of_length_one_two_and_three() {
+    assert!(detect_loop(
+        &history_from_tool_calls(vec![
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+            ToolCall::new("call-2", "lookup", json!({"value": 1})),
+        ]),
+        2
+    ));
+    assert!(detect_loop(
+        &history_from_tool_calls(vec![
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+            ToolCall::new("call-2", "summarize", json!({"value": 2})),
+            ToolCall::new("call-3", "lookup", json!({"value": 1})),
+            ToolCall::new("call-4", "summarize", json!({"value": 2})),
+        ]),
+        4
+    ));
+    assert!(detect_loop(
+        &history_from_tool_calls(vec![
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+            ToolCall::new("call-2", "summarize", json!({"value": 2})),
+            ToolCall::new("call-3", "expand", json!({"value": 3})),
+            ToolCall::new("call-4", "lookup", json!({"value": 1})),
+            ToolCall::new("call-5", "summarize", json!({"value": 2})),
+            ToolCall::new("call-6", "expand", json!({"value": 3})),
+        ]),
+        6
+    ));
+    assert!(detect_loop(
+        &history_from_tool_calls(
+            (1..=10)
+                .map(|index| {
+                    if index % 2 == 1 {
+                        ToolCall::new(format!("call-{index}"), "lookup", json!({"value": 1}))
+                    } else {
+                        ToolCall::new(format!("call-{index}"), "summarize", json!({"value": 2}))
+                    }
+                })
+                .collect::<Vec<_>>()
+        ),
+        SessionConfig::default().loop_detection_window
+    ));
+
+    assert!(!detect_loop(
+        &history_from_tool_calls(vec![
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+            ToolCall::new("call-2", "lookup", json!({"value": 1})),
+        ]),
+        SessionConfig::default().loop_detection_window
+    ));
+    assert!(!detect_loop(
+        &history_from_tool_calls(vec![
+            ToolCall::new("call-1", "tool_1", json!({"value": 1})),
+            ToolCall::new("call-2", "tool_2", json!({"value": 2})),
+            ToolCall::new("call-3", "tool_3", json!({"value": 3})),
+            ToolCall::new("call-4", "tool_4", json!({"value": 4})),
+            ToolCall::new("call-5", "tool_5", json!({"value": 5})),
+            ToolCall::new("call-6", "tool_6", json!({"value": 6})),
+            ToolCall::new("call-7", "tool_7", json!({"value": 7})),
+            ToolCall::new("call-8", "tool_8", json!({"value": 8})),
+            ToolCall::new("call-9", "lookup", json!({"value": 1})),
+            ToolCall::new("call-10", "lookup", json!({"value": 1})),
+        ]),
+        SessionConfig::default().loop_detection_window
+    ));
+    assert!(!detect_loop(
+        &history_from_tool_calls(vec![
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+            ToolCall::new("call-2", "summarize", json!({"value": 2})),
+            ToolCall::new("call-3", "lookup", json!({"value": 1})),
+            ToolCall::new("call-4", "summarize", json!({"value": 99})),
+        ]),
+        4
+    ));
+    assert!(!detect_loop(
+        &history_from_tool_calls(vec![
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+            ToolCall::new("call-2", "summarize", json!({"value": 2})),
+            ToolCall::new("call-3", "expand", json!({"value": 3})),
+            ToolCall::new("call-4", "lookup", json!({"value": 1})),
+            ToolCall::new("call-5", "summarize", json!({"value": 2})),
+            ToolCall::new("call-6", "expand", json!({"value": 3})),
+            ToolCall::new("call-7", "lookup", json!({"value": 1})),
+            ToolCall::new("call-8", "summarize", json!({"value": 2})),
+            ToolCall::new("call-9", "expand", json!({"value": 3})),
+            ToolCall::new("call-10", "lookup", json!({"value": 99})),
+        ]),
+        SessionConfig::default().loop_detection_window
+    ));
+    assert!(!detect_loop(
+        &history_from_tool_calls(vec![
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+            ToolCall::new("call-2", "lookup", json!({"value": 1})),
+        ]),
+        1
+    ));
+}
+
+#[test]
+fn process_input_emits_loop_detection_and_steers_recovery_when_enabled_by_default() {
+    let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
+        tool_call_response_with_call(
+            "resp-1",
+            "Need tool",
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+        ),
+        tool_call_response_with_call(
+            "resp-2",
+            "Need tool again",
+            ToolCall::new("call-2", "lookup", json!({"value": 1})),
+        ),
+        assistant_response("resp-3", "All done", None),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut session = Session::new(
+        profile_with_lookup_tool(),
+        ExecutionEnvironment::default(),
+        SessionConfig {
+            loop_detection_window: 2,
+            ..SessionConfig::default()
+        },
+    );
+    session.next_event();
+
+    session
+        .process_input(&client, "Question")
+        .expect("process input");
+
+    let calls = adapter.complete_requests();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(
+        calls[2].messages.last().expect("recovery steering"),
+        &Message::user(LOOP_DETECTION_WARNING)
+    );
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(
+        turn_names(&session.history),
+        [
+            "UserTurn",
+            "AssistantTurn",
+            "ToolResultsTurn",
+            "AssistantTurn",
+            "ToolResultsTurn",
+            "SteeringTurn",
+            "AssistantTurn",
+        ]
+    );
+    let HistoryTurn::Steering(steering) = &session.history[5] else {
+        panic!("loop detection steering recorded");
+    };
+    assert_eq!(steering.text(), LOOP_DETECTION_WARNING);
+    let HistoryTurn::Assistant(assistant) = session.history.last().expect("final assistant") else {
+        panic!("final assistant recorded");
+    };
+    assert_eq!(assistant.text(), "All done");
+
+    let events = drain_events(&mut session);
+    let kinds = events
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            EventKind::UserInput,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::AssistantTextEnd,
+            EventKind::ModelToolCallEnd,
+            EventKind::ToolCallStart,
+            EventKind::ToolCallEnd,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::AssistantTextEnd,
+            EventKind::ModelToolCallEnd,
+            EventKind::ToolCallStart,
+            EventKind::ToolCallEnd,
+            EventKind::LoopDetection,
+            EventKind::AssistantTextStart,
+            EventKind::AssistantTextDelta,
+            EventKind::AssistantTextEnd,
+            EventKind::ProcessingEnd,
+        ]
+    );
+    assert_eq!(events[13].data["message"], json!(LOOP_DETECTION_WARNING));
+}
+
+#[test]
+fn process_input_waits_for_configured_loop_detection_window_before_steering_by_default() {
+    let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
+        tool_call_response_with_call(
+            "resp-1",
+            "Need tool",
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+        ),
+        tool_call_response_with_call(
+            "resp-2",
+            "Need tool again",
+            ToolCall::new("call-2", "lookup", json!({"value": 1})),
+        ),
+        assistant_response("resp-3", "All done", None),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut session = Session::new(
+        profile_with_lookup_tool(),
+        ExecutionEnvironment::default(),
+        SessionConfig::default(),
+    );
+    session.next_event();
+
+    session
+        .process_input(&client, "Question")
+        .expect("process input");
+
+    assert_eq!(adapter.complete_requests().len(), 3);
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(
+        turn_names(&session.history),
+        [
+            "UserTurn",
+            "AssistantTurn",
+            "ToolResultsTurn",
+            "AssistantTurn",
+            "ToolResultsTurn",
+            "AssistantTurn",
+        ]
+    );
+    assert!(!session
+        .history
+        .iter()
+        .any(|turn| matches!(turn, HistoryTurn::Steering(_))));
+    let HistoryTurn::Assistant(assistant) = session.history.last().expect("final assistant") else {
+        panic!("final assistant recorded");
+    };
+    assert_eq!(assistant.text(), "All done");
+
+    let events = drain_events(&mut session);
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::LoopDetection));
+}
+
+#[test]
+fn process_input_skips_loop_detection_when_disabled() {
+    let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
+        tool_call_response_with_call(
+            "resp-1",
+            "Need tool",
+            ToolCall::new("call-1", "lookup", json!({"value": 1})),
+        ),
+        tool_call_response_with_call(
+            "resp-2",
+            "Need tool again",
+            ToolCall::new("call-2", "lookup", json!({"value": 1})),
+        ),
+        assistant_response("resp-3", "All done", None),
+    ]));
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut session = Session::new(
+        profile_with_lookup_tool(),
+        ExecutionEnvironment::default(),
+        SessionConfig {
+            enable_loop_detection: false,
+            loop_detection_window: 2,
+            ..SessionConfig::default()
+        },
+    );
+    session.next_event();
+
+    session
+        .process_input(&client, "Question")
+        .expect("process input");
+
+    assert_eq!(adapter.complete_requests().len(), 3);
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(
+        turn_names(&session.history),
+        [
+            "UserTurn",
+            "AssistantTurn",
+            "ToolResultsTurn",
+            "AssistantTurn",
+            "ToolResultsTurn",
+            "AssistantTurn",
+        ]
+    );
+    assert!(!session
+        .history
+        .iter()
+        .any(|turn| matches!(turn, HistoryTurn::Steering(_))));
+
+    let events = drain_events(&mut session);
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::LoopDetection));
 }
 
 #[test]
@@ -872,12 +1788,23 @@ fn process_input_reads_reasoning_effort_when_each_request_is_built() {
     let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
         assistant_response("resp-1", "First", None),
         assistant_response("resp-2", "Second", None),
+        assistant_response("resp-3", "Third", None),
+        assistant_response("resp-4", "Fourth", None),
+        assistant_response("resp-5", "Fifth", None),
     ]));
     let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
     let client =
         Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let mut profile = ProviderProfile::new("openai", "fake-model");
+    profile.request_provider = Some("fake-provider".to_string());
+    profile
+        .provider_options
+        .insert("temperature".to_string(), json!(0.2));
+    profile
+        .provider_options
+        .insert("reasoning".to_string(), json!({"summary": "auto"}));
     let mut session = Session::new(
-        ProviderProfile::new("fake-provider", "fake-model"),
+        profile,
         ExecutionEnvironment::default(),
         SessionConfig {
             reasoning_effort: Some("low".to_string()),
@@ -893,15 +1820,69 @@ fn process_input_reads_reasoning_effort_when_each_request_is_built() {
     session
         .process_input(&client, "Second input")
         .expect("second input");
+    session.config.reasoning_effort = Some("medium".to_string());
+    session
+        .process_input(&client, "Third input")
+        .expect("third input");
+    session.config.reasoning_effort = None;
+    session
+        .process_input(&client, "Fourth input")
+        .expect("fourth input");
+    session.config.reasoning_effort = Some("provider-extension".to_string());
+    session
+        .process_input(&client, "Fifth input")
+        .expect("fifth input");
 
     let calls = adapter.complete_requests();
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].reasoning_effort.as_deref(), Some("low"));
-    assert_eq!(calls[1].reasoning_effort.as_deref(), Some("high"));
-    assert_eq!(calls[1].messages[0], Message::system(""));
+    assert_eq!(calls.len(), 5);
+    assert_eq!(
+        calls
+            .iter()
+            .map(|request| request.reasoning_effort.as_deref())
+            .collect::<Vec<_>>(),
+        [
+            Some("low"),
+            Some("high"),
+            Some("medium"),
+            None,
+            Some("provider-extension"),
+        ]
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .map(|request| request.provider.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("fake-provider"); 5]
+    );
+    assert_eq!(
+        calls[0].provider_options["openai"]["reasoning"],
+        json!({"summary": "auto", "effort": "low"})
+    );
+    assert_eq!(
+        calls[1].provider_options["openai"]["reasoning"],
+        json!({"summary": "auto", "effort": "high"})
+    );
+    assert_eq!(
+        calls[2].provider_options["openai"]["reasoning"],
+        json!({"summary": "auto", "effort": "medium"})
+    );
+    assert_eq!(
+        calls[3].provider_options["openai"]["reasoning"],
+        json!({"summary": "auto"})
+    );
+    assert_eq!(
+        calls[4].provider_options["openai"]["reasoning"],
+        json!({"summary": "auto", "effort": "provider-extension"})
+    );
+    assert_eq!(calls[1].messages[0], calls[0].messages[0]);
+    assert!(calls[1].messages[0].text().contains("<environment>"));
     assert_eq!(calls[1].messages[1], Message::user("First input"));
     assert_eq!(calls[1].messages[2], Message::assistant("First"));
     assert_eq!(calls[1].messages[3], Message::user("Second input"));
+    assert_eq!(calls[4].messages[7], Message::user("Fourth input"));
+    assert_eq!(calls[4].messages[8], Message::assistant("Fourth"));
+    assert_eq!(calls[4].messages[9], Message::user("Fifth input"));
 }
 
 fn assistant_response(id: &str, text: &str, reasoning: Option<&str>) -> Response {
@@ -933,20 +1914,64 @@ fn assistant_response(id: &str, text: &str, reasoning: Option<&str>) -> Response
     }
 }
 
-fn tool_call_response(id: &str) -> Response {
+fn tool_call_response_with_call(id: &str, text: &str, tool_call: ToolCall) -> Response {
     Response {
         id: id.to_string(),
         model: "fake-model".to_string(),
         provider: "fake-provider".to_string(),
         message: assistant_message(vec![
-            ContentPart::text("Need a tool"),
-            ContentPart::ToolCall {
-                tool_call: ToolCall::new("call-1", "lookup", json!({"query": "rust"})),
-            },
+            ContentPart::text(text),
+            ContentPart::ToolCall { tool_call },
         ]),
         finish_reason: FinishReason::ToolCalls,
         ..Response::default()
     }
+}
+
+fn tool_call_response(id: &str) -> Response {
+    tool_call_response_with_call(
+        id,
+        "Need a tool",
+        ToolCall::new("call-1", "lookup", json!({"query": "rust"})),
+    )
+}
+
+fn profile_with_lookup_tool() -> ProviderProfile {
+    let mut profile = ProviderProfile::new("fake-provider", "fake-model");
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredTool::new_with_executor(
+        ToolDefinition::new(
+            "lookup",
+            "Lookup values",
+            Some(json!({
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"],
+                "additionalProperties": false
+            })),
+        )
+        .expect("tool definition"),
+        Arc::new(|_| {
+            Ok(ToolExecutionOutput::success(Value::String(
+                "tool result".to_string(),
+            )))
+        }),
+    ));
+    profile.set_tool_registry(registry);
+    profile
+}
+
+fn history_from_tool_calls(tool_calls: impl IntoIterator<Item = ToolCall>) -> Vec<HistoryTurn> {
+    let mut history = Vec::new();
+    for tool_call in tool_calls {
+        let mut assistant_turn = AssistantTurn::new("tool");
+        assistant_turn.tool_calls = vec![tool_call.clone()];
+        history.push(HistoryTurn::Assistant(assistant_turn));
+        history.push(HistoryTurn::ToolResults(ToolResultsTurn::new(vec![
+            ToolResult::success(tool_call.id, Value::String("tool result".to_string())),
+        ])));
+    }
+    history
 }
 
 fn assistant_message(content: Vec<ContentPart>) -> Message {
@@ -965,6 +1990,27 @@ fn drain_events(session: &mut Session) -> Vec<SessionEvent> {
         events.push(event);
     }
     events
+}
+
+fn turn_names(history: &[HistoryTurn]) -> Vec<&'static str> {
+    history
+        .iter()
+        .map(|turn| match turn {
+            HistoryTurn::User(_) => "UserTurn",
+            HistoryTurn::Steering(_) => "SteeringTurn",
+            HistoryTurn::Assistant(_) => "AssistantTurn",
+            HistoryTurn::System(_) => "SystemTurn",
+            HistoryTurn::ToolResults(_) => "ToolResultsTurn",
+        })
+        .collect()
+}
+
+fn assert_json_f64(value: &Value, expected: f64) {
+    let actual = value.as_f64().expect("JSON number");
+    assert!(
+        (actual - expected).abs() < f64::EPSILON,
+        "expected {expected}, got {actual}"
+    );
 }
 
 #[derive(Default)]
@@ -1034,5 +2080,143 @@ impl ProviderAdapter for ScriptedAdapter {
             .pop_front()
             .ok_or_else(|| AdapterError::new(AdapterErrorKind::Configuration, "missing stream"))?;
         Ok(stream_events(events.into_iter().map(Ok)))
+    }
+}
+
+#[derive(Debug)]
+struct ErrorAdapter {
+    error: AdapterError,
+    complete_requests: Mutex<Vec<Request>>,
+    stream_requests: Mutex<Vec<Request>>,
+}
+
+impl ErrorAdapter {
+    fn new(error: AdapterError) -> Self {
+        Self {
+            error,
+            complete_requests: Mutex::new(Vec::new()),
+            stream_requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn complete_requests(&self) -> Vec<Request> {
+        self.complete_requests
+            .lock()
+            .expect("complete requests")
+            .clone()
+    }
+}
+
+impl ProviderAdapter for ErrorAdapter {
+    fn name(&self) -> &str {
+        "fake-provider"
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        self.complete_requests
+            .lock()
+            .expect("complete requests")
+            .push(request);
+        Err(self.error.clone())
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
+        self.stream_requests
+            .lock()
+            .expect("stream requests")
+            .push(request);
+        Err(self.error.clone())
+    }
+}
+
+#[derive(Debug)]
+struct CleanupCountingBackend {
+    cleanup_calls: Arc<Mutex<usize>>,
+}
+
+impl CleanupCountingBackend {
+    fn new(cleanup_calls: Arc<Mutex<usize>>) -> Self {
+        Self { cleanup_calls }
+    }
+}
+
+impl ExecutionEnvironmentBackend for CleanupCountingBackend {
+    fn read_file(
+        &self,
+        path: &Path,
+        _offset: Option<usize>,
+        _limit: Option<usize>,
+    ) -> EnvironmentResult<String> {
+        Err(EnvironmentError::FileNotFound(path.to_path_buf()))
+    }
+
+    fn read_file_bytes(&self, path: &Path) -> EnvironmentResult<Vec<u8>> {
+        Err(EnvironmentError::FileNotFound(path.to_path_buf()))
+    }
+
+    fn write_file(&self, _path: &Path, _content: &str) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn file_exists(&self, _path: &Path) -> bool {
+        false
+    }
+
+    fn is_directory(&self, _path: &Path) -> bool {
+        false
+    }
+
+    fn delete_file(&self, _path: &Path) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn rename_file(&self, _source_path: &Path, _destination_path: &Path) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn list_directory(&self, _path: &Path, _depth: usize) -> EnvironmentResult<Vec<DirEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn exec_command(
+        &self,
+        _command: &str,
+        _options: CommandOptions,
+    ) -> EnvironmentResult<ExecResult> {
+        Ok(ExecResult::default())
+    }
+
+    fn grep(
+        &self,
+        _pattern: &str,
+        _path: &Path,
+        _options: &GrepOptions,
+    ) -> EnvironmentResult<String> {
+        Ok(String::new())
+    }
+
+    fn glob(&self, _pattern: &str, _path: &Path) -> EnvironmentResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    fn initialize(&self) -> EnvironmentResult<()> {
+        Ok(())
+    }
+
+    fn cleanup(&self) -> EnvironmentResult<()> {
+        *self.cleanup_calls.lock().expect("cleanup calls") += 1;
+        Ok(())
+    }
+
+    fn working_directory(&self) -> String {
+        "workspace".to_string()
+    }
+
+    fn platform(&self) -> String {
+        "test".to_string()
+    }
+
+    fn os_version(&self) -> String {
+        "test".to_string()
     }
 }

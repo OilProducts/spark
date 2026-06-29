@@ -842,6 +842,13 @@ def build_anthropic_messages_request(
     if thinking is not None:
         body["thinking"] = thinking
 
+    output_config = _copy_provider_option_mapping(
+        options.get("output_config"),
+        field_name="provider_options.anthropic.output_config",
+    )
+    if output_config is not None:
+        body["output_config"] = output_config
+
     explicit_cache_control = _copy_provider_option_mapping(
         options.get("cache_control"),
         field_name="provider_options.anthropic.cache_control",

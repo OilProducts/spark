@@ -826,7 +826,6 @@ class Session:
                     answer_to_question = None
                 self._emit_event(EventKind.USER_INPUT, event_data)
                 self._drain_steering_queue()
-                check_context_usage(self)
 
                 round_count = 0
                 while True:
@@ -868,7 +867,6 @@ class Session:
 
                     self.history.append(ToolResultsTurn(result_list=tool_results))
                     self._drain_steering_queue()
-                    check_context_usage(self)
                     self._maybe_emit_loop_detection_warning()
 
                 next_follow_up = self._next_follow_up()

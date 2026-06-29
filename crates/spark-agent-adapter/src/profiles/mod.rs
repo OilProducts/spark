@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use unified_llm_adapter::{get_model_info, ModelInfo, Tool};
 
 use crate::config::SessionConfig;
+use crate::context;
 use crate::environment::ExecutionEnvironment;
 use crate::tools::ToolRegistry;
 
@@ -92,8 +93,16 @@ impl ProviderProfile {
         self.tools()
     }
 
-    pub fn build_system_prompt(&self, _environment: &ExecutionEnvironment) -> String {
-        self.system_prompt.clone()
+    pub fn build_system_prompt(&self, environment: &ExecutionEnvironment) -> String {
+        context::build_system_prompt(self, environment)
+    }
+
+    pub fn build_system_prompt_with_user_overrides(
+        &self,
+        environment: &ExecutionEnvironment,
+        user_overrides: Option<&str>,
+    ) -> String {
+        context::build_system_prompt_with_user_overrides(self, environment, user_overrides)
     }
 
     pub fn tools(&self) -> Vec<Tool> {
@@ -130,18 +139,29 @@ impl ProviderProfile {
 
     pub fn provider_options_for_config(&self, config: &SessionConfig) -> BTreeMap<String, Value> {
         let mut options = self.provider_options();
-        if self.id == "openai" {
-            if let Some(reasoning_effort) = config.reasoning_effort.as_ref() {
-                let mut reasoning_options = match options.remove("reasoning") {
-                    Some(Value::Object(map)) => map,
-                    _ => Map::new(),
-                };
-                reasoning_options.insert(
-                    "effort".to_string(),
-                    Value::String(reasoning_effort.clone()),
+        let Some(reasoning_effort) = config.reasoning_effort.as_ref() else {
+            return options;
+        };
+
+        match self.id.as_str() {
+            "openai" => {
+                merge_option_object(
+                    &mut options,
+                    "reasoning",
+                    [("effort", Value::String(reasoning_effort.clone()))],
                 );
-                options.insert("reasoning".to_string(), Value::Object(reasoning_options));
             }
+            "anthropic" => {
+                merge_option_object(
+                    &mut options,
+                    "output_config",
+                    [("effort", Value::String(reasoning_effort.clone()))],
+                );
+            }
+            "gemini" => {
+                merge_gemini_thinking_level(&mut options, reasoning_effort);
+            }
+            _ => {}
         }
         options
     }
@@ -201,6 +221,35 @@ impl ProviderProfile {
     }
 }
 
+fn merge_option_object<const N: usize>(
+    options: &mut BTreeMap<String, Value>,
+    key: &str,
+    values: [(&str, Value); N],
+) {
+    let mut object = match options.remove(key) {
+        Some(Value::Object(map)) => map,
+        _ => Map::new(),
+    };
+    for (field, value) in values {
+        object.insert(field.to_string(), value);
+    }
+    options.insert(key.to_string(), Value::Object(object));
+}
+
+fn merge_gemini_thinking_level(options: &mut BTreeMap<String, Value>, reasoning_effort: &str) {
+    let mut object = match options.remove("thinkingConfig") {
+        Some(Value::Object(map)) => map,
+        _ => Map::new(),
+    };
+    if !object.contains_key("thinkingBudget") {
+        object.insert(
+            "thinkingLevel".to_string(),
+            Value::String(reasoning_effort.to_string()),
+        );
+    }
+    options.insert("thinkingConfig".to_string(), Value::Object(object));
+}
+
 fn non_empty(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
@@ -212,6 +261,76 @@ fn normalize_capability_name(capability: &str) -> String {
         .strip_prefix("supports_")
         .unwrap_or(normalized.as_str())
         .to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstructionProviderFamily {
+    OpenAI,
+    Anthropic,
+    Gemini,
+}
+
+pub(crate) fn instruction_provider_family(
+    profile: &ProviderProfile,
+) -> Option<InstructionProviderFamily> {
+    for selector in [
+        non_empty(&profile.id),
+        profile.request_provider.as_deref().and_then(non_empty),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(family) = instruction_family_from_provider_selector(selector) {
+            return Some(family);
+        }
+    }
+
+    if let Some(model_info) = get_model_info(&profile.model) {
+        return instruction_family_from_text(&model_info.provider);
+    }
+
+    let haystack = [
+        profile.id.as_str(),
+        profile.model.as_str(),
+        profile.display_name.as_deref().unwrap_or_default(),
+    ]
+    .join(" ")
+    .to_ascii_lowercase();
+    if haystack.contains("anthropic") || haystack.contains("claude") {
+        return Some(InstructionProviderFamily::Anthropic);
+    }
+    if haystack.contains("gemini") {
+        return Some(InstructionProviderFamily::Gemini);
+    }
+    let model = profile.model.to_ascii_lowercase();
+    if haystack.contains("openai")
+        || model.starts_with("gpt-")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+    {
+        return Some(InstructionProviderFamily::OpenAI);
+    }
+    None
+}
+
+fn instruction_family_from_provider_selector(value: &str) -> Option<InstructionProviderFamily> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "openai" | "openrouter" | "litellm" | "codex" | "openai_compatible" | "compatible" => {
+            Some(InstructionProviderFamily::OpenAI)
+        }
+        "anthropic" | "claude" | "claude_code" => Some(InstructionProviderFamily::Anthropic),
+        "gemini" | "google" | "google_gemini" => Some(InstructionProviderFamily::Gemini),
+        _ => None,
+    }
+}
+
+fn instruction_family_from_text(value: &str) -> Option<InstructionProviderFamily> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "openai" => Some(InstructionProviderFamily::OpenAI),
+        "anthropic" => Some(InstructionProviderFamily::Anthropic),
+        "gemini" | "google" => Some(InstructionProviderFamily::Gemini),
+        _ => None,
+    }
 }
 
 pub(crate) fn apply_model_info(profile: &mut ProviderProfile, model_info: &ModelInfo) {

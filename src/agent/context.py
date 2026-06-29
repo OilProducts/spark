@@ -50,9 +50,34 @@ def _character_count(value: Any) -> int:
     return len(str(value))
 
 
-def _estimate_context_tokens(history: Iterable[Any]) -> float:
-    total_chars = sum(_character_count(turn) for turn in history)
-    return total_chars / 4
+def _session_prompt_text(session: Any) -> str:
+    for attribute in ("system_prompt_snapshot", "_system_prompt", "system_prompt"):
+        value = getattr(session, attribute, None)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _estimate_context_usage(
+    history: Iterable[Any],
+    *,
+    prompt: str = "",
+    context_window_size: int,
+) -> dict[str, Any]:
+    approximate_characters = _character_count(prompt) + sum(
+        _character_count(turn) for turn in history
+    )
+    approximate_tokens = approximate_characters / 4
+    threshold_tokens = context_window_size * 0.8
+    usage_ratio = approximate_tokens / context_window_size
+    return {
+        "approximate_characters": approximate_characters,
+        "approximate_tokens": approximate_tokens,
+        "threshold_tokens": threshold_tokens,
+        "threshold_ratio": 0.8,
+        "context_window_size": context_window_size,
+        "usage_ratio": usage_ratio,
+    }
 
 
 def check_context_usage(session: _ContextSession) -> bool:
@@ -61,24 +86,23 @@ def check_context_usage(session: _ContextSession) -> bool:
     if not context_window_size or context_window_size <= 0:
         return False
 
-    if getattr(session, "_context_warning_emitted", False):
+    usage = _estimate_context_usage(
+        getattr(session, "history", []),
+        prompt=_session_prompt_text(session),
+        context_window_size=context_window_size,
+    )
+    if usage["approximate_tokens"] <= usage["threshold_tokens"]:
         return False
 
-    approx_tokens = _estimate_context_tokens(getattr(session, "history", []))
-    threshold = context_window_size * 0.8
-    if approx_tokens <= threshold:
-        return False
-
-    percent = round(approx_tokens / context_window_size * 100)
+    percent = int(usage["usage_ratio"] * 100 + 0.5)
     event = SessionEvent(
         kind=EventKind.WARNING,
         session_id=getattr(session, "id", getattr(session, "session_id", None)),
-        data={"message": f"Context usage at ~{percent}% of context window"},
+        data={
+            "message": f"Context usage at ~{percent}% of context window",
+            "usage": usage,
+        },
     )
-    try:
-        setattr(session, "_context_warning_emitted", True)
-    except (AttributeError, TypeError):
-        pass
     session.emit_event(event)
     return True
 

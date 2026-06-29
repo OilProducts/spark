@@ -135,6 +135,27 @@ In source checkouts, `uv run spark` and `uv run spark-server` are development en
 - [tests/](tests): Rust parity fixtures, Python guardrails, UI contracts, and acceptance assets
 - [specs/](specs): Attractor, workspace, frontend, and storage specifications
 
+### Agent Host Controls
+
+The M3 agent adapter boundary exposes deterministic host controls for session and tool execution behavior:
+
+- Tool results sent back to the model are truncated by per-tool character limits before line limits. The visible truncation marker states what was omitted and that full output is available through the event stream. `TOOL_CALL_END` keeps the full untruncated output or error data and also exposes the model-visible `model_content`.
+- System prompts are assembled from provider base instructions, environment context, active tool descriptions, project instructions, and user overrides. The environment snapshot is captured at session start and includes working directory, git state, branch, platform, OS version, date, model display name, knowledge cutoff, modified/untracked counts, and recent commits.
+- Project instruction discovery walks from git root or working directory to the active working directory. `AGENTS.md` is always considered; only the active provider file is included among `.codex/instructions.md`, `CLAUDE.md`, and `GEMINI.md`; project instructions are capped at 32 KB with a truncation marker.
+- Context warnings use the approximate one-token-per-four-characters heuristic and emit `WARNING` events above 80 percent of the provider context window. They do not automatically compact or summarize history.
+- `session.steer` queues a `SteeringTurn` for the next model call, including after the current tool round. Steering is emitted as `STEERING_INJECTED` and is converted to a user-role request message without restarting history.
+- `session.follow_up` queues another user input after natural completion on the same history and event stream. It is not processed after abort or unrecoverable close.
+- `reasoning_effort` accepts runtime values such as `low`, `medium`, `high`, and null, and changes are reflected in the next unified LLM `Request` and provider-specific options.
+- Turn and tool-round limits emit `TURN_LIMIT`; repeated tool-call signatures of pattern length 1, 2, or 3 emit `LOOP_DETECTION` and add recovery steering without silently changing assistant output.
+
+The source-checkout validation gate remains:
+
+```bash
+uv run pytest -q
+```
+
+Focused M3 checks live in `tests/agent/test_truncation.py`, `tests/agent/test_prompts.py`, `tests/agent/test_project_docs.py`, `tests/agent/test_context_usage.py`, `tests/agent/test_steering.py`, `tests/agent/test_reasoning_effort.py`, `tests/agent/test_loop_detection.py`, and `tests/compat/agent`.
+
 ## Requirements
 
 - Rust stable toolchain with Cargo

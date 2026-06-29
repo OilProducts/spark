@@ -468,6 +468,24 @@ class GeminiProviderProfile(ProviderProfile):
             for name, tool in custom_tool_registry.items():
                 self.tool_registry.register(tool, name=name)
 
+    def provider_options(self, session_config: Any | None = None) -> dict[str, Any]:
+        options = ProviderProfile.provider_options(self, session_config)
+        if session_config is None:
+            return options
+
+        reasoning_effort = getattr(session_config, "reasoning_effort", None)
+        if reasoning_effort is None:
+            return options
+
+        thinking_config: dict[str, Any] = {}
+        existing_thinking_config = options.get("thinkingConfig")
+        if isinstance(existing_thinking_config, Mapping):
+            thinking_config.update(existing_thinking_config)
+        if "thinkingBudget" not in thinking_config:
+            thinking_config["thinkingLevel"] = reasoning_effort
+        options["thinkingConfig"] = thinking_config
+        return options
+
 
 __all__ = [
     "DEFAULT_GEMINI_SHELL_TIMEOUT_MS",

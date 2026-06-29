@@ -12,7 +12,50 @@ from .environment import ExecutionEnvironment
 from .project_docs import ProjectDocument, ProjectDocuments
 
 
+def _family_from_provider_selector(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip().casefold().replace("-", "_")
+    if normalized in {
+        "openai",
+        "openrouter",
+        "litellm",
+        "codex",
+        "openai_compatible",
+        "compatible",
+    }:
+        return "openai"
+    if normalized in {"anthropic", "claude", "claude_code"}:
+        return "anthropic"
+    if normalized in {"gemini", "google", "google_gemini"}:
+        return "gemini"
+    return None
+
+
+def _family_from_profile_type(profile: Any) -> str | None:
+    type_name = type(profile).__name__.casefold()
+    if "openaicompatible" in type_name or "openaiprovider" in type_name:
+        return "openai"
+    if "anthropic" in type_name:
+        return "anthropic"
+    if "gemini" in type_name:
+        return "gemini"
+    return None
+
+
 def _provider_family(profile: Any) -> str | None:
+    type_family = _family_from_profile_type(profile)
+    if type_family is not None:
+        return type_family
+
+    for selector in (
+        getattr(profile, "id", None),
+        getattr(profile, "request_provider", None),
+    ):
+        selector_family = _family_from_provider_selector(selector)
+        if selector_family is not None:
+            return selector_family
+
     model = getattr(profile, "model", None)
     if isinstance(model, str) and model:
         model_info = get_model_info(model)

@@ -335,6 +335,7 @@ fn anthropic_complete_request_uses_messages_api_headers_and_role_translation() {
                 json!({
                     "beta_headers": ["tools-2025-01-01", "tools-2025-01-01", "thinking-2024-01-01"],
                     "thinking": {"type": "enabled", "budget_tokens": 128},
+                    "output_config": {"effort": "high"},
                 }),
             ),
             ("openai".to_string(), json!({"parallel_tool_calls": false})),
@@ -392,6 +393,7 @@ fn anthropic_complete_request_uses_messages_api_headers_and_role_translation() {
         body["thinking"],
         json!({"type": "enabled", "budget_tokens": 128})
     );
+    assert_eq!(body["output_config"], json!({"effort": "high"}));
     assert_eq!(
         body["tools"],
         json!([{

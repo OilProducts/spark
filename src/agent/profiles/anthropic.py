@@ -411,7 +411,21 @@ class AnthropicProviderProfile(ProviderProfile):
                 self.tool_registry.register(tool, name=name)
 
     def provider_options(self, session_config: Any | None = None) -> dict[str, Any]:
-        return super().provider_options(session_config)
+        options = super().provider_options(session_config)
+        if session_config is None:
+            return options
+
+        reasoning_effort = getattr(session_config, "reasoning_effort", None)
+        if reasoning_effort is None:
+            return options
+
+        output_config: dict[str, Any] = {}
+        existing_output_config = options.get("output_config")
+        if isinstance(existing_output_config, Mapping):
+            output_config.update(existing_output_config)
+        output_config["effort"] = reasoning_effort
+        options["output_config"] = output_config
+        return options
 
 
 __all__ = [

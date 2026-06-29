@@ -68,7 +68,11 @@ PROVIDER_CASES = (
             "wait",
             "close_agent",
         ),
-        expected_provider_options={},
+        expected_provider_options={
+            "output_config": {
+                "effort": "medium",
+            },
+        },
     ),
     ProviderCase(
         name="gemini",
@@ -89,7 +93,9 @@ PROVIDER_CASES = (
             "wait",
             "close_agent",
         ),
-        expected_provider_options={},
+        expected_provider_options={
+            "thinkingConfig": {"thinkingLevel": "medium"},
+        },
     ),
 )
 
