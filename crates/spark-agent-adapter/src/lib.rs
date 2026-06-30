@@ -21,7 +21,8 @@ pub mod tools;
 pub mod truncation;
 
 pub use agent::{
-    AgentRawLogLine, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
+    AgentError, AgentRawLogLine, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput,
+    AgentTurnRequest,
 };
 pub use codergen::{
     CodergenBackend, CodergenBackendOutput, CodergenBackendRequest, CodergenError,

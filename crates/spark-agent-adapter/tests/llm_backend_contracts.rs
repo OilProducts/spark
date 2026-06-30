@@ -3,13 +3,14 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    AgentTurnBackend, AgentTurnRequest, CodergenBackend, CodergenBackendRequest,
-    RustLlmAgentTurnBackend, RustLlmCodergenBackend,
+    AgentTurnBackend, AgentTurnRequest, AssistantTurn, CodergenBackend, CodergenBackendRequest,
+    HistoryTurn, RustLlmAgentTurnBackend, RustLlmCodergenBackend, UserTurn,
 };
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
 use unified_llm_adapter::{
-    stream_events, ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
-    Request, Response, StreamEvent, StreamEvents, Usage,
+    stream_events, ActiveLlmProfile, AdapterError, AdapterErrorKind, Client, FinishReason, Message,
+    MessageRole, ProviderAdapter, Request, Response, StreamEvent, StreamEventType, StreamEvents,
+    Usage,
 };
 
 fn tool_names(request: &Request) -> Vec<String> {
@@ -23,6 +24,43 @@ fn tool_parameters(request: &Request, name: &str) -> Value {
         .find(|tool| tool.name == name)
         .and_then(|tool| tool.parameters.clone())
         .expect("tool parameters")
+}
+
+#[test]
+fn agent_turn_request_round_trips_selector_metadata_and_history() {
+    let request = AgentTurnRequest {
+        conversation_id: "conversation-contract".to_string(),
+        project_path: "/repo".to_string(),
+        prompt: "Continue from here".to_string(),
+        history: vec![
+            HistoryTurn::User(UserTurn::new("Previous question")),
+            HistoryTurn::Assistant(AssistantTurn::new("Previous answer")),
+        ],
+        provider: Some("openrouter".to_string()),
+        model: Some("openrouter/model".to_string()),
+        llm_profile: Some("implementation".to_string()),
+        reasoning_effort: Some("HIGH".to_string()),
+        chat_mode: Some("agent".to_string()),
+        metadata: BTreeMap::from([("caller".to_string(), json!("workspace"))]),
+    };
+
+    let encoded = serde_json::to_value(&request).expect("serialize request");
+    assert_eq!(encoded["conversation_id"], "conversation-contract");
+    assert_eq!(encoded["project_path"], "/repo");
+    assert_eq!(encoded["prompt"], "Continue from here");
+    assert_eq!(encoded["provider"], "openrouter");
+    assert_eq!(encoded["model"], "openrouter/model");
+    assert_eq!(encoded["llm_profile"], "implementation");
+    assert_eq!(encoded["reasoning_effort"], "HIGH");
+    assert_eq!(encoded["chat_mode"], "agent");
+    assert_eq!(encoded["metadata"]["caller"], "workspace");
+    assert_eq!(encoded["history"][0]["role"], "user");
+    assert_eq!(encoded["history"][0]["content"], "Previous question");
+    assert_eq!(encoded["history"][1]["role"], "assistant");
+    assert_eq!(encoded["history"][1]["content"], "Previous answer");
+
+    let decoded: AgentTurnRequest = serde_json::from_value(encoded).expect("deserialize request");
+    assert_eq!(decoded, request);
 }
 
 #[test]
@@ -136,6 +174,7 @@ fn agent_turn_backend_builds_session_and_preserves_metadata_and_output_contract(
             conversation_id: "conversation-1".to_string(),
             project_path: "/repo".to_string(),
             prompt: "Plan the next step".to_string(),
+            history: Vec::new(),
             provider: None,
             model: Some("gpt-agent".to_string()),
             llm_profile: None,
@@ -251,6 +290,82 @@ fn agent_turn_backend_builds_session_and_preserves_metadata_and_output_contract(
 }
 
 #[test]
+fn agent_turn_backend_seeds_session_from_request_history_before_current_prompt() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("OPENAI")).expect("client");
+    let backend = RustLlmAgentTurnBackend::new(client);
+
+    backend
+        .run_turn(AgentTurnRequest {
+            conversation_id: "conversation-history".to_string(),
+            project_path: "/repo".to_string(),
+            prompt: "Current question".to_string(),
+            history: vec![
+                HistoryTurn::User(UserTurn::new("Previous question")),
+                HistoryTurn::Assistant(AssistantTurn::new("Previous answer")),
+            ],
+            provider: Some("openai".to_string()),
+            model: Some("gpt-agent".to_string()),
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: Some("agent".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("agent output");
+
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.messages.len(), 4);
+    assert_eq!(request.messages[0].role, MessageRole::System);
+    assert_eq!(request.messages[1], Message::user("Previous question"));
+    assert_eq!(request.messages[2], Message::assistant("Previous answer"));
+    assert_eq!(request.messages[3], Message::user("Current question"));
+}
+
+#[test]
+fn agent_turn_backend_does_not_reuse_prior_history_as_current_final_text_after_stream_error() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(ErroringStreamAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("OPENAI")).expect("client");
+    let backend = RustLlmAgentTurnBackend::new(client);
+
+    let output = backend
+        .run_turn(AgentTurnRequest {
+            conversation_id: "conversation-history-error".to_string(),
+            project_path: "/repo".to_string(),
+            prompt: "Current question".to_string(),
+            history: vec![
+                HistoryTurn::User(UserTurn::new("Previous question")),
+                HistoryTurn::Assistant(AssistantTurn::new("Previous answer")),
+            ],
+            provider: Some("openai".to_string()),
+            model: Some("gpt-agent".to_string()),
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: Some("agent".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("agent output");
+
+    assert_eq!(calls.lock().expect("calls").len(), 1);
+    assert_eq!(output.final_assistant_text, None);
+    assert!(output
+        .events
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::Error));
+    assert_eq!(
+        output.token_usage,
+        Some(
+            json!({"total": {"inputTokens": 1, "cachedInputTokens": 0, "outputTokens": 1, "totalTokens": 2}})
+        )
+    );
+}
+
+#[test]
 fn agent_turn_backend_routes_llm_profile_through_session_boundary() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
@@ -271,6 +386,7 @@ fn agent_turn_backend_routes_llm_profile_through_session_boundary() {
             conversation_id: "conversation-2".to_string(),
             project_path: "/repo".to_string(),
             prompt: "Use the selected profile".to_string(),
+            history: Vec::new(),
             provider: Some("codex".to_string()),
             model: None,
             llm_profile: Some("implementation".to_string()),
@@ -343,6 +459,7 @@ fn agent_turn_backend_uses_anthropic_native_profile_at_adapter_boundary() {
             conversation_id: "conversation-anthropic".to_string(),
             project_path: "/repo".to_string(),
             prompt: "Edit the file".to_string(),
+            history: Vec::new(),
             provider: Some("Claude-Code".to_string()),
             model: Some("claude-sonnet-4-5".to_string()),
             llm_profile: None,
@@ -404,6 +521,7 @@ fn agent_turn_backend_uses_gemini_native_profile_at_adapter_boundary() {
             conversation_id: "conversation-gemini".to_string(),
             project_path: "/repo".to_string(),
             prompt: "Inspect several files".to_string(),
+            history: Vec::new(),
             provider: Some("Google-Gemini".to_string()),
             model: Some("gemini-3.1-pro-preview".to_string()),
             llm_profile: None,
@@ -474,6 +592,7 @@ fn agent_turn_backend_normalizes_openai_compatible_selectors_at_adapter_boundary
                 conversation_id: format!("conversation-{selector}"),
                 project_path: "/repo".to_string(),
                 prompt: "Use the compatibility selector".to_string(),
+                history: Vec::new(),
                 provider: Some(selector.to_string()),
                 model: Some("explicit-model".to_string()),
                 llm_profile: None,
@@ -532,6 +651,7 @@ fn agent_turn_backend_preserves_configured_profile_ids_before_provider_alias_nor
             conversation_id: "conversation-team-profile".to_string(),
             project_path: "/repo".to_string(),
             prompt: "Use the configured profile id".to_string(),
+            history: Vec::new(),
             provider: Some("Team-Profile".to_string()),
             model: None,
             llm_profile: None,
@@ -571,6 +691,7 @@ fn agent_turn_backend_keys_openai_provider_options_by_native_profile_for_configu
             conversation_id: "conversation-team-openai".to_string(),
             project_path: "/repo".to_string(),
             prompt: "Use the configured OpenAI profile".to_string(),
+            history: Vec::new(),
             provider: None,
             model: None,
             llm_profile: Some("team-openai".to_string()),
@@ -635,6 +756,7 @@ fn agent_turn_backend_keys_anthropic_and_gemini_provider_options_by_native_profi
                 conversation_id: format!("conversation-{profile_id}"),
                 project_path: "/repo".to_string(),
                 prompt: "Use the configured native profile".to_string(),
+                history: Vec::new(),
                 provider: None,
                 model: None,
                 llm_profile: Some(profile_id.to_string()),
@@ -898,6 +1020,52 @@ impl ProviderAdapter for RecordingAdapter {
                     }),
                 )),
             ]
+            .into_iter(),
+        ))
+    }
+}
+
+struct ErroringStreamAdapter {
+    name: &'static str,
+    calls: Arc<Mutex<Vec<Request>>>,
+}
+
+impl ErroringStreamAdapter {
+    fn new(name: &'static str, calls: Arc<Mutex<Vec<Request>>>) -> Self {
+        Self { name, calls }
+    }
+}
+
+impl ProviderAdapter for ErroringStreamAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        self.calls.lock().expect("calls").push(request.clone());
+        Ok(Response {
+            model: request.model.clone(),
+            provider: request.provider.clone().unwrap_or_default(),
+            message: Message::assistant("unused non-streaming response"),
+            finish_reason: FinishReason::Stop,
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
+        self.calls.lock().expect("calls").push(request);
+        Ok(stream_events(
+            vec![Ok(StreamEvent {
+                error: Some(AdapterError::new(AdapterErrorKind::Stream, "stream failed")),
+                usage: Some(Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    total_tokens: 2,
+                    ..Usage::default()
+                }),
+                raw: Some(json!({"error": "stream failed"})),
+                ..StreamEvent::new(StreamEventType::Error)
+            })]
             .into_iter(),
         ))
     }

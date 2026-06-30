@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use attractor_api::{
     ContinuePipelineRequest, PipelineStartRequest, RuntimeHandlerRunnerFactory,
@@ -8,7 +9,10 @@ use attractor_api::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use spark_agent_adapter::{AgentThreadResumeFailure, AgentTurnOutput};
+use spark_agent_adapter::{
+    AgentError, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
+    AssistantTurn, HistoryTurn, RustLlmAgentTurnBackend, UserTurn,
+};
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
@@ -183,7 +187,7 @@ pub struct RunContinueRequest {
     pub reasoning_effort: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PreparedConversationTurn {
     pub conversation_id: String,
     pub project_path: String,
@@ -198,6 +202,7 @@ pub struct PreparedConversationTurn {
     pub reasoning_effort: Option<String>,
     pub user_turn_id: String,
     pub assistant_turn_id: String,
+    pub agent_turn_request: AgentTurnRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -222,6 +227,50 @@ pub struct FlowRunRequestCreateResponse {
 pub struct WorkspaceConversationService {
     settings: SparkSettings,
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
+    agent_turn_backend: Arc<dyn AgentTurnBackend>,
+}
+
+#[derive(Clone)]
+struct EnvironmentAgentTurnBackend {
+    config_dir: PathBuf,
+}
+
+impl EnvironmentAgentTurnBackend {
+    fn new(config_dir: PathBuf) -> Self {
+        Self { config_dir }
+    }
+}
+
+impl AgentTurnBackend for EnvironmentAgentTurnBackend {
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        let client = unified_llm_adapter::Client::from_env_and_profiles(&self.config_dir, None)
+            .map_err(adapter_error_to_agent_error)?;
+        RustLlmAgentTurnBackend::new(client).run_turn(request)
+    }
+}
+
+fn default_agent_turn_backend(settings: &SparkSettings) -> Arc<dyn AgentTurnBackend> {
+    Arc::new(EnvironmentAgentTurnBackend::new(
+        settings.config_dir.clone(),
+    ))
+}
+
+fn adapter_error_to_agent_error(error: unified_llm_adapter::AdapterError) -> AgentError {
+    AgentError {
+        message: error.to_string(),
+        retryable: error.retryable,
+        raw: serde_json::to_value(error).ok(),
+    }
+}
+
+fn agent_turn_backend_error(error: AgentError) -> WorkspaceError {
+    let message =
+        non_empty_string(&error.message).unwrap_or_else(|| "Agent turn failed.".to_string());
+    if error.retryable {
+        WorkspaceError::ServiceUnavailable(message)
+    } else {
+        WorkspaceError::Internal(message)
+    }
 }
 
 impl WorkspaceConversationService {
@@ -236,9 +285,34 @@ impl WorkspaceConversationService {
         settings: SparkSettings,
         runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
     ) -> Self {
+        let agent_turn_backend = default_agent_turn_backend(&settings);
+        Self::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
+            settings,
+            runtime_handler_runner_factory,
+            agent_turn_backend,
+        )
+    }
+
+    pub fn new_with_agent_turn_backend(
+        settings: SparkSettings,
+        agent_turn_backend: Arc<dyn AgentTurnBackend>,
+    ) -> Self {
+        Self::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
+            settings,
+            attractor_api::default_runtime_handler_runner_factory(),
+            agent_turn_backend,
+        )
+    }
+
+    pub fn new_with_runtime_handler_runner_factory_and_agent_turn_backend(
+        settings: SparkSettings,
+        runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
+        agent_turn_backend: Arc<dyn AgentTurnBackend>,
+    ) -> Self {
         Self {
             settings,
             runtime_handler_runner_factory,
+            agent_turn_backend,
         }
     }
 
@@ -571,6 +645,28 @@ impl WorkspaceConversationService {
             &emitted_payloads,
         )?;
 
+        let agent_turn_request = AgentTurnRequest {
+            conversation_id: conversation_id.to_string(),
+            project_path: project_path.clone(),
+            prompt: message.clone(),
+            history: agent_history_from_snapshot(&snapshot, &[&user_turn_id, &assistant_turn_id]),
+            provider: Some(effective_provider.clone()),
+            model: effective_model.clone(),
+            llm_profile: effective_profile.clone(),
+            reasoning_effort: effective_reasoning_effort.clone(),
+            chat_mode: Some(effective_chat_mode.clone()),
+            metadata: BTreeMap::from([
+                (
+                    "spark.workspace.user_turn_id".to_string(),
+                    json!(user_turn_id.clone()),
+                ),
+                (
+                    "spark.workspace.assistant_turn_id".to_string(),
+                    json!(assistant_turn_id.clone()),
+                ),
+            ]),
+        };
+
         let prepared = PreparedConversationTurn {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
@@ -582,6 +678,7 @@ impl WorkspaceConversationService {
             reasoning_effort: effective_reasoning_effort,
             user_turn_id,
             assistant_turn_id,
+            agent_turn_request,
         };
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok((prepared, snapshot))
@@ -709,6 +806,25 @@ impl WorkspaceConversationService {
         )?;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok(snapshot)
+    }
+
+    pub fn execute_turn(
+        &self,
+        conversation_id: &str,
+        request: ConversationTurnRequest,
+    ) -> WorkspaceResult<Value> {
+        let (prepared, _started_snapshot) = self.start_turn(conversation_id, request)?;
+        let output = self
+            .agent_turn_backend
+            .run_turn(prepared.agent_turn_request.clone())
+            .map_err(agent_turn_backend_error)?;
+        self.ingest_agent_turn_output(
+            &prepared.conversation_id,
+            &prepared.project_path,
+            &prepared.assistant_turn_id,
+            &prepared.chat_mode,
+            output,
+        )
     }
 
     pub fn submit_request_user_input_answer(
@@ -4044,6 +4160,7 @@ fn fail_assistant_turn_and_segments(
     assistant_turn_id: &str,
     message: &str,
     error_code: Option<&str>,
+    force_turn_upsert: bool,
     emitted_payloads: &mut Vec<Value>,
 ) {
     let now = iso_now();
@@ -4084,7 +4201,8 @@ fn fail_assistant_turn_and_segments(
     if let Some(turn) = find_turn_mut(snapshot, assistant_turn_id) {
         let changed = turn.get("status").and_then(Value::as_str) != Some("failed")
             || turn.get("error").and_then(Value::as_str) != Some(message)
-            || error_code.is_some();
+            || error_code.is_some()
+            || force_turn_upsert;
         set_string_value(turn, "status", "failed");
         set_string_value(turn, "error", message);
         if let Some(error_code) = error_code {
@@ -4094,6 +4212,29 @@ fn fail_assistant_turn_and_segments(
             let turn = turn.clone();
             emitted_payloads.push(build_turn_upsert_payload(snapshot, &turn));
         }
+    }
+}
+
+fn apply_assistant_turn_token_usage(
+    snapshot: &mut Value,
+    assistant_turn_id: &str,
+    token_usage: &Value,
+) -> bool {
+    let Some(turn) = find_turn_mut(snapshot, assistant_turn_id) else {
+        return false;
+    };
+    let changed = turn.get("token_usage") != Some(token_usage);
+    set_value(turn, "token_usage", token_usage.clone());
+    changed
+}
+
+fn emit_assistant_turn_upsert(
+    snapshot: &Value,
+    assistant_turn_id: &str,
+    emitted_payloads: &mut Vec<Value>,
+) {
+    if let Some(turn) = find_turn(snapshot, assistant_turn_id) {
+        emitted_payloads.push(build_turn_upsert_payload(snapshot, turn));
     }
 }
 
@@ -4107,17 +4248,23 @@ fn finalize_agent_turn_output(
     buffered_plan_assistant_event: Option<&TurnStreamEvent>,
     emitted_payloads: &mut Vec<Value>,
 ) {
+    let token_usage_changed = token_usage
+        .as_ref()
+        .map(|token_usage| {
+            apply_assistant_turn_token_usage(snapshot, assistant_turn_id, token_usage)
+        })
+        .unwrap_or(false);
+
     if let Some(failure) = thread_resume_failure {
         let now = iso_now();
-        if let Some(turn) = find_turn_mut(snapshot, assistant_turn_id) {
-            set_string_value(turn, "status", "failed");
-            set_string_value(turn, "error", &failure.message);
-            if let Some(error_code) = failure.error_code.as_deref() {
-                set_string_value(turn, "error_code", error_code);
-            }
-            let turn = turn.clone();
-            emitted_payloads.push(build_turn_upsert_payload(snapshot, &turn));
-        }
+        fail_assistant_turn_and_segments(
+            snapshot,
+            assistant_turn_id,
+            &failure.message,
+            failure.error_code.as_deref(),
+            token_usage_changed,
+            emitted_payloads,
+        );
         append_workflow_event(
             snapshot,
             json!({
@@ -4131,10 +4278,16 @@ fn finalize_agent_turn_output(
         return;
     }
 
-    if let Some(token_usage) = token_usage.clone() {
-        if let Some(turn) = find_turn_mut(snapshot, assistant_turn_id) {
-            set_value(turn, "token_usage", token_usage);
-        }
+    if let Some((message, error_code)) = failed_assistant_state(snapshot, assistant_turn_id) {
+        fail_assistant_turn_and_segments(
+            snapshot,
+            assistant_turn_id,
+            &message,
+            error_code.as_deref(),
+            token_usage_changed,
+            emitted_payloads,
+        );
+        return;
     }
 
     let mut plan_segment = finalized_plan_segment(snapshot, assistant_turn_id);
@@ -4153,6 +4306,9 @@ fn finalize_agent_turn_output(
         && final_text.is_none()
         && has_pending_request_user_input_segment(snapshot, assistant_turn_id)
     {
+        if token_usage_changed {
+            emit_assistant_turn_upsert(snapshot, assistant_turn_id, emitted_payloads);
+        }
         return;
     }
     if final_answer_segment.is_none() {
@@ -4201,6 +4357,7 @@ fn finalize_agent_turn_output(
             assistant_turn_id,
             &message,
             error_code.as_deref(),
+            false,
             emitted_payloads,
         );
         return;
@@ -4225,13 +4382,10 @@ fn finalize_agent_turn_output(
             != Some(resolved_content.as_str())
             || turn.get("status").and_then(Value::as_str) != Some("complete")
             || turn.get("error").is_some()
-            || token_usage.is_some();
+            || token_usage_changed;
         set_string_value(turn, "content", &resolved_content);
         set_string_value(turn, "status", "complete");
         remove_key(turn, "error");
-        if let Some(token_usage) = token_usage {
-            set_value(turn, "token_usage", token_usage);
-        }
         if turn_changed {
             let turn = turn.clone();
             emitted_payloads.push(build_turn_upsert_payload(snapshot, &turn));
@@ -4262,6 +4416,73 @@ fn append_workflow_event(snapshot: &mut Value, event: Value) {
     } else if let Some(object) = snapshot.as_object_mut() {
         object.insert("event_log".to_string(), json!([event]));
     }
+}
+
+fn agent_history_from_snapshot(snapshot: &Value, excluded_turn_ids: &[&str]) -> Vec<HistoryTurn> {
+    snapshot
+        .get("turns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| agent_history_turn_from_persisted_turn(turn, excluded_turn_ids))
+        .collect()
+}
+
+fn agent_history_turn_from_persisted_turn(
+    turn: &Value,
+    excluded_turn_ids: &[&str],
+) -> Option<HistoryTurn> {
+    if turn
+        .get("id")
+        .and_then(Value::as_str)
+        .map(|turn_id| excluded_turn_ids.contains(&turn_id))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let kind = turn
+        .get("kind")
+        .and_then(Value::as_str)
+        .and_then(non_empty_string)
+        .unwrap_or_else(|| "message".to_string());
+    if !kind.eq_ignore_ascii_case("message") {
+        return None;
+    }
+    let status = turn
+        .get("status")
+        .and_then(Value::as_str)
+        .and_then(non_empty_string)
+        .unwrap_or_else(|| "complete".to_string());
+    if !status.eq_ignore_ascii_case("complete") {
+        return None;
+    }
+    let content = turn
+        .get("content")
+        .and_then(Value::as_str)
+        .and_then(non_empty_string)?;
+    let timestamp = history_turn_timestamp(turn);
+    match turn.get("role").and_then(Value::as_str) {
+        Some(role) if role.eq_ignore_ascii_case("user") => {
+            let mut user_turn = UserTurn::new(content);
+            user_turn.timestamp = timestamp;
+            Some(HistoryTurn::User(user_turn))
+        }
+        Some(role) if role.eq_ignore_ascii_case("assistant") => {
+            let mut assistant_turn = AssistantTurn::new(content);
+            assistant_turn.timestamp = timestamp;
+            Some(HistoryTurn::Assistant(assistant_turn))
+        }
+        _ => None,
+    }
+}
+
+fn history_turn_timestamp(turn: &Value) -> OffsetDateTime {
+    turn.get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|timestamp| {
+            OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339).ok()
+        })
+        .unwrap_or_else(OffsetDateTime::now_utc)
 }
 
 fn build_turn_upsert_payload(snapshot: &Value, turn: &Value) -> Value {

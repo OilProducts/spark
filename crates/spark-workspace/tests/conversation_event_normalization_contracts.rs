@@ -1,15 +1,22 @@
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use spark_agent_adapter::{AgentRawLogLine, AgentThreadResumeFailure, AgentTurnOutput};
+use spark_agent_adapter::{
+    AgentError, AgentRawLogLine, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput,
+    AgentTurnRequest,
+};
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::settings::SparkSettings;
+use spark_storage::{ProjectRegistry, CONVERSATION_STATE_SCHEMA_VERSION};
 use spark_workspace::{
-    ConversationRequestUserInputAnswerRequest, ConversationTurnRequest,
-    WorkspaceConversationService, WorkspaceError,
+    live::conversation_envelopes_after, ConversationRequestUserInputAnswerRequest,
+    ConversationTurnRequest, WorkspaceConversationService, WorkspaceError,
 };
 
 #[test]
@@ -80,6 +87,483 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
         )
         .expect_err("active assistant conflict");
     assert!(matches!(conflict, WorkspaceError::Conflict(_)));
+}
+
+#[test]
+fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let service = WorkspaceConversationService::new(settings(temp.path()));
+
+    let (first_prepared, _snapshot) = service
+        .start_turn(
+            "conversation-agent-request",
+            ConversationTurnRequest {
+                project_path: "/projects/agent-request".to_string(),
+                message: "First question".to_string(),
+                provider: Some("codex".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("first turn");
+    service
+        .ingest_agent_turn_output(
+            "conversation-agent-request",
+            "/projects/agent-request",
+            &first_prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                final_assistant_text: Some("First answer".to_string()),
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("first output");
+
+    let (prepared, snapshot) = service
+        .start_turn(
+            "conversation-agent-request",
+            ConversationTurnRequest {
+                project_path: "/projects/agent-request".to_string(),
+                message: "Second question".to_string(),
+                provider: Some("openrouter".to_string()),
+                model: Some("openrouter/model".to_string()),
+                llm_profile: Some("implementation".to_string()),
+                reasoning_effort: Some("HIGH".to_string()),
+                chat_mode: Some("plan".to_string()),
+            },
+        )
+        .expect("second turn");
+
+    let request = &prepared.agent_turn_request;
+    assert_eq!(request.conversation_id, prepared.conversation_id);
+    assert_eq!(request.project_path, prepared.project_path);
+    assert_eq!(request.prompt, "Second question");
+    assert_eq!(request.provider.as_deref(), Some("openrouter"));
+    assert_eq!(request.model.as_deref(), Some("openrouter/model"));
+    assert_eq!(request.llm_profile.as_deref(), Some("implementation"));
+    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(request.chat_mode.as_deref(), Some("plan"));
+    assert_eq!(
+        request.metadata["spark.workspace.user_turn_id"],
+        json!(prepared.user_turn_id.clone())
+    );
+    assert_eq!(
+        request.metadata["spark.workspace.assistant_turn_id"],
+        json!(prepared.assistant_turn_id.clone())
+    );
+
+    let history = serde_json::to_value(&request.history).expect("history json");
+    assert_eq!(history.as_array().expect("history").len(), 2);
+    assert_eq!(history[0]["role"], "user");
+    assert_eq!(history[0]["content"], "First question");
+    assert_eq!(history[1]["role"], "assistant");
+    assert_eq!(history[1]["content"], "First answer");
+    assert!(history[0].get("id").is_none());
+    assert!(history[0].get("status").is_none());
+    assert!(history[0].get("kind").is_none());
+    assert!(history[1].get("segments").is_none());
+
+    let turns = snapshot["turns"].as_array().expect("turns");
+    assert!(turns
+        .iter()
+        .any(|turn| turn["id"] == prepared.user_turn_id && turn["content"] == "Second question"));
+    assert!(request
+        .history
+        .iter()
+        .all(
+            |turn| serde_json::to_value(turn).expect("turn json")["content"] != "Second question"
+        ));
+
+    let decoded: AgentTurnRequest =
+        serde_json::from_value(serde_json::to_value(request).expect("request json"))
+            .expect("deserialize request");
+    assert_eq!(&decoded, request);
+}
+
+#[test]
+fn start_turn_agent_history_uses_legacy_complete_turn_defaults() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = "/projects/legacy-agent-request";
+    let project = ProjectRegistry::new(&settings.data_dir)
+        .ensure_project_paths(project_path)
+        .expect("project");
+    write_state(
+        &project.conversations_dir,
+        "conversation-legacy-agent-request",
+        json!({
+            "schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
+            "revision": 2,
+            "conversation_id": "conversation-legacy-agent-request",
+            "project_path": project_path,
+            "chat_mode": "chat",
+            "provider": "codex",
+            "model": null,
+            "llm_profile": null,
+            "reasoning_effort": null,
+            "title": "Legacy conversation",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:02Z",
+            "turns": [
+                {
+                    "id": "turn-legacy-user",
+                    "role": "user",
+                    "content": "Legacy question",
+                    "timestamp": "2026-01-01T00:00:00Z"
+                },
+                {
+                    "id": "turn-legacy-assistant",
+                    "role": "assistant",
+                    "content": "Legacy answer",
+                    "timestamp": "2026-01-01T00:00:01Z"
+                }
+            ],
+            "segments": []
+        }),
+    );
+
+    let service = WorkspaceConversationService::new(settings);
+    let (prepared, _snapshot) = service
+        .start_turn(
+            "conversation-legacy-agent-request",
+            ConversationTurnRequest {
+                project_path: project_path.to_string(),
+                message: "Current question".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+
+    let history = serde_json::to_value(&prepared.agent_turn_request.history).expect("history");
+    assert_eq!(history.as_array().expect("history").len(), 2);
+    assert_eq!(history[0]["role"], "user");
+    assert_eq!(history[0]["content"], "Legacy question");
+    assert_eq!(history[0]["timestamp"], "2026-01-01T00:00:00Z");
+    assert_eq!(history[1]["role"], "assistant");
+    assert_eq!(history[1]["content"], "Legacy answer");
+    assert_eq!(history[1]["timestamp"], "2026-01-01T00:00:01Z");
+}
+
+#[test]
+fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            final_assistant_text: Some("First answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            raw_log_lines: vec![AgentRawLogLine {
+                direction: "outgoing".to_string(),
+                line: "{\"event\":\"backend-second\"}".to_string(),
+            }],
+            final_assistant_text: Some("Second answer".to_string()),
+            token_usage: Some(json!({"total": {"inputTokens": 12, "outputTokens": 5}})),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let requests = backend.requests();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(backend),
+    );
+
+    service
+        .execute_turn(
+            "conversation-execute",
+            ConversationTurnRequest {
+                project_path: "/projects/execute".to_string(),
+                message: "First question".to_string(),
+                provider: Some("codex".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("first execution");
+    let snapshot = service
+        .execute_turn(
+            "conversation-execute",
+            ConversationTurnRequest {
+                project_path: "/projects/execute".to_string(),
+                message: "Second question".to_string(),
+                provider: Some("openrouter".to_string()),
+                model: Some("openrouter/model".to_string()),
+                llm_profile: Some("implementation".to_string()),
+                reasoning_effort: Some("HIGH".to_string()),
+                chat_mode: Some("plan".to_string()),
+            },
+        )
+        .expect("second execution");
+
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
+    let request = &requests[1];
+    assert_eq!(request.conversation_id, "conversation-execute");
+    assert_eq!(request.project_path, "/projects/execute");
+    assert_eq!(request.prompt, "Second question");
+    assert_eq!(request.provider.as_deref(), Some("openrouter"));
+    assert_eq!(request.model.as_deref(), Some("openrouter/model"));
+    assert_eq!(request.llm_profile.as_deref(), Some("implementation"));
+    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(request.chat_mode.as_deref(), Some("plan"));
+    let history = serde_json::to_value(&request.history).expect("history");
+    assert_eq!(history.as_array().expect("history").len(), 2);
+    assert_eq!(history[0]["role"], "user");
+    assert_eq!(history[0]["content"], "First question");
+    assert_eq!(history[1]["role"], "assistant");
+    assert_eq!(history[1]["content"], "First answer");
+    assert!(history[0].get("id").is_none());
+    assert!(history[1].get("status").is_none());
+    let assistant_turn_id = request.metadata["spark.workspace.assistant_turn_id"]
+        .as_str()
+        .expect("assistant turn id")
+        .to_string();
+    let user_turn_id = request.metadata["spark.workspace.user_turn_id"]
+        .as_str()
+        .expect("user turn id")
+        .to_string();
+
+    let turns = snapshot["turns"].as_array().expect("turns");
+    assert!(turns
+        .iter()
+        .any(|turn| turn["id"] == user_turn_id && turn["content"] == "Second question"));
+    let assistant_turn = turns
+        .iter()
+        .find(|turn| turn["id"] == assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "complete");
+    assert_eq!(assistant_turn["content"], "Second answer");
+    assert_eq!(
+        assistant_turn["token_usage"],
+        json!({"total": {"inputTokens": 12, "outputTokens": 5}})
+    );
+
+    let persisted = service
+        .get_snapshot("conversation-execute", Some("/projects/execute"))
+        .expect("persisted snapshot");
+    assert_eq!(snapshot["revision"], persisted["revision"]);
+    assert_eq!(snapshot["turns"], persisted["turns"]);
+
+    let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
+        .read_raw_rpc_log("conversation-execute", "/projects/execute")
+        .expect("raw log");
+    assert_eq!(raw_log.last().expect("raw line").direction, "outgoing");
+    assert_eq!(
+        raw_log.last().expect("raw line").line,
+        "{\"event\":\"backend-second\"}"
+    );
+
+    let events = service
+        .read_events_after("conversation-execute", "/projects/execute", 0)
+        .expect("events");
+    assert!(events.iter().any(|event| {
+        event["type"] == "turn_upsert"
+            && event["turn"]["id"] == assistant_turn_id
+            && event["turn"]["status"] == "complete"
+    }));
+    assert!(events
+        .iter()
+        .any(|event| event["type"] == "conversation_snapshot"));
+
+    let live_envelopes =
+        conversation_envelopes_after(&settings, "conversation-execute", "/projects/execute", 0)
+            .expect("live envelopes");
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.turn_upsert"
+            && envelope.payload["turn"]["id"] == assistant_turn_id
+            && envelope.payload["turn"]["status"] == "complete"
+            && envelope.payload["turn"]["content"] == "Second answer"
+            && envelope.payload["turn"]["token_usage"]["total"]["inputTokens"] == json!(12)
+    }));
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.snapshot"
+            && envelope.payload["state"]["turns"]
+                .as_array()
+                .is_some_and(|turns| {
+                    turns.iter().any(|turn| {
+                        turn["id"] == assistant_turn_id
+                            && turn["status"] == "complete"
+                            && turn["token_usage"]["total"]["outputTokens"] == json!(5)
+                    })
+                })
+    }));
+}
+
+#[test]
+fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            events: vec![stream_error_event("backend stream failed")],
+            final_assistant_text: Some("Do not persist this final text".to_string()),
+            token_usage: Some(json!({"total": {"inputTokens": 7, "outputTokens": 1}})),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            thread_resume_failure: Some(AgentThreadResumeFailure {
+                message: "thread resume failed".to_string(),
+                error_code: Some("thread_resume_failed".to_string()),
+                details: Some(json!({"thread_id": "thread-public-execute"})),
+            }),
+            token_usage: Some(json!({"total": {"inputTokens": 2, "outputTokens": 0}})),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let requests = backend.requests();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(backend),
+    );
+
+    let stream_failed = service
+        .execute_turn(
+            "conversation-execute-stream-failure",
+            ConversationTurnRequest {
+                project_path: "/projects/execute-errors".to_string(),
+                message: "Run the failing stream".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("stream failure output");
+
+    let stream_request = requests.lock().expect("requests")[0].clone();
+    assert_eq!(
+        stream_request.conversation_id,
+        "conversation-execute-stream-failure"
+    );
+    assert_eq!(stream_request.project_path, "/projects/execute-errors");
+    assert_eq!(stream_request.prompt, "Run the failing stream");
+    let stream_assistant_turn_id = stream_request.metadata["spark.workspace.assistant_turn_id"]
+        .as_str()
+        .expect("assistant turn id")
+        .to_string();
+
+    let stream_assistant_turn = stream_failed["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == stream_assistant_turn_id)
+        .expect("stream failed assistant turn");
+    assert_eq!(stream_assistant_turn["status"], "failed");
+    assert_eq!(stream_assistant_turn["error"], "backend stream failed");
+    assert_ne!(
+        stream_assistant_turn["content"],
+        "Do not persist this final text"
+    );
+    assert_eq!(
+        stream_assistant_turn["token_usage"],
+        json!({"total": {"inputTokens": 7, "outputTokens": 1}})
+    );
+    let stream_segment = segment_by_kind(
+        stream_failed["segments"].as_array().expect("segments"),
+        "assistant_message",
+    );
+    assert_eq!(stream_segment["status"], "failed");
+    assert_eq!(stream_segment["error"], "backend stream failed");
+
+    let stream_events = service
+        .read_events_after(
+            "conversation-execute-stream-failure",
+            "/projects/execute-errors",
+            0,
+        )
+        .expect("stream events");
+    assert!(stream_events.iter().any(|event| {
+        event["type"] == "turn_upsert"
+            && event["turn"]["id"] == stream_assistant_turn_id
+            && event["turn"]["status"] == "failed"
+            && event["turn"]["token_usage"]["total"]["inputTokens"] == json!(7)
+    }));
+    assert!(stream_events.iter().any(|event| {
+        event["type"] == "segment_upsert"
+            && event["segment"]["status"] == "failed"
+            && event["segment"]["error"] == "backend stream failed"
+    }));
+    assert!(stream_events
+        .iter()
+        .any(|event| event["type"] == "conversation_snapshot"));
+
+    let stream_live = conversation_envelopes_after(
+        &settings,
+        "conversation-execute-stream-failure",
+        "/projects/execute-errors",
+        0,
+    )
+    .expect("stream live envelopes");
+    assert!(stream_live.iter().any(|envelope| {
+        envelope.event_type == "conversation.turn_upsert"
+            && envelope.payload["turn"]["id"] == stream_assistant_turn_id
+            && envelope.payload["turn"]["status"] == "failed"
+            && envelope.payload["turn"]["error"] == "backend stream failed"
+    }));
+
+    let resume_failed = service
+        .execute_turn(
+            "conversation-execute-resume-failure",
+            ConversationTurnRequest {
+                project_path: "/projects/execute-errors".to_string(),
+                message: "Resume the previous thread".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("thread resume failure output");
+
+    let resume_request = requests.lock().expect("requests")[1].clone();
+    assert_eq!(
+        resume_request.conversation_id,
+        "conversation-execute-resume-failure"
+    );
+    assert_eq!(resume_request.prompt, "Resume the previous thread");
+    let resume_assistant_turn_id = resume_request.metadata["spark.workspace.assistant_turn_id"]
+        .as_str()
+        .expect("assistant turn id")
+        .to_string();
+
+    let resume_assistant_turn = resume_failed["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == resume_assistant_turn_id)
+        .expect("resume failed assistant turn");
+    assert_eq!(resume_assistant_turn["status"], "failed");
+    assert_eq!(resume_assistant_turn["error"], "thread resume failed");
+    assert_eq!(resume_assistant_turn["error_code"], "thread_resume_failed");
+    assert_eq!(
+        resume_assistant_turn["token_usage"],
+        json!({"total": {"inputTokens": 2, "outputTokens": 0}})
+    );
+    assert_eq!(resume_failed["event_log"][0]["kind"], "continuity_reset");
+    assert_eq!(
+        resume_failed["event_log"][0]["details"]["thread_id"],
+        "thread-public-execute"
+    );
+
+    let resume_events = service
+        .read_events_after(
+            "conversation-execute-resume-failure",
+            "/projects/execute-errors",
+            0,
+        )
+        .expect("resume events");
+    assert!(resume_events.iter().any(|event| {
+        event["type"] == "turn_upsert"
+            && event["turn"]["id"] == resume_assistant_turn_id
+            && event["turn"]["status"] == "failed"
+            && event["turn"]["error_code"] == "thread_resume_failed"
+    }));
+    let resume_live = conversation_envelopes_after(
+        &settings,
+        "conversation-execute-resume-failure",
+        "/projects/execute-errors",
+        0,
+    )
+    .expect("resume live envelopes");
+    assert!(resume_live.iter().any(|envelope| {
+        envelope.event_type == "conversation.turn_upsert"
+            && envelope.payload["turn"]["id"] == resume_assistant_turn_id
+            && envelope.payload["turn"]["status"] == "failed"
+            && envelope.payload["turn"]["error_code"] == "thread_resume_failed"
+    }));
 }
 
 #[test]
@@ -189,6 +673,7 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
             &failure_prepared.assistant_turn_id,
             "chat",
             AgentTurnOutput {
+                token_usage: Some(json!({"total": {"inputTokens": 3, "outputTokens": 0}})),
                 thread_resume_failure: Some(AgentThreadResumeFailure {
                     message: "thread resume failed".to_string(),
                     error_code: Some("thread_resume_failed".to_string()),
@@ -206,6 +691,10 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
         .expect("failed assistant turn");
     assert_eq!(assistant_turn["status"], "failed");
     assert_eq!(assistant_turn["error_code"], "thread_resume_failed");
+    assert_eq!(
+        assistant_turn["token_usage"],
+        json!({"total": {"inputTokens": 3, "outputTokens": 0}})
+    );
     assert_eq!(failed["event_log"][0]["kind"], "continuity_reset");
 }
 
@@ -324,6 +813,76 @@ fn stream_error_without_final_answer_remains_failed_and_does_not_write_fallback_
 }
 
 #[test]
+fn stream_error_with_final_text_and_usage_stays_failed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let (prepared, _snapshot) = service
+        .start_turn(
+            "conversation-stream-error-final-text",
+            ConversationTurnRequest {
+                project_path: "/projects/stream-error-final-text".to_string(),
+                message: "Run the agent".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+
+    let snapshot = service
+        .ingest_agent_turn_output(
+            "conversation-stream-error-final-text",
+            "/projects/stream-error-final-text",
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![stream_error_event("backend failed")],
+                final_assistant_text: Some("Do not persist as success".to_string()),
+                token_usage: Some(json!({"total": {"inputTokens": 9, "outputTokens": 2}})),
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("ingest stream error");
+
+    let assistant_turn = snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == prepared.assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "failed");
+    assert_eq!(assistant_turn["error"], "backend failed");
+    assert_ne!(assistant_turn["content"], "Do not persist as success");
+    assert_eq!(
+        assistant_turn["token_usage"],
+        json!({"total": {"inputTokens": 9, "outputTokens": 2}})
+    );
+
+    let segment = segment_by_kind(
+        snapshot["segments"].as_array().expect("segments"),
+        "assistant_message",
+    );
+    assert_eq!(segment["status"], "failed");
+    assert_eq!(segment["error"], "backend failed");
+    assert_ne!(segment["content"], "Do not persist as success");
+
+    let events = service
+        .read_events_after(
+            "conversation-stream-error-final-text",
+            "/projects/stream-error-final-text",
+            0,
+        )
+        .expect("events");
+    assert!(events.iter().any(|event| {
+        event["type"] == "turn_upsert"
+            && event["turn"]["id"] == prepared.assistant_turn_id
+            && event["turn"]["status"] == "failed"
+            && event["turn"]["token_usage"]["total"]["inputTokens"] == json!(9)
+    }));
+    assert!(events
+        .iter()
+        .any(|event| event["type"] == "conversation_snapshot"));
+}
+
+#[test]
 fn request_user_input_answers_expire_pending_segments_and_are_idempotent() {
     let temp = tempfile::tempdir().expect("tempdir");
     let service = WorkspaceConversationService::new(settings(temp.path()));
@@ -418,6 +977,40 @@ fn request_user_input_answers_expire_pending_segments_and_are_idempotent() {
         )
         .expect_err("missing request");
     assert!(matches!(missing, WorkspaceError::NotFound(_)));
+}
+
+#[derive(Clone)]
+struct ScriptedAgentTurnBackend {
+    requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
+    outputs: Arc<Mutex<VecDeque<AgentTurnOutput>>>,
+}
+
+impl ScriptedAgentTurnBackend {
+    fn new(outputs: Vec<AgentTurnOutput>) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            outputs: Arc::new(Mutex::new(VecDeque::from(outputs))),
+        }
+    }
+
+    fn requests(&self) -> Arc<Mutex<Vec<AgentTurnRequest>>> {
+        Arc::clone(&self.requests)
+    }
+}
+
+impl AgentTurnBackend for ScriptedAgentTurnBackend {
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.requests.lock().expect("requests").push(request);
+        self.outputs
+            .lock()
+            .expect("outputs")
+            .pop_front()
+            .ok_or_else(|| AgentError {
+                message: "No scripted agent output available.".to_string(),
+                retryable: false,
+                raw: None,
+            })
+    }
 }
 
 fn content_delta(channel: &str, text: &str, app_turn_id: &str, item_id: &str) -> TurnStreamEvent {
@@ -550,6 +1143,16 @@ fn segment_by_kind<'a>(segments: &'a [Value], kind: &str) -> &'a Value {
         .iter()
         .find(|segment| segment["kind"] == kind)
         .expect("segment kind")
+}
+
+fn write_state(conversations_dir: &Path, conversation_id: &str, state: Value) {
+    let directory = conversations_dir.join(conversation_id);
+    fs::create_dir_all(&directory).expect("conversation dir");
+    fs::write(
+        directory.join("state.json"),
+        serde_json::to_string_pretty(&state).expect("state json"),
+    )
+    .expect("write state");
 }
 
 fn settings(root: &Path) -> SparkSettings {

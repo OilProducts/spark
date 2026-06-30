@@ -110,11 +110,16 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         let prompt = request.prompt.clone();
         let mut session =
             build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
+        let initial_history_len = session.history.len();
         if let Err(error) = session.process_input(&self.client, prompt) {
-            return Err(agent_adapter_error_from_session(error, &mut session));
+            let output = agent_output_from_session(&mut session, initial_history_len);
+            if agent_turn_output_has_failure(&output) {
+                return Ok(output);
+            }
+            return Err(agent_adapter_error(error));
         }
 
-        Ok(agent_output_from_session(&mut session))
+        Ok(agent_output_from_session(&mut session, initial_history_len))
     }
 }
 
@@ -134,6 +139,7 @@ fn build_agent_session(
         conversation_id,
         project_path,
         prompt: _,
+        history,
         provider,
         model,
         llm_profile,
@@ -193,10 +199,12 @@ fn build_agent_session(
         ..SessionConfig::default()
     };
 
-    Ok(Session::new(profile, execution_environment, config))
+    let mut session = Session::new(profile, execution_environment, config);
+    session.history = history;
+    Ok(session)
 }
 
-fn agent_output_from_session(session: &mut Session) -> AgentTurnOutput {
+fn agent_output_from_session(session: &mut Session, initial_history_len: usize) -> AgentTurnOutput {
     let mut output = AgentTurnOutput::default();
     while let Some(event) = session.next_event() {
         if let Some(raw_line) = raw_log_line_from_event(&event) {
@@ -213,11 +221,24 @@ fn agent_output_from_session(session: &mut Session) -> AgentTurnOutput {
         }
     }
 
-    if let Some(assistant) = session.history.iter().rev().find_map(|turn| match turn {
-        HistoryTurn::Assistant(assistant) => Some(assistant),
-        _ => None,
-    }) {
-        output.final_assistant_text = Some(assistant.text());
+    if let Some((assistant, text)) = session
+        .history
+        .iter()
+        .skip(initial_history_len)
+        .rev()
+        .find_map(|turn| match turn {
+            HistoryTurn::Assistant(assistant) => {
+                let text = assistant.text();
+                if non_empty(&text).is_some() {
+                    Some((assistant, text))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+    {
+        output.final_assistant_text = Some(text);
         if output.token_usage.is_none() {
             output.token_usage = assistant
                 .usage
@@ -227,6 +248,14 @@ fn agent_output_from_session(session: &mut Session) -> AgentTurnOutput {
     }
 
     output
+}
+
+fn agent_turn_output_has_failure(output: &AgentTurnOutput) -> bool {
+    output.thread_resume_failure.is_some()
+        || output
+            .events
+            .iter()
+            .any(|event| event.kind == spark_common::events::TurnStreamEventKind::Error)
 }
 
 fn raw_log_line_from_event(event: &SessionEvent) -> Option<AgentRawLogLine> {
@@ -525,36 +554,6 @@ fn agent_adapter_error(error: AdapterError) -> AgentError {
         message: format_adapter_error(&error),
         retryable: error.retryable,
         raw: serde_json::to_value(error).ok(),
-    }
-}
-
-fn agent_adapter_error_from_session(error: AdapterError, session: &mut Session) -> AgentError {
-    let message = format_adapter_error(&error);
-    let retryable = error.retryable;
-    let adapter_error = serde_json::to_value(&error).ok();
-    let mut session_events = Vec::new();
-    let mut thread_resume_failure = None;
-
-    while let Some(event) = session.next_event() {
-        if thread_resume_failure.is_none() {
-            thread_resume_failure = thread_resume_failure_from_event(&event);
-        }
-        if let Ok(value) = serde_json::to_value(&event) {
-            session_events.push(value);
-        }
-    }
-
-    let raw = Some(json!({
-        "adapter_error": adapter_error,
-        "session_state": format!("{:?}", session.state).to_ascii_lowercase(),
-        "session_events": session_events,
-        "thread_resume_failure": thread_resume_failure,
-    }));
-
-    AgentError {
-        message,
-        retryable,
-        raw,
     }
 }
 

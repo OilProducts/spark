@@ -367,7 +367,7 @@
         "tests/compat/agent"
       ],
       "status": "completed",
-      "milestone_id": "M4-core-loop-error-shutdown",
+      "milestone_id": "M5-subagents-shared-environment",
       "notes": "M4 completed recoverable tool errors, provider error taxonomy, context warnings, turn-limit behavior, command and stream abort cleanup, event flushing, and Spark-compatible structured error payloads. M5 completed subagent-specific shutdown cleanup for active child handles."
     },
     {
@@ -402,7 +402,7 @@
       ],
       "status": "pending",
       "milestone_id": "M6-spark-codergen-integration",
-      "notes": "This requirement translates the language-agnostic library spec into the repository's distribution-readiness goal."
+      "notes": "M6A1 completed the Workspace service-level Rust agent turn execution sub-scope. REQ-015 remains pending for HTTP route wiring, request-user-input backend lifecycle, Python facade boundary, codergen-adjacent runtime integration, and final integration closure."
     },
     {
       "id": "REQ-016",

@@ -5,11 +5,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use spark_common::events::TurnStreamEvent;
 
+use crate::history::HistoryTurn;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentTurnRequest {
     pub conversation_id: String,
     pub project_path: String,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<HistoryTurn>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,7 +57,7 @@ pub struct AgentTurnOutput {
     pub thread_resume_failure: Option<AgentThreadResumeFailure>,
 }
 
-pub trait AgentTurnBackend {
+pub trait AgentTurnBackend: Send + Sync {
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError>;
 }
 
