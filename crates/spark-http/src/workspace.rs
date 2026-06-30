@@ -288,13 +288,19 @@ async fn send_conversation_turn(
 
 async fn answer_conversation_request_user_input(
     State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath((conversation_id, request_id)): AxumPath<(String, String)>,
     payload: Result<Json<ConversationRequestUserInputAnswerRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
     let project_path = request.project_path.clone();
-    let service = WorkspaceConversationService::new((*settings).clone());
+    let service = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+    );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let updated =
         service.submit_request_user_input_answer(&conversation_id, &request_id, request)?;

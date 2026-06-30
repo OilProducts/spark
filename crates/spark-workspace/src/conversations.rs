@@ -10,8 +10,9 @@ use attractor_api::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use spark_agent_adapter::{
-    AgentError, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
-    AssistantTurn, HistoryTurn, RustLlmAgentTurnBackend, UserTurn,
+    AgentError, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure, AgentTurnBackend,
+    AgentTurnOutput, AgentTurnRequest, AssistantTurn, HistoryTurn, RustLlmAgentTurnBackend,
+    UserTurn,
 };
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
@@ -246,6 +247,15 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
         let client = unified_llm_adapter::Client::from_env_and_profiles(&self.config_dir, None)
             .map_err(adapter_error_to_agent_error)?;
         RustLlmAgentTurnBackend::new(client).run_turn(request)
+    }
+
+    fn answer_request_user_input(
+        &self,
+        request: AgentRequestUserInputAnswerRequest,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let client = unified_llm_adapter::Client::from_env_and_profiles(&self.config_dir, None)
+            .map_err(adapter_error_to_agent_error)?;
+        RustLlmAgentTurnBackend::new(client).answer_request_user_input(request)
     }
 }
 
@@ -892,63 +902,135 @@ impl WorkspaceConversationService {
             return Err(WorkspaceError::Conflict(message.to_string()));
         }
 
+        let actual_request_id = request_record
+            .get("request_id")
+            .and_then(Value::as_str)
+            .and_then(non_empty_string)
+            .unwrap_or_else(|| lookup_id.clone());
+        let assistant_turn_id = segment
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .and_then(non_empty_string)
+            .ok_or_else(|| {
+                WorkspaceError::Internal(
+                    "Conversation input request is missing its assistant turn.".to_string(),
+                )
+            })?;
+        let effective_chat_mode = normalize_chat_mode(
+            snapshot
+                .get("chat_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("chat"),
+        );
+        let effective_provider = snapshot
+            .get("provider")
+            .and_then(Value::as_str)
+            .map(validate_provider)
+            .transpose()?
+            .unwrap_or_else(|| "codex".to_string());
+        let effective_model = snapshot
+            .get("model")
+            .and_then(Value::as_str)
+            .and_then(non_empty_string);
+        let effective_profile = snapshot
+            .get("llm_profile")
+            .and_then(Value::as_str)
+            .and_then(non_empty_string);
+        let effective_reasoning_effort = snapshot
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .and_then(non_empty_string);
+        let history = agent_history_from_snapshot(&snapshot, &[&assistant_turn_id]);
+        let normalized_answer_strings = request_user_input_answer_strings(&normalized_answers);
         let submitted_at = iso_now();
         request_record.insert(
             "answers".to_string(),
             Value::Object(normalized_answers.clone()),
         );
         request_record.insert("submitted_at".to_string(), json!(submitted_at));
-        request_record.insert("status".to_string(), json!("expired"));
+        request_record.insert("status".to_string(), json!("answered"));
 
-        let mut emitted_payloads = Vec::new();
-        let mut updated_segment = segment.clone();
-        if let Some(object) = updated_segment.as_object_mut() {
-            object.insert("status".to_string(), json!("failed"));
-            object.insert("updated_at".to_string(), json!(submitted_at));
-            object.insert("completed_at".to_string(), json!(submitted_at));
-            object.insert("error".to_string(), json!(REQUEST_USER_INPUT_EXPIRED_ERROR));
-            object.insert(
-                "content".to_string(),
-                json!(request_user_input_answer_summary(&request_record)),
-            );
-            object.insert(
-                "request_user_input".to_string(),
-                Value::Object(request_record),
-            );
-        }
+        let updated_segment =
+            answered_request_user_input_segment(&segment, &request_record, &submitted_at);
         upsert_segment(&mut snapshot, updated_segment.clone());
-        let assistant_turn_id = updated_segment
-            .get("turn_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        if let Some(assistant_turn_id) = assistant_turn_id {
-            if let Some(turn) = find_turn_mut(&mut snapshot, &assistant_turn_id) {
-                if turn.get("role").and_then(Value::as_str) == Some("assistant")
-                    && matches!(
-                        turn.get("status").and_then(Value::as_str),
-                        Some("pending" | "streaming" | "failed")
-                    )
-                {
-                    set_string_value(turn, "status", "failed");
-                    set_string_value(turn, "error", REQUEST_USER_INPUT_EXPIRED_ERROR);
-                    let turn = turn.clone();
-                    emitted_payloads.push(build_turn_upsert_payload(&snapshot, &turn));
-                }
-            }
-        }
-        emitted_payloads.push(build_segment_upsert_payload(&snapshot, &updated_segment));
-        touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-        emitted_payloads.push(build_conversation_snapshot_payload(&snapshot));
-        stamp_progress_payloads_with_state_revision(&mut snapshot, &mut emitted_payloads);
-        repository.write_snapshot(&snapshot)?;
-        append_events(
+
+        let mut emitted_payloads = vec![build_segment_upsert_payload(&snapshot, &updated_segment)];
+        persist_snapshot_with_payloads(
             &repository,
             conversation_id,
             &project_path,
-            &emitted_payloads,
+            &mut snapshot,
+            &mut emitted_payloads,
         )?;
-        prepare_snapshot_for_ui(&mut snapshot, conversation_id);
-        Ok(snapshot)
+
+        let answer_request = AgentRequestUserInputAnswerRequest {
+            conversation_id: conversation_id.to_string(),
+            project_path: project_path.clone(),
+            request_id: actual_request_id.clone(),
+            assistant_turn_id: assistant_turn_id.clone(),
+            answers: normalized_answer_strings,
+            request_user_input: Some(Value::Object(request_record.clone())),
+            history,
+            provider: Some(effective_provider),
+            model: effective_model,
+            llm_profile: effective_profile,
+            reasoning_effort: effective_reasoning_effort,
+            chat_mode: Some(effective_chat_mode.clone()),
+            metadata: BTreeMap::from([
+                (
+                    "spark.workspace.assistant_turn_id".to_string(),
+                    json!(assistant_turn_id.clone()),
+                ),
+                (
+                    "spark.workspace.request_user_input.segment_id".to_string(),
+                    json!(segment_id.clone()),
+                ),
+                (
+                    "spark.workspace.request_user_input.lookup_id".to_string(),
+                    json!(lookup_id.clone()),
+                ),
+                (
+                    "spark.workspace.request_user_input.submitted_at".to_string(),
+                    json!(submitted_at.clone()),
+                ),
+            ]),
+        };
+
+        let output = match self
+            .agent_turn_backend
+            .answer_request_user_input(answer_request)
+        {
+            Ok(output) if !request_user_input_answer_cannot_resume(&output) => output,
+            Ok(_) => {
+                let mut emitted_payloads = Vec::new();
+                let expired_at = iso_now();
+                expire_request_user_input_answer_in_snapshot(
+                    &mut snapshot,
+                    &segment_id,
+                    request_record,
+                    &expired_at,
+                    &mut emitted_payloads,
+                );
+                persist_snapshot_with_payloads(
+                    &repository,
+                    conversation_id,
+                    &project_path,
+                    &mut snapshot,
+                    &mut emitted_payloads,
+                )?;
+                prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+                return Ok(snapshot);
+            }
+            Err(error) => return Err(agent_turn_backend_error(error)),
+        };
+
+        self.ingest_agent_turn_output(
+            conversation_id,
+            &project_path,
+            &assistant_turn_id,
+            &effective_chat_mode,
+            output,
+        )
     }
 
     pub fn create_flow_run_request_by_handle(
@@ -3833,6 +3915,100 @@ fn request_user_input_answer_summary(request: &Map<String, Value>) -> String {
     }
 }
 
+fn request_user_input_answer_strings(answers: &Map<String, Value>) -> BTreeMap<String, String> {
+    answers
+        .iter()
+        .filter_map(|(key, value)| {
+            value
+                .as_str()
+                .and_then(non_empty_string)
+                .map(|answer| (key.clone(), answer))
+        })
+        .collect()
+}
+
+fn answered_request_user_input_segment(
+    segment: &Value,
+    request_record: &Map<String, Value>,
+    submitted_at: &str,
+) -> Value {
+    let mut updated_segment = segment.clone();
+    if let Some(object) = updated_segment.as_object_mut() {
+        object.insert("status".to_string(), json!("complete"));
+        object.insert("updated_at".to_string(), json!(submitted_at));
+        object.insert("completed_at".to_string(), json!(submitted_at));
+        object.insert(
+            "content".to_string(),
+            json!(request_user_input_answer_summary(request_record)),
+        );
+        object.insert(
+            "request_user_input".to_string(),
+            Value::Object(request_record.clone()),
+        );
+    }
+    remove_key(&mut updated_segment, "error");
+    updated_segment
+}
+
+fn expire_request_user_input_answer_in_snapshot(
+    snapshot: &mut Value,
+    segment_id: &str,
+    mut request_record: Map<String, Value>,
+    expired_at: &str,
+    emitted_payloads: &mut Vec<Value>,
+) {
+    request_record.insert("status".to_string(), json!("expired"));
+    request_record
+        .entry("submitted_at".to_string())
+        .or_insert_with(|| json!(expired_at));
+    let Some(segment) = find_segment(snapshot, segment_id).cloned() else {
+        return;
+    };
+    let mut updated_segment = segment.clone();
+    if let Some(object) = updated_segment.as_object_mut() {
+        object.insert("status".to_string(), json!("failed"));
+        object.insert("updated_at".to_string(), json!(expired_at));
+        object.insert("completed_at".to_string(), json!(expired_at));
+        object.insert("error".to_string(), json!(REQUEST_USER_INPUT_EXPIRED_ERROR));
+        object.insert(
+            "content".to_string(),
+            json!(request_user_input_answer_summary(&request_record)),
+        );
+        object.insert(
+            "request_user_input".to_string(),
+            Value::Object(request_record),
+        );
+    }
+    upsert_segment(snapshot, updated_segment.clone());
+    if let Some(assistant_turn_id) = updated_segment.get("turn_id").and_then(Value::as_str) {
+        if let Some(turn) = find_turn_mut(snapshot, assistant_turn_id) {
+            if turn.get("role").and_then(Value::as_str) == Some("assistant")
+                && matches!(
+                    turn.get("status").and_then(Value::as_str),
+                    Some("pending" | "streaming" | "failed")
+                )
+            {
+                set_string_value(turn, "status", "failed");
+                set_string_value(turn, "error", REQUEST_USER_INPUT_EXPIRED_ERROR);
+                let turn = turn.clone();
+                emitted_payloads.push(build_turn_upsert_payload(snapshot, &turn));
+            }
+        }
+    }
+    emitted_payloads.push(build_segment_upsert_payload(snapshot, &updated_segment));
+}
+
+fn request_user_input_answer_cannot_resume(output: &AgentTurnOutput) -> bool {
+    output
+        .thread_resume_failure
+        .as_ref()
+        .and_then(|failure| failure.error_code.as_deref())
+        .is_some_and(|error_code| error_code.starts_with("request_user_input_"))
+        || output.events.iter().any(|event| {
+            event.source.raw_kind.as_deref() == Some("request_user_input_resume_failure")
+        })
+}
+
 fn normalize_request_user_input_answers(
     request: &Map<String, Value>,
     answers: &BTreeMap<String, String>,
@@ -4562,6 +4738,20 @@ fn append_events(
         repository.append_conversation_event(conversation_id, project_path, event)?;
     }
     Ok(())
+}
+
+fn persist_snapshot_with_payloads(
+    repository: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+    snapshot: &mut Value,
+    emitted_payloads: &mut Vec<Value>,
+) -> WorkspaceResult<()> {
+    touch_snapshot(repository, snapshot, conversation_id, project_path)?;
+    emitted_payloads.push(build_conversation_snapshot_payload(snapshot));
+    stamp_progress_payloads_with_state_revision(snapshot, emitted_payloads);
+    repository.write_snapshot(snapshot)?;
+    append_events(repository, conversation_id, project_path, emitted_payloads)
 }
 
 fn append_mode_change_turn(snapshot: &mut Value, chat_mode: &str) -> Value {

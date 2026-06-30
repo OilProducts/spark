@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use spark_common::events::TurnStreamEvent;
 
 use crate::history::HistoryTurn;
@@ -12,6 +12,32 @@ pub struct AgentTurnRequest {
     pub conversation_id: String,
     pub project_path: String,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<HistoryTurn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_mode: Option<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentRequestUserInputAnswerRequest {
+    pub conversation_id: String,
+    pub project_path: String,
+    pub request_id: String,
+    pub assistant_turn_id: String,
+    #[serde(default)]
+    pub answers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_user_input: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<HistoryTurn>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +85,24 @@ pub struct AgentTurnOutput {
 
 pub trait AgentTurnBackend: Send + Sync {
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError>;
+
+    fn answer_request_user_input(
+        &self,
+        request: AgentRequestUserInputAnswerRequest,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        Err(AgentError {
+            message: "request-user-input answer is not supported by this agent backend."
+                .to_string(),
+            retryable: false,
+            raw: Some(json!({
+                "kind": "unsupported_operation",
+                "operation": "request_user_input_answer",
+                "conversation_id": request.conversation_id,
+                "request_id": request.request_id,
+                "assistant_turn_id": request.assistant_turn_id,
+            })),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

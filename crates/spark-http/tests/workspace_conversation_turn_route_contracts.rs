@@ -6,13 +6,14 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    AgentError, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
+    AgentError, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure, AgentTurnBackend,
+    AgentTurnOutput, AgentTurnRequest,
 };
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::settings::SparkSettings;
-use spark_http::{build_app, build_app_with_agent_turn_backend, build_app_with_rust_llm_client};
+use spark_http::{build_app_with_agent_turn_backend, build_app_with_rust_llm_client};
 use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService};
 use tower::ServiceExt;
 use unified_llm_adapter::{
@@ -475,7 +476,7 @@ async fn conversation_turn_route_returns_workspace_error_for_backend_trait_failu
 }
 
 #[tokio::test]
-async fn request_user_input_answer_route_expires_pending_requests() {
+async fn request_user_input_answer_route_continues_pending_requests() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = WorkspaceConversationService::new(settings.clone());
@@ -501,7 +502,16 @@ async fn request_user_input_answer_route_expires_pending_requests() {
             },
         )
         .expect("pending request");
-    let app = build_app(settings);
+    let backend = ScriptedAgentTurnBackend::with_answer_outputs(
+        Vec::new(),
+        vec![AgentTurnOutput {
+            final_assistant_text: Some("Route answer after input.".to_string()),
+            token_usage: Some(json!({"total": {"inputTokens": 4, "outputTokens": 2}})),
+            ..AgentTurnOutput::default()
+        }],
+    );
+    let answer_requests = backend.answer_requests();
+    let app = build_app_with_agent_turn_backend(settings, Arc::new(backend));
 
     let answered = request_json(
         app.clone(),
@@ -520,8 +530,34 @@ async fn request_user_input_answer_route_expires_pending_requests() {
         .iter()
         .find(|segment| segment["kind"] == "request_user_input")
         .expect("request segment");
-    assert_eq!(segment["request_user_input"]["status"], "expired");
-    assert_eq!(segment["status"], "failed");
+    assert_eq!(segment["request_user_input"]["status"], "answered");
+    assert_eq!(segment["status"], "complete");
+    let assistant_turn = answered.1["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == prepared.assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "complete");
+    assert_eq!(assistant_turn["content"], "Route answer after input.");
+    assert_eq!(
+        assistant_turn["token_usage"]["total"]["inputTokens"],
+        json!(4)
+    );
+    let answer_requests = answer_requests.lock().expect("answer requests");
+    assert_eq!(answer_requests.len(), 1);
+    assert_eq!(
+        answer_requests[0].conversation_id,
+        "conversation-http-input"
+    );
+    assert_eq!(answer_requests[0].project_path, "/projects/http-input");
+    assert_eq!(answer_requests[0].request_id, "input-1");
+    assert_eq!(
+        answer_requests[0].assistant_turn_id,
+        prepared.assistant_turn_id
+    );
+    assert_eq!(answer_requests[0].answers["decision"], "Approve");
+    drop(answer_requests);
 
     let changed = request_json(
         app.clone(),
@@ -550,6 +586,88 @@ async fn request_user_input_answer_route_expires_pending_requests() {
         missing.1,
         json!({"detail": "Unknown conversation input request: missing"})
     );
+}
+
+#[tokio::test]
+async fn request_user_input_answer_route_returns_backend_errors_without_expiring_request() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let service = WorkspaceConversationService::new(settings.clone());
+    let (prepared, _) = service
+        .start_turn(
+            "conversation-http-input-backend-error",
+            ConversationTurnRequest {
+                project_path: "/projects/http-input-backend-error".to_string(),
+                message: "Need input".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start");
+    service
+        .ingest_agent_turn_output(
+            "conversation-http-input-backend-error",
+            "/projects/http-input-backend-error",
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![request_user_input_event()],
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("pending request");
+    let backend = ScriptedAgentTurnBackend::with_answer_outputs(Vec::new(), Vec::new());
+    let answer_requests = backend.answer_requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+
+    let response = request_json(
+        app,
+        "POST",
+        "/workspace/api/conversations/conversation-http-input-backend-error/request-user-input/decision/answer",
+        Some(json!({
+            "project_path": "/projects/http-input-backend-error",
+            "answers": {"decision": "Approve"}
+        })),
+    )
+    .await;
+
+    assert_eq!(response.0, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response.1,
+        json!({"detail": "No scripted agent answer output available."})
+    );
+    assert!(response.1.get("segments").is_none());
+    let answer_requests = answer_requests.lock().expect("answer requests");
+    assert_eq!(answer_requests.len(), 1);
+    assert_eq!(answer_requests[0].request_id, "input-1");
+    drop(answer_requests);
+
+    let snapshot = WorkspaceConversationService::new(settings)
+        .get_snapshot(
+            "conversation-http-input-backend-error",
+            Some("/projects/http-input-backend-error"),
+        )
+        .expect("stored snapshot");
+    let segment = snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .find(|segment| segment["kind"] == "request_user_input")
+        .expect("request segment");
+    assert_eq!(segment["status"], "complete");
+    assert_eq!(segment["request_user_input"]["status"], "answered");
+    assert_eq!(
+        segment["request_user_input"]["answers"]["decision"],
+        "Approve"
+    );
+    assert!(segment.get("error").is_none());
+    let assistant_turn = snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == prepared.assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "streaming");
+    assert!(assistant_turn.get("error").is_none());
 }
 
 async fn request_json(
@@ -618,18 +736,33 @@ async fn request_text(
 struct ScriptedAgentTurnBackend {
     requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
     outputs: Arc<Mutex<VecDeque<AgentTurnOutput>>>,
+    answer_requests: Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>>,
+    answer_outputs: Arc<Mutex<VecDeque<AgentTurnOutput>>>,
 }
 
 impl ScriptedAgentTurnBackend {
     fn new(outputs: Vec<AgentTurnOutput>) -> Self {
+        Self::with_answer_outputs(outputs, Vec::new())
+    }
+
+    fn with_answer_outputs(
+        outputs: Vec<AgentTurnOutput>,
+        answer_outputs: Vec<AgentTurnOutput>,
+    ) -> Self {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             outputs: Arc::new(Mutex::new(VecDeque::from(outputs))),
+            answer_requests: Arc::new(Mutex::new(Vec::new())),
+            answer_outputs: Arc::new(Mutex::new(VecDeque::from(answer_outputs))),
         }
     }
 
     fn requests(&self) -> Arc<Mutex<Vec<AgentTurnRequest>>> {
         Arc::clone(&self.requests)
+    }
+
+    fn answer_requests(&self) -> Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>> {
+        Arc::clone(&self.answer_requests)
     }
 }
 
@@ -642,6 +775,25 @@ impl AgentTurnBackend for ScriptedAgentTurnBackend {
             .pop_front()
             .ok_or_else(|| AgentError {
                 message: "No scripted agent output available.".to_string(),
+                retryable: false,
+                raw: None,
+            })
+    }
+
+    fn answer_request_user_input(
+        &self,
+        request: AgentRequestUserInputAnswerRequest,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        self.answer_requests
+            .lock()
+            .expect("answer requests")
+            .push(request);
+        self.answer_outputs
+            .lock()
+            .expect("answer outputs")
+            .pop_front()
+            .ok_or_else(|| AgentError {
+                message: "No scripted agent answer output available.".to_string(),
                 retryable: false,
                 raw: None,
             })

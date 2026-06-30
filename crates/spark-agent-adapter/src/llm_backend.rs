@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
+use spark_common::events::{TurnStreamEvent, TurnStreamEventKind, TurnStreamSource};
 use unified_llm_adapter::{
     is_display_model_placeholder, resolve_high_level_provider_and_model, AdapterError, Client,
     HighLevelLlmResolutionInputs, LlmProfileRoute, Message, ModelCapabilities, Request,
 };
 
 use crate::agent::{
-    AgentError, AgentRawLogLine, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput,
-    AgentTurnRequest,
+    AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
+    AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
 };
 use crate::codergen::{
     CodergenBackend, CodergenBackendOutput, CodergenBackendRequest, CodergenBackendResponse,
@@ -121,6 +122,84 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
 
         Ok(agent_output_from_session(&mut session, initial_history_len))
     }
+
+    fn answer_request_user_input(
+        &self,
+        request: AgentRequestUserInputAnswerRequest,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let continuation = match request_user_input_answer_continuation(&request) {
+            Ok(continuation) => continuation,
+            Err(failure) => {
+                return Ok(request_user_input_resume_failure_output(
+                    request.request_id.as_str(),
+                    failure,
+                ));
+            }
+        };
+
+        let AgentRequestUserInputAnswerRequest {
+            conversation_id,
+            project_path,
+            request_id,
+            assistant_turn_id,
+            answers,
+            request_user_input,
+            history,
+            provider,
+            model,
+            llm_profile,
+            reasoning_effort,
+            chat_mode,
+            mut metadata,
+        } = request;
+        metadata.insert(
+            "spark.runtime.request_user_input.request_id".to_string(),
+            json!(request_id),
+        );
+        metadata.insert(
+            "spark.runtime.request_user_input.assistant_turn_id".to_string(),
+            json!(assistant_turn_id),
+        );
+        metadata.insert(
+            "spark.runtime.request_user_input.answers".to_string(),
+            json!(answers),
+        );
+        if let Some(request_user_input) = request_user_input {
+            metadata.insert(
+                "spark.runtime.request_user_input".to_string(),
+                request_user_input,
+            );
+        }
+
+        let mut session = build_agent_session_for_source(
+            &self.client,
+            AgentTurnRequest {
+                conversation_id,
+                project_path,
+                prompt: String::new(),
+                history,
+                provider,
+                model,
+                llm_profile,
+                reasoning_effort,
+                chat_mode,
+                metadata,
+            },
+            "request_user_input_answer",
+        )
+        .map_err(agent_adapter_error)?;
+        let initial_history_len = session.history.len();
+        session.mark_awaiting_input(continuation.pending_question);
+        if let Err(error) = session.process_input(&self.client, continuation.answer_content) {
+            let output = agent_output_from_session(&mut session, initial_history_len);
+            if agent_turn_output_has_failure(&output) {
+                return Ok(output);
+            }
+            return Err(agent_adapter_error(error));
+        }
+
+        Ok(agent_output_from_session(&mut session, initial_history_len))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +213,14 @@ struct AgentSessionSelection {
 fn build_agent_session(
     client: &Client,
     request: AgentTurnRequest,
+) -> Result<Session, AdapterError> {
+    build_agent_session_for_source(client, request, "agent_turn")
+}
+
+fn build_agent_session_for_source(
+    client: &Client,
+    request: AgentTurnRequest,
+    source: &str,
 ) -> Result<Session, AdapterError> {
     let AgentTurnRequest {
         conversation_id,
@@ -160,7 +247,7 @@ fn build_agent_session(
     let metadata_model = normalize_optional(model.as_deref());
     let metadata_llm_profile = normalize_optional(llm_profile.as_deref());
     metadata.extend(llm_metadata(
-        "agent_turn",
+        source,
         [
             ("conversation_id", Some(conversation_id.as_str())),
             ("project_path", Some(project_path.as_str())),
@@ -202,6 +289,234 @@ fn build_agent_session(
     let mut session = Session::new(profile, execution_environment, config);
     session.history = history;
     Ok(session)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestUserInputAnswerContinuation {
+    pending_question: String,
+    answer_content: String,
+}
+
+fn request_user_input_answer_continuation(
+    request: &AgentRequestUserInputAnswerRequest,
+) -> Result<RequestUserInputAnswerContinuation, AgentThreadResumeFailure> {
+    let request_id = non_empty(&request.request_id).ok_or_else(|| {
+        request_user_input_resume_failure(
+            "request-user-input answer could not resume because the request id is empty.",
+            "request_user_input_missing_request_id",
+            json!({}),
+        )
+    })?;
+    let answers = normalize_request_user_input_answer_map(&request.answers);
+    if answers.is_empty() {
+        return Err(request_user_input_resume_failure(
+            "request-user-input answer could not resume because no answers were supplied.",
+            "request_user_input_missing_answers",
+            json!({ "request_id": request_id }),
+        ));
+    }
+
+    if let Some(payload_id) = request
+        .request_user_input
+        .as_ref()
+        .and_then(request_user_input_payload_request_id)
+    {
+        if payload_id != request_id {
+            return Err(request_user_input_resume_failure(
+                "request-user-input answer could not resume because the persisted request id does not match the answer request.",
+                "request_user_input_id_mismatch",
+                json!({
+                    "request_id": request_id,
+                    "payload_request_id": payload_id,
+                }),
+            ));
+        }
+    }
+
+    if matches!(
+        request
+            .request_user_input
+            .as_ref()
+            .and_then(request_user_input_payload_status)
+            .as_deref(),
+        Some("expired")
+    ) {
+        return Err(request_user_input_resume_failure(
+            "request-user-input answer could not resume because the persisted request is no longer pending.",
+            "request_user_input_not_pending",
+            json!({ "request_id": request_id }),
+        ));
+    }
+
+    let answer_content =
+        request_user_input_answer_content(&answers, request.request_user_input.as_ref());
+    if answer_content.trim().is_empty() {
+        return Err(request_user_input_resume_failure(
+            "request-user-input answer could not resume because the normalized answers were empty.",
+            "request_user_input_missing_answers",
+            json!({ "request_id": request_id }),
+        ));
+    }
+
+    Ok(RequestUserInputAnswerContinuation {
+        pending_question: request_user_input_pending_question(
+            request_id,
+            request.request_user_input.as_ref(),
+        ),
+        answer_content,
+    })
+}
+
+fn normalize_request_user_input_answer_map(
+    answers: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    answers
+        .iter()
+        .filter_map(|(key, value)| {
+            let key = non_empty(key)?;
+            let value = non_empty(value)?;
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn request_user_input_payload_request_id(payload: &Value) -> Option<String> {
+    let object = payload.as_object()?;
+    object
+        .get("request_id")
+        .or_else(|| object.get("itemId"))
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+        .map(str::to_string)
+}
+
+fn request_user_input_payload_status(payload: &Value) -> Option<String> {
+    payload
+        .as_object()?
+        .get("status")
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+        .map(|status| status.to_ascii_lowercase())
+}
+
+fn request_user_input_pending_question(request_id: &str, payload: Option<&Value>) -> String {
+    let prompts = request_user_input_questions(payload)
+        .into_iter()
+        .filter_map(|(_, prompt)| non_empty(&prompt).map(str::to_string))
+        .collect::<Vec<_>>();
+    match prompts.len() {
+        0 => format!("User input requested for {request_id}."),
+        1 => prompts[0].clone(),
+        count => format!("{count} questions need user input."),
+    }
+}
+
+fn request_user_input_answer_content(
+    answers: &BTreeMap<String, String>,
+    payload: Option<&Value>,
+) -> String {
+    let questions = request_user_input_questions(payload);
+    let mut consumed_question_ids = Vec::new();
+    let mut lines = Vec::new();
+    for (question_id, prompt) in questions {
+        if let Some(answer) = answers.get(&question_id) {
+            lines.push(request_user_input_answer_line(
+                question_id.as_str(),
+                prompt.as_str(),
+                answer.as_str(),
+            ));
+            consumed_question_ids.push(question_id);
+        }
+    }
+    for (question_id, answer) in answers {
+        if consumed_question_ids
+            .iter()
+            .any(|consumed| consumed == question_id)
+        {
+            continue;
+        }
+        lines.push(request_user_input_answer_line(
+            question_id.as_str(),
+            "",
+            answer.as_str(),
+        ));
+    }
+    lines.join("\n\n")
+}
+
+fn request_user_input_questions(payload: Option<&Value>) -> Vec<(String, String)> {
+    payload
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("questions"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(index, question)| {
+            let object = question.as_object()?;
+            let question_id = object
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("question-{}", index + 1));
+            let prompt = object
+                .get("question")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(str::to_string)
+                .unwrap_or_default();
+            Some((question_id, prompt))
+        })
+        .collect()
+}
+
+fn request_user_input_answer_line(question_id: &str, prompt: &str, answer: &str) -> String {
+    if let Some(prompt) = non_empty(prompt) {
+        format!("{prompt}\nAnswer: {answer}")
+    } else {
+        format!("{question_id}: {answer}")
+    }
+}
+
+fn request_user_input_resume_failure(
+    message: impl Into<String>,
+    error_code: impl Into<String>,
+    details: Value,
+) -> AgentThreadResumeFailure {
+    AgentThreadResumeFailure {
+        message: message.into(),
+        error_code: Some(error_code.into()),
+        details: Some(details),
+    }
+}
+
+fn request_user_input_resume_failure_output(
+    request_id: &str,
+    failure: AgentThreadResumeFailure,
+) -> AgentTurnOutput {
+    AgentTurnOutput {
+        events: vec![TurnStreamEvent {
+            kind: TurnStreamEventKind::Error,
+            channel: None,
+            source: TurnStreamSource {
+                backend: Some(BACKEND_NAME.to_string()),
+                item_id: non_empty(request_id).map(str::to_string),
+                raw_kind: Some("request_user_input_resume_failure".to_string()),
+                ..TurnStreamSource::default()
+            },
+            content_delta: None,
+            message: Some(failure.message.clone()),
+            tool_call: None,
+            request_user_input: None,
+            token_usage: None,
+            error: Some(failure.message.clone()),
+            phase: Some("request_user_input_answer".to_string()),
+            status: Some("failed".to_string()),
+        }],
+        thread_resume_failure: Some(failure),
+        ..AgentTurnOutput::default()
+    }
 }
 
 fn agent_output_from_session(session: &mut Session, initial_history_len: usize) -> AgentTurnOutput {

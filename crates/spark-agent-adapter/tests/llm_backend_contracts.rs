@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    AgentTurnBackend, AgentTurnRequest, AssistantTurn, CodergenBackend, CodergenBackendRequest,
-    HistoryTurn, RustLlmAgentTurnBackend, RustLlmCodergenBackend, UserTurn,
+    AgentRequestUserInputAnswerRequest, AgentTurnBackend, AgentTurnRequest, AssistantTurn,
+    CodergenBackend, CodergenBackendRequest, HistoryTurn, RustLlmAgentTurnBackend,
+    RustLlmCodergenBackend, UserTurn,
 };
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
 use unified_llm_adapter::{
@@ -60,6 +61,64 @@ fn agent_turn_request_round_trips_selector_metadata_and_history() {
     assert_eq!(encoded["history"][1]["content"], "Previous answer");
 
     let decoded: AgentTurnRequest = serde_json::from_value(encoded).expect("deserialize request");
+    assert_eq!(decoded, request);
+}
+
+#[test]
+fn request_user_input_answer_request_round_trips_resume_lifecycle_fields() {
+    let request = AgentRequestUserInputAnswerRequest {
+        conversation_id: "conversation-answer".to_string(),
+        project_path: "/repo".to_string(),
+        request_id: "request-1".to_string(),
+        assistant_turn_id: "assistant-turn-1".to_string(),
+        answers: BTreeMap::from([
+            ("constraints".to_string(), "Keep scope narrow".to_string()),
+            ("path_choice".to_string(), "Inline card".to_string()),
+        ]),
+        request_user_input: Some(json!({
+            "request_id": "request-1",
+            "status": "pending",
+            "questions": [
+                {
+                    "id": "path_choice",
+                    "header": "Path",
+                    "question": "Which path should I take?",
+                    "question_type": "MULTIPLE_CHOICE",
+                    "options": [{"label": "Inline card"}],
+                    "allow_other": true,
+                    "is_secret": false
+                }
+            ]
+        })),
+        history: vec![
+            HistoryTurn::User(UserTurn::new("Previous question")),
+            HistoryTurn::Assistant(AssistantTurn::new("Previous answer")),
+        ],
+        provider: Some("codex".to_string()),
+        model: Some("gpt-agent".to_string()),
+        llm_profile: Some("implementation".to_string()),
+        reasoning_effort: Some("HIGH".to_string()),
+        chat_mode: Some("agent".to_string()),
+        metadata: BTreeMap::from([("caller".to_string(), json!("workspace"))]),
+    };
+
+    let encoded = serde_json::to_value(&request).expect("serialize answer request");
+    assert_eq!(encoded["conversation_id"], "conversation-answer");
+    assert_eq!(encoded["project_path"], "/repo");
+    assert_eq!(encoded["request_id"], "request-1");
+    assert_eq!(encoded["assistant_turn_id"], "assistant-turn-1");
+    assert_eq!(encoded["answers"]["path_choice"], "Inline card");
+    assert_eq!(encoded["request_user_input"]["status"], "pending");
+    assert_eq!(encoded["history"][0]["role"], "user");
+    assert_eq!(encoded["provider"], "codex");
+    assert_eq!(encoded["model"], "gpt-agent");
+    assert_eq!(encoded["llm_profile"], "implementation");
+    assert_eq!(encoded["reasoning_effort"], "HIGH");
+    assert_eq!(encoded["chat_mode"], "agent");
+    assert_eq!(encoded["metadata"]["caller"], "workspace");
+
+    let decoded: AgentRequestUserInputAnswerRequest =
+        serde_json::from_value(encoded).expect("deserialize answer request");
     assert_eq!(decoded, request);
 }
 
@@ -323,6 +382,280 @@ fn agent_turn_backend_seeds_session_from_request_history_before_current_prompt()
     assert_eq!(request.messages[1], Message::user("Previous question"));
     assert_eq!(request.messages[2], Message::assistant("Previous answer"));
     assert_eq!(request.messages[3], Message::user("Current question"));
+}
+
+#[test]
+fn agent_turn_backend_answers_request_user_input_through_rust_session_lifecycle() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("OPENAI")).expect("client");
+    let backend = RustLlmAgentTurnBackend::new(client);
+
+    let output = backend
+        .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            conversation_id: "conversation-answer".to_string(),
+            project_path: "/repo".to_string(),
+            request_id: "request-1".to_string(),
+            assistant_turn_id: "assistant-turn-1".to_string(),
+            answers: BTreeMap::from([
+                ("constraints".to_string(), "Keep scope narrow".to_string()),
+                ("path_choice".to_string(), "Inline card".to_string()),
+            ]),
+            request_user_input: Some(json!({
+                "request_id": "request-1",
+                "status": "answered",
+                "questions": [
+                    {
+                        "id": "path_choice",
+                        "header": "Path",
+                        "question": "Which path should I take?",
+                        "question_type": "MULTIPLE_CHOICE",
+                        "options": [{"label": "Inline card"}],
+                        "allow_other": true,
+                        "is_secret": false
+                    },
+                    {
+                        "id": "constraints",
+                        "header": "Constraints",
+                        "question": "What constraints matter?",
+                        "question_type": "FREEFORM",
+                        "options": [],
+                        "allow_other": false,
+                        "is_secret": false
+                    }
+                ]
+            })),
+            history: vec![
+                HistoryTurn::User(UserTurn::new("Use request_user_input.")),
+                HistoryTurn::Assistant(AssistantTurn::new("Which path should I take?")),
+            ],
+            provider: None,
+            model: Some("gpt-agent".to_string()),
+            llm_profile: None,
+            reasoning_effort: Some("HIGH".to_string()),
+            chat_mode: Some("agent".to_string()),
+            metadata: BTreeMap::from([("caller".to_string(), json!("workspace"))]),
+        })
+        .expect("answer output");
+
+    assert_eq!(
+        output.final_assistant_text.as_deref(),
+        Some("adapter response for gpt-agent")
+    );
+    assert!(output.thread_resume_failure.is_none());
+    assert_eq!(
+        output
+            .events
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            TurnStreamEventKind::ContentDelta,
+            TurnStreamEventKind::ContentCompleted,
+            TurnStreamEventKind::TokenUsageUpdated,
+            TurnStreamEventKind::TurnCompleted
+        ]
+    );
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.provider.as_deref(), Some("openai"));
+    assert_eq!(request.model, "gpt-agent");
+    assert_eq!(request.messages.len(), 4);
+    assert_eq!(
+        request.messages[1],
+        Message::user("Use request_user_input.")
+    );
+    assert_eq!(
+        request.messages[2],
+        Message::assistant("Which path should I take?")
+    );
+    assert_eq!(request.messages[3].role, MessageRole::User);
+    let answer_message = request.messages[3].text();
+    assert!(answer_message.contains("Inline card"));
+    assert!(answer_message.contains("Keep scope narrow"));
+    assert_eq!(
+        request.metadata["spark.runtime.source"],
+        json!("request_user_input_answer")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.request_user_input.request_id"],
+        json!("request-1")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.request_user_input.assistant_turn_id"],
+        json!("assistant-turn-1")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.request_user_input.answers"]["path_choice"],
+        json!("Inline card")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.request_user_input.answers"]["constraints"],
+        json!("Keep scope narrow")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.request_user_input"]["questions"][0]["question"],
+        json!("Which path should I take?")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.request_user_input"]["questions"][1]["question"],
+        json!("What constraints matter?")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.conversation_id"],
+        json!("conversation-answer")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.project_path"],
+        json!("/repo")
+    );
+    assert_eq!(request.metadata["spark.runtime.chat_mode"], json!("agent"));
+    assert_eq!(
+        request.metadata["spark.runtime.reasoning_effort"],
+        json!("high")
+    );
+    assert_eq!(request.metadata["caller"], json!("workspace"));
+}
+
+#[test]
+fn agent_turn_backend_answer_preserves_profile_selector_semantics() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "implementation",
+            ActiveLlmProfile::new("openai_compatible", Some("local-default".to_string())),
+            adapter,
+        )
+        .expect("profile client");
+    let backend = RustLlmAgentTurnBackend::new(client);
+
+    backend
+        .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            conversation_id: "conversation-profile-answer".to_string(),
+            project_path: "/repo".to_string(),
+            request_id: "request-1".to_string(),
+            assistant_turn_id: "assistant-turn-profile".to_string(),
+            answers: BTreeMap::from([("path_choice".to_string(), "Inline card".to_string())]),
+            request_user_input: Some(json!({
+                "itemId": "request-1",
+                "questions": [
+                    {
+                        "id": "path_choice",
+                        "question": "Which path should I take?",
+                        "options": [{"label": "Inline card"}]
+                    }
+                ]
+            })),
+            history: vec![HistoryTurn::Assistant(AssistantTurn::new(
+                "Which path should I take?",
+            ))],
+            provider: Some("codex".to_string()),
+            model: None,
+            llm_profile: Some("implementation".to_string()),
+            reasoning_effort: None,
+            chat_mode: Some("chat".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("answer output");
+
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.provider.as_deref(), Some("openai_compatible"));
+    assert_eq!(request.model, "local-default");
+    assert_eq!(
+        tool_names(request),
+        [
+            "read_file",
+            "apply_patch",
+            "write_file",
+            "shell",
+            "grep",
+            "glob",
+            "spawn_agent",
+            "send_input",
+            "wait",
+            "close_agent",
+        ]
+    );
+    assert_eq!(
+        request.provider_options,
+        BTreeMap::from([("openai_compatible".to_string(), json!({}))])
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.source"],
+        json!("request_user_input_answer")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.llm_profile"],
+        json!("implementation")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.llm_profile_selector"],
+        json!("implementation")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.provider_selector"],
+        json!("codex")
+    );
+}
+
+#[test]
+fn agent_turn_backend_answer_reports_recoverable_resume_failure_as_output() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("OPENAI")).expect("client");
+    let backend = RustLlmAgentTurnBackend::new(client);
+
+    let output = backend
+        .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            conversation_id: "conversation-answer".to_string(),
+            project_path: "/repo".to_string(),
+            request_id: "request-1".to_string(),
+            assistant_turn_id: "assistant-turn-1".to_string(),
+            answers: BTreeMap::from([("path_choice".to_string(), "Inline card".to_string())]),
+            request_user_input: Some(json!({
+                "request_id": "request-2",
+                "status": "pending",
+                "questions": [{"id": "path_choice", "question": "Which path?"}]
+            })),
+            history: Vec::new(),
+            provider: None,
+            model: Some("gpt-agent".to_string()),
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: Some("agent".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("recoverable resume failure output");
+
+    assert!(calls.lock().expect("calls").is_empty());
+    let failure = output
+        .thread_resume_failure
+        .as_ref()
+        .expect("thread resume failure");
+    assert_eq!(
+        failure.error_code.as_deref(),
+        Some("request_user_input_id_mismatch")
+    );
+    assert_eq!(
+        failure.details.as_ref().unwrap()["request_id"],
+        json!("request-1")
+    );
+    assert_eq!(output.events.len(), 1);
+    assert_eq!(output.events[0].kind, TurnStreamEventKind::Error);
+    assert_eq!(
+        output.events[0].source.item_id.as_deref(),
+        Some("request-1")
+    );
+    assert_eq!(output.events[0].status.as_deref(), Some("failed"));
 }
 
 #[test]

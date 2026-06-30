@@ -11,7 +11,8 @@ use axum::http::{Request, Response, StatusCode};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    AgentError, AgentRawLogLine, AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
+    AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentTurnBackend,
+    AgentTurnOutput, AgentTurnRequest,
 };
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
@@ -19,7 +20,10 @@ use spark_common::events::{
 use spark_common::settings::SparkSettings;
 use spark_http::{build_app, build_app_with_agent_turn_backend};
 use spark_storage::ConversationRepository;
-use spark_workspace::{TriggerCreateRequest, WorkspaceTriggerService};
+use spark_workspace::{
+    ConversationTurnRequest, TriggerCreateRequest, WorkspaceConversationService,
+    WorkspaceTriggerService,
+};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -239,9 +243,9 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
     let mut envelopes = Vec::new();
     for _ in 0..20 {
         let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        let is_snapshot = envelope["type"] == "conversation.snapshot";
+        let cursor = envelope["cursor"]["value"].as_i64().expect("cursor");
         envelopes.push(envelope);
-        if is_snapshot {
+        if cursor >= final_revision {
             break;
         }
     }
@@ -300,6 +304,151 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
     );
 }
 
+#[tokio::test]
+async fn live_route_streams_backend_ingested_revision_range_for_request_user_input_answer_route() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project_path_text = project_path.to_string_lossy().to_string();
+    let service = WorkspaceConversationService::new(settings.clone());
+    let (prepared, _) = service
+        .start_turn(
+            "conversation-live-answer",
+            ConversationTurnRequest {
+                project_path: project_path_text.clone(),
+                message: "Need a live answer.".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    let pending_snapshot = service
+        .ingest_agent_turn_output(
+            "conversation-live-answer",
+            &project_path_text,
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![request_user_input_event()],
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("pending input");
+    let before_revision = pending_snapshot["revision"]
+        .as_i64()
+        .expect("pending revision");
+    let answer_output = AgentTurnOutput {
+        raw_log_lines: vec![AgentRawLogLine {
+            direction: "incoming".to_string(),
+            line: "{\"event\":\"http-live-answer\"}".to_string(),
+        }],
+        events: vec![
+            content_delta("Answered ", "app-turn-live-answer", "final-answer"),
+            content_delta("over live SSE.", "app-turn-live-answer", "final-answer"),
+            token_usage(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
+        ],
+        final_assistant_text: Some("Answered over live SSE.".to_string()),
+        token_usage: Some(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
+        ..AgentTurnOutput::default()
+    };
+    let app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(StaticAgentTurnBackend::from_output(answer_output)),
+    );
+
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?conversation_id=conversation-live-answer&conversation_project_path={}&conversation_revision={before_revision}",
+            url_encode(&project_path_text)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+
+    let posted = request(
+        app,
+        "POST",
+        "/workspace/api/conversations/conversation-live-answer/request-user-input/decision/answer",
+        Some(json!({
+            "project_path": project_path_text,
+            "answers": {"decision": "Approve"}
+        })),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::OK);
+    let posted_snapshot = json_body(posted).await;
+    let final_revision = posted_snapshot["revision"]
+        .as_i64()
+        .expect("final snapshot revision");
+    assert!(final_revision > before_revision);
+
+    let mut envelopes = Vec::new();
+    for _ in 0..20 {
+        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        let cursor = envelope["cursor"]["value"].as_i64().expect("cursor");
+        envelopes.push(envelope);
+        if cursor >= final_revision {
+            break;
+        }
+    }
+    assert_eq!(
+        envelopes.last().expect("snapshot envelope")["type"],
+        "conversation.snapshot"
+    );
+    let cursors = envelopes
+        .iter()
+        .map(|envelope| envelope["cursor"]["value"].as_i64().expect("cursor"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cursors,
+        ((before_revision + 1)..=final_revision).collect::<Vec<_>>()
+    );
+
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "request_user_input"
+            && envelope["payload"]["segment"]["request_user_input"]["status"] == "answered"
+            && envelope["payload"]["segment"]["request_user_input"]["answers"]["decision"]
+                == "Approve"
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "assistant_message"
+            && envelope["payload"]["segment"]["content"] == "Answered over live SSE."
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.turn_upsert"
+            && envelope["payload"]["turn"]["id"] == prepared.assistant_turn_id
+            && envelope["payload"]["turn"]["status"] == "complete"
+            && envelope["payload"]["turn"]["content"] == "Answered over live SSE."
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.turn_upsert"
+            && envelope["payload"]["turn"]["id"] == prepared.assistant_turn_id
+            && envelope["payload"]["turn"]["token_usage"]["total"]["outputTokens"] == json!(3)
+    }));
+    let snapshot_envelope = envelopes.last().expect("snapshot envelope");
+    assert_eq!(snapshot_envelope["cursor"]["value"], json!(final_revision));
+    assert_eq!(
+        snapshot_envelope["payload"]["state"]["turns"],
+        posted_snapshot["turns"]
+    );
+
+    let raw_log = ConversationRepository::new(&settings.data_dir)
+        .read_raw_rpc_log("conversation-live-answer", &project_path.to_string_lossy())
+        .expect("raw log");
+    assert_eq!(raw_log.last().expect("raw log line").direction, "incoming");
+    assert_eq!(
+        raw_log.last().expect("raw log line").line,
+        "{\"event\":\"http-live-answer\"}"
+    );
+}
+
 struct StaticAgentTurnBackend {
     output: AgentTurnOutput,
 }
@@ -319,6 +468,13 @@ impl StaticAgentTurnBackend {
 
 impl AgentTurnBackend for StaticAgentTurnBackend {
     fn run_turn(&self, _request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        Ok(self.output.clone())
+    }
+
+    fn answer_request_user_input(
+        &self,
+        _request: AgentRequestUserInputAnswerRequest,
+    ) -> Result<AgentTurnOutput, AgentError> {
         Ok(self.output.clone())
     }
 }

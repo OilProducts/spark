@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    AgentError, AgentRawLogLine, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput,
-    AgentTurnRequest,
+    AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
+    AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
 };
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
@@ -883,15 +883,47 @@ fn stream_error_with_final_text_and_usage_stays_failed() {
 }
 
 #[test]
-fn request_user_input_answers_expire_pending_segments_and_are_idempotent() {
+fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::with_answer_outputs(
+        Vec::new(),
+        vec![AgentTurnOutput {
+            raw_log_lines: vec![AgentRawLogLine {
+                direction: "incoming".to_string(),
+                line: "{\"event\":\"request-user-input-answer\"}".to_string(),
+            }],
+            events: vec![
+                content_delta("assistant", "Approved ", "app-answer", "final-answer"),
+                content_completed(
+                    "assistant",
+                    "Approved after input.",
+                    "app-answer",
+                    "final-answer",
+                ),
+                token_usage(json!({"total": {"inputTokens": 7, "outputTokens": 3}})),
+            ],
+            final_assistant_text: Some("Approved after input.".to_string()),
+            token_usage: Some(json!({"total": {"inputTokens": 7, "outputTokens": 3}})),
+            ..AgentTurnOutput::default()
+        }],
+    );
+    let answer_requests = backend.answer_requests();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(backend),
+    );
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-input",
             ConversationTurnRequest {
                 project_path: "/projects/input".to_string(),
                 message: "Need approval".to_string(),
+                provider: Some("openrouter".to_string()),
+                model: Some("openrouter/model".to_string()),
+                llm_profile: Some("implementation".to_string()),
+                reasoning_effort: Some("HIGH".to_string()),
+                chat_mode: Some("chat".to_string()),
                 ..ConversationTurnRequest::default()
             },
         )
@@ -928,11 +960,11 @@ fn request_user_input_answers_expire_pending_segments_and_are_idempotent() {
         answered["segments"].as_array().expect("segments"),
         "request_user_input",
     );
-    assert_eq!(request_segment["status"], "failed");
-    assert_eq!(request_segment["request_user_input"]["status"], "expired");
+    assert_eq!(request_segment["status"], "complete");
+    assert_eq!(request_segment["request_user_input"]["status"], "answered");
     assert_eq!(
-        request_segment["error"],
-        "The requested input expired before the answer could be used."
+        request_segment["request_user_input"]["answers"]["decision"],
+        "Approve"
     );
     let assistant_turn = answered["turns"]
         .as_array()
@@ -940,7 +972,64 @@ fn request_user_input_answers_expire_pending_segments_and_are_idempotent() {
         .iter()
         .find(|turn| turn["id"] == prepared.assistant_turn_id)
         .expect("assistant turn");
-    assert_eq!(assistant_turn["status"], "failed");
+    assert_eq!(assistant_turn["status"], "complete");
+    assert_eq!(assistant_turn["content"], "Approved after input.");
+    assert_eq!(
+        assistant_turn["token_usage"]["total"]["inputTokens"],
+        json!(7)
+    );
+    assert!(answered["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "assistant_message"
+            && segment["content"] == "Approved after input."));
+    let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
+        .read_raw_rpc_log("conversation-input", "/projects/input")
+        .expect("raw log");
+    assert_eq!(raw_log[0].direction, "incoming");
+    assert_eq!(raw_log[0].line, "{\"event\":\"request-user-input-answer\"}");
+
+    let answer_requests = answer_requests.lock().expect("answer requests");
+    assert_eq!(answer_requests.len(), 1);
+    let answer_request = &answer_requests[0];
+    assert_eq!(answer_request.conversation_id, "conversation-input");
+    assert_eq!(answer_request.project_path, "/projects/input");
+    assert_eq!(answer_request.request_id, "input-1");
+    assert_eq!(answer_request.assistant_turn_id, prepared.assistant_turn_id);
+    assert_eq!(answer_request.answers["decision"], "Approve");
+    assert_eq!(
+        answer_request.request_user_input.as_ref().unwrap()["status"],
+        "answered"
+    );
+    assert_eq!(
+        answer_request.request_user_input.as_ref().unwrap()["answers"]["decision"],
+        "Approve"
+    );
+    assert_eq!(answer_request.history.len(), 1);
+    match &answer_request.history[0] {
+        spark_agent_adapter::HistoryTurn::User(turn) => {
+            assert_eq!(turn.text(), "Need approval");
+        }
+        other => panic!("unexpected history turn: {other:?}"),
+    }
+    assert_eq!(answer_request.provider.as_deref(), Some("openrouter"));
+    assert_eq!(answer_request.model.as_deref(), Some("openrouter/model"));
+    assert_eq!(
+        answer_request.llm_profile.as_deref(),
+        Some("implementation")
+    );
+    assert_eq!(answer_request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(answer_request.chat_mode.as_deref(), Some("chat"));
+    assert_eq!(
+        answer_request.metadata["spark.workspace.assistant_turn_id"],
+        json!(prepared.assistant_turn_id)
+    );
+    assert_eq!(
+        answer_request.metadata["spark.workspace.request_user_input.lookup_id"],
+        json!("decision")
+    );
+    drop(answer_requests);
 
     let idempotent = service
         .submit_request_user_input_answer(
@@ -979,22 +1068,214 @@ fn request_user_input_answers_expire_pending_segments_and_are_idempotent() {
     assert!(matches!(missing, WorkspaceError::NotFound(_)));
 }
 
+#[test]
+fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let backend = ScriptedAgentTurnBackend::with_answer_outputs(
+        Vec::new(),
+        vec![AgentTurnOutput {
+            thread_resume_failure: Some(AgentThreadResumeFailure {
+                message: "request-user-input answer could not resume.".to_string(),
+                error_code: Some("request_user_input_not_pending".to_string()),
+                details: Some(json!({"request_id": "input-1"})),
+            }),
+            ..AgentTurnOutput::default()
+        }],
+    );
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings(temp.path()),
+        Arc::new(backend),
+    );
+    let (prepared, _snapshot) = service
+        .start_turn(
+            "conversation-input-expired",
+            ConversationTurnRequest {
+                project_path: "/projects/input-expired".to_string(),
+                message: "Need approval".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    service
+        .ingest_agent_turn_output(
+            "conversation-input-expired",
+            "/projects/input-expired",
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![request_user_input_event()],
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("request input");
+
+    let answered = service
+        .submit_request_user_input_answer(
+            "conversation-input-expired",
+            "decision",
+            ConversationRequestUserInputAnswerRequest {
+                project_path: "/projects/input-expired".to_string(),
+                answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+            },
+        )
+        .expect("answer");
+    let request_segment = segment_by_kind(
+        answered["segments"].as_array().expect("segments"),
+        "request_user_input",
+    );
+    assert_eq!(request_segment["status"], "failed");
+    assert_eq!(request_segment["request_user_input"]["status"], "expired");
+    assert_eq!(
+        request_segment["error"],
+        "The requested input expired before the answer could be used."
+    );
+    let assistant_turn = answered["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == prepared.assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "failed");
+    assert_eq!(
+        assistant_turn["error"],
+        "The requested input expired before the answer could be used."
+    );
+
+    let idempotent = service
+        .submit_request_user_input_answer(
+            "conversation-input-expired",
+            "input-1",
+            ConversationRequestUserInputAnswerRequest {
+                project_path: "/projects/input-expired".to_string(),
+                answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+            },
+        )
+        .expect("idempotent answer");
+    assert_eq!(idempotent["revision"], answered["revision"]);
+
+    let changed = service
+        .submit_request_user_input_answer(
+            "conversation-input-expired",
+            "decision",
+            ConversationRequestUserInputAnswerRequest {
+                project_path: "/projects/input-expired".to_string(),
+                answers: BTreeMap::from([("decision".to_string(), "Reject".to_string())]),
+            },
+        )
+        .expect_err("changed answer conflict");
+    assert!(matches!(changed, WorkspaceError::Conflict(_)));
+}
+
+#[test]
+fn request_user_input_answer_backend_errors_return_error_without_expiring_request() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let backend = ScriptedAgentTurnBackend::with_answer_outputs(Vec::new(), Vec::new());
+    let answer_requests = backend.answer_requests();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings(temp.path()),
+        Arc::new(backend),
+    );
+    let (prepared, _snapshot) = service
+        .start_turn(
+            "conversation-input-backend-error",
+            ConversationTurnRequest {
+                project_path: "/projects/input-backend-error".to_string(),
+                message: "Need approval".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    service
+        .ingest_agent_turn_output(
+            "conversation-input-backend-error",
+            "/projects/input-backend-error",
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![request_user_input_event()],
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("request input");
+
+    let error = service
+        .submit_request_user_input_answer(
+            "conversation-input-backend-error",
+            "decision",
+            ConversationRequestUserInputAnswerRequest {
+                project_path: "/projects/input-backend-error".to_string(),
+                answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+            },
+        )
+        .expect_err("backend answer error");
+    assert!(matches!(
+        error,
+        WorkspaceError::Internal(message)
+            if message == "No scripted agent answer output available."
+    ));
+    let answer_requests = answer_requests.lock().expect("answer requests");
+    assert_eq!(answer_requests.len(), 1);
+    assert_eq!(answer_requests[0].request_id, "input-1");
+    drop(answer_requests);
+
+    let snapshot = service
+        .get_snapshot(
+            "conversation-input-backend-error",
+            Some("/projects/input-backend-error"),
+        )
+        .expect("stored snapshot");
+    let request_segment = segment_by_kind(
+        snapshot["segments"].as_array().expect("segments"),
+        "request_user_input",
+    );
+    assert_eq!(request_segment["status"], "complete");
+    assert_eq!(request_segment["request_user_input"]["status"], "answered");
+    assert_eq!(
+        request_segment["request_user_input"]["answers"]["decision"],
+        "Approve"
+    );
+    assert!(request_segment.get("error").is_none());
+    let assistant_turn = snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == prepared.assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "streaming");
+    assert!(assistant_turn.get("error").is_none());
+}
+
 #[derive(Clone)]
 struct ScriptedAgentTurnBackend {
     requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
     outputs: Arc<Mutex<VecDeque<AgentTurnOutput>>>,
+    answer_requests: Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>>,
+    answer_outputs: Arc<Mutex<VecDeque<AgentTurnOutput>>>,
 }
 
 impl ScriptedAgentTurnBackend {
     fn new(outputs: Vec<AgentTurnOutput>) -> Self {
+        Self::with_answer_outputs(outputs, Vec::new())
+    }
+
+    fn with_answer_outputs(
+        outputs: Vec<AgentTurnOutput>,
+        answer_outputs: Vec<AgentTurnOutput>,
+    ) -> Self {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             outputs: Arc::new(Mutex::new(VecDeque::from(outputs))),
+            answer_requests: Arc::new(Mutex::new(Vec::new())),
+            answer_outputs: Arc::new(Mutex::new(VecDeque::from(answer_outputs))),
         }
     }
 
     fn requests(&self) -> Arc<Mutex<Vec<AgentTurnRequest>>> {
         Arc::clone(&self.requests)
+    }
+
+    fn answer_requests(&self) -> Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>> {
+        Arc::clone(&self.answer_requests)
     }
 }
 
@@ -1007,6 +1288,25 @@ impl AgentTurnBackend for ScriptedAgentTurnBackend {
             .pop_front()
             .ok_or_else(|| AgentError {
                 message: "No scripted agent output available.".to_string(),
+                retryable: false,
+                raw: None,
+            })
+    }
+
+    fn answer_request_user_input(
+        &self,
+        request: AgentRequestUserInputAnswerRequest,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        self.answer_requests
+            .lock()
+            .expect("answer requests")
+            .push(request);
+        self.answer_outputs
+            .lock()
+            .expect("answer outputs")
+            .pop_front()
+            .ok_or_else(|| AgentError {
+                message: "No scripted agent answer output available.".to_string(),
                 retryable: false,
                 raw: None,
             })
