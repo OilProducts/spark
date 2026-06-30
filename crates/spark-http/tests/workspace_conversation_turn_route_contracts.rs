@@ -1,20 +1,61 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
-use spark_agent_adapter::AgentTurnOutput;
-use spark_common::events::{TurnStreamEvent, TurnStreamEventKind, TurnStreamSource};
+use spark_agent_adapter::{
+    AgentError, AgentThreadResumeFailure, AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
+};
+use spark_common::events::{
+    TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
+};
 use spark_common::settings::SparkSettings;
-use spark_http::build_app;
+use spark_http::{build_app, build_app_with_agent_turn_backend, build_app_with_rust_llm_client};
 use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService};
 use tower::ServiceExt;
+use unified_llm_adapter::{
+    stream_events, ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
+    Request as LlmRequest, Response, StreamEvent, StreamEvents, Usage,
+};
 
 #[tokio::test]
-async fn conversation_turn_route_persists_initial_turns_and_errors() {
+async fn conversation_turn_route_executes_injected_backend_and_preserves_validation() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app(settings.clone());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            final_assistant_text: Some("Previous route answer.".to_string()),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            raw_log_lines: vec![spark_agent_adapter::AgentRawLogLine {
+                direction: "outgoing".to_string(),
+                line: "{\"event\":\"http-route-turn\"}".to_string(),
+            }],
+            events: vec![request_user_input_event()],
+            final_assistant_text: Some("Scripted route answer.".to_string()),
+            token_usage: Some(json!({"total": {"inputTokens": 8, "outputTokens": 4}})),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let backend_requests = backend.requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+
+    let first = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/conversation-http-turn/turns",
+        Some(json!({
+            "project_path": "/projects/http-turn",
+            "message": "Prime route history",
+            "provider": "codex",
+            "chat_mode": "chat"
+        })),
+    )
+    .await;
+    assert_eq!(first.0, StatusCode::OK);
 
     let response = request_json(
         app.clone(),
@@ -25,6 +66,8 @@ async fn conversation_turn_route_persists_initial_turns_and_errors() {
             "message": "Ship it",
             "provider": "openai",
             "model": "gpt-5",
+            "llm_profile": "frontier",
+            "reasoning_effort": "HIGH",
             "chat_mode": "chat"
         })),
     )
@@ -33,10 +76,65 @@ async fn conversation_turn_route_persists_initial_turns_and_errors() {
     assert_eq!(response.1["conversation_id"], "conversation-http-turn");
     assert_eq!(response.1["provider"], "openai");
     assert_eq!(response.1["model"], "gpt-5");
-    assert_eq!(response.1["turns"].as_array().expect("turns").len(), 2);
-    assert_eq!(response.1["turns"][0]["role"], "user");
-    assert_eq!(response.1["turns"][1]["role"], "assistant");
-    assert_eq!(response.1["turns"][1]["status"], "pending");
+    assert_eq!(response.1["llm_profile"], "frontier");
+    assert_eq!(response.1["reasoning_effort"], "high");
+    assert_eq!(response.1["turns"].as_array().expect("turns").len(), 4);
+    let assistant_turn = response.1["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["role"] == "assistant" && turn["content"] == "Scripted route answer.")
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "complete");
+    assert_eq!(
+        assistant_turn["token_usage"]["total"]["inputTokens"],
+        json!(8)
+    );
+    assert!(response.1["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "assistant_message"
+            && segment["content"] == "Scripted route answer."));
+    assert!(response.1["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "request_user_input"
+            && segment["request_user_input"]["status"] == "pending"));
+
+    let backend_requests = backend_requests.lock().expect("backend requests");
+    assert_eq!(backend_requests.len(), 2);
+    let backend_request = &backend_requests[1];
+    assert_eq!(backend_request.conversation_id, "conversation-http-turn");
+    assert_eq!(backend_request.project_path, "/projects/http-turn");
+    assert_eq!(backend_request.prompt, "Ship it");
+    assert_eq!(backend_request.provider.as_deref(), Some("openai"));
+    assert_eq!(backend_request.model.as_deref(), Some("gpt-5"));
+    assert_eq!(backend_request.llm_profile.as_deref(), Some("frontier"));
+    assert_eq!(backend_request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(backend_request.chat_mode.as_deref(), Some("chat"));
+    let user_turn_id = backend_request.metadata["spark.workspace.user_turn_id"]
+        .as_str()
+        .expect("user turn id");
+    let assistant_turn_id = backend_request.metadata["spark.workspace.assistant_turn_id"]
+        .as_str()
+        .expect("assistant turn id");
+    assert!(response.1["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| turn["id"] == user_turn_id && turn["content"] == "Ship it"));
+    assert_eq!(assistant_turn["id"], assistant_turn_id);
+    let history = serde_json::to_value(&backend_request.history).expect("history");
+    assert_eq!(history.as_array().expect("history").len(), 2);
+    assert_eq!(history[0]["role"], "user");
+    assert_eq!(history[0]["content"], "Prime route history");
+    assert_eq!(history[1]["role"], "assistant");
+    assert_eq!(history[1]["content"], "Previous route answer.");
+    assert!(history[0].get("id").is_none());
+    assert!(history[1].get("status").is_none());
+    drop(backend_requests);
 
     let project = spark_storage::ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths("/projects/http-turn")
@@ -49,11 +147,34 @@ async fn conversation_turn_route_persists_initial_turns_and_errors() {
         .conversations_dir
         .join("conversation-http-turn/events.jsonl")
         .exists());
+    let persisted = WorkspaceConversationService::new(settings.clone())
+        .get_snapshot("conversation-http-turn", Some("/projects/http-turn"))
+        .expect("persisted snapshot");
+    assert_eq!(persisted["turns"], response.1["turns"]);
+    assert_eq!(persisted["segments"], response.1["segments"]);
+    let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
+        .read_raw_rpc_log("conversation-http-turn", "/projects/http-turn")
+        .expect("raw log");
+    assert_eq!(raw_log.last().expect("raw log line").direction, "outgoing");
+    assert_eq!(
+        raw_log.last().expect("raw log line").line,
+        "{\"event\":\"http-route-turn\"}"
+    );
 
+    WorkspaceConversationService::new(settings.clone())
+        .start_turn(
+            "conversation-http-conflict",
+            ConversationTurnRequest {
+                project_path: "/projects/http-turn".to_string(),
+                message: "Leave pending".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("pending turn");
     let conflict = request_json(
         app.clone(),
         "POST",
-        "/workspace/api/conversations/conversation-http-turn/turns",
+        "/workspace/api/conversations/conversation-http-conflict/turns",
         Some(json!({"project_path": "/projects/http-turn", "message": "Again"})),
     )
     .await;
@@ -96,6 +217,261 @@ async fn conversation_turn_route_persists_initial_turns_and_errors() {
     .await;
     assert_eq!(malformed.0, StatusCode::BAD_REQUEST);
     assert!(malformed.2.starts_with("application/json"));
+}
+
+#[tokio::test]
+async fn conversation_turn_route_uses_rust_llm_client_backend_and_normalizes_codex_selector() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "frontier",
+            ActiveLlmProfile::new("openai_compatible", Some("profile-default".to_string())),
+            adapter,
+        )
+        .expect("client");
+    let app = build_app_with_rust_llm_client(settings, client);
+
+    let response = request_json(
+        app,
+        "POST",
+        "/workspace/api/conversations/conversation-http-rust-agent/turns",
+        Some(json!({
+            "project_path": "/projects/http-rust-agent",
+            "message": "Route through the Rust agent backend.",
+            "provider": "codex",
+            "model": "gpt-route-agent",
+            "llm_profile": "frontier",
+            "reasoning_effort": "HIGH",
+            "chat_mode": "chat"
+        })),
+    )
+    .await;
+
+    assert_eq!(response.0, StatusCode::OK);
+    let turns = response.1["turns"].as_array().expect("turns");
+    let assistant_turn = turns
+        .iter()
+        .find(|turn| turn["role"] == "assistant")
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "complete");
+    assert_eq!(
+        assistant_turn["content"],
+        "route adapter response for gpt-route-agent"
+    );
+
+    let calls = calls.lock().expect("calls");
+    assert_eq!(calls.len(), 1);
+    let request = &calls[0];
+    assert_eq!(request.provider.as_deref(), Some("openai_compatible"));
+    assert_eq!(request.model, "gpt-route-agent");
+    assert_eq!(
+        request.messages.last().expect("user message"),
+        &Message::user("Route through the Rust agent backend.")
+    );
+    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        request.metadata["spark.runtime.provider"],
+        json!("openai_compatible")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.model"],
+        json!("gpt-route-agent")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.llm_profile"],
+        json!("frontier")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.reasoning_effort"],
+        json!("high")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.provider_selector"],
+        json!("codex")
+    );
+    assert_eq!(request.metadata["spark.runtime.chat_mode"], json!("chat"));
+}
+
+#[tokio::test]
+async fn conversation_turn_route_persists_structured_backend_error_output() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(ScriptedAgentTurnBackend::new(vec![AgentTurnOutput {
+            events: vec![stream_error_event("route backend stream failed")],
+            token_usage: Some(json!({"total": {"inputTokens": 9, "outputTokens": 1}})),
+            ..AgentTurnOutput::default()
+        }])),
+    );
+
+    let response = request_json(
+        app,
+        "POST",
+        "/workspace/api/conversations/conversation-http-output-error/turns",
+        Some(json!({
+            "project_path": "/projects/http-output-error",
+            "message": "Preserve this failed output"
+        })),
+    )
+    .await;
+
+    assert_eq!(response.0, StatusCode::OK);
+    let assistant_turn = response.1["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["role"] == "assistant")
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "failed");
+    assert_eq!(assistant_turn["error"], "route backend stream failed");
+    assert_eq!(
+        assistant_turn["token_usage"],
+        json!({"total": {"inputTokens": 9, "outputTokens": 1}})
+    );
+    assert!(response.1["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "assistant_message"
+            && segment["status"] == "failed"
+            && segment["error"] == "route backend stream failed"));
+    let persisted = WorkspaceConversationService::new(settings.clone())
+        .get_snapshot(
+            "conversation-http-output-error",
+            Some("/projects/http-output-error"),
+        )
+        .expect("persisted snapshot");
+    assert_eq!(persisted["turns"], response.1["turns"]);
+    assert_eq!(persisted["segments"], response.1["segments"]);
+
+    let events = WorkspaceConversationService::new(settings)
+        .read_events_after(
+            "conversation-http-output-error",
+            "/projects/http-output-error",
+            0,
+        )
+        .expect("events");
+    assert!(events.iter().any(|event| {
+        event["type"] == "turn_upsert"
+            && event["turn"]["status"] == "failed"
+            && event["turn"]["error"] == "route backend stream failed"
+    }));
+    assert!(events.iter().any(|event| {
+        event["type"] == "segment_upsert"
+            && event["segment"]["status"] == "failed"
+            && event["segment"]["error"] == "route backend stream failed"
+    }));
+}
+
+#[tokio::test]
+async fn conversation_turn_route_persists_thread_resume_failure_details() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(ScriptedAgentTurnBackend::new(vec![AgentTurnOutput {
+            token_usage: Some(json!({"total": {"inputTokens": 5, "outputTokens": 0}})),
+            thread_resume_failure: Some(AgentThreadResumeFailure {
+                message: "route thread resume failed".to_string(),
+                error_code: Some("thread_resume_failed".to_string()),
+                details: Some(json!({"thread_id": "thread-http-resume"})),
+            }),
+            ..AgentTurnOutput::default()
+        }])),
+    );
+
+    let response = request_json(
+        app,
+        "POST",
+        "/workspace/api/conversations/conversation-http-resume-failure/turns",
+        Some(json!({
+            "project_path": "/projects/http-resume-failure",
+            "message": "Resume this thread"
+        })),
+    )
+    .await;
+
+    assert_eq!(response.0, StatusCode::OK);
+    let assistant_turn = response.1["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["role"] == "assistant")
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "failed");
+    assert_eq!(assistant_turn["error"], "route thread resume failed");
+    assert_eq!(assistant_turn["error_code"], "thread_resume_failed");
+    assert_eq!(
+        assistant_turn["token_usage"],
+        json!({"total": {"inputTokens": 5, "outputTokens": 0}})
+    );
+    assert_eq!(response.1["event_log"][0]["kind"], "continuity_reset");
+    assert_eq!(
+        response.1["event_log"][0]["details"]["thread_id"],
+        "thread-http-resume"
+    );
+    let persisted = WorkspaceConversationService::new(settings.clone())
+        .get_snapshot(
+            "conversation-http-resume-failure",
+            Some("/projects/http-resume-failure"),
+        )
+        .expect("persisted snapshot");
+    assert_eq!(persisted["turns"], response.1["turns"]);
+    assert_eq!(persisted["event_log"], response.1["event_log"]);
+
+    let events = WorkspaceConversationService::new(settings)
+        .read_events_after(
+            "conversation-http-resume-failure",
+            "/projects/http-resume-failure",
+            0,
+        )
+        .expect("events");
+    assert!(events.iter().any(|event| {
+        event["type"] == "turn_upsert"
+            && event["turn"]["status"] == "failed"
+            && event["turn"]["error_code"] == "thread_resume_failed"
+    }));
+    assert!(events.iter().any(|event| {
+        event["type"] == "conversation_snapshot"
+            && event["state"]["event_log"][0]["details"]["thread_id"] == "thread-http-resume"
+    }));
+}
+
+#[tokio::test]
+async fn conversation_turn_route_returns_workspace_error_for_backend_trait_failure() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(Vec::new());
+    let backend_requests = backend.requests();
+    let app = build_app_with_agent_turn_backend(settings, Arc::new(backend));
+
+    let response = request_json(
+        app,
+        "POST",
+        "/workspace/api/conversations/conversation-http-backend-error/turns",
+        Some(json!({
+            "project_path": "/projects/http-backend-error",
+            "message": "Backend should fail"
+        })),
+    )
+    .await;
+
+    assert_eq!(response.0, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response.1,
+        json!({"detail": "No scripted agent output available."})
+    );
+    assert!(response.1.get("turns").is_none());
+    let backend_requests = backend_requests.lock().expect("backend requests");
+    assert_eq!(backend_requests.len(), 1);
+    assert_eq!(backend_requests[0].prompt, "Backend should fail");
 }
 
 #[tokio::test]
@@ -238,6 +614,96 @@ async fn request_text(
     )
 }
 
+#[derive(Clone)]
+struct ScriptedAgentTurnBackend {
+    requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
+    outputs: Arc<Mutex<VecDeque<AgentTurnOutput>>>,
+}
+
+impl ScriptedAgentTurnBackend {
+    fn new(outputs: Vec<AgentTurnOutput>) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            outputs: Arc::new(Mutex::new(VecDeque::from(outputs))),
+        }
+    }
+
+    fn requests(&self) -> Arc<Mutex<Vec<AgentTurnRequest>>> {
+        Arc::clone(&self.requests)
+    }
+}
+
+impl AgentTurnBackend for ScriptedAgentTurnBackend {
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.requests.lock().expect("requests").push(request);
+        self.outputs
+            .lock()
+            .expect("outputs")
+            .pop_front()
+            .ok_or_else(|| AgentError {
+                message: "No scripted agent output available.".to_string(),
+                retryable: false,
+                raw: None,
+            })
+    }
+}
+
+struct RecordingAdapter {
+    name: &'static str,
+    calls: Arc<Mutex<Vec<LlmRequest>>>,
+}
+
+impl RecordingAdapter {
+    fn new(name: &'static str, calls: Arc<Mutex<Vec<LlmRequest>>>) -> Self {
+        Self { name, calls }
+    }
+}
+
+impl ProviderAdapter for RecordingAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, request: LlmRequest) -> Result<Response, AdapterError> {
+        self.calls.lock().expect("calls").push(request.clone());
+        Ok(Response {
+            model: request.model.clone(),
+            provider: request.provider.clone().unwrap_or_default(),
+            message: Message::assistant(format!("route adapter response for {}", request.model)),
+            finish_reason: FinishReason::Stop,
+            usage: Usage {
+                input_tokens: 3,
+                output_tokens: 4,
+                total_tokens: 7,
+                ..Usage::default()
+            },
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        self.calls.lock().expect("calls").push(request.clone());
+        Ok(stream_events(
+            vec![
+                Ok(StreamEvent::text_delta(format!(
+                    "route adapter response for {}",
+                    request.model
+                ))),
+                Ok(StreamEvent::finish(
+                    FinishReason::Stop,
+                    Some(Usage {
+                        input_tokens: 3,
+                        output_tokens: 4,
+                        total_tokens: 7,
+                        ..Usage::default()
+                    }),
+                )),
+            ]
+            .into_iter(),
+        ))
+    }
+}
+
 fn request_user_input_event() -> TurnStreamEvent {
     TurnStreamEvent {
         kind: TurnStreamEventKind::RequestUserInputRequested,
@@ -268,6 +734,26 @@ fn request_user_input_event() -> TurnStreamEvent {
         error: None,
         phase: None,
         status: None,
+    }
+}
+
+fn stream_error_event(message: &str) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::Error,
+        channel: Some(TurnStreamChannel::Assistant),
+        source: TurnStreamSource {
+            app_turn_id: Some("app-turn".to_string()),
+            item_id: Some("error-item".to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: None,
+        message: Some(message.to_string()),
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: Some(message.to_string()),
+        phase: Some("final_answer".to_string()),
+        status: Some("failed".to_string()),
     }
 }
 

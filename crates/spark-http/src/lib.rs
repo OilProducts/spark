@@ -13,6 +13,7 @@ use axum::routing::{any, get};
 use axum::{Json, Router};
 use serde_json::json;
 use serde_json::Value;
+use spark_agent_adapter::{AgentTurnBackend, RustLlmAgentTurnBackend};
 use spark_common::settings::SparkSettings;
 use spark_workspace::live::{
     latest_run_sequence, run_envelopes_after, run_upsert_envelope, trigger_upsert_envelope,
@@ -27,9 +28,12 @@ use tokio_util::sync::CancellationToken;
 mod workspace;
 
 pub fn build_app(settings: SparkSettings) -> Router {
-    build_app_with_runtime_handler_runner_factory(
+    let agent_turn_backend =
+        spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&settings);
+    build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
         settings,
         attractor_api::default_runtime_handler_runner_factory(),
+        agent_turn_backend,
     )
 }
 
@@ -37,9 +41,23 @@ pub fn build_app_with_rust_llm_client(
     settings: SparkSettings,
     client: unified_llm_adapter::Client,
 ) -> Router {
-    build_app_with_runtime_handler_runner_factory(
+    let agent_turn_backend: Arc<dyn AgentTurnBackend> =
+        Arc::new(RustLlmAgentTurnBackend::new(client.clone()));
+    build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
         settings,
         attractor_api::rust_llm_runtime_handler_runner_factory(client),
+        agent_turn_backend,
+    )
+}
+
+pub fn build_app_with_agent_turn_backend(
+    settings: SparkSettings,
+    agent_turn_backend: Arc<dyn AgentTurnBackend>,
+) -> Router {
+    build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
+        settings,
+        attractor_api::default_runtime_handler_runner_factory(),
+        agent_turn_backend,
     )
 }
 
@@ -47,10 +65,25 @@ pub fn build_app_with_runtime_handler_runner_factory(
     settings: SparkSettings,
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
 ) -> Router {
+    let agent_turn_backend =
+        spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&settings);
+    build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
+        settings,
+        runtime_handler_runner_factory,
+        agent_turn_backend,
+    )
+}
+
+pub fn build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
+    settings: SparkSettings,
+    runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
+    agent_turn_backend: Arc<dyn AgentTurnBackend>,
+) -> Router {
     let state = HttpAppState {
         settings: Arc::new(settings),
         live_hub: Arc::new(WorkspaceLiveHub::new()),
         runtime_handler_runner_factory,
+        agent_turn_backend,
         trigger_source_loop: None,
     };
     let state = state.with_trigger_source_loop();
@@ -74,6 +107,7 @@ pub(crate) struct HttpAppState {
     settings: Arc<SparkSettings>,
     live_hub: Arc<WorkspaceLiveHub>,
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
+    agent_turn_backend: Arc<dyn AgentTurnBackend>,
     #[allow(dead_code)]
     trigger_source_loop: Option<Arc<TriggerSourceLoop>>,
 }
@@ -93,6 +127,12 @@ impl FromRef<HttpAppState> for Arc<WorkspaceLiveHub> {
 impl FromRef<HttpAppState> for attractor_api::RuntimeHandlerRunnerFactory {
     fn from_ref(input: &HttpAppState) -> Self {
         input.runtime_handler_runner_factory.clone()
+    }
+}
+
+impl FromRef<HttpAppState> for Arc<dyn AgentTurnBackend> {
+    fn from_ref(input: &HttpAppState) -> Self {
+        input.agent_turn_backend.clone()
     }
 }
 

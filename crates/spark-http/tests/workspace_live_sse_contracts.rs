@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use attractor_api::{AttractorApiService, PipelineStartRequest};
@@ -9,8 +10,14 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, Response, StatusCode};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
+use spark_agent_adapter::{
+    AgentError, AgentRawLogLine, AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
+};
+use spark_common::events::{
+    TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
+};
 use spark_common::settings::SparkSettings;
-use spark_http::build_app;
+use spark_http::{build_app, build_app_with_agent_turn_backend};
 use spark_storage::ConversationRepository;
 use spark_workspace::{TriggerCreateRequest, WorkspaceTriggerService};
 use tower::ServiceExt;
@@ -116,7 +123,10 @@ async fn live_route_streams_conversation_mutations_on_open_connection() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     seed_conversation(&settings, &project_path, "conversation-live");
-    let app = build_app(settings);
+    let app = build_app_with_agent_turn_backend(
+        settings,
+        Arc::new(StaticAgentTurnBackend::new("Live route answer.")),
+    );
 
     let live = request(
         app.clone(),
@@ -158,6 +168,159 @@ async fn live_route_streams_conversation_mutations_on_open_connection() {
         json!({"kind": "conversation_revision", "value": 4})
     );
     assert_eq!(second["payload"]["turn"]["role"], "assistant");
+}
+
+#[tokio::test]
+async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-live-ingested");
+    let backend_output = AgentTurnOutput {
+        raw_log_lines: vec![AgentRawLogLine {
+            direction: "incoming".to_string(),
+            line: "{\"event\":\"http-live-ingested\"}".to_string(),
+        }],
+        events: vec![
+            content_delta("Live ", "app-turn-live", "final-answer"),
+            content_delta("streamed answer.", "app-turn-live", "final-answer"),
+            token_usage(json!({"total": {"inputTokens": 11, "outputTokens": 4}})),
+            request_user_input_event(),
+        ],
+        final_assistant_text: Some("Live streamed answer.".to_string()),
+        token_usage: Some(json!({"total": {"inputTokens": 11, "outputTokens": 4}})),
+        ..AgentTurnOutput::default()
+    };
+    let app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(StaticAgentTurnBackend::from_output(backend_output)),
+    );
+
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?conversation_id=conversation-live-ingested&conversation_project_path={}&conversation_revision=2",
+            url_encode(&project_path.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+
+    let posted = request(
+        app,
+        "POST",
+        "/workspace/api/conversations/conversation-live-ingested/turns",
+        Some(json!({
+            "project_path": project_path,
+            "message": "Please stream the ingested backend output."
+        })),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::OK);
+    let posted_snapshot = json_body(posted).await;
+    let final_revision = posted_snapshot["revision"]
+        .as_i64()
+        .expect("final snapshot revision");
+    assert!(final_revision > 4);
+    assert!(posted_snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| turn["role"] == "assistant"
+            && turn["status"] == "complete"
+            && turn["content"] == "Live streamed answer."
+            && turn["token_usage"]["total"]["inputTokens"] == json!(11)));
+
+    let mut envelopes = Vec::new();
+    for _ in 0..20 {
+        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        let is_snapshot = envelope["type"] == "conversation.snapshot";
+        envelopes.push(envelope);
+        if is_snapshot {
+            break;
+        }
+    }
+    assert_eq!(
+        envelopes.last().expect("snapshot envelope")["type"],
+        "conversation.snapshot"
+    );
+    let cursors = envelopes
+        .iter()
+        .map(|envelope| envelope["cursor"]["value"].as_i64().expect("cursor"))
+        .collect::<Vec<_>>();
+    assert_eq!(cursors, (3..=final_revision).collect::<Vec<_>>());
+
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.turn_upsert"
+            && envelope["payload"]["turn"]["role"] == "user"
+            && envelope["payload"]["turn"]["content"]
+                == "Please stream the ingested backend output."
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "assistant_message"
+            && envelope["payload"]["segment"]["content"] == "Live streamed answer."
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.turn_upsert"
+            && envelope["payload"]["turn"]["role"] == "assistant"
+            && envelope["payload"]["turn"]["token_usage"]["total"]["outputTokens"] == json!(4)
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "request_user_input"
+            && envelope["payload"]["segment"]["request_user_input"]["status"] == "pending"
+    }));
+    let snapshot_envelope = envelopes.last().expect("snapshot envelope");
+    assert_eq!(snapshot_envelope["cursor"]["value"], json!(final_revision));
+    assert_eq!(
+        snapshot_envelope["payload"]["state"]["revision"],
+        json!(final_revision)
+    );
+    assert_eq!(
+        snapshot_envelope["payload"]["state"]["turns"],
+        posted_snapshot["turns"]
+    );
+
+    let raw_log = ConversationRepository::new(&settings.data_dir)
+        .read_raw_rpc_log(
+            "conversation-live-ingested",
+            &project_path.to_string_lossy(),
+        )
+        .expect("raw log");
+    assert_eq!(raw_log.last().expect("raw log line").direction, "incoming");
+    assert_eq!(
+        raw_log.last().expect("raw log line").line,
+        "{\"event\":\"http-live-ingested\"}"
+    );
+}
+
+struct StaticAgentTurnBackend {
+    output: AgentTurnOutput,
+}
+
+impl StaticAgentTurnBackend {
+    fn new(final_assistant_text: &str) -> Self {
+        Self::from_output(AgentTurnOutput {
+            final_assistant_text: Some(final_assistant_text.to_string()),
+            ..AgentTurnOutput::default()
+        })
+    }
+
+    fn from_output(output: AgentTurnOutput) -> Self {
+        Self { output }
+    }
+}
+
+impl AgentTurnBackend for StaticAgentTurnBackend {
+    fn run_turn(&self, _request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        Ok(self.output.clone())
+    }
 }
 
 #[tokio::test]
@@ -730,6 +893,64 @@ fn sse_data_json(frame: &str) -> Value {
         .collect::<Vec<_>>()
         .join("\n");
     serde_json::from_str(&data).expect("SSE data JSON")
+}
+
+fn content_delta(text: &str, app_turn_id: &str, item_id: &str) -> TurnStreamEvent {
+    let mut event = TurnStreamEvent::content_delta(TurnStreamChannel::Assistant, text);
+    event.source = TurnStreamSource {
+        app_turn_id: Some(app_turn_id.to_string()),
+        item_id: Some(item_id.to_string()),
+        ..TurnStreamSource::default()
+    };
+    event.phase = Some("final_answer".to_string());
+    event
+}
+
+fn token_usage(usage: Value) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::TokenUsageUpdated,
+        channel: None,
+        source: TurnStreamSource::default(),
+        content_delta: None,
+        message: None,
+        tool_call: None,
+        request_user_input: None,
+        token_usage: Some(usage),
+        error: None,
+        phase: None,
+        status: None,
+    }
+}
+
+fn request_user_input_event() -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::RequestUserInputRequested,
+        channel: None,
+        source: TurnStreamSource {
+            app_turn_id: Some("app-turn-live".to_string()),
+            item_id: Some("approval".to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: None,
+        message: None,
+        tool_call: None,
+        request_user_input: Some(json!({
+            "itemId": "approval",
+            "questions": [{
+                "id": "decision",
+                "header": "Approve",
+                "question": "Approve this change?",
+                "options": [
+                    {"label": "Approve", "description": "Continue"},
+                    {"label": "Reject", "description": "Stop"}
+                ]
+            }]
+        })),
+        token_usage: None,
+        error: None,
+        phase: None,
+        status: None,
+    }
 }
 
 fn seed_conversation(settings: &SparkSettings, project_path: &Path, conversation_id: &str) {

@@ -12,6 +12,7 @@ use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use spark_agent_adapter::AgentTurnBackend;
 use spark_common::settings::SparkSettings;
 use spark_storage::{read_trigger_definition, DeletedProjectRecord, ProjectRecord};
 use spark_workspace::conversations::{
@@ -46,10 +47,12 @@ type ApiResult<T> = std::result::Result<Json<T>, WorkspaceApiError>;
 fn conversation_service(
     settings: &SparkSettings,
     runtime_handler_runner_factory: &attractor_api::RuntimeHandlerRunnerFactory,
+    agent_turn_backend: &Arc<dyn AgentTurnBackend>,
 ) -> WorkspaceConversationService {
-    WorkspaceConversationService::new_with_runtime_handler_runner_factory(
+    WorkspaceConversationService::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
         settings.clone(),
         runtime_handler_runner_factory.clone(),
+        agent_turn_backend.clone(),
     )
 }
 
@@ -258,15 +261,21 @@ async fn update_conversation_settings(
 
 async fn send_conversation_turn(
     State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(conversation_id): AxumPath<String>,
     payload: Result<Json<ConversationTurnRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
     let project_path = request.project_path.clone();
-    let service = WorkspaceConversationService::new((*settings).clone());
+    let service = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+    );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
-    let (_prepared, snapshot) = service.start_turn(&conversation_id, request)?;
+    let snapshot = service.execute_turn(&conversation_id, request)?;
     publish_conversation_after(
         &settings,
         &live_hub,
@@ -302,13 +311,18 @@ async fn answer_conversation_request_user_input(
 async fn create_flow_run_request_by_handle(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(conversation_handle): AxumPath<String>,
     payload: Result<Json<FlowRunRequestCreateByHandleRequest>, JsonRejection>,
 ) -> ApiResult<FlowRunRequestCreateResponse> {
     let request = json_payload(payload)?;
-    let response = conversation_service(&settings, &runtime_handler_runner_factory)
-        .create_flow_run_request_by_handle(&conversation_handle, request)?;
+    let response = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+    )
+    .create_flow_run_request_by_handle(&conversation_handle, request)?;
     publish_conversation_snapshot(
         &settings,
         &live_hub,
@@ -321,13 +335,18 @@ async fn create_flow_run_request_by_handle(
 async fn review_flow_run_request(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath((conversation_id, request_id)): AxumPath<(String, String)>,
     payload: Result<Json<FlowRunRequestReviewRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
     let project_path = request.project_path.clone();
-    let service = conversation_service(&settings, &runtime_handler_runner_factory);
+    let service = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+    );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let before_run_ids = current_conversation_run_ids(&service, &conversation_id, &project_path);
     let updated = service.review_flow_run_request(&conversation_id, &request_id, request)?;
@@ -345,13 +364,18 @@ async fn review_flow_run_request(
 async fn review_proposed_plan(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath((conversation_id, plan_id)): AxumPath<(String, String)>,
     payload: Result<Json<ProposedPlanReviewRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
     let project_path = request.project_path.clone();
-    let service = conversation_service(&settings, &runtime_handler_runner_factory);
+    let service = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+    );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let before_run_ids = current_conversation_run_ids(&service, &conversation_id, &project_path);
     let updated = service.review_proposed_plan(&conversation_id, &plan_id, request)?;
@@ -369,6 +393,7 @@ async fn review_proposed_plan(
 async fn launch_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     body: Bytes,
 ) -> Result<Response, WorkspaceApiError> {
@@ -376,8 +401,12 @@ async fn launch_workspace_run(
         Ok(request) => request,
         Err(response) => return Ok(response),
     };
-    let payload = conversation_service(&settings, &runtime_handler_runner_factory)
-        .launch_workspace_run(request)?;
+    let payload = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+    )
+    .launch_workspace_run(request)?;
     publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_run_ids_from_value(&settings, &live_hub, &payload);
     Ok(Json(payload).into_response())
@@ -386,6 +415,7 @@ async fn launch_workspace_run(
 async fn retry_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
     body: Bytes,
@@ -395,8 +425,12 @@ async fn retry_workspace_run(
         Err(response) => return Ok(response),
     };
     let before_sequence = latest_run_sequence(&settings, &run_id).ok().flatten();
-    let payload = conversation_service(&settings, &runtime_handler_runner_factory)
-        .retry_workspace_run(&run_id, request)?;
+    let payload = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+    )
+    .retry_workspace_run(&run_id, request)?;
     publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_live_run_after(&settings, &live_hub, &run_id, before_sequence);
     publish_run_ids_from_value_except(&settings, &live_hub, &payload, Some(&run_id));
@@ -406,6 +440,7 @@ async fn retry_workspace_run(
 async fn continue_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
     body: Bytes,
@@ -415,8 +450,12 @@ async fn continue_workspace_run(
         Err(response) => return Ok(response),
     };
     let before_sequence = latest_run_sequence(&settings, &run_id).ok().flatten();
-    let payload = conversation_service(&settings, &runtime_handler_runner_factory)
-        .continue_workspace_run(&run_id, request)?;
+    let payload = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+    )
+    .continue_workspace_run(&run_id, request)?;
     publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_live_run_after(&settings, &live_hub, &run_id, before_sequence);
     publish_run_ids_from_value_except(&settings, &live_hub, &payload, Some(&run_id));

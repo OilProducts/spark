@@ -281,6 +281,10 @@ impl WorkspaceConversationService {
         )
     }
 
+    pub fn default_agent_turn_backend(settings: &SparkSettings) -> Arc<dyn AgentTurnBackend> {
+        default_agent_turn_backend(settings)
+    }
+
     pub fn new_with_runtime_handler_runner_factory(
         settings: SparkSettings,
         runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
