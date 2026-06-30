@@ -43,7 +43,7 @@ pub(crate) fn build_openai_tool_registry_with_capabilities(
             registered_glob_tool(glob_tool()),
         ]
         .into_iter()
-        .chain(subagent_tools().into_iter().map(RegisteredTool::from)),
+        .chain(registered_subagent_tools()),
     )
 }
 
@@ -73,7 +73,7 @@ pub(crate) fn build_anthropic_tool_registry_with_capabilities(
             registered_glob_tool(glob_tool()),
         ]
         .into_iter()
-        .chain(subagent_tools().into_iter().map(RegisteredTool::from)),
+        .chain(registered_subagent_tools()),
     )
 }
 
@@ -112,7 +112,7 @@ pub(crate) fn build_gemini_tool_registry_with_capabilities(
     if enable_web_fetch {
         tools.push(RegisteredTool::from(web_fetch_tool()));
     }
-    tools.extend(subagent_tools().into_iter().map(RegisteredTool::from));
+    tools.extend(registered_subagent_tools());
     registry_from_tools(tools)
 }
 
@@ -159,6 +159,36 @@ pub fn subagent_tools() -> Vec<Tool> {
             &["agent_id"],
         ),
     ]
+}
+
+fn registered_subagent_tools() -> Vec<RegisteredTool> {
+    subagent_tools()
+        .into_iter()
+        .map(|tool| {
+            let definition =
+                ToolDefinition::try_from(tool).expect("subagent tool must convert to definition");
+            let name = definition.name.clone();
+            RegisteredTool::new_with_executor(
+                definition,
+                Arc::new(move |execution| {
+                    let Some(runtime) = execution.subagent_runtime.as_ref() else {
+                        return Ok(tool_error(format!(
+                            "subagent runtime is unavailable for {}",
+                            execution.tool_name
+                        )));
+                    };
+                    let output = match name.as_str() {
+                        "spawn_agent" => runtime.spawn_agent(&execution.arguments),
+                        "send_input" => runtime.send_input(&execution.arguments),
+                        "wait" => runtime.wait(&execution.arguments),
+                        "close_agent" => runtime.close_agent(&execution.arguments),
+                        _ => tool_error(format!("Unknown subagent tool: {name}")),
+                    };
+                    Ok(output)
+                }),
+            )
+        })
+        .collect()
 }
 
 fn registry_from_tools(tools: impl IntoIterator<Item = RegisteredTool>) -> ToolRegistry {

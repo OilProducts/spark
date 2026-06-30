@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    detect_loop, history_to_messages, tool_call_signature, AssistantTurn, CommandOptions, DirEntry,
-    EnvironmentError, EnvironmentResult, EventKind, ExecResult, ExecutionEnvironment,
-    ExecutionEnvironmentBackend, GrepOptions, HistoryTurn, LlmClientHandle, ProviderProfile,
-    RegisteredTool, Session, SessionConfig, SessionEvent, SessionState, SteeringTurn, SystemTurn,
+    detect_loop, history_to_messages, tool_call_signature, AssistantTurn, ChildSessionOptions,
+    CommandOptions, DirEntry, EnvironmentError, EnvironmentResult, EventKind, ExecResult,
+    ExecutionEnvironment, ExecutionEnvironmentBackend, GrepOptions, HistoryTurn, LlmClientHandle,
+    ProviderProfile, RegisteredTool, Session, SessionConfig, SessionEvent, SessionState,
+    SteeringTurn, SubAgentError, SubAgentLimitError, SubAgentResult, SubAgentStatus, SystemTurn,
     ToolDefinition, ToolExecutionOutput, ToolRegistry, ToolResultsTurn, UserTurn,
     LOOP_DETECTION_WARNING,
 };
@@ -62,6 +63,171 @@ fn public_runtime_contracts_are_exported_with_session_defaults() {
     assert_eq!(start_event.kind, EventKind::SessionStart);
     assert_eq!(start_event.session_id, Some(session.id));
     assert_eq!(start_event.data["state"], json!("idle"));
+}
+
+#[test]
+fn subagent_types_are_exported_and_child_sessions_use_typed_registry() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let environment = ExecutionEnvironment::local(workspace.path().join("workspace"));
+    let mut profile = ProviderProfile::new("fake-provider", "parent-model");
+    profile.capabilities.insert("tool_calls".to_string(), true);
+    profile
+        .provider_options
+        .insert("temperature".to_string(), json!(0.2));
+    profile.register_tool(Tool::passive("lookup").expect("valid tool"));
+    let mut session = Session::new(
+        profile.clone(),
+        environment,
+        SessionConfig {
+            max_turns: 11,
+            max_subagent_depth: 2,
+            reasoning_effort: Some("medium".to_string()),
+            ..SessionConfig::default()
+        },
+    );
+    session
+        .history
+        .push(HistoryTurn::User(UserTurn::new("parent turn")));
+
+    let handle = session
+        .create_child_session(
+            ChildSessionOptions::new()
+                .with_model("child-model")
+                .with_max_turns(4),
+        )
+        .expect("child session")
+        .clone();
+
+    assert_eq!(handle.status, SubAgentStatus::Pending);
+    assert_eq!(handle.session_id, Some(handle.id));
+    assert!(session.active_subagent(handle.id.to_string()).is_some());
+    assert_eq!(session.active_subagents[&handle.id.to_string()], handle);
+
+    let child = handle.session.as_deref().expect("child session handle");
+    assert_ne!(child.id, session.id);
+    assert_eq!(child.id, handle.id);
+    assert!(child
+        .execution_environment
+        .shares_backend_with(&session.execution_environment));
+    assert!(child.history.is_empty());
+    assert_eq!(child.config.max_turns, 4);
+    assert_eq!(child.config.max_subagent_depth, 1);
+    assert_eq!(
+        child.config.reasoning_effort,
+        session.config.reasoning_effort
+    );
+    assert_eq!(child.provider_profile.model, "child-model");
+    assert_eq!(child.provider_profile.id, profile.id);
+    assert_eq!(child.provider_profile.tools(), profile.tools());
+    assert_eq!(
+        child.provider_profile.provider_options(),
+        profile.provider_options()
+    );
+    assert!(child.provider_profile.supports("tool_calls"));
+
+    child
+        .execution_environment
+        .write_file("shared.txt", "child data")
+        .expect("write through child environment");
+    assert_eq!(
+        session
+            .execution_environment
+            .read_file("shared.txt", None, None)
+            .expect("read through parent environment"),
+        "child data"
+    );
+    assert_eq!(session.history.len(), 1);
+
+    let default_handle = session
+        .create_child_session(ChildSessionOptions::default())
+        .expect("default child")
+        .clone();
+    let default_child = default_handle.session.as_deref().expect("default child");
+    assert_eq!(default_child.config.max_turns, 0);
+    assert_eq!(default_child.config.max_subagent_depth, 1);
+
+    let result = SubAgentResult::new(handle.id, SubAgentStatus::Completed);
+    assert!(result.success);
+    assert_eq!(result.status, SubAgentStatus::Completed);
+}
+
+#[test]
+fn subagent_depth_limit_decrements_and_blocks_recursive_spawn() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut session = Session::new(
+        ProviderProfile::new("fake-provider", "fake-model"),
+        ExecutionEnvironment::local(workspace.path().join("workspace")),
+        SessionConfig {
+            max_subagent_depth: 1,
+            ..SessionConfig::default()
+        },
+    );
+
+    let child_handle = session
+        .create_child_session(ChildSessionOptions::default())
+        .expect("child session")
+        .clone();
+    let child = child_handle.session.as_deref().expect("child session");
+    assert_eq!(child.config.max_subagent_depth, 0);
+
+    let mut recursive_child = child.clone();
+    let error = recursive_child
+        .create_child_session(ChildSessionOptions::default())
+        .expect_err("recursive child spawn is rejected");
+    assert!(matches!(
+        error,
+        SubAgentError::Limit(SubAgentLimitError {
+            max_subagent_depth: 0
+        })
+    ));
+    assert!(error.recoverable());
+}
+
+#[test]
+fn subagent_working_directory_is_scoped_and_escape_rejected_before_registration() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let workspace_path = workspace.path().join("workspace");
+    let mut session = Session::new(
+        ProviderProfile::new("fake-provider", "fake-model"),
+        ExecutionEnvironment::local(&workspace_path),
+        SessionConfig::default(),
+    );
+
+    let handle = session
+        .create_child_session(ChildSessionOptions::new().with_working_dir("child"))
+        .expect("scoped child")
+        .clone();
+    let child = handle.session.as_deref().expect("child session");
+    assert_eq!(
+        PathBuf::from(child.execution_environment.working_directory()),
+        workspace_path.join("child")
+    );
+
+    child
+        .execution_environment
+        .write_file("note.txt", "hello")
+        .expect("write scoped file");
+    assert!(session.execution_environment.file_exists("child/note.txt"));
+    assert_eq!(
+        session
+            .execution_environment
+            .read_file("child/note.txt", None, None)
+            .expect("parent sees child file"),
+        "hello"
+    );
+    assert!(matches!(
+        child
+            .execution_environment
+            .read_file("../escape.txt", None, None),
+        Err(EnvironmentError::PermissionDenied(_))
+    ));
+
+    let registered_count = session.active_subagents.len();
+    let error = session
+        .create_child_session(ChildSessionOptions::new().with_working_dir("../escape"))
+        .expect_err("working_dir escape is rejected");
+    assert!(matches!(error, SubAgentError::WorkingDirectory(_)));
+    assert_eq!(session.active_subagents.len(), registered_count);
 }
 
 #[test]
@@ -1612,7 +1778,10 @@ fn process_input_provider_error_emits_structured_payload_closes_and_runs_cleanup
         ]
     );
     assert_eq!(events[1].data["error"]["kind"], json!("authentication"));
-    assert_eq!(events[1].data["error"]["name"], json!("AuthenticationError"));
+    assert_eq!(
+        events[1].data["error"]["name"],
+        json!("AuthenticationError")
+    );
     assert_eq!(events[1].data["error"]["message"], json!("invalid key"));
     assert_eq!(events[1].data["error"]["provider"], json!("fake-provider"));
     assert_eq!(events[1].data["error"]["model"], json!("fake-model"));

@@ -341,6 +341,11 @@ def _clone_provider_profile(
         child_profile = ProviderProfile(
             id=getattr(parent_profile, "id", ""),
             model=getattr(parent_profile, "model", ""),
+            subagent_model_overrides=getattr(
+                parent_profile,
+                "subagent_model_overrides",
+                (),
+            ),
             tool_registry=tool_registry,
             capabilities=getattr(parent_profile, "capabilities", None)
             or getattr(parent_profile, "capability_flags", {})
@@ -363,6 +368,20 @@ def _clone_provider_profile(
         cloned_tool_registry = _clone_tool_registry(getattr(child_profile, "tool_registry", None))
         try:
             setattr(child_profile, "tool_registry", cloned_tool_registry)
+        except Exception:
+            pass
+    subagent_model_overrides = getattr(child_profile, "subagent_model_overrides", None)
+    if subagent_model_overrides is not None:
+        try:
+            setattr(
+                child_profile,
+                "subagent_model_overrides",
+                tuple(
+                    model.strip()
+                    for model in subagent_model_overrides
+                    if isinstance(model, str) and model.strip()
+                ),
+            )
         except Exception:
             pass
     for attribute_name in ("capabilities", "provider_options_map"):
@@ -454,6 +473,69 @@ def _subagent_depth_limit(parent_session: Any) -> int:
     config = _parent_session_config(parent_session)
     depth = int(getattr(config, "max_subagent_depth", 0) or 0)
     return depth
+
+
+def _allowed_subagent_model_overrides(parent_profile: Any) -> tuple[str, ...]:
+    allowed_override_method = getattr(parent_profile, "allowed_subagent_model_overrides", None)
+    if callable(allowed_override_method):
+        values = allowed_override_method()
+    else:
+        values = getattr(parent_profile, "subagent_model_overrides", ())
+    if isinstance(values, str):
+        values = (values,)
+    try:
+        return tuple(
+            value.strip()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        )
+    except TypeError:
+        return ()
+
+
+def _model_override_allowed(parent_profile: Any, requested_model: str) -> bool:
+    requested_model = requested_model.strip()
+    if not requested_model:
+        return False
+
+    allow_method = getattr(parent_profile, "allows_subagent_model_override", None)
+    if callable(allow_method):
+        try:
+            return bool(allow_method(requested_model))
+        except Exception:
+            pass
+
+    parent_model = getattr(parent_profile, "model", "")
+    if isinstance(parent_model, str) and requested_model == parent_model:
+        return True
+
+    capabilities = getattr(parent_profile, "capabilities", None)
+    if not isinstance(capabilities, Mapping):
+        capabilities = getattr(parent_profile, "capability_flags", {})
+    if isinstance(capabilities, Mapping) and capabilities.get("subagent_model_override"):
+        return True
+
+    return any(
+        allowed_model == "*" or allowed_model == requested_model
+        for allowed_model in _allowed_subagent_model_overrides(parent_profile)
+    )
+
+
+def _model_override_error(parent_profile: Any, requested_model: str) -> str:
+    provider = getattr(parent_profile, "request_provider", None) or getattr(
+        parent_profile,
+        "id",
+        "",
+    )
+    parent_model = getattr(parent_profile, "model", "")
+    return (
+        "model override is not allowed for spawn_agent: "
+        f"requested_model={requested_model!r}, "
+        f"parent_model={parent_model or '<unspecified>'!r}, "
+        f"provider={provider or '<unspecified>'!r}, "
+        f"allowed_models={list(_allowed_subagent_model_overrides(parent_profile))!r}. "
+        "Retry without the model argument or choose an allowed model."
+    )
 
 
 def create_child_session(
@@ -734,6 +816,13 @@ def _subagent_result_payload(result: SubAgentResult) -> dict[str, Any]:
     }
 
 
+def _wait_result_tool_output(result: SubAgentResult) -> ToolOutput:
+    return _tool_result(
+        _subagent_result_payload(result),
+        is_error=result.status == SubAgentStatus.FAILED or result.error is not None,
+    )
+
+
 def spawn_agent(
     arguments: Mapping[str, Any],
     execution_environment: ExecutionEnvironment,
@@ -756,6 +845,13 @@ def spawn_agent(
     model = arguments.get("model")
     if model is not None and not isinstance(model, str):
         return _error("model must be a string")
+    if isinstance(model, str):
+        model = model.strip()
+        if not model:
+            return _error("model must not be empty")
+        parent_profile = _parent_session_profile(session)
+        if not _model_override_allowed(parent_profile, model):
+            return _error(_model_override_error(parent_profile, model))
 
     max_turns = arguments.get("max_turns")
     if max_turns is not None and (not isinstance(max_turns, int) or isinstance(max_turns, bool)):
@@ -869,7 +965,7 @@ async def wait(
         handle.result = _subagent_result(handle, status=SubAgentStatus.FAILED, error=exc)
         result = handle.result
 
-    return _tool_result(_subagent_result_payload(result), is_error=False)
+    return _wait_result_tool_output(result)
 
 
 async def close_agent(

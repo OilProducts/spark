@@ -8,11 +8,15 @@ use serde_json::{json, Value};
 use spark_agent_adapter::{
     create_anthropic_profile, create_gemini_profile, create_openai_profile, CommandOptions,
     DirEntry, EnvironmentError, EnvironmentResult, EventKind, ExecResult, ExecutionEnvironment,
-    ExecutionEnvironmentBackend, GrepOptions, RegisteredTool, SessionConfig, ToolDefinition,
-    ToolDispatchContext, ToolDispatchEvent, ToolExecutionOutput, ToolRegistry,
+    ExecutionEnvironmentBackend, GrepOptions, HistoryTurn, RegisteredTool, Session, SessionConfig,
+    SessionState, SubAgentStatus, ToolDefinition, ToolDispatchContext, ToolDispatchEvent,
+    ToolExecutionOutput, ToolRegistry,
 };
 use tempfile::tempdir;
-use unified_llm_adapter::{AdapterError, AdapterErrorKind, Tool, ToolCall, ToolResult};
+use unified_llm_adapter::{
+    AdapterError, AdapterErrorKind, Client, ContentPart, FinishReason, Message, ProviderAdapter,
+    Request, Response, StreamEvents, Tool, ToolCall, ToolResult,
+};
 
 const PNG_BYTES: &[u8] = &[
     0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0x00, 0x00, 0x00, 0x0d, b'I', b'H', b'D',
@@ -71,6 +75,343 @@ fn assert_single_start_end(
     match raw_arguments {
         Some(raw_arguments) => assert_eq!(events[0].data["raw_arguments"], json!(raw_arguments)),
         None => assert!(!events[0].data.contains_key("raw_arguments")),
+    }
+}
+
+fn assistant_text_response(id: &str, text: &str) -> Response {
+    Response {
+        id: id.to_string(),
+        model: "fake-model".to_string(),
+        provider: "fake-provider".to_string(),
+        message: Message::assistant(text),
+        finish_reason: FinishReason::Stop,
+        ..Response::default()
+    }
+}
+
+fn tool_call_response(id: &str, tool_call: ToolCall) -> Response {
+    let mut message = Message::assistant("");
+    message.content.push(ContentPart::ToolCall { tool_call });
+    Response {
+        id: id.to_string(),
+        model: "fake-model".to_string(),
+        provider: "fake-provider".to_string(),
+        message,
+        finish_reason: FinishReason::ToolCalls,
+        ..Response::default()
+    }
+}
+
+fn latest_agent_id(request: &Request) -> String {
+    request
+        .messages
+        .iter()
+        .rev()
+        .flat_map(|message| message.content.iter())
+        .find_map(|part| match part {
+            ContentPart::ToolResult { tool_result } => tool_result
+                .content
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            _ => None,
+        })
+        .expect("agent_id from previous subagent tool result")
+}
+
+fn has_message_text(request: &Request, expected: &str) -> bool {
+    request
+        .messages
+        .iter()
+        .any(|message| message.text() == expected)
+}
+
+fn last_tool_result_id(request: &Request) -> Option<String> {
+    request
+        .messages
+        .iter()
+        .rev()
+        .flat_map(|message| message.content.iter())
+        .find_map(|part| match part {
+            ContentPart::ToolResult { tool_result } => Some(tool_result.tool_call_id.clone()),
+            _ => None,
+        })
+}
+
+fn session_tool_results(session: &Session) -> Vec<unified_llm_adapter::ToolResultData> {
+    session
+        .history
+        .iter()
+        .flat_map(|turn| match turn {
+            HistoryTurn::ToolResults(turn) => turn.results().to_vec(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+fn subagent_enabled_profile() -> spark_agent_adapter::ProviderProfile {
+    let mut profile = create_openai_profile("fake-model");
+    profile.id = "fake-provider".to_string();
+    profile.request_provider = Some("fake-provider".to_string());
+    profile.display_name = Some("Fake".to_string());
+    profile.supports_streaming = false;
+    profile
+}
+
+#[derive(Default)]
+struct HappySubagentAdapter {
+    requests: Mutex<Vec<Request>>,
+}
+
+impl HappySubagentAdapter {
+    fn requests(&self) -> Vec<Request> {
+        self.requests.lock().expect("requests").clone()
+    }
+}
+
+impl ProviderAdapter for HappySubagentAdapter {
+    fn name(&self) -> &str {
+        "fake-provider"
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        let mut requests = self.requests.lock().expect("requests");
+        let response = if has_message_text(&request, "Investigate the repository") {
+            if has_message_text(&request, "Please continue") {
+                assistant_text_response("child-2", "child response 2")
+            } else {
+                assistant_text_response("child-1", "child response 1")
+            }
+        } else {
+            match last_tool_result_id(&request).as_deref() {
+                None => tool_call_response(
+                    "parent-spawn",
+                    ToolCall::new(
+                        "spawn-1",
+                        "spawn_agent",
+                        json!({"task": "Investigate the repository"}),
+                    ),
+                ),
+                Some("spawn-1") => {
+                    let agent_id = latest_agent_id(&request);
+                    tool_call_response(
+                        "parent-send",
+                        ToolCall::new(
+                            "send-1",
+                            "send_input",
+                            json!({"agent_id": agent_id, "message": "Please continue"}),
+                        ),
+                    )
+                }
+                Some("send-1") => {
+                    let agent_id = latest_agent_id(&request);
+                    tool_call_response(
+                        "parent-wait",
+                        ToolCall::new("wait-1", "wait", json!({"agent_id": agent_id})),
+                    )
+                }
+                Some("wait-1") => {
+                    let agent_id = latest_agent_id(&request);
+                    tool_call_response(
+                        "parent-close",
+                        ToolCall::new("close-1", "close_agent", json!({"agent_id": agent_id})),
+                    )
+                }
+                Some("close-1") => assistant_text_response("parent-done", "parent done"),
+                _ => {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        "unexpected complete call",
+                    ));
+                }
+            }
+        };
+        requests.push(request);
+        Ok(response)
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
+        Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "streaming is disabled",
+        ))
+    }
+}
+
+#[derive(Default)]
+struct ModelOverrideSubagentAdapter {
+    requests: Mutex<Vec<Request>>,
+}
+
+impl ModelOverrideSubagentAdapter {
+    fn requests(&self) -> Vec<Request> {
+        self.requests.lock().expect("requests").clone()
+    }
+}
+
+impl ProviderAdapter for ModelOverrideSubagentAdapter {
+    fn name(&self) -> &str {
+        "fake-provider"
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        let mut requests = self.requests.lock().expect("requests");
+        let response = if has_message_text(&request, "Investigate with child model") {
+            assistant_text_response("child-model-response", "child response")
+        } else {
+            match last_tool_result_id(&request).as_deref() {
+                None => tool_call_response(
+                    "parent-spawn",
+                    ToolCall::new(
+                        "spawn-model-override",
+                        "spawn_agent",
+                        json!({
+                            "task": "Investigate with child model",
+                            "model": "child-model"
+                        }),
+                    ),
+                ),
+                Some("spawn-model-override") => {
+                    let agent_id = latest_agent_id(&request);
+                    tool_call_response(
+                        "parent-wait",
+                        ToolCall::new("wait-model-override", "wait", json!({"agent_id": agent_id})),
+                    )
+                }
+                Some("wait-model-override") => {
+                    assistant_text_response("parent-done", "parent done")
+                }
+                _ => {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        "unexpected complete call",
+                    ));
+                }
+            }
+        };
+        requests.push(request);
+        Ok(response)
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
+        Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "streaming is disabled",
+        ))
+    }
+}
+
+#[derive(Default)]
+struct ChildProcessingFailureAdapter {
+    requests: Mutex<Vec<Request>>,
+}
+
+impl ProviderAdapter for ChildProcessingFailureAdapter {
+    fn name(&self) -> &str {
+        "fake-provider"
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        let mut requests = self.requests.lock().expect("requests");
+        let response = if has_message_text(&request, "Investigate failing child") {
+            requests.push(request);
+            return Err(AdapterError::new(
+                AdapterErrorKind::Provider,
+                "child provider failed",
+            ));
+        } else {
+            match last_tool_result_id(&request).as_deref() {
+                None => tool_call_response(
+                    "parent-spawn",
+                    ToolCall::new(
+                        "spawn-failing-child",
+                        "spawn_agent",
+                        json!({"task": "Investigate failing child"}),
+                    ),
+                ),
+                Some("spawn-failing-child") => {
+                    let agent_id = latest_agent_id(&request);
+                    tool_call_response(
+                        "parent-wait",
+                        ToolCall::new("wait-failing-child", "wait", json!({"agent_id": agent_id})),
+                    )
+                }
+                Some("wait-failing-child") => assistant_text_response("parent-done", "parent done"),
+                _ => {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        "unexpected complete call",
+                    ));
+                }
+            }
+        };
+        requests.push(request);
+        Ok(response)
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
+        Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "streaming is disabled",
+        ))
+    }
+}
+
+#[derive(Default)]
+struct RecoverableSubagentFailureAdapter {
+    requests: Mutex<Vec<Request>>,
+}
+
+impl ProviderAdapter for RecoverableSubagentFailureAdapter {
+    fn name(&self) -> &str {
+        "fake-provider"
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        let mut requests = self.requests.lock().expect("requests");
+        let index = requests.len();
+        let response = match index {
+            0 => tool_call_response(
+                "unknown-agent",
+                ToolCall::new(
+                    "send-unknown",
+                    "send_input",
+                    json!({"agent_id": "missing-agent", "message": "hello"}),
+                ),
+            ),
+            1 => tool_call_response(
+                "bad-working-dir",
+                ToolCall::new(
+                    "spawn-bad-dir",
+                    "spawn_agent",
+                    json!({"task": "Investigate", "working_dir": "../escape"}),
+                ),
+            ),
+            2 => tool_call_response(
+                "bad-model",
+                ToolCall::new(
+                    "spawn-bad-model",
+                    "spawn_agent",
+                    json!({"task": "Investigate", "model": "other-model"}),
+                ),
+            ),
+            3 => assistant_text_response("done", "done"),
+            _ => {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    "unexpected complete call",
+                ));
+            }
+        };
+        requests.push(request);
+        Ok(response)
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
+        Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "streaming is disabled",
+        ))
     }
 }
 
@@ -1069,6 +1410,293 @@ fn registry_preserves_unified_active_tool_executors_for_compatibility() {
             "arguments": {"value": 7}
         })
     );
+}
+
+#[test]
+fn provider_subagent_tools_are_executable_registry_tools() {
+    let result = create_openai_profile("gpt-5.2").registry().dispatch(
+        ToolCall::new(
+            "spawn-without-session",
+            "spawn_agent",
+            json!({"task": "Investigate"}),
+        ),
+        ToolDispatchContext::default(),
+    );
+
+    assert!(result.is_error);
+    assert_eq!(
+        result.content,
+        json!("subagent runtime is unavailable for spawn_agent")
+    );
+}
+
+#[test]
+fn session_dispatches_subagent_tools_through_provider_registry() {
+    let adapter = Arc::new(HappySubagentAdapter::default());
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let workspace = tempdir().expect("workspace");
+    let mut session = Session::new(
+        subagent_enabled_profile(),
+        ExecutionEnvironment::local(workspace.path()),
+        SessionConfig {
+            max_subagent_depth: 1,
+            ..SessionConfig::default()
+        },
+    );
+
+    session
+        .process_input(&client, "parent task")
+        .expect("subagent tool flow");
+
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(session.active_subagents.len(), 1);
+    assert_eq!(
+        session
+            .active_subagents
+            .values()
+            .next()
+            .expect("subagent handle")
+            .status,
+        SubAgentStatus::Completed
+    );
+    let tool_results = session_tool_results(&session);
+    assert_eq!(
+        tool_results
+            .iter()
+            .map(|result| result.tool_call_id.as_str())
+            .collect::<Vec<_>>(),
+        ["spawn-1", "send-1", "wait-1", "close-1"]
+    );
+    let wait_result = tool_results
+        .iter()
+        .find(|result| result.tool_call_id == "wait-1")
+        .expect("wait result");
+    assert!(!wait_result.is_error);
+    assert_eq!(wait_result.content["status"], json!("completed"));
+    assert_eq!(wait_result.content["success"], json!(true));
+    assert_eq!(wait_result.content["output"], json!("child response 2"));
+    assert_eq!(wait_result.content["turns_used"], json!(4));
+
+    let requests = adapter.requests();
+    assert_eq!(requests.len(), 7);
+    let child_initial = requests
+        .iter()
+        .find(|request| {
+            has_message_text(request, "Investigate the repository")
+                && !has_message_text(request, "Please continue")
+        })
+        .expect("child initial request");
+    assert_eq!(
+        child_initial.messages[1].text(),
+        "Investigate the repository"
+    );
+    let child_follow_up = requests
+        .iter()
+        .find(|request| has_message_text(request, "Please continue"))
+        .expect("child follow-up request");
+    assert_eq!(child_follow_up.messages[3].text(), "Please continue");
+}
+
+#[test]
+fn session_spawn_agent_allowed_model_override_changes_only_child_model() {
+    let adapter = Arc::new(ModelOverrideSubagentAdapter::default());
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let workspace = tempdir().expect("workspace");
+    let mut profile = subagent_enabled_profile();
+    profile
+        .subagent_model_overrides
+        .push("child-model".to_string());
+    let parent_model = profile.model.clone();
+    let parent_id = profile.id.clone();
+    let parent_request_provider = profile.request_provider.clone();
+    let parent_tools = profile.tools();
+    let parent_provider_options = profile.provider_options();
+    let parent_capabilities = profile.capability_flags().clone();
+    let mut session = Session::new(
+        profile,
+        ExecutionEnvironment::local(workspace.path()),
+        SessionConfig {
+            max_subagent_depth: 1,
+            ..SessionConfig::default()
+        },
+    );
+
+    session
+        .process_input(&client, "parent task")
+        .expect("subagent model override flow");
+
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(session.provider_profile.model, parent_model);
+    assert_eq!(
+        session.provider_profile.capability_flags(),
+        &parent_capabilities
+    );
+    assert_eq!(
+        session.provider_profile.provider_options(),
+        parent_provider_options
+    );
+
+    let handle = session
+        .active_subagents
+        .values()
+        .next()
+        .expect("subagent handle");
+    assert_eq!(handle.status, SubAgentStatus::Completed);
+    let child_profile = handle
+        .provider_profile
+        .as_ref()
+        .expect("child provider profile");
+    assert_eq!(child_profile.model, "child-model");
+    assert_eq!(child_profile.id, parent_id);
+    assert_eq!(child_profile.request_provider, parent_request_provider);
+    assert_eq!(child_profile.tools(), parent_tools);
+    assert_eq!(child_profile.provider_options(), parent_provider_options);
+    assert_eq!(child_profile.capability_flags(), &parent_capabilities);
+
+    let requests = adapter.requests();
+    let child_request = requests
+        .iter()
+        .find(|request| has_message_text(request, "Investigate with child model"))
+        .expect("child request");
+    assert_eq!(child_request.model, "child-model");
+    assert_eq!(child_request.provider.as_deref(), Some("fake-provider"));
+    assert_eq!(
+        child_request.provider_options,
+        BTreeMap::from([("fake-provider".to_string(), json!({}))])
+    );
+    assert_eq!(
+        child_request
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        parent_tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let wait_result = session_tool_results(&session)
+        .into_iter()
+        .find(|result| result.tool_call_id == "wait-model-override")
+        .expect("wait result");
+    assert!(!wait_result.is_error);
+    assert_eq!(wait_result.content["status"], json!("completed"));
+    assert_eq!(wait_result.content["output"], json!("child response"));
+}
+
+#[test]
+fn subagent_wait_returns_recoverable_error_when_child_processing_fails() {
+    let adapter = Arc::new(ChildProcessingFailureAdapter::default());
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter;
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let workspace = tempdir().expect("workspace");
+    let mut session = Session::new(
+        subagent_enabled_profile(),
+        ExecutionEnvironment::local(workspace.path()),
+        SessionConfig {
+            max_subagent_depth: 1,
+            ..SessionConfig::default()
+        },
+    );
+
+    session
+        .process_input(&client, "parent task")
+        .expect("parent continues after child processing failure");
+
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(session.active_subagents.len(), 1);
+    let handle = session
+        .active_subagents
+        .values()
+        .next()
+        .expect("subagent handle");
+    assert_eq!(handle.status, SubAgentStatus::Failed);
+
+    let tool_results = session_tool_results(&session);
+    assert_eq!(
+        tool_results
+            .iter()
+            .map(|result| result.tool_call_id.as_str())
+            .collect::<Vec<_>>(),
+        ["spawn-failing-child", "wait-failing-child"]
+    );
+    let wait_result = tool_results
+        .iter()
+        .find(|result| result.tool_call_id == "wait-failing-child")
+        .expect("wait result");
+    assert!(wait_result.is_error);
+    assert_eq!(
+        wait_result.content["agent_id"],
+        json!(handle.id.to_string())
+    );
+    assert_eq!(wait_result.content["status"], json!("failed"));
+    assert_eq!(wait_result.content["success"], json!(false));
+    assert_eq!(wait_result.content["output"], Value::Null);
+    assert_eq!(wait_result.content["turns_used"], json!(1));
+    assert_eq!(wait_result.content["error"], json!("child provider failed"));
+}
+
+#[test]
+fn subagent_tool_failures_are_recoverable_tool_results() {
+    let adapter = Arc::new(RecoverableSubagentFailureAdapter::default());
+    let client_adapter: Arc<dyn ProviderAdapter> = adapter;
+    let client =
+        Client::from_adapters(vec![client_adapter], Some("fake-provider")).expect("client");
+    let workspace = tempdir().expect("workspace");
+    let mut session = Session::new(
+        subagent_enabled_profile(),
+        ExecutionEnvironment::local(workspace.path()),
+        SessionConfig {
+            max_subagent_depth: 1,
+            ..SessionConfig::default()
+        },
+    );
+
+    session
+        .process_input(&client, "parent task")
+        .expect("recoverable subagent failures");
+
+    assert_eq!(session.state, SessionState::Idle);
+    assert!(session.active_subagents.is_empty());
+    let tool_results = session_tool_results(&session);
+    assert_eq!(tool_results.len(), 3);
+    assert!(tool_results.iter().all(|result| result.is_error));
+    assert!(tool_results[0]
+        .content
+        .as_str()
+        .expect("unknown agent error")
+        .contains("Unknown child agent"));
+    assert!(tool_results[1]
+        .content
+        .as_str()
+        .expect("working dir error")
+        .contains("working_dir"));
+    assert!(tool_results[2]
+        .content
+        .as_str()
+        .expect("model override error")
+        .contains("model override is not allowed"));
+    assert!(tool_results[2]
+        .content
+        .as_str()
+        .expect("model override error")
+        .contains("requested_model=\"other-model\""));
+    assert!(tool_results[2]
+        .content
+        .as_str()
+        .expect("model override error")
+        .contains("parent_model=\"fake-model\""));
+    assert!(tool_results[2]
+        .content
+        .as_str()
+        .expect("model override error")
+        .contains("provider=\"fake-provider\""));
 }
 
 #[test]

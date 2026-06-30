@@ -300,6 +300,21 @@ async def test_subagent_tools_spawn_send_wait_and_close_through_the_tool_registr
     agent_id = spawn_result.content["agent_id"]
     handle = next(iter(session.active_subagents.values()))
     assert handle.status == agent.SubAgentStatus.RUNNING
+    child_session = handle.session
+    assert child_session is not None
+    assert child_session.provider_profile is handle.provider_profile
+    assert child_session.provider_profile is not session.provider_profile
+    assert child_session.provider_profile.model == session.provider_profile.model
+    assert child_session.provider_profile.id == session.provider_profile.id
+    assert child_session.provider_profile.tools() == session.provider_profile.tools()
+    assert (
+        child_session.provider_profile.provider_options()
+        == session.provider_profile.provider_options()
+    )
+    assert (
+        child_session.provider_profile.capabilities
+        == session.provider_profile.capabilities
+    )
 
     await asyncio.wait_for(client.started[0].wait(), timeout=1)
 
@@ -393,6 +408,100 @@ async def test_subagent_spawn_reports_startup_failure_recoverably(
 
 
 @pytest.mark.asyncio
+async def test_subagent_spawn_allows_configured_model_override_without_mutating_parent(
+    tmp_path: Path,
+) -> None:
+    client = _BlockingCompleteClient([_assistant_response("child response", "resp-1")])
+    session = _make_subagent_session(tmp_path, client=client)
+    parent_profile = session.provider_profile
+    parent_profile.subagent_model_overrides = ("child-model",)
+    parent_tools = parent_profile.tools()
+    parent_capabilities = dict(parent_profile.capabilities)
+    parent_provider_options = parent_profile.provider_options()
+
+    result = await agent.execute_tool_call(
+        session,
+        unified_llm.ToolCallData(
+            id="spawn-model-override",
+            name="spawn_agent",
+            arguments={
+                "task": "Investigate the repository",
+                "model": "child-model",
+            },
+        ),
+    )
+
+    assert result.is_error is False
+    assert result.content["model"] == "child-model"
+    handle = next(iter(session.active_subagents.values()))
+    child_session = handle.session
+    assert child_session is not None
+    child_profile = child_session.provider_profile
+
+    assert parent_profile.model == "parent-model"
+    assert parent_profile.capabilities == parent_capabilities
+    assert parent_profile.provider_options() == parent_provider_options
+    assert child_profile is handle.provider_profile
+    assert child_profile is not parent_profile
+    assert child_profile.model == "child-model"
+    assert child_profile.id == parent_profile.id
+    assert child_profile.tools() == parent_tools
+    assert child_profile.provider_options() == parent_provider_options
+    assert child_profile.capabilities == parent_capabilities
+    assert child_profile.supports("tool_calls") is True
+
+    await asyncio.wait_for(client.started[0].wait(), timeout=1)
+    child_request = client.requests[0]
+    assert child_request.model == "child-model"
+    assert child_request.provider == parent_profile.id
+    assert child_request.provider_options == {
+        parent_profile.id: parent_provider_options,
+    }
+    assert [tool.name for tool in child_request.tools or []] == [
+        tool.name for tool in parent_tools
+    ]
+
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_subagent_spawn_rejects_disallowed_model_override_recoverably(
+    tmp_path: Path,
+) -> None:
+    session = _make_subagent_session(tmp_path)
+    parent_profile = session.provider_profile
+    parent_profile.subagent_model_overrides = ("allowed-child-model",)
+    parent_capabilities = dict(parent_profile.capabilities)
+    parent_provider_options = parent_profile.provider_options()
+
+    result = await agent.execute_tool_call(
+        session,
+        unified_llm.ToolCallData(
+            id="spawn-bad-model",
+            name="spawn_agent",
+            arguments={
+                "task": "Investigate the repository",
+                "model": "blocked-child-model",
+            },
+        ),
+    )
+
+    assert result.is_error is True
+    assert "model override is not allowed" in result.content
+    assert "blocked-child-model" in result.content
+    assert "parent-model" in result.content
+    assert "provider-id" in result.content
+    assert "allowed-child-model" in result.content
+    assert "Retry without the model argument" in result.content
+    assert session.state == agent.SessionState.IDLE
+    assert session.active_subagents == {}
+    assert parent_profile.model == "parent-model"
+    assert parent_profile.capabilities == parent_capabilities
+    assert parent_profile.provider_options() == parent_provider_options
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_subagent_wait_reports_failed_child_tasks_and_blocks_follow_up(
     tmp_path: Path,
 ) -> None:
@@ -424,7 +533,7 @@ async def test_subagent_wait_reports_failed_child_tasks_and_blocks_follow_up(
         ),
     )
 
-    assert wait_result.is_error is False
+    assert wait_result.is_error is True
     assert wait_result.content["status"] == "failed"
     assert wait_result.content["success"] is False
     assert wait_result.content["output"] is None

@@ -19,6 +19,10 @@ use crate::history::{
     history_to_messages, AssistantTurn, HistoryTurn, SteeringTurn, TurnContent, UserTurn,
 };
 use crate::profiles::ProviderProfile;
+use crate::subagents::{
+    close_active_subagents, is_subagent_tool_name, SubAgentHandle, SubAgentToolRuntime,
+    SubAgentWorker,
+};
 use crate::tools::{ToolDispatchContext, ToolDispatchEvent, ToolHostControlHook, ToolHostControls};
 use unified_llm_adapter::ToolCall;
 
@@ -116,7 +120,9 @@ pub struct Session {
     #[serde(default)]
     pub follow_up_queue: VecDeque<UserTurn>,
     #[serde(default)]
-    pub active_subagents: BTreeMap<String, Value>,
+    pub active_subagents: BTreeMap<String, SubAgentHandle>,
+    #[serde(default, skip)]
+    pub(crate) active_subagent_workers: BTreeMap<String, SubAgentWorker>,
     #[serde(default)]
     pub system_prompt_snapshot: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,6 +214,7 @@ impl Session {
             steering_queue: VecDeque::new(),
             follow_up_queue: VecDeque::new(),
             active_subagents: BTreeMap::new(),
+            active_subagent_workers: BTreeMap::new(),
             system_prompt_snapshot,
             pending_question: None,
             abort_signaled: false,
@@ -335,7 +342,7 @@ impl Session {
                 }
 
                 round_count += 1;
-                let tool_results = self.execute_tool_calls(assistant_turn.tool_calls);
+                let tool_results = self.execute_tool_calls(client, assistant_turn.tool_calls);
                 if self.abort_requested() {
                     self.close_for_abort();
                     return Ok(());
@@ -586,6 +593,10 @@ impl Session {
         if self.state == SessionState::Closed {
             return;
         }
+        close_active_subagents(
+            &mut self.active_subagents,
+            &mut self.active_subagent_workers,
+        );
         self.state = SessionState::Closed;
         self.pending_question = None;
         self.emit_kind(
@@ -956,8 +967,13 @@ impl Session {
 
     fn execute_tool_calls(
         &mut self,
+        client: &Client,
         tool_calls: impl IntoIterator<Item = ToolCall>,
     ) -> Vec<unified_llm_adapter::ToolResult> {
+        let tool_calls = tool_calls.into_iter().collect::<Vec<_>>();
+        let has_subagent_calls = tool_calls
+            .iter()
+            .any(|tool_call| is_subagent_tool_name(&tool_call.name));
         let events = Arc::new(Mutex::new(Vec::<ToolDispatchEvent>::new()));
         let captured_events = events.clone();
         let queued_steering = Arc::new(Mutex::new(Vec::<SteeringTurn>::new()));
@@ -977,6 +993,7 @@ impl Session {
                 .push(UserTurn::new(content));
         });
         let registry = self.provider_profile.registry();
+        let subagent_runtime = SubAgentToolRuntime::from_session(self, client.clone());
         let results = registry.dispatch_many(
             tool_calls,
             ToolDispatchContext {
@@ -984,8 +1001,10 @@ impl Session {
                 messages: self.history_messages(),
                 config: self.config.clone(),
                 capabilities: self.provider_profile.capability_flags().clone(),
-                supports_parallel_tool_calls: self.provider_profile.supports("parallel_tool_calls"),
+                supports_parallel_tool_calls: self.provider_profile.supports("parallel_tool_calls")
+                    && !has_subagent_calls,
                 host_controls: ToolHostControls::new(Some(steering_hook), Some(follow_up_hook)),
+                subagent_runtime: Some(subagent_runtime.clone()),
                 event_hook: Some(Arc::new(move |event| {
                     captured_events
                         .lock()
@@ -995,6 +1014,7 @@ impl Session {
                 ..ToolDispatchContext::default()
             },
         );
+        subagent_runtime.restore_into(self);
 
         let events = events.lock().expect("tool dispatch events").clone();
         for event in events {

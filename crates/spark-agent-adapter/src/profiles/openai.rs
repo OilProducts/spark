@@ -107,7 +107,7 @@ fn openai_system_prompt() -> String {
         "Follow project instructions from AGENTS.md and OpenAI-specific .codex/instructions.md when those instructions are present in the prompt context.",
         "When a tool reports an error, use the error data to recover or explain the blocker instead of inventing results.",
         "Preserve observable behavior, keep diffs focused, and update tests when behavior changes.",
-        "Subagent tools are available as model-facing definitions only; do not assume a Python-backed subagent runtime.",
+        "Use subagent tools through the normal tool-calling path when a bounded child investigation is useful.",
     ]
     .join("\n")
 }
@@ -119,7 +119,7 @@ fn openai_compatible_system_prompt() -> String {
         "Prefer apply_patch for targeted edits and write_file only for new files or complete rewrites.",
         "Keep changes focused, preserve observable behavior, and validate the result with the most relevant tests or commands.",
         "Treat OpenAI-compatible providers such as OpenRouter and LiteLLM as Spark compatibility extensions, not as native Anthropic or Gemini profiles.",
-        "Subagent tools are exposed as definitions only in this milestone and must not invoke Python agent code.",
+        "Use subagent tools through the normal tool-calling path when a bounded child investigation is useful.",
     ]
     .join("\n")
 }

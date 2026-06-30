@@ -23,6 +23,7 @@ def _normalize_capability_name(capability: str) -> str:
 class ProviderProfile:
     id: str = ""
     model: str = ""
+    subagent_model_overrides: tuple[str, ...] | list[str] = field(default_factory=tuple)
     tool_registry: ToolRegistry | Mapping[str, RegisteredTool | ToolDefinition] = field(
         default_factory=ToolRegistry
     )
@@ -39,6 +40,10 @@ class ProviderProfile:
     def __post_init__(self) -> None:
         if not isinstance(self.tool_registry, ToolRegistry):
             self.tool_registry = ToolRegistry(self.tool_registry)
+        self.subagent_model_overrides = _copy_string_sequence(
+            self.subagent_model_overrides,
+            field_name="subagent_model_overrides",
+        )
         self.capabilities = _copy_mapping(self.capabilities)
         self.provider_options_map = _copy_mapping(self.provider_options_map)
         self.supports_reasoning = bool(
@@ -96,6 +101,42 @@ class ProviderProfile:
     @capability_flags.setter
     def capability_flags(self, value: Mapping[str, bool]) -> None:
         self.capabilities = _copy_mapping(value)
+
+    def allows_subagent_model_override(self, requested_model: str) -> bool:
+        requested_model = requested_model.strip()
+        if not requested_model:
+            return False
+        if requested_model == self.model:
+            return True
+        if self.capabilities.get("subagent_model_override"):
+            return True
+        return any(
+            allowed_model == "*" or allowed_model == requested_model
+            for allowed_model in self.subagent_model_overrides
+        )
+
+    def allowed_subagent_model_overrides(self) -> tuple[str, ...]:
+        return tuple(self.subagent_model_overrides)
+
+
+def _copy_string_sequence(value: Any, *, field_name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        values = (value,)
+    else:
+        try:
+            values = tuple(value)
+        except TypeError as exc:
+            raise TypeError(f"{field_name} must be a sequence of strings") from exc
+    normalized: list[str] = []
+    for item in values:
+        if not isinstance(item, str):
+            raise TypeError(f"{field_name} must be a sequence of strings")
+        item = item.strip()
+        if item:
+            normalized.append(item)
+    return tuple(normalized)
 
 
 __all__ = ["ProviderProfile"]

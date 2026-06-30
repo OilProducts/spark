@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -241,6 +241,43 @@ impl ExecutionEnvironment {
         self.backend.as_ref()
     }
 
+    pub fn shares_backend_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.backend, &other.backend)
+    }
+
+    pub fn scoped_child(&self, working_dir: impl AsRef<Path>) -> EnvironmentResult<Self> {
+        let parent_display = PathBuf::from(self.working_directory());
+        let parent_root = absolute_normalized_path(&parent_display);
+        let requested_working_dir = working_dir.as_ref();
+        let scope_display = if requested_working_dir.is_absolute() {
+            requested_working_dir.to_path_buf()
+        } else {
+            parent_display.join(requested_working_dir)
+        };
+        let scope_root = absolute_normalized_path(&scope_display);
+
+        if !scope_root.starts_with(&parent_root) {
+            return Err(EnvironmentError::PermissionDenied(scope_display));
+        }
+
+        let delegate_prefix = scope_root
+            .strip_prefix(&parent_root)
+            .ok()
+            .map(Path::to_path_buf)
+            .filter(|path| !path.as_os_str().is_empty());
+        Ok(Self {
+            working_dir: Some(scope_display.clone()),
+            env: self.env.clone(),
+            metadata: self.metadata.clone(),
+            backend: Arc::new(ScopedExecutionEnvironmentBackend {
+                base_environment: self.clone(),
+                scope_display,
+                scope_root,
+                delegate_prefix,
+            }),
+        })
+    }
+
     pub fn read_file(
         &self,
         path: impl AsRef<Path>,
@@ -330,6 +367,181 @@ impl ExecutionEnvironment {
 
     pub fn os_version(&self) -> String {
         self.backend.os_version()
+    }
+}
+
+#[derive(Clone)]
+struct ScopedExecutionEnvironmentBackend {
+    base_environment: ExecutionEnvironment,
+    scope_display: PathBuf,
+    scope_root: PathBuf,
+    delegate_prefix: Option<PathBuf>,
+}
+
+impl ScopedExecutionEnvironmentBackend {
+    fn scoped_path(&self, path: &Path) -> EnvironmentResult<PathBuf> {
+        let candidate = if path.is_absolute() {
+            absolute_normalized_path(path)
+        } else {
+            normalize_path(self.scope_root.join(path))
+        };
+        if !candidate.starts_with(&self.scope_root) {
+            return Err(EnvironmentError::PermissionDenied(path.to_path_buf()));
+        }
+        let relative = candidate
+            .strip_prefix(&self.scope_root)
+            .map_err(|_| EnvironmentError::PermissionDenied(path.to_path_buf()))?;
+        Ok(self.delegate_path(relative))
+    }
+
+    fn delegate_path(&self, relative_path: &Path) -> PathBuf {
+        if relative_path.as_os_str().is_empty() {
+            return self
+                .delegate_prefix
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("."));
+        }
+        match self.delegate_prefix.as_ref() {
+            Some(prefix) => prefix.join(relative_path),
+            None => relative_path.to_path_buf(),
+        }
+    }
+
+    fn command_options(&self, mut options: CommandOptions) -> EnvironmentResult<CommandOptions> {
+        options.working_dir = match options.working_dir {
+            Some(working_dir) => Some(self.scoped_path(&working_dir)?),
+            None => self.delegate_prefix.clone(),
+        };
+        Ok(options)
+    }
+}
+
+impl fmt::Debug for ScopedExecutionEnvironmentBackend {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScopedExecutionEnvironmentBackend")
+            .field("scope_display", &self.scope_display)
+            .field("delegate_prefix", &self.delegate_prefix)
+            .finish()
+    }
+}
+
+impl ExecutionEnvironmentBackend for ScopedExecutionEnvironmentBackend {
+    fn read_file(
+        &self,
+        path: &Path,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> EnvironmentResult<String> {
+        self.base_environment
+            .read_file(self.scoped_path(path)?, offset, limit)
+    }
+
+    fn read_file_bytes(&self, path: &Path) -> EnvironmentResult<Vec<u8>> {
+        self.base_environment
+            .read_file_bytes(self.scoped_path(path)?)
+    }
+
+    fn write_file(&self, path: &Path, content: &str) -> EnvironmentResult<()> {
+        self.base_environment
+            .write_file(self.scoped_path(path)?, content)
+    }
+
+    fn file_exists(&self, path: &Path) -> bool {
+        self.scoped_path(path)
+            .map(|path| self.base_environment.file_exists(path))
+            .unwrap_or(false)
+    }
+
+    fn is_directory(&self, path: &Path) -> bool {
+        self.scoped_path(path)
+            .map(|path| self.base_environment.is_directory(path))
+            .unwrap_or(false)
+    }
+
+    fn delete_file(&self, path: &Path) -> EnvironmentResult<()> {
+        self.base_environment.delete_file(self.scoped_path(path)?)
+    }
+
+    fn rename_file(&self, source_path: &Path, destination_path: &Path) -> EnvironmentResult<()> {
+        self.base_environment.rename_file(
+            self.scoped_path(source_path)?,
+            self.scoped_path(destination_path)?,
+        )
+    }
+
+    fn list_directory(&self, path: &Path, depth: usize) -> EnvironmentResult<Vec<DirEntry>> {
+        self.base_environment
+            .list_directory(self.scoped_path(path)?, depth)
+    }
+
+    fn exec_command(
+        &self,
+        command: &str,
+        options: CommandOptions,
+    ) -> EnvironmentResult<ExecResult> {
+        self.base_environment
+            .exec_command(command, self.command_options(options)?)
+    }
+
+    fn grep(&self, pattern: &str, path: &Path, options: &GrepOptions) -> EnvironmentResult<String> {
+        self.base_environment
+            .grep(pattern, self.scoped_path(path)?, options)
+    }
+
+    fn glob(&self, pattern: &str, path: &Path) -> EnvironmentResult<Vec<String>> {
+        self.base_environment.glob(pattern, self.scoped_path(path)?)
+    }
+
+    fn initialize(&self) -> EnvironmentResult<()> {
+        self.base_environment.initialize()
+    }
+
+    fn cleanup(&self) -> EnvironmentResult<()> {
+        self.base_environment.cleanup()
+    }
+
+    fn working_directory(&self) -> String {
+        self.scope_display.to_string_lossy().to_string()
+    }
+
+    fn platform(&self) -> String {
+        self.base_environment.platform()
+    }
+
+    fn os_version(&self) -> String {
+        self.base_environment.os_version()
+    }
+}
+
+fn absolute_normalized_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    normalize_path(absolute)
+}
+
+fn normalize_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
     }
 }
 

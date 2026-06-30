@@ -276,7 +276,9 @@ fn thread_resume_failure_from_event(event: &SessionEvent) -> Option<AgentThreadR
     })
 }
 
-fn thread_resume_failure_from_error_event(event: &SessionEvent) -> Option<AgentThreadResumeFailure> {
+fn thread_resume_failure_from_error_event(
+    event: &SessionEvent,
+) -> Option<AgentThreadResumeFailure> {
     let nested = event.data.get("error").and_then(Value::as_object);
     let message = object_string(nested, &["message"])
         .or_else(|| data_string(&event.data, &["message", "error"]))

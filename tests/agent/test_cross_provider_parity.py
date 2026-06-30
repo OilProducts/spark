@@ -712,9 +712,10 @@ def _assert_provider_request_shape(
     provider_case: ProviderCase,
     reasoning_effort: str | None = REASONING_EFFORT,
     provider_options: dict[str, Any] | None = None,
+    expected_model: str | None = None,
 ) -> None:
     assert request.provider == provider_case.name
-    assert request.model == provider_case.model
+    assert request.model == (provider_case.model if expected_model is None else expected_model)
     assert request.reasoning_effort == reasoning_effort
     expected_provider_options = (
         provider_case.expected_provider_options
@@ -2262,3 +2263,104 @@ async def test_cross_provider_parity_subagent_spawn_and_wait(
     await session.close()
     assert session.state == agent.SessionState.CLOSED
     assert session.active_subagents == {}
+
+
+@pytest.mark.parametrize(
+    "provider_case",
+    PROVIDER_CASES,
+    ids=[case.name for case in PROVIDER_CASES],
+)
+@pytest.mark.asyncio
+async def test_cross_provider_parity_subagent_model_override_policy(
+    tmp_path: Path,
+    provider_case: ProviderCase,
+) -> None:
+    child_model = f"{provider_case.model}-child"
+    client = _BlockingCompleteClient(
+        [
+            _build_complete_response(
+                provider_case,
+                _turn("resp-1", "child response"),
+            ),
+        ]
+    )
+    profile = provider_case.factory(
+        model=provider_case.model,
+        supports_streaming=False,
+        subagent_model_overrides=(child_model,),
+    )
+    session = agent.Session(
+        profile=profile,
+        execution_env=agent.LocalExecutionEnvironment(working_dir=tmp_path / "allowed"),
+        llm_client=client,
+        config=agent.SessionConfig(reasoning_effort=REASONING_EFFORT),
+    )
+
+    spawn_result = await agent.execute_tool_call(
+        session,
+        unified_llm.ToolCallData(
+            id="spawn-model-override",
+            name="spawn_agent",
+            arguments={
+                "task": "Investigate the repository",
+                "model": child_model,
+            },
+        ),
+    )
+
+    assert spawn_result.is_error is False
+    assert spawn_result.content["model"] == child_model
+    handle = next(iter(session.active_subagents.values()))
+    child_session = handle.session
+    assert child_session is not None
+    assert child_session.provider_profile is not profile
+    assert child_session.provider_profile.model == child_model
+    assert child_session.provider_profile.id == profile.id
+    assert child_session.provider_profile.tools() == profile.tools()
+    assert child_session.provider_profile.provider_options(
+        session.config
+    ) == profile.provider_options(session.config)
+    assert child_session.provider_profile.capabilities == profile.capabilities
+
+    await asyncio.wait_for(client.started[0].wait(), timeout=1)
+    _assert_provider_request_shape(
+        client.requests[0],
+        provider_case=provider_case,
+        reasoning_effort=REASONING_EFFORT,
+        expected_model=child_model,
+    )
+    await session.close()
+
+    blocked_profile = provider_case.factory(
+        model=provider_case.model,
+        supports_streaming=False,
+        subagent_model_overrides=("allowed-child-model",),
+    )
+    blocked_session = agent.Session(
+        profile=blocked_profile,
+        execution_env=agent.LocalExecutionEnvironment(working_dir=tmp_path / "blocked"),
+        config=agent.SessionConfig(reasoning_effort=REASONING_EFFORT),
+    )
+
+    blocked_result = await agent.execute_tool_call(
+        blocked_session,
+        unified_llm.ToolCallData(
+            id="spawn-blocked-model",
+            name="spawn_agent",
+            arguments={
+                "task": "Investigate the repository",
+                "model": "blocked-child-model",
+            },
+        ),
+    )
+
+    assert blocked_result.is_error is True
+    assert "model override is not allowed" in blocked_result.content
+    assert "blocked-child-model" in blocked_result.content
+    assert provider_case.model in blocked_result.content
+    assert provider_case.name in blocked_result.content
+    assert "allowed-child-model" in blocked_result.content
+    assert blocked_session.state == agent.SessionState.IDLE
+    assert blocked_session.active_subagents == {}
+    assert blocked_profile.model == provider_case.model
+    await blocked_session.close()

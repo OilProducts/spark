@@ -16,6 +16,7 @@ pub mod profiles;
 pub mod project_docs;
 pub mod session;
 pub mod status_envelope;
+pub mod subagents;
 pub mod tools;
 pub mod truncation;
 
@@ -66,6 +67,11 @@ pub use status_envelope::{
     contract_failure_outcome, extract_structured_outcome_payload, status_envelope_allowed_keys,
     validate_write_contract_violation, ModeledOutcomeParseResult, PlainTextParseResult,
     StructuredContractViolation, StructuredTextOutcome,
+};
+pub use subagents::{
+    create_child_session, ChildSessionOptions, SubAgentError, SubAgentHandle, SubAgentLimitError,
+    SubAgentLookupError, SubAgentResult, SubAgentRuntimeResult, SubAgentStateError, SubAgentStatus,
+    SubAgentWorkingDirectoryError,
 };
 pub use tools::{
     RegisteredTool, ToolDefinition, ToolDispatchContext, ToolDispatchEvent, ToolExecution,

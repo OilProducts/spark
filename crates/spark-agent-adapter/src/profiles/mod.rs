@@ -32,6 +32,8 @@ pub struct ProviderProfile {
     pub request_provider: Option<String>,
     #[serde(default)]
     pub model: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagent_model_overrides: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub system_prompt: String,
     #[serde(default)]
@@ -64,6 +66,7 @@ impl Default for ProviderProfile {
             id: String::new(),
             request_provider: None,
             model: String::new(),
+            subagent_model_overrides: Vec::new(),
             system_prompt: String::new(),
             tools: Vec::new(),
             tool_registry: ToolRegistry::new(),
@@ -187,6 +190,29 @@ impl ProviderProfile {
             .and_then(non_empty)
             .or_else(|| non_empty(&self.id))
             .map(str::to_string)
+    }
+
+    pub fn allows_subagent_model_override(&self, requested_model: &str) -> bool {
+        let Some(requested_model) = non_empty(requested_model) else {
+            return false;
+        };
+        if non_empty(&self.model) == Some(requested_model) {
+            return true;
+        }
+        if self.capability_enabled("subagent_model_override") {
+            return true;
+        }
+        self.subagent_model_overrides
+            .iter()
+            .filter_map(|model| non_empty(model))
+            .any(|model| model == "*" || model == requested_model)
+    }
+
+    pub fn allowed_subagent_model_overrides(&self) -> Vec<String> {
+        self.subagent_model_overrides
+            .iter()
+            .filter_map(|model| non_empty(model).map(str::to_string))
+            .collect()
     }
 
     pub fn supports(&self, capability: impl AsRef<str>) -> bool {

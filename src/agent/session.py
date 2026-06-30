@@ -109,6 +109,7 @@ def _build_session_system_prompt(
     fallback_profile = ProviderProfile(
         id=getattr(provider_profile, "id", ""),
         model=getattr(provider_profile, "model", ""),
+        subagent_model_overrides=getattr(provider_profile, "subagent_model_overrides", ()),
         tool_registry=tool_registry,
         capabilities=capabilities or {},
         provider_options_map=getattr(provider_profile, "provider_options_map", {}) or {},

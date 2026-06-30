@@ -17,6 +17,7 @@ use crate::config::SessionConfig;
 use crate::environment::ExecutionEnvironment;
 use crate::events::EventKind;
 use crate::history::TurnContent;
+use crate::subagents::SubAgentToolRuntime;
 use crate::truncation::truncate_tool_output;
 
 pub type ToolExecutor =
@@ -200,6 +201,7 @@ pub struct ToolExecution {
     pub config: SessionConfig,
     pub capabilities: BTreeMap<String, bool>,
     pub host_controls: ToolHostControls,
+    pub subagent_runtime: Option<SubAgentToolRuntime>,
 }
 
 #[derive(Clone, Default)]
@@ -390,6 +392,7 @@ pub struct ToolDispatchContext {
     pub capabilities: BTreeMap<String, bool>,
     pub supports_parallel_tool_calls: bool,
     pub host_controls: ToolHostControls,
+    pub subagent_runtime: Option<SubAgentToolRuntime>,
     pub truncation_hook: Option<ToolTruncationHook>,
     pub event_hook: Option<ToolEventHook>,
 }
@@ -403,6 +406,7 @@ impl Default for ToolDispatchContext {
             capabilities: BTreeMap::new(),
             supports_parallel_tool_calls: false,
             host_controls: ToolHostControls::default(),
+            subagent_runtime: None,
             truncation_hook: None,
             event_hook: None,
         }
@@ -422,6 +426,7 @@ impl fmt::Debug for ToolDispatchContext {
                 &self.supports_parallel_tool_calls,
             )
             .field("host_controls", &self.host_controls)
+            .field("has_subagent_runtime", &self.subagent_runtime.is_some())
             .field("has_truncation_hook", &self.truncation_hook.is_some())
             .field("has_event_hook", &self.event_hook.is_some())
             .finish()
@@ -622,6 +627,7 @@ fn dispatch_one(
         config: context.config.clone(),
         capabilities: context.capabilities.clone(),
         host_controls: context.host_controls.clone(),
+        subagent_runtime: context.subagent_runtime.clone(),
     };
     let executor = registered.executor.clone();
     let execution = catch_unwind(AssertUnwindSafe(|| (executor)(invocation)));

@@ -31,7 +31,7 @@ fn anthropic_system_prompt() -> String {
         "Follow project instructions from AGENTS.md and Anthropic-specific CLAUDE.md when those instructions are present in the prompt context.",
         "Use tool errors as recoverable feedback, ask for missing information only when needed, and avoid pretending that an edit or command succeeded.",
         "Preserve observable behavior, keep changes readable, and update tests when behavior changes.",
-        "Subagent tools are available as model-facing definitions only; do not assume a Python-backed subagent runtime.",
+        "Use subagent tools through the normal tool-calling path when a bounded child investigation is useful.",
     ]
     .join("\n")
 }

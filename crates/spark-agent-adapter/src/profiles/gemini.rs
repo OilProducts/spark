@@ -45,7 +45,7 @@ fn gemini_system_prompt() -> String {
         "Follow project instructions from AGENTS.md and Gemini-specific GEMINI.md when those instructions are present in the prompt context.",
         "Gemini safety settings, grounding configuration, and thinking configuration are provider options supplied through the Gemini request options map.",
         "Treat tool errors as recoverable feedback, keep changes focused, and update tests when behavior changes.",
-        "Subagent tools are available as model-facing definitions only; do not assume a Python-backed subagent runtime.",
+        "Use subagent tools through the normal tool-calling path when a bounded child investigation is useful.",
     ]
     .join("\n")
 }
