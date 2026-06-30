@@ -778,6 +778,14 @@ impl WorkspaceConversationService {
                     if let Some(turn) = find_turn_mut(&mut snapshot, assistant_turn_id) {
                         set_string_value(turn, "status", "failed");
                         set_string_value(turn, "error", &message);
+                        if let Some(error_code) =
+                            event.error_code.as_deref().and_then(non_empty_string)
+                        {
+                            set_string_value(turn, "error_code", &error_code);
+                        }
+                        if let Some(details) = event.details.as_ref() {
+                            set_value(turn, "details", details.clone());
+                        }
                         let turn = turn.clone();
                         emitted_payloads.push(build_turn_upsert_payload(&snapshot, &turn));
                     }
@@ -804,6 +812,7 @@ impl WorkspaceConversationService {
             &chat_mode,
             output.final_assistant_text.as_deref(),
             output.token_usage,
+            output.token_usage_breakdown,
             output.thread_resume_failure.as_ref(),
             buffered_plan_assistant_event.as_ref(),
             &mut emitted_payloads,
@@ -3282,6 +3291,8 @@ fn materialize_segment_for_event(
             set_string_value(&mut segment, "status", "streaming");
             set_string_value(&mut segment, "updated_at", &now);
             remove_key(&mut segment, "error");
+            remove_key(&mut segment, "error_code");
+            remove_key(&mut segment, "details");
             if let Some(phase) = normalized_assistant_phase(event.phase.as_deref()) {
                 set_string_value(&mut segment, "phase", &phase);
             }
@@ -3342,6 +3353,8 @@ fn materialize_segment_for_event(
             set_string_value(&mut segment, "updated_at", &now);
             set_string_value(&mut segment, "completed_at", &now);
             remove_key(&mut segment, "error");
+            remove_key(&mut segment, "error_code");
+            remove_key(&mut segment, "details");
             if let Some(phase) = normalized_assistant_phase(event.phase.as_deref()) {
                 set_string_value(&mut segment, "phase", &phase);
             }
@@ -3477,6 +3490,38 @@ fn materialize_segment_for_event(
             upsert_segment(snapshot, segment.clone());
             Some(segment)
         }
+        TurnStreamEventKind::Other(kind) if is_model_tool_call_kind(kind) => {
+            let tool_call = event.tool_call.clone()?;
+            let segment_id = model_tool_segment_id(assistant_turn_id, event, &tool_call);
+            let status = model_tool_call_status(kind, &tool_call);
+            let mut segment = find_segment(snapshot, &segment_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    segment_shell(
+                        &segment_id,
+                        assistant_turn_id,
+                        next_turn_segment_order(snapshot, assistant_turn_id),
+                        "model_tool_call",
+                        "assistant",
+                        &status,
+                        &now,
+                        build_segment_source(event, tool_call_id(&tool_call).as_deref()),
+                    )
+                });
+            set_string_value(&mut segment, "status", &status);
+            set_string_value(&mut segment, "updated_at", &now);
+            set_value(
+                &mut segment,
+                "source",
+                build_segment_source(event, tool_call_id(&tool_call).as_deref()),
+            );
+            set_value(&mut segment, "tool_call", tool_call);
+            if status == "complete" || status == "failed" {
+                set_string_value(&mut segment, "completed_at", &now);
+            }
+            upsert_segment(snapshot, segment.clone());
+            Some(segment)
+        }
         TurnStreamEventKind::ToolCallStarted
         | TurnStreamEventKind::ToolCallUpdated
         | TurnStreamEventKind::ToolCallCompleted
@@ -3533,6 +3578,12 @@ fn materialize_segment_for_event(
             }
             set_string_value(&mut segment, "status", "failed");
             set_string_value(&mut segment, "error", &message);
+            if let Some(error_code) = event.error_code.as_deref().and_then(non_empty_string) {
+                set_string_value(&mut segment, "error_code", &error_code);
+            }
+            if let Some(details) = event.details.as_ref() {
+                set_value(&mut segment, "details", details.clone());
+            }
             set_string_value(&mut segment, "updated_at", &now);
             set_string_value(&mut segment, "completed_at", &now);
             if let Some(phase) = normalized_assistant_phase(event.phase.as_deref()) {
@@ -3586,6 +3637,22 @@ fn build_segment_source(event: &TurnStreamEvent, call_id: Option<&str>) -> Value
     let mut source = Map::new();
     if let Some(value) = event
         .source
+        .backend
+        .as_ref()
+        .and_then(|value| non_empty_string(value))
+    {
+        source.insert("backend".to_string(), json!(value));
+    }
+    if let Some(value) = event
+        .source
+        .session_id
+        .as_ref()
+        .and_then(|value| non_empty_string(value))
+    {
+        source.insert("session_id".to_string(), json!(value));
+    }
+    if let Some(value) = event
+        .source
         .app_turn_id
         .as_ref()
         .and_then(|value| non_empty_string(value))
@@ -3602,6 +3669,22 @@ fn build_segment_source(event: &TurnStreamEvent, call_id: Option<&str>) -> Value
     }
     if let Some(value) = event.source.summary_index {
         source.insert("summary_index".to_string(), json!(value));
+    }
+    if let Some(value) = event
+        .source
+        .response_id
+        .as_ref()
+        .and_then(|value| non_empty_string(value))
+    {
+        source.insert("response_id".to_string(), json!(value));
+    }
+    if let Some(value) = event
+        .source
+        .raw_kind
+        .as_ref()
+        .and_then(|value| non_empty_string(value))
+    {
+        source.insert("raw_kind".to_string(), json!(value));
     }
     if let Some(value) = call_id.and_then(non_empty_string) {
         source.insert("call_id".to_string(), json!(value));
@@ -3677,6 +3760,19 @@ fn tool_segment_id(turn_id: &str, event: &TurnStreamEvent, tool_call: &Value) ->
     format!("segment-tool-{app_turn_id}-{call_id}")
 }
 
+fn model_tool_segment_id(turn_id: &str, event: &TurnStreamEvent, tool_call: &Value) -> String {
+    let app_turn_id = event
+        .source
+        .app_turn_id
+        .as_deref()
+        .and_then(non_empty_string)
+        .unwrap_or_else(|| turn_id.to_string());
+    let call_id = tool_call_id(tool_call)
+        .or_else(|| event.source.item_id.as_deref().and_then(non_empty_string))
+        .unwrap_or_else(|| "model-tool".to_string());
+    format!("segment-model-tool-{app_turn_id}-{call_id}")
+}
+
 fn request_user_input_segment_id(
     turn_id: &str,
     event: &TurnStreamEvent,
@@ -3723,6 +3819,31 @@ fn tool_call_status(event: &TurnStreamEvent, tool_call: &Value) -> String {
         }
         TurnStreamEventKind::ToolCallFailed => "failed".to_string(),
         _ => "complete".to_string(),
+    }
+}
+
+fn is_model_tool_call_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "model_tool_call_start" | "model_tool_call_delta" | "model_tool_call_end"
+    )
+}
+
+fn model_tool_call_status(kind: &str, tool_call: &Value) -> String {
+    let raw_status = tool_call
+        .get("status")
+        .and_then(Value::as_str)
+        .and_then(non_empty_string);
+    if let Some(raw_status) = raw_status {
+        return match raw_status.as_str() {
+            "completed" | "complete" => "complete".to_string(),
+            "failed" => "failed".to_string(),
+            _ => "running".to_string(),
+        };
+    }
+    match kind {
+        "model_tool_call_end" => "complete".to_string(),
+        _ => "running".to_string(),
     }
 }
 
@@ -4285,13 +4406,15 @@ fn complete_existing_assistant_segment_with_text(
     set_string_value(segment, "completed_at", &now);
     set_string_value(segment, "phase", "final_answer");
     remove_key(segment, "error");
+    remove_key(segment, "error_code");
+    remove_key(segment, "details");
     Some(segment.clone())
 }
 
 fn failed_assistant_state(
     snapshot: &Value,
     assistant_turn_id: &str,
-) -> Option<(String, Option<String>)> {
+) -> Option<(String, Option<String>, Option<Value>)> {
     if let Some(turn) = find_turn(snapshot, assistant_turn_id) {
         if turn.get("status").and_then(Value::as_str) == Some("failed") {
             let message = turn
@@ -4303,7 +4426,8 @@ fn failed_assistant_state(
                 .get("error_code")
                 .and_then(Value::as_str)
                 .and_then(non_empty_string);
-            return Some((message, error_code));
+            let details = turn.get("details").cloned();
+            return Some((message, error_code, details));
         }
     }
 
@@ -4331,7 +4455,8 @@ fn failed_assistant_state(
                 .get("error_code")
                 .and_then(Value::as_str)
                 .and_then(non_empty_string);
-            Some((message, error_code))
+            let details = segment.get("details").cloned();
+            Some((message, error_code, details))
         })
 }
 
@@ -4340,6 +4465,7 @@ fn fail_assistant_turn_and_segments(
     assistant_turn_id: &str,
     message: &str,
     error_code: Option<&str>,
+    details: Option<&Value>,
     force_turn_upsert: bool,
     emitted_payloads: &mut Vec<Value>,
 ) {
@@ -4361,11 +4487,15 @@ fn fail_assistant_turn_and_segments(
             }
             let changed = segment.get("status").and_then(Value::as_str) != Some("failed")
                 || segment.get("error").and_then(Value::as_str) != Some(message)
-                || error_code.is_some();
+                || error_code.is_some()
+                || details.is_some_and(|details| segment.get("details") != Some(details));
             set_string_value(segment, "status", "failed");
             set_string_value(segment, "error", message);
             if let Some(error_code) = error_code {
                 set_string_value(segment, "error_code", error_code);
+            }
+            if let Some(details) = details {
+                set_value(segment, "details", details.clone());
             }
             set_string_value(segment, "updated_at", &now);
             set_string_value(segment, "completed_at", &now);
@@ -4382,11 +4512,15 @@ fn fail_assistant_turn_and_segments(
         let changed = turn.get("status").and_then(Value::as_str) != Some("failed")
             || turn.get("error").and_then(Value::as_str) != Some(message)
             || error_code.is_some()
+            || details.is_some_and(|details| turn.get("details") != Some(details))
             || force_turn_upsert;
         set_string_value(turn, "status", "failed");
         set_string_value(turn, "error", message);
         if let Some(error_code) = error_code {
             set_string_value(turn, "error_code", error_code);
+        }
+        if let Some(details) = details {
+            set_value(turn, "details", details.clone());
         }
         if changed {
             let turn = turn.clone();
@@ -4408,6 +4542,19 @@ fn apply_assistant_turn_token_usage(
     changed
 }
 
+fn apply_assistant_turn_token_usage_breakdown(
+    snapshot: &mut Value,
+    assistant_turn_id: &str,
+    token_usage_breakdown: &Value,
+) -> bool {
+    let Some(turn) = find_turn_mut(snapshot, assistant_turn_id) else {
+        return false;
+    };
+    let changed = turn.get("token_usage_breakdown") != Some(token_usage_breakdown);
+    set_value(turn, "token_usage_breakdown", token_usage_breakdown.clone());
+    changed
+}
+
 fn emit_assistant_turn_upsert(
     snapshot: &Value,
     assistant_turn_id: &str,
@@ -4424,6 +4571,7 @@ fn finalize_agent_turn_output(
     chat_mode: &str,
     final_assistant_text: Option<&str>,
     token_usage: Option<Value>,
+    token_usage_breakdown: Option<Value>,
     thread_resume_failure: Option<&AgentThreadResumeFailure>,
     buffered_plan_assistant_event: Option<&TurnStreamEvent>,
     emitted_payloads: &mut Vec<Value>,
@@ -4434,6 +4582,17 @@ fn finalize_agent_turn_output(
             apply_assistant_turn_token_usage(snapshot, assistant_turn_id, token_usage)
         })
         .unwrap_or(false);
+    let token_usage_breakdown_changed = token_usage_breakdown
+        .as_ref()
+        .map(|token_usage_breakdown| {
+            apply_assistant_turn_token_usage_breakdown(
+                snapshot,
+                assistant_turn_id,
+                token_usage_breakdown,
+            )
+        })
+        .unwrap_or(false);
+    let usage_changed = token_usage_changed || token_usage_breakdown_changed;
 
     if let Some(failure) = thread_resume_failure {
         let now = iso_now();
@@ -4442,7 +4601,8 @@ fn finalize_agent_turn_output(
             assistant_turn_id,
             &failure.message,
             failure.error_code.as_deref(),
-            token_usage_changed,
+            failure.details.as_ref(),
+            usage_changed,
             emitted_payloads,
         );
         append_workflow_event(
@@ -4458,13 +4618,16 @@ fn finalize_agent_turn_output(
         return;
     }
 
-    if let Some((message, error_code)) = failed_assistant_state(snapshot, assistant_turn_id) {
+    if let Some((message, error_code, details)) =
+        failed_assistant_state(snapshot, assistant_turn_id)
+    {
         fail_assistant_turn_and_segments(
             snapshot,
             assistant_turn_id,
             &message,
             error_code.as_deref(),
-            token_usage_changed,
+            details.as_ref(),
+            usage_changed,
             emitted_payloads,
         );
         return;
@@ -4486,7 +4649,7 @@ fn finalize_agent_turn_output(
         && final_text.is_none()
         && has_pending_request_user_input_segment(snapshot, assistant_turn_id)
     {
-        if token_usage_changed {
+        if usage_changed {
             emit_assistant_turn_upsert(snapshot, assistant_turn_id, emitted_payloads);
         }
         return;
@@ -4516,6 +4679,8 @@ fn finalize_agent_turn_output(
                             request_user_input: None,
                             token_usage: None,
                             error: None,
+                            error_code: None,
+                            details: None,
                             phase: Some("final_answer".to_string()),
                             status: None,
                         });
@@ -4530,13 +4695,14 @@ fn finalize_agent_turn_output(
     }
 
     if final_answer_segment.is_none() && plan_segment.is_none() {
-        let (message, error_code) = failed_assistant_state(snapshot, assistant_turn_id)
-            .unwrap_or_else(|| (MISSING_FINAL_ANSWER_ERROR.to_string(), None));
+        let (message, error_code, details) = failed_assistant_state(snapshot, assistant_turn_id)
+            .unwrap_or_else(|| (MISSING_FINAL_ANSWER_ERROR.to_string(), None, None));
         fail_assistant_turn_and_segments(
             snapshot,
             assistant_turn_id,
             &message,
             error_code.as_deref(),
+            details.as_ref(),
             false,
             emitted_payloads,
         );
@@ -4562,10 +4728,14 @@ fn finalize_agent_turn_output(
             != Some(resolved_content.as_str())
             || turn.get("status").and_then(Value::as_str) != Some("complete")
             || turn.get("error").is_some()
-            || token_usage_changed;
+            || turn.get("error_code").is_some()
+            || turn.get("details").is_some()
+            || usage_changed;
         set_string_value(turn, "content", &resolved_content);
         set_string_value(turn, "status", "complete");
         remove_key(turn, "error");
+        remove_key(turn, "error_code");
+        remove_key(turn, "details");
         if turn_changed {
             let turn = turn.clone();
             emitted_payloads.push(build_turn_upsert_payload(snapshot, &turn));

@@ -35,7 +35,47 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
                 direction: "outgoing".to_string(),
                 line: "{\"event\":\"http-route-turn\"}".to_string(),
             }],
-            events: vec![request_user_input_event()],
+            events: vec![
+                content_completed(
+                    TurnStreamChannel::Assistant,
+                    "Scripted route answer.",
+                    "app-route-turn",
+                    "final-answer",
+                ),
+                content_delta(
+                    TurnStreamChannel::Reasoning,
+                    "Checking route contracts",
+                    "app-route-turn",
+                    "reasoning",
+                ),
+                content_completed(
+                    TurnStreamChannel::Reasoning,
+                    "Checking route contracts.",
+                    "app-route-turn",
+                    "reasoning",
+                ),
+                model_tool_event("model_tool_call_start", "route-tool-1", "proposed", None),
+                model_tool_event(
+                    "model_tool_call_delta",
+                    "route-tool-1",
+                    "streaming",
+                    Some("{\"query\":\"http route\"}"),
+                ),
+                model_tool_event("model_tool_call_end", "route-tool-1", "completed", None),
+                tool_event(
+                    TurnStreamEventKind::ToolCallStarted,
+                    "route-tool-1",
+                    "running",
+                    "partial route output",
+                ),
+                tool_event(
+                    TurnStreamEventKind::ToolCallCompleted,
+                    "route-tool-1",
+                    "completed",
+                    "full route output",
+                ),
+                request_user_input_event(),
+            ],
             final_assistant_text: Some("Scripted route answer.".to_string()),
             token_usage: Some(json!({"total": {"inputTokens": 8, "outputTokens": 4}})),
             ..AgentTurnOutput::default()
@@ -103,6 +143,30 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
         .iter()
         .any(|segment| segment["kind"] == "request_user_input"
             && segment["request_user_input"]["status"] == "pending"));
+    assert!(response.1["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "reasoning"
+            && segment["content"] == "Checking route contracts."
+            && segment["source"]["item_id"] == "reasoning"));
+    assert!(response.1["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "model_tool_call"
+            && segment["status"] == "complete"
+            && segment["tool_call"]["id"] == "route-tool-1"
+            && segment["tool_call"]["arguments"] == json!({"query": "http route"})
+            && segment["source"]["raw_kind"] == "model_tool_call_end"));
+    assert!(response.1["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "tool_call"
+            && segment["status"] == "complete"
+            && segment["tool_call"]["id"] == "route-tool-1"
+            && segment["tool_call"]["output"] == "full route output"));
 
     let backend_requests = backend_requests.lock().expect("backend requests");
     assert_eq!(backend_requests.len(), 2);
@@ -486,6 +550,11 @@ async fn request_user_input_answer_route_continues_pending_requests() {
             ConversationTurnRequest {
                 project_path: "/projects/http-input".to_string(),
                 message: "Need input".to_string(),
+                provider: Some("openrouter".to_string()),
+                model: Some("openrouter/route-input".to_string()),
+                llm_profile: Some("implementation".to_string()),
+                reasoning_effort: Some("HIGH".to_string()),
+                chat_mode: Some("chat".to_string()),
                 ..ConversationTurnRequest::default()
             },
         )
@@ -557,6 +626,17 @@ async fn request_user_input_answer_route_continues_pending_requests() {
         prepared.assistant_turn_id
     );
     assert_eq!(answer_requests[0].answers["decision"], "Approve");
+    assert_eq!(answer_requests[0].provider.as_deref(), Some("openrouter"));
+    assert_eq!(
+        answer_requests[0].model.as_deref(),
+        Some("openrouter/route-input")
+    );
+    assert_eq!(
+        answer_requests[0].llm_profile.as_deref(),
+        Some("implementation")
+    );
+    assert_eq!(answer_requests[0].reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(answer_requests[0].chat_mode.as_deref(), Some("chat"));
     drop(answer_requests);
 
     let changed = request_json(
@@ -884,6 +964,103 @@ fn request_user_input_event() -> TurnStreamEvent {
         })),
         token_usage: None,
         error: None,
+        error_code: None,
+        details: None,
+        phase: None,
+        status: None,
+    }
+}
+
+fn content_delta(
+    channel: TurnStreamChannel,
+    text: &str,
+    app_turn_id: &str,
+    item_id: &str,
+) -> TurnStreamEvent {
+    let mut event = TurnStreamEvent::content_delta(channel, text);
+    event.source = source(app_turn_id, item_id);
+    event
+}
+
+fn content_completed(
+    channel: TurnStreamChannel,
+    text: &str,
+    app_turn_id: &str,
+    item_id: &str,
+) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::ContentCompleted,
+        channel: Some(channel),
+        source: source(app_turn_id, item_id),
+        content_delta: Some(text.to_string()),
+        message: Some(text.to_string()),
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: Some("final_answer".to_string()),
+        status: None,
+    }
+}
+
+fn model_tool_event(kind: &str, id: &str, status: &str, delta: Option<&str>) -> TurnStreamEvent {
+    let mut tool_call = json!({
+        "id": id,
+        "kind": "model_tool_call",
+        "status": status,
+        "name": "lookup",
+        "title": "lookup",
+        "arguments": {"query": "http route"},
+    });
+    if let Some(delta) = delta {
+        tool_call["delta"] = json!(delta);
+    }
+
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::Other(kind.to_string()),
+        channel: None,
+        source: TurnStreamSource {
+            app_turn_id: Some("app-route-turn".to_string()),
+            item_id: Some(id.to_string()),
+            response_id: Some("resp-route".to_string()),
+            raw_kind: Some(kind.to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: delta.map(str::to_string),
+        message: None,
+        tool_call: Some(tool_call),
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: None,
+        status: Some(status.to_string()),
+    }
+}
+
+fn tool_event(kind: TurnStreamEventKind, id: &str, status: &str, output: &str) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind,
+        channel: None,
+        source: source("app-route-turn", id),
+        content_delta: None,
+        message: None,
+        tool_call: Some(json!({
+            "id": id,
+            "kind": "command_execution",
+            "status": status,
+            "title": "Run command",
+            "output": output,
+            "file_paths": [],
+        })),
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
         phase: None,
         status: None,
     }
@@ -904,8 +1081,18 @@ fn stream_error_event(message: &str) -> TurnStreamEvent {
         request_user_input: None,
         token_usage: None,
         error: Some(message.to_string()),
+        error_code: None,
+        details: None,
         phase: Some("final_answer".to_string()),
         status: Some("failed".to_string()),
+    }
+}
+
+fn source(app_turn_id: &str, item_id: &str) -> TurnStreamSource {
+    TurnStreamSource {
+        app_turn_id: Some(app_turn_id.to_string()),
+        item_id: Some(item_id.to_string()),
+        ..TurnStreamSource::default()
     }
 }
 

@@ -178,6 +178,10 @@ pub struct TurnStreamEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -195,6 +199,8 @@ impl TurnStreamEvent {
             request_user_input: None,
             token_usage: None,
             error: None,
+            error_code: None,
+            details: None,
             phase: None,
             status: None,
         };
@@ -214,6 +220,8 @@ impl TurnStreamEvent {
             request_user_input: None,
             token_usage: None,
             error: None,
+            error_code: None,
+            details: None,
             phase: None,
             status: None,
         }
@@ -244,6 +252,8 @@ impl<'de> Deserialize<'de> for TurnStreamEvent {
             RequestUserInput,
             TokenUsage,
             Error,
+            ErrorCode,
+            Details,
             Phase,
             Status,
         }
@@ -276,6 +286,8 @@ impl<'de> Deserialize<'de> for TurnStreamEvent {
                             "request_user_input" => Ok(Field::RequestUserInput),
                             "token_usage" => Ok(Field::TokenUsage),
                             "error" => Ok(Field::Error),
+                            "error_code" => Ok(Field::ErrorCode),
+                            "details" => Ok(Field::Details),
                             "phase" => Ok(Field::Phase),
                             "status" => Ok(Field::Status),
                             _ => Err(de::Error::unknown_field(value, FIELDS)),
@@ -309,6 +321,8 @@ impl<'de> Deserialize<'de> for TurnStreamEvent {
                 let mut request_user_input = None;
                 let mut token_usage = None;
                 let mut error = None;
+                let mut error_code = None;
+                let mut details = None;
                 let mut phase = None;
                 let mut status = None;
 
@@ -323,6 +337,8 @@ impl<'de> Deserialize<'de> for TurnStreamEvent {
                         Field::RequestUserInput => request_user_input = Some(map.next_value()?),
                         Field::TokenUsage => token_usage = Some(map.next_value()?),
                         Field::Error => error = Some(map.next_value()?),
+                        Field::ErrorCode => error_code = Some(map.next_value()?),
+                        Field::Details => details = Some(map.next_value()?),
                         Field::Phase => phase = Some(map.next_value()?),
                         Field::Status => status = Some(map.next_value()?),
                     }
@@ -338,6 +354,8 @@ impl<'de> Deserialize<'de> for TurnStreamEvent {
                     request_user_input: request_user_input.unwrap_or(None),
                     token_usage: token_usage.unwrap_or(None),
                     error: error.unwrap_or(None),
+                    error_code: error_code.unwrap_or(None),
+                    details: details.unwrap_or(None),
                     phase: phase.unwrap_or(None),
                     status: status.unwrap_or(None),
                 };
@@ -356,6 +374,8 @@ impl<'de> Deserialize<'de> for TurnStreamEvent {
             "request_user_input",
             "token_usage",
             "error",
+            "error_code",
+            "details",
             "phase",
             "status",
         ];

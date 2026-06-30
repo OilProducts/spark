@@ -360,6 +360,22 @@ fn event_kind_serializes_to_stable_agent_event_strings() {
 #[test]
 fn session_events_map_to_workspace_turn_stream_events_without_renaming_workspace_kinds() {
     let session_id = Uuid::new_v4();
+    let text_start = SessionEvent::new(
+        EventKind::AssistantTextStart,
+        session_id,
+        BTreeMap::from([("response_id".to_string(), json!("resp-1"))]),
+    );
+    let stream_event = text_start.to_turn_stream_event().expect("text start event");
+    assert_eq!(
+        stream_event.kind,
+        TurnStreamEventKind::Other("assistant_text_start".to_string())
+    );
+    assert_eq!(stream_event.channel, Some(TurnStreamChannel::Assistant));
+    assert_eq!(
+        stream_event.source.raw_kind.as_deref(),
+        Some("assistant_text_start")
+    );
+
     let text_delta = SessionEvent::new(
         EventKind::AssistantTextDelta,
         session_id,
@@ -393,6 +409,20 @@ fn session_events_map_to_workspace_turn_stream_events_without_renaming_workspace
     assert_eq!(stream_event.kind, TurnStreamEventKind::ContentCompleted);
     assert_eq!(stream_event.channel, Some(TurnStreamChannel::Reasoning));
     assert_eq!(stream_event.content_delta.as_deref(), Some("Because"));
+
+    let reasoning_start = SessionEvent::new(
+        EventKind::AssistantReasoningStart,
+        session_id,
+        BTreeMap::new(),
+    );
+    let stream_event = reasoning_start
+        .to_turn_stream_event()
+        .expect("reasoning start event");
+    assert_eq!(
+        stream_event.kind,
+        TurnStreamEventKind::Other("assistant_reasoning_start".to_string())
+    );
+    assert_eq!(stream_event.channel, Some(TurnStreamChannel::Reasoning));
 
     let usage = SessionEvent::new(
         EventKind::ModelUsageUpdate,
@@ -469,21 +499,55 @@ fn session_events_map_to_workspace_turn_stream_events_without_renaming_workspace
 #[test]
 fn spark_mapping_keeps_model_proposed_tool_calls_distinct_from_execution_tool_calls() {
     let session_id = Uuid::new_v4();
-    for kind in [
-        EventKind::ModelToolCallStart,
-        EventKind::ModelToolCallDelta,
-        EventKind::ModelToolCallEnd,
+    for (kind, expected_kind, expected_status) in [
+        (
+            EventKind::ModelToolCallStart,
+            "model_tool_call_start",
+            "proposed",
+        ),
+        (
+            EventKind::ModelToolCallDelta,
+            "model_tool_call_delta",
+            "streaming",
+        ),
+        (
+            EventKind::ModelToolCallEnd,
+            "model_tool_call_end",
+            "completed",
+        ),
     ] {
         let proposed_tool = SessionEvent::new(
             kind,
             session_id,
-            BTreeMap::from([(
-                "tool_call".to_string(),
-                json!({"id": "proposed-1", "name": "lookup", "arguments": {"query": "rust"}}),
-            )]),
-        );
+            BTreeMap::from([
+                (
+                    "tool_call".to_string(),
+                    json!({"id": "call-1", "name": "lookup", "arguments": {"query": "rust"}}),
+                ),
+                ("delta".to_string(), json!("{\"query\":\"rust\"}")),
+                ("response_id".to_string(), json!("resp-1")),
+            ]),
+        )
+        .to_turn_stream_event()
+        .expect("model-proposed tool call maps");
 
-        assert!(proposed_tool.to_turn_stream_event().is_none());
+        assert_eq!(
+            proposed_tool.kind,
+            TurnStreamEventKind::Other(expected_kind.to_string())
+        );
+        assert_eq!(
+            proposed_tool.source.raw_kind.as_deref(),
+            Some(expected_kind)
+        );
+        assert_eq!(proposed_tool.source.item_id.as_deref(), Some("call-1"));
+        assert_eq!(proposed_tool.source.response_id.as_deref(), Some("resp-1"));
+        let tool_call = proposed_tool.tool_call.expect("model tool payload");
+        assert_eq!(tool_call["id"], "call-1");
+        assert_eq!(tool_call["kind"], "model_tool_call");
+        assert_eq!(tool_call["status"], expected_status);
+        assert_eq!(tool_call["name"], "lookup");
+        assert_eq!(tool_call["arguments"], json!({"query": "rust"}));
+        assert_eq!(tool_call["delta"], "{\"query\":\"rust\"}");
     }
 
     let execution_start = SessionEvent::new(
@@ -535,6 +599,67 @@ fn spark_mapping_keeps_model_proposed_tool_calls_distinct_from_execution_tool_ca
             "error": null
         }))
     );
+}
+
+#[test]
+fn stream_error_conversion_preserves_structured_failure_payload() {
+    let session_id = Uuid::new_v4();
+    let mut error = AdapterError::new(AdapterErrorKind::RateLimit, "provider rate limited");
+    error.provider = Some("openai".to_string());
+    error.status_code = Some(429);
+    error.error_code = Some("rate_limit_exceeded".to_string());
+    error.raw = Some(json!({
+        "error": {
+            "message": "provider rate limited",
+            "code": "rate_limit_exceeded",
+            "param": "messages"
+        }
+    }));
+    let stream_event = StreamEvent {
+        error: Some(error),
+        raw: Some(json!({"event_id": "evt-1"})),
+        ..StreamEvent::new(StreamEventType::Error)
+    };
+
+    let events = SessionEvent::from_stream_event(&stream_event, session_id, Some("resp-1"));
+    let error_event = events
+        .iter()
+        .find(|event| event.kind == EventKind::Error)
+        .expect("error event");
+    assert_eq!(error_event.data["message"], "provider rate limited");
+    assert_eq!(error_event.data["code"], "rate_limit_exceeded");
+    assert_eq!(error_event.data["error_code"], "rate_limit_exceeded");
+    assert_eq!(error_event.data["provider"], "openai");
+    assert_eq!(error_event.data["status_code"], json!(429));
+    assert_eq!(
+        error_event.data["details"]["raw"]["error"]["code"],
+        "rate_limit_exceeded"
+    );
+    assert_eq!(
+        error_event.data["raw"]["error"]["code"],
+        "rate_limit_exceeded"
+    );
+    assert_eq!(error_event.data["event_raw"]["event_id"], "evt-1");
+
+    let stream_event = error_event
+        .to_turn_stream_event()
+        .expect("workspace error event");
+    assert_eq!(stream_event.kind, TurnStreamEventKind::Error);
+    assert_eq!(
+        stream_event.message.as_deref(),
+        Some("provider rate limited")
+    );
+    assert_eq!(stream_event.error.as_deref(), Some("provider rate limited"));
+    assert_eq!(
+        stream_event.error_code.as_deref(),
+        Some("rate_limit_exceeded")
+    );
+    assert_eq!(
+        stream_event.details.as_ref().expect("details")["raw"]["error"]["param"],
+        "messages"
+    );
+    assert_eq!(stream_event.source.response_id.as_deref(), Some("resp-1"));
+    assert_eq!(stream_event.source.raw_kind.as_deref(), Some("error"));
 }
 
 #[test]

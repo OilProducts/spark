@@ -510,6 +510,8 @@ fn request_user_input_resume_failure_output(
             tool_call: None,
             request_user_input: None,
             token_usage: None,
+            error_code: failure.error_code.clone(),
+            details: failure.details.clone(),
             error: Some(failure.message.clone()),
             phase: Some("request_user_input_answer".to_string()),
             status: Some("failed".to_string()),
@@ -531,6 +533,7 @@ fn agent_output_from_session(session: &mut Session, initial_history_len: usize) 
         if let Some(turn_stream_event) = event.to_turn_stream_event() {
             if let Some(token_usage) = turn_stream_event.token_usage.as_ref() {
                 output.token_usage = Some(token_usage.clone());
+                output.token_usage_breakdown = Some(token_usage.clone());
             }
             output.events.push(turn_stream_event);
         }
@@ -559,6 +562,9 @@ fn agent_output_from_session(session: &mut Session, initial_history_len: usize) 
                 .usage
                 .as_ref()
                 .and_then(workspace_token_usage_payload_from_usage);
+        }
+        if output.token_usage_breakdown.is_none() {
+            output.token_usage_breakdown = output.token_usage.clone();
         }
     }
 

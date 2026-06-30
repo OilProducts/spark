@@ -11,8 +11,8 @@ use axum::http::{Request, Response, StatusCode};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentTurnBackend,
-    AgentTurnOutput, AgentTurnRequest,
+    AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
+    AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
 };
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
@@ -189,11 +189,41 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
         events: vec![
             content_delta("Live ", "app-turn-live", "final-answer"),
             content_delta("streamed answer.", "app-turn-live", "final-answer"),
+            content_completed(
+                TurnStreamChannel::Reasoning,
+                "Live route reasoning.",
+                "app-turn-live",
+                "reasoning",
+            ),
+            model_tool_event("model_tool_call_start", "live-tool-1", "proposed", None),
+            model_tool_event(
+                "model_tool_call_delta",
+                "live-tool-1",
+                "streaming",
+                Some("{\"query\":\"live route\"}"),
+            ),
+            model_tool_event("model_tool_call_end", "live-tool-1", "completed", None),
+            tool_event(
+                TurnStreamEventKind::ToolCallStarted,
+                "live-tool-1",
+                "running",
+                "partial live output",
+            ),
+            tool_event(
+                TurnStreamEventKind::ToolCallCompleted,
+                "live-tool-1",
+                "completed",
+                "full live output",
+            ),
             token_usage(json!({"total": {"inputTokens": 11, "outputTokens": 4}})),
             request_user_input_event(),
         ],
         final_assistant_text: Some("Live streamed answer.".to_string()),
         token_usage: Some(json!({"total": {"inputTokens": 11, "outputTokens": 4}})),
+        token_usage_breakdown: Some(json!({
+            "total": {"inputTokens": 11, "outputTokens": 4},
+            "last": {"inputTokens": 3, "outputTokens": 1}
+        })),
         ..AgentTurnOutput::default()
     };
     let app = build_app_with_agent_turn_backend(
@@ -238,10 +268,33 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
         .any(|turn| turn["role"] == "assistant"
             && turn["status"] == "complete"
             && turn["content"] == "Live streamed answer."
-            && turn["token_usage"]["total"]["inputTokens"] == json!(11)));
+            && turn["token_usage"]["total"]["inputTokens"] == json!(11)
+            && turn["token_usage_breakdown"]["last"]["outputTokens"] == json!(1)));
+    assert!(posted_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "reasoning"
+            && segment["content"] == "Live route reasoning."));
+    assert!(posted_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "model_tool_call"
+            && segment["status"] == "complete"
+            && segment["tool_call"]["id"] == "live-tool-1"
+            && segment["tool_call"]["arguments"] == json!({"query": "live route"})));
+    assert!(posted_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "tool_call"
+            && segment["status"] == "complete"
+            && segment["tool_call"]["id"] == "live-tool-1"
+            && segment["tool_call"]["output"] == "full live output"));
 
     let mut envelopes = Vec::new();
-    for _ in 0..20 {
+    for _ in 0..40 {
         let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
         let cursor = envelope["cursor"]["value"].as_i64().expect("cursor");
         envelopes.push(envelope);
@@ -271,9 +324,29 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             && envelope["payload"]["segment"]["content"] == "Live streamed answer."
     }));
     assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "reasoning"
+            && envelope["payload"]["segment"]["content"] == "Live route reasoning."
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "model_tool_call"
+            && envelope["payload"]["segment"]["status"] == "complete"
+            && envelope["payload"]["segment"]["tool_call"]["id"] == "live-tool-1"
+            && envelope["payload"]["segment"]["source"]["raw_kind"] == "model_tool_call_end"
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "tool_call"
+            && envelope["payload"]["segment"]["status"] == "complete"
+            && envelope["payload"]["segment"]["tool_call"]["output"] == "full live output"
+    }));
+    assert!(envelopes.iter().any(|envelope| {
         envelope["type"] == "conversation.turn_upsert"
             && envelope["payload"]["turn"]["role"] == "assistant"
             && envelope["payload"]["turn"]["token_usage"]["total"]["outputTokens"] == json!(4)
+            && envelope["payload"]["turn"]["token_usage_breakdown"]["last"]["inputTokens"]
+                == json!(3)
     }));
     assert!(envelopes.iter().any(|envelope| {
         envelope["type"] == "conversation.segment_upsert"
@@ -301,6 +374,109 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
     assert_eq!(
         raw_log.last().expect("raw log line").line,
         "{\"event\":\"http-live-ingested\"}"
+    );
+}
+
+#[tokio::test]
+async fn live_route_streams_structured_backend_failure_from_persisted_state() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-live-failure");
+    let backend_output = AgentTurnOutput {
+        raw_log_lines: vec![AgentRawLogLine {
+            direction: "incoming".to_string(),
+            line: "{\"event\":\"http-live-thread-resume-failed\"}".to_string(),
+        }],
+        token_usage: Some(json!({"total": {"inputTokens": 6, "outputTokens": 0}})),
+        token_usage_breakdown: Some(json!({
+            "total": {"inputTokens": 6, "outputTokens": 0},
+            "last": {"inputTokens": 6, "outputTokens": 0}
+        })),
+        thread_resume_failure: Some(AgentThreadResumeFailure {
+            message: "live thread resume failed".to_string(),
+            error_code: Some("thread_resume_failed".to_string()),
+            details: Some(json!({
+                "thread_id": "thread-live-resume",
+                "retryable": false
+            })),
+        }),
+        ..AgentTurnOutput::default()
+    };
+    let app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(StaticAgentTurnBackend::from_output(backend_output)),
+    );
+
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?conversation_id=conversation-live-failure&conversation_project_path={}&conversation_revision=2",
+            url_encode(&project_path.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+
+    let posted = request(
+        app,
+        "POST",
+        "/workspace/api/conversations/conversation-live-failure/turns",
+        Some(json!({
+            "project_path": project_path,
+            "message": "Resume and fail with structured details."
+        })),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::OK);
+    let posted_snapshot = json_body(posted).await;
+    let final_revision = posted_snapshot["revision"]
+        .as_i64()
+        .expect("final snapshot revision");
+
+    let mut envelopes = Vec::new();
+    for _ in 0..20 {
+        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        let cursor = envelope["cursor"]["value"].as_i64().expect("cursor");
+        envelopes.push(envelope);
+        if cursor >= final_revision {
+            break;
+        }
+    }
+
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.turn_upsert"
+            && envelope["payload"]["turn"]["role"] == "assistant"
+            && envelope["payload"]["turn"]["status"] == "failed"
+            && envelope["payload"]["turn"]["error"] == "live thread resume failed"
+            && envelope["payload"]["turn"]["error_code"] == "thread_resume_failed"
+            && envelope["payload"]["turn"]["details"]["thread_id"] == "thread-live-resume"
+            && envelope["payload"]["turn"]["token_usage"]["total"]["inputTokens"] == json!(6)
+            && envelope["payload"]["turn"]["token_usage_breakdown"]["last"]["outputTokens"]
+                == json!(0)
+    }));
+    let snapshot_envelope = envelopes.last().expect("snapshot envelope");
+    assert_eq!(snapshot_envelope["type"], "conversation.snapshot");
+    assert_eq!(
+        snapshot_envelope["payload"]["state"]["event_log"][0]["details"]["thread_id"],
+        "thread-live-resume"
+    );
+    assert_eq!(
+        snapshot_envelope["payload"]["state"]["turns"],
+        posted_snapshot["turns"]
+    );
+
+    let raw_log = ConversationRepository::new(&settings.data_dir)
+        .read_raw_rpc_log("conversation-live-failure", &project_path.to_string_lossy())
+        .expect("raw log");
+    assert_eq!(
+        raw_log.last().expect("raw log line").line,
+        "{\"event\":\"http-live-thread-resume-failed\"}"
     );
 }
 
@@ -1062,6 +1238,90 @@ fn content_delta(text: &str, app_turn_id: &str, item_id: &str) -> TurnStreamEven
     event
 }
 
+fn content_completed(
+    channel: TurnStreamChannel,
+    text: &str,
+    app_turn_id: &str,
+    item_id: &str,
+) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::ContentCompleted,
+        channel: Some(channel),
+        source: source(app_turn_id, item_id),
+        content_delta: Some(text.to_string()),
+        message: Some(text.to_string()),
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: Some("final_answer".to_string()),
+        status: None,
+    }
+}
+
+fn model_tool_event(kind: &str, id: &str, status: &str, delta: Option<&str>) -> TurnStreamEvent {
+    let mut tool_call = json!({
+        "id": id,
+        "kind": "model_tool_call",
+        "status": status,
+        "name": "lookup",
+        "title": "lookup",
+        "arguments": {"query": "live route"},
+    });
+    if let Some(delta) = delta {
+        tool_call["delta"] = json!(delta);
+    }
+
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::Other(kind.to_string()),
+        channel: None,
+        source: TurnStreamSource {
+            app_turn_id: Some("app-turn-live".to_string()),
+            item_id: Some(id.to_string()),
+            response_id: Some("resp-live".to_string()),
+            raw_kind: Some(kind.to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: delta.map(str::to_string),
+        message: None,
+        tool_call: Some(tool_call),
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: None,
+        status: Some(status.to_string()),
+    }
+}
+
+fn tool_event(kind: TurnStreamEventKind, id: &str, status: &str, output: &str) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind,
+        channel: None,
+        source: source("app-turn-live", id),
+        content_delta: None,
+        message: None,
+        tool_call: Some(json!({
+            "id": id,
+            "kind": "command_execution",
+            "status": status,
+            "title": "Run command",
+            "output": output,
+            "file_paths": [],
+        })),
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: None,
+        status: None,
+    }
+}
+
 fn token_usage(usage: Value) -> TurnStreamEvent {
     TurnStreamEvent {
         kind: TurnStreamEventKind::TokenUsageUpdated,
@@ -1073,8 +1333,18 @@ fn token_usage(usage: Value) -> TurnStreamEvent {
         request_user_input: None,
         token_usage: Some(usage),
         error: None,
+        error_code: None,
+        details: None,
         phase: None,
         status: None,
+    }
+}
+
+fn source(app_turn_id: &str, item_id: &str) -> TurnStreamSource {
+    TurnStreamSource {
+        app_turn_id: Some(app_turn_id.to_string()),
+        item_id: Some(item_id.to_string()),
+        ..TurnStreamSource::default()
     }
 }
 
@@ -1104,6 +1374,8 @@ fn request_user_input_event() -> TurnStreamEvent {
         })),
         token_usage: None,
         error: None,
+        error_code: None,
+        details: None,
         phase: None,
         status: None,
     }

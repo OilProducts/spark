@@ -15,6 +15,7 @@ fn agent_turn_output_carries_normalized_events_usage_raw_logs_and_resume_failure
         events: vec![event],
         final_assistant_text: Some("hello".to_string()),
         token_usage: Some(json!({"total": {"inputTokens": 3, "outputTokens": 5}})),
+        token_usage_breakdown: Some(json!({"total": {"inputTokens": 3, "outputTokens": 5}})),
         raw_log_lines: vec![AgentRawLogLine {
             direction: "incoming".to_string(),
             line: "{\"type\":\"event\"}".to_string(),
@@ -29,6 +30,10 @@ fn agent_turn_output_carries_normalized_events_usage_raw_logs_and_resume_failure
     let encoded = serde_json::to_value(&output).expect("serialize");
     assert_eq!(encoded["events"][0]["kind"], "content_delta");
     assert_eq!(encoded["events"][0]["channel"], "assistant");
+    assert_eq!(
+        encoded["token_usage_breakdown"]["total"]["outputTokens"],
+        json!(5)
+    );
     assert_eq!(encoded["raw_log_lines"][0]["direction"], "incoming");
     assert_eq!(
         encoded["thread_resume_failure"]["error_code"],

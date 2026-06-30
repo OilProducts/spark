@@ -402,7 +402,7 @@
       ],
       "status": "pending",
       "milestone_id": "M6-spark-codergen-integration",
-      "notes": "M6A1 completed the Workspace service-level Rust agent turn execution sub-scope. M6A2 completed HTTP route wiring through the Workspace service-level Rust AgentTurnBackend path, including backend-ingested responses and live envelope publication. M6A3 completed request-user-input answer handling through the Rust backend lifecycle for Workspace and HTTP, including backend continuation, public answer semantics, and live publication. REQ-015 remains pending for Workspace/HTTP output-contract closure, Python facade boundary, codergen-adjacent runtime integration, and final integration closure."
+      "notes": "M6A1 completed the Workspace service-level Rust agent turn execution sub-scope. M6A2 completed HTTP route wiring through the Workspace service-level Rust AgentTurnBackend path, including backend-ingested responses and live envelope publication. M6A3 completed request-user-input answer handling through the Rust backend lifecycle for Workspace and HTTP, including backend continuation, public answer semantics, and live publication. M6A4 completed Workspace/HTTP output-contract closure for persisted snapshots, live envelopes, route responses, usage, raw logs, request-user-input records, thread resume failures, and structured errors. REQ-015 remains pending for Python facade boundary, codergen-adjacent runtime integration, and final integration closure."
     },
     {
       "id": "REQ-016",

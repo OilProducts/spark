@@ -77,6 +77,8 @@ pub struct AgentTurnOutput {
     pub final_assistant_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage_breakdown: Option<Value>,
     #[serde(default)]
     pub raw_log_lines: Vec<AgentRawLogLine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -73,6 +73,11 @@ impl EventKind {
         data: &BTreeMap<String, Value>,
     ) -> Option<TurnStreamEventKind> {
         Some(match self {
+            Self::AssistantTextStart
+            | Self::AssistantReasoningStart
+            | Self::ModelToolCallStart
+            | Self::ModelToolCallDelta
+            | Self::ModelToolCallEnd => TurnStreamEventKind::Other(self.as_str().to_string()),
             Self::AssistantTextDelta | Self::AssistantReasoningDelta => {
                 TurnStreamEventKind::ContentDelta
             }
@@ -223,12 +228,12 @@ impl SessionEvent {
     pub fn to_turn_stream_event(&self) -> Option<TurnStreamEvent> {
         let kind = self.kind.to_turn_stream_kind(&self.data)?;
         let channel = match self.kind {
-            EventKind::AssistantTextDelta | EventKind::AssistantTextEnd => {
-                Some(TurnStreamChannel::Assistant)
-            }
-            EventKind::AssistantReasoningDelta | EventKind::AssistantReasoningEnd => {
-                Some(TurnStreamChannel::Reasoning)
-            }
+            EventKind::AssistantTextStart
+            | EventKind::AssistantTextDelta
+            | EventKind::AssistantTextEnd => Some(TurnStreamChannel::Assistant),
+            EventKind::AssistantReasoningStart
+            | EventKind::AssistantReasoningDelta
+            | EventKind::AssistantReasoningEnd => Some(TurnStreamChannel::Reasoning),
             _ => None,
         };
         let content_delta = match self.kind {
@@ -239,6 +244,7 @@ impl SessionEvent {
                 data_string(&self.data, &["text", "delta"])
             }
             EventKind::ToolCallOutputDelta => data_string(&self.data, &["delta", "output_delta"]),
+            EventKind::ModelToolCallDelta => data_string(&self.data, &["delta"]),
             _ => None,
         };
         let message = content_delta.clone().or_else(|| {
@@ -263,6 +269,16 @@ impl SessionEvent {
             } else {
                 None
             },
+            error_code: if self.kind == EventKind::Error {
+                session_error_code(&self.data)
+            } else {
+                None
+            },
+            details: if self.kind == EventKind::Error {
+                session_error_details(&self.data)
+            } else {
+                None
+            },
             phase: data_string(&self.data, &["phase"]),
             status: data_string(&self.data, &["status"]),
         })
@@ -273,7 +289,12 @@ impl SessionEvent {
             backend: Some("agent_session".to_string()),
             session_id: self.session_id.map(|id| id.to_string()),
             app_turn_id: data_string(&self.data, &["app_turn_id"]),
-            item_id: data_string(&self.data, &["item_id"]),
+            item_id: data_string(&self.data, &["item_id"]).or_else(|| match self.kind {
+                EventKind::ModelToolCallStart
+                | EventKind::ModelToolCallDelta
+                | EventKind::ModelToolCallEnd => model_tool_call_id(&self.data),
+                _ => None,
+            }),
             response_id: data_string(&self.data, &["response_id"]),
             summary_index: self.data.get("summary_index").and_then(Value::as_u64),
             raw_kind: Some(self.kind.as_str().to_string()),
@@ -282,6 +303,11 @@ impl SessionEvent {
 
     fn turn_stream_tool_call_payload(&self) -> Option<Value> {
         match self.kind {
+            EventKind::ModelToolCallStart
+            | EventKind::ModelToolCallDelta
+            | EventKind::ModelToolCallEnd => {
+                Some(model_proposed_tool_call_payload(&self.kind, &self.data))
+            }
             EventKind::ToolCallStart | EventKind::ToolCallOutputDelta | EventKind::ToolCallEnd => {
                 Some(actual_tool_call_payload(&self.kind, &self.data))
             }
@@ -322,6 +348,35 @@ fn session_error_message(data: &BTreeMap<String, Value>) -> Option<String> {
     data_string(data, &["message"])
         .or_else(|| object_string(data.get("error").and_then(Value::as_object), &["message"]))
         .or_else(|| data_string(data, &["error"]))
+}
+
+fn session_error_code(data: &BTreeMap<String, Value>) -> Option<String> {
+    data_string(data, &["error_code", "code", "error_kind", "kind", "name"]).or_else(|| {
+        object_string(
+            data.get("error").and_then(Value::as_object),
+            &["error_code", "code", "kind", "name"],
+        )
+    })
+}
+
+fn session_error_details(data: &BTreeMap<String, Value>) -> Option<Value> {
+    data.get("details").cloned().or_else(|| {
+        let mut details = Map::new();
+        for key in [
+            "provider",
+            "status_code",
+            "retryable",
+            "retry_after",
+            "error_kind",
+            "raw",
+            "event_raw",
+        ] {
+            if let Some(value) = data.get(key) {
+                details.insert(key.to_string(), value.clone());
+            }
+        }
+        (!details.is_empty()).then(|| Value::Object(details))
+    })
 }
 
 fn actual_tool_call_payload(kind: &EventKind, data: &BTreeMap<String, Value>) -> Value {
@@ -408,6 +463,59 @@ fn actual_tool_call_payload(kind: &EventKind, data: &BTreeMap<String, Value>) ->
     Value::Object(payload)
 }
 
+fn model_proposed_tool_call_payload(kind: &EventKind, data: &BTreeMap<String, Value>) -> Value {
+    let mut payload = data
+        .get("tool_call")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let id = model_tool_call_id(data).unwrap_or_else(|| "model_tool_call".to_string());
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .and_then(non_empty_string)
+        .or_else(|| data_string(data, &["name", "tool_name"]))
+        .unwrap_or_else(|| "Model tool call".to_string());
+    let status = match kind {
+        EventKind::ModelToolCallStart => "proposed",
+        EventKind::ModelToolCallDelta => "streaming",
+        EventKind::ModelToolCallEnd => "completed",
+        _ => "proposed",
+    };
+
+    payload.insert("id".to_string(), Value::String(id));
+    payload.insert(
+        "kind".to_string(),
+        Value::String("model_tool_call".to_string()),
+    );
+    payload.insert("status".to_string(), Value::String(status.to_string()));
+    payload
+        .entry("name".to_string())
+        .or_insert_with(|| Value::String(name.clone()));
+    payload
+        .entry("title".to_string())
+        .or_insert_with(|| Value::String(name));
+    if let Some(delta) = data.get("delta").cloned() {
+        payload.insert("delta".to_string(), delta);
+    }
+    if let Some(response_id) = data.get("response_id").cloned() {
+        payload.insert("response_id".to_string(), response_id);
+    }
+    payload.extend(
+        data.iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "tool_call" | "delta" | "response_id"))
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+
+    Value::Object(payload)
+}
+
+fn model_tool_call_id(data: &BTreeMap<String, Value>) -> Option<String> {
+    let nested = data.get("tool_call").and_then(Value::as_object);
+    object_string(nested, &["id", "tool_call_id", "call_id"])
+        .or_else(|| data_string(data, &["id", "tool_call_id", "call_id"]))
+}
+
 fn workspace_token_usage_payload(data: &BTreeMap<String, Value>) -> Option<Value> {
     if let Some(token_usage) = data.get("token_usage") {
         return Some(token_usage.clone());
@@ -482,6 +590,11 @@ fn object_string(object: Option<&Map<String, Value>>, keys: &[&str]) -> Option<S
             other => Some(other.to_string()),
         }
     })
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn data_u64(data: &BTreeMap<String, Value>, keys: &[&str]) -> Option<u64> {
@@ -678,12 +791,41 @@ fn stream_error_payload(event: &StreamEvent, response_id: Option<&str>) -> BTree
     let mut payload = response_event_payload(response_id);
     match event.error.as_ref() {
         Some(error) => {
+            let code = error
+                .error_code
+                .clone()
+                .unwrap_or_else(|| error.kind.spec_error_name().to_string());
+            let mut details = Map::new();
+            details.insert(
+                "kind".to_string(),
+                serde_json::to_value(error.kind).expect("error kind is serializable"),
+            );
+            details.insert("retryable".to_string(), Value::Bool(error.retryable));
+            if let Some(provider) = error.provider.as_ref() {
+                details.insert("provider".to_string(), Value::String(provider.clone()));
+            }
+            if let Some(status_code) = error.status_code {
+                details.insert("status_code".to_string(), Value::from(status_code));
+            }
+            if let Some(error_code) = error.error_code.as_ref() {
+                details.insert("error_code".to_string(), Value::String(error_code.clone()));
+            }
+            if let Some(retry_after) = error.retry_after {
+                details.insert("retry_after".to_string(), Value::from(retry_after));
+            }
+            if let Some(raw) = error.raw.as_ref() {
+                details.insert("raw".to_string(), raw.clone());
+            }
+
+            payload.insert("message".to_string(), Value::String(error.message.clone()));
+            payload.insert("code".to_string(), Value::String(code));
             payload.insert("error".to_string(), Value::String(error.message.clone()));
             payload.insert(
                 "error_kind".to_string(),
                 serde_json::to_value(error.kind).expect("error kind is serializable"),
             );
             payload.insert("retryable".to_string(), Value::Bool(error.retryable));
+            payload.insert("details".to_string(), Value::Object(details));
             if let Some(provider) = error.provider.as_ref() {
                 payload.insert("provider".to_string(), Value::String(provider.clone()));
             }
@@ -702,15 +844,22 @@ fn stream_error_payload(event: &StreamEvent, response_id: Option<&str>) -> BTree
         }
         None => {
             payload.insert(
+                "message".to_string(),
+                Value::String("model stream error".to_string()),
+            );
+            payload.insert("code".to_string(), Value::String("StreamError".to_string()));
+            payload.insert(
                 "error".to_string(),
                 Value::String("model stream error".to_string()),
             );
         }
     }
     if let Some(raw) = event.raw.as_ref() {
-        payload
-            .entry("raw".to_string())
-            .or_insert_with(|| raw.clone());
+        if payload.contains_key("raw") {
+            payload.insert("event_raw".to_string(), raw.clone());
+        } else {
+            payload.insert("raw".to_string(), raw.clone());
+        }
     }
     payload
 }

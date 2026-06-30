@@ -507,6 +507,8 @@ fn plan_completed(content: &str) -> TurnStreamEvent {
         request_user_input: None,
         token_usage: None,
         error: None,
+        error_code: None,
+        details: None,
         phase: None,
         status: None,
     }

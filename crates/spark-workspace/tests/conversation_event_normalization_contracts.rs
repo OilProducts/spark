@@ -259,6 +259,10 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
             }],
             final_assistant_text: Some("Second answer".to_string()),
             token_usage: Some(json!({"total": {"inputTokens": 12, "outputTokens": 5}})),
+            token_usage_breakdown: Some(json!({
+                "total": {"inputTokens": 12, "outputTokens": 5},
+                "last": {"inputTokens": 4, "outputTokens": 2}
+            })),
             ..AgentTurnOutput::default()
         },
     ]);
@@ -336,6 +340,10 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
         assistant_turn["token_usage"],
         json!({"total": {"inputTokens": 12, "outputTokens": 5}})
     );
+    assert_eq!(
+        assistant_turn["token_usage_breakdown"]["last"]["inputTokens"],
+        json!(4)
+    );
 
     let persisted = service
         .get_snapshot("conversation-execute", Some("/projects/execute"))
@@ -373,6 +381,7 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
             && envelope.payload["turn"]["status"] == "complete"
             && envelope.payload["turn"]["content"] == "Second answer"
             && envelope.payload["turn"]["token_usage"]["total"]["inputTokens"] == json!(12)
+            && envelope.payload["turn"]["token_usage_breakdown"]["last"]["outputTokens"] == json!(2)
     }));
     assert!(live_envelopes.iter().any(|envelope| {
         envelope.event_type == "conversation.snapshot"
@@ -394,12 +403,28 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
     let settings = settings(temp.path());
     let backend = ScriptedAgentTurnBackend::new(vec![
         AgentTurnOutput {
-            events: vec![stream_error_event("backend stream failed")],
+            events: vec![structured_stream_error_event(
+                "backend stream failed",
+                "rate_limit_exceeded",
+                json!({
+                    "provider": "openai",
+                    "status_code": 429,
+                    "raw": {"error": {"code": "rate_limit_exceeded"}}
+                }),
+            )],
             final_assistant_text: Some("Do not persist this final text".to_string()),
             token_usage: Some(json!({"total": {"inputTokens": 7, "outputTokens": 1}})),
+            token_usage_breakdown: Some(json!({
+                "total": {"inputTokens": 7, "outputTokens": 1},
+                "last": {"inputTokens": 7, "outputTokens": 1}
+            })),
             ..AgentTurnOutput::default()
         },
         AgentTurnOutput {
+            raw_log_lines: vec![AgentRawLogLine {
+                direction: "incoming".to_string(),
+                line: "{\"event\":\"thread-resume-failed\"}".to_string(),
+            }],
             thread_resume_failure: Some(AgentThreadResumeFailure {
                 message: "thread resume failed".to_string(),
                 error_code: Some("thread_resume_failed".to_string()),
@@ -446,6 +471,8 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
         .expect("stream failed assistant turn");
     assert_eq!(stream_assistant_turn["status"], "failed");
     assert_eq!(stream_assistant_turn["error"], "backend stream failed");
+    assert_eq!(stream_assistant_turn["error_code"], "rate_limit_exceeded");
+    assert_eq!(stream_assistant_turn["details"]["provider"], "openai");
     assert_ne!(
         stream_assistant_turn["content"],
         "Do not persist this final text"
@@ -454,12 +481,18 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
         stream_assistant_turn["token_usage"],
         json!({"total": {"inputTokens": 7, "outputTokens": 1}})
     );
+    assert_eq!(
+        stream_assistant_turn["token_usage_breakdown"]["last"]["outputTokens"],
+        json!(1)
+    );
     let stream_segment = segment_by_kind(
         stream_failed["segments"].as_array().expect("segments"),
         "assistant_message",
     );
     assert_eq!(stream_segment["status"], "failed");
     assert_eq!(stream_segment["error"], "backend stream failed");
+    assert_eq!(stream_segment["error_code"], "rate_limit_exceeded");
+    assert_eq!(stream_segment["details"]["status_code"], json!(429));
 
     let stream_events = service
         .read_events_after(
@@ -473,11 +506,13 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             && event["turn"]["id"] == stream_assistant_turn_id
             && event["turn"]["status"] == "failed"
             && event["turn"]["token_usage"]["total"]["inputTokens"] == json!(7)
+            && event["turn"]["error_code"] == "rate_limit_exceeded"
     }));
     assert!(stream_events.iter().any(|event| {
         event["type"] == "segment_upsert"
             && event["segment"]["status"] == "failed"
             && event["segment"]["error"] == "backend stream failed"
+            && event["segment"]["details"]["raw"]["error"]["code"] == "rate_limit_exceeded"
     }));
     assert!(stream_events
         .iter()
@@ -495,6 +530,9 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             && envelope.payload["turn"]["id"] == stream_assistant_turn_id
             && envelope.payload["turn"]["status"] == "failed"
             && envelope.payload["turn"]["error"] == "backend stream failed"
+            && envelope.payload["turn"]["error_code"] == "rate_limit_exceeded"
+            && envelope.payload["turn"]["details"]["provider"] == "openai"
+            && envelope.payload["turn"]["token_usage_breakdown"]["last"]["outputTokens"] == json!(1)
     }));
 
     let resume_failed = service
@@ -529,6 +567,10 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
     assert_eq!(resume_assistant_turn["error"], "thread resume failed");
     assert_eq!(resume_assistant_turn["error_code"], "thread_resume_failed");
     assert_eq!(
+        resume_assistant_turn["details"]["thread_id"],
+        "thread-public-execute"
+    );
+    assert_eq!(
         resume_assistant_turn["token_usage"],
         json!({"total": {"inputTokens": 2, "outputTokens": 0}})
     );
@@ -536,6 +578,16 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
     assert_eq!(
         resume_failed["event_log"][0]["details"]["thread_id"],
         "thread-public-execute"
+    );
+    let resume_raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
+        .read_raw_rpc_log(
+            "conversation-execute-resume-failure",
+            "/projects/execute-errors",
+        )
+        .expect("resume raw log");
+    assert_eq!(
+        resume_raw_log.last().expect("raw line").line,
+        "{\"event\":\"thread-resume-failed\"}"
     );
 
     let resume_events = service
@@ -550,6 +602,7 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             && event["turn"]["id"] == resume_assistant_turn_id
             && event["turn"]["status"] == "failed"
             && event["turn"]["error_code"] == "thread_resume_failed"
+            && event["turn"]["details"]["thread_id"] == "thread-public-execute"
     }));
     let resume_live = conversation_envelopes_after(
         &settings,
@@ -563,6 +616,12 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             && envelope.payload["turn"]["id"] == resume_assistant_turn_id
             && envelope.payload["turn"]["status"] == "failed"
             && envelope.payload["turn"]["error_code"] == "thread_resume_failed"
+            && envelope.payload["turn"]["details"]["thread_id"] == "thread-public-execute"
+    }));
+    assert!(resume_live.iter().any(|envelope| {
+        envelope.event_type == "conversation.snapshot"
+            && envelope.payload["state"]["event_log"][0]["details"]["thread_id"]
+                == "thread-public-execute"
     }));
 }
 
@@ -594,12 +653,24 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
             content_completed("reasoning", "Because.", "app-turn", "reasoning"),
             content_delta("plan", "1. Do it", "app-turn", "plan"),
             content_completed("plan", "1. Do it", "app-turn", "plan"),
+            model_tool_event("model_tool_call_start", "tool-1", "proposed", None),
+            model_tool_event(
+                "model_tool_call_delta",
+                "tool-1",
+                "streaming",
+                Some("{\"query\":\"rust\"}"),
+            ),
+            model_tool_event("model_tool_call_end", "tool-1", "completed", None),
             tool_event("tool_call_started", "tool-1", "running", "partial"),
             tool_event("tool_call_completed", "tool-1", "completed", "full output"),
             token_usage(json!({"total": {"inputTokens": 10, "outputTokens": 4}})),
         ],
         final_assistant_text: Some("Hello".to_string()),
         token_usage: Some(json!({"total": {"inputTokens": 10, "outputTokens": 4}})),
+        token_usage_breakdown: Some(json!({
+            "total": {"inputTokens": 10, "outputTokens": 4},
+            "last": {"inputTokens": 2, "outputTokens": 1}
+        })),
         thread_resume_failure: None,
     };
     let snapshot = service
@@ -624,6 +695,10 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
         assistant_turn["token_usage"]["total"]["inputTokens"],
         json!(10)
     );
+    assert_eq!(
+        assistant_turn["token_usage_breakdown"]["last"]["outputTokens"],
+        json!(1)
+    );
     let segments = snapshot["segments"].as_array().expect("segments");
     assert_eq!(
         segments
@@ -638,6 +713,18 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
     assert_eq!(reasoning["source"]["item_id"], "reasoning");
     let plan = segment_by_kind(segments, "plan");
     assert_eq!(plan["content"], "1. Do it");
+    let model_tool = segment_by_kind(segments, "model_tool_call");
+    assert_eq!(model_tool["status"], "complete");
+    assert_eq!(model_tool["tool_call"]["id"], "tool-1");
+    assert_eq!(model_tool["tool_call"]["kind"], "model_tool_call");
+    assert_eq!(model_tool["tool_call"]["name"], "lookup");
+    assert_eq!(
+        model_tool["tool_call"]["arguments"],
+        json!({"query": "rust"})
+    );
+    assert_eq!(model_tool["source"]["call_id"], "tool-1");
+    assert_eq!(model_tool["source"]["raw_kind"], "model_tool_call_end");
+    assert_eq!(model_tool["source"]["response_id"], "resp-1");
     let tool = segment_by_kind(segments, "tool_call");
     assert_eq!(tool["status"], "complete");
     assert_eq!(tool["tool_call"]["output"], "full output");
@@ -655,6 +742,41 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
     assert!(events
         .iter()
         .any(|event| event["type"] == "conversation_snapshot"));
+
+    let live_envelopes =
+        conversation_envelopes_after(&settings, "conversation-events", "/projects/events", 0)
+            .expect("live envelopes");
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.turn_upsert"
+            && envelope.payload["turn"]["id"] == prepared.assistant_turn_id
+            && envelope.payload["turn"]["token_usage_breakdown"]["last"]["outputTokens"] == json!(1)
+    }));
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.segment_upsert"
+            && envelope.payload["segment"]["kind"] == "assistant_message"
+            && envelope.payload["segment"]["content"] == "Hello"
+    }));
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.segment_upsert"
+            && envelope.payload["segment"]["kind"] == "reasoning"
+            && envelope.payload["segment"]["content"] == "Because."
+            && envelope.payload["segment"]["source"]["item_id"] == "reasoning"
+    }));
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.segment_upsert"
+            && envelope.payload["segment"]["kind"] == "model_tool_call"
+            && envelope.payload["segment"]["status"] == "complete"
+            && envelope.payload["segment"]["tool_call"]["id"] == "tool-1"
+            && envelope.payload["segment"]["source"]["raw_kind"] == "model_tool_call_end"
+            && envelope.payload["segment"]["source"]["response_id"] == "resp-1"
+    }));
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.segment_upsert"
+            && envelope.payload["segment"]["kind"] == "tool_call"
+            && envelope.payload["segment"]["status"] == "complete"
+            && envelope.payload["segment"]["tool_call"]["output"] == "full output"
+            && envelope.payload["segment"]["source"]["call_id"] == "tool-1"
+    }));
 
     let (failure_prepared, _snapshot) = service
         .start_turn(
@@ -691,6 +813,7 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
         .expect("failed assistant turn");
     assert_eq!(assistant_turn["status"], "failed");
     assert_eq!(assistant_turn["error_code"], "thread_resume_failed");
+    assert_eq!(assistant_turn["details"]["thread_id"], "thread-1");
     assert_eq!(
         assistant_turn["token_usage"],
         json!({"total": {"inputTokens": 3, "outputTokens": 0}})
@@ -1335,6 +1458,8 @@ fn content_completed(
         request_user_input: None,
         token_usage: None,
         error: None,
+        error_code: None,
+        details: None,
         phase: Some("final_answer".to_string()),
         status: None,
     }
@@ -1358,8 +1483,46 @@ fn tool_event(kind: &str, id: &str, status: &str, output: &str) -> TurnStreamEve
         request_user_input: None,
         token_usage: None,
         error: None,
+        error_code: None,
+        details: None,
         phase: None,
         status: None,
+    }
+}
+
+fn model_tool_event(kind: &str, id: &str, status: &str, delta: Option<&str>) -> TurnStreamEvent {
+    let mut tool_call = json!({
+        "id": id,
+        "kind": "model_tool_call",
+        "status": status,
+        "name": "lookup",
+        "title": "lookup",
+        "arguments": {"query": "rust"},
+    });
+    if let Some(delta) = delta {
+        tool_call["delta"] = json!(delta);
+    }
+
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::Other(kind.to_string()),
+        channel: None,
+        source: TurnStreamSource {
+            app_turn_id: Some("app-turn".to_string()),
+            item_id: Some(id.to_string()),
+            response_id: Some("resp-1".to_string()),
+            raw_kind: Some(kind.to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: delta.map(str::to_string),
+        message: None,
+        tool_call: Some(tool_call),
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: None,
+        status: Some(status.to_string()),
     }
 }
 
@@ -1374,6 +1537,8 @@ fn token_usage(usage: Value) -> TurnStreamEvent {
         request_user_input: None,
         token_usage: Some(usage),
         error: None,
+        error_code: None,
+        details: None,
         phase: None,
         status: None,
     }
@@ -1405,6 +1570,8 @@ fn request_user_input_event() -> TurnStreamEvent {
         })),
         token_usage: None,
         error: None,
+        error_code: None,
+        details: None,
         phase: None,
         status: None,
     }
@@ -1421,9 +1588,22 @@ fn stream_error_event(message: &str) -> TurnStreamEvent {
         request_user_input: None,
         token_usage: None,
         error: Some(message.to_string()),
+        error_code: None,
+        details: None,
         phase: Some("final_answer".to_string()),
         status: Some("failed".to_string()),
     }
+}
+
+fn structured_stream_error_event(
+    message: &str,
+    error_code: &str,
+    details: Value,
+) -> TurnStreamEvent {
+    let mut event = stream_error_event(message);
+    event.error_code = Some(error_code.to_string());
+    event.details = Some(details);
+    event
 }
 
 fn parse_channel(channel: &str) -> TurnStreamChannel {
