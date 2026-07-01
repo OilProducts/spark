@@ -315,6 +315,7 @@ def test_m6_deliverable_contains_rust_binaries_and_excludes_generated_paths(
     required = {
         "spark/bin/spark",
         "spark/bin/spark-server",
+        "spark/bin/spark-agent-boundary",
         "spark/ui_dist/index.html",
         "spark/guides/dot-authoring.md",
         "spark/guides/spark-operations.md",
@@ -330,7 +331,7 @@ def test_m6_deliverable_contains_rust_binaries_and_excludes_generated_paths(
     assert wheel_metadata["root_is_purelib"] == "false"
     assert native_tag in wheel_metadata["tags"]
     assert "py3-none-any" not in wheel_metadata["tags"]
-    for entry in ("spark/bin/spark", "spark/bin/spark-server"):
+    for entry in ("spark/bin/spark", "spark/bin/spark-server", "spark/bin/spark-agent-boundary"):
         assert (info_by_name[entry].external_attr >> 16) & 0o111
         with zipfile.ZipFile(wheel_path) as wheel:
             assert _is_native_binary_payload(wheel.read(entry))
@@ -351,6 +352,8 @@ def test_m6_deliverable_contains_rust_binaries_and_excludes_generated_paths(
         "scripts/run-docker.sh",
         "crates/spark-cli/src/main.rs",
         "crates/spark-server/src/main.rs",
+        "crates/spark-agent-adapter/src/boundary_cli.rs",
+        "crates/spark-agent-adapter/src/bin/spark-agent-boundary.rs",
         "crates/spark-assets/build.rs",
         "crates/spark-assets/src/lib.rs",
         "crates/spark-workspace/src/models.rs",
@@ -371,8 +374,10 @@ def test_m6_deliverable_contains_rust_binaries_and_excludes_generated_paths(
     assert required_sdist_sources <= sdist_relative_names
     assert "spark/bin/spark" not in sdist_relative_names
     assert "spark/bin/spark-server" not in sdist_relative_names
+    assert "spark/bin/spark-agent-boundary" not in sdist_relative_names
     assert "src/spark/bin/spark" not in sdist_relative_names
     assert "src/spark/bin/spark-server" not in sdist_relative_names
+    assert "src/spark/bin/spark-agent-boundary" not in sdist_relative_names
     assert not _artifact_forbidden_entries(sdist_names)
 
 

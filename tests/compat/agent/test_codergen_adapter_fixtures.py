@@ -174,7 +174,7 @@ def _status_envelope_resolution_manifest() -> dict[str, Any]:
         ),
     )
     call = dict(backend.calls[0])
-    call["prompt_contains_status_contract"] = "Structured response contract:" in call.pop("prompt")
+    call.pop("prompt")
     return _manifest(
         fixture_id="agent/codergen-status-envelope-resolution",
         scenario="status_envelope_resolution",

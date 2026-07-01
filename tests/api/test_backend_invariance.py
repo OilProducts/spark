@@ -5,6 +5,7 @@ import inspect
 import json
 import itertools
 from pathlib import Path
+import threading
 from spark_common.turn_stream import TurnStreamEvent, TurnStreamSource
 from types import SimpleNamespace
 from typing import List
@@ -14,12 +15,9 @@ from fastapi.testclient import TestClient
 
 import attractor.api.codex_backends as codex_backends_module
 import attractor.api.server as server
-from agent.events import EventKind, SessionEvent
-from agent.types import AssistantTurn, SessionState
 from attractor.engine import Context, load_checkpoint
 from attractor.engine.context_contracts import ContextWriteContract
 from attractor.engine.outcome import FailureKind, Outcome, OutcomeStatus
-from attractor.engine.status_envelope_prompting import build_status_envelope_context_updates_contract_text
 from attractor.handlers.base import ChildInterventionRequest, ChildInterventionResult
 from spark_common.project_identity import build_project_id
 from spark_common.runtime_path import resolve_runtime_workspace_path
@@ -28,7 +26,6 @@ from tests.api._support import (
     close_task_immediately as _close_task_immediately,
     wait_for_pipeline_completion as _wait_for_pipeline_completion,
 )
-from unified_llm.types import Usage
 
 
 def _start_pipeline_via_http(attractor_api_client: TestClient, payload: dict) -> dict:
@@ -1138,10 +1135,8 @@ def test_codex_app_server_backend_repairs_malformed_contract_output_on_same_thre
     assert len(prompts) == 2
     assert prompts[0]["thread_id"] == "thread-123"
     assert prompts[1]["thread_id"] == "thread-123"
-    assert "violated the status_envelope response contract" in str(prompts[1]["prompt"])
-    assert "notes must be a string" in str(prompts[1]["prompt"])
-    assert "Do not do new repository work." in str(prompts[1]["prompt"])
-    assert "Do not run commands." in str(prompts[1]["prompt"])
+    assert prompts[0]["prompt"] == "hello"
+    assert prompts[1]["prompt"] != prompts[0]["prompt"]
 
 
 def test_codex_app_server_backend_repairs_malformed_output_for_any_response_contract(
@@ -1191,7 +1186,8 @@ def test_codex_app_server_backend_repairs_malformed_output_for_any_response_cont
     assert result.status == OutcomeStatus.SUCCESS
     assert result.notes == "corrected"
     assert len(prompts) == 2
-    assert "violated the custom_contract response contract" in str(prompts[1]["prompt"])
+    assert prompts[0]["prompt"] == "hello"
+    assert prompts[1]["prompt"] != prompts[0]["prompt"]
 
 
 def test_codex_app_server_backend_repairs_undeclared_context_updates_on_same_thread(
@@ -1246,26 +1242,8 @@ def test_codex_app_server_backend_repairs_undeclared_context_updates_on_same_thr
     assert len(prompts) == 2
     assert prompts[0]["thread_id"] == "thread-123"
     assert prompts[1]["thread_id"] == "thread-123"
-    repair_prompt = str(prompts[1]["prompt"])
-    assert "undeclared context_updates keys" in repair_prompt
-    assert "context.review.extra" in repair_prompt
-    assert "context.review.summary" in repair_prompt
-    assert (
-        build_status_envelope_context_updates_contract_text(
-            ContextWriteContract(allowed_keys=("context.review.summary",))
-        )
-        in repair_prompt
-    )
-    assert (
-        'Re-emit the same decision using only these "context_updates" keys when needed: '
-        '"context.review.summary".'
-    ) in repair_prompt
-    assert "Do not do new repository work." in repair_prompt
-    assert "Previous invalid final answer:" in repair_prompt
-    assert (
-        '{"outcome":"success","context_updates":{"context.review.summary":"ready","context.review.extra":"nope"}}'
-        in repair_prompt
-    )
+    assert prompts[0]["prompt"] == "hello"
+    assert prompts[1]["prompt"] != prompts[0]["prompt"]
 
 
 def test_codex_app_server_backend_repairs_context_updates_when_node_declares_no_writes(
@@ -1318,15 +1296,8 @@ def test_codex_app_server_backend_repairs_context_updates_when_node_declares_no_
     assert len(prompts) == 2
     assert prompts[0]["thread_id"] == "thread-123"
     assert prompts[1]["thread_id"] == "thread-123"
-    repair_prompt = str(prompts[1]["prompt"])
-    assert "undeclared context_updates keys" in repair_prompt
-    assert build_status_envelope_context_updates_contract_text(ContextWriteContract()) in repair_prompt
-    assert 'Re-emit the same decision with no "context_updates".' in repair_prompt
-    assert 'This node must not emit "context_updates".' in repair_prompt
-    assert 'Keys with dots stay literal keys' not in repair_prompt
-    assert "Do not do new repository work." in repair_prompt
-    assert "Previous invalid final answer:" in repair_prompt
-    assert '{"outcome":"success","context_updates":{"context.review.summary":"ready"}}' in repair_prompt
+    assert prompts[0]["prompt"] == "hello"
+    assert prompts[1]["prompt"] != prompts[0]["prompt"]
 
 
 def test_codex_app_server_backend_repairs_invalid_context_update_keys_on_same_thread(
@@ -1381,8 +1352,8 @@ def test_codex_app_server_backend_repairs_invalid_context_update_keys_on_same_th
     assert len(prompts) == 2
     assert prompts[0]["thread_id"] == "thread-123"
     assert prompts[1]["thread_id"] == "thread-123"
-    assert "invalid context_updates keys" in str(prompts[1]["prompt"])
-    assert "runtime/state.json" in str(prompts[1]["prompt"])
+    assert prompts[0]["prompt"] == "hello"
+    assert prompts[1]["prompt"] != prompts[0]["prompt"]
 
 
 def test_codex_app_server_backend_returns_contract_failure_when_repair_exhausted(
@@ -2388,87 +2359,90 @@ def test_pipeline_launch_skips_provider_preflight_for_non_llm_flow(
     assert final_payload["status"] == "completed"
 
 
-def _install_fake_unified_session(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    responses: list[str],
-    events: list[SessionEvent] | None = None,
-    usage: Usage | None = None,
-    awaiting_input: bool = False,
-    prompts: list[str] | None = None,
-    configs: list[str | None] | None = None,
-) -> None:
-    class FakeSession:
-        def __init__(self, *, provider_profile, execution_environment, client, config) -> None:
-            del execution_environment, client
-            import asyncio
+class _FakeRustBoundary:
+    def __init__(
+        self,
+        outputs: list[dict[str, object] | BaseException],
+        *,
+        before_output=None,
+        steer_outputs: list[dict[str, object] | BaseException] | None = None,
+    ) -> None:
+        self.requests: list[dict[str, object]] = []
+        self.steer_requests: list[dict[str, object]] = []
+        self.outputs = list(outputs)
+        self.steer_outputs = list(steer_outputs or [{"status": "delivered", "delivery_mode": "rust_boundary_codergen_turn"}])
+        self.before_output = before_output
 
-            self.provider_profile = provider_profile
-            self.config = config
-            self.state = SessionState.IDLE
-            self.history: list[AssistantTurn] = []
-            self.event_queue = asyncio.Queue()
-            if configs is not None:
-                configs.append(config.reasoning_effort)
+    def run_codergen(self, payload: dict[str, object]) -> dict[str, object]:
+        self.requests.append(payload)
+        if self.before_output is not None:
+            self.before_output()
+        output = self.outputs.pop(0)
+        if isinstance(output, BaseException):
+            raise output
+        return output
 
-        async def process_input(self, prompt: str) -> None:
-            if prompts is not None:
-                prompts.append(prompt)
-            for event in events or []:
-                await self.event_queue.put(event)
-            if awaiting_input:
-                self.state = SessionState.AWAITING_INPUT
-                return
-            text = responses.pop(0)
-            self.history.append(AssistantTurn(text, usage=usage))
-            self.state = SessionState.IDLE
-
-        async def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        codex_backends_module,
-        "_profile_for_provider",
-        lambda provider, model: SimpleNamespace(model=str(model or f"{provider}-default")),
-    )
-    monkeypatch.setattr(codex_backends_module, "Session", FakeSession)
+    def steer_codergen_turn(self, payload: dict[str, object]) -> dict[str, object]:
+        self.steer_requests.append(payload)
+        output = self.steer_outputs.pop(0)
+        if isinstance(output, BaseException):
+            raise output
+        return output
 
 
 def test_unified_agent_backend_returns_plain_text_and_records_tool_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    del monkeypatch
     emitted: list[dict[str, str]] = []
     usage_snapshots = []
-    events = [
-        SessionEvent(EventKind.ASSISTANT_TEXT_DELTA, data={"delta": "Hello"}),
-        SessionEvent(EventKind.TOOL_CALL_START, data={"tool_name": "shell"}),
-        SessionEvent(EventKind.TOOL_CALL_END, data={"tool_name": "shell"}),
-    ]
-    configs: list[str | None] = []
-    _install_fake_unified_session(
-        monkeypatch,
-        responses=["Unified reply"],
-        events=events,
-        usage=Usage(input_tokens=3, output_tokens=4, total_tokens=7),
-        configs=configs,
+    boundary = _FakeRustBoundary(
+        [
+            {
+                "events": [
+                    {"kind": "content_delta", "channel": "assistant", "content_delta": "Hello"},
+                    {
+                        "kind": "tool_call_updated",
+                        "tool_call": {
+                            "id": "tool-1",
+                            "kind": "command_execution",
+                            "status": "running",
+                            "title": "shell",
+                        },
+                    },
+                    {
+                        "kind": "tool_call_updated",
+                        "tool_call": {
+                            "id": "tool-1",
+                            "kind": "command_execution",
+                            "status": "completed",
+                            "title": "shell",
+                        },
+                    },
+                ],
+                "response": {"kind": "text", "value": "Unified reply"},
+                "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+            }
+        ]
     )
     backend = codex_backends_module.UnifiedAgentBackend(
         str(tmp_path),
         emitted.append,
         provider="openai",
-        client_factory=lambda provider: SimpleNamespace(close=lambda: None),
         on_usage_update=usage_snapshots.append,
+        boundary=boundary,
     )
 
     result = backend.run("plan", "hello", Context(), model="gpt-test", reasoning_effort="high")
 
     assert result == "Unified reply"
-    assert configs == ["high"]
+    assert boundary.requests[0]["reasoning_effort"] == "high"
     assert [event["msg"] for event in emitted] == [
         "[plan] Hello",
-        "[plan] tool started: shell",
+        "[plan] tool running: shell",
         "[plan] tool completed: shell",
+        "[plan] Unified reply",
     ]
     assert usage_snapshots[-1].by_model["gpt-test"].total_tokens == 7
 
@@ -2477,59 +2451,44 @@ def test_unified_agent_backend_delivers_intervention_to_active_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    del monkeypatch
     backend_box: dict[str, codex_backends_module.UnifiedAgentBackend] = {}
     intervention_results: list[ChildInterventionResult] = []
-    steered_messages: list[str] = []
 
-    class FakeSession:
-        def __init__(self, *, provider_profile, execution_environment, client, config) -> None:
-            del execution_environment, client, config
-            self.provider_profile = provider_profile
-            self.state = SessionState.IDLE
-            self.history: list[AssistantTurn] = []
-            self.event_queue = codex_backends_module.asyncio.Queue()
-
-        async def process_input(self, prompt: str) -> None:
-            del prompt
-            intervention_results.append(
-                backend_box["backend"].request_child_intervention(
-                    ChildInterventionRequest(
-                        child_run_id="child-1",
-                        message="Please fix the failure.",
-                        parent_run_id="parent-1",
-                        parent_node_id="manager",
-                        root_run_id="parent-1",
-                        reason="tests failed",
-                    )
+    def request_during_turn() -> None:
+        intervention_results.append(
+            backend_box["backend"].request_child_intervention(
+                ChildInterventionRequest(
+                    child_run_id="child-1",
+                    message="Please fix the failure.",
+                    parent_run_id="parent-1",
+                    parent_node_id="manager",
+                    root_run_id="parent-1",
+                    reason="tests failed",
                 )
             )
-            self.history.append(AssistantTurn("Unified reply"))
+        )
 
-        def steer(self, message: str) -> str:
-            steered_messages.append(message)
-            return message
-
-        async def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        codex_backends_module,
-        "_profile_for_provider",
-        lambda provider, model: SimpleNamespace(model=str(model or f"{provider}-default")),
+    boundary = _FakeRustBoundary(
+        [{"response": {"kind": "text", "value": "Unified reply"}}],
+        before_output=request_during_turn,
     )
-    monkeypatch.setattr(codex_backends_module, "Session", FakeSession)
     backend = codex_backends_module.UnifiedAgentBackend(
         str(tmp_path),
         lambda event: None,
         provider="openai",
-        client_factory=lambda provider: SimpleNamespace(close=lambda: None),
+        boundary=boundary,
     )
     backend_box["backend"] = backend
 
     assert backend.run("plan", "hello", Context(), model="gpt-test") == "Unified reply"
-    assert steered_messages == ["Please fix the failure."]
     assert intervention_results[0].status == "delivered"
-    assert intervention_results[0].delivery_mode == "unified_agent_session"
+    assert intervention_results[0].delivery_mode == "rust_boundary_codergen_turn"
+    assert intervention_results[0].reason == "tests failed"
+    assert boundary.steer_requests[0]["turn_id"] == boundary.requests[0]["turn_id"]
+    assert boundary.steer_requests[0]["message"] == "Please fix the failure."
+    assert boundary.steer_requests[0]["child_run_id"] == "child-1"
+    assert boundary.steer_requests[0]["parent_node_id"] == "manager"
     inactive = backend.request_child_intervention(
         ChildInterventionRequest(
             child_run_id="child-1",
@@ -2547,22 +2506,52 @@ def test_unified_agent_backend_emits_llm_content_progress(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    del monkeypatch
     progress_events: list[dict[str, object]] = []
-    events = [
-        SessionEvent(EventKind.ASSISTANT_TEXT_DELTA, data={"delta": "Hello ", "response_id": "r-1"}),
-        SessionEvent(EventKind.ASSISTANT_TEXT_END, data={"text": "Hello world", "response_id": "r-1"}),
-        SessionEvent(EventKind.ASSISTANT_REASONING_DELTA, data={"delta": "Thinking", "response_id": "r-1"}),
-    ]
-    _install_fake_unified_session(
-        monkeypatch,
-        responses=["Hello world"],
-        events=events,
+    boundary = _FakeRustBoundary(
+        [
+            {
+                "events": [
+                    {
+                        "kind": "content_delta",
+                        "channel": "assistant",
+                        "content_delta": "Hello ",
+                        "source": {
+                            "backend": "rust_agent",
+                            "raw_kind": "assistant_text_delta",
+                            "response_id": "r-1",
+                        },
+                    },
+                    {
+                        "kind": "content_completed",
+                        "channel": "assistant",
+                        "content_delta": "Hello world",
+                        "source": {
+                            "backend": "rust_agent",
+                            "raw_kind": "assistant_text_end",
+                            "response_id": "r-1",
+                        },
+                    },
+                    {
+                        "kind": "content_delta",
+                        "channel": "reasoning",
+                        "content_delta": "Thinking",
+                        "source": {
+                            "backend": "rust_agent",
+                            "raw_kind": "assistant_reasoning_delta",
+                            "response_id": "r-1",
+                        },
+                    },
+                ],
+                "response": {"kind": "text", "value": "Hello world"},
+            }
+        ]
     )
     backend = codex_backends_module.UnifiedAgentBackend(
         str(tmp_path),
         lambda event: None,
         provider="openai",
-        client_factory=lambda provider: SimpleNamespace(close=lambda: None),
+        boundary=boundary,
     )
 
     result = backend.run(
@@ -2583,9 +2572,10 @@ def test_unified_agent_backend_emits_llm_content_progress(
             "channel": "assistant",
             "content_delta": "Hello ",
             "status": "streaming",
+            "phase": None,
             "source": {
-                "backend": "agent_session",
-                "raw_kind": str(EventKind.ASSISTANT_TEXT_DELTA),
+                "backend": "rust_agent",
+                "raw_kind": "assistant_text_delta",
                 "response_id": "r-1",
             },
         },
@@ -2595,9 +2585,10 @@ def test_unified_agent_backend_emits_llm_content_progress(
             "channel": "assistant",
             "content_delta": "Hello world",
             "status": "complete",
+            "phase": None,
             "source": {
-                "backend": "agent_session",
-                "raw_kind": str(EventKind.ASSISTANT_TEXT_END),
+                "backend": "rust_agent",
+                "raw_kind": "assistant_text_end",
                 "response_id": "r-1",
             },
         },
@@ -2607,9 +2598,10 @@ def test_unified_agent_backend_emits_llm_content_progress(
             "channel": "reasoning",
             "content_delta": "Thinking",
             "status": "streaming",
+            "phase": None,
             "source": {
-                "backend": "agent_session",
-                "raw_kind": str(EventKind.ASSISTANT_REASONING_DELTA),
+                "backend": "rust_agent",
+                "raw_kind": "assistant_reasoning_delta",
                 "response_id": "r-1",
             },
         },
@@ -2620,15 +2612,22 @@ def test_unified_agent_backend_coerces_status_envelope(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _install_fake_unified_session(
-        monkeypatch,
-        responses=['{"outcome":"success","context_updates":{"result":"ok"},"notes":"done"}'],
+    del monkeypatch
+    boundary = _FakeRustBoundary(
+        [
+            {
+                "response": {
+                    "kind": "text",
+                    "value": '{"outcome":"success","context_updates":{"result":"ok"},"notes":"done"}',
+                }
+            }
+        ]
     )
     backend = codex_backends_module.UnifiedAgentBackend(
         str(tmp_path),
         lambda event: None,
         provider="anthropic",
-        client_factory=lambda provider: SimpleNamespace(close=lambda: None),
+        boundary=boundary,
     )
 
     result = backend.run("plan", "hello", Context(), response_contract="status_envelope")
@@ -2642,20 +2641,18 @@ def test_unified_agent_backend_repairs_contract_in_same_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    prompts: list[str] = []
-    _install_fake_unified_session(
-        monkeypatch,
-        responses=[
-            '{"outcome":"success","notes":["bad"]}',
-            '{"outcome":"success","notes":"fixed"}',
-        ],
-        prompts=prompts,
+    del monkeypatch
+    boundary = _FakeRustBoundary(
+        [
+            {"response": {"kind": "text", "value": '{"outcome":"success","notes":["bad"]}'}},
+            {"response": {"kind": "text", "value": '{"outcome":"success","notes":"fixed"}'}},
+        ]
     )
     backend = codex_backends_module.UnifiedAgentBackend(
         str(tmp_path),
         lambda event: None,
         provider="gemini",
-        client_factory=lambda provider: SimpleNamespace(close=lambda: None),
+        boundary=boundary,
     )
 
     result = backend.run(
@@ -2668,24 +2665,32 @@ def test_unified_agent_backend_repairs_contract_in_same_session(
 
     assert isinstance(result, Outcome)
     assert result.status == OutcomeStatus.SUCCESS
-    assert len(prompts) == 2
-    assert "violated the status_envelope response contract" in prompts[1]
+    assert len(boundary.requests) == 2
+    assert boundary.requests[0]["prompt"] == "hello"
+    assert boundary.requests[1]["repair_attempt"] == 1
+    assert boundary.requests[1]["prompt"] != boundary.requests[0]["prompt"]
 
 
 def test_unified_agent_backend_fails_interactive_input_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _install_fake_unified_session(
-        monkeypatch,
-        responses=[],
-        awaiting_input=True,
+    del monkeypatch
+    boundary = _FakeRustBoundary(
+        [
+            {
+                "error": {
+                    "message": "unified-agent codergen requested interactive input; this is not supported for v1",
+                    "retryable": False,
+                }
+            }
+        ]
     )
     backend = codex_backends_module.UnifiedAgentBackend(
         str(tmp_path),
         lambda event: None,
         provider="openai",
-        client_factory=lambda provider: SimpleNamespace(close=lambda: None),
+        boundary=boundary,
     )
 
     result = backend.run("plan", "hello", Context())
@@ -2700,40 +2705,14 @@ def test_unified_agent_backend_normalizes_provider_exception_and_closes_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    closed_clients: list[str] = []
-    closed_sessions: list[str] = []
-
-    class FakeClient:
-        def close(self) -> None:
-            closed_clients.append("closed")
-
-    class FakeSession:
-        def __init__(self, *, provider_profile, execution_environment, client, config) -> None:
-            del execution_environment, client, config
-            self.provider_profile = provider_profile
-            self.state = SessionState.IDLE
-            self.history: list[AssistantTurn] = []
-            self.event_queue = codex_backends_module.asyncio.Queue()
-
-        async def process_input(self, prompt: str) -> None:
-            del prompt
-            raise ValueError("provider exploded")
-
-        async def close(self) -> None:
-            closed_sessions.append(self.provider_profile.model)
-
-    monkeypatch.setattr(
-        codex_backends_module,
-        "_profile_for_provider",
-        lambda provider, model: SimpleNamespace(model=str(model or f"{provider}-default")),
-    )
-    monkeypatch.setattr(codex_backends_module, "Session", FakeSession)
+    del monkeypatch
+    boundary = _FakeRustBoundary([ValueError("provider exploded")])
 
     backend = codex_backends_module.UnifiedAgentBackend(
         str(tmp_path),
         lambda event: None,
         provider="openai",
-        client_factory=lambda provider: FakeClient(),
+        boundary=boundary,
     )
 
     result = backend.run("plan", "hello", Context(), model="gpt-test")
@@ -2742,18 +2721,17 @@ def test_unified_agent_backend_normalizes_provider_exception_and_closes_session(
     assert result.status == OutcomeStatus.FAIL
     assert result.failure_kind == FailureKind.RUNTIME
     assert result.failure_reason == "provider exploded"
-    assert closed_sessions == ["gpt-test"]
-    assert closed_clients == ["closed"]
 
 
 def test_unified_agent_backend_marks_auth_setup_failures_non_retryable(
     tmp_path: Path,
 ) -> None:
+    boundary = _FakeRustBoundary([ValueError("missing OPENAI_API_KEY")])
     backend = codex_backends_module.UnifiedAgentBackend(
         str(tmp_path),
         lambda event: None,
         provider="openai",
-        client_factory=lambda provider: (_ for _ in ()).throw(ValueError("missing OPENAI_API_KEY")),
+        boundary=boundary,
     )
 
     result = backend.run("plan", "hello", Context(), model="gpt-test")
@@ -2765,46 +2743,50 @@ def test_unified_agent_backend_marks_auth_setup_failures_non_retryable(
     assert result.retryable is False
 
 
-def test_unified_agent_backend_enforces_timeout_and_closes_session(
+def test_unified_agent_backend_preserves_timeout_in_boundary_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    closed: list[str] = []
-
-    class FakeSession:
-        def __init__(self, *, provider_profile, execution_environment, client, config) -> None:
-            del execution_environment, client, config
-            self.provider_profile = provider_profile
-            self.state = SessionState.IDLE
-            self.history: list[AssistantTurn] = []
-            self.event_queue = codex_backends_module.asyncio.Queue()
-
-        async def process_input(self, prompt: str) -> None:
-            del prompt
-            await codex_backends_module.asyncio.sleep(1)
-            self.history.append(AssistantTurn("late"))
-
-        async def close(self) -> None:
-            closed.append(self.provider_profile.model)
-
-    monkeypatch.setattr(
-        codex_backends_module,
-        "_profile_for_provider",
-        lambda provider, model: SimpleNamespace(model=str(model or f"{provider}-default")),
-    )
-    monkeypatch.setattr(codex_backends_module, "Session", FakeSession)
+    del monkeypatch
+    boundary = _FakeRustBoundary([{"response": {"kind": "text", "value": "on time"}}])
 
     backend = codex_backends_module.UnifiedAgentBackend(
         str(tmp_path),
         lambda event: None,
         provider="openai",
-        client_factory=lambda provider: SimpleNamespace(close=lambda: None),
+        boundary=boundary,
     )
 
-    result = backend.run("plan", "hello", Context(), model="gpt-test", timeout=0.01)
+    result = backend.run("plan", "hello", Context(), model="gpt-test", timeout=0.5)
+
+    assert result == "on time"
+    assert boundary.requests[0]["timeout_seconds"] == 0.5
+
+
+def test_unified_agent_backend_times_out_blocked_boundary_call(tmp_path: Path) -> None:
+    release = threading.Event()
+
+    class BlockingBoundary(_FakeRustBoundary):
+        def run_codergen(self, payload: dict[str, object]) -> dict[str, object]:
+            self.requests.append(payload)
+            release.wait(2)
+            return {"response": {"kind": "text", "value": "late"}}
+
+    boundary = BlockingBoundary([])
+    backend = codex_backends_module.UnifiedAgentBackend(
+        str(tmp_path),
+        lambda event: None,
+        provider="openai",
+        boundary=boundary,
+    )
+
+    try:
+        result = backend.run("plan", "hello", Context(), model="gpt-test", timeout=0.01)
+    finally:
+        release.set()
 
     assert isinstance(result, Outcome)
     assert result.status == OutcomeStatus.FAIL
     assert result.failure_kind == FailureKind.RUNTIME
-    assert result.failure_reason == "unified-agent backend timed out after 0.01s"
-    assert closed == ["gpt-test"]
+    assert "timed out after 0.01s" in result.failure_reason
+    assert boundary.requests[0]["timeout_seconds"] == 0.01

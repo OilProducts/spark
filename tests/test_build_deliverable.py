@@ -182,19 +182,25 @@ def test_stage_rust_binaries_copies_release_outputs_with_executable_bits(
     release_dir = repo_root / "target" / "release"
     spark = release_dir / "spark"
     spark_server = release_dir / "spark-server"
+    spark_agent_boundary = release_dir / "spark-agent-boundary"
     _write(spark, "#!/bin/sh\n")
     _write(spark_server, "#!/bin/sh\n")
+    _write(spark_agent_boundary, "#!/bin/sh\n")
     spark.chmod(0o755)
     spark_server.chmod(0o755)
+    spark_agent_boundary.chmod(0o755)
 
     build_deliverable._stage_rust_binaries(repo_root, stage_root)
 
     staged_spark = stage_root / "src" / "spark" / "bin" / "spark"
     staged_server = stage_root / "src" / "spark" / "bin" / "spark-server"
+    staged_boundary = stage_root / "src" / "spark" / "bin" / "spark-agent-boundary"
     assert staged_spark.read_text(encoding="utf-8") == "#!/bin/sh\n"
     assert staged_server.read_text(encoding="utf-8") == "#!/bin/sh\n"
+    assert staged_boundary.read_text(encoding="utf-8") == "#!/bin/sh\n"
     assert staged_spark.stat().st_mode & 0o111
     assert staged_server.stat().st_mode & 0o111
+    assert staged_boundary.stat().st_mode & 0o111
 
 
 def test_verify_artifact_contents_rejects_generated_and_test_only_entries(

@@ -1,23 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 from dataclasses import dataclass, field
+import json
+import os
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import threading
 import tomllib
 import uuid
-from typing import Any, Callable, Optional
-
-from agent.events import EventKind, SessionEvent
-from agent.local_environment import LocalExecutionEnvironment
-from agent.profiles.anthropic import AnthropicProviderProfile
-from agent.profiles.gemini import GeminiProviderProfile
-from agent.profiles.openai import OpenAIProviderProfile
-from agent.profiles.openai_compatible import OpenAICompatibleProviderProfile
-from agent.session import Session
-from agent.types import AssistantTurn, SessionConfig, SessionState, UserTurn
+from typing import Any, Callable, Mapping, Optional, Protocol
 from spark.workspace.conversations.models import (
     ChatTurnResult,
     RequestUserInputOption,
@@ -38,13 +32,27 @@ from spark_common.codex_app_client import (
 from spark_common import codex_app_protocol
 from spark_common.codex_runtime import build_codex_runtime_environment
 from spark_common.runtime_path import resolve_runtime_workspace_path
-from spark.llm_profiles import LlmProfileConfigurationError, get_llm_profile
-from unified_llm.client import Client as UnifiedLlmClient
-from unified_llm.models import get_latest_model, get_model_info
 
 
 CHAT_TURN_IDLE_TIMEOUT_SECONDS = codex_app_protocol.APP_SERVER_TURN_IDLE_TIMEOUT_SECONDS
 CONTINUITY_RESET_ERROR_CODE = "continuity_reset"
+BOUNDARY_COMMAND_ENV = "SPARK_RUST_AGENT_BOUNDARY_COMMAND"
+BOUNDARY_BINARY_NAME = "spark-agent-boundary"
+BOUNDARY_UNAVAILABLE_MESSAGE = (
+    "Rust agent boundary command is not available. Build the committed spark-agent-boundary "
+    "Rust binary, install a wheel that includes spark/bin/spark-agent-boundary, or set "
+    "SPARK_RUST_AGENT_BOUNDARY_COMMAND to a command that accepts a JSON payload on stdin "
+    "and returns the serialized Rust adapter output."
+)
+SUPPORTED_AGENT_SELECTORS = {
+    "codex",
+    "openai",
+    "anthropic",
+    "gemini",
+    "openrouter",
+    "litellm",
+    "openai_compatible",
+}
 
 
 def _normalize_provider(value: str | None) -> str:
@@ -52,69 +60,86 @@ def _normalize_provider(value: str | None) -> str:
     return normalized or "codex"
 
 
-def _profile_for_provider(provider: str, model: str | None):
-    model_id = as_non_empty_string(model)
-    if provider in {"openrouter", "litellm", "openai_compatible"} and model_id is None:
-        raise ValueError(f"Provider {provider} requires an explicit model.")
-    if model_id is None:
-        latest = get_latest_model(provider, "tools") or get_latest_model(provider)
-        model_id = latest.id if latest is not None else ""
-    model_info = get_model_info(model_id) if model_id else None
-    supports_streaming = bool(model_info.supports_tools) if model_info is not None else False
-    if provider == "openai":
-        return OpenAIProviderProfile(model=model_id, supports_streaming=supports_streaming)
-    if provider == "anthropic":
-        return AnthropicProviderProfile(model=model_id, supports_streaming=supports_streaming)
-    if provider == "gemini":
-        return GeminiProviderProfile(model=model_id, supports_streaming=supports_streaming)
-    if provider in {"openrouter", "litellm"}:
-        return OpenAICompatibleProviderProfile(
-            id=provider,
-            model=model_id,
-            display_name="OpenRouter" if provider == "openrouter" else "LiteLLM",
-            supports_streaming=supports_streaming,
+def normalize_boundary_provider_selector(value: str | None) -> str:
+    normalized = _normalize_provider(value).replace("-", "_")
+    if normalized == "compatible":
+        normalized = "openai_compatible"
+    if normalized not in SUPPORTED_AGENT_SELECTORS:
+        raise ValueError(
+            "Provider must be blank or one of: codex, openai, anthropic, gemini, "
+            "openrouter, litellm, openai_compatible."
         )
-    if provider == "openai_compatible":
-        return OpenAICompatibleProviderProfile(
-            id=provider,
-            model=model_id,
-            display_name="OpenAI Compatible",
-            supports_streaming=supports_streaming,
+    return normalized
+
+
+def _timestamp_for_history_turn(turn: Any) -> str:
+    if isinstance(turn, Mapping):
+        value = turn.get("timestamp")
+    else:
+        value = getattr(turn, "timestamp", None)
+    timestamp = as_non_empty_string(value)
+    return timestamp or "1970-01-01T00:00:00Z"
+
+
+def _history_value(turn: Any, key: str, default: Any = None) -> Any:
+    if isinstance(turn, Mapping):
+        return turn.get(key, default)
+    return getattr(turn, key, default)
+
+
+def rust_history_from_persisted_turns(turns: list[Any] | tuple[Any, ...]) -> list[dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    for turn in turns:
+        role = str(_history_value(turn, "role", "") or "").strip().lower()
+        status = str(_history_value(turn, "status", "complete") or "complete").strip().lower()
+        kind = str(_history_value(turn, "kind", "message") or "message").strip().lower()
+        content = str(_history_value(turn, "content", "") or "")
+        if role not in {"user", "assistant"} or kind != "message" or status != "complete" or not content:
+            continue
+        history.append(
+            {
+                "role": role,
+                "content": content,
+                "timestamp": _timestamp_for_history_turn(turn),
+            }
         )
-    raise ValueError("Provider must be blank or one of: codex, openai, anthropic, gemini, openrouter, litellm, openai_compatible.")
+    return history
 
 
-def _session_for_llm_profile(config_dir: Path, profile_id: str, model: str | None):
+def build_agent_turn_request_payload(
+    *,
+    conversation_id: str,
+    project_path: str,
+    prompt: str,
+    provider: str | None,
+    model: str | None,
+    llm_profile: str | None,
+    reasoning_effort: str | None,
+    chat_mode: str | None,
+    history: list[Any] | tuple[Any, ...] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "conversation_id": str(conversation_id or ""),
+        "project_path": normalize_project_path_value(project_path),
+        "prompt": str(prompt or ""),
+        "history": rust_history_from_persisted_turns(list(history or [])),
+        "provider": normalize_boundary_provider_selector(provider),
+        "metadata": copy.deepcopy(dict(metadata or {})),
+    }
     model_id = as_non_empty_string(model)
-    if model_id is None:
-        raise ValueError(f"LLM profile {profile_id} requires an explicit model.")
-    configured_profile = get_llm_profile(config_dir, profile_id)
-    return (
-        OpenAICompatibleProviderProfile(
-            id=configured_profile.id,
-            model=model_id,
-            display_name=configured_profile.label or configured_profile.id,
-            supports_streaming=True,
-        ),
-        UnifiedLlmClient(
-            providers={configured_profile.id: configured_profile.build_adapter()},
-            default_provider=configured_profile.id,
-        ),
-    )
-
-
-def _tool_record_for_session_event(event: SessionEvent, *, status: str) -> ToolCallRecord:
-    tool_name = str(event.data.get("tool_name") or "tool")
-    tool_call_id = as_non_empty_string(event.data.get("tool_call_id")) or f"tool-{uuid.uuid4().hex}"
-    output = event.data.get("output")
-    error = event.data.get("error")
-    return ToolCallRecord(
-        id=tool_call_id,
-        kind="dynamic_tool",
-        status=status,
-        title=tool_name,
-        output=str(error if error is not None else output) if (error is not None or output is not None) else None,
-    )
+    profile_id = as_non_empty_string(llm_profile)
+    effort = as_non_empty_string(reasoning_effort)
+    mode = as_non_empty_string(chat_mode)
+    if model_id is not None:
+        payload["model"] = model_id
+    if profile_id is not None:
+        payload["llm_profile"] = profile_id
+    if effort is not None:
+        payload["reasoning_effort"] = effort.lower()
+    if mode is not None:
+        payload["chat_mode"] = mode.lower()
+    return payload
 
 
 def _normalize_tool_call_status(value: Any) -> str:
@@ -162,7 +187,12 @@ def _request_user_input_question_type(question: dict[str, Any]) -> str:
 
 
 def _request_user_input_record_from_payload(payload: dict[str, Any]) -> Optional[RequestUserInputRecord]:
-    request_id = as_non_empty_string(payload.get("itemId"))
+    request_id = as_non_empty_string(
+        payload.get("request_id")
+        or payload.get("requestId")
+        or payload.get("itemId")
+        or payload.get("id")
+    )
     raw_questions = payload.get("questions")
     if not request_id or not isinstance(raw_questions, list) or len(raw_questions) == 0:
         return None
@@ -188,10 +218,11 @@ def _request_user_input_record_from_payload(payload: dict[str, Any]) -> Optional
                 id=question_id,
                 header=as_non_empty_string(entry.get("header")) or f"Question {index + 1}",
                 question=prompt,
-                question_type=_request_user_input_question_type(entry),
+                question_type=as_non_empty_string(entry.get("question_type") or entry.get("questionType"))
+                or _request_user_input_question_type(entry),
                 options=options,
-                allow_other=bool(entry.get("isOther")),
-                is_secret=bool(entry.get("isSecret")),
+                allow_other=bool(entry.get("allow_other", entry.get("allowOther", entry.get("isOther")))),
+                is_secret=bool(entry.get("is_secret", entry.get("isSecret"))),
             )
         )
     if len(questions) == 0:
@@ -213,30 +244,17 @@ def _request_user_input_response_payload(answers: dict[str, str]) -> dict[str, A
     }
 
 
-def _token_usage_payload_from_unified_usage(usage: Any) -> Optional[dict[str, Any]]:
-    if usage is None:
+def token_usage_payload_from_boundary_usage(usage: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(usage, Mapping):
         return None
-    if isinstance(usage, dict):
-        input_tokens = int(usage.get("input_tokens", 0) or 0)
-        cached_input_tokens = int(usage.get("cache_read_tokens", 0) or 0)
-        output_tokens = int(usage.get("output_tokens", 0) or 0)
-        total_tokens = int(usage.get("total_tokens", 0) or 0)
-        if total_tokens <= 0:
-            total_tokens = input_tokens + output_tokens
-        if max(input_tokens, cached_input_tokens, output_tokens, total_tokens) <= 0:
-            return None
-        return {
-            "total": {
-                "inputTokens": max(0, input_tokens),
-                "cachedInputTokens": max(0, min(input_tokens, cached_input_tokens)),
-                "outputTokens": max(0, output_tokens),
-                "totalTokens": max(0, total_tokens),
-            }
-        }
-    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-    cached_input_tokens = int(getattr(usage, "cache_read_tokens", 0) or 0)
-    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-    total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    if isinstance(usage.get("total"), Mapping):
+        return copy.deepcopy(dict(usage))
+    input_tokens = int(usage.get("input_tokens", usage.get("inputTokens", 0)) or 0)
+    cached_input_tokens = int(
+        usage.get("cache_read_tokens", usage.get("cached_input_tokens", usage.get("cachedInputTokens", 0))) or 0
+    )
+    output_tokens = int(usage.get("output_tokens", usage.get("outputTokens", 0)) or 0)
+    total_tokens = int(usage.get("total_tokens", usage.get("totalTokens", 0)) or 0)
     if total_tokens <= 0:
         total_tokens = input_tokens + output_tokens
     if max(input_tokens, cached_input_tokens, output_tokens, total_tokens) <= 0:
@@ -251,20 +269,397 @@ def _token_usage_payload_from_unified_usage(usage: Any) -> Optional[dict[str, An
     }
 
 
-def _agent_history_from_persisted_turns(turns: list[Any]) -> list[UserTurn | AssistantTurn]:
-    history: list[UserTurn | AssistantTurn] = []
-    for turn in turns:
-        role = str(getattr(turn, "role", "") or "").strip().lower()
-        status = str(getattr(turn, "status", "") or "").strip().lower()
-        kind = str(getattr(turn, "kind", "message") or "message").strip().lower()
-        content = str(getattr(turn, "content", "") or "")
-        if kind != "message" or status != "complete" or not content:
-            continue
-        if role == "user":
-            history.append(UserTurn(content))
-        elif role == "assistant":
-            history.append(AssistantTurn(content))
-    return history
+def _turn_stream_source_from_payload(payload: Mapping[str, Any] | None) -> TurnStreamSource:
+    payload = payload or {}
+    summary_index = payload.get("summary_index")
+    if summary_index is None:
+        summary_index = payload.get("summaryIndex")
+    return TurnStreamSource(
+        backend=as_non_empty_string(payload.get("backend")),
+        session_id=as_non_empty_string(payload.get("session_id") or payload.get("sessionId")),
+        app_turn_id=as_non_empty_string(payload.get("app_turn_id") or payload.get("appTurnId")),
+        item_id=as_non_empty_string(payload.get("item_id") or payload.get("itemId")),
+        response_id=as_non_empty_string(payload.get("response_id") or payload.get("responseId")),
+        summary_index=int(summary_index) if isinstance(summary_index, int) else None,
+        raw_kind=as_non_empty_string(payload.get("raw_kind") or payload.get("rawKind")),
+    )
+
+
+def _source_payload_from_boundary_event(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    source_payload = payload.get("source")
+    if isinstance(source_payload, Mapping):
+        return source_payload
+    source_keys = {
+        "backend",
+        "session_id",
+        "sessionId",
+        "app_turn_id",
+        "appTurnId",
+        "item_id",
+        "itemId",
+        "response_id",
+        "responseId",
+        "summary_index",
+        "summaryIndex",
+        "raw_kind",
+        "rawKind",
+    }
+    if not any(key in payload for key in source_keys):
+        return None
+    return {key: payload[key] for key in source_keys if key in payload}
+
+
+def _default_tool_status_for_event_kind(event_kind: str) -> str:
+    if event_kind == "tool_call_started":
+        return "running"
+    if event_kind == "tool_call_failed":
+        return "failed"
+    return "completed"
+
+
+def _tool_record_from_boundary_payload(payload: Any, *, event_kind: str) -> Any:
+    if isinstance(payload, ToolCallRecord):
+        return payload
+    if not isinstance(payload, Mapping):
+        return payload
+    normalized_payload = dict(payload)
+    tool_call = _tool_call_from_item(normalized_payload)
+    if tool_call is not None:
+        return tool_call
+    raw_paths = normalized_payload.get("file_paths")
+    if raw_paths is None:
+        raw_paths = normalized_payload.get("filePaths")
+    item_id = as_non_empty_string(
+        normalized_payload.get("id")
+        or normalized_payload.get("call_id")
+        or normalized_payload.get("callId")
+        or normalized_payload.get("tool_call_id")
+        or normalized_payload.get("toolCallId")
+    )
+    title = as_non_empty_string(
+        normalized_payload.get("title")
+        or normalized_payload.get("name")
+        or normalized_payload.get("tool_name")
+        or normalized_payload.get("toolName")
+    )
+    command = as_non_empty_string(normalized_payload.get("command"))
+    output_value = normalized_payload.get("output")
+    if item_id is None and title is None and command is None and output_value is None:
+        return payload
+    if item_id is None:
+        item_id = f"tool-{uuid.uuid4().hex}"
+    if title is None:
+        title = "Run command" if command is not None else "Tool call"
+    raw_kind_value = as_non_empty_string(normalized_payload.get("kind") or normalized_payload.get("type"))
+    kind = as_non_empty_string(normalized_payload.get("tool_kind") or normalized_payload.get("toolKind"))
+    if kind is None and raw_kind_value not in {
+        "tool_call_started",
+        "tool_call_updated",
+        "tool_call_completed",
+        "tool_call_failed",
+    }:
+        kind = raw_kind_value
+    return ToolCallRecord(
+        id=item_id,
+        kind=kind or ("command_execution" if command is not None else "dynamic_tool"),
+        status=_normalize_tool_call_status(
+            normalized_payload.get("status") or _default_tool_status_for_event_kind(event_kind)
+        ),
+        title=title,
+        command=command,
+        output=str(output_value) if output_value is not None and str(output_value) else None,
+        file_paths=[str(path) for path in raw_paths] if isinstance(raw_paths, list) else [],
+    )
+
+
+def _request_user_input_from_boundary_payload(payload: Any) -> Any:
+    if isinstance(payload, RequestUserInputRecord):
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    if "request_id" in payload:
+        record = RequestUserInputRecord.from_dict(payload)
+        if record.request_id and record.questions:
+            return record
+    return _request_user_input_record_from_payload(payload) or payload
+
+
+def _boundary_event_kind(payload: Mapping[str, Any]) -> str:
+    return str(
+        payload.get("kind")
+        or payload.get("event_kind")
+        or payload.get("eventKind")
+        or payload.get("type")
+        or ""
+    )
+
+
+def _boundary_content_value(payload: Mapping[str, Any]) -> Optional[str]:
+    for key in ("content_delta", "contentDelta", "delta", "text", "content"):
+        value = payload.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _boundary_error_message(payload: Mapping[str, Any]) -> Optional[str]:
+    error = payload.get("error")
+    if isinstance(error, Mapping):
+        return str(error.get("message") or error.get("error") or error)
+    if error is not None:
+        return str(error)
+    if _boundary_event_kind(payload) == "error" and payload.get("message") is not None:
+        return str(payload.get("message"))
+    return None
+
+
+def _boundary_channel(payload: Mapping[str, Any], source: TurnStreamSource) -> Optional[str]:
+    channel = as_non_empty_string(payload.get("channel"))
+    if channel is not None:
+        return channel
+    kind = _boundary_event_kind(payload)
+    if kind not in {"content_delta", "content_completed"}:
+        return None
+    raw_kind = str(source.raw_kind or "").lower()
+    if "reasoning" in raw_kind:
+        return "reasoning"
+    if "plan" in raw_kind:
+        return "plan"
+    return "assistant"
+
+
+def turn_stream_event_from_boundary_payload(payload: Any) -> TurnStreamEvent:
+    if isinstance(payload, TurnStreamEvent):
+        return payload
+    if not isinstance(payload, Mapping):
+        raise ValueError("Rust boundary event payload must be an object.")
+    kind = _boundary_event_kind(payload)
+    source = _turn_stream_source_from_payload(_source_payload_from_boundary_event(payload))
+    token_usage = payload.get("token_usage")
+    if token_usage is None:
+        token_usage = payload.get("tokenUsage")
+    if not isinstance(token_usage, dict):
+        token_usage = token_usage_payload_from_boundary_usage(payload.get("usage"))
+    tool_payload = payload.get("tool_call", payload.get("toolCall"))
+    if tool_payload is None and kind in {
+        "tool_call_started",
+        "tool_call_updated",
+        "tool_call_completed",
+        "tool_call_failed",
+    }:
+        tool_payload = payload
+    request_user_input_payload = payload.get("request_user_input", payload.get("requestUserInput"))
+    if request_user_input_payload is None and kind == "request_user_input_requested":
+        request_user_input_payload = payload
+    return TurnStreamEvent(
+        kind=kind,
+        channel=_boundary_channel(payload, source),
+        source=source,
+        content_delta=_boundary_content_value(payload),
+        message=str(payload.get("message")) if payload.get("message") is not None else None,
+        tool_call=_tool_record_from_boundary_payload(tool_payload, event_kind=kind),
+        request_user_input=_request_user_input_from_boundary_payload(request_user_input_payload),
+        token_usage=copy.deepcopy(token_usage) if isinstance(token_usage, dict) else None,
+        error=_boundary_error_message(payload),
+        phase=str(payload.get("phase")) if payload.get("phase") is not None else None,
+        status=str(payload.get("status")) if payload.get("status") is not None else None,
+    )
+
+
+class RustBoundaryError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool | None = False,
+        raw: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.raw = copy.deepcopy(dict(raw or {}))
+
+
+class RustAgentBoundary(Protocol):
+    def run_agent_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def run_codergen(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def steer_codergen_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+
+def default_rust_agent_boundary_command() -> str | None:
+    packaged_binary = _packaged_rust_agent_boundary_binary_path()
+    if packaged_binary is not None:
+        return shlex.quote(str(packaged_binary))
+    cargo_command = _source_checkout_cargo_boundary_command()
+    if cargo_command is not None:
+        return cargo_command
+    source_binary = _source_checkout_rust_agent_boundary_binary_path()
+    if source_binary is not None:
+        return shlex.quote(str(source_binary))
+    return None
+
+
+def _platform_boundary_binary_name() -> str:
+    suffix = ".exe" if os.name == "nt" else ""
+    return f"{BOUNDARY_BINARY_NAME}{suffix}"
+
+
+def _packaged_rust_agent_boundary_binary_path() -> Path | None:
+    candidate = Path(__file__).resolve().parents[1] / "bin" / _platform_boundary_binary_name()
+    return candidate if _is_runnable_file(candidate) else None
+
+
+def _source_checkout_cargo_boundary_command() -> str | None:
+    workspace_root = _source_checkout_root()
+    if workspace_root is None or shutil.which("cargo") is None:
+        return None
+    manifest_path = workspace_root / "Cargo.toml"
+    return " ".join(
+        [
+            "cargo",
+            "run",
+            "-q",
+            "--manifest-path",
+            shlex.quote(str(manifest_path)),
+            "-p",
+            "spark-agent-adapter",
+            "--bin",
+            BOUNDARY_BINARY_NAME,
+            "--",
+        ]
+    )
+
+
+def _source_checkout_rust_agent_boundary_binary_path() -> Path | None:
+    workspace_root = _source_checkout_root()
+    if workspace_root is None:
+        return None
+    binary_name = _platform_boundary_binary_name()
+    for target_dir in _workspace_target_dirs(workspace_root):
+        for profile in ("debug", "release"):
+            candidate = target_dir / profile / binary_name
+            if _is_runnable_file(candidate):
+                return candidate
+    return None
+
+
+def _workspace_target_dirs(workspace_root: Path) -> tuple[Path, ...]:
+    configured_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
+    target_dirs: list[Path] = []
+    if configured_target:
+        configured_path = Path(configured_target).expanduser()
+        if not configured_path.is_absolute():
+            configured_path = (Path.cwd() / configured_path).resolve(strict=False)
+        target_dirs.append(configured_path)
+    target_dirs.append(workspace_root / "target")
+    return tuple(target_dirs)
+
+
+def _source_checkout_root() -> Path | None:
+    for directory in Path(__file__).resolve().parents:
+        if _is_spark_rust_workspace(directory):
+            return directory
+    return None
+
+
+def _is_spark_rust_workspace(directory: Path) -> bool:
+    return (
+        (directory / "Cargo.toml").is_file()
+        and (directory / "pyproject.toml").is_file()
+        and (directory / "crates" / "spark-agent-adapter" / "Cargo.toml").is_file()
+    )
+
+
+def _is_runnable_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if os.name == "posix" and not os.access(path, os.X_OK):
+        return False
+    return True
+
+
+class SerializedRustAgentBoundary:
+    def __init__(self, command: str | None = None) -> None:
+        configured_command = as_non_empty_string(
+            command if command is not None else os.environ.get(BOUNDARY_COMMAND_ENV)
+        )
+        self.command = configured_command or default_rust_agent_boundary_command()
+
+    def run_agent_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._run("agent-turn", payload)
+
+    def run_codergen(self, payload: dict[str, Any]) -> dict[str, Any]:
+        timeout_seconds = payload.get("timeout_seconds")
+        timeout = float(timeout_seconds) if isinstance(timeout_seconds, (int, float)) else None
+        return self._run("codergen", payload, timeout_seconds=timeout)
+
+    def steer_codergen_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._run("codergen-steer", payload)
+
+    def _run(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if self.command is None:
+            raise RustBoundaryError(
+                BOUNDARY_UNAVAILABLE_MESSAGE,
+                retryable=False,
+                raw={"kind": "rust_boundary_unconfigured", "operation": operation},
+            )
+        argv = [*shlex.split(self.command), operation]
+        try:
+            completed = subprocess.run(
+                argv,
+                input=json.dumps(payload, sort_keys=True),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RustBoundaryError(
+                f"Rust boundary {operation} timed out after {timeout_seconds:g}s",
+                retryable=None,
+                raw={"kind": "rust_boundary_timeout", "operation": operation},
+            ) from exc
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or completed.stdout.strip() or f"Rust boundary {operation} failed."
+            raise RustBoundaryError(
+                message,
+                retryable=False,
+                raw={"kind": "rust_boundary_process_failed", "operation": operation, "returncode": completed.returncode},
+            )
+        try:
+            decoded = json.loads(completed.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise RustBoundaryError(
+                f"Rust boundary {operation} returned invalid JSON: {exc.msg}",
+                retryable=False,
+                raw={"kind": "rust_boundary_invalid_json", "operation": operation},
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise RustBoundaryError(
+                f"Rust boundary {operation} returned a non-object payload.",
+                retryable=False,
+                raw={"kind": "rust_boundary_invalid_payload", "operation": operation},
+            )
+        if isinstance(decoded.get("error"), dict) and not any(key in decoded for key in ("events", "response")):
+            error = decoded["error"]
+            raise RustBoundaryError(
+                str(error.get("message") or f"Rust boundary {operation} failed."),
+                retryable=bool(error.get("retryable")),
+                raw=error,
+            )
+        if isinstance(decoded.get("output"), dict):
+            return decoded["output"]
+        return decoded
 
 
 def _resume_failure_summary(failure: CodexAppServerThreadResumeFailure) -> str:
@@ -337,87 +732,57 @@ class UnifiedAgentChatSession:
         llm_profile: Optional[str] = None,
         config_dir: Path | str | None = None,
         persisted_history: list[Any] | None = None,
-        client_factory: Callable[[str], UnifiedLlmClient] | None = None,
+        conversation_id: str = "",
+        metadata: Mapping[str, Any] | None = None,
+        boundary: RustAgentBoundary | None = None,
+        client_factory: Any | None = None,
     ) -> None:
+        del client_factory
         self.requested_working_dir = normalize_project_path_value(working_dir)
         self.working_dir = resolve_runtime_workspace_path(working_dir)
-        self.provider = _normalize_provider(provider)
+        self.provider = normalize_boundary_provider_selector(provider)
         self.model = as_non_empty_string(model)
         self.llm_profile = as_non_empty_string(llm_profile)
         self.config_dir = Path(config_dir) if config_dir is not None else None
+        self.conversation_id = str(conversation_id or "")
+        self.metadata = copy.deepcopy(dict(metadata or {}))
+        if self.config_dir is not None:
+            self.metadata.setdefault("spark.config_dir", str(self.config_dir))
         self._persisted_history = list(persisted_history or [])
-        self._client_factory = client_factory or (
-            lambda effective_provider: UnifiedLlmClient.from_env(default_provider=effective_provider)
-        )
-        self._session: Session | None = None
-        self._client: UnifiedLlmClient | None = None
-        self._runner: asyncio.Runner | None = None
+        self._boundary = boundary or SerializedRustAgentBoundary()
         self._lock = threading.Lock()
-
-    def _close_session_and_client_unlocked(self, *, close_runner: bool) -> None:
-        session = self._session
-        self._session = None
-        client = self._client
-        self._client = None
-        runner = self._runner
-        if close_runner:
-            self._runner = None
-        if session is not None:
-            try:
-                if runner is not None:
-                    runner.run(session.close())
-                else:
-                    asyncio.run(session.close())
-            except RuntimeError:
-                pass
-        if client is not None:
-            close_client = getattr(client, "close", None)
-            if callable(close_client):
-                try:
-                    result = close_client()
-                    if asyncio.iscoroutine(result):
-                        if runner is not None:
-                            runner.run(result)
-                        else:
-                            asyncio.run(result)
-                except RuntimeError:
-                    pass
-        if close_runner and runner is not None:
-            runner.close()
+        self._raw_rpc_logger: Optional[Callable[[str, str], None]] = None
+        self._pending_user_input_lock = threading.Lock()
+        self._pending_user_input_by_request_id: dict[str, _PendingUserInputRequest] = {}
+        self._pending_user_input_request_id_by_question_id: dict[str, str] = {}
 
     def close(self) -> None:
-        with self._lock:
-            self._close_session_and_client_unlocked(close_runner=True)
+        close = getattr(self._boundary, "close", None)
+        if callable(close):
+            close()
 
     def _replace_model_unlocked(self, model: Optional[str]) -> None:
         next_model = as_non_empty_string(model)
         if next_model == self.model:
             return
-        self._close_session_and_client_unlocked(close_runner=False)
         self.model = next_model
 
-    def _run_async(self, coro):
-        if self._runner is None:
-            self._runner = asyncio.Runner()
-        return self._runner.run(coro)
+    def set_raw_rpc_logger(self, callback: Optional[Callable[[str, str], None]]) -> None:
+        self._raw_rpc_logger = callback
 
-    def _build_session(self, reasoning_effort: Optional[str]) -> Session:
-        if self.llm_profile is not None:
-            if self.config_dir is None:
-                raise LlmProfileConfigurationError("LLM profile config directory is unavailable.")
-            profile, client = _session_for_llm_profile(self.config_dir, self.llm_profile, self.model)
-        else:
-            profile = _profile_for_provider(self.provider, self.model)
-            client = self._client_factory(self.provider)
-        self._client = client
-        session = Session(
-            provider_profile=profile,
-            execution_environment=LocalExecutionEnvironment(working_dir=self.working_dir),
-            client=client,
-            config=SessionConfig(reasoning_effort=reasoning_effort),
-        )
-        session.history.extend(_agent_history_from_persisted_turns(self._persisted_history))
-        return session
+    def clear_raw_rpc_logger(self) -> None:
+        self._raw_rpc_logger = None
+
+    def _emit_raw_log_lines(self, raw_log_lines: Any) -> None:
+        if self._raw_rpc_logger is None or not isinstance(raw_log_lines, list):
+            return
+        for entry in raw_log_lines:
+            if not isinstance(entry, Mapping):
+                continue
+            direction = str(entry.get("direction") or "incoming")
+            line = str(entry.get("line") or "")
+            if line:
+                self._raw_rpc_logger(direction, line)
 
     def _emit_live_event(
         self,
@@ -427,154 +792,122 @@ class UnifiedAgentChatSession:
         if callback is not None:
             callback(event)
 
-    def _forward_session_event(
+    def _register_pending_user_input(self, request: RequestUserInputRecord) -> _PendingUserInputRequest:
+        pending = _PendingUserInputRequest(
+            request_id=request.request_id,
+            question_ids=tuple(question.id for question in request.questions),
+        )
+        with self._pending_user_input_lock:
+            self._pending_user_input_by_request_id[request.request_id] = pending
+            for question_id in pending.question_ids:
+                self._pending_user_input_request_id_by_question_id[question_id] = request.request_id
+        return pending
+
+    def _clear_pending_user_input(self, request_id: str) -> None:
+        with self._pending_user_input_lock:
+            pending = self._pending_user_input_by_request_id.pop(request_id, None)
+            if pending is None:
+                return
+            for question_id in pending.question_ids:
+                current_request_id = self._pending_user_input_request_id_by_question_id.get(question_id)
+                if current_request_id == request_id:
+                    self._pending_user_input_request_id_by_question_id.pop(question_id, None)
+
+    def submit_request_user_input_answers(self, request_or_question_id: str, answers: dict[str, str]) -> bool:
+        normalized_lookup_id = as_non_empty_string(request_or_question_id)
+        if not normalized_lookup_id:
+            return False
+        normalized_answers = {
+            str(key): str(value).strip()
+            for key, value in answers.items()
+            if str(value).strip()
+        }
+        if len(normalized_answers) == 0:
+            return False
+        with self._pending_user_input_lock:
+            request_id = self._pending_user_input_request_id_by_question_id.get(normalized_lookup_id, normalized_lookup_id)
+            pending = self._pending_user_input_by_request_id.get(request_id)
+        if pending is None:
+            return False
+        pending.submit(normalized_answers)
+        return True
+
+    def has_pending_request_user_input(self, request_or_question_id: str) -> bool:
+        normalized_lookup_id = as_non_empty_string(request_or_question_id)
+        if not normalized_lookup_id:
+            return False
+        with self._pending_user_input_lock:
+            request_id = self._pending_user_input_request_id_by_question_id.get(normalized_lookup_id, normalized_lookup_id)
+            return request_id in self._pending_user_input_by_request_id
+
+    def _handle_boundary_event(
         self,
-        event: SessionEvent,
+        event_payload: Any,
         *,
         on_event: Optional[Callable[[TurnStreamEvent], None]],
-    ) -> None:
-        if event.kind == EventKind.ASSISTANT_TEXT_DELTA:
-            delta = str(event.data.get("delta", ""))
-            if delta:
-                self._emit_live_event(
-                    on_event,
-                    TurnStreamEvent(
-                        kind="content_delta",
-                        channel="assistant",
-                        content_delta=delta,
-                        source=TurnStreamSource(
-                            backend="agent_session",
-                            response_id=as_non_empty_string(event.data.get("response_id")),
-                            raw_kind=str(event.kind),
-                        ),
-                    ),
-                )
-            return
-        if event.kind == EventKind.ASSISTANT_TEXT_END:
-            text = str(event.data.get("text", ""))
-            self._emit_live_event(
-                on_event,
-                TurnStreamEvent(
-                    kind="content_completed",
-                    channel="assistant",
-                    content_delta=text,
-                    source=TurnStreamSource(
-                        backend="agent_session",
-                        response_id=as_non_empty_string(event.data.get("response_id")),
-                        raw_kind=str(event.kind),
-                    ),
-                ),
-            )
-            return
-        if event.kind == EventKind.ASSISTANT_REASONING_DELTA:
-            delta = str(event.data.get("delta", ""))
-            if delta:
-                self._emit_live_event(
-                    on_event,
-                    TurnStreamEvent(
-                        kind="content_delta",
-                        channel="reasoning",
-                        content_delta=delta,
-                        source=TurnStreamSource(
-                            backend="agent_session",
-                            response_id=as_non_empty_string(event.data.get("response_id")),
-                            raw_kind=str(event.kind),
-                        ),
-                    ),
-                )
-            return
-        if event.kind == EventKind.ASSISTANT_REASONING_END:
-            text = str(event.data.get("text", "") or "")
-            if text:
-                self._emit_live_event(
-                    on_event,
-                    TurnStreamEvent(
-                        kind="content_completed",
-                        channel="reasoning",
-                        content_delta=text,
-                        source=TurnStreamSource(
-                            backend="agent_session",
-                            response_id=as_non_empty_string(event.data.get("response_id")),
-                            raw_kind=str(event.kind),
-                        ),
-                    ),
-                )
-            return
-        if event.kind == EventKind.MODEL_USAGE_UPDATE:
-            token_usage = _token_usage_payload_from_unified_usage(event.data.get("usage"))
-            if token_usage is not None:
-                self._emit_live_event(
-                    on_event,
-                    TurnStreamEvent(
-                        kind="token_usage_updated",
-                        token_usage=token_usage,
-                        source=TurnStreamSource(backend="agent_session", raw_kind=str(event.kind)),
-                    ),
-                )
-            return
-        if event.kind in {
-            EventKind.MODEL_TOOL_CALL_START,
-            EventKind.MODEL_TOOL_CALL_DELTA,
-            EventKind.MODEL_TOOL_CALL_END,
-        }:
-            return
-        if event.kind == EventKind.TOOL_CALL_START:
-            tool_call = _tool_record_for_session_event(event, status="running")
-            self._emit_live_event(
-                on_event,
-                TurnStreamEvent(
-                    kind="tool_call_started",
-                    tool_call=tool_call,
-                    source=TurnStreamSource(backend="agent_session", item_id=tool_call.id, raw_kind=str(event.kind)),
-                ),
-            )
-            return
-        if event.kind == EventKind.TOOL_CALL_END:
-            status = "failed" if event.data.get("error") is not None else "completed"
-            tool_call = _tool_record_for_session_event(event, status=status)
-            self._emit_live_event(
-                on_event,
-                TurnStreamEvent(
-                    kind="tool_call_failed" if status == "failed" else "tool_call_completed",
-                    tool_call=tool_call,
-                    source=TurnStreamSource(backend="agent_session", item_id=tool_call.id, raw_kind=str(event.kind)),
-                ),
-            )
-            return
-        if event.kind == EventKind.ERROR:
-            self._emit_live_event(
-                on_event,
-                TurnStreamEvent(
-                    kind="error",
-                    message=str(event.data.get("error", "")),
-                    error=str(event.data.get("error", "")),
-                    source=TurnStreamSource(backend="agent_session", raw_kind=str(event.kind)),
-                ),
+    ) -> TurnStreamEvent:
+        event = turn_stream_event_from_boundary_payload(event_payload)
+        if event.kind == "request_user_input_requested" and isinstance(event.request_user_input, RequestUserInputRecord):
+            pending = self._register_pending_user_input(event.request_user_input)
+            self._emit_live_event(on_event, event)
+            try:
+                pending.wait_for_answers()
+            finally:
+                self._clear_pending_user_input(event.request_user_input.request_id)
+            return event
+        self._emit_live_event(on_event, event)
+        return event
+
+    def _append_turn_history(self, prompt: str, assistant_message: str) -> None:
+        self._persisted_history.append(
+            {
+                "role": "user",
+                "content": prompt,
+                "timestamp": "1970-01-01T00:00:00Z",
+                "status": "complete",
+                "kind": "message",
+            }
+        )
+        if assistant_message:
+            self._persisted_history.append(
+                {
+                    "role": "assistant",
+                    "content": assistant_message,
+                    "timestamp": "1970-01-01T00:00:00Z",
+                    "status": "complete",
+                    "kind": "message",
+                }
             )
 
-    async def _submit_and_capture(
-        self,
-        session: Session,
-        prompt: str,
-        *,
-        on_event: Optional[Callable[[TurnStreamEvent], None]],
-    ) -> tuple[str, Optional[dict[str, Any]]]:
-        task = asyncio.create_task(session.process_input(prompt))
-        while True:
-            if task.done() and session.event_queue.empty():
-                break
-            try:
-                event = await asyncio.wait_for(session.event_queue.get(), timeout=0.05)
-            except asyncio.TimeoutError:
-                continue
-            self._forward_session_event(event, on_event=on_event)
-        await task
-        if session.state == SessionState.AWAITING_INPUT:
-            raise RuntimeError("unified-agent project chat requested interactive input; this is not supported")
-        for turn in reversed(session.history):
-            if isinstance(turn, AssistantTurn):
-                return turn.text, _token_usage_payload_from_unified_usage(getattr(turn, "usage", None))
-        return "", None
+    def _raise_thread_resume_failure(self, payload: Mapping[str, Any]) -> None:
+        message = str(payload.get("message") or "Rust agent thread could not resume.")
+        error_code = as_non_empty_string(payload.get("error_code") or payload.get("code")) or "resume_failed"
+        details = payload.get("details") if isinstance(payload.get("details"), Mapping) else {}
+        persisted_thread_id = as_non_empty_string(details.get("persisted_thread_id") if isinstance(details, Mapping) else None)
+        persisted_thread_id = persisted_thread_id or as_non_empty_string(details.get("thread_id") if isinstance(details, Mapping) else None)
+        persisted_thread_id = persisted_thread_id or ""
+        raise PersistedThreadContinuityResetError(
+            persisted_thread_id,
+            CodexAppServerThreadResumeFailure(
+                kind=error_code,
+                message=message,
+            ),
+        )
+
+    def _raise_boundary_output_error(self, error_payload: Any) -> None:
+        if error_payload is None:
+            return
+        if isinstance(error_payload, Mapping):
+            raise RustBoundaryError(
+                str(error_payload.get("message") or error_payload.get("error") or "Rust agent boundary failed."),
+                retryable=bool(error_payload.get("retryable")),
+                raw=error_payload,
+            )
+        raise RustBoundaryError(
+            str(error_payload),
+            retryable=False,
+            raw={"kind": "rust_boundary_error", "error": error_payload},
+        )
 
     def turn(
         self,
@@ -585,21 +918,70 @@ class UnifiedAgentChatSession:
         reasoning_effort: Optional[str] = None,
         on_event: Optional[Callable[[TurnStreamEvent], None]] = None,
     ) -> ChatTurnResult:
-        del chat_mode
         with self._lock:
             if model is not None:
                 self._replace_model_unlocked(model)
-            if self._session is None:
-                self._session = self._build_session(reasoning_effort)
-            else:
-                self._session.config.reasoning_effort = reasoning_effort
-            message, token_usage = self._run_async(
-                self._submit_and_capture(
-                    self._session,
-                    prompt,
-                    on_event=on_event,
-                )
+            request = build_agent_turn_request_payload(
+                conversation_id=self.conversation_id,
+                project_path=self.requested_working_dir,
+                prompt=prompt,
+                provider=self.provider,
+                model=self.model,
+                llm_profile=self.llm_profile,
+                reasoning_effort=reasoning_effort,
+                chat_mode=chat_mode,
+                history=self._persisted_history,
+                metadata=self.metadata,
             )
+            output = self._boundary.run_agent_turn(request)
+            if not isinstance(output, Mapping):
+                raise RuntimeError("Rust agent boundary returned a non-object output.")
+            self._emit_raw_log_lines(output.get("raw_log_lines"))
+            thread_resume_failure = output.get("thread_resume_failure")
+            if isinstance(thread_resume_failure, Mapping):
+                self._raise_thread_resume_failure(thread_resume_failure)
+            assistant_deltas: list[str] = []
+            completed_assistant_text: Optional[str] = None
+            completed_plan_text: Optional[str] = None
+            event_token_usage: Optional[dict[str, Any]] = None
+            event_error: Optional[str] = None
+            raw_events = output.get("events")
+            event_payloads = raw_events if isinstance(raw_events, list) else []
+            for event_payload in event_payloads:
+                event = self._handle_boundary_event(event_payload, on_event=on_event)
+                if event.kind == "token_usage_updated" and isinstance(event.token_usage, dict):
+                    event_token_usage = copy.deepcopy(event.token_usage)
+                elif event.kind == "content_delta" and event.channel == "assistant" and event.content_delta:
+                    assistant_deltas.append(event.content_delta)
+                elif event.kind == "content_completed" and event.channel == "assistant" and event.content_delta:
+                    completed_assistant_text = event.content_delta
+                elif event.kind == "content_completed" and event.channel == "plan" and event.content_delta:
+                    completed_plan_text = event.content_delta
+                elif event.kind == "error":
+                    event_error = event.error or event.message or "Rust agent boundary failed."
+            self._raise_boundary_output_error(output.get("error"))
+            if event_error is not None:
+                raise RustBoundaryError(
+                    event_error,
+                    retryable=False,
+                    raw={"kind": "rust_boundary_turn_error"},
+                )
+            output_token_usage = output.get("token_usage")
+            token_usage = copy.deepcopy(output_token_usage) if isinstance(output_token_usage, dict) else None
+            if token_usage is None:
+                token_usage = token_usage_payload_from_boundary_usage(output.get("usage"))
+            if token_usage is None and event_token_usage is not None:
+                token_usage = event_token_usage
+            message = str(
+                output.get("final_assistant_text")
+                or output.get("assistant_message")
+                or output.get("text")
+                or completed_assistant_text
+                or completed_plan_text
+                or "".join(assistant_deltas)
+                or ""
+            )
+            self._append_turn_history(prompt, message)
             return ChatTurnResult(assistant_message=message, token_usage=token_usage)
 
 

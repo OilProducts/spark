@@ -21,15 +21,18 @@ FRONTEND_BINARIES = ("tsc", "vite")
 RUST_BINARY_TARGETS = (
     ("spark-cli", "spark"),
     ("spark-server", "spark-server"),
+    ("spark-agent-adapter", "spark-agent-boundary"),
 )
 REQUIRED_RUST_BINARY_ENTRIES = (
     "spark/bin/spark",
     "spark/bin/spark-server",
+    "spark/bin/spark-agent-boundary",
 )
 FORBIDDEN_SDIST_BINARY_ENTRIES = (
     *REQUIRED_RUST_BINARY_ENTRIES,
     "src/spark/bin/spark",
     "src/spark/bin/spark-server",
+    "src/spark/bin/spark-agent-boundary",
 )
 REQUIRED_SOURCE_PATHS = (
     "Cargo.toml",
@@ -41,6 +44,8 @@ REQUIRED_SOURCE_PATHS = (
     "src",
     "crates/spark-cli/src/main.rs",
     "crates/spark-server/src/main.rs",
+    "crates/spark-agent-adapter/src/boundary_cli.rs",
+    "crates/spark-agent-adapter/src/bin/spark-agent-boundary.rs",
     "crates/spark-assets/build.rs",
     "tests/compat/providers/test_unified_llm_adapter_fixtures.py",
     "tests/compat/packaging/test_packaging_smoke_fixtures.py",
@@ -94,6 +99,8 @@ REQUIRED_SDIST_SOURCE_ENTRIES = (
     "scripts/run-docker.sh",
     "crates/spark-cli/src/main.rs",
     "crates/spark-server/src/main.rs",
+    "crates/spark-agent-adapter/src/boundary_cli.rs",
+    "crates/spark-agent-adapter/src/bin/spark-agent-boundary.rs",
     "crates/spark-assets/build.rs",
     "crates/spark-assets/src/lib.rs",
     "crates/spark-workspace/src/models.rs",

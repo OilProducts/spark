@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod apply_patch;
+pub mod boundary_cli;
 pub mod codergen;
 pub mod config;
 pub mod context;

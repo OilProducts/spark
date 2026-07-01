@@ -78,6 +78,7 @@ impl CodergenBackend for RustLlmCodergenBackend {
                 BTreeMap::from([
                     ("backend".to_string(), json!(BACKEND_NAME)),
                     ("node_id".to_string(), json!(request.node_id)),
+                    ("provider_selector".to_string(), json!(request.provider)),
                     ("provider".to_string(), json!(response.provider)),
                     ("model".to_string(), json!(response.model)),
                     (
@@ -88,6 +89,19 @@ impl CodergenBackend for RustLlmCodergenBackend {
                         "reasoning_effort".to_string(),
                         json!(llm_request.reasoning_effort.clone()),
                     ),
+                    (
+                        "response_contract".to_string(),
+                        json!(request.response_contract),
+                    ),
+                    (
+                        "contract_repair_attempts".to_string(),
+                        json!(request.contract_repair_attempts),
+                    ),
+                    (
+                        "timeout_seconds".to_string(),
+                        json!(request.timeout_seconds),
+                    ),
+                    ("write_contract".to_string(), json!(request.write_contract)),
                 ]),
             )],
             usage: Some(response.usage),

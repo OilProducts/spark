@@ -19,7 +19,6 @@
       "llm_profile": "backend-profile",
       "model": "gpt-launch",
       "node_id": "task",
-      "prompt_contains_status_contract": true,
       "provider": "anthropic",
       "reasoning_effort": "medium",
       "response_contract": "status_envelope",

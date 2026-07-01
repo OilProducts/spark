@@ -1528,6 +1528,7 @@ class ProjectChatService:
                     "provider": normalized_provider,
                     "model": model,
                     "persisted_history": persisted_history,
+                    "conversation_id": conversation_id,
                 }
                 if normalized_profile is not None:
                     session_kwargs["llm_profile"] = normalized_profile

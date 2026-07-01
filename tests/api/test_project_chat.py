@@ -2600,8 +2600,9 @@ def test_build_session_keys_chat_sessions_by_provider_and_model(tmp_path: Path, 
             provider: str,
             model: str | None = None,
             persisted_history: list[project_chat.ConversationTurn] | None = None,
+            conversation_id: str = "",
         ) -> None:
-            del persisted_history
+            del persisted_history, conversation_id
             self.marker = f"{provider}:{model}:{working_dir}"
             created.append({"provider": provider, "model": model})
 
@@ -2660,6 +2661,7 @@ def test_project_chat_starts_profile_session_with_explicit_model(tmp_path: Path,
             llm_profile: str | None = None,
             config_dir: Path | None = None,
             persisted_history: list[project_chat.ConversationTurn] | None = None,
+            conversation_id: str = "",
         ) -> None:
             del persisted_history
             created.append(
@@ -2669,6 +2671,7 @@ def test_project_chat_starts_profile_session_with_explicit_model(tmp_path: Path,
                     "model": model,
                     "llm_profile": llm_profile,
                     "config_dir": config_dir,
+                    "conversation_id": conversation_id,
                 }
             )
 
@@ -2697,6 +2700,7 @@ def test_project_chat_starts_profile_session_with_explicit_model(tmp_path: Path,
             "model": "local-model",
             "llm_profile": "local",
             "config_dir": tmp_path / "config",
+            "conversation_id": "conversation-profile",
         }
     ]
     assert sorted(service._sessions) == ["conversation-profile::codex::local::local-model"]
@@ -2783,36 +2787,19 @@ def test_unified_chat_session_applies_reasoning_effort_changes_between_turns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    observed_reasoning_efforts: list[str | None] = []
+    del monkeypatch
+    requests: list[dict[str, Any]] = []
 
-    class FakeSession:
-        def __init__(self, *, provider_profile, execution_environment, client, config) -> None:
-            del execution_environment, client
-            self.provider_profile = provider_profile
-            self.config = config
-            self.state = project_chat_session.SessionState.IDLE
-            self.history: list[project_chat_session.AssistantTurn] = []
-            self.event_queue = asyncio.Queue()
-
-        async def process_input(self, prompt: str) -> None:
-            observed_reasoning_efforts.append(self.config.reasoning_effort)
-            self.history.append(project_chat_session.AssistantTurn(f"ack {prompt}"))
-
-        async def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        project_chat_session,
-        "_profile_for_provider",
-        lambda provider, model: SimpleNamespace(model=str(model or f"{provider}-default")),
-    )
-    monkeypatch.setattr(project_chat_session, "Session", FakeSession)
+    class FakeBoundary:
+        def run_agent_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+            requests.append(payload)
+            return {"final_assistant_text": f"ack {payload['prompt']}"}
 
     session = project_chat_session.UnifiedAgentChatSession(
         str(tmp_path),
         provider="openai",
         model="gpt-test",
-        client_factory=lambda provider: SimpleNamespace(provider=provider),
+        boundary=FakeBoundary(),
     )
 
     first = session.turn("first", None, reasoning_effort="high")
@@ -2820,7 +2807,7 @@ def test_unified_chat_session_applies_reasoning_effort_changes_between_turns(
 
     assert first.assistant_message == "ack first"
     assert second.assistant_message == "ack second"
-    assert observed_reasoning_efforts == ["high", "low"]
+    assert [request["reasoning_effort"] for request in requests] == ["high", "low"]
 
 
 def test_project_chat_unified_session_hydrates_persisted_history_without_current_turn(
@@ -2837,8 +2824,9 @@ def test_project_chat_unified_session_hydrates_persisted_history_without_current
             provider: str,
             model: str | None = None,
             persisted_history: list[project_chat.ConversationTurn] | None = None,
+            conversation_id: str = "",
         ) -> None:
-            del working_dir, provider, model
+            del working_dir, provider, model, conversation_id
             captured_histories.append(list(persisted_history or []))
 
         def turn(
@@ -2878,40 +2866,59 @@ def test_project_chat_unified_session_hydrates_persisted_history_without_current
 
 
 def test_unified_chat_session_maps_session_events_to_turn_stream_source(tmp_path: Path) -> None:
+    class FakeBoundary:
+        def run_agent_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+            del payload
+            return {
+                "events": [
+                    {
+                        "kind": "content_delta",
+                        "channel": "reasoning",
+                        "content_delta": "Thinking",
+                        "source": {
+                            "backend": "rust_agent",
+                            "response_id": "resp-1",
+                            "raw_kind": "assistant_reasoning_delta",
+                        },
+                    },
+                    {
+                        "kind": "token_usage_updated",
+                        "token_usage": {
+                            "total": {
+                                "inputTokens": 2,
+                                "cachedInputTokens": 0,
+                                "outputTokens": 3,
+                                "totalTokens": 5,
+                            }
+                        },
+                    },
+                    {
+                        "kind": "tool_call_updated",
+                        "tool_call": {
+                            "id": "call-model",
+                            "kind": "command_execution",
+                            "status": "running",
+                            "title": "shell",
+                        },
+                    },
+                ],
+                "final_assistant_text": "done",
+            }
+
     session = project_chat_session.UnifiedAgentChatSession(
         str(tmp_path),
         provider="openai",
         model="gpt-test",
-        client_factory=lambda provider: SimpleNamespace(provider=provider),
+        boundary=FakeBoundary(),
     )
     events: list[TurnStreamEvent] = []
 
-    session._forward_session_event(
-        project_chat_session.SessionEvent(
-            project_chat_session.EventKind.ASSISTANT_REASONING_DELTA,
-            data={"delta": "Thinking", "response_id": "resp-1"},
-        ),
-        on_event=events.append,
-    )
-    session._forward_session_event(
-        project_chat_session.SessionEvent(
-            project_chat_session.EventKind.MODEL_USAGE_UPDATE,
-            data={"usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}},
-        ),
-        on_event=events.append,
-    )
-    session._forward_session_event(
-        project_chat_session.SessionEvent(
-            project_chat_session.EventKind.MODEL_TOOL_CALL_START,
-            data={"tool_call": {"id": "call-model", "name": "shell"}},
-        ),
-        on_event=events.append,
-    )
+    assert session.turn("hello", None, on_event=events.append).assistant_message == "done"
 
-    assert [event.kind for event in events] == ["content_delta", "token_usage_updated"]
+    assert [event.kind for event in events] == ["content_delta", "token_usage_updated", "tool_call_updated"]
     assert events[0].channel == "reasoning"
     assert events[0].content_delta == "Thinking"
-    assert events[0].source.backend == "agent_session"
+    assert events[0].source.backend == "rust_agent"
     assert events[0].source.response_id == "resp-1"
     assert events[1].token_usage == {
         "total": {
@@ -2921,104 +2928,58 @@ def test_unified_chat_session_maps_session_events_to_turn_stream_source(tmp_path
             "totalTokens": 5,
         }
     }
+    assert events[2].tool_call.id == "call-model"
 
 def test_unified_chat_session_close_closes_agent_session_and_client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    closed_sessions: list[str] = []
-    closed_clients: list[str] = []
+    del monkeypatch
+    closed: list[str] = []
 
-    class FakeUnifiedClient:
-        def __init__(self, provider: str) -> None:
-            self.provider = provider
+    class FakeBoundary:
+        def run_agent_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+            return {"final_assistant_text": f"ack {payload['prompt']}"}
 
-        async def close(self) -> None:
-            closed_clients.append(self.provider)
-
-    class FakeSession:
-        def __init__(self, *, provider_profile, execution_environment, client, config) -> None:
-            del execution_environment, config
-            self.provider_profile = provider_profile
-            self.client = client
-            self.state = project_chat_session.SessionState.IDLE
-            self.history: list[project_chat_session.AssistantTurn] = []
-            self.event_queue = asyncio.Queue()
-
-        async def process_input(self, prompt: str) -> None:
-            self.history.append(project_chat_session.AssistantTurn(f"ack {prompt}"))
-
-        async def close(self) -> None:
-            closed_sessions.append(self.provider_profile.model)
-
-    monkeypatch.setattr(
-        project_chat_session,
-        "_profile_for_provider",
-        lambda provider, model: SimpleNamespace(model=str(model or f"{provider}-default")),
-    )
-    monkeypatch.setattr(project_chat_session, "Session", FakeSession)
+        def close(self) -> None:
+            closed.append("boundary")
 
     session = project_chat_session.UnifiedAgentChatSession(
         str(tmp_path),
         provider="openai",
         model="gpt-test",
-        client_factory=FakeUnifiedClient,
+        boundary=FakeBoundary(),
     )
 
     assert session.turn("hello", None).assistant_message == "ack hello"
     session.close()
 
-    assert closed_sessions == ["gpt-test"]
-    assert closed_clients == ["openai"]
+    assert closed == ["boundary"]
 
 
-def test_unified_chat_session_model_switch_closes_replaced_session_and_client(
+def test_unified_chat_session_model_switch_updates_boundary_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    closed_sessions: list[str] = []
-    closed_clients: list[str] = []
+    del monkeypatch
+    requests: list[dict[str, Any]] = []
 
-    class FakeUnifiedClient:
-        def __init__(self, provider: str) -> None:
-            self.provider = provider
-
-        async def close(self) -> None:
-            closed_clients.append(self.provider)
-
-    class FakeSession:
-        def __init__(self, *, provider_profile, execution_environment, client, config) -> None:
-            del execution_environment, client, config
-            self.provider_profile = provider_profile
-            self.state = project_chat_session.SessionState.IDLE
-            self.history: list[project_chat_session.AssistantTurn] = []
-            self.event_queue = asyncio.Queue()
-
-        async def process_input(self, prompt: str) -> None:
-            self.history.append(project_chat_session.AssistantTurn(f"{self.provider_profile.model}:{prompt}"))
-
-        async def close(self) -> None:
-            closed_sessions.append(self.provider_profile.model)
-
-    monkeypatch.setattr(
-        project_chat_session,
-        "_profile_for_provider",
-        lambda provider, model: SimpleNamespace(model=str(model or f"{provider}-default")),
-    )
-    monkeypatch.setattr(project_chat_session, "Session", FakeSession)
+    class FakeBoundary:
+        def run_agent_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+            requests.append(payload)
+            return {"final_assistant_text": f"{payload['model']}:{payload['prompt']}"}
 
     session = project_chat_session.UnifiedAgentChatSession(
         str(tmp_path),
         provider="openai",
         model="gpt-old",
-        client_factory=FakeUnifiedClient,
+        boundary=FakeBoundary(),
     )
 
     assert session.turn("first", None).assistant_message == "gpt-old:first"
     assert session.turn("second", "gpt-new").assistant_message == "gpt-new:second"
 
-    assert closed_sessions == ["gpt-old"]
-    assert closed_clients == ["openai"]
+    assert [request["model"] for request in requests] == ["gpt-old", "gpt-new"]
 
 
 def test_list_chat_models_combines_codex_and_unified_provider_metadata(
