@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use attractor_core::{ContextMap, DotGraph, Outcome, RawRuntimeEvent};
-use serde_json::json;
+use serde_json::{json, Value};
 use spark_agent_adapter::{
     CodergenBackend, CodergenError, CodergenExecution, CodergenHandler, CodergenRequest,
 };
@@ -16,6 +17,8 @@ pub struct RuntimeCodergen {
     fallback_provider: Option<String>,
     fallback_profile: Option<String>,
     fallback_reasoning_effort: Option<String>,
+    project_path: Option<PathBuf>,
+    metadata: BTreeMap<String, Value>,
 }
 
 impl RuntimeCodergen {
@@ -28,6 +31,8 @@ impl RuntimeCodergen {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: BTreeMap::new(),
         }
     }
 
@@ -44,6 +49,8 @@ impl RuntimeCodergen {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: BTreeMap::new(),
         }
     }
 
@@ -60,6 +67,8 @@ impl RuntimeCodergen {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: BTreeMap::new(),
         }
     }
 
@@ -74,6 +83,16 @@ impl RuntimeCodergen {
         self.fallback_provider = provider;
         self.fallback_profile = profile;
         self.fallback_reasoning_effort = reasoning_effort;
+        self
+    }
+
+    pub fn with_runtime_context(
+        mut self,
+        project_path: Option<PathBuf>,
+        metadata: BTreeMap<String, Value>,
+    ) -> Self {
+        self.project_path = project_path;
+        self.metadata = metadata;
         self
     }
 
@@ -96,6 +115,8 @@ impl RuntimeCodergen {
             fallback_provider: self.fallback_provider.clone(),
             fallback_profile: self.fallback_profile.clone(),
             fallback_reasoning_effort: self.fallback_reasoning_effort.clone(),
+            project_path: self.project_path.clone(),
+            metadata: self.metadata.clone(),
         })
     }
 }

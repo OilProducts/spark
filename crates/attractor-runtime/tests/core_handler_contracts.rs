@@ -747,6 +747,160 @@ fn manager_loop_steering_records_rejected_and_delivered_interventions() {
 }
 
 #[test]
+fn manager_loop_child_intervention_reaches_active_rust_codergen_session() {
+    let child_graph = parse_graph(
+        r#"
+        digraph G {
+          task [
+            shape=box,
+            prompt="Implement the bounded change",
+            codergen.requires_child_intervention=true,
+            codergen.requires_session_events=true,
+            llm_provider="openai",
+            llm_model="gpt-steer"
+          ]
+        }
+        "#,
+    );
+    let manager_graph = parse_graph(
+        r#"
+        digraph G {
+          manager [
+            shape=house,
+            manager.poll_interval=0ms,
+            manager.max_cycles=1,
+            manager.actions="steer"
+          ]
+        }
+        "#,
+    );
+    let temp = tempfile::tempdir().expect("tempdir");
+    let child_paths = run_paths(&temp, "child-active-rust-codergen");
+    let parent_paths = run_paths(&temp, "parent-steers-active-rust-codergen");
+    let calls = Arc::new(Mutex::new(Vec::<LlmRequest>::new()));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(BlockingInterventionAdapter::new(
+        "openai",
+        Arc::clone(&calls),
+        started_tx,
+        release_rx,
+    ));
+    let client = Client::from_adapters(vec![adapter], None).expect("client");
+    let mut child_runner = RuntimeHandlerRunner::new().with_rust_llm_client(client);
+    let child_intervention_runner = child_runner.clone();
+    let child_thread_graph = child_graph.clone();
+    let child_thread_paths = child_paths.clone();
+    let child_workdir = temp.path().to_path_buf();
+    let child = thread::spawn(move || {
+        execute_handler(
+            &mut child_runner,
+            &child_thread_graph,
+            "task",
+            context([("internal.root_run_id", json!("root-run"))]),
+            &child_thread_paths,
+            &child_workdir,
+        )
+    });
+
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("child codergen session started");
+    let mut parent_runner =
+        RuntimeHandlerRunner::new().with_child_intervention_requester(move |request| {
+            child_intervention_runner.request_child_intervention(request)
+        });
+    let parent_outcome = execute_handler(
+        &mut parent_runner,
+        &manager_graph,
+        "manager",
+        context([
+            (
+                "internal.run_id",
+                json!("parent-steers-active-rust-codergen"),
+            ),
+            ("internal.root_run_id", json!("root-run")),
+            (
+                "context.stack.child.run_id",
+                json!("child-active-rust-codergen"),
+            ),
+            ("context.stack.child.status", json!("running")),
+            ("context.stack.child.active_stage", json!("task")),
+            ("context.stack.child.failure_reason", json!("tests failed")),
+            (
+                "context.stack.child.intervention",
+                json!("Please keep the current change bounded."),
+            ),
+        ]),
+        &parent_paths,
+        temp.path(),
+    );
+    release_tx.send(()).expect("release child adapter");
+    let child_outcome = child.join().expect("child thread");
+
+    assert_eq!(parent_outcome.status, OutcomeStatus::Fail);
+    assert_eq!(
+        parent_outcome.context_updates["context.stack.child.intervention_status"],
+        json!("delivered")
+    );
+    assert_eq!(
+        parent_outcome.context_updates["context.stack.child.intervention_delivery_mode"],
+        json!("rust_boundary_codergen_turn")
+    );
+    assert_eq!(
+        parent_outcome.context_updates["context.stack.child.intervention_reason"],
+        json!("tests failed")
+    );
+    let parent_events = read_raw_events(&parent_paths).expect("parent events");
+    assert!(parent_events.iter().any(|event| {
+        event.event_type == "ChildInterventionRequested"
+            && event.payload["child_run_id"] == json!("child-active-rust-codergen")
+            && event.payload["parent_node_id"] == json!("manager")
+            && event.payload["target_node_id"] == json!("task")
+            && event.payload["status"] == json!("delivered")
+            && event.payload["delivery_mode"] == json!("rust_boundary_codergen_turn")
+            && event.payload["reason"] == json!("tests failed")
+    }));
+
+    assert_eq!(child_outcome.status, OutcomeStatus::Success);
+    assert_eq!(child_outcome.notes, "final runtime answer after steering");
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].messages.last(),
+        Some(&Message::user("Please keep the current change bounded."))
+    );
+    drop(requests);
+    let child_events = read_raw_events(&child_paths).expect("child events");
+    let steering_event = child_events
+        .iter()
+        .find(|event| {
+            event.event_type == "CodergenAdapter"
+                && event.payload["adapter_event_type"] == json!("rust_agent_session_event")
+                && event.payload["payload"]["kind"] == json!("steering_injected")
+        })
+        .expect("child steering adapter event");
+    let data = &steering_event.payload["payload"]["session_event"]["data"];
+    assert_eq!(
+        data["message"],
+        json!("Please keep the current change bounded.")
+    );
+    assert_eq!(data["child_run_id"], json!("child-active-rust-codergen"));
+    assert_eq!(
+        data["parent_run_id"],
+        json!("parent-steers-active-rust-codergen")
+    );
+    assert_eq!(data["parent_node_id"], json!("manager"));
+    assert_eq!(data["root_run_id"], json!("root-run"));
+    assert_eq!(data["target_node_id"], json!("task"));
+    assert_eq!(data["reason"], json!("tests failed"));
+    assert_eq!(data["source"], json!("manager_loop"));
+    assert_eq!(data["cycle"], json!(1));
+    assert_eq!(data["provider"], json!("openai"));
+    assert_eq!(data["model"], json!("gpt-steer"));
+}
+
+#[test]
 fn noop_start_exit_and_conditional_handlers_match_fixture_outcomes() {
     let graph = fixture_graph("handler-start-exit-conditional", "dot");
     let temp = tempfile::tempdir().expect("tempdir");
@@ -1554,6 +1708,116 @@ fn codergen_runtime_handler_can_enter_rust_unified_llm_adapter_boundary() {
 }
 
 #[test]
+fn codergen_runtime_agent_mode_enters_rust_session_boundary_with_run_context() {
+    let graph = parse_graph(
+        r#"
+        digraph G {
+          task [
+            shape=box,
+            prompt="Inspect with tools",
+            codergen.requires_tools=true,
+            codergen.requires_session_events=true,
+            llm_model="agent-runtime",
+            llm_provider="openai-compatible"
+          ]
+        }
+        "#,
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RustBoundaryRecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], None).expect("client");
+    let mut runner = RuntimeHandlerRunner::new().with_rust_llm_client(client);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = run_paths(&temp, "run-rust-agent-codergen-boundary");
+
+    let outcome = execute_handler(
+        &mut runner,
+        &graph,
+        "task",
+        ContextMap::new(),
+        &paths,
+        temp.path(),
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Success);
+    assert_eq!(outcome.notes, "runtime adapter response");
+    let requests = calls.lock().expect("calls");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.provider.as_deref(), Some("openai_compatible"));
+    assert_eq!(request.model, "agent-runtime");
+    assert_eq!(request.messages.len(), 2);
+    assert!(request.messages[0].text().contains("OpenAI-compatible"));
+    assert_eq!(request.messages[1], Message::user("Inspect with tools"));
+    assert!(!request.tools.is_empty());
+    assert_eq!(
+        request.metadata["spark.runtime.source"],
+        json!("agent_turn")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.project_path"],
+        json!(temp.path().to_string_lossy().to_string())
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.codergen.node_id"],
+        json!("task")
+    );
+    assert_eq!(
+        request.metadata["spark.runtime.codergen.runtime_mode"]["mode"],
+        json!("agent")
+    );
+
+    let status: Value = serde_json::from_str(
+        &std::fs::read_to_string(paths.logs_dir().join("task/status.json"))
+            .expect("codergen status artifact"),
+    )
+    .expect("status json");
+    assert_eq!(status["usage"]["input_tokens"], json!(1));
+    assert_eq!(status["usage"]["output_tokens"], json!(2));
+    assert_eq!(status["usage"]["total_tokens"], json!(3));
+
+    let events = read_raw_events(&paths).expect("events");
+    let request_started = events
+        .iter()
+        .find(|event| {
+            event.event_type == "CodergenAdapter"
+                && event.payload["adapter_event_type"] == json!("codergen_backend_request_started")
+        })
+        .expect("request started event");
+    assert_eq!(request_started.payload["node_id"], json!("task"));
+    assert_eq!(
+        request_started.payload["payload"]["runtime_mode"]["mode"],
+        json!("agent")
+    );
+    let accepted = events
+        .iter()
+        .find(|event| {
+            event.event_type == "CodergenAdapter"
+                && event.payload["adapter_event_type"]
+                    == json!("codergen_backend_response_accepted")
+        })
+        .expect("response accepted event");
+    assert_eq!(accepted.payload["node_id"], json!("task"));
+    assert_eq!(accepted.payload["payload"]["repair_attempts"], json!(0));
+    let usage_event = events
+        .iter()
+        .find(|event| {
+            event.event_type == "CodergenAdapter"
+                && event.payload["adapter_event_type"] == json!("rust_agent_session_event")
+                && event.payload["payload"]["kind"] == json!("model_usage_update")
+        })
+        .expect("session usage adapter event");
+    assert_eq!(usage_event.payload["node_id"], json!("task"));
+    assert_eq!(
+        usage_event.payload["payload"]["token_usage"]["total_tokens"],
+        json!(3)
+    );
+}
+
+#[test]
 fn codergen_runtime_uses_run_record_llm_fallback_when_launch_context_omits_selection() {
     let graph = parse_graph(
         r#"
@@ -1913,7 +2177,111 @@ impl ProviderAdapter for RustBoundaryRecordingAdapter {
         })
     }
 
-    fn stream(&self, _request: LlmRequest) -> Result<StreamEvents, AdapterError> {
-        unimplemented!("codergen runtime uses complete")
+    fn stream(&self, request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        self.complete(request).map(|response| {
+            unified_llm_adapter::stream_events(
+                vec![
+                    Ok(unified_llm_adapter::StreamEvent::text_delta(
+                        response.text(),
+                    )),
+                    Ok(unified_llm_adapter::StreamEvent::finish(
+                        response.finish_reason,
+                        Some(response.usage),
+                    )),
+                ]
+                .into_iter(),
+            )
+        })
+    }
+}
+
+struct BlockingInterventionAdapter {
+    name: &'static str,
+    calls: Arc<Mutex<Vec<LlmRequest>>>,
+    started: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl BlockingInterventionAdapter {
+    fn new(
+        name: &'static str,
+        calls: Arc<Mutex<Vec<LlmRequest>>>,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> Self {
+        Self {
+            name,
+            calls,
+            started: Mutex::new(Some(started)),
+            release: Mutex::new(release),
+        }
+    }
+}
+
+impl ProviderAdapter for BlockingInterventionAdapter {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn complete(&self, request: LlmRequest) -> Result<Response, AdapterError> {
+        let call_index = {
+            let mut calls = self.calls.lock().expect("calls");
+            calls.push(request.clone());
+            calls.len()
+        };
+        if call_index == 1 {
+            if let Some(started) = self.started.lock().expect("started").take() {
+                let _ = started.send(());
+            }
+            self.release
+                .lock()
+                .expect("release")
+                .recv_timeout(Duration::from_secs(5))
+                .expect("manager releases blocked codergen adapter");
+            return Ok(Response {
+                model: request.model.clone(),
+                provider: request.provider.clone().unwrap_or_default(),
+                message: Message::assistant("intermediate runtime answer before steering"),
+                finish_reason: FinishReason::Stop,
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 2,
+                    total_tokens: 3,
+                    ..Usage::default()
+                },
+                ..Response::default()
+            });
+        }
+
+        Ok(Response {
+            model: request.model.clone(),
+            provider: request.provider.clone().unwrap_or_default(),
+            message: Message::assistant("final runtime answer after steering"),
+            finish_reason: FinishReason::Stop,
+            usage: Usage {
+                input_tokens: 4,
+                output_tokens: 5,
+                total_tokens: 9,
+                ..Usage::default()
+            },
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        self.complete(request).map(|response| {
+            unified_llm_adapter::stream_events(
+                vec![
+                    Ok(unified_llm_adapter::StreamEvent::text_delta(
+                        response.text(),
+                    )),
+                    Ok(unified_llm_adapter::StreamEvent::finish(
+                        response.finish_reason,
+                        Some(response.usage),
+                    )),
+                ]
+                .into_iter(),
+            )
+        })
     }
 }

@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
+use attractor_core::{FailureKind, Outcome, OutcomeStatus};
 use serde_json::{json, Map, Value};
 use spark_common::events::{TurnStreamEvent, TurnStreamEventKind, TurnStreamSource};
 use unified_llm_adapter::{
     is_display_model_placeholder, resolve_high_level_provider_and_model, AdapterError, Client,
-    HighLevelLlmResolutionInputs, LlmProfileRoute, Message, ModelCapabilities, Request,
+    HighLevelLlmResolutionInputs, LlmProfileRoute, Message, ModelCapabilities, Request, Usage,
 };
 
 use crate::agent::{
@@ -12,8 +13,8 @@ use crate::agent::{
     AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
 };
 use crate::codergen::{
-    CodergenBackend, CodergenBackendOutput, CodergenBackendRequest, CodergenBackendResponse,
-    CodergenError, CodergenEvent,
+    ActiveCodergenSession, CodergenBackend, CodergenBackendOutput, CodergenBackendRequest,
+    CodergenBackendResponse, CodergenError, CodergenEvent, CodergenSessionInterventionBroker,
 };
 use crate::config::SessionConfig;
 use crate::environment::ExecutionEnvironment;
@@ -30,11 +31,25 @@ const PROVIDER_PLACEHOLDERS: &[&str] = &["codex default (config/profile)"];
 #[derive(Clone)]
 pub struct RustLlmCodergenBackend {
     client: Client,
+    intervention_broker: Option<CodergenSessionInterventionBroker>,
 }
 
 impl RustLlmCodergenBackend {
     pub fn new(client: Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            intervention_broker: None,
+        }
+    }
+
+    pub fn with_intervention_broker(
+        client: Client,
+        intervention_broker: CodergenSessionInterventionBroker,
+    ) -> Self {
+        Self {
+            client,
+            intervention_broker: Some(intervention_broker),
+        }
     }
 }
 
@@ -43,10 +58,32 @@ impl CodergenBackend for RustLlmCodergenBackend {
         &mut self,
         request: CodergenBackendRequest,
     ) -> Result<CodergenBackendOutput, CodergenError> {
+        if request.runtime_mode.requires_agent() {
+            return self.run_agent_codergen(request);
+        }
+        self.run_text_only_codergen(request)
+    }
+}
+
+impl RustLlmCodergenBackend {
+    fn run_text_only_codergen(
+        &mut self,
+        request: CodergenBackendRequest,
+    ) -> Result<CodergenBackendOutput, CodergenError> {
         let profile = normalize_optional(request.llm_profile.as_deref());
         let reasoning_effort = normalize_lower_optional(request.reasoning_effort.as_deref());
         let metadata_response_contract =
             normalize_optional(Some(request.response_contract.as_str()));
+        let mut metadata = request.metadata.clone();
+        metadata.extend(llm_metadata(
+            "codergen",
+            [
+                ("node_id", Some(request.node_id.as_str())),
+                ("response_contract", metadata_response_contract.as_deref()),
+                ("provider_selector", Some(request.provider.as_str())),
+                ("runtime_mode", Some(request.runtime_mode.mode.as_str())),
+            ],
+        ));
         let llm_request = build_llm_request(
             &self.client,
             vec![Message::user(request.prompt.clone())],
@@ -57,13 +94,7 @@ impl CodergenBackend for RustLlmCodergenBackend {
                 reasoning_effort: reasoning_effort.clone(),
                 required_capabilities: capabilities_for_codergen(&request),
             },
-            llm_metadata(
-                "codergen",
-                [
-                    ("node_id", Some(request.node_id.as_str())),
-                    ("response_contract", metadata_response_contract.as_deref()),
-                ],
-            ),
+            metadata,
         )
         .map_err(codergen_adapter_error)?;
         let response = self
@@ -102,11 +133,440 @@ impl CodergenBackend for RustLlmCodergenBackend {
                         json!(request.timeout_seconds),
                     ),
                     ("write_contract".to_string(), json!(request.write_contract)),
+                    ("runtime_mode".to_string(), json!(request.runtime_mode)),
                 ]),
             )],
             usage: Some(response.usage),
         })
     }
+
+    fn run_agent_codergen(
+        &mut self,
+        request: CodergenBackendRequest,
+    ) -> Result<CodergenBackendOutput, CodergenError> {
+        let agent_request = codergen_agent_turn_request(&request);
+        let prompt = agent_request.prompt.clone();
+        let mut session =
+            build_agent_session(&self.client, agent_request).map_err(codergen_adapter_error)?;
+        let initial_history_len = session.history.len();
+        let _active_session = self.intervention_broker.as_ref().map(|broker| {
+            broker.register(ActiveCodergenSession {
+                node_id: request.node_id.clone(),
+                child_run_id: metadata_string(&request.metadata, "spark.runtime.run_id"),
+                root_run_id: metadata_string(&request.metadata, "spark.runtime.root_run_id"),
+                provider: request.provider.clone(),
+                model: request
+                    .model
+                    .clone()
+                    .or_else(|| non_empty(&session.provider_profile.model).map(str::to_string)),
+                llm_profile: request.llm_profile.clone(),
+                reasoning_effort: request.reasoning_effort.clone(),
+                project_path: request.project_path.clone(),
+                metadata: request.metadata.clone(),
+                steering: session.steering_handle(),
+            })
+        });
+        let process_error = session.process_input(&self.client, prompt).err();
+        session.close();
+        Ok(codergen_output_from_session(
+            request,
+            &mut session,
+            initial_history_len,
+            process_error,
+        ))
+    }
+}
+
+fn codergen_agent_turn_request(request: &CodergenBackendRequest) -> AgentTurnRequest {
+    let mut metadata = request.metadata.clone();
+    metadata.insert(
+        "spark.runtime.codergen.node_id".to_string(),
+        json!(request.node_id.clone()),
+    );
+    metadata.insert(
+        "spark.runtime.codergen.response_contract".to_string(),
+        json!(request.response_contract.clone()),
+    );
+    metadata.insert(
+        "spark.runtime.codergen.contract_repair_attempts".to_string(),
+        json!(request.contract_repair_attempts),
+    );
+    metadata.insert(
+        "spark.runtime.codergen.runtime_mode".to_string(),
+        json!(request.runtime_mode.clone()),
+    );
+    metadata.insert(
+        "spark.runtime.codergen.write_contract".to_string(),
+        json!(request.write_contract.clone()),
+    );
+    if let Some(timeout_seconds) = request.timeout_seconds {
+        metadata.insert(
+            "spark.runtime.codergen.timeout_seconds".to_string(),
+            json!(timeout_seconds),
+        );
+    }
+    if let Some(repair_attempt) = request.repair_attempt {
+        metadata.insert(
+            "spark.runtime.codergen.repair_attempt".to_string(),
+            json!(repair_attempt),
+        );
+    }
+
+    AgentTurnRequest {
+        conversation_id: codergen_conversation_id(request),
+        project_path: codergen_project_path(request),
+        prompt: request.prompt.clone(),
+        history: Vec::new(),
+        provider: normalize_optional(Some(request.provider.as_str())),
+        model: request
+            .model
+            .as_deref()
+            .and_then(non_empty)
+            .map(str::to_string),
+        llm_profile: request
+            .llm_profile
+            .as_deref()
+            .and_then(non_empty)
+            .map(str::to_string),
+        reasoning_effort: normalize_lower_optional(request.reasoning_effort.as_deref()),
+        chat_mode: Some("agent".to_string()),
+        metadata,
+    }
+}
+
+fn codergen_output_from_session(
+    request: CodergenBackendRequest,
+    session: &mut Session,
+    initial_history_len: usize,
+    process_error: Option<AdapterError>,
+) -> CodergenBackendOutput {
+    let (final_assistant_text, assistant_usage) =
+        codergen_final_assistant_text_and_usage(session, initial_history_len);
+    let session_events = drain_session_events(session);
+    let event_usage = session_events
+        .iter()
+        .rev()
+        .find_map(usage_from_session_event);
+    let usage = assistant_usage.or(event_usage);
+    let response = if let Some(error) = process_error.as_ref() {
+        CodergenBackendResponse::Outcome(Outcome {
+            status: OutcomeStatus::Fail,
+            failure_reason: format_adapter_error(error),
+            retryable: Some(error.retryable),
+            failure_kind: Some(FailureKind::Runtime),
+            ..Outcome::new(OutcomeStatus::Fail)
+        })
+    } else if let Some(text) = final_assistant_text.as_deref().and_then(non_empty) {
+        CodergenBackendResponse::Text(text.to_string())
+    } else {
+        CodergenBackendResponse::Outcome(Outcome {
+            status: OutcomeStatus::Fail,
+            failure_reason: "agent-backed codergen completed without assistant text".to_string(),
+            retryable: Some(false),
+            failure_kind: Some(FailureKind::Runtime),
+            ..Outcome::new(OutcomeStatus::Fail)
+        })
+    };
+
+    let mut events = Vec::new();
+    for event in &session_events {
+        events.push(codergen_event_from_session_event(&request, session, event));
+        if let Some(raw_log_line) = raw_log_line_from_event(event) {
+            events.push(CodergenEvent::new(
+                "rust_agent_raw_log_line",
+                BTreeMap::from([
+                    ("node_id".to_string(), json!(request.node_id.clone())),
+                    ("direction".to_string(), json!(raw_log_line.direction)),
+                    ("line".to_string(), json!(raw_log_line.line)),
+                ]),
+            ));
+        }
+    }
+    if !session_events
+        .iter()
+        .any(|event| event.kind == EventKind::ModelUsageUpdate)
+    {
+        if let Some(usage) = usage.as_ref() {
+            events.push(codergen_usage_event_from_assistant_turn(
+                &request, session, usage,
+            ));
+        }
+    }
+    events.push(CodergenEvent::new(
+        "rust_agent_adapter_request_completed",
+        codergen_completion_event_payload(&request, session, usage.as_ref()),
+    ));
+
+    CodergenBackendOutput {
+        response,
+        events,
+        usage,
+    }
+}
+
+fn codergen_event_from_session_event(
+    request: &CodergenBackendRequest,
+    session: &Session,
+    event: &SessionEvent,
+) -> CodergenEvent {
+    let mut payload = codergen_session_metadata_payload(request, session);
+    payload.insert("kind".to_string(), json!(event.kind.as_str()));
+    payload.insert(
+        "category".to_string(),
+        json!(codergen_session_event_category(&event.kind)),
+    );
+    payload.insert(
+        "session_event".to_string(),
+        serde_json::to_value(event).unwrap_or_else(|_| json!({})),
+    );
+    if let Some(turn_stream_event) = event.to_turn_stream_event() {
+        if let Some(tool_call) = turn_stream_event.tool_call.as_ref() {
+            payload.insert("tool_event".to_string(), tool_call.clone());
+        }
+        payload.insert(
+            "turn_stream_event".to_string(),
+            serde_json::to_value(turn_stream_event).unwrap_or_else(|_| json!({})),
+        );
+    }
+    CodergenEvent::new("rust_agent_session_event", payload)
+}
+
+fn codergen_usage_event_from_assistant_turn(
+    request: &CodergenBackendRequest,
+    session: &Session,
+    usage: &Usage,
+) -> CodergenEvent {
+    let usage_value =
+        serde_json::to_value(usage.clone().normalized()).unwrap_or_else(|_| json!({}));
+    let mut payload = codergen_session_metadata_payload(request, session);
+    payload.insert(
+        "kind".to_string(),
+        json!(EventKind::ModelUsageUpdate.as_str()),
+    );
+    payload.insert("category".to_string(), json!("usage"));
+    payload.insert("token_usage".to_string(), usage_value.clone());
+    payload.insert("derived_from".to_string(), json!("assistant_turn_usage"));
+    payload.insert(
+        "session_event".to_string(),
+        json!({
+            "kind": EventKind::ModelUsageUpdate.as_str(),
+            "session_id": session.session_id().to_string(),
+            "data": {"usage": usage_value},
+        }),
+    );
+    CodergenEvent::new("rust_agent_session_event", payload)
+}
+
+fn codergen_session_event_category(kind: &EventKind) -> &'static str {
+    match kind {
+        EventKind::SessionStart | EventKind::SessionEnd => "lifecycle",
+        EventKind::UserInput => "user_input",
+        EventKind::ProcessingEnd | EventKind::TurnLimit | EventKind::LoopDetection => "processing",
+        EventKind::AssistantTextStart
+        | EventKind::AssistantTextDelta
+        | EventKind::AssistantTextEnd => "assistant_text",
+        EventKind::AssistantReasoningStart
+        | EventKind::AssistantReasoningDelta
+        | EventKind::AssistantReasoningEnd => "reasoning",
+        EventKind::ModelToolCallStart
+        | EventKind::ModelToolCallDelta
+        | EventKind::ModelToolCallEnd => "model_tool_call",
+        EventKind::ToolCallStart | EventKind::ToolCallOutputDelta | EventKind::ToolCallEnd => {
+            "tool_execution"
+        }
+        EventKind::SteeringInjected => "steering",
+        EventKind::ModelUsageUpdate => "usage",
+        EventKind::Warning => "warning",
+        EventKind::Error => "error",
+        EventKind::Other(_) => "other",
+    }
+}
+
+fn codergen_completion_event_payload(
+    request: &CodergenBackendRequest,
+    session: &Session,
+    usage: Option<&Usage>,
+) -> BTreeMap<String, Value> {
+    let mut payload = codergen_session_metadata_payload(request, session);
+    payload.insert("backend".to_string(), json!(BACKEND_NAME));
+    payload.insert("session_state".to_string(), json!(session.state));
+    payload.insert(
+        "contract_repair_attempts".to_string(),
+        json!(request.contract_repair_attempts),
+    );
+    payload.insert("token_usage".to_string(), json!(usage));
+    payload
+}
+
+fn codergen_session_metadata_payload(
+    request: &CodergenBackendRequest,
+    session: &Session,
+) -> BTreeMap<String, Value> {
+    let metadata = &session.execution_environment.metadata;
+    BTreeMap::from([
+        ("node_id".to_string(), json!(request.node_id.clone())),
+        (
+            "session_id".to_string(),
+            json!(session.session_id().to_string()),
+        ),
+        (
+            "provider_selector".to_string(),
+            json!(request.provider.clone()),
+        ),
+        (
+            "provider".to_string(),
+            json!(metadata_string(metadata, "spark.runtime.provider")
+                .or_else(|| session.provider_profile.request_provider_id())),
+        ),
+        ("model_selector".to_string(), json!(request.model.clone())),
+        (
+            "model".to_string(),
+            json!(metadata_string(metadata, "spark.runtime.model")
+                .or_else(|| non_empty(&session.provider_profile.model).map(str::to_string))),
+        ),
+        (
+            "llm_profile_selector".to_string(),
+            json!(request.llm_profile.clone()),
+        ),
+        (
+            "llm_profile".to_string(),
+            json!(metadata_string(metadata, "spark.runtime.llm_profile")),
+        ),
+        (
+            "reasoning_effort".to_string(),
+            json!(metadata_string(metadata, "spark.runtime.reasoning_effort")
+                .or_else(|| session.config.reasoning_effort.clone())
+                .or_else(|| request.reasoning_effort.clone())),
+        ),
+        (
+            "runtime_mode".to_string(),
+            json!(request.runtime_mode.clone()),
+        ),
+        (
+            "response_contract".to_string(),
+            json!(request.response_contract.clone()),
+        ),
+        (
+            "timeout_seconds".to_string(),
+            json!(request.timeout_seconds),
+        ),
+        (
+            "write_contract".to_string(),
+            json!(request.write_contract.clone()),
+        ),
+    ])
+}
+
+fn codergen_final_assistant_text_and_usage(
+    session: &Session,
+    initial_history_len: usize,
+) -> (Option<String>, Option<Usage>) {
+    session
+        .history
+        .iter()
+        .skip(initial_history_len)
+        .rev()
+        .find_map(|turn| match turn {
+            HistoryTurn::Assistant(assistant) => {
+                let text = assistant.text();
+                if non_empty(&text).is_some() {
+                    Some((Some(text), assistant.usage.clone()))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .unwrap_or((None, None))
+}
+
+fn drain_session_events(session: &mut Session) -> Vec<SessionEvent> {
+    let mut events = Vec::new();
+    while let Some(event) = session.next_event() {
+        events.push(event);
+    }
+    events
+}
+
+fn usage_from_session_event(event: &SessionEvent) -> Option<Usage> {
+    if event.kind != EventKind::ModelUsageUpdate {
+        return None;
+    }
+    event
+        .data
+        .get("token_usage")
+        .or_else(|| event.data.get("usage"))
+        .and_then(usage_from_token_usage_payload)
+}
+
+fn codergen_project_path(request: &CodergenBackendRequest) -> String {
+    request
+        .project_path
+        .as_ref()
+        .map(|path| path.to_string_lossy().trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| ".".to_string())
+}
+
+fn codergen_conversation_id(request: &CodergenBackendRequest) -> String {
+    metadata_string(&request.metadata, "spark.runtime.conversation_id").unwrap_or_else(|| {
+        metadata_string(&request.metadata, "spark.runtime.run_id")
+            .map(|run_id| format!("{run_id}:{}", request.node_id))
+            .unwrap_or_else(|| format!("codergen:{}", request.node_id))
+    })
+}
+
+fn metadata_string(metadata: &BTreeMap<String, Value>, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+        .map(str::to_string)
+}
+
+fn usage_from_token_usage_payload(payload: &Value) -> Option<Usage> {
+    let total = payload.get("total").unwrap_or(payload);
+    let input_tokens = value_u64(total, &["inputTokens", "input_tokens"])
+        .or_else(|| value_u64(payload, &["inputTokens", "input_tokens"]))
+        .unwrap_or(0);
+    let output_tokens = value_u64(total, &["outputTokens", "output_tokens"])
+        .or_else(|| value_u64(payload, &["outputTokens", "output_tokens"]))
+        .unwrap_or(0);
+    let total_tokens = value_u64(total, &["totalTokens", "total_tokens"])
+        .or_else(|| value_u64(payload, &["totalTokens", "total_tokens"]))
+        .unwrap_or(input_tokens + output_tokens);
+    let cache_read_tokens = value_u64(total, &["cachedInputTokens", "cache_read_tokens"])
+        .or_else(|| value_u64(payload, &["cachedInputTokens", "cache_read_tokens"]));
+    let cache_write_tokens = value_u64(total, &["cacheWriteTokens", "cache_write_tokens"])
+        .or_else(|| value_u64(payload, &["cacheWriteTokens", "cache_write_tokens"]));
+    let reasoning_tokens = value_u64(total, &["reasoningOutputTokens", "reasoning_tokens"])
+        .or_else(|| value_u64(payload, &["reasoningOutputTokens", "reasoning_tokens"]));
+    if input_tokens == 0
+        && output_tokens == 0
+        && total_tokens == 0
+        && cache_read_tokens.is_none()
+        && cache_write_tokens.is_none()
+        && reasoning_tokens.is_none()
+    {
+        return None;
+    }
+    Some(
+        Usage {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            reasoning_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            raw: Some(payload.clone()),
+            ..Usage::default()
+        }
+        .normalized(),
+    )
+}
+
+fn value_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| value.get(*key)?.as_u64())
 }
 
 #[derive(Clone)]

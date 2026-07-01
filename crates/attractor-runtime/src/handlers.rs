@@ -322,12 +322,46 @@ fn default_manager_loop_source() -> String {
     "manager_loop".to_string()
 }
 
+fn adapter_intervention_request_from_runtime(
+    request: ChildInterventionRequest,
+) -> spark_agent_adapter::CodergenChildInterventionRequest {
+    spark_agent_adapter::CodergenChildInterventionRequest {
+        child_run_id: request.child_run_id,
+        message: request.message,
+        parent_run_id: request.parent_run_id,
+        parent_node_id: request.parent_node_id,
+        root_run_id: request.root_run_id,
+        reason: request.reason,
+        source: request.source,
+        cycle: request.cycle,
+        target_node_id: request.target_node_id,
+        provider: None,
+        model: None,
+        llm_profile: None,
+        reasoning_effort: None,
+    }
+}
+
+fn adapter_intervention_result_to_runtime(
+    result: spark_agent_adapter::CodergenChildInterventionResult,
+) -> ChildInterventionResult {
+    ChildInterventionResult {
+        run_id: result.run_id,
+        status: result.status,
+        delivery_mode: result.delivery_mode,
+        reason: result.reason,
+        message: result.message,
+        target_node_id: result.target_node_id,
+    }
+}
+
 #[derive(Clone)]
 pub struct RuntimeHandlerRunner {
     custom_handlers: BTreeMap<String, RegisteredRuntimeHandler>,
     interviewer: Arc<Mutex<Box<dyn Interviewer + Send>>>,
     fan_in_ranker: Option<Arc<Mutex<FanInRanker>>>,
     codergen_backend_factory: Option<CodergenBackendFactory>,
+    codergen_intervention_broker: Option<spark_agent_adapter::CodergenSessionInterventionBroker>,
     event_append_lock: Arc<Mutex<()>>,
     child_run_launcher: Option<ChildRunLauncher>,
     child_status_resolver: Option<ChildStatusResolver>,
@@ -351,6 +385,7 @@ impl RuntimeHandlerRunner {
             interviewer: Arc::new(Mutex::new(Box::<QueueInterviewer>::default())),
             fan_in_ranker: None,
             codergen_backend_factory: None,
+            codergen_intervention_broker: None,
             event_append_lock: Arc::new(Mutex::new(())),
             child_run_launcher: None,
             child_status_resolver: None,
@@ -378,15 +413,23 @@ impl RuntimeHandlerRunner {
         factory: impl Fn() -> Box<dyn spark_agent_adapter::CodergenBackend> + Send + Sync + 'static,
     ) -> Self {
         self.codergen_backend_factory = Some(Arc::new(factory));
+        self.codergen_intervention_broker = None;
         self
     }
 
-    pub fn with_rust_llm_client(self, client: unified_llm_adapter::Client) -> Self {
-        self.with_codergen_backend_factory(move || {
-            Box::new(spark_agent_adapter::RustLlmCodergenBackend::new(
-                client.clone(),
-            ))
-        })
+    pub fn with_rust_llm_client(mut self, client: unified_llm_adapter::Client) -> Self {
+        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
+        let factory_broker = broker.clone();
+        self.codergen_backend_factory = Some(Arc::new(move || {
+            Box::new(
+                spark_agent_adapter::RustLlmCodergenBackend::with_intervention_broker(
+                    client.clone(),
+                    factory_broker.clone(),
+                ),
+            )
+        }));
+        self.codergen_intervention_broker = Some(broker);
+        self
     }
 
     pub fn set_codergen_backend_factory(
@@ -394,14 +437,21 @@ impl RuntimeHandlerRunner {
         factory: impl Fn() -> Box<dyn spark_agent_adapter::CodergenBackend> + Send + Sync + 'static,
     ) {
         self.codergen_backend_factory = Some(Arc::new(factory));
+        self.codergen_intervention_broker = None;
     }
 
     pub fn set_rust_llm_client(&mut self, client: unified_llm_adapter::Client) {
-        self.set_codergen_backend_factory(move || {
-            Box::new(spark_agent_adapter::RustLlmCodergenBackend::new(
-                client.clone(),
-            ))
-        });
+        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
+        let factory_broker = broker.clone();
+        self.codergen_backend_factory = Some(Arc::new(move || {
+            Box::new(
+                spark_agent_adapter::RustLlmCodergenBackend::with_intervention_broker(
+                    client.clone(),
+                    factory_broker.clone(),
+                ),
+            )
+        }));
+        self.codergen_intervention_broker = Some(broker);
     }
 
     pub fn with_child_run_launcher(
@@ -458,7 +508,33 @@ impl RuntimeHandlerRunner {
     }
 
     pub(crate) fn child_intervention_requester(&self) -> Option<ChildInterventionRequester> {
-        self.child_intervention_requester.clone()
+        if let Some(requester) = self.child_intervention_requester.clone() {
+            return Some(requester);
+        }
+        let broker = self.codergen_intervention_broker.clone()?;
+        Some(Arc::new(move |request| {
+            adapter_intervention_result_to_runtime(
+                broker
+                    .request_child_intervention(adapter_intervention_request_from_runtime(request)),
+            )
+        }))
+    }
+
+    pub fn request_child_intervention(
+        &self,
+        request: ChildInterventionRequest,
+    ) -> ChildInterventionResult {
+        if let Some(requester) = self.child_intervention_requester() {
+            return requester(request.clone());
+        }
+        ChildInterventionResult {
+            run_id: request.child_run_id,
+            status: "rejected".to_string(),
+            delivery_mode: "unsupported".to_string(),
+            reason: "backend_steering_unsupported".to_string(),
+            message: "child intervention requester is unavailable".to_string(),
+            target_node_id: request.target_node_id,
+        }
     }
 
     pub fn register_handler_fn(
@@ -554,6 +630,14 @@ impl RuntimeHandlerRunner {
         &self,
         runtime: HandlerRuntime,
     ) -> std::result::Result<Outcome, RuntimeNodeError> {
+        let root_run_id = runtime
+            .context
+            .get("internal.root_run_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(runtime.run_id.as_str())
+            .to_string();
         let mut codergen = if let Some(factory) = self.codergen_backend_factory.as_ref() {
             RuntimeCodergen::with_boxed_backend(
                 runtime.graph.clone(),
@@ -568,6 +652,20 @@ impl RuntimeHandlerRunner {
             runtime.fallback_provider.clone(),
             runtime.fallback_profile.clone(),
             runtime.fallback_reasoning_effort.clone(),
+        )
+        .with_runtime_context(
+            Some(runtime.run_workdir.clone()),
+            BTreeMap::from([
+                (
+                    "spark.runtime.run_id".to_string(),
+                    json!(runtime.run_id.clone()),
+                ),
+                ("spark.runtime.root_run_id".to_string(), json!(root_run_id)),
+                (
+                    "spark.runtime.run_workdir".to_string(),
+                    json!(runtime.run_workdir.to_string_lossy().to_string()),
+                ),
+            ]),
         );
         let execution = codergen
             .execute(&runtime.node_id, runtime.context.clone())

@@ -87,6 +87,95 @@ impl LlmClientHandle {
     }
 }
 
+#[derive(Debug)]
+struct SessionSteeringState {
+    queue: VecDeque<SteeringTurn>,
+    accepting: bool,
+}
+
+impl Default for SessionSteeringState {
+    fn default() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            accepting: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionSteeringHandle {
+    state: Arc<Mutex<SessionSteeringState>>,
+}
+
+impl Default for SessionSteeringHandle {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SessionSteeringState::default())),
+        }
+    }
+}
+
+impl PartialEq for SessionSteeringHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl SessionSteeringHandle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn queue_steering(&self, content: impl Into<TurnContent>) -> bool {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        if !state.accepting {
+            return false;
+        }
+        state.queue.push_back(SteeringTurn::new(content));
+        true
+    }
+
+    pub fn queue_steering_with_metadata(
+        &self,
+        content: impl Into<TurnContent>,
+        metadata: impl Into<BTreeMap<String, Value>>,
+    ) -> bool {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        if !state.accepting {
+            return false;
+        }
+        state
+            .queue
+            .push_back(SteeringTurn::with_metadata(content, metadata));
+        true
+    }
+
+    fn drain(&self) -> Vec<SteeringTurn> {
+        self.state
+            .lock()
+            .expect("session steering queue lock")
+            .queue
+            .drain(..)
+            .collect()
+    }
+
+    fn drain_and_close_if_empty(&self) -> Vec<SteeringTurn> {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        if state.queue.is_empty() {
+            state.accepting = false;
+            return Vec::new();
+        }
+        state.queue.drain(..).collect()
+    }
+
+    pub(crate) fn close(&self) {
+        self.state
+            .lock()
+            .expect("session steering queue lock")
+            .accepting = false;
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
@@ -123,6 +212,8 @@ pub struct Session {
     pub active_subagents: BTreeMap<String, SubAgentHandle>,
     #[serde(default, skip)]
     pub(crate) active_subagent_workers: BTreeMap<String, SubAgentWorker>,
+    #[serde(default, skip)]
+    pub(crate) external_steering: Option<SessionSteeringHandle>,
     #[serde(default)]
     pub system_prompt_snapshot: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,6 +306,7 @@ impl Session {
             follow_up_queue: VecDeque::new(),
             active_subagents: BTreeMap::new(),
             active_subagent_workers: BTreeMap::new(),
+            external_steering: None,
             system_prompt_snapshot,
             pending_question: None,
             abort_signaled: false,
@@ -334,6 +426,10 @@ impl Session {
                 }
 
                 if assistant_turn.tool_calls.is_empty() {
+                    if self.drain_steering_queue_before_completion() {
+                        round_count += 1;
+                        continue;
+                    }
                     if self.assistant_response_is_open_question(&assistant_turn) {
                         self.mark_awaiting_input(assistant_turn.text());
                         return Ok(());
@@ -475,8 +571,30 @@ impl Session {
         self.steering_queue.push_back(SteeringTurn::new(content));
     }
 
+    pub fn queue_steering_with_metadata(
+        &mut self,
+        content: impl Into<crate::history::TurnContent>,
+        metadata: impl Into<BTreeMap<String, Value>>,
+    ) {
+        self.steering_queue
+            .push_back(SteeringTurn::with_metadata(content, metadata));
+    }
+
     pub fn steer(&mut self, content: impl Into<crate::history::TurnContent>) {
         self.queue_steering(content);
+    }
+
+    pub fn attach_steering_handle(&mut self, handle: SessionSteeringHandle) {
+        self.external_steering = Some(handle);
+    }
+
+    pub fn steering_handle(&mut self) -> SessionSteeringHandle {
+        if let Some(handle) = self.external_steering.as_ref() {
+            return handle.clone();
+        }
+        let handle = SessionSteeringHandle::new();
+        self.external_steering = Some(handle.clone());
+        handle
     }
 
     pub fn queue_follow_up(&mut self, content: impl Into<crate::history::TurnContent>) {
@@ -590,6 +708,9 @@ impl Session {
     }
 
     fn close_with_reason(&mut self, reason: &'static str, error: Option<Value>) {
+        if let Some(external_steering) = self.external_steering.as_ref() {
+            external_steering.close();
+        }
         if self.state == SessionState::Closed {
             return;
         }
@@ -669,15 +790,34 @@ impl Session {
         self.emit_kind(EventKind::UserInput, payload);
     }
 
-    fn drain_steering_queue(&mut self) {
+    fn drain_steering_queue(&mut self) -> bool {
+        self.drain_steering_queue_inner(false)
+    }
+
+    fn drain_steering_queue_before_completion(&mut self) -> bool {
+        self.drain_steering_queue_inner(true)
+    }
+
+    fn drain_steering_queue_inner(&mut self, close_external_if_empty: bool) -> bool {
+        let has_local_steering = !self.steering_queue.is_empty();
+        if let Some(external_steering) = self.external_steering.as_ref() {
+            let steering = if close_external_if_empty && !has_local_steering {
+                external_steering.drain_and_close_if_empty()
+            } else {
+                external_steering.drain()
+            };
+            self.steering_queue.extend(steering);
+        }
+        let mut drained = false;
         while let Some(steering_turn) = self.steering_queue.pop_front() {
             let text = steering_turn.text();
+            let mut payload = BTreeMap::from([("content".to_string(), Value::String(text))]);
+            payload.extend(steering_turn.metadata.clone());
             self.history.push(HistoryTurn::Steering(steering_turn));
-            self.emit_kind(
-                EventKind::SteeringInjected,
-                BTreeMap::from([("content".to_string(), Value::String(text))]),
-            );
+            self.emit_kind(EventKind::SteeringInjected, payload);
+            drained = true;
         }
+        drained
     }
 
     fn maybe_emit_loop_detection_warning(&mut self) -> bool {

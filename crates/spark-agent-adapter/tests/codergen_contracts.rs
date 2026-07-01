@@ -9,11 +9,11 @@ use attractor_dsl::{
 use serde_json::json;
 use spark_agent_adapter::{
     build_status_envelope_prompt_appendix, CodergenBackend, CodergenBackendOutput,
-    CodergenBackendRequest, CodergenError, CodergenHandler, CodergenRequest,
+    CodergenBackendRequest, CodergenError, CodergenExecutionMode, CodergenHandler, CodergenRequest,
 };
 use tempfile::tempdir;
 use unified_llm_adapter::{
-    RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
+    Usage, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
     RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
 };
 
@@ -73,6 +73,8 @@ fn codergen_selects_authored_prompt_expands_goal_and_writes_artifacts() {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
         })
         .unwrap();
 
@@ -89,6 +91,72 @@ fn codergen_selects_authored_prompt_expands_goal_and_writes_artifacts() {
             .unwrap()
             .trim(),
         "backend text response"
+    );
+}
+
+#[test]
+fn codergen_text_only_usage_is_public_on_execution_and_status_artifact() {
+    let graph = parse_dot(
+        r#"
+        digraph G {
+          task [shape=box, prompt="Plan"];
+        }
+        "#,
+    )
+    .expect("dot parses");
+    let backend = ScriptedBackend::new([CodergenBackendOutput {
+        response: spark_agent_adapter::codergen::CodergenBackendResponse::Text(
+            "backend text response".to_string(),
+        ),
+        events: Vec::new(),
+        usage: Some(Usage {
+            input_tokens: 11,
+            output_tokens: 7,
+            total_tokens: 18,
+            reasoning_tokens: Some(3),
+            cache_read_tokens: Some(2),
+            cache_write_tokens: Some(1),
+            raw: Some(json!({"provider_shape": {"input": 11, "output": 7}})),
+        }),
+    }]);
+    let logs_root = tempdir().unwrap();
+    let execution = CodergenHandler::with_backend(backend)
+        .execute(CodergenRequest {
+            node_id: "task".to_string(),
+            node: graph.nodes["task"].clone(),
+            graph,
+            context: ContextMap::new(),
+            logs_root: Some(logs_root.path().to_path_buf()),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
+        })
+        .unwrap();
+
+    let usage = execution.usage.expect("execution usage");
+    assert_eq!(usage.input_tokens, 11);
+    assert_eq!(usage.output_tokens, 7);
+    assert_eq!(usage.total_tokens, 18);
+    assert_eq!(
+        usage.raw,
+        Some(json!({"provider_shape": {"input": 11, "output": 7}}))
+    );
+    let status: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(logs_root.path().join("task/status.json")).unwrap(),
+    )
+    .expect("status json");
+    assert_eq!(status["usage"]["input_tokens"], json!(11));
+    assert_eq!(status["usage"]["output_tokens"], json!(7));
+    assert_eq!(status["usage"]["total_tokens"], json!(18));
+    assert_eq!(status["usage"]["reasoning_tokens"], json!(3));
+    assert_eq!(status["usage"]["cache_read_tokens"], json!(2));
+    assert_eq!(status["usage"]["cache_write_tokens"], json!(1));
+    assert_eq!(
+        status["usage"]["raw"],
+        json!({"provider_shape": {"input": 11, "output": 7}})
     );
 }
 
@@ -119,6 +187,8 @@ fn codergen_uses_authored_label_but_not_generated_label() {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
         })
         .unwrap();
     assert_eq!(labelled_calls.borrow()[0].prompt, "Label Prompt");
@@ -136,6 +206,8 @@ fn codergen_uses_authored_label_but_not_generated_label() {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
         })
         .unwrap();
     assert_eq!(generated_calls.borrow()[0].prompt, "");
@@ -178,6 +250,8 @@ fn codergen_declared_reads_and_malformed_read_contract_are_observable() {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
         })
         .unwrap();
     let prompt = &calls.borrow()[0].prompt;
@@ -196,6 +270,8 @@ fn codergen_declared_reads_and_malformed_read_contract_are_observable() {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
         })
         .unwrap();
     assert_eq!(execution.outcome.status, OutcomeStatus::Fail);
@@ -243,6 +319,8 @@ fn codergen_status_envelope_repair_is_separate_from_node_retry() {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
         })
         .unwrap();
 
@@ -293,6 +371,8 @@ fn codergen_contract_failure_when_repair_budget_exhausts() {
             fallback_provider: None,
             fallback_profile: None,
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
         })
         .unwrap();
     assert_eq!(execution.outcome.status, OutcomeStatus::Fail);
@@ -337,6 +417,8 @@ fn codergen_resolves_model_provider_profile_and_reasoning() {
             fallback_provider: None,
             fallback_profile: Some("backend-profile".to_string()),
             fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
         })
         .unwrap();
 
@@ -392,6 +474,8 @@ fn codergen_treats_stylesheet_llm_selection_as_node_precedence_before_launch_and
             fallback_provider: Some("OpenAI".to_string()),
             fallback_profile: Some("fallback-profile".to_string()),
             fallback_reasoning_effort: Some("medium".to_string()),
+            project_path: None,
+            metadata: Default::default(),
         })
         .unwrap();
 
@@ -400,4 +484,95 @@ fn codergen_treats_stylesheet_llm_selection_as_node_precedence_before_launch_and
     assert_eq!(call.provider, "openai_compatible");
     assert_eq!(call.llm_profile.as_deref(), Some("styled-profile"));
     assert_eq!(call.reasoning_effort.as_deref(), Some("low"));
+}
+
+#[test]
+fn codergen_runtime_mode_metadata_defaults_to_text_only_and_selects_agent_when_required() {
+    let graph = parse_dot(
+        r#"
+        digraph G {
+          text [shape=box, prompt="Summarize"]
+          agent [
+            shape=box,
+            prompt="Inspect and edit",
+            codergen.requires_tools=true,
+            codergen.requires_steering=true,
+            codergen.requires_child_intervention=true,
+            codergen.requires_session_events=true
+          ]
+        }
+        "#,
+    )
+    .expect("dot parses");
+    let backend = ScriptedBackend::new([
+        CodergenBackendOutput::text("text response"),
+        CodergenBackendOutput::text("agent response"),
+    ]);
+    let calls = backend.calls.clone();
+    let mut handler = CodergenHandler::with_backend(backend);
+
+    handler
+        .execute(CodergenRequest {
+            node_id: "text".to_string(),
+            node: graph.nodes["text"].clone(),
+            graph: graph.clone(),
+            context: ContextMap::new(),
+            logs_root: None,
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
+        })
+        .unwrap();
+    handler
+        .execute(CodergenRequest {
+            node_id: "agent".to_string(),
+            node: graph.nodes["agent"].clone(),
+            graph,
+            context: ContextMap::new(),
+            logs_root: None,
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+            project_path: None,
+            metadata: Default::default(),
+        })
+        .unwrap();
+
+    let calls = calls.borrow();
+    assert_eq!(calls[0].runtime_mode.mode, CodergenExecutionMode::TextOnly);
+    assert!(calls[0].runtime_mode.is_text_only());
+    assert_eq!(calls[1].runtime_mode.mode, CodergenExecutionMode::Agent);
+    assert!(calls[1].runtime_mode.requires_tools);
+    assert!(calls[1].runtime_mode.requires_steering);
+    assert!(calls[1].runtime_mode.requires_child_intervention);
+    assert!(calls[1].runtime_mode.requires_session_events);
+}
+
+#[test]
+fn codergen_backend_request_legacy_payload_defaults_to_text_only() {
+    let request: CodergenBackendRequest = serde_json::from_value(json!({
+        "node_id": "task",
+        "prompt": "Write",
+        "context": {},
+        "response_contract": "",
+        "contract_repair_attempts": 0,
+        "write_contract": {"allowed_keys": [], "parse_error": ""},
+        "provider": "codex",
+        "model": "gpt-boundary",
+        "llm_profile": null,
+        "reasoning_effort": null,
+        "repair_attempt": null
+    }))
+    .expect("legacy payload decodes");
+
+    assert!(request.runtime_mode.is_text_only());
+    let encoded = serde_json::to_value(&request).expect("serialize request");
+    assert!(encoded.get("runtime_mode").is_none());
+    assert_eq!(encoded["node_id"], json!("task"));
+    assert_eq!(encoded["provider"], json!("codex"));
+    assert_eq!(encoded["model"], json!("gpt-boundary"));
 }

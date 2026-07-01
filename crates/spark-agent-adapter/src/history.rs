@@ -118,6 +118,8 @@ impl SystemTurn {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SteeringTurn {
     pub content: TurnContent,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, Value>,
     #[serde(with = "time::serde::rfc3339")]
     pub timestamp: OffsetDateTime,
 }
@@ -126,6 +128,18 @@ impl SteeringTurn {
     pub fn new(content: impl Into<TurnContent>) -> Self {
         Self {
             content: content.into(),
+            metadata: BTreeMap::new(),
+            timestamp: OffsetDateTime::now_utc(),
+        }
+    }
+
+    pub fn with_metadata(
+        content: impl Into<TurnContent>,
+        metadata: impl Into<BTreeMap<String, Value>>,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            metadata: metadata.into(),
             timestamp: OffsetDateTime::now_utc(),
         }
     }

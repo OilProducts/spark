@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use attractor_core::{
-    attr_string, attr_text, dot_value_text, node_has_explicit_attr, resolve_context_read_contract,
-    resolve_context_write_contract, ContextMap, ContextWriteContract, DotAttribute, DotGraph,
-    DotNode, DotValue, FailureKind, Outcome, OutcomeStatus,
+    attr_bool, attr_string, attr_text, dot_value_text, node_has_explicit_attr,
+    resolve_context_read_contract, resolve_context_write_contract, ContextMap,
+    ContextWriteContract, DotAttribute, DotGraph, DotNode, DotValue, FailureKind, Outcome,
+    OutcomeStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -16,6 +18,7 @@ use unified_llm_adapter::{
     resolve_effective_reasoning_effort, LlmResolutionInputs, Usage,
 };
 
+use crate::session::SessionSteeringHandle;
 use crate::status_envelope::{
     build_contract_repair_prompt, build_status_envelope_prompt_appendix,
     coerce_structured_text_outcome, contract_failure_outcome, validate_write_contract_violation,
@@ -52,9 +55,74 @@ pub struct CodergenRequest {
     pub fallback_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodergenExecutionMode {
+    #[default]
+    #[serde(alias = "text", alias = "completion")]
+    TextOnly,
+    #[serde(alias = "agent_required", alias = "session")]
+    Agent,
+}
+
+impl CodergenExecutionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TextOnly => "text_only",
+            Self::Agent => "agent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodergenRuntimeMode {
+    #[serde(default)]
+    pub mode: CodergenExecutionMode,
+    #[serde(default)]
+    pub requires_tools: bool,
+    #[serde(default)]
+    pub requires_steering: bool,
+    #[serde(default)]
+    pub requires_child_intervention: bool,
+    #[serde(default)]
+    pub requires_session_events: bool,
+}
+
+impl CodergenRuntimeMode {
+    pub fn text_only() -> Self {
+        Self::default()
+    }
+
+    pub fn agent() -> Self {
+        Self {
+            mode: CodergenExecutionMode::Agent,
+            requires_tools: true,
+            requires_steering: true,
+            requires_child_intervention: true,
+            requires_session_events: true,
+        }
+    }
+
+    pub fn requires_agent(&self) -> bool {
+        self.mode == CodergenExecutionMode::Agent
+            || self.requires_tools
+            || self.requires_steering
+            || self.requires_child_intervention
+            || self.requires_session_events
+    }
+
+    pub fn is_text_only(&self) -> bool {
+        !self.requires_agent()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CodergenBackendRequest {
     pub node_id: String,
     pub prompt: String,
@@ -78,6 +146,386 @@ pub struct CodergenBackendRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_attempt: Option<u32>,
+    #[serde(default, skip_serializing_if = "CodergenRuntimeMode::is_text_only")]
+    pub runtime_mode: CodergenRuntimeMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodergenChildInterventionRequest {
+    pub child_run_id: String,
+    pub message: String,
+    pub parent_run_id: String,
+    pub parent_node_id: String,
+    pub root_run_id: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default = "default_manager_loop_source")]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodergenChildInterventionResult {
+    pub run_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub delivery_mode: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveCodergenSession {
+    pub node_id: String,
+    pub child_run_id: Option<String>,
+    pub root_run_id: Option<String>,
+    pub provider: String,
+    pub model: Option<String>,
+    pub llm_profile: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub project_path: Option<PathBuf>,
+    pub metadata: BTreeMap<String, Value>,
+    pub steering: SessionSteeringHandle,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CodergenSessionInterventionBroker {
+    inner: Arc<Mutex<CodergenSessionInterventionState>>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveCodergenSessionEntry {
+    generation: u64,
+    session: ActiveCodergenSession,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ActiveCodergenSessionKey {
+    child_run_id: String,
+    root_run_id: Option<String>,
+    target_node_id: String,
+}
+
+impl ActiveCodergenSessionKey {
+    fn from_session(session: &ActiveCodergenSession) -> Option<Self> {
+        Some(Self {
+            child_run_id: normalized_optional(session.child_run_id.as_deref())?,
+            root_run_id: normalized_optional(session.root_run_id.as_deref()),
+            target_node_id: normalized_optional(Some(session.node_id.as_str()))?,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct CodergenSessionInterventionState {
+    generation: u64,
+    active: BTreeMap<ActiveCodergenSessionKey, ActiveCodergenSessionEntry>,
+    unkeyed_active: BTreeMap<u64, ActiveCodergenSessionEntry>,
+}
+
+#[derive(Debug)]
+pub struct ActiveCodergenSessionGuard {
+    broker: CodergenSessionInterventionBroker,
+    generation: u64,
+    key: Option<ActiveCodergenSessionKey>,
+}
+
+impl Drop for ActiveCodergenSessionGuard {
+    fn drop(&mut self) {
+        let active = {
+            let mut state = self
+                .broker
+                .inner
+                .lock()
+                .expect("codergen intervention broker lock");
+            if let Some(key) = self.key.as_ref() {
+                if state
+                    .active
+                    .get(key)
+                    .is_some_and(|entry| entry.generation == self.generation)
+                {
+                    state.active.remove(key)
+                } else {
+                    None
+                }
+            } else {
+                state.unkeyed_active.remove(&self.generation)
+            }
+        };
+        if let Some(active) = active {
+            active.session.steering.close();
+        }
+    }
+}
+
+impl CodergenSessionInterventionBroker {
+    pub fn register(&self, session: ActiveCodergenSession) -> ActiveCodergenSessionGuard {
+        let key = ActiveCodergenSessionKey::from_session(&session);
+        let mut state = self
+            .inner
+            .lock()
+            .expect("codergen intervention broker lock");
+        state.generation = state.generation.saturating_add(1);
+        let generation = state.generation;
+        let entry = ActiveCodergenSessionEntry {
+            generation,
+            session,
+        };
+        let replaced = if let Some(key) = key.clone() {
+            state.active.insert(key, entry)
+        } else {
+            state.unkeyed_active.insert(generation, entry)
+        };
+        drop(state);
+        if let Some(replaced) = replaced {
+            replaced.session.steering.close();
+        }
+        ActiveCodergenSessionGuard {
+            broker: self.clone(),
+            generation,
+            key,
+        }
+    }
+
+    pub fn request_child_intervention(
+        &self,
+        request: CodergenChildInterventionRequest,
+    ) -> CodergenChildInterventionResult {
+        let (active_sessions, has_unkeyed_active) = {
+            let state = self
+                .inner
+                .lock()
+                .expect("codergen intervention broker lock");
+            (
+                state
+                    .active
+                    .values()
+                    .map(|entry| entry.session.clone())
+                    .collect::<Vec<_>>(),
+                !state.unkeyed_active.is_empty(),
+            )
+        };
+        if active_sessions.is_empty() {
+            if has_unkeyed_active {
+                return rejected_intervention(
+                    &request,
+                    "backend_steering_unsupported",
+                    "rust_session",
+                    "No active Rust codergen session has an intervention child run identity.",
+                );
+            }
+            return rejected_intervention(
+                &request,
+                "backend_steering_unsupported",
+                "rust_session",
+                "No active Rust codergen session is available for intervention.",
+            );
+        }
+
+        let request_child_run_id = request.child_run_id.trim();
+        let child_matches = active_sessions
+            .into_iter()
+            .filter(|active| {
+                normalized_optional(active.child_run_id.as_deref()).as_deref()
+                    == Some(request_child_run_id)
+            })
+            .collect::<Vec<_>>();
+        if child_matches.is_empty() {
+            return rejected_intervention(
+                &request,
+                "backend_steering_unsupported",
+                "rust_session",
+                "No active Rust codergen session matches the intervention child run.",
+            );
+        }
+
+        let request_root_run_id = normalized_optional(Some(request.root_run_id.as_str()));
+        let (root_matches, rootless_matches): (Vec<_>, Vec<_>) =
+            child_matches.into_iter().partition(|active| {
+                normalized_optional(active.root_run_id.as_deref()).as_deref()
+                    == request_root_run_id.as_deref()
+            });
+        let root_matches = if request_root_run_id.is_some() && root_matches.is_empty() {
+            rootless_matches
+                .into_iter()
+                .filter(|active| normalized_optional(active.root_run_id.as_deref()).is_none())
+                .collect::<Vec<_>>()
+        } else {
+            root_matches
+        };
+        if root_matches.is_empty() {
+            return rejected_intervention(
+                &request,
+                "backend_steering_unsupported",
+                "rust_session",
+                "No active Rust codergen session matches the intervention root run.",
+            );
+        }
+
+        let active = if let Some(target_node_id) =
+            normalized_optional(request.target_node_id.as_deref())
+        {
+            let target_matches = root_matches
+                .into_iter()
+                .filter(|active| active.node_id == target_node_id)
+                .collect::<Vec<_>>();
+            match target_matches.into_iter().next() {
+                Some(active) => active,
+                None => {
+                    return rejected_intervention(
+                        &request,
+                        "backend_steering_unsupported",
+                        "rust_session",
+                        "No active Rust codergen session matches the intervention target node.",
+                    );
+                }
+            }
+        } else {
+            let mut matches = root_matches.into_iter();
+            let Some(active) = matches.next() else {
+                return rejected_intervention(
+                    &request,
+                    "backend_steering_unsupported",
+                    "rust_session",
+                    "No active Rust codergen session matches the intervention target node.",
+                );
+            };
+            if matches.next().is_some() {
+                return rejected_intervention(
+                    &request,
+                    "backend_steering_unsupported",
+                    "rust_session",
+                    "Multiple active Rust codergen sessions match the intervention child run and root run; target node is required.",
+                );
+            }
+            active
+        };
+
+        let payload = intervention_steering_payload(&request, &active);
+        if !active
+            .steering
+            .queue_steering_with_metadata(request.message.clone(), payload)
+        {
+            return rejected_intervention(
+                &request,
+                "backend_steering_unsupported",
+                "rust_session",
+                "Active Rust codergen session is no longer accepting steering.",
+            );
+        }
+        CodergenChildInterventionResult {
+            run_id: request.child_run_id,
+            status: "delivered".to_string(),
+            delivery_mode: "rust_boundary_codergen_turn".to_string(),
+            reason: request.reason,
+            message: "Intervention delivered to active Rust codergen session.".to_string(),
+            target_node_id: request.target_node_id,
+        }
+    }
+}
+
+fn rejected_intervention(
+    request: &CodergenChildInterventionRequest,
+    reason: impl Into<String>,
+    delivery_mode: impl Into<String>,
+    message: impl Into<String>,
+) -> CodergenChildInterventionResult {
+    CodergenChildInterventionResult {
+        run_id: request.child_run_id.clone(),
+        status: "rejected".to_string(),
+        delivery_mode: delivery_mode.into(),
+        reason: reason.into(),
+        message: message.into(),
+        target_node_id: request.target_node_id.clone(),
+    }
+}
+
+fn intervention_steering_payload(
+    request: &CodergenChildInterventionRequest,
+    active: &ActiveCodergenSession,
+) -> BTreeMap<String, Value> {
+    let provider = request
+        .provider
+        .clone()
+        .or_else(|| normalized_optional(Some(active.provider.as_str())));
+    let model = request.model.clone().or_else(|| active.model.clone());
+    let llm_profile = request
+        .llm_profile
+        .clone()
+        .or_else(|| active.llm_profile.clone());
+    let reasoning_effort = request
+        .reasoning_effort
+        .clone()
+        .or_else(|| active.reasoning_effort.clone());
+    BTreeMap::from([
+        ("node_id".to_string(), json!(active.node_id.clone())),
+        ("message".to_string(), json!(request.message.clone())),
+        ("reason".to_string(), json!(request.reason.clone())),
+        ("source".to_string(), json!(request.source.clone())),
+        ("cycle".to_string(), json!(request.cycle)),
+        (
+            "child_run_id".to_string(),
+            json!(request.child_run_id.clone()),
+        ),
+        (
+            "parent_run_id".to_string(),
+            json!(request.parent_run_id.clone()),
+        ),
+        (
+            "parent_node_id".to_string(),
+            json!(request.parent_node_id.clone()),
+        ),
+        (
+            "root_run_id".to_string(),
+            json!(request.root_run_id.clone()),
+        ),
+        (
+            "target_node_id".to_string(),
+            json!(request.target_node_id.clone()),
+        ),
+        ("provider".to_string(), json!(provider)),
+        ("model".to_string(), json!(model)),
+        ("llm_profile".to_string(), json!(llm_profile)),
+        ("reasoning_effort".to_string(), json!(reasoning_effort)),
+        (
+            "project_path".to_string(),
+            json!(active
+                .project_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string())),
+        ),
+        ("metadata".to_string(), json!(active.metadata.clone())),
+    ])
+}
+
+fn default_manager_loop_source() -> String {
+    "manager_loop".to_string()
+}
+
+fn normalized_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -209,6 +657,7 @@ impl CodergenHandler {
         let response_contract = normalized_response_contract_name(&request.node.attrs);
         let contract_repair_attempts =
             contract_repair_attempts(&request.node.attrs, &response_contract);
+        let runtime_mode = runtime_mode_for_node(&request.node.attrs);
         if response_contract == STATUS_ENVELOPE_RESPONSE_CONTRACT {
             prompt = format!(
                 "{prompt}\n\n{}",
@@ -235,6 +684,9 @@ impl CodergenHandler {
                 &request.context,
             ),
             repair_attempt: None,
+            runtime_mode,
+            project_path: request.project_path.clone(),
+            metadata: request.metadata.clone(),
         };
 
         let mut events = vec![event(
@@ -249,6 +701,7 @@ impl CodergenHandler {
                     "reasoning_effort",
                     json!(backend_request.reasoning_effort.clone()),
                 ),
+                ("runtime_mode", json!(backend_request.runtime_mode.clone())),
             ],
         )];
 
@@ -630,6 +1083,50 @@ fn contract_repair_attempts(
         .and_then(|value| value.trim().parse::<i64>().ok())
         .map(|value| value.max(0) as u32)
         .unwrap_or(DEFAULT_CONTRACT_REPAIR_ATTEMPTS)
+}
+
+fn runtime_mode_for_node(attrs: &BTreeMap<String, DotAttribute>) -> CodergenRuntimeMode {
+    let mut runtime_mode = CodergenRuntimeMode {
+        mode: attr_text(attrs, "codergen.runtime_mode")
+            .or_else(|| attr_text(attrs, "codergen.execution_mode"))
+            .map(|value| runtime_mode_kind(&value))
+            .unwrap_or_default(),
+        requires_tools: any_bool_attr(attrs, &["codergen.requires_tools", "codergen.tools"]),
+        requires_steering: any_bool_attr(
+            attrs,
+            &["codergen.requires_steering", "codergen.steering"],
+        ),
+        requires_child_intervention: any_bool_attr(
+            attrs,
+            &[
+                "codergen.requires_child_intervention",
+                "codergen.child_intervention",
+            ],
+        ),
+        requires_session_events: any_bool_attr(
+            attrs,
+            &[
+                "codergen.requires_session_events",
+                "codergen.session_events",
+                "codergen.events",
+            ],
+        ),
+    };
+    if runtime_mode.requires_agent() {
+        runtime_mode.mode = CodergenExecutionMode::Agent;
+    }
+    runtime_mode
+}
+
+fn runtime_mode_kind(value: &str) -> CodergenExecutionMode {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "agent" | "agent_required" | "session" | "session_backed" => CodergenExecutionMode::Agent,
+        _ => CodergenExecutionMode::TextOnly,
+    }
+}
+
+fn any_bool_attr(attrs: &BTreeMap<String, DotAttribute>, keys: &[&str]) -> bool {
+    keys.iter().any(|key| attr_bool(attrs, key, false))
 }
 
 fn timeout_seconds(attrs: &BTreeMap<String, DotAttribute>) -> Option<f64> {
