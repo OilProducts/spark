@@ -5686,8 +5686,8 @@ def test_send_turn_streams_text_deltas_without_persisting_each_delta(tmp_path: P
     assert snapshot["turns"][-1]["content"] == "Hello"
     assert snapshot["turns"][-1]["token_usage"] == {"total_tokens": 12}
     assert [(segment["kind"], segment["status"], segment["content"]) for segment in snapshot["segments"]] == [
-        ("reasoning", "complete", "Thinking"),
         ("assistant_message", "complete", "Hello"),
+        ("reasoning", "complete", "Thinking"),
     ]
     transient_segments = [
         payload["segment"]
@@ -5712,6 +5712,239 @@ def test_send_turn_streams_text_deltas_without_persisting_each_delta(tmp_path: P
     ] == [
         ("reasoning", "complete", "Thinking"),
         ("assistant_message", "complete", "Hello"),
+    ]
+
+
+def test_send_turn_preserves_transient_reasoning_order_when_completion_arrives_late(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+
+    class FakeSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            reasoning_effort: str | None = None,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            if on_event is not None:
+                reasoning_source = TurnStreamSource(app_turn_id="app-turn-1", item_id="reasoning-1", summary_index=0)
+                tool_source = TurnStreamSource(app_turn_id="app-turn-1", item_id="cmd-1")
+                assistant_source = TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1")
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_delta",
+                        channel="reasoning",
+                        source=reasoning_source,
+                        content_delta="Thinking first.",
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="tool_call_started",
+                        source=tool_source,
+                        tool_call=ToolCallRecord(
+                            id="cmd-1",
+                            kind="command_execution",
+                            status="running",
+                            title="Run command",
+                            command="pwd",
+                        ),
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="tool_call_completed",
+                        source=tool_source,
+                        tool_call=ToolCallRecord(
+                            id="cmd-1",
+                            kind="command_execution",
+                            status="completed",
+                            title="Run command",
+                            command="pwd",
+                            output="/tmp/project",
+                        ),
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        source=assistant_source,
+                        content_delta="Done.",
+                        phase="final_answer",
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="reasoning",
+                        source=reasoning_source,
+                        content_delta="Thinking first.",
+                    )
+                )
+            return project_chat.ChatTurnResult(
+                assistant_message='{"assistant_message":"Done."}',
+            )
+
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: FakeSession())
+
+    snapshot = service.send_turn("conversation-test", str(tmp_path), "run it", None)
+
+    assert [
+        (segment["kind"], segment["order"], segment.get("content") or segment.get("tool_call", {}).get("title"))
+        for segment in snapshot["segments"]
+    ] == [
+        ("reasoning", 1, "Thinking first."),
+        ("tool_call", 2, "Run command"),
+        ("assistant_message", 3, "Done."),
+    ]
+
+    events_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "events.jsonl"
+    event_entries = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    durable_segment_events = [
+        entry["segment"]
+        for entry in event_entries
+        if entry.get("type") == "segment_upsert"
+    ]
+    assert [
+        (segment["kind"], segment["order"])
+        for segment in durable_segment_events
+        if segment["kind"] in {"reasoning", "tool_call", "assistant_message"}
+    ] == [
+        ("tool_call", 2),
+        ("tool_call", 2),
+        ("assistant_message", 3),
+        ("reasoning", 1),
+    ]
+
+
+def test_send_turn_streams_tool_updates_without_persisting_each_update(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    progress_updates: list[dict[str, Any]] = []
+
+    class FakeSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            reasoning_effort: str | None = None,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            if on_event is not None:
+                source = TurnStreamSource(app_turn_id="app-turn-1", item_id="cmd-1")
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="tool_call_started",
+                        source=source,
+                        tool_call=ToolCallRecord(
+                            id="cmd-1",
+                            kind="command_execution",
+                            status="running",
+                            title="Run command",
+                            command="printf hi",
+                        ),
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="tool_call_updated",
+                        source=source,
+                        tool_call=ToolCallRecord(
+                            id="cmd-1",
+                            kind="command_execution",
+                            status="running",
+                            title="Run command",
+                            command="printf hi",
+                            output="h",
+                        ),
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="tool_call_updated",
+                        source=source,
+                        tool_call=ToolCallRecord(
+                            id="cmd-1",
+                            kind="command_execution",
+                            status="running",
+                            title="Run command",
+                            command="printf hi",
+                            output="hi",
+                        ),
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="tool_call_completed",
+                        source=source,
+                        tool_call=ToolCallRecord(
+                            id="cmd-1",
+                            kind="command_execution",
+                            status="completed",
+                            title="Run command",
+                            command="printf hi",
+                            output="hi",
+                        ),
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
+                        content_delta="Done.",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(
+                assistant_message='{"assistant_message":"Done."}',
+            )
+
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: FakeSession())
+
+    snapshot = service.send_turn(
+        "conversation-test",
+        str(tmp_path),
+        "run it",
+        None,
+        progress_callback=progress_updates.append,
+    )
+
+    tool_segments = [segment for segment in snapshot["segments"] if segment["kind"] == "tool_call"]
+    assert [(segment["status"], segment["tool_call"]["output"]) for segment in tool_segments] == [
+        ("completed", "hi"),
+    ]
+    transient_tool_segments = [
+        payload["segment"]
+        for payload in progress_updates
+        if payload.get("type") == "segment_upsert"
+        and payload.get("transient") is True
+        and payload["segment"]["kind"] == "tool_call"
+    ]
+    assert [(segment["status"], segment["tool_call"]["output"]) for segment in transient_tool_segments] == [
+        ("running", "h"),
+        ("running", "hi"),
+    ]
+
+    events_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "events.jsonl"
+    event_entries = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    durable_tool_events = [
+        entry
+        for entry in event_entries
+        if entry.get("type") == "segment_upsert" and entry["segment"]["kind"] == "tool_call"
+    ]
+    assert [(entry["segment"]["status"], entry["segment"]["tool_call"].get("output")) for entry in durable_tool_events] == [
+        ("running", None),
+        ("completed", "hi"),
     ]
 
 

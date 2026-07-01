@@ -624,8 +624,22 @@ class ProjectChatRepository:
             if existing_segment.id != segment.id:
                 continue
             state.segments[index] = segment
+            self._sort_segments(state)
             return
         state.segments.append(segment)
+        self._sort_segments(state)
+
+    def _sort_segments(self, state: ConversationState) -> None:
+        turn_positions = {turn.id: index for index, turn in enumerate(state.turns)}
+        fallback_turn_position = len(turn_positions)
+        state.segments.sort(
+            key=lambda segment: (
+                turn_positions.get(segment.turn_id, fallback_turn_position),
+                segment.order,
+                segment.timestamp,
+                segment.id,
+            )
+        )
 
     def get_segment(self, state: ConversationState, segment_id: str) -> Optional[ConversationSegment]:
         for segment in state.segments:

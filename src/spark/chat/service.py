@@ -598,14 +598,22 @@ class ProjectChatService:
         state: ConversationState,
         turn: ConversationTurn,
         event: TurnStreamEvent,
+        *,
+        transient_segments: Optional[dict[str, ConversationSegment]] = None,
+        transient_segment: Optional[ConversationSegment] = None,
     ) -> Optional[ConversationSegment]:
+        def next_segment_order() -> int:
+            if transient_segments is None:
+                return self._next_turn_segment_order(state, turn.id)
+            return self._next_transient_segment_order(state, turn.id, transient_segments)
+
         timestamp = _iso_now()
         if event.kind == "content_delta" and event.channel == "reasoning":
             segment_id = self._build_reasoning_segment_id(turn.id, event)
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
                 turn_id=turn.id,
-                order=self._next_turn_segment_order(state, turn.id),
+                order=next_segment_order(),
                 kind="reasoning",
                 role="assistant",
                 status="streaming",
@@ -623,7 +631,7 @@ class ProjectChatService:
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
                 turn_id=turn.id,
-                order=self._next_turn_segment_order(state, turn.id),
+                order=next_segment_order(),
                 kind="assistant_message",
                 role="assistant",
                 status="streaming",
@@ -644,7 +652,7 @@ class ProjectChatService:
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
                 turn_id=turn.id,
-                order=self._next_turn_segment_order(state, turn.id),
+                order=next_segment_order(),
                 kind="plan",
                 role="assistant",
                 status="streaming",
@@ -672,7 +680,7 @@ class ProjectChatService:
                 segment = ConversationSegment(
                     id=segment_id,
                     turn_id=turn.id,
-                    order=self._next_turn_segment_order(state, turn.id),
+                    order=next_segment_order(),
                     kind="context_compaction",
                     role="system",
                     status=target_status,
@@ -709,7 +717,7 @@ class ProjectChatService:
                 segment = ConversationSegment(
                     id=segment_id,
                     turn_id=turn.id,
-                    order=self._next_turn_segment_order(state, turn.id),
+                    order=next_segment_order(),
                     kind="request_user_input",
                     role="system",
                     status="pending",
@@ -735,7 +743,7 @@ class ProjectChatService:
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
                 turn_id=turn.id,
-                order=self._next_turn_segment_order(state, turn.id),
+                order=next_segment_order(),
                 kind="tool_call",
                 role="system",
                 status=status,
@@ -756,7 +764,7 @@ class ProjectChatService:
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
                 turn_id=turn.id,
-                order=self._next_turn_segment_order(state, turn.id),
+                order=next_segment_order(),
                 kind="assistant_message",
                 role="assistant",
                 status="complete",
@@ -769,6 +777,11 @@ class ProjectChatService:
                 segment.content = event.content_delta
             elif turn.content:
                 segment.content = turn.content
+            if transient_segment is not None:
+                segment.order = transient_segment.order
+                segment.timestamp = transient_segment.timestamp
+                if event.content_delta is None:
+                    segment.content = transient_segment.content
             segment.status = "complete"
             segment.updated_at = timestamp
             segment.completed_at = timestamp
@@ -781,7 +794,7 @@ class ProjectChatService:
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
                 turn_id=turn.id,
-                order=self._next_turn_segment_order(state, turn.id),
+                order=next_segment_order(),
                 kind="reasoning",
                 role="assistant",
                 status="complete",
@@ -791,6 +804,11 @@ class ProjectChatService:
             )
             if event.content_delta:
                 segment.content = event.content_delta
+            if transient_segment is not None:
+                segment.order = transient_segment.order
+                segment.timestamp = transient_segment.timestamp
+                if event.content_delta is None:
+                    segment.content = transient_segment.content
             segment.status = "complete"
             segment.updated_at = timestamp
             segment.completed_at = timestamp
@@ -801,7 +819,7 @@ class ProjectChatService:
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
                 turn_id=turn.id,
-                order=self._next_turn_segment_order(state, turn.id),
+                order=next_segment_order(),
                 kind="plan",
                 role="assistant",
                 status="complete",
@@ -811,6 +829,11 @@ class ProjectChatService:
             )
             if event.content_delta:
                 segment.content = event.content_delta
+            if transient_segment is not None:
+                segment.order = transient_segment.order
+                segment.timestamp = transient_segment.timestamp
+                if event.content_delta is None:
+                    segment.content = transient_segment.content
             segment.status = "complete"
             segment.updated_at = timestamp
             segment.completed_at = timestamp
@@ -822,7 +845,7 @@ class ProjectChatService:
             segment = self._get_segment(state, segment_id) or ConversationSegment(
                 id=segment_id,
                 turn_id=turn.id,
-                order=self._next_turn_segment_order(state, turn.id),
+                order=next_segment_order(),
                 kind="assistant_message",
                 role="assistant",
                 status="failed",
@@ -969,6 +992,38 @@ class ProjectChatService:
         segment.error = None
         if event.channel == "assistant":
             segment.phase = self._assistant_segment_phase(event, segment)
+        transient_segments[segment_id] = segment
+        return segment
+
+    def _materialize_transient_tool_call_segment(
+        self,
+        state: ConversationState,
+        turn: ConversationTurn,
+        event: TurnStreamEvent,
+        transient_segments: dict[str, ConversationSegment],
+    ) -> Optional[ConversationSegment]:
+        if event.kind != "tool_call_updated" or event.tool_call is None:
+            return None
+        segment_id = self._build_tool_segment_id(turn.id, event)
+        timestamp = _iso_now()
+        existing_segment = transient_segments.get(segment_id) or self._get_segment(state, segment_id)
+        if existing_segment is not None:
+            segment = ConversationSegment.from_dict(existing_segment.to_dict())
+        else:
+            segment = ConversationSegment(
+                id=segment_id,
+                turn_id=turn.id,
+                order=self._next_transient_segment_order(state, turn.id, transient_segments),
+                kind="tool_call",
+                role="system",
+                status=event.tool_call.status,
+                timestamp=timestamp,
+                updated_at=timestamp,
+                source=self._build_segment_source(event, tool_call_id=event.tool_call.id),
+            )
+        segment.status = event.tool_call.status
+        segment.updated_at = timestamp
+        segment.tool_call = ToolCallRecord.from_dict(event.tool_call.to_dict())
         transient_segments[segment_id] = segment
         return segment
 
@@ -1321,6 +1376,7 @@ class ProjectChatService:
 
         buffered_plan_assistant_event: TurnStreamEvent | None = None
         transient_delta_segments: dict[str, ConversationSegment] = {}
+        transient_tool_call_segments: dict[str, ConversationSegment] = {}
 
         def persist_live_event(event: TurnStreamEvent) -> None:
             nonlocal buffered_plan_assistant_event
@@ -1333,6 +1389,10 @@ class ProjectChatService:
 
                 emitted_payloads: list[dict[str, Any]] = []
                 transient_payloads: list[dict[str, Any]] = []
+                reserved_transient_segments = {
+                    **transient_delta_segments,
+                    **transient_tool_call_segments,
+                }
                 if (
                     event.kind == "content_delta"
                     and event.channel in {"assistant", "reasoning", "plan"}
@@ -1359,6 +1419,26 @@ class ProjectChatService:
                     for payload in transient_payloads:
                         self._publish_transient_progress_payload(progress_callback, payload)
                     return
+                if event.kind == "tool_call_updated" and event.tool_call is not None:
+                    segment = self._materialize_transient_tool_call_segment(
+                        current_state,
+                        current_assistant_turn,
+                        event,
+                        transient_tool_call_segments,
+                    )
+                    if segment is not None:
+                        transient_payloads.append(
+                            self._build_transient_segment_upsert_payload(current_state, segment)
+                        )
+                    _log_project_chat_debug(
+                        "forwarded transient tool progress event",
+                        conversation_id=conversation_id,
+                        event_kind=event.kind,
+                        turns=_summarize_turns_for_debug(current_state.turns),
+                    )
+                    for payload in transient_payloads:
+                        self._publish_transient_progress_payload(progress_callback, payload)
+                    return
 
                 if current_assistant_turn.status == "pending":
                     current_assistant_turn.status = "streaming"
@@ -1370,20 +1450,46 @@ class ProjectChatService:
                     self._upsert_turn(current_state, current_assistant_turn)
                     emitted_payloads.append(self._build_turn_upsert_payload(current_state, current_assistant_turn))
                 elif event.kind == "content_completed" and event.channel == "reasoning":
-                    segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
+                    segment = self._materialize_segment_for_live_event(
+                        current_state,
+                        current_assistant_turn,
+                        event,
+                        transient_segments=reserved_transient_segments,
+                        transient_segment=transient_delta_segments.get(
+                            self._build_reasoning_segment_id(current_assistant_turn.id, event)
+                        ),
+                    )
                     if segment is not None:
                         emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
                 elif event.kind == "content_completed" and event.channel == "plan":
-                    segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
+                    segment = self._materialize_segment_for_live_event(
+                        current_state,
+                        current_assistant_turn,
+                        event,
+                        transient_segments=reserved_transient_segments,
+                        transient_segment=transient_delta_segments.get(
+                            self._build_plan_segment_id(current_assistant_turn.id, event)
+                        ),
+                    )
                     if segment is not None:
                         self._persist_proposed_plan_segment_artifact(current_state, current_assistant_turn, segment)
                         emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
                 elif event.kind in {"context_compaction_started", "context_compaction_completed"}:
-                    segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
+                    segment = self._materialize_segment_for_live_event(
+                        current_state,
+                        current_assistant_turn,
+                        event,
+                        transient_segments=reserved_transient_segments,
+                    )
                     if segment is not None:
                         emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
                 elif event.kind == "request_user_input_requested" and event.request_user_input is not None:
-                    segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
+                    segment = self._materialize_segment_for_live_event(
+                        current_state,
+                        current_assistant_turn,
+                        event,
+                        transient_segments=reserved_transient_segments,
+                    )
                     if segment is not None:
                         emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
                 elif event.kind == "content_completed" and event.channel == "assistant":
@@ -1405,12 +1511,28 @@ class ProjectChatService:
                         if assistant_message and self._is_final_answer_phase(event.phase):
                             current_assistant_turn.content = assistant_message
                             self._upsert_turn(current_state, current_assistant_turn)
-                        segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
+                        segment = self._materialize_segment_for_live_event(
+                            current_state,
+                            current_assistant_turn,
+                            event,
+                            transient_segments=reserved_transient_segments,
+                            transient_segment=transient_delta_segments.get(
+                                self._build_assistant_segment_id(current_assistant_turn.id, event)
+                            ),
+                        )
                         emitted_payloads.append(self._build_turn_upsert_payload(current_state, current_assistant_turn))
                         if segment is not None:
                             emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
-                elif event.kind in {"tool_call_started", "tool_call_updated", "tool_call_completed", "tool_call_failed"} and event.tool_call is not None:
-                    segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
+                elif event.kind in {"tool_call_started", "tool_call_completed", "tool_call_failed"} and event.tool_call is not None:
+                    segment = self._materialize_segment_for_live_event(
+                        current_state,
+                        current_assistant_turn,
+                        event,
+                        transient_segments=reserved_transient_segments,
+                        transient_segment=transient_tool_call_segments.get(
+                            self._build_tool_segment_id(current_assistant_turn.id, event)
+                        ),
+                    )
                     if segment is not None:
                         emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
                 else:
