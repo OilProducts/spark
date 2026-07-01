@@ -1082,6 +1082,39 @@ def test_process_turn_message_normalizes_item_reasoning_delta_by_item_and_summar
     assert events[0].content_delta == "**Summ"
     assert events[0].source.item_id == "rs-1"
     assert events[0].source.summary_index == 0
+    assert state.reasoning_summary_texts[("rs-1", 0)] == "**Summ"
+
+
+def test_process_turn_message_tracks_reasoning_summary_part_text_by_item_and_summary_index() -> None:
+    state = codex_app_protocol.CodexAppServerTurnState()
+    first_events = codex_app_protocol.process_turn_message(
+        {
+            "method": "item/reasoning/summaryTextDelta",
+            "params": {
+                "itemId": "rs-1",
+                "summaryIndex": 0,
+                "delta": "Thinking",
+            },
+        },
+        state,
+    )
+    second_events = codex_app_protocol.process_turn_message(
+        {
+            "method": "item/reasoning/summaryPartAdded",
+            "params": {
+                "itemId": "rs-1",
+                "summaryIndex": 0,
+                "part": {"text": "Thinking about persistence."},
+            },
+        },
+        state,
+    )
+
+    assert [event.content_delta for event in [*first_events, *second_events]] == [
+        "Thinking",
+        " about persistence.",
+    ]
+    assert state.reasoning_summary_texts[("rs-1", 0)] == "Thinking about persistence."
 
 
 def test_process_turn_message_normalizes_context_compaction_events() -> None:
@@ -2095,7 +2128,11 @@ def test_send_turn_marks_assistant_failed_after_non_runtime_exception(tmp_path: 
     assert state.turns[-1].error == "provider exploded"
 
 
-def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(tmp_path: Path) -> None:
+def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SPARK_ENABLE_RAW_RPC_LOG", "1")
     service = project_chat.ProjectChatService(tmp_path)
     conversation_id = "conversation-test"
     project_path = str(tmp_path.resolve())
@@ -3356,9 +3393,10 @@ def test_send_turn_buffers_plan_mode_assistant_completion_without_leaking_markup
         if payload.get("type") == "segment_upsert"
     ]
     assert "assistant_message" not in live_segment_kinds
+    assert "reasoning" in live_segment_kinds
     assert "plan" in live_segment_kinds
     assert snapshot["turns"][-1]["content"] == "1. Patch the real session path.\n2. Add the regression coverage."
-    assert [segment["kind"] for segment in snapshot["segments"]] == ["reasoning", "plan"]
+    assert [segment["kind"] for segment in snapshot["segments"]] == ["plan"]
     assert all("<proposed_plan>" not in segment["content"] for segment in snapshot["segments"])
 
 
@@ -5572,17 +5610,293 @@ def test_build_session_ignores_unsupported_persisted_thread_state(tmp_path: Path
     assert captured["persisted_model"] is None
 
 
-def test_send_turn_writes_raw_jsonrpc_log(tmp_path: Path, monkeypatch) -> None:
+def test_send_turn_streams_text_deltas_without_persisting_each_delta(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    progress_updates: list[dict[str, Any]] = []
+
+    class FakeSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            reasoning_effort: str | None = None,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            if on_event is not None:
+                source = TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1")
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_delta",
+                        channel="assistant",
+                        source=source,
+                        content_delta="Hel",
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_delta",
+                        channel="assistant",
+                        source=source,
+                        content_delta="lo",
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_delta",
+                        channel="reasoning",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="reasoning-1", summary_index=0),
+                        content_delta="Thinking",
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="reasoning",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="reasoning-1", summary_index=0),
+                        content_delta="Thinking",
+                    )
+                )
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        source=source,
+                        content_delta="Hello",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(
+                assistant_message='{"assistant_message":"Hello"}',
+                token_usage={"total_tokens": 12},
+            )
+
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: FakeSession())
+
+    snapshot = service.send_turn(
+        "conversation-test",
+        str(tmp_path),
+        "hello",
+        None,
+        progress_callback=progress_updates.append,
+    )
+
+    assert snapshot["turns"][-1]["content"] == "Hello"
+    assert snapshot["turns"][-1]["token_usage"] == {"total_tokens": 12}
+    assert [(segment["kind"], segment["status"], segment["content"]) for segment in snapshot["segments"]] == [
+        ("reasoning", "complete", "Thinking"),
+        ("assistant_message", "complete", "Hello"),
+    ]
+    transient_segments = [
+        payload["segment"]
+        for payload in progress_updates
+        if payload.get("type") == "segment_upsert" and payload.get("transient") is True
+    ]
+    assert [(segment["kind"], segment["status"], segment["content"]) for segment in transient_segments] == [
+        ("assistant_message", "streaming", "Hel"),
+        ("assistant_message", "streaming", "Hello"),
+        ("reasoning", "streaming", "Thinking"),
+    ]
+    events_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "events.jsonl"
+    event_entries = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    durable_segment_events = [
+        entry
+        for entry in event_entries
+        if entry.get("type") == "segment_upsert"
+    ]
+    assert [
+        (entry["segment"]["kind"], entry["segment"]["status"], entry["segment"]["content"])
+        for entry in durable_segment_events
+    ] == [
+        ("reasoning", "complete", "Thinking"),
+        ("assistant_message", "complete", "Hello"),
+    ]
+
+
+def test_send_turn_persists_real_codex_reasoning_summary_on_turn_completion(tmp_path: Path, monkeypatch) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    session = project_chat.CodexAppServerChatSession(str(tmp_path))
+    client = StubChatClient()
+    session._client = client
+    progress_updates: list[dict[str, Any]] = []
+
+    def run_turn(**kwargs) -> CodexAppServerTurnResult:
+        kwargs["on_turn_started"]("app-turn-1")
+        state = codex_app_protocol.CodexAppServerTurnState()
+        messages = [
+            {
+                "method": "item/reasoning/summaryTextDelta",
+                "params": {
+                    "itemId": "rs-1",
+                    "summaryIndex": 0,
+                    "delta": "Thinking",
+                },
+            },
+            {
+                "method": "item/reasoning/summaryPartAdded",
+                "params": {
+                    "itemId": "rs-1",
+                    "summaryIndex": 0,
+                    "part": {"text": "Thinking about persistence."},
+                },
+            },
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "tokenUsage": {
+                        "total": {
+                            "inputTokens": 3,
+                            "cachedInputTokens": 0,
+                            "outputTokens": 4,
+                            "reasoningOutputTokens": 2,
+                            "totalTokens": 7,
+                        },
+                    },
+                },
+            },
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "id": "msg-1",
+                        "type": "agentMessage",
+                        "text": "Done.",
+                        "phase": "final_answer",
+                    },
+                },
+            },
+        ]
+        for message in messages:
+            for event in codex_app_protocol.process_turn_message(message, state):
+                event.source.app_turn_id = "app-turn-1"
+                kwargs["on_event"](event)
+        state.turn_status = "completed"
+        return CodexAppServerTurnResult(thread_id=kwargs["thread_id"], turn_id="app-turn-1", state=state)
+
+    client.run_turn_handler = run_turn
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: session)
+
+    snapshot = service.send_turn(
+        "conversation-test",
+        str(tmp_path),
+        "hello",
+        None,
+        progress_callback=progress_updates.append,
+    )
+
+    segments_by_kind = {segment["kind"]: segment for segment in snapshot["segments"]}
+    assert segments_by_kind["assistant_message"]["content"] == "Done."
+    assert segments_by_kind["reasoning"]["content"] == "Thinking about persistence."
+    assert segments_by_kind["reasoning"]["status"] == "complete"
+    assert segments_by_kind["reasoning"]["source"]["item_id"] == "rs-1"
+    assert segments_by_kind["reasoning"]["source"]["summary_index"] == 0
+    assert snapshot["turns"][-1]["token_usage"] == {
+        "total": {
+            "inputTokens": 3,
+            "cachedInputTokens": 0,
+            "outputTokens": 4,
+            "reasoningOutputTokens": 2,
+            "totalTokens": 7,
+        },
+    }
+
+    transient_reasoning_segments = [
+        payload["segment"]
+        for payload in progress_updates
+        if payload.get("type") == "segment_upsert"
+        and payload.get("transient") is True
+        and payload["segment"]["kind"] == "reasoning"
+    ]
+    assert [segment["content"] for segment in transient_reasoning_segments] == [
+        "Thinking",
+        "Thinking about persistence.",
+    ]
+
+    events_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "events.jsonl"
+    event_entries = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    durable_reasoning_events = [
+        entry
+        for entry in event_entries
+        if entry.get("type") == "segment_upsert" and entry["segment"]["kind"] == "reasoning"
+    ]
+    assert len(durable_reasoning_events) == 1
+    assert durable_reasoning_events[0]["segment"]["status"] == "complete"
+    assert durable_reasoning_events[0]["segment"]["content"] == "Thinking about persistence."
+
+
+def test_send_turn_does_not_write_raw_jsonrpc_log_by_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SPARK_ENABLE_RAW_RPC_LOG", raising=False)
     service = project_chat.ProjectChatService(tmp_path)
 
     class FakeSession:
         def __init__(self) -> None:
             self.raw_logger = None
+            self.set_calls = 0
+            self.clear_calls = 0
 
         def set_raw_rpc_logger(self, callback) -> None:
+            self.set_calls += 1
             self.raw_logger = callback
 
         def clear_raw_rpc_logger(self) -> None:
+            self.clear_calls += 1
+            self.raw_logger = None
+
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            reasoning_effort: str | None = None,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            assert self.raw_logger is None
+            if on_event is not None:
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
+                        content_delta="Logged.",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(
+                assistant_message='{"assistant_message":"Logged."}',
+            )
+
+    fake_session = FakeSession()
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: fake_session)
+
+    snapshot = service.send_turn("conversation-test", str(tmp_path), "hello", None)
+
+    assert snapshot["turns"][-1]["content"] == "Logged."
+    assert fake_session.set_calls == 0
+    assert fake_session.clear_calls == 0
+    raw_log_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "raw-log.jsonl"
+    assert not raw_log_path.exists()
+
+
+def test_send_turn_writes_raw_jsonrpc_log_when_enabled(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SPARK_ENABLE_RAW_RPC_LOG", "1")
+    service = project_chat.ProjectChatService(tmp_path)
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.raw_logger = None
+            self.set_calls = 0
+            self.clear_calls = 0
+
+        def set_raw_rpc_logger(self, callback) -> None:
+            self.set_calls += 1
+            self.raw_logger = callback
+
+        def clear_raw_rpc_logger(self) -> None:
+            self.clear_calls += 1
             self.raw_logger = None
 
         def turn(
@@ -5602,7 +5916,7 @@ def test_send_turn_writes_raw_jsonrpc_log(tmp_path: Path, monkeypatch) -> None:
                 on_event(
                     project_chat.TurnStreamEvent(
                         kind="content_completed",
-                channel="assistant",
+                        channel="assistant",
                         source=TurnStreamSource(app_turn_id="app-turn-1", item_id="msg-1"),
                         content_delta="Logged.",
                         phase="final_answer",
@@ -5612,11 +5926,14 @@ def test_send_turn_writes_raw_jsonrpc_log(tmp_path: Path, monkeypatch) -> None:
                 assistant_message='{"assistant_message":"Logged."}',
             )
 
-    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: FakeSession())
+    fake_session = FakeSession()
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: fake_session)
 
     snapshot = service.send_turn("conversation-test", str(tmp_path), "hello", None)
 
     assert snapshot["turns"][-1]["content"] == "Logged."
+    assert fake_session.set_calls == 1
+    assert fake_session.clear_calls == 1
     raw_log_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "raw-log.jsonl"
     raw_entries = [json.loads(line) for line in raw_log_path.read_text(encoding="utf-8").splitlines()]
     assert [(entry["direction"], entry["line"]) for entry in raw_entries] == [
@@ -5685,10 +6002,7 @@ def test_start_turn_returns_initial_snapshot_before_background_completion(tmp_pa
 
     assert final_snapshot is not None
     assert final_snapshot["turns"][-1]["content"] == "ACK"
-    assert [segment["kind"] for segment in final_snapshot["segments"]] == [
-        "reasoning",
-        "assistant_message",
-    ]
+    assert [segment["kind"] for segment in final_snapshot["segments"]] == ["assistant_message"]
 
 
 def test_start_turn_rejects_overlapping_active_assistant_turn(tmp_path: Path) -> None:
@@ -5929,7 +6243,6 @@ def test_send_project_conversation_turn_endpoint_uses_real_service_signature(
     assert final_snapshot["turns"][1]["content"] == "Working on it"
     assert final_snapshot["turns"][1]["status"] == "complete"
     assert [segment["kind"] for segment in final_snapshot["segments"]] == [
-        "reasoning",
         "assistant_message",
         "tool_call",
     ]

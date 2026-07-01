@@ -109,6 +109,54 @@ class TestCheckpointAndArtifacts:
             assert isinstance(manifest_payload["started_at"], str)
             assert manifest_payload["started_at"]
 
+    def test_load_checkpoint_accepts_split_active_node_checkpoint_for_run_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "state.json"
+            checkpoint_file.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-27T12:00:00+00:00",
+                        "active_node": "review",
+                        "last_completed_node": "plan",
+                        "completed_nodes": ["start", "plan"],
+                        "context": {"graph.goal": "Ship"},
+                        "retry_counts": {"review": 1},
+                        "logs": ["checkpoint saved"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            checkpoint = load_checkpoint(checkpoint_file)
+
+            assert checkpoint is not None
+            assert checkpoint.current_node == "review"
+            assert checkpoint.completed_nodes == ["start", "plan"]
+            assert checkpoint.context["graph.goal"] == "Ship"
+            assert checkpoint.retry_counts == {"review": 1}
+            assert checkpoint.logs == ["checkpoint saved"]
+
+    def test_load_checkpoint_accepts_terminal_split_checkpoint_for_run_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_file = Path(tmp) / "state.json"
+            checkpoint_file.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-27T12:00:00+00:00",
+                        "active_node": None,
+                        "last_completed_node": "done",
+                        "completed_nodes": ["start", "plan"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            checkpoint = load_checkpoint(checkpoint_file)
+
+            assert checkpoint is not None
+            assert checkpoint.current_node == "done"
+            assert checkpoint.completed_nodes == ["start", "plan"]
+
     def test_auto_status_synthesizes_success_when_runner_returns_none(self):
         graph = parse_dot(
             """

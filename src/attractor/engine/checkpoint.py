@@ -7,9 +7,29 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import uuid
 
+_MISSING = object()
+
 
 def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _checkpoint_current_node(data: Dict[str, object]) -> str:
+    current_node = data.get("current_node", _MISSING)
+    if current_node is not _MISSING:
+        return str(current_node)
+
+    # CR-2026-0044 briefly persisted checkpoints with split node semantics.
+    # Keep read compatibility so existing run history remains inspectable.
+    active_node = data.get("active_node", _MISSING)
+    if active_node is not _MISSING and active_node is not None:
+        return str(active_node)
+
+    last_completed_node = data.get("last_completed_node", _MISSING)
+    if last_completed_node is not _MISSING and last_completed_node is not None:
+        return str(last_completed_node)
+
+    raise KeyError("current_node")
 
 
 @dataclass
@@ -35,7 +55,7 @@ class Checkpoint:
     def from_dict(cls, data: Dict[str, object]) -> "Checkpoint":
         return cls(
             timestamp=str(data.get("timestamp", _utc_timestamp())),
-            current_node=str(data["current_node"]),
+            current_node=_checkpoint_current_node(data),
             completed_nodes=[str(v) for v in data.get("completed_nodes", [])],
             context=dict(data.get("context", {})),
             retry_counts={str(k): int(v) for k, v in dict(data.get("retry_counts", {})).items()},
@@ -72,4 +92,7 @@ def load_checkpoint(path: Path) -> Optional[Checkpoint]:
         return None
     if not isinstance(data, dict):
         return None
-    return Checkpoint.from_dict(data)
+    try:
+        return Checkpoint.from_dict(data)
+    except (KeyError, TypeError, ValueError):
+        return None

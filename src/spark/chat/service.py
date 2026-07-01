@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import subprocess
 import threading
@@ -859,6 +860,15 @@ class ProjectChatService:
             return
         progress_callback(payload)
 
+    def _publish_transient_progress_payload(
+        self,
+        progress_callback: Optional[Callable[[dict[str, Any]], None]],
+        payload: dict[str, Any],
+    ) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(payload)
+
     def _stamp_progress_payloads_with_state_revision(
         self,
         state: ConversationState,
@@ -884,6 +894,83 @@ class ProjectChatService:
         segment: ConversationSegment,
     ) -> dict[str, Any]:
         return self._repository.build_segment_upsert_payload(state, segment)
+
+    def _build_transient_segment_upsert_payload(
+        self,
+        state: ConversationState,
+        segment: ConversationSegment,
+    ) -> dict[str, Any]:
+        return {
+            "type": "segment_upsert",
+            "transient": True,
+            "revision": state.revision,
+            "conversation_id": state.conversation_id,
+            "project_path": state.project_path,
+            "title": state.title,
+            "updated_at": segment.updated_at or state.updated_at,
+            "segment": self._repository.serialize_segment_for_ui(segment),
+        }
+
+    def _next_transient_segment_order(
+        self,
+        state: ConversationState,
+        turn_id: str,
+        transient_segments: dict[str, ConversationSegment],
+    ) -> int:
+        max_order = 0
+        for segment in [*state.segments, *transient_segments.values()]:
+            if segment.turn_id == turn_id and segment.order > max_order:
+                max_order = segment.order
+        return max_order + 1
+
+    def _materialize_transient_delta_segment(
+        self,
+        state: ConversationState,
+        turn: ConversationTurn,
+        event: TurnStreamEvent,
+        transient_segments: dict[str, ConversationSegment],
+    ) -> Optional[ConversationSegment]:
+        if event.kind != "content_delta" or event.channel not in {"assistant", "reasoning", "plan"}:
+            return None
+        if not event.content_delta:
+            return None
+        timestamp = _iso_now()
+        if event.channel == "reasoning":
+            segment_id = self._build_reasoning_segment_id(turn.id, event)
+            kind = "reasoning"
+            phase = None
+        elif event.channel == "plan":
+            segment_id = self._build_plan_segment_id(turn.id, event)
+            kind = "plan"
+            phase = None
+        else:
+            segment_id = self._build_assistant_segment_id(turn.id, event)
+            kind = "assistant_message"
+            phase = self._assistant_segment_phase(event)
+        segment = (
+            transient_segments.get(segment_id)
+            or self._get_segment(state, segment_id)
+            or ConversationSegment(
+                id=segment_id,
+                turn_id=turn.id,
+                order=self._next_transient_segment_order(state, turn.id, transient_segments),
+                kind=kind,
+                role="assistant",
+                status="streaming",
+                timestamp=timestamp,
+                updated_at=timestamp,
+                phase=phase,
+                source=self._build_segment_source(event),
+            )
+        )
+        segment.content = f"{segment.content}{event.content_delta}"
+        segment.status = "streaming"
+        segment.updated_at = timestamp
+        segment.error = None
+        if event.channel == "assistant":
+            segment.phase = self._assistant_segment_phase(event, segment)
+        transient_segments[segment_id] = segment
+        return segment
 
     def _build_prompt_values(self, state: ConversationState, message: str) -> dict[str, str]:
         return {
@@ -1132,6 +1219,8 @@ class ProjectChatService:
         persist_live_event: Callable[[TurnStreamEvent], None],
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> ChatTurnResult:
+        enable_raw_rpc_log = os.environ.get("SPARK_ENABLE_RAW_RPC_LOG") == "1"
+
         def bind_raw_rpc_logger(target_session: Any) -> None:
             if hasattr(target_session, "set_raw_rpc_logger"):
                 target_session.set_raw_rpc_logger(
@@ -1148,7 +1237,8 @@ class ProjectChatService:
                 target_session.clear_raw_rpc_logger()
 
         def run_session(target_session: Any) -> ChatTurnResult:
-            bind_raw_rpc_logger(target_session)
+            if enable_raw_rpc_log:
+                bind_raw_rpc_logger(target_session)
             try:
                 return target_session.turn(
                     prepared.prompt,
@@ -1158,7 +1248,8 @@ class ProjectChatService:
                     on_event=persist_live_event,
                 )
             finally:
-                clear_raw_rpc_logger(target_session)
+                if enable_raw_rpc_log:
+                    clear_raw_rpc_logger(target_session)
 
         try:
             session = self._build_session(
@@ -1229,6 +1320,7 @@ class ProjectChatService:
                 raise RuntimeError("Conversation state disappeared before the turn started.")
 
         buffered_plan_assistant_event: TurnStreamEvent | None = None
+        transient_delta_segments: dict[str, ConversationSegment] = {}
 
         def persist_live_event(event: TurnStreamEvent) -> None:
             nonlocal buffered_plan_assistant_event
@@ -1240,6 +1332,34 @@ class ProjectChatService:
                     self._upsert_turn(current_state, current_assistant_turn)
 
                 emitted_payloads: list[dict[str, Any]] = []
+                transient_payloads: list[dict[str, Any]] = []
+                if (
+                    event.kind == "content_delta"
+                    and event.channel in {"assistant", "reasoning", "plan"}
+                    and event.content_delta
+                ):
+                    if event.channel == "assistant" and chat_mode == "plan":
+                        return
+                    segment = self._materialize_transient_delta_segment(
+                        current_state,
+                        current_assistant_turn,
+                        event,
+                        transient_delta_segments,
+                    )
+                    if segment is not None:
+                        transient_payloads.append(
+                            self._build_transient_segment_upsert_payload(current_state, segment)
+                        )
+                    _log_project_chat_debug(
+                        "forwarded transient progress event",
+                        conversation_id=conversation_id,
+                        event_kind=event.kind,
+                        turns=_summarize_turns_for_debug(current_state.turns),
+                    )
+                    for payload in transient_payloads:
+                        self._publish_transient_progress_payload(progress_callback, payload)
+                    return
+
                 if current_assistant_turn.status == "pending":
                     current_assistant_turn.status = "streaming"
                     self._upsert_turn(current_state, current_assistant_turn)
@@ -1249,25 +1369,10 @@ class ProjectChatService:
                     current_assistant_turn.token_usage = copy.deepcopy(event.token_usage)
                     self._upsert_turn(current_state, current_assistant_turn)
                     emitted_payloads.append(self._build_turn_upsert_payload(current_state, current_assistant_turn))
-                elif event.kind == "content_delta" and event.channel == "assistant":
-                    if event.content_delta and chat_mode != "plan":
-                        segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
-                        if segment is not None:
-                            emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
-                elif event.kind == "content_delta" and event.channel == "reasoning":
-                    if event.content_delta:
-                        segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
-                        if segment is not None:
-                            emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
                 elif event.kind == "content_completed" and event.channel == "reasoning":
                     segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
                     if segment is not None:
                         emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
-                elif event.kind == "content_delta" and event.channel == "plan":
-                    if event.content_delta:
-                        segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
-                        if segment is not None:
-                            emitted_payloads.append(self._build_segment_upsert_payload(current_state, segment))
                 elif event.kind == "content_completed" and event.channel == "plan":
                     segment = self._materialize_segment_for_live_event(current_state, current_assistant_turn, event)
                     if segment is not None:

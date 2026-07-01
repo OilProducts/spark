@@ -1058,6 +1058,24 @@ class CodexAppServerChatSession:
                     self._clear_thread_id()
                 self._close_unlocked()
                 raise
+            for (item_id, summary_index), summary_text in result.state.reasoning_summary_texts.items():
+                if not summary_text.strip():
+                    continue
+                self._emit_live_event(
+                    on_event,
+                    TurnStreamEvent(
+                        kind="content_completed",
+                        channel="reasoning",
+                        content_delta=summary_text,
+                        source=TurnStreamSource(
+                            backend="codex_app_server",
+                            app_turn_id=current_app_turn_id or result.turn_id,
+                            item_id=item_id,
+                            summary_index=summary_index,
+                            raw_kind="reasoning_summary_completed",
+                        ),
+                    ),
+                )
             for tool_call in tool_calls_by_id.values():
                 if tool_call.status == "running":
                     tool_call.status = "failed" if result.state.last_error else "completed"

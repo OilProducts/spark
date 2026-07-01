@@ -1225,17 +1225,18 @@ def create_workspace_router(deps: WorkspaceApiDependencies) -> APIRouter:
                 while True:
                     event = await conversation_queue.get()
                     revision = _conversation_event_revision(event)
-                    if isinstance(revision, int) and revision <= highest_revision:
+                    is_transient = event.get("transient") is True
+                    if isinstance(revision, int) and revision <= highest_revision and not is_transient:
                         continue
-                    if revision is not None:
+                    if revision is not None and not is_transient:
                         highest_revision = revision
                     await send(_live_envelope(
                         _conversation_live_event_type(event),
                         project_path=event.get("project_path") if isinstance(event.get("project_path"), str) else effective_conversation_project_path,
                         resource_kind="conversation",
                         resource_id=conversation_id,
-                        cursor_kind="conversation_revision" if isinstance(revision, int) else None,
-                        cursor_value=revision if isinstance(revision, int) else None,
+                        cursor_kind="conversation_revision" if isinstance(revision, int) and not is_transient else None,
+                        cursor_value=revision if isinstance(revision, int) and not is_transient else None,
                         payload=event,
                     ))
 

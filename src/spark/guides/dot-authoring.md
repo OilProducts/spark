@@ -251,6 +251,10 @@ Only the threshold attr for the active `join_policy` is valid. Do not keep `join
 | `manager.steer_cooldown` | duration | Minimum time between eligible automatic steering attempts. |
 | `stack.child_autostart` | boolean | Whether the child pipeline should be started automatically. |
 
+Defaults: `manager.actions` defaults to `observe,wait`, `manager.max_cycles` defaults to `1000`, `manager.poll_interval` defaults to `45s`, and `stack.child_autostart` defaults to `true`.
+
+`manager.max_cycles` counts supervisor loop iterations, not steering attempts. Each cycle may observe child telemetry, optionally steer, check child resolution, and optionally wait for `manager.poll_interval`. Setting `manager.actions=""` disables observe, steer, and wait.
+
 Automatic manager steering requires concrete child failure context from `context.stack.child.*`. The manager does not auto-steer from elapsed time, unchanged active stage, missing artifacts, or long-running work. `manager.steer_cooldown` only spaces eligible attempts; it is not a stall or progress detector.
 
 Within one manager invocation, automatic steering is capped at one delivered or attempted intervention per `(child_run_id, target_node_id, failure_reason)`. Later cycles with the same key are recorded as skipped automatic interventions. Human/API steering through `/pipelines/{pipeline_id}/steer` is unaffected.

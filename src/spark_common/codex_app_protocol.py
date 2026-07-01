@@ -178,6 +178,8 @@ class CodexAppServerTurnState:
     turn_error: Optional[str] = None
     last_error: Optional[str] = None
     reasoning_summary_buffer: str = ""
+    reasoning_summary_buffers: dict[tuple[Optional[str], Optional[int]], str] = field(default_factory=dict)
+    reasoning_summary_texts: dict[tuple[Optional[str], Optional[int]], str] = field(default_factory=dict)
     agent_message_phases: dict[str, str] = field(default_factory=dict)
 
     def resolved_agent_text(self) -> str:
@@ -403,7 +405,10 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
             summary_index = params.get("summaryIndex")
             item_id = as_non_empty_string(params.get("itemId"))
             normalized_summary_index = int(summary_index) if isinstance(summary_index, int) else None
+            summary_key = (item_id, normalized_summary_index)
             state.reasoning_summary_buffer = f"{state.reasoning_summary_buffer}{delta}"
+            state.reasoning_summary_buffers[summary_key] = f"{state.reasoning_summary_buffers.get(summary_key, '')}{delta}"
+            state.reasoning_summary_texts[summary_key] = f"{state.reasoning_summary_texts.get(summary_key, '')}{delta}"
             events.append(
                 _event(
                     "content_delta",
@@ -420,6 +425,9 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
         part = params.get("part")
         summary_text: Optional[str] = None
         summary_index = params.get("summaryIndex")
+        item_id = as_non_empty_string(params.get("itemId"))
+        normalized_summary_index = int(summary_index) if isinstance(summary_index, int) else None
+        summary_key = (item_id, normalized_summary_index)
         if isinstance(part, dict):
             for key in ("text", "summaryText", "summary_text"):
                 value = part.get(key)
@@ -427,9 +435,12 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
                     summary_text = str(value)
                     break
         if summary_text:
-            if state.reasoning_summary_buffer and summary_text.startswith(state.reasoning_summary_buffer):
-                remaining_summary_text = summary_text[len(state.reasoning_summary_buffer):]
+            prior_summary_text = state.reasoning_summary_buffers.get(summary_key) or state.reasoning_summary_buffer
+            state.reasoning_summary_texts[summary_key] = summary_text
+            if prior_summary_text and summary_text.startswith(prior_summary_text):
+                remaining_summary_text = summary_text[len(prior_summary_text):]
                 state.reasoning_summary_buffer = ""
+                state.reasoning_summary_buffers[summary_key] = ""
                 if remaining_summary_text:
                     events.append(
                         _event(
@@ -437,20 +448,21 @@ def process_turn_message(message: dict[str, Any], state: CodexAppServerTurnState
                             raw_kind="reasoning_delta",
                             channel="reasoning",
                             content_delta=remaining_summary_text,
-                            item_id=as_non_empty_string(params.get("itemId")),
-                            summary_index=int(summary_index) if isinstance(summary_index, int) else None,
+                            item_id=item_id,
+                            summary_index=normalized_summary_index,
                         )
                     )
             else:
                 state.reasoning_summary_buffer = ""
+                state.reasoning_summary_buffers[summary_key] = ""
                 events.append(
                     _event(
                         "content_delta",
                         raw_kind="reasoning_delta",
                         channel="reasoning",
                         content_delta=summary_text,
-                        item_id=as_non_empty_string(params.get("itemId")),
-                        summary_index=int(summary_index) if isinstance(summary_index, int) else None,
+                        item_id=item_id,
+                        summary_index=normalized_summary_index,
                     )
                 )
         return events
