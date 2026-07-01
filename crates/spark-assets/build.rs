@@ -21,9 +21,9 @@ fn main() {
         "../../frontend/dist/index.html",
         "../../frontend/index.html",
         "../../frontend/public/assets/spark-app-icon.png",
-        "../../src/spark/flows",
-        "../../src/spark/guides",
-        "../../src/unified_llm/data/models.json",
+        "assets/flows",
+        "assets/guides",
+        "assets/unified_llm/data/models.json",
         "../../assets",
     ] {
         println!("cargo:rerun-if-changed={path}");

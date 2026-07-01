@@ -82,6 +82,46 @@ fn init_source_checkout_guard_matches_runtime_home_contract() {
     assert!(output.stderr.contains("before `spark-server init`"));
 }
 
+#[cfg(unix)]
+#[test]
+fn cargo_installed_server_process_init_uses_default_home_without_source_checkout_guard() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let install_root = temp.path().join("cargo-root");
+    let installed_bin = install_root.join("bin/spark-server");
+    let home = temp.path().join("home");
+    fs::create_dir_all(installed_bin.parent().expect("bin parent")).expect("bin dir");
+    fs::create_dir_all(&home).expect("home dir");
+    fs::copy(env!("CARGO_BIN_EXE_spark-server"), &installed_bin).expect("copy binary");
+    let mut permissions = fs::metadata(&installed_bin)
+        .expect("installed metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&installed_bin, permissions).expect("installed executable");
+
+    let output = Command::new(&installed_bin)
+        .arg("init")
+        .env_clear()
+        .env("HOME", &home)
+        .output()
+        .expect("run installed spark-server");
+
+    let data_dir = home.join(".spark");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout utf8"),
+        format!(
+            "Initialized Spark at {}\nSeeded flows: {}\ncreated=9 updated=0 skipped=0\n",
+            data_dir.display(),
+            data_dir.join("flows").display()
+        )
+    );
+    assert!(data_dir.join("config/flow-catalog.toml").is_file());
+    assert!(data_dir.join("flows/examples/simple-linear.dot").is_file());
+}
+
 #[test]
 fn service_install_source_checkout_guard_matches_runtime_home_contract() {
     let env = BTreeMap::new();

@@ -3,22 +3,22 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    working_dir: /app
     ports:
       - "8000:8000"
     environment:
-      - PYTHONUNBUFFERED=1
+      - SPARK_HOME=/spark
+      - SPARK_PROJECT_ROOTS=/projects
+      - ATTRACTOR_CODEX_RUNTIME_ROOT=/codex-runtime
       - HOME=/codex-runtime
       - CODEX_HOME=/codex-runtime/.codex
       - XDG_CONFIG_HOME=/codex-runtime/.config
       - XDG_DATA_HOME=/codex-runtime/.local/share
-      - ATTRACTOR_RUNTIME_REPO_ROOT=/app
-      - ATTRACTOR_HOST_REPO_ROOT=${PWD}
-      - ATTRACTOR_CODEX_RUNTIME_ROOT=/codex-runtime
       - OPENAI_API_KEY
       - OPENAI_BASE_URL
       - OPENAI_ORG_ID
       - OPENAI_PROJECT_ID
+      - OPENAI_COMPATIBLE_BASE_URL
+      - OPENAI_COMPATIBLE_API_KEY
       - ANTHROPIC_API_KEY
       - ANTHROPIC_BASE_URL
       - GEMINI_API_KEY
@@ -30,10 +30,9 @@ services:
       - OPENROUTER_TITLE
       - LITELLM_BASE_URL
       - LITELLM_API_KEY
-    command: sh -lc "pip install -e /app && uvicorn spark.app:app --host 0.0.0.0 --port 8000 --reload"
     volumes:
-      - .:/app
       - codex_runtime:/codex-runtime
+      - spark_home:/spark
 
   frontend:
     build:
@@ -55,3 +54,4 @@ services:
 volumes:
   frontend_node_modules:
   codex_runtime:
+  spark_home:

@@ -1,1 +1,0 @@
-"""CLI compatibility fixtures."""

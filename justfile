@@ -2,12 +2,12 @@ set shell := ["bash", "-lc"]
 
 [private]
 frontend-deps:
-  if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -x frontend/node_modules/.bin/vitest || ! -x frontend/node_modules/.bin/playwright ]]; then echo "Installing frontend dependencies with npm ci..." >&2; npm --prefix frontend ci; fi
+  if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -x frontend/node_modules/.bin/vitest ]]; then echo "Installing frontend dependencies with npm ci..." >&2; npm --prefix frontend ci; fi
 
-# Developer setup for the Rust-backed source checkout and frontend.
+# Developer setup for the Cargo-backed source checkout and frontend.
 setup:
-  uv sync --dev
   npm --prefix frontend ci
+  cargo fetch
 
 dev-docker:
   bash scripts/dev-docker.sh
@@ -18,23 +18,25 @@ run-docker:
 dev-run: frontend-deps
   bash scripts/dev-run.sh
 
-# Repository guardrails for Python compatibility and frontend unit behavior.
+# Repository validation gate for the Rust cutover.
 test: frontend-deps
-  uv run pytest -q
+  cargo fmt --all -- --check
+  cargo test --workspace --all-features
   npm --prefix frontend run test:unit
+  npm --prefix frontend run build
 
-# Build the packaged Rust-backed wheel and sdist through the deliverable image.
-deliverable:
-  docker build -f Dockerfile.wheel -t spark-wheel-builder .
-  mkdir -p dist
-  docker run --rm -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -v "$PWD/dist:/out" spark-wheel-builder
+# Build local release binaries and the production frontend.
+deliverable: frontend-deps
+  npm --prefix frontend run build
+  cargo build --workspace --release
 
-[private]
-install-wheel: deliverable
-  spark_home="${SPARK_HOME:-$HOME/.spark}"; venv_dir="${spark_home}/venv"; mkdir -p "${spark_home}"; python3 -m venv "${venv_dir}"; wheel_path="$(ls -t dist/spark-[0-9]*.whl | head -n 1)"; "${venv_dir}/bin/pip" install --upgrade --force-reinstall "${wheel_path}"
+# Install the public command names from this source checkout.
+install:
+  cargo install --path crates/spark-cli --bin spark
+  cargo install --path crates/spark-server --bin spark-server
+  spark-server init
 
-install: install-wheel
-  spark_home="${SPARK_HOME:-$HOME/.spark}"; venv_dir="${spark_home}/venv"; SPARK_HOME="${spark_home}" "${venv_dir}/bin/spark-server" init
-
-install-systemd: install-wheel
-  spark_home="${SPARK_HOME:-$HOME/.spark}"; venv_dir="${spark_home}/venv"; spark_host="${SPARK_HOST:-0.0.0.0}"; spark_port="${SPARK_PORT:-8000}"; "${venv_dir}/bin/spark-server" service install --host "${spark_host}" --port "${spark_port}" --data-dir "${spark_home}"
+install-systemd:
+  cargo install --path crates/spark-cli --bin spark
+  cargo install --path crates/spark-server --bin spark-server
+  spark-server service install --host "${SPARK_HOST:-0.0.0.0}" --port "${SPARK_PORT:-8000}" --data-dir "${SPARK_HOME:-$HOME/.spark}"

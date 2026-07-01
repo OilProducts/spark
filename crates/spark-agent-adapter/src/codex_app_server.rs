@@ -1326,8 +1326,6 @@ fn first_party_tool_bin_dirs() -> Vec<PathBuf> {
             candidates.push(parent.to_path_buf());
         }
     }
-    candidates.push(repo_root().join(".venv").join(venv_bin_dir_name()));
-
     let mut seen = Vec::<String>::new();
     let mut directories = Vec::new();
     for candidate in candidates {
@@ -1343,22 +1341,6 @@ fn first_party_tool_bin_dirs() -> Vec<PathBuf> {
         directories.push(normalized);
     }
     directories
-}
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn venv_bin_dir_name() -> &'static str {
-    if cfg!(windows) {
-        "Scripts"
-    } else {
-        "bin"
-    }
 }
 
 fn path_separator() -> &'static str {

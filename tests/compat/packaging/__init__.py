@@ -1,1 +1,0 @@
-"""Packaging compatibility fixture tests."""

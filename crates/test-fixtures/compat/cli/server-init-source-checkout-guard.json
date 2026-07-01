@@ -1,0 +1,83 @@
+{
+  "command": {
+    "argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "init"
+    ],
+    "cwd": "__WORKTREE__",
+    "normalized_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "init"
+    ]
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "after": {},
+    "before": {}
+  },
+  "environment": {
+    "selected": {
+      "ANTHROPIC_API_KEY": "<redacted>",
+      "CODEX_CI": "1",
+      "CODEX_MANAGED_BY_NPM": "1",
+      "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
+      "CODEX_THREAD_ID": "019ef013-15bd-7d11-a48e-cad8977bd59e"
+    },
+    "selected_keys": [
+      "ANTHROPIC_API_KEY",
+      "CODEX_CI",
+      "CODEX_MANAGED_BY_NPM",
+      "CODEX_MANAGED_PACKAGE_ROOT",
+      "CODEX_THREAD_ID"
+    ]
+  },
+  "filesystem": {
+    "after": {},
+    "before": {}
+  },
+  "fixture_id": "cli/server-init-source-checkout-guard",
+  "item_id": "M0-I02-CLI-FILESYSTEM-FIXTURES",
+  "normalization": {
+    "tokens": {
+      "__CODEX_HOME__": "__CODEX_HOME__",
+      "__CODEX_RUNTIME_ROOT__": "__CODEX_RUNTIME_ROOT__",
+      "__FLOWS_DIR__": "__FLOWS_DIR__",
+      "__OUTPUT_DIR__": "__COMPAT_FIXTURE_ROOT__/cli",
+      "__OUTPUT__": "__COMPAT_FIXTURE_ROOT__/cli/server-init-source-checkout-guard.json",
+      "__PROJECT_DIR__": "__PROJECT_DIR__",
+      "__SPARK_HOME__": "__SPARK_HOME__",
+      "__WORKTREE__": "__WORKTREE__"
+    }
+  },
+  "paths": {
+    "attractor_codex_runtime_root": "__CODEX_RUNTIME_ROOT__",
+    "codex_home": "__CODEX_HOME__",
+    "output": "__COMPAT_FIXTURE_ROOT__/cli/server-init-source-checkout-guard.json",
+    "spark_flows_dir": "__FLOWS_DIR__",
+    "spark_home": "__SPARK_HOME__"
+  },
+  "process": {
+    "returncode": 1,
+    "stderr": "Refusing to use default runtime home ~/.spark from a source checkout at __WORKTREE__.\n\nThe default home is reserved for the installed or stable Spark instance.\nRun the source checkout with an explicit dev home before `spark-server init`, for example:\n\n  SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- init\n  SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- serve --port 8010\n",
+    "stdout": ""
+  },
+  "provenance": {
+    "capture_tool": "scripts/compat_capture.py",
+    "captured_at_utc": "2026-06-22T16:16:05.516216Z",
+    "oracle": "python-worktree",
+    "worktree_path": "__WORKTREE__"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": 1
+}

@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
@@ -186,8 +186,8 @@ fn initialize_and_turn_payload_contracts_match_codex_app_server_schema() {
 fn model_list_is_supported_and_matches_generated_schema_shape() {
     let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
-    let fake_bin = fake_model_list_codex_app_server_bin(temp.path());
-    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_bin.as_os_str());
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "model-list");
     let _runtime_guard = EnvVarGuard::set(
         "ATTRACTOR_CODEX_RUNTIME_ROOT",
         temp.path().join("codex-runtime"),
@@ -384,42 +384,6 @@ fn assert_only_schema_declared_keys(schema: &str, instance: &Value) {
     assert!(unknown.is_empty(), "unknown schema keys: {unknown:?}");
 }
 
-fn fake_model_list_codex_app_server_bin(root: &Path) -> PathBuf {
-    let bin = root.join("fake-codex-app-server-model-list.py");
-    let script = r#"#!/usr/bin/env python3
-import json
-import sys
-
-for raw in sys.stdin:
-    message = json.loads(raw)
-    method = message.get("method")
-    request_id = message.get("id")
-    if method == "initialize":
-        print(json.dumps({"id": request_id, "result": {"userAgent": "fake"}}), flush=True)
-    elif method == "initialized":
-        continue
-    elif method == "model/list":
-        print(json.dumps({"id": request_id, "result": {"data": [{
-            "id": "gpt-codex-test",
-            "model": "gpt-codex-test",
-            "displayName": "Codex Test",
-            "description": "Test model",
-            "isDefault": True,
-            "hidden": False,
-            "defaultReasoningEffort": "medium",
-            "supportedReasoningEfforts": [{"reasoningEffort": "medium", "description": "Medium"}]
-        }]}}), flush=True)
-    else:
-        print(json.dumps({"id": request_id, "error": {"code": -32601, "message": "unexpected method " + str(method)}}), flush=True)
-"#;
-    fs::write(&bin, script).expect("write fake codex app-server");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut permissions = fs::metadata(&bin).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&bin, permissions).expect("chmod fake codex app-server");
-    }
-    bin
+fn fake_codex_app_server_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_spark-agent-fake-codex-app-server")
 }

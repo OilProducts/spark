@@ -24,7 +24,8 @@ use serde_json::{json, Map, Value};
 use spark_common::logging::init_spark_logging;
 use spark_common::paths::{Environment, ProcessEnvironment};
 use spark_common::source_checkout::{
-    require_explicit_agent_base_url_with_env, source_checkout_root_from_manifest,
+    installed_package_root_from_executable, require_explicit_agent_base_url_with_env,
+    source_checkout_root_from_manifest,
 };
 use spark_common::SparkCommonError;
 use tracing::Level;
@@ -2300,20 +2301,10 @@ fn source_guard_root(binary_name: &str) -> PathBuf {
     let Ok(executable_path) = std::env::current_exe() else {
         return source_checkout_root_from_manifest();
     };
-    if executable_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .map(|name| name == binary_name || name == format!("{binary_name}.exe"))
-        .unwrap_or(false)
+    if let Some(package_root) =
+        installed_package_root_from_executable(&executable_path, binary_name)
     {
-        if let Some(package_root) = executable_path
-            .parent()
-            .filter(|parent| parent.file_name().and_then(|value| value.to_str()) == Some("bin"))
-            .and_then(Path::parent)
-            .filter(|parent| parent.file_name().and_then(|value| value.to_str()) == Some("spark"))
-        {
-            return package_root.to_path_buf();
-        }
+        return package_root;
     }
     source_checkout_root_from_manifest()
 }

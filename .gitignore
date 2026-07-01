@@ -1,8 +1,5 @@
 agent-notes.md
 node_modules/
-__pycache__/
-*.pyc
-*.egg-info/
 .spark/
 codex-app-server.schema/
 .DS_Store
@@ -11,11 +8,6 @@ build/
 dist/
 target/
 frontend/.tmp-*/
-frontend/src/__tests__/.tmp-compat-probes/
-src/spark/ui_dist/
-tests/compat/_generated/
-tests/compat/.tmp/
-tests/compat/.server-logs/
 .spark/rust-rewrite/current/validation/generated/cli/**
 .spark/rust-rewrite/current/validation/generated/filesystem/**
 .spark/rust-rewrite/current/validation/generated/http/**

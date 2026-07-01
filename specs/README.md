@@ -24,8 +24,3 @@ Execution artifacts stay outside this folder:
   Canonical operator-facing client specification: presentation boundaries, workflows, UX rules, client-state rules, and story traceability.
 - `spark-flow-extensions.md`
   Canonical Spark-owned flow-surface extension contract layered onto Attractor.
-
-## Acceptance Workflow Assets
-
-High-level workflow verification assets live outside `specs/` under:
-- `../tests/acceptance/agent-workflows/`

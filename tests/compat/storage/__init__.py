@@ -1,1 +1,0 @@
-"""Filesystem compatibility fixtures."""

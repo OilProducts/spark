@@ -17,7 +17,8 @@ use spark_common::settings::{
     resolve_settings_with_env, validate_settings, SettingsOverrides, SparkSettings,
 };
 use spark_common::source_checkout::{
-    require_explicit_dev_home_with_env, source_checkout_root_from_manifest,
+    installed_package_root_from_executable, require_explicit_dev_home_with_env,
+    source_checkout_root_from_manifest,
 };
 use spark_common::SparkCommonError;
 use tracing::Level;
@@ -483,7 +484,6 @@ fn build_service_unit(
 ) -> String {
     let provider_env_file = settings.config_dir.join("provider.env");
     let mut service_environment = vec![
-        quote_systemd_arg("PYTHONUNBUFFERED=1"),
         quote_systemd_arg(format!("PATH={path_env}")),
         quote_systemd_arg(format!("SPARK_HOME={}", settings.data_dir.display())),
         quote_systemd_arg(format!("SPARK_FLOWS_DIR={}", settings.flows_dir.display())),
@@ -945,22 +945,6 @@ fn source_guard_root(binary_name: &str) -> PathBuf {
         return package_root;
     }
     source_checkout_root_from_manifest()
-}
-
-fn installed_package_root_from_executable(
-    executable_path: &Path,
-    binary_name: &str,
-) -> Option<PathBuf> {
-    let name = executable_path.file_name()?.to_str()?;
-    if name != binary_name && name != format!("{binary_name}.exe") {
-        return None;
-    }
-    executable_path
-        .parent()
-        .filter(|parent| parent.file_name().and_then(|value| value.to_str()) == Some("bin"))
-        .and_then(Path::parent)
-        .filter(|parent| parent.file_name().and_then(|value| value.to_str()) == Some("spark"))
-        .map(Path::to_path_buf)
 }
 
 fn is_help_arg(value: &str) -> bool {

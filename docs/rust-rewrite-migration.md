@@ -1,243 +1,41 @@
-# Rust Rewrite Migration Source Of Truth
+# Rust Cutover Record
 
-This committed document is the migration source of truth for Rust-backed Spark. It records adapter ownership, retained Python modules, deprecated compatibility surfaces, explicit non-goals, and future decision candidates using committed repository files: docs, specs, manifests, crates, and tests. Validation of this document uses committed repository files only. It does not change any user command, HTTP route, SSE payload, storage layout, package name, service workflow, or frontend contract.
-
-## Scope
-
-- Public commands remain `spark` and `spark-server`.
-- Rust crates own the contracts already implemented and validated through the rewrite milestones.
-- Python modules remain valid where this document classifies them as retained behavior.
-- Deprecated compatibility routes remain supported until a later contract decision and validation update approve an incompatible change.
-- No open policy gaps remain after the post-gap spec/API drift audit. Explicit non-goals and future compatibility-break candidates are still not counted as closed parity.
-
-## Binding Unified LLM Contract Decisions
-
-| Decision | Documentation boundary |
-| --- | --- |
-| `CD-ULLM-RUST-001` | Normal Spark server and CLI unified LLM execution is Rust-owned through `crates/spark-server`, `crates/spark-cli`, `crates/attractor-runtime`, `crates/spark-agent-adapter`, and `crates/unified-llm-adapter`; it does not import, shell out to, or wrap `src.unified_llm` provider clients, including `src.unified_llm.adapters` or `src.unified_llm.provider_utils`, for normal provider execution. |
-| `CD-ULLM-RUST-015` | Python `unified_llm` checks in `tests/compat/providers` and `tests/adapters` are retained oracle or compatibility support; they do not replace Rust-owned behavioral validation through Rust crate tests and `uv run pytest -q`. |
-| `CD-ULLM-RUST-016` | Rust-owned surfaces are model catalog/profile resolution, request DTOs, provider routing, native/compatible provider adapters, streaming, errors, retry, tools, structured output, middleware, timeout, usage, launch/profile wiring, and HTTP transport in `crates/unified-llm-adapter` plus Rust consumers. Retained Python surfaces are compatibility tests, oracle fixture generation, historical adapter checks, and package data under `src/unified_llm`. Unsupported/deferred provider capabilities are live SDK/network error-shape parity beyond normalized public errors, persistent provider cache resources, compatible-provider advisory latest-model defaults, Responses-only compatible-provider features, and currently rejected audio/document inputs. Optional live smoke prerequisites are explicit pytest or Rust live-smoke selection plus provider credentials supplied through process environment variables. |
-| `CD-ULLM-RUST-018` | Spark LLM profiles and Attractor launch context are Rust-owned runtime inputs through `crates/unified-llm-adapter/src/profiles.rs`, `crates/unified-llm-adapter/src/resolution.rs`, `crates/attractor-api/src/lib.rs`, and runtime keys `llm-profiles.toml`, `_attractor.runtime.launch_model`, `_attractor.runtime.launch_provider`, `_attractor.runtime.launch_profile`, and `_attractor.runtime.launch_reasoning_effort`; public metadata exposes only redacted profile fields while Python `src/spark/llm_profiles.py` remains a retained API/compatibility mirror. |
-
-## Agent Boundary
-
-| Surface | Classification | Current owner | Retained Python status | Evidence |
-| --- | --- | --- | --- | --- |
-| Normal Spark chat and `agent-turn` request/response payloads | `native_rust` | `crates/spark-agent-adapter` | `src/spark/chat/session.py` is a Python facade that serializes to the `spark-agent-boundary` Rust binary and maps responses back to Workspace records; `src/agent` is retained compatibility/oracle/fallback/historical implementation support only | `crates/spark-agent-adapter/tests/llm_backend_contracts.rs`; `tests/compat/agent/test_m6b_rust_boundary_adapter.py` |
-| Turn output DTOs, stream event payloads, token usage, raw logs, request-user-input records, and thread resume failure payloads | `native_rust` | `crates/spark-agent-adapter`; `spark_common` event DTOs | Python facade preserves the serialized Rust payloads in conversation records; Python source events are compatibility inputs, not the binding runtime contract | `crates/spark-agent-adapter/tests/agent_event_contracts.rs`; `crates/spark-agent-adapter/tests/llm_backend_contracts.rs`; `src/spark/chat/session.py` |
-| Codergen prompt selection, context reads, simulation, prompt/response/status artifacts, usage, and failure payloads | `rust_owned_adapter` | `crates/spark-agent-adapter`; `crates/attractor-runtime` | Python codergen code is retained compatibility/oracle/fallback support for legacy paths; normal codergen and codergen-adjacent agent mode enter the Rust adapter boundary | `crates/spark-agent-adapter/tests/codergen_contracts.rs`; `crates/spark-agent-adapter/tests/llm_backend_contracts.rs`; `crates/attractor-runtime/tests/codergen_runtime_contracts.rs` |
-| Status envelope resolution and repair prompt behavior | `native_rust` | `crates/spark-agent-adapter` | Python codergen contract helpers are retained compatibility/oracle support, not the normal owner of status-envelope handling | `crates/spark-agent-adapter/tests/codergen_contracts.rs`; Rust codergen contract tests |
-| Agent session loop, tools, execution environment, project context, provider profiles, steering, child intervention, and streaming behavior | `native_rust` | `crates/spark-agent-adapter` | `src/agent` remains present for compatibility tests, oracle fixture generation, fallback handling, and historical comparison only; it is not the normal Spark chat, agent-turn, or codergen-adjacent agent runtime | `crates/spark-agent-adapter/tests/runtime_contracts.rs`; `crates/spark-agent-adapter/tests/tool_dispatch_contracts.rs`; `crates/spark-agent-adapter/tests/local_environment_contracts.rs`; `crates/spark-agent-adapter/tests/provider_profile_contracts.rs` |
-
-The Workspace boundary remains the public conversation and live-event API: Workspace chat records, request-user-input records, tool-call records, selected provider/model/profile/reasoning values, and run-launch metadata are persisted and served through Workspace routes. The HTTP boundary remains Rust-owned by `crates/spark-http`, `crates/spark-workspace`, and `crates/attractor-api`; those crates expose the public routes and SSE delivery while routing normal agent work to the Rust adapter. The Python facade boundary is intentionally thin: [src/spark/chat/session.py](../src/spark/chat/session.py) normalizes provider selectors, converts persisted history, launches or locates `spark-agent-boundary`, and converts returned Rust event payloads into Workspace records. The Attractor codergen boundary is `crates/attractor-runtime` plus `crates/spark-agent-adapter`: Attractor supplies node prompt/context/runtime metadata and consumes outcomes, usage, events, raw logs, status artifacts, and failure payloads returned by the Rust adapter.
-
-Provider configuration is read by the Rust provider/client stack. Supported agent selectors are `codex`, `openai`, `anthropic`, `gemini`, `openrouter`, `litellm`, and `openai_compatible`; facade inputs normalize hyphenated compatible names and reject unsupported selectors before invoking the boundary. Profile selectors preserve request and session identity while dispatching to the configured provider, and profile-backed OpenAI-compatible calls use the configured endpoint and key requirements. Runtime `reasoning_effort` values such as `low`, `medium`, `high`, and null are normalized before low-level unified LLM requests and are retained in request metadata and provider-specific options when supported.
-
-Project instruction loading is Rust-owned in the session prompt path. Discovery walks from git root or working directory to the active working directory, always considers `AGENTS.md`, includes only the active provider instruction file among `.codex/instructions.md`, `CLAUDE.md`, and `GEMINI.md`, and applies the 32 KB instruction budget with a truncation marker. Event consumption is also Rust-owned at the adapter boundary: tool, assistant, reasoning, plan, usage, request-user-input, steering, warning, loop-detection, turn-limit, lifecycle, and error events are serialized as adapter output and then mapped by the Python facade or Attractor consumer without redefining ownership.
-
-Steering and child intervention are part of the Rust session contract. `session.steer` queues a user-role steering turn for the next model call, including after the current tool round. Codergen agent mode registers active Rust sessions for child-intervention delivery; interventions are delivered only when child run, root run, and target node identity match, and stale, inactive, or mismatched requests are rejected with an unsupported-steering result. Execution environments are typed and swappable at the Rust boundary: local sessions and child sessions share the selected backend, scoped child working directories reject path escape before registration, and additional backends must preserve the same observable file, command, tool, stream, and failure contracts.
-
-Recoverable tool errors remain model-visible tool results and stream events, including full output or error data where the event contract carries it. Session-closing failures are distinct: unrecoverable errors emit `ERROR`, close or abort the session, prevent queued follow-up processing, and preserve thread-resume failure payloads in the serialized agent-turn output. Out-of-scope extensions for this boundary include removing retained Python `src/agent`, claiming Python tests as completion evidence for Rust runtime behavior, adding remote-worker execution, or changing public HTTP/SSE/storage shapes without a separate contract decision.
-
-## Distribution Readiness Boundary
-
-Distribution guidance for this migration is bounded by the Rust-owned runtime path that is observable in committed code and tests. Packaged and source-checkout Spark commands still expose the public `spark` and `spark-server` names, but normal Spark chat, Workspace conversation turns, HTTP turn routes, live SSE delivery, Attractor codergen execution, and codergen-adjacent agent turns enter `crates/spark-agent-adapter` for agent behavior and `crates/unified-llm-adapter` for provider/model behavior. The retained `src/agent` package remains compatibility, oracle, fallback, and historical implementation support only; it is not the normal runtime implementation for Spark chat, `agent-turn`, or codergen-adjacent execution.
-
-The boundary payload is the adapter contract, not an implementation detail of the Python facade. `AgentTurnOutput` carries `TurnStreamEvent` records, final assistant text, token usage payloads, normalized usage breakdowns, raw log lines, and thread resume failures. `SessionEvent` maps Rust session events to Workspace `TurnStreamEvent` shapes for assistant text, reasoning, model tool calls, tool execution, token usage, request-user-input records, lifecycle events, warnings, and errors. `src/spark/chat/session.py` serializes Workspace chat requests to the `spark-agent-boundary` Rust binary, normalizes provider/profile/model/reasoning inputs before the boundary call, registers request-user-input waits from returned event payloads, emits raw log lines through the existing raw RPC logger hook, and converts serialized Rust events back into persisted conversation records. `crates/spark-http` and `crates/spark-workspace` keep the public HTTP and SSE surfaces, while the Python facade only preserves those shapes for callers that still enter through Python package APIs.
-
-Attractor codergen integration consumes the same Rust-owned agent contract through `crates/attractor-runtime`, `crates/spark-agent-adapter`, and the codergen adapter bridge in `src/attractor/api/codex_backends.py`. Codergen requests pass prompt, context, model, provider, profile, reasoning, status-envelope, and write-contract data into the Rust adapter; results return outcomes, status artifacts, events, usage deltas, raw logs, failure payloads, and thread continuity errors without redefining the provider or session owner. Child interventions are delivered as steering only to the matching active Rust codergen session, and mismatches are rejected instead of mutating another session.
-
-Provider configuration is process-environment and Spark config driven. Environment-backed providers are OpenAI, Anthropic, Gemini, OpenRouter, LiteLLM, and OpenAI-compatible Chat Completions endpoints; profile-backed OpenAI-compatible providers come from `llm-profiles.toml` and keep public metadata redacted. OpenAI, Anthropic, and Gemini native agent profiles include provider-specific editing/tool surfaces: OpenAI uses the Codex-style `apply_patch` path for targeted edits, Anthropic uses its `edit_file` old/new-string path for existing files, and Gemini uses its `edit_file` search-and-replace shape with optional Gemini web capabilities controlled by profile options. `reasoning_effort` is normalized through chat, run launch, recovery, and codergen paths and is passed to the low-level Rust `Request` plus provider-specific option maps where supported.
-
-Project instruction loading is part of the Rust prompt context path. `AGENTS.md` is always considered, while only the active provider-specific instruction file is included among `.codex/instructions.md`, `CLAUDE.md`, and `GEMINI.md`. Event consumers should treat adapter-emitted `TurnStreamEvent` values as the public stream contract and should not infer hidden session state from raw provider responses.
-
-Validation evidence must remain behavioral. The repository completion gate is `uv run pytest -q`, which includes Python compatibility guardrails and pytest-exposed Rust checks where those tests invoke focused `cargo test` commands for Workspace, HTTP, and adapter contracts. Direct Rust coverage for local development remains the crate tests under `crates/spark-agent-adapter/tests` and `crates/unified-llm-adapter/tests`, including event mapping, runtime/session behavior, provider/profile selection, prompt context, tool dispatch, local execution environment behavior, codergen, native provider parity, compatible provider parity, HTTP transport, runtime boundary, and live-smoke harness contracts. Historical Python `src/agent` tests do not complete the Rust runtime distribution evidence by themselves; they are retained only as compatibility and oracle checks alongside Rust crate, Workspace/API, cross-provider, documentation, and full-repository validation gates.
-
-Optional live smoke is separate from ordinary validation. Default validation is credential-free. Rust live provider smoke runs only when `UNIFIED_LLM_ADAPTER_RUN_LIVE=1` is set and credentials are present in the process environment; retained Python adapter live smoke remains explicitly selected with pytest live options. Live smoke may support release confidence, but it is not required for the ordinary `uv run pytest -q` completion gate and must not commit credentials, captured provider logs, or local smoke artifacts.
-
-## Explicit Out-Of-Scope Extensions
-
-| Extension | Distribution status | Required evidence before support claims |
-| --- | --- | --- |
-| MCP runtime integration | Out of scope for this migration boundary | Separate implemented contract, public API decision, and validation evidence |
-| Skills as a supported packaged runtime feature | Out of scope unless wired through a separate product contract | Separate implementation and tests for loading, isolation, configuration, and event/error behavior |
-| New sandbox policy systems | Out of scope for the agent distribution claim | Separate policy contract plus file, command, approval, and failure-mode validation |
-| Automatic context compaction or summarization | Out of scope for the Rust agent boundary; current behavior is warning-only context usage reporting | Separate session behavior, persistence, and stream-event validation |
-| New approval systems or read-before-write guardrails | Out of scope unless they have separate implemented evidence | Explicit host-control contract, user-facing behavior tests, and compatibility notes |
-| Removing retained Python `src/agent` or treating it as normal runtime | Out of scope for M7 distribution guidance | Separate removal plan and compatibility validation |
-
-## M3 Agent Context And Host Controls Status
-
-M3 records the host-facing controls that shape Rust-owned agent request construction and tool-result delivery. Tool output truncation applies per-tool character limits before line limits and keeps UTF-8 boundaries valid. The `ToolResult` sent back to the model contains the truncated text and visible omission marker, while `TOOL_CALL_END` carries the full untruncated output or recoverable error data plus the model-visible `model_content`.
-
-Prompt context is layered as provider base instructions, environment context, active tool descriptions, project instructions, and user overrides. The session snapshots that prompt context at start, including working directory, git repository status, branch, platform, OS version, current date, model display name, knowledge cutoff when known, modified and untracked counts, and recent commit messages. Project instruction discovery walks root to leaf, always considers `AGENTS.md`, includes only the active provider instruction file among `.codex/instructions.md`, `CLAUDE.md`, and `GEMINI.md`, and applies the 32 KB project instruction budget with the documented truncation marker.
-
-Context warnings use the one-token-per-four-characters estimate and emit `WARNING` above 80 percent of the provider context window without automatic compaction or summarization. `session.steer` queues `SteeringTurn` values for the next model request, including after the current tool round, emits `STEERING_INJECTED`, and converts steering into user-role request messages without restarting history. `session.follow_up` queues another user input after natural completion on the same history and event stream, and close/abort paths prevent later follow-up processing. Runtime `reasoning_effort` values, including `low`, `medium`, `high`, and null, are read from the current session config for each low-level unified LLM `Request` and merged into provider-specific options when the active provider supports them.
-
-Turn limits and repeated tool-call loop detection are observable session controls. Round and session limits emit `TURN_LIMIT` and return the session to idle. Repeating tool-call signatures of pattern length 1, 2, or 3 emit `LOOP_DETECTION` and add recovery steering for the next request without rewriting assistant output. Recoverable tool errors remain tool results; unrecoverable session errors emit `ERROR` and close the session.
-
-M3 validation is behavioral and credential-free. Focused retained-agent compatibility coverage is in `tests/agent/test_truncation.py`, `tests/agent/test_prompts.py`, `tests/agent/test_project_docs.py`, `tests/agent/test_context_usage.py`, `tests/agent/test_steering.py`, `tests/agent/test_reasoning_effort.py`, and `tests/agent/test_loop_detection.py`; these checks do not make `src/agent` the normal runtime owner. Rust-facing compatibility fixtures live under `tests/compat/agent`, including `agent/m3-tool-event-truncation` and `agent/m3-context-usage-warning`. Rust adapter contract coverage includes `crates/spark-agent-adapter/tests/tool_dispatch_contracts.rs`, `crates/spark-agent-adapter/tests/prompt_context_contracts.rs`, `crates/spark-agent-adapter/tests/runtime_contracts.rs`, `crates/spark-agent-adapter/tests/llm_backend_contracts.rs`, and `crates/spark-agent-adapter/tests/codergen_contracts.rs`. The repository completion gate remains:
+Spark now uses a Cargo-only distribution model. The supported install path is:
 
 ```bash
-uv run pytest -q
+cargo install --path crates/spark-cli --bin spark
+cargo install --path crates/spark-server --bin spark-server
 ```
 
-## Unified LLM Boundary
+The public command names remain `spark` and `spark-server`.
 
-| Surface | Classification | Current owner | Retained Python status | Evidence |
-| --- | --- | --- | --- | --- |
-| Model catalog, provider environment, profile metadata, and installed provider resources | `native_rust` | `crates/unified-llm-adapter` | Rust mirrors the Python oracle and packaged resources | `providers/model-catalog-env-resolution`; `providers/m6-provider-profile-resource-parity`; Rust adapter/profile tests |
-| Request DTOs, tool/structured-output payloads, retry, errors, stream events, and usage/cost normalization | `native_rust` | `crates/unified-llm-adapter` | Rust owns the normal Spark server and CLI contract; Python clients are retained for compatibility and oracle fixture support outside normal Spark provider execution | `providers/request-tool-structured-output`; `providers/retry-error-usage-stream`; adapter contract tests |
-| Provider adapter routing from Rust callers to provider implementations | `rust_owned_adapter` | `crates/unified-llm-adapter` | Rust callers route through Rust `ProviderAdapter` implementations; Python provider clients are historical compatibility/oracle surfaces, not wrappers used by Spark server or CLI execution | M3 and M6 provider/model validation artifacts |
-| Provider-specific clients, cross-provider streaming normalization, structured-output fallback handling, middleware, and timeouts | `retained_python_module` | `src/unified_llm` | Retained Python modules are guarded only as compatibility, oracle, and package-data support; they are not normal provider execution for Rust-backed Spark | `tests/adapters/test_openai_adapter.py`; `tests/adapters/test_anthropic_adapter.py`; `tests/adapters/test_cross_provider_parity.py` |
+## Removed Boundaries
 
-## LLM Runtime Inputs
+- Python runtime packages under `src/`
+- Python wheel and sdist packaging metadata
+- Python launcher compatibility wrappers
+- pytest compatibility/oracle suites
+- install recipes that create Python virtual environments
 
-| Input | Classification | Runtime owner | Public or retained surface | Evidence |
-| --- | --- | --- | --- | --- |
-| Spark LLM profile config `llm-profiles.toml` | `rust_owned_runtime_input` | `crates/unified-llm-adapter/src/profiles.rs` | Public metadata exposes `id`, `label`, `provider`, `models`, `default_model`, and `configured`; it redacts `base_url`, `api_key_env`, and secrets. Python `src/spark/llm_profiles.py` remains an API/compatibility mirror. | `crates/unified-llm-adapter/tests/llm_profile_contracts.rs`; `tests/test_llm_profiles.py`; `tests/api/test_llm_profiles_endpoint.py` |
-| Attractor launch context keys `_attractor.runtime.launch_model`, `_attractor.runtime.launch_provider`, `_attractor.runtime.launch_profile`, and `_attractor.runtime.launch_reasoning_effort` | `rust_owned_runtime_input` | `crates/attractor-api/src/lib.rs`; `crates/unified-llm-adapter/src/resolution.rs` | Provider, model, profile, and reasoning inputs resolve from explicit launch values, runtime context, graph/node/style defaults, backend fallback, profile defaults, and catalog defaults according to the Rust resolution helpers. | `crates/attractor-api/tests/pipeline_lifecycle_contracts.rs`; `crates/unified-llm-adapter/tests/runtime_boundary_contracts.rs`; `crates/unified-llm-adapter/tests/public_surface_contracts.rs` |
-| Profile-backed OpenAI-compatible provider selection | `rust_owned_runtime_input` | `crates/unified-llm-adapter/src/profiles.rs`; `crates/unified-llm-adapter/src/openai_compatible.rs` | Profile IDs preserve request/session identity while adapter dispatch uses the profile provider `openai_compatible`; local no-key profiles use `require_api_key = false`, and profiles with `api_key_env` require a non-empty process environment value. | `crates/unified-llm-adapter/tests/llm_profile_contracts.rs`; `crates/spark-agent-adapter/tests/llm_backend_contracts.rs`; `crates/attractor-runtime/tests/core_handler_contracts.rs` |
+## Rust-Owned Assets
 
-## Deferred Unified LLM Capabilities
+Runtime assets live under [crates/spark-assets/assets](../crates/spark-assets/assets):
 
-| Capability | Status | Evidence |
-| --- | --- | --- |
-| Credential-backed smoke execution in ordinary validation | `non_goal_for_ordinary_validation` | `M6 Gated Live Provider Smoke Plan`; `CD-ULLM-RUST-015` |
-| Exact live SDK or network error-shape parity beyond normalized public errors | `future_work` | `CD-ULLM-RUST-016`; `CD-ULLM-RUST-019` |
-| Provider-specific persistent cache resources | `future_work` | `CD-ULLM-RUST-008`; `CD-ULLM-RUST-016` |
-| OpenRouter, LiteLLM, and OpenAI-compatible advisory latest-model defaults | `future_work` | `CD-ULLM-RUST-016`; `CD-ULLM-RUST-017` |
-| Responses-only compatible-provider features and built-in Responses tools | `future_work` | `crates/unified-llm-adapter/tests/openai_compatible_contracts.rs`; `CD-ULLM-RUST-005` |
-| Native audio and document provider inputs | `currently_rejected` | `crates/unified-llm-adapter/tests/native_request_contracts.rs`; `CD-ULLM-RUST-016` |
+- `flows/`
+- `guides/`
+- `unified_llm/data/models.json`
 
-## M5 Runtime Wiring, Profiles, And Launch Resolution Status
+The frontend remains source-built with `npm --prefix frontend run build`. `spark-assets` embeds `frontend/dist` when present and uses its existing fallback only for development.
 
-M5 records the normal Rust-owned runtime path for Spark LLM calls. `crates/spark-server` builds an `attractor_runtime::RuntimeHandlerRunner` with a `unified_llm_adapter::Client` loaded from environment and Spark profile config; `crates/attractor-runtime` passes launch and run-record LLM fallback values into node execution; `crates/spark-agent-adapter` turns codergen and agent-turn requests into low-level `unified_llm_adapter::Request` values; and `crates/unified-llm-adapter` owns provider/profile/model/reasoning resolution before dispatching to registered Rust `ProviderAdapter` instances. The CLI path in `crates/spark-cli` normalizes user-supplied launch, continue, conversation-run, provider, profile, model, and reasoning flags into HTTP payloads consumed by the Rust server/runtime path.
+## Validation Gate
 
-Normal M5 Spark server, CLI, Attractor, codergen, agent-turn, profile, and high-level generation paths do not import, shell out to, or wrap `src.unified_llm.adapters` or `src.unified_llm.provider_utils` for provider execution. The retained Python `src/unified_llm` package remains valid only for compatibility tests, oracle fixture generation, and package data such as the model catalog. Those Python surfaces are retained compatibility/oracle/package-data surfaces, not normal provider execution paths for this milestone.
+The cutover validation gate is:
 
-Source-checkout `uv run spark` and `uv run spark-server` commands are development entry points for the public command surface. They dispatch to packaged Rust payloads when present, otherwise to built workspace binaries under `target/debug` or `target/release`; when those binaries are unavailable, they fail with explicit `cargo build` instructions. They do not enter Python Spark CLI, server, or provider fallback paths, and they do not change the CD-ULLM-RUST-001 runtime ownership boundary: when normal Spark server or CLI execution reaches unified LLM provider work, that execution remains Rust-owned, while retained Python `unified_llm` code remains compatibility/oracle/package-data support.
+```bash
+cargo fmt --all -- --check
+cargo test --workspace --all-features
+npm --prefix frontend run test:unit
+npm --prefix frontend run build
+```
 
-Spark profile loading is Rust-owned through `llm-profiles.toml` under the Spark config directory. Supported entries are `[profiles.<id>]` tables with `provider = "openai_compatible"`, a non-empty `base_url`, a non-empty `models` list, optional `label`, optional `api_key_env`, and optional `default_model` constrained to the profile's model list. Public profile metadata exposes only `id`, `label`, `provider`, `models`, `default_model`, and `configured`; it redacts `base_url`, `api_key_env`, and secret values. Profiles with `api_key_env` are configured only when the referenced process environment value is non-empty. Profile-backed adapter construction uses the OpenAI-compatible Chat Completions adapter with the profile endpoint, requires an API key only when `api_key_env` is present, permits local no-key profiles with `require_api_key = false`, and surfaces missing or malformed profile fields as configuration errors.
-
-Launch context resolution is Rust-owned for `_attractor.runtime.launch_model`, `_attractor.runtime.launch_provider`, `_attractor.runtime.launch_profile`, and `_attractor.runtime.launch_reasoning_effort`. Node/style values win before launch context, launch context wins before run/backend fallback values, and fallbacks win before defaults. Provider and reasoning values are normalized lowercase. The display model placeholder `codex default (config/profile)` is treated as omitted for model selection, and generated default reasoning placeholders do not override launch-time reasoning because the runtime carries an explicit default-placeholder marker.
-
-High-level provider and model resolution integrates explicit request values, profile selectors, client defaults, native latest-model fallback, and OpenAI-compatible explicit-model requirements. Profile IDs supplied through provider selectors are preserved in request metadata and session identity while the low-level adapter call routes to the profile provider, currently `openai_compatible`. Native providers `openai`, `anthropic`, and `gemini` may use catalog latest-model fallback when the requested capabilities match; compatible providers `openrouter`, `litellm`, and `openai_compatible` still require an explicit request model or active profile default.
-
-M5 validation evidence is behavioral and credential-free. Rust-facing coverage includes `cargo test -p unified-llm-adapter --test llm_profile_contracts`, `cargo test -p unified-llm-adapter --test runtime_boundary_contracts`, the high-level profile/model tests in `cargo test -p unified-llm-adapter --test public_surface_contracts`, `cargo test -p spark-agent-adapter --test llm_backend_contracts`, Attractor launch/profile coverage in `cargo test -p attractor-runtime --test core_handler_contracts`, and CLI/server shell contract tests in `cargo test -p spark-cli --test cli_shell_contracts` and `cargo test -p spark-server --test server_shell_contracts`. Retained Python compatibility/oracle coverage remains `uv run pytest tests/compat/providers -q` and `uv run pytest tests/adapters -q`. The repository completion gate for this milestone remains `uv run pytest -q`.
-
-M7 closes the M5-adjacent production transport gap for normal Rust provider execution. Remaining adjacent capabilities are broader live SDK/network error-shape parity, keeping credential-backed smoke execution outside ordinary validation, and future provider feature expansion beyond the current Rust adapters.
-
-## M6 Unified LLM Boundary Closure
-
-M6 closes the unified LLM migration documentation for the currently delivered runtime boundary. Normal Spark server and CLI execution is Rust-owned: `spark-server` and `spark-cli` send launch/profile/model/provider inputs into `crates/attractor-runtime`, `crates/spark-agent-adapter` lowers generation requests to `unified_llm_adapter::Request`, and `crates/unified-llm-adapter` performs provider/profile/model resolution, request translation, stream translation, error normalization, retry policy support, usage accounting, tools, structured output, middleware, timeouts, and provider dispatch through Rust `ProviderAdapter` implementations. That path does not import, shell out to, or wrap `src.unified_llm` provider clients for normal Spark provider execution.
-
-The retained Python `src/unified_llm` package remains intentionally present in three roles. First, `tests/compat/providers` uses it as an oracle for fixture-backed parity observations such as model catalog/profile resources, request/tool/structured-output DTOs, retry/error/usage/stream behavior, and package-data compatibility. Second, `tests/adapters` guards historical provider adapter behavior as compatibility evidence, including optional comparison smoke runs. Third, `src/unified_llm/data/models.json` and related loaders remain package-data support while Rust mirrors the model catalog and provider profile behavior. These retained surfaces are not the binding normal runtime path for Spark server or CLI provider execution.
-
-Rust-facing validation is behavioral. `cargo test -p unified-llm-adapter --test native_provider_parity_matrix` covers OpenAI, Anthropic, and Gemini provider routing, request translation, image URL/data/local-path inputs, structured output, provider option isolation, response translation, streaming delta/final-text parity, usage, reasoning/thinking, cache accounting, authentication errors, and rate-limit errors. `cargo test -p unified-llm-adapter --test compatible_provider_parity_matrix` covers OpenAI-compatible, OpenRouter, and LiteLLM Chat Completions routing, explicit model/profile resolution, environment configuration, unsupported feature warnings, usage, errors, and streaming without treating those providers as native OpenAI Responses implementations.
-
-Additional Rust behavior coverage comes from `cargo test -p unified-llm-adapter --test public_surface_contracts` for public DTOs, low-level routing, retry boundaries, high-level retries, active/passive tools, ordered batched tool continuation, streaming tool loops, structured-output generation/streaming, middleware, timeout, usage, and concurrency contracts; `cargo test -p unified-llm-adapter --test native_request_contracts` for provider-native request/response translation, prompt caching, thinking continuation, cache usage, media handling, and explicitly rejected audio/document inputs; `cargo test -p unified-llm-adapter --test openai_compatible_contracts` for Chat Completions request/response/error/SSE compatibility; and `cargo test -p unified-llm-adapter --test runtime_boundary_contracts` plus `cargo test -p unified-llm-adapter --test adapter_contracts` for runtime resolution and Python-oracle fixture parity. Retained Python checks remain `uv run pytest tests/compat/providers -q` and `uv run pytest tests/adapters -q`, while `uv run pytest -q` is the repository completion gate.
-
-Unsupported or intentionally deferred provider capabilities remain explicit non-goals or future work rather than silent gaps. Credential-backed smoke execution in ordinary validation is an explicit non-goal; default validation remains credential-free. Exact live SDK/network error-shape parity beyond normalized public errors, provider-specific persistent cache resource management, OpenRouter/LiteLLM/OpenAI-compatible advisory latest-model defaults, and compatible-provider support for Responses-only options or built-in Responses tools are future work. Audio and document content for native providers is currently rejected with provider-scoped errors. Compatible providers continue to surface unsupported Responses-only behavior through warnings and keep requiring an explicit request model or profile default.
-
-Optional real-key checks are operational smoke tests, not the binding migration contract. They are gated by explicit pytest selection and provider credentials as described in the M6 gated live provider smoke plan below.
-
-## M6 Gated Live Provider Smoke Plan
-
-M6 keeps ordinary validation credential-free while documenting opt-in real-key checks for retained Python compatibility smoke behavior. `uv run pytest -q` does not make OpenAI, Anthropic, Gemini, or OpenAI-compatible API calls: tests marked `live` or `live_smoke` are skipped by default unless the operator explicitly selects them with `--run-live`, `-m live`, or the agent live-smoke gate. Missing provider credentials skip the selected live tests instead of failing default local runs.
-
-The adapter smoke entry point is `tests/adapters/test_cross_provider_parity.py`. Run it explicitly with `uv run pytest -q -m live tests/adapters/test_cross_provider_parity.py` or `uv run pytest -q --run-live tests/adapters/test_cross_provider_parity.py`. It covers OpenAI, Anthropic, and Gemini native adapters for basic generation, streaming, image input, structured output, tool calling with tool-result replay, and provider error conversion. It also covers the OpenAI-compatible Chat Completions path against OpenAI when `OPENAI_API_KEY` is present.
-
-Operational prerequisites are process environment variables only. OpenAI native and OpenAI-compatible smoke tests require `OPENAI_API_KEY`; Anthropic smoke tests require `ANTHROPIC_API_KEY`; Gemini smoke tests require `GEMINI_API_KEY` or `GOOGLE_API_KEY`. Optional model overrides are `UNIFIED_LLM_LIVE_OPENAI_MODEL`, `UNIFIED_LLM_LIVE_ANTHROPIC_MODEL`, `UNIFIED_LLM_LIVE_GEMINI_MODEL`, and `UNIFIED_LLM_LIVE_CHAT_MODEL`; `OPENAI_BASE_URL` can redirect the OpenAI-compatible adapter when needed.
-
-The live smoke plan complements mocked and fixture-backed parity coverage in `tests/adapters` and `tests/compat/providers`; it is not the only proof of provider behavior and is not required for the milestone completion gate. Live runs must not add credential files, captured API logs, local response artifacts, or generated smoke outputs as deliverables.
-
-## M7 Production Rust Provider Transport Status
-
-M7 installs `NativeHttpTransport` for environment and profile configured providers in `crates/unified-llm-adapter`. Normal Spark server, CLI, and agent unified LLM runtime execution is Rust-owned and transport-backed for configured providers: `Client::from_env`, `Client::from_env_map`, and `Client::from_env_map_and_profiles` now construct Rust transport-backed adapters for OpenAI, Anthropic, Gemini, OpenRouter, LiteLLM, and OpenAI-compatible endpoints. Profile-backed OpenAI-compatible adapters use the same transport, preserve local no-key profiles with `require_api_key = false`, and keep public profile metadata redacted.
-
-The transport executes prepared `NativeCompleteRequest` values without rewriting provider adapter intent: method, URL, headers, JSON body, connect timeout, request timeout, and stream-read timeout are forwarded to HTTP. Complete calls return status, normalized headers, and parsed JSON to existing response translators. Streaming calls yield provider chunks incrementally through the shared SSE/JSON stream translators, release network resources on explicit close or drop, and keep post-partial stream errors visible to callers instead of transparently retrying them.
-
-Credential-free deterministic Rust transport coverage is in `crates/unified-llm-adapter/tests/http_transport_contracts.rs`. It covers successful complete and streaming calls, exact request forwarding, native and compatible endpoint selection, profile-backed local endpoints, HTTP status errors, malformed JSON, refused-connection network errors, request timeouts, stream read timeouts, explicit stream close, Retry-After headers, rate-limit headers, raw error bodies, and provider error metadata. Runtime integration checks include `crates/unified-llm-adapter/tests/runtime_boundary_contracts.rs`, `crates/spark-agent-adapter/tests/llm_backend_contracts.rs`, and the CLI/server shell contract tests that exercise launch/profile/provider payload wiring into the Rust runtime path. Retry boundary coverage remains in `crates/unified-llm-adapter/tests/public_surface_contracts.rs`: low-level `Client.complete` and `Client.stream` do not retry automatically, while high-level generation and streaming retry only individual LLM calls and only before a stream has yielded caller-visible events.
-
-The gated Rust live smoke harness is `crates/unified-llm-adapter/tests/live_smoke_contracts.rs`. It is inert by default and runs only with `UNIFIED_LLM_ADAPTER_RUN_LIVE=1`; `UNIFIED_LLM_ADAPTER_LIVE_PROVIDERS` can restrict providers. It supports OpenAI, Anthropic, Gemini, OpenRouter, and OpenAI-compatible complete and stream calls, with provider credentials supplied only through process environment variables and optional model overrides. The credential-free full-suite command and milestone completion gate is `uv run pytest -q`.
-
-## M1 Unified LLM Runtime Boundary
-
-M1 establishes `crates/unified-llm-adapter` as the Rust-owned low-level runtime boundary for rewrite callers. The Rust crate owns the public `Request`, `Response`, `Message`, `ContentPart`, `FinishReason`, `Usage`, `StreamEvent`, `ProviderAdapter`, `Client`, default-client functions, provider environment registration, model catalog access, retry/error normalization, and middleware contracts.
-
-Normal Rust-facing complete and stream calls are made through `Client` and registered `ProviderAdapter` trait objects. `Client::from_env` records configured providers in the fixed order `openai`, `anthropic`, `gemini`, `openrouter`, `litellm`, and `openai_compatible`, including the `GOOGLE_API_KEY` fallback for Gemini. OpenAI, Anthropic, and Gemini entries use Rust native provider adapters for provider-native request/response translation; OpenRouter, LiteLLM, and OpenAI-compatible entries use the separate Rust Chat Completions compatibility adapter path. As of M7, ordinary environment construction installs the Rust HTTP transport for these providers.
-
-The retained Python `src/unified_llm` package remains valid only for compatibility tests, oracle fixture generation, and package data such as the model catalog. Existing provider-specific Python clients, cross-provider streaming normalization, structured-output fallbacks, timeout behavior, and credential handling are retained compatibility/oracle/package-data surfaces, not normal M1 Rust runtime dependencies.
-
-Remaining provider capabilities include broader live SDK error-shape parity and optional credential-backed smoke coverage outside ordinary validation. Catalog defaults remain native-provider only, so OpenRouter, LiteLLM, and OpenAI-compatible endpoints do not receive advisory latest-model defaults from the catalog.
-
-Validation for this boundary is behavioral: `cargo test -p unified-llm-adapter` exercises the Rust public client, adapter, routing, middleware, catalog, DTO, complete, and stream contracts; `uv run pytest tests/compat/providers -q` checks retained Python compatibility observations; `uv run pytest tests/adapters -q` guards retained Python provider behavior; and `uv run pytest -q` remains the full repository completion gate.
-
-## M2 Native Provider Translation Status
-
-M2 adds Rust-owned, non-streaming native provider adapters in `crates/unified-llm-adapter` for OpenAI, Anthropic, and Gemini. The adapters implement `ProviderAdapter.complete` by preparing OpenAI Responses API requests, Anthropic Messages API requests, and Gemini `generateContent` requests with provider-native method, URL, headers, authentication, body shape, provider-option isolation, media handling, prompt caching, reasoning/thinking continuation data, and tool-result replay data. Responses returned by an injected Rust transport are normalized back into the unified `Response`, preserving raw payloads and separating visible output tokens from reasoning and cache token accounting.
-
-M2 originally established adapter and mock-transport coverage. As of M7, `Client::from_env` registers native OpenAI, Anthropic, Gemini, OpenRouter, LiteLLM, and generic OpenAI-compatible adapter entries with the Rust HTTP transport. The retained Python `src/unified_llm` provider clients remain compatibility/oracle surfaces for historical adapter behavior and optional comparison smoke runs. OpenAI-compatible Chat Completions remains distinct from native OpenAI Responses behavior.
-
-M2 validation evidence is behavioral and credential-free. `cargo test -p unified-llm-adapter` exercises `Client.complete` and `ProviderAdapter.complete` with mock native transports for endpoint paths, headers, authentication, request bodies, response parsing, rate-limit mapping, raw payload preservation, active-provider option isolation, Anthropic beta header joining, prompt caching, reasoning/thinking preservation, usage/cost fields, local filesystem media inputs, and Gemini synthetic ID replay. `uv run pytest tests/compat/providers -q` and `uv run pytest tests/adapters -q` continue to guard the retained Python compatibility boundary, while `uv run pytest -q` remains the full repository completion gate.
-
-Remaining M2-adjacent capabilities include optional live credential smoke operation, provider-specific persistent cache resource management, and broader high-level generate/tool-loop orchestration.
-
-## M3 OpenAI-Compatible, OpenRouter, And LiteLLM Translation Status
-
-M3 adds a Rust-owned Chat Completions compatibility adapter in `crates/unified-llm-adapter`. `OpenAICompatibleAdapter`, `OpenRouterAdapter`, and `LiteLLMAdapter` build `POST /v1/chat/completions` requests and never route compatible providers through native OpenAI's `POST /v1/responses` path. The adapters translate unified messages, image URL/data parts, tool calls and tool results, function tools, tool choice, generation options, response formats, active-provider `provider_options`, provider headers, Chat Completions responses, usage, rate-limit headers, raw payloads, provider errors, and SSE streams into the unified Rust DTOs and stream lifecycle.
-
-Only the active provider namespace is read from `provider_options`: `openai_compatible`, `openrouter`, or `litellm`. OpenRouter defaults to `https://openrouter.ai/api/v1`, requires `OPENROUTER_API_KEY` for environment configuration, and forwards configured `OPENROUTER_HTTP_REFERER` and `OPENROUTER_TITLE` headers. LiteLLM requires `LITELLM_BASE_URL` and accepts optional `LITELLM_API_KEY`. These compatible providers still require explicit request models; catalog latest-model defaults remain native-provider only.
-
-The compatibility adapter reports unsupported Responses-only behavior through `Response.warnings` rather than claiming native Responses parity. Unsupported features include reasoning-token visibility on compatible usage payloads, built-in OpenAI Responses tools such as web search tools, and server-side Responses conversation state options such as `previous_response_id`, `conversation`, `prompt`, `instructions`, and `store`.
-
-M3 also completes the Rust-owned error, retry, and streaming contracts for rewrite callers. `SDKError`, `ProviderError`, `SDKErrorKind`, and retained `AdapterError` aliases expose retryability, Retry-After, provider metadata, status codes, error codes, and raw payload retention. `RetryPolicy` owns deterministic delay math, jitter bounds, Retry-After override and cutoff handling, callbacks, and high-level retry helpers, while low-level `Client.complete` and `Client.stream` continue to surface adapter failures without automatic retry. `StreamEvent`, `StreamEventType`, `StreamAccumulator`, managed stream closing, and the shared SSE parser own provider-neutral stream lifecycle behavior for text, reasoning, tool calls, final accumulated responses, provider-event passthrough, malformed stream payloads, and post-partial stream errors.
-
-M3 validation evidence is behavioral and credential-free. `cargo test -p unified-llm-adapter` exercises the Rust-owned public error classifiers, RetryPolicy, low-level no-retry client boundary, before-first-event stream retry helper, post-partial stream error behavior, explicit stream closing, stream accumulation, OpenAI Responses streaming, Anthropic Messages streaming, Gemini SSE and JSON stream chunks, OpenAI-compatible Chat Completions response/error/request/stream translation, OpenRouter environment and header behavior, LiteLLM environment behavior, explicit compatible-provider model requirements, raw payload retention, and unsupported-feature warnings. `uv run pytest tests/compat/providers -q` and `uv run pytest tests/adapters -q` remain retained Python compatibility checks, but they do not replace the Rust-owned runtime validation; `uv run pytest -q` remains the full repository completion gate.
-
-Remaining M3-adjacent work includes credential-backed live provider smoke operation, exact live SDK/network error-shape parity beyond the normalized public contract, and any future provider capability expansion that would turn compatible-provider warnings into native feature support.
-
-## M2 Anthropic Prompt Caching And Cache Accounting
-
-Anthropic request translation preserves explicit `cache_control` annotations on provider-native system blocks, tool definitions, and message content blocks. Automatic Anthropic prompt caching is enabled by default: when no explicit `provider_options.anthropic.cache_control` is supplied, the adapter uses `{"type":"ephemeral"}` and marks the merged system prompt, the last tool definition, and the stable conversation prefix before the current user turn, while staying within Anthropic's four-breakpoint limit.
-
-`provider_options.anthropic.auto_cache = false` disables only automatic breakpoint injection. Explicit annotations remain intact, and only the Anthropic provider namespace controls Anthropic caching behavior. Whenever any Anthropic request body contains `cache_control`, the adapter adds `prompt-caching-2024-07-31` to `anthropic-beta` unless it is already present.
-
-Cache accounting is normalized without mixing it into visible output or reasoning token fields: Anthropic `cache_read_input_tokens` maps to `Usage.cache_read_tokens`, Anthropic `cache_creation_input_tokens` maps to `Usage.cache_write_tokens`, OpenAI `usage.input_tokens_details.cached_tokens` maps to `Usage.cache_read_tokens`, and Gemini `usageMetadata.cachedContentTokenCount` maps to `Usage.cache_read_tokens`.
-
-Deferred cache behavior remains provider-specific persistent cache resource management, such as creating or reusing Gemini `cachedContent` resources beyond pass-through request options.
-
-## Deprecated Compatibility Surfaces
-
-The following routes are compatibility surfaces, not cleanup leftovers. They remain preserved until a later contract decision, migration note, and validation update approve a different contract.
-
-| Surface | Current status | Preferred replacement | Evidence |
-| --- | --- | --- | --- |
-| `GET /attractor/runs/events` | Preserved compatibility route | `GET /workspace/api/live/events` | `http/deprecated-attractor-runs-events`; M5 deprecated route evidence |
-| `GET /workspace/api/conversations/{conversation_id}/events` | Preserved compatibility route | `GET /workspace/api/live/events` | `http/deprecated-workspace-conversation-events`; M5 deprecated route evidence |
-| `GET /attractor/pipelines/{id}/events` | Preserved compatibility route | `GET /attractor/pipelines/{id}/journal` or `GET /workspace/api/live/events?run_id=<id>` | `crates/spark-http/tests/deprecated_route_error_contracts.rs`; `tests/api/test_pipeline_contract_section_95.py` |
-
-## Closed Gaps, Non-Goals, And Audit Result
-
-This document treats prior policy gaps as closed only where implementation or audit evidence is listed:
-
-- Acceptance workflow assets are covered by an executable pytest harness.
-- First-class subgraph and scoped `node[...]` / `edge[...]` default authoring is available through Graph Settings.
-- The post-gap spec/API drift audit found no remaining unintended runtime, editor, or API drift and records all remaining differences as intentional policy decisions, explicit non-goals, or future compatibility-break candidates.
-
-The following remain explicit non-goals and are not counted as closed parity:
-
-- M7 does not remove Python `agent` or `unified_llm` modules.
-- M7 does not reintroduce remote-worker execution; native and local-container execution remain the supported modes.
-
-## Approved Policy Decisions
-
-- Trigger-launched flows may run against and mutate the trigger action's configured project repository by default. This preserves the current trigger launch behavior: `project_path` on the trigger action is the launched run's project target, trigger static context and payload are injected into the run checkpoint, trigger provenance is recorded, and missing `project_path` falls back to Spark home/data-dir behavior.
-- Manager-loop authoring is first-class in Rust-backed preview payloads and frontend authoring for the supported manager-loop attributes.
-- Manager-loop observe cycles ingest linked child-run telemetry into the runtime-owned `context.stack.child.*` snapshot without adding stall or progress heuristics.
-- The non-exit outgoing-edge validator rule is intended behavior: every non-exit node must declare at least one outgoing edge, and intentional completion routes through the single terminal node.
-
-## Future Decision Candidates
-
-Any removal of deprecated event routes, manager-loop contract change, or validator rule relaxation/tightening requires a new contract decision before implementation depends on it.
+Live provider smoke remains opt-in through Rust tests such as `crates/unified-llm-adapter/tests/live_smoke_contracts.rs` and is not part of default validation.

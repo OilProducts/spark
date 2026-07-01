@@ -57,7 +57,8 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
         "EnvironmentFile=-{}",
         harness.data_dir.join("config/provider.env").display()
     )));
-    assert!(unit.contains("Environment=PYTHONUNBUFFERED=1\n"));
+    assert!(!unit.contains("PYTHON"));
+    assert!(!unit.contains("PYTHONUNBUFFERED"));
     assert!(unit.contains("Environment=PATH="));
     assert!(unit.contains(&format!(
         "Environment=SPARK_HOME={}\n",

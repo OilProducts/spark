@@ -88,7 +88,7 @@ fn missing_provider_fixture_names_committed_path_and_fixture_name() {
         .expect("panic message");
 
     assert!(message.contains("read committed provider fixture missing-provider-fixture at"));
-    assert!(message.contains("tests/compat/fixtures/providers/missing-provider-fixture.json"));
+    assert!(message.contains("crates/test-fixtures/compat/providers/missing-provider-fixture.json"));
 }
 
 fn model_catalog_env_resolution_observation() -> Value {
@@ -433,7 +433,7 @@ fn fixture(fixture_name: &str) -> Value {
 
 fn fixture_path(fixture_name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/compat/fixtures/providers")
+        .join("../../crates/test-fixtures/compat/providers")
         .join(format!("{fixture_name}.json"))
 }
 

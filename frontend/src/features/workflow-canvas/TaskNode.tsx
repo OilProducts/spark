@@ -571,7 +571,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     value={draftToolCommand}
                                     onChange={(event) => setDraftToolCommand(event.target.value)}
                                     className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                    placeholder="e.g. pytest -q"
+                                    placeholder="e.g. cargo test -p spark-cli"
                                 />
                             </div>
                         )}

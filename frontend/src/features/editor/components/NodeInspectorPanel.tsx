@@ -173,7 +173,7 @@ export function NodeInspectorPanel({
                                     value={(selectedNode?.data?.['tool.command'] as string) || ''}
                                     onChange={(event) => onPropertyChange('tool.command', event.target.value)}
                                     className="font-mono text-xs"
-                                    placeholder="e.g. pytest -q"
+                                    placeholder="e.g. cargo test -p spark-cli"
                                 />
                             </div>
                         ) : null}

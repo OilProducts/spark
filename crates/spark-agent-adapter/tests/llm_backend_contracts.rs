@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -60,103 +58,8 @@ impl Drop for EnvVarGuard {
     }
 }
 
-fn fake_codex_app_server_bin(root: &Path, log_path: &Path) -> PathBuf {
-    let bin = root.join("fake-codex-app-server.py");
-    let script = format!(
-        r#"#!/usr/bin/env python3
-import json
-import sys
-
-log_path = {log_path:?}
-awaiting_request_user_input_response = False
-
-def log(message):
-    with open(log_path, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(message) + "\n")
-
-for raw in sys.stdin:
-    message = json.loads(raw)
-    log(message)
-    if awaiting_request_user_input_response:
-        awaiting_request_user_input_response = False
-        print(json.dumps({{"method": "item/agentMessage/delta", "params": {{"turnId": "turn-test", "itemId": "msg-test", "delta": "Ack"}}}}), flush=True)
-        print(json.dumps({{"method": "item/completed", "params": {{"turnId": "turn-test", "item": {{"type": "AgentMessage", "id": "msg-test", "content": [{{"type": "Text", "text": "Ack"}}], "phase": "final_answer"}}}}}}), flush=True)
-        print(json.dumps({{"method": "thread/tokenUsage/updated", "params": {{"turnId": "turn-test", "tokenUsage": {{"total": {{"inputTokens": 2, "cachedInputTokens": 0, "outputTokens": 1, "totalTokens": 3}}}}}}}}), flush=True)
-        print(json.dumps({{"method": "turn/completed", "params": {{"turn": {{"id": "turn-test", "status": "completed"}}}}}}), flush=True)
-        continue
-    method = message.get("method")
-    request_id = message.get("id")
-    if method == "initialize":
-        print(json.dumps({{"id": request_id, "result": {{"userAgent": "fake"}}}}), flush=True)
-    elif method == "initialized":
-        continue
-    elif method == "thread/start":
-        print(json.dumps({{"id": request_id, "result": {{"thread": {{"id": "thread-test"}}}}}}), flush=True)
-    elif method == "turn/start":
-        print(json.dumps({{"id": request_id, "result": {{"turn": {{"id": "turn-test", "status": "inProgress", "items": []}}}}}}), flush=True)
-        print(json.dumps({{"id": "server-request-1", "method": "item/tool/requestUserInput", "params": {{"threadId": "thread-test", "turnId": "turn-test", "itemId": "input-test", "questions": [{{"id": "choice", "header": "Choice", "question": "Pick one", "options": [{{"label": "A", "description": "Use A"}}]}}], "autoResolutionMs": None}}}}), flush=True)
-        awaiting_request_user_input_response = True
-    elif method == "model/list":
-        print(json.dumps({{"id": request_id, "result": {{"data": [{{"id": "gpt-codex-test", "model": "gpt-codex-test", "displayName": "Codex Test", "description": "Test model", "isDefault": True, "hidden": False, "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{{"reasoningEffort": "medium", "description": "Medium"}}]}}]}}}}), flush=True)
-    else:
-        print(json.dumps({{"id": request_id, "error": {{"code": -32601, "message": "unexpected method " + str(method)}}}}), flush=True)
-"#,
-        log_path = log_path.display().to_string()
-    );
-    fs::write(&bin, script).expect("write fake codex app-server");
-    #[cfg(unix)]
-    {
-        let mut permissions = fs::metadata(&bin).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&bin, permissions).expect("chmod fake codex app-server");
-    }
-    bin
-}
-
-fn fake_steerable_codex_app_server_bin(root: &Path, log_path: &Path) -> PathBuf {
-    let bin = root.join("fake-steerable-codex-app-server.py");
-    let script = format!(
-        r#"#!/usr/bin/env python3
-import json
-import sys
-
-log_path = {log_path:?}
-
-def log(message):
-    with open(log_path, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(message) + "\n")
-
-for raw in sys.stdin:
-    message = json.loads(raw)
-    log(message)
-    method = message.get("method")
-    request_id = message.get("id")
-    if method == "initialize":
-        print(json.dumps({{"id": request_id, "result": {{"userAgent": "fake"}}}}), flush=True)
-    elif method == "initialized":
-        continue
-    elif method == "thread/start":
-        print(json.dumps({{"id": request_id, "result": {{"thread": {{"id": "thread-steer"}}}}}}), flush=True)
-    elif method == "turn/start":
-        print(json.dumps({{"id": request_id, "result": {{"turn": {{"id": "turn-steer", "status": "inProgress", "items": []}}}}}}), flush=True)
-    elif method == "turn/steer":
-        print(json.dumps({{"id": request_id, "result": {{}}}}), flush=True)
-        print(json.dumps({{"method": "item/agentMessage/delta", "params": {{"threadId": "thread-steer", "turnId": "turn-steer", "itemId": "msg-steer", "delta": "Steered"}}}}), flush=True)
-        print(json.dumps({{"method": "item/completed", "params": {{"threadId": "thread-steer", "turnId": "turn-steer", "item": {{"type": "AgentMessage", "id": "msg-steer", "content": [{{"type": "Text", "text": "Steered"}}], "phase": "final_answer"}}}}}}), flush=True)
-        print(json.dumps({{"method": "turn/completed", "params": {{"threadId": "thread-steer", "turn": {{"id": "turn-steer", "status": "completed"}}}}}}), flush=True)
-    else:
-        print(json.dumps({{"id": request_id, "error": {{"code": -32601, "message": "unexpected method " + str(method)}}}}), flush=True)
-"#,
-        log_path = log_path.display().to_string()
-    );
-    fs::write(&bin, script).expect("write steerable fake codex app-server");
-    #[cfg(unix)]
-    {
-        let mut permissions = fs::metadata(&bin).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&bin, permissions).expect("chmod steerable fake codex app-server");
-    }
-    bin
+fn fake_codex_app_server_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_spark-agent-fake-codex-app-server")
 }
 
 fn wait_for_logged_method(log_path: &Path, method: &str) {
@@ -348,8 +251,9 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
     let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
-    let fake_bin = fake_codex_app_server_bin(temp.path(), &log_path);
-    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_bin.as_os_str());
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
     let runtime_root = temp.path().join("codex-runtime");
     let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", runtime_root.as_os_str());
     let client = Client::new();
@@ -2166,8 +2070,9 @@ fn codergen_backend_routes_codex_provider_with_profile_through_app_server() {
     let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
-    let fake_bin = fake_codex_app_server_bin(temp.path(), &log_path);
-    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_bin.as_os_str());
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
     let runtime_root = temp.path().join("codex-runtime");
     let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", runtime_root.as_os_str());
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2223,8 +2128,9 @@ fn codergen_backend_delivers_child_intervention_to_codex_app_server_turn() {
     let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
-    let fake_bin = fake_steerable_codex_app_server_bin(temp.path(), &log_path);
-    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_bin.as_os_str());
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "steerable");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
     let runtime_root = temp.path().join("codex-runtime");
     let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", runtime_root.as_os_str());
     let broker = CodergenSessionInterventionBroker::default();

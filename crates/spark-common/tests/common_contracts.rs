@@ -17,7 +17,8 @@ use spark_common::settings::{
     parse_project_roots, resolve_settings_with_env, validate_settings, SettingsOverrides,
 };
 use spark_common::source_checkout::{
-    default_api_target_refusal_message, default_runtime_home_refusal_message, is_source_checkout,
+    default_api_target_refusal_message, default_runtime_home_refusal_message,
+    installed_package_root_from_executable, is_source_checkout,
     require_explicit_agent_base_url_with_env, require_explicit_dev_home_with_env,
 };
 
@@ -238,11 +239,13 @@ fn runtime_workspace_path_keeps_existing_requested_path() {
 }
 
 #[test]
-fn source_checkout_guard_messages_match_python_contract() {
+fn source_checkout_guard_messages_match_cargo_contract() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
-    std::fs::write(root.join("pyproject.toml"), "[project]\n").expect("pyproject");
-    std::fs::create_dir_all(root.join("src/spark/flows")).expect("flows");
+    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").expect("cargo manifest");
+    std::fs::create_dir_all(root.join("crates/spark-cli")).expect("cli crate");
+    std::fs::create_dir_all(root.join("crates/spark-server")).expect("server crate");
+    std::fs::create_dir_all(root.join("crates/spark-assets/assets/flows")).expect("flows");
     std::fs::create_dir_all(root.join("frontend")).expect("frontend");
     let empty_env = BTreeMap::<String, String>::new();
 
@@ -272,6 +275,27 @@ fn source_checkout_guard_messages_match_python_contract() {
     configured_env.insert("SPARK_HOME".to_string(), String::new());
     require_explicit_dev_home_with_env("spark-server init", None, root, &configured_env)
         .expect_err("empty home does not satisfy guard");
+}
+
+#[test]
+fn installed_package_root_detection_accepts_cargo_install_roots_without_source_guarding() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let install_root = temp.path().join("cargo-root");
+    let executable_path = install_root.join("bin/spark-server");
+    std::fs::create_dir_all(executable_path.parent().expect("bin parent")).expect("bin dir");
+
+    assert_eq!(
+        installed_package_root_from_executable(&executable_path, "spark-server").as_deref(),
+        Some(install_root.as_path())
+    );
+    assert!(!is_source_checkout(&install_root));
+    require_explicit_dev_home_with_env(
+        "spark-server init",
+        None,
+        &install_root,
+        &BTreeMap::<String, String>::new(),
+    )
+    .expect("installed cargo root may use default home");
 }
 
 #[test]

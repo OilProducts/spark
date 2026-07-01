@@ -12,12 +12,12 @@ use std::path::{Component, Path, PathBuf};
 use include_dir::{include_dir, Dir, DirEntry};
 
 static FRONTEND_DIST: Dir<'_> = include_dir!("$SPARK_FRONTEND_DIST_DIR");
-static STARTER_FLOWS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../src/spark/flows");
-static GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../src/spark/guides");
+static STARTER_FLOWS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/flows");
+static GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/guides");
 static ROOT_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../assets");
 static MODEL_CATALOG_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../src/unified_llm/data/models.json"
+    "/assets/unified_llm/data/models.json"
 ));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

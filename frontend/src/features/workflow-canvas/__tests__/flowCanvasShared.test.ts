@@ -1,6 +1,5 @@
-import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 import { buildHydratedFlowGraph, layoutWithElk } from '@/features/workflow-canvas/flowCanvasShared'
 import { filterAuthoredEdges, filterAuthoredNodes } from '@/features/workflow-canvas/derivedPreview'
@@ -20,40 +19,149 @@ function loadStarterFlowPreview(flowRelativePath: string, expandChildren: boolea
         return cached
     }
 
-    const payload = JSON.parse(execFileSync(
-        'uv',
-        [
-            'run',
-            'python',
-            '-c',
-            [
-                'import json, os',
-                'from pathlib import Path',
-                'import attractor.api.server as server',
-                'repo_root = Path(os.environ["SPARK_REPO_ROOT"])',
-                'flow_path = repo_root / os.environ["SPARK_FLOW_RELATIVE_PATH"]',
-                'payload = server._preview_payload_from_dot_source(',
-                '    flow_path.read_text(encoding="utf-8"),',
-                '    expand_children=os.environ.get("SPARK_EXPAND_CHILDREN") == "1",',
-                '    flow_source_dir=flow_path.parent.resolve(),',
-                ')',
-                'print(json.dumps(payload))',
-            ].join('\n'),
-        ],
-        {
-            cwd: repoRoot,
-            encoding: 'utf-8',
-            env: {
-                ...process.env,
-                SPARK_REPO_ROOT: repoRoot,
-                SPARK_FLOW_RELATIVE_PATH: flowRelativePath,
-                SPARK_EXPAND_CHILDREN: expandChildren ? '1' : '0',
-            },
-        },
-    )) as PreviewResponsePayload
+    const flowPath = resolve(repoRoot, flowRelativePath)
+    const payload = buildPreviewPayloadFromDotFile(flowPath, expandChildren)
 
     previewFixtureCache.set(cacheKey, payload)
     return payload
+}
+
+function buildPreviewPayloadFromDotFile(flowPath: string, expandChildren: boolean): PreviewResponsePayload {
+    const source = readFileSync(flowPath, 'utf-8')
+    const graph = parseLineOrientedDot(source)
+    if (expandChildren) {
+        const childDotfile = typeof graph.graph_attrs?.['stack.child_dotfile'] === 'string'
+            ? graph.graph_attrs['stack.child_dotfile']
+            : null
+        if (childDotfile) {
+            const childPath = resolve(dirname(flowPath), childDotfile)
+            graph.child_previews = Object.fromEntries(
+                graph.nodes
+                    .filter((node) => node.type === 'stack.manager_loop' || node.shape === 'house')
+                    .map((node) => {
+                        const childGraph = parseLineOrientedDot(readFileSync(childPath, 'utf-8'))
+                        return [String(node.id), {
+                            flow_name: childDotfile,
+                            flow_path: childPath,
+                            flow_label: typeof childGraph.graph_attrs?.label === 'string' ? childGraph.graph_attrs.label : childDotfile,
+                            provenance: 'derived_child_preview',
+                            graph: childGraph,
+                        }]
+                    }),
+            )
+        }
+    }
+    return {
+        status: 'ok',
+        graph,
+    }
+}
+
+function parseLineOrientedDot(source: string): NonNullable<PreviewResponsePayload['graph']> {
+    const graphAttrs: Record<string, unknown> = {}
+    const nodes: Array<Record<string, unknown>> = []
+    const edges: Array<Record<string, unknown>> = []
+
+    source.split(/\r?\n/).forEach((rawLine) => {
+        const line = rawLine.trim()
+        if (!line || line === '{' || line === '}') {
+            return
+        }
+        if (line.startsWith('graph [')) {
+            Object.assign(graphAttrs, parseAttrs(extractAttrBody(line)))
+            return
+        }
+        const edgeMatch = line.match(/^"?([^"\s]+)"?\s*->\s*"?([^"\s;\[]+)"?\s*(?:\[(.*)\])?;?$/)
+        if (edgeMatch) {
+            edges.push({
+                from: edgeMatch[1],
+                to: edgeMatch[2],
+                ...parseAttrs(edgeMatch[3] ?? ''),
+            })
+            return
+        }
+        const nodeMatch = line.match(/^"?([^"\s\[]+)"?\s*\[(.*)\];?$/)
+        if (nodeMatch && !['node', 'edge'].includes(nodeMatch[1])) {
+            nodes.push({
+                id: nodeMatch[1],
+                ...parseAttrs(nodeMatch[2]),
+            })
+        }
+    })
+
+    return {
+        graph_attrs: graphAttrs,
+        nodes,
+        edges,
+    }
+}
+
+function extractAttrBody(statement: string): string {
+    const start = statement.indexOf('[')
+    const end = statement.lastIndexOf(']')
+    return start >= 0 && end > start ? statement.slice(start + 1, end) : ''
+}
+
+function parseAttrs(body: string): Record<string, unknown> {
+    const attrs: Record<string, unknown> = {}
+    splitAttrs(body).forEach((part) => {
+        const index = part.indexOf('=')
+        if (index <= 0) {
+            return
+        }
+        const key = part.slice(0, index).trim()
+        const rawValue = part.slice(index + 1).trim()
+        attrs[key] = parseAttrValue(rawValue)
+    })
+    return attrs
+}
+
+function splitAttrs(body: string): string[] {
+    const parts: string[] = []
+    let current = ''
+    let inString = false
+    let escaped = false
+    for (const character of body) {
+        if (escaped) {
+            current += character
+            escaped = false
+            continue
+        }
+        if (character === '\\') {
+            current += character
+            escaped = true
+            continue
+        }
+        if (character === '"') {
+            current += character
+            inString = !inString
+            continue
+        }
+        if (character === ',' && !inString) {
+            parts.push(current.trim())
+            current = ''
+            continue
+        }
+        current += character
+    }
+    if (current.trim()) {
+        parts.push(current.trim())
+    }
+    return parts
+}
+
+function parseAttrValue(rawValue: string): string | number | boolean {
+    if (rawValue.startsWith('"') && rawValue.endsWith('"')) {
+        return rawValue.slice(1, -1).replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\\\/g, '\\')
+    }
+    if (rawValue === 'true') {
+        return true
+    }
+    if (rawValue === 'false') {
+        return false
+    }
+    const numeric = Number(rawValue)
+    return Number.isFinite(numeric) && rawValue.trim() !== '' ? numeric : rawValue
 }
 
 function getRenderRoute(edge: { data?: Record<string, unknown> | undefined }): EdgeRoute | null {
@@ -410,25 +518,25 @@ describe('flowCanvasShared', () => {
     it.each([
         {
             flowName: 'implement-spec.dot',
-            flowRelativePath: 'src/spark/flows/software-development/spec-implementation/implement-spec.dot',
+            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-spec.dot',
             expandChildren: false,
             expectedDerivedNodeId: null,
         },
         {
             flowName: 'implement-spec.dot',
-            flowRelativePath: 'src/spark/flows/software-development/spec-implementation/implement-spec.dot',
+            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-spec.dot',
             expandChildren: true,
             expectedDerivedNodeId: '__child_preview_cluster__run_milestone',
         },
         {
             flowName: 'implement-milestone.dot',
-            flowRelativePath: 'src/spark/flows/software-development/spec-implementation/implement-milestone.dot',
+            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-milestone.dot',
             expandChildren: false,
             expectedDerivedNodeId: null,
         },
         {
             flowName: 'implement-milestone.dot',
-            flowRelativePath: 'src/spark/flows/software-development/spec-implementation/implement-milestone.dot',
+            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-milestone.dot',
             expandChildren: true,
             expectedDerivedNodeId: null,
         },

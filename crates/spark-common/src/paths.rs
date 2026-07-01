@@ -61,7 +61,7 @@ pub fn normalize_path(value: impl AsRef<Path>) -> Result<PathBuf> {
 pub fn detect_project_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for ancestor in manifest_dir.ancestors() {
-        if ancestor.join("pyproject.toml").is_file() && ancestor.join("src/spark").is_dir() {
+        if ancestor.join("Cargo.toml").is_file() && ancestor.join("crates").is_dir() {
             return ancestor.to_path_buf();
         }
         if ancestor.join(".git").exists() {

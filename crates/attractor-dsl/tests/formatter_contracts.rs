@@ -10,7 +10,7 @@ use serde_json::Value;
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("tests/compat/fixtures")
+        .join("crates/test-fixtures/compat")
         .join(name)
 }
 
