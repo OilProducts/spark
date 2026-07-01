@@ -211,6 +211,7 @@ class ProjectChatRepository:
             "chat_mode": state.chat_mode,
             "provider": state.provider,
             "model": state.model,
+            "llm_profile": state.llm_profile,
             "reasoning_effort": state.reasoning_effort,
             "title": state.title,
             "created_at": state.created_at,

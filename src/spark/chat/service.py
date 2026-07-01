@@ -1516,7 +1516,7 @@ class ProjectChatService:
             session = self._sessions.get(session_key)
             if session is not None:
                 target_session = session
-            elif normalized_provider != "codex" or normalized_profile is not None:
+            else:
                 state = self._read_state(conversation_id, project_path)
                 excluded = history_exclude_turn_ids or set()
                 persisted_history = [
@@ -1524,18 +1524,6 @@ class ProjectChatService:
                     for turn in (state.turns if state is not None else [])
                     if turn.id not in excluded
                 ]
-                session_kwargs: dict[str, Any] = {
-                    "provider": normalized_provider,
-                    "model": model,
-                    "persisted_history": persisted_history,
-                    "conversation_id": conversation_id,
-                }
-                if normalized_profile is not None:
-                    session_kwargs["llm_profile"] = normalized_profile
-                    session_kwargs["config_dir"] = self._data_dir / "config"
-                target_session = UnifiedAgentChatSession(project_path, **session_kwargs)
-                self._sessions[session_key] = target_session
-            else:
                 persisted_session = self._read_session_state(
                     conversation_id,
                     project_path,
@@ -1544,43 +1532,21 @@ class ProjectChatService:
                 )
                 if persisted_session is None and model is None:
                     persisted_session = self._read_session_state(conversation_id, project_path)
-                persisted_thread_id = (
-                    persisted_session.thread_id
-                    if persisted_session is not None and persisted_session.provider == "codex"
-                    else None
-                )
                 persisted_model = (
                     persisted_session.model
-                    if persisted_session is not None and persisted_session.provider == "codex"
+                    if persisted_session is not None and persisted_session.provider == normalized_provider
                     else None
                 )
-                session_identity: dict[str, Optional[str]] = {"model": model}
-
-                def persist_thread(thread_id: str) -> None:
-                    self._persist_session_thread(
-                        conversation_id,
-                        project_path,
-                        thread_id,
-                        provider=normalized_provider,
-                        model=session_identity["model"],
-                    )
-
-                def persist_model(resolved_model: str) -> None:
-                    session_identity["model"] = resolved_model
-                    self._persist_session_model(
-                        conversation_id,
-                        project_path,
-                        resolved_model,
-                        provider=normalized_provider,
-                    )
-
-                target_session = CodexAppServerChatSession(
-                    project_path,
-                    persisted_thread_id=persisted_thread_id,
-                    persisted_model=persisted_model,
-                    on_thread_id_updated=persist_thread,
-                    on_model_updated=persist_model,
-                )
+                session_kwargs: dict[str, Any] = {
+                    "provider": normalized_provider,
+                    "model": model or persisted_model,
+                    "persisted_history": persisted_history,
+                    "conversation_id": conversation_id,
+                }
+                if normalized_profile is not None:
+                    session_kwargs["llm_profile"] = normalized_profile
+                    session_kwargs["config_dir"] = self._data_dir / "config"
+                target_session = UnifiedAgentChatSession(project_path, **session_kwargs)
                 self._sessions[session_key] = target_session
         return target_session
 

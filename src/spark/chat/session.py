@@ -144,6 +144,8 @@ def build_agent_turn_request_payload(
 
 def _normalize_tool_call_status(value: Any) -> str:
     normalized = str(value or "").strip().lower()
+    if normalized in {"proposed", "streaming"}:
+        return normalized
     if normalized in {"inprogress", "running"}:
         return "running"
     if normalized in {"failed", "error"}:

@@ -1867,8 +1867,8 @@ def test_codex_app_server_backend_reports_steer_errors(
 @pytest.mark.parametrize(
     ("provider", "expected_backend"),
     [
-        ("", "codex"),
-        ("codex", "codex"),
+        ("", "unified"),
+        ("codex", "unified"),
         ("openai", "unified"),
         ("anthropic", "unified"),
         ("gemini", "unified"),
@@ -1930,19 +1930,15 @@ def test_provider_router_forwards_intervention_to_active_backend(
     router_box: dict[str, codex_backends_module.ProviderRouterBackend] = {}
     forwarded_results: list[ChildInterventionResult] = []
 
-    class FakeCodexBackend(_BackendRunAdapter):
+    class FakeUnifiedBackend(_BackendRunAdapter):
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
-
-        def bind_stage_raw_rpc_log(self, node_id, logs_root):
-            del node_id, logs_root
-            return nullcontext()
 
         def request_child_intervention(self, request: ChildInterventionRequest) -> ChildInterventionResult:
             return ChildInterventionResult(
                 run_id=request.child_run_id,
                 status="delivered",
-                delivery_mode="fake_codex",
+                delivery_mode="fake_unified",
                 reason=request.reason,
             )
 
@@ -1960,15 +1956,15 @@ def test_provider_router_forwards_intervention_to_active_backend(
                     )
                 )
             )
-            return "codex-result"
+            return "unified-result"
 
-    monkeypatch.setattr(codex_backends_module, "CodexAppServerBackend", FakeCodexBackend)
+    monkeypatch.setattr(codex_backends_module, "UnifiedAgentBackend", FakeUnifiedBackend)
     router = codex_backends_module.ProviderRouterBackend(str(tmp_path), lambda event: None)
     router_box["router"] = router
 
-    assert router.run("plan", "hello", Context(), provider="codex") == "codex-result"
+    assert router.run("plan", "hello", Context(), provider="codex") == "unified-result"
     assert forwarded_results[0].status == "delivered"
-    assert forwarded_results[0].delivery_mode == "fake_codex"
+    assert forwarded_results[0].delivery_mode == "fake_unified"
     inactive = router.request_child_intervention(
         ChildInterventionRequest(
             child_run_id="child-1",
@@ -1989,13 +1985,9 @@ def test_provider_router_rejects_intervention_when_active_backend_is_unsupported
     router_box: dict[str, codex_backends_module.ProviderRouterBackend] = {}
     intervention_results: list[ChildInterventionResult] = []
 
-    class FakeCodexBackend(_BackendRunAdapter):
+    class FakeUnifiedBackend(_BackendRunAdapter):
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
-
-        def bind_stage_raw_rpc_log(self, node_id, logs_root):
-            del node_id, logs_root
-            return nullcontext()
 
         def run(self, *args, **kwargs) -> str:
             del args, kwargs
@@ -2010,13 +2002,13 @@ def test_provider_router_rejects_intervention_when_active_backend_is_unsupported
                     )
                 )
             )
-            return "codex-result"
+            return "unified-result"
 
-    monkeypatch.setattr(codex_backends_module, "CodexAppServerBackend", FakeCodexBackend)
+    monkeypatch.setattr(codex_backends_module, "UnifiedAgentBackend", FakeUnifiedBackend)
     router = codex_backends_module.ProviderRouterBackend(str(tmp_path), lambda event: None)
     router_box["router"] = router
 
-    assert router.run("plan", "hello", Context(), provider="codex") == "codex-result"
+    assert router.run("plan", "hello", Context(), provider="codex") == "unified-result"
     assert intervention_results[0].status == "rejected"
     assert intervention_results[0].reason == "backend_steering_unsupported"
 

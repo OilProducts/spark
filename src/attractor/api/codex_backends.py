@@ -48,8 +48,8 @@ from spark_common import codex_app_protocol
 from spark_common.turn_stream import TurnStreamEvent
 from spark_common.runtime_path import resolve_runtime_workspace_path
 
-UNIFIED_AGENT_PROVIDERS = {"openai", "anthropic", "gemini", "openrouter", "litellm", "openai_compatible"}
-SUPPORTED_LLM_PROVIDERS = {"codex", *UNIFIED_AGENT_PROVIDERS}
+UNIFIED_AGENT_PROVIDERS = {"codex", "openai", "anthropic", "gemini", "openrouter", "litellm", "openai_compatible"}
+SUPPORTED_LLM_PROVIDERS = {*UNIFIED_AGENT_PROVIDERS}
 SUPPORTED_LLM_PROVIDER_MESSAGE = (
     "Supported providers: codex, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
 )
@@ -1277,16 +1277,6 @@ class ProviderRouterBackend(CodergenBackend):
         self._active_backend: object | None = None
         self._raw_rpc_log_lock = threading.Lock()
         self._raw_rpc_log_state = threading.local()
-        self._codex_usage_source = object()
-        self._codex = CodexAppServerBackend(
-            working_dir,
-            emit,
-            model=model,
-            on_usage_update=lambda snapshot: self._record_source_usage(
-                self._codex_usage_source,
-                snapshot,
-            ),
-        )
 
     def _stage_raw_rpc_log_path(self, node_id: str, logs_root: str | Path | None) -> Path | None:
         if logs_root is None:
@@ -1314,8 +1304,7 @@ class ProviderRouterBackend(CodergenBackend):
         previous = getattr(self._raw_rpc_log_state, "path", None)
         self._raw_rpc_log_state.path = self._stage_raw_rpc_log_path(node_id, logs_root)
         try:
-            with self._codex.bind_stage_raw_rpc_log(node_id, logs_root):
-                yield
+            yield
         finally:
             if previous is None:
                 if hasattr(self._raw_rpc_log_state, "path"):
@@ -1392,23 +1381,6 @@ class ProviderRouterBackend(CodergenBackend):
                 retryable=False,
                 failure_kind=FailureKind.RUNTIME,
             )
-        if effective_provider == "codex" and not llm_profile:
-            self._set_active_backend(self._codex)
-            try:
-                return self._codex.run(
-                    node_id,
-                    prompt,
-                    context,
-                    response_contract=response_contract,
-                    contract_repair_attempts=contract_repair_attempts,
-                    timeout=timeout,
-                    model=model,
-                    reasoning_effort=reasoning_effort,
-                    emit_event=emit_event,
-                    write_contract=write_contract,
-                )
-            finally:
-                self._clear_active_backend(self._codex)
         if llm_profile or effective_provider in UNIFIED_AGENT_PROVIDERS:
             usage_source = object()
             backend = UnifiedAgentBackend(

@@ -8,6 +8,8 @@ import threading
 
 import pytest
 
+import spark.chat.service as project_chat
+from tests.compat import harness
 from attractor.api.codex_backends import ProviderRouterBackend, UnifiedAgentBackend
 from attractor.dsl import parse_dot
 from attractor.engine.context import Context
@@ -20,8 +22,20 @@ from spark.chat.session import (
     SerializedRustAgentBoundary,
     UnifiedAgentChatSession,
     default_rust_agent_boundary_command,
+    normalize_boundary_provider_selector,
 )
+from spark.workspace.storage import ensure_project_paths
 from spark.workspace.conversations.utils import normalize_project_path_value
+
+M6_ITEM_ID = "M6-I3"
+M6_REQUIREMENTS = ("REQ-001", "REQ-004", "REQ-014", "REQ-015")
+M6_DECISIONS = (
+    "CD-CODING-AGENT-RUST-001",
+    "CD-CODING-AGENT-RUST-003",
+    "CD-CODING-AGENT-RUST-004",
+    "CD-CODING-AGENT-RUST-011",
+    "CD-CODING-AGENT-RUST-012",
+)
 
 
 class FakeRustBoundary:
@@ -142,6 +156,459 @@ def _successful_status_envelope(label: str = "done") -> str:
             "failure_reason": "",
         }
     )
+
+
+def test_m6_integration_boundary_snapshot_fixture_matches_golden(
+    compat_fixture_root,
+    compat_update_goldens,
+    tmp_path,
+):
+    manifest = _m6_integration_boundary_manifest(tmp_path)
+    harness.validate_manifest_coverage(
+        manifest,
+        requirement_ids=M6_REQUIREMENTS,
+        decision_ids=M6_DECISIONS,
+    )
+    fixture_path = compat_fixture_root / "agent/m6-integration-boundary-snapshot.json"
+    if compat_update_goldens:
+        harness.write_manifest(fixture_path, manifest)
+    expected = harness.load_manifest(fixture_path)
+    harness.assert_agent_manifest_matches_golden(manifest, expected)
+
+
+def test_project_chat_service_uses_committed_rust_boundary_for_profiled_chat_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    _committed_boundary_command_or_skip(monkeypatch)
+    with _openai_compatible_server(
+        [
+            {
+                "payload": _chat_completion_response(
+                    "Rust-backed chat answer.",
+                    model="profile-model",
+                )
+            }
+        ]
+    ) as (base_url, records):
+        spark_home = tmp_path / "spark-home"
+        _write_test_profile(spark_home / "config", base_url)
+        service = project_chat.ProjectChatService(spark_home)
+        snapshot = service.send_turn(
+            "conversation-rust-chat",
+            str(tmp_path / "project"),
+            "Please answer from the Rust boundary.",
+            model="profile-model",
+            provider="codex",
+            llm_profile="team-profile",
+            reasoning_effort="HIGH",
+        )
+
+    assert snapshot["provider"] == "codex"
+    assert snapshot["model"] == "profile-model"
+    assert snapshot["llm_profile"] == "team-profile"
+    assert snapshot["reasoning_effort"] == "high"
+    assert snapshot["turns"][-1]["status"] == "complete"
+    assert snapshot["turns"][-1]["content"] == "Rust-backed chat answer."
+    assert snapshot["turns"][-1]["token_usage"]["total"]["totalTokens"] == 13
+    assert records and records[0]["path"] == "/v1/chat/completions"
+    request_body = records[0]["body"]
+    assert request_body["model"] == "profile-model"
+    assert request_body["metadata"]["spark.runtime.provider_selector"] == "codex"
+    assert request_body["metadata"]["spark.runtime.provider"] == "openai_compatible"
+    assert request_body["metadata"]["spark.runtime.llm_profile"] == "team-profile"
+    assert request_body["metadata"]["spark.runtime.reasoning_effort"] == "high"
+
+
+def _m6_integration_boundary_manifest(tmp_path):
+    return {
+        "schema_version": "compat-agent-v1",
+        "fixture_id": "agent/m6-integration-boundary-snapshot",
+        "item_id": M6_ITEM_ID,
+        "requirements": list(M6_REQUIREMENTS),
+        "decisions": list(M6_DECISIONS),
+        "provenance": {
+            "oracle": "m6-public-python-facade-workspace-codergen-boundary",
+            "interfaces": [
+                "spark.chat.session.UnifiedAgentChatSession",
+                "spark.chat.service.ProjectChatService",
+                "attractor.api.codex_backends.ProviderRouterBackend",
+                "attractor.handlers.HandlerRunner",
+            ],
+        },
+        "scenario": "m6_integration_boundary_snapshot",
+        "input": {
+            "selectors": ["codex", "openai-compatible", "openai", "anthropic", "gemini"],
+            "chat_provider": "codex",
+            "profile": "team-profile",
+            "codergen_provider": "openai-compatible",
+        },
+        "observation": {
+            "facade_events": _m6_facade_event_observation(tmp_path / "facade"),
+            "workspace_snapshot": _m6_workspace_snapshot_observation(tmp_path / "workspace"),
+            "codergen_runtime": _m6_codergen_observation(tmp_path / "codergen"),
+            "selectors": {
+                selector: normalize_boundary_provider_selector(selector)
+                for selector in ["codex", "openai-compatible", "openai", "anthropic", "gemini"]
+            },
+            "failures": _m6_failure_observation(tmp_path / "failures"),
+        },
+    }
+
+
+def _m6_facade_event_observation(project_path):
+    requested = threading.Event()
+    events = []
+    boundary = FakeRustBoundary(
+        agent_outputs=[
+            {
+                "events": [
+                    {"kind": "session_start", "source": {"backend": "rust", "raw_kind": "SESSION_START"}},
+                    {
+                        "kind": "content_delta",
+                        "channel": "reasoning",
+                        "content_delta": "checking",
+                        "source": {"backend": "rust", "raw_kind": "assistant_reasoning_delta"},
+                    },
+                    {
+                        "kind": "model_tool_call_start",
+                        "tool_call": {
+                            "id": "model-call-1",
+                            "kind": "model_tool_call",
+                            "status": "proposed",
+                            "title": "search",
+                        },
+                        "source": {"backend": "rust", "raw_kind": "model_tool_call_start"},
+                    },
+                    {
+                        "kind": "tool_call_started",
+                        "tool_call": {
+                            "id": "exec-call-1",
+                            "kind": "command_execution",
+                            "status": "running",
+                            "title": "Run command",
+                            "command": "printf ok",
+                        },
+                    },
+                    {
+                        "kind": "tool_call_failed",
+                        "tool_call": {
+                            "id": "exec-call-1",
+                            "kind": "command_execution",
+                            "status": "failed",
+                            "title": "Run command",
+                            "command": "printf ok",
+                            "output": "recoverable tool failure visible to model",
+                        },
+                    },
+                    {
+                        "kind": "token_usage_updated",
+                        "usage": {"inputTokens": 5, "outputTokens": 7, "totalTokens": 12},
+                    },
+                    {"kind": "warning", "message": "bounded warning"},
+                    {
+                        "kind": "request_user_input_requested",
+                        "request_user_input": {
+                            "request_id": "request-1",
+                            "status": "pending",
+                            "questions": [
+                                {
+                                    "id": "decision",
+                                    "header": "Decision",
+                                    "question": "Continue?",
+                                    "question_type": "MULTIPLE_CHOICE",
+                                    "options": [{"label": "Continue", "description": "Proceed"}],
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "kind": "content_completed",
+                        "channel": "assistant",
+                        "content_delta": "Facade answer.",
+                        "phase": "final_answer",
+                    },
+                    {"kind": "turn_limit", "message": "turn budget reached"},
+                    {"kind": "processing_end", "status": "idle"},
+                    {"kind": "session_end", "status": "closed"},
+                ],
+                "final_assistant_text": "Facade answer.",
+            }
+        ]
+    )
+    session = UnifiedAgentChatSession(
+        str(project_path),
+        provider="codex",
+        model="profile-model",
+        llm_profile="team-profile",
+        conversation_id="conversation-m6-facade",
+        boundary=boundary,
+    )
+    result_holder = {}
+
+    def on_event(event):
+        events.append(event)
+        if event.kind == "request_user_input_requested":
+            requested.set()
+
+    thread = threading.Thread(
+        target=lambda: result_holder.setdefault("result", session.turn("hello", None, on_event=on_event))
+    )
+    thread.start()
+    assert requested.wait(2)
+    assert session.submit_request_user_input_answers("request-1", {"decision": "Continue"})
+    thread.join(2)
+    assert not thread.is_alive()
+
+    return {
+        "assistant_message": result_holder["result"].assistant_message,
+        "event_kinds": [event.kind for event in events],
+        "channels": [event.channel for event in events if event.channel],
+        "model_tool_events": [
+            {
+                "kind": event.kind,
+                "tool_kind": event.tool_call.kind,
+                "status": event.tool_call.status,
+            }
+            for event in events
+            if event.kind.startswith("model_tool_call") and event.tool_call is not None
+        ],
+        "execution_tool_events": [
+            {
+                "kind": event.kind,
+                "tool_kind": event.tool_call.kind,
+                "status": event.tool_call.status,
+                "output": event.tool_call.output,
+            }
+            for event in events
+            if event.kind.startswith("tool_call") and event.tool_call is not None
+        ],
+        "request_user_input": [
+            event.request_user_input.to_dict()
+            for event in events
+            if event.kind == "request_user_input_requested" and event.request_user_input is not None
+        ],
+        "usage_totals": [
+            event.token_usage["total"]["totalTokens"]
+            for event in events
+            if event.kind == "token_usage_updated" and isinstance(event.token_usage, dict)
+        ],
+        "warnings": [event.message for event in events if event.kind == "warning"],
+        "lifecycle": [
+            event.kind
+            for event in events
+            if event.kind in {"session_start", "turn_limit", "processing_end", "session_end"}
+        ],
+    }
+
+
+def _m6_workspace_snapshot_observation(project_path):
+    boundary = FakeRustBoundary(
+        agent_outputs=[
+            {
+                "events": [
+                    {
+                        "kind": "content_delta",
+                        "channel": "reasoning",
+                        "content_delta": "reasoning through public service",
+                    },
+                    {
+                        "kind": "tool_call_completed",
+                        "tool_call": {
+                            "id": "workspace-tool-1",
+                            "kind": "command_execution",
+                            "status": "completed",
+                            "title": "Run command",
+                            "command": "pwd",
+                            "output": "workspace output",
+                        },
+                    },
+                    {
+                        "kind": "token_usage_updated",
+                        "usage": {"inputTokens": 3, "outputTokens": 4, "totalTokens": 7},
+                    },
+                    {
+                        "kind": "content_completed",
+                        "channel": "assistant",
+                        "content_delta": "Workspace answer.",
+                        "phase": "final_answer",
+                    },
+                ],
+                "final_assistant_text": "Workspace answer.",
+                "token_usage": {
+                    "total": {
+                        "inputTokens": 3,
+                        "cachedInputTokens": 0,
+                        "outputTokens": 4,
+                        "totalTokens": 7,
+                    }
+                },
+                "raw_log_lines": [{"direction": "incoming", "line": '{"workspace":true}'}],
+            }
+        ]
+    )
+    service = project_chat.ProjectChatService(project_path / "spark-home")
+
+    class BoundarySession(UnifiedAgentChatSession):
+        def __init__(self, working_dir, **kwargs):
+            super().__init__(working_dir, **kwargs, boundary=boundary)
+
+    original = project_chat.UnifiedAgentChatSession
+    project_chat.UnifiedAgentChatSession = BoundarySession
+    try:
+        snapshot = service.send_turn(
+            "conversation-m6-workspace",
+            str(project_path / "project"),
+            "Persist this through the public service.",
+            model="profile-model",
+            provider="codex",
+            llm_profile="team-profile",
+            reasoning_effort="HIGH",
+        )
+    finally:
+        project_chat.UnifiedAgentChatSession = original
+
+    return {
+        "conversation_id": snapshot["conversation_id"],
+        "provider": snapshot["provider"],
+        "model": snapshot["model"],
+        "llm_profile": snapshot["llm_profile"],
+        "reasoning_effort": snapshot["reasoning_effort"],
+        "assistant_turn": {
+            "role": snapshot["turns"][-1]["role"],
+            "status": snapshot["turns"][-1]["status"],
+            "content": snapshot["turns"][-1]["content"],
+            "token_usage": snapshot["turns"][-1]["token_usage"],
+        },
+        "segments": [
+            {
+                "kind": segment["kind"],
+                "status": segment["status"],
+                "content": segment.get("content"),
+                "tool_call": segment.get("tool_call"),
+            }
+            for segment in snapshot["segments"]
+        ],
+        "raw_log_directions": [
+            json.loads(line)["direction"]
+            for line in (
+                ensure_project_paths(project_path / "spark-home", str(project_path / "project")).conversations_dir
+                / "conversation-m6-workspace"
+                / "raw-log.jsonl"
+            ).read_text(encoding="utf-8").splitlines()
+        ],
+    }
+
+
+def _m6_codergen_observation(project_path):
+    boundary = FakeRustBoundary(
+        codergen_outputs=[
+            {
+                "events": [
+                    {
+                        "kind": "content_delta",
+                        "channel": "reasoning",
+                        "content_delta": "codergen thinking",
+                    }
+                ],
+                "response": {
+                    "kind": "outcome",
+                    "value": {
+                        "status": "success",
+                        "preferred_label": "done",
+                        "context_updates": {"context.allowed": "done"},
+                        "notes": "codergen completed",
+                    },
+                },
+            }
+        ]
+    )
+    backend = ProviderRouterBackend(
+        str(project_path),
+        lambda event: None,
+        model="fallback-model",
+        boundary=boundary,
+    )
+    graph = parse_dot(
+        r'''
+        digraph G {
+          task [
+            shape=box,
+            prompt="Use runtime state",
+            codergen.response_contract="status_envelope",
+            spark.writes_context="[\"context.allowed\"]",
+            llm_provider="openai-compatible",
+            llm_model="profile-model",
+            llm_profile="team-profile",
+            reasoning_effort="HIGH"
+          ];
+        }
+        '''
+    )
+    runner = HandlerRunner(graph, build_default_registry(codergen_backend=backend))
+    outcome = runner("task", "", Context(values={"context.request": "ship"}))
+    request = boundary.codergen_requests[0]
+    return {
+        "outcome": harness.outcome_payload(outcome),
+        "request": {
+            "provider": request["provider"],
+            "model": request["model"],
+            "llm_profile": request["llm_profile"],
+            "reasoning_effort": request["reasoning_effort"],
+            "response_contract": request["response_contract"],
+            "write_contract": request["write_contract"],
+        },
+    }
+
+
+def _m6_failure_observation(project_path):
+    recoverable_boundary = FakeRustBoundary(
+        codergen_outputs=[
+            RustBoundaryError(
+                "recoverable tool failure",
+                retryable=True,
+                raw={"kind": "tool_error"},
+            )
+        ]
+    )
+    recoverable = UnifiedAgentBackend(
+        str(project_path / "recoverable"),
+        lambda event: None,
+        provider="openrouter",
+        boundary=recoverable_boundary,
+    ).run("plan", "Prompt", Context(), provider="openrouter", model="model-x")
+
+    auth_session = UnifiedAgentChatSession(
+        str(project_path / "auth"),
+        provider="codex",
+        model="profile-model",
+        boundary=FakeRustBoundary(
+            agent_outputs=[
+                {
+                    "error": {
+                        "kind": "auth_error",
+                        "message": "auth failed",
+                        "retryable": False,
+                    }
+                }
+            ]
+        ),
+    )
+    try:
+        auth_session.turn("hello", None)
+    except RustBoundaryError as exc:
+        auth_failure = {
+            "message": str(exc),
+            "retryable": exc.retryable,
+            "kind": exc.raw.get("kind"),
+        }
+    else:
+        raise AssertionError("auth failure did not surface as RustBoundaryError")
+
+    return {
+        "recoverable_codergen": harness.outcome_payload(recoverable),
+        "unrecoverable_chat": auth_failure,
+    }
 
 
 def test_chat_session_builds_boundary_payload_and_maps_turn_output(tmp_path):

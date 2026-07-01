@@ -122,6 +122,8 @@ Spark is distributed through the public command names `spark` and `spark-server`
 
 In source checkouts, `uv run spark` and `uv run spark-server` are development entry points for the same command surface: they dispatch to packaged Rust payloads when present, otherwise to built workspace binaries under `target/debug` or `target/release`. If those binaries are unavailable, the launchers fail with `cargo build` instructions instead of entering Python Spark CLI, server, or provider fallback paths. Source-checkout runtime state stays separated from a stable install with `SPARK_HOME=~/.spark-dev` and `SPARK_API_BASE_URL=http://127.0.0.1:8010`. Normal Spark server and CLI unified LLM provider execution remains Rust-owned through the Rust crates and adapters; Python `unified_llm` provider clients are retained for compatibility/oracle/package-data support, not as the normal provider runtime.
 
+Normal Spark chat, `agent-turn`, and codergen-adjacent agent execution are Rust-owned through [crates/spark-agent-adapter/](crates/spark-agent-adapter). Workspace conversation APIs and live delivery keep the public HTTP and SSE shapes, while the Python facade in [src/spark/chat/session.py](src/spark/chat/session.py) serializes requests to the `spark-agent-boundary` Rust binary and maps the returned payloads back to persisted conversation records. The retained [src/agent/](src/agent) package is compatibility, oracle, fallback, and historical implementation support only; it is not the normal runtime implementation for Spark chat or agent execution.
+
 - [Cargo.toml](Cargo.toml): Rust workspace manifest for the Spark rewrite
 - [crates/spark-cli/](crates/spark-cli): Rust `spark` command surface for conversations, runs, flows, and triggers
 - [crates/spark-server/](crates/spark-server): Rust `spark-server` command surface for serving, init, service management, and hidden worker execution
@@ -137,15 +139,18 @@ In source checkouts, `uv run spark` and `uv run spark-server` are development en
 
 ### Agent Host Controls
 
-The M3 agent adapter boundary exposes deterministic host controls for session and tool execution behavior:
+The Rust agent adapter boundary preserves Spark adapter payloads, event streams, token usage, raw logs, request-user-input records, and failure payloads across the Workspace, HTTP, Python facade, and Attractor codergen integration boundaries:
 
 - Tool results sent back to the model are truncated by per-tool character limits before line limits. The visible truncation marker states what was omitted and that full output is available through the event stream. `TOOL_CALL_END` keeps the full untruncated output or error data and also exposes the model-visible `model_content`.
 - System prompts are assembled from provider base instructions, environment context, active tool descriptions, project instructions, and user overrides. The environment snapshot is captured at session start and includes working directory, git state, branch, platform, OS version, date, model display name, knowledge cutoff, modified/untracked counts, and recent commits.
 - Project instruction discovery walks from git root or working directory to the active working directory. `AGENTS.md` is always considered; only the active provider file is included among `.codex/instructions.md`, `CLAUDE.md`, and `GEMINI.md`; project instructions are capped at 32 KB with a truncation marker.
+- Provider configuration and selectors are normalized before crossing the Rust boundary. Supported selectors are `codex`, `openai`, `anthropic`, `gemini`, `openrouter`, `litellm`, and `openai_compatible`; `compatible` is normalized to `openai_compatible`, profile IDs preserve request/session identity, and profile-backed calls dispatch through the configured provider. `reasoning_effort` values such as `low`, `medium`, `high`, and null are normalized and reflected in the next unified LLM `Request` and provider-specific options.
 - Context warnings use the approximate one-token-per-four-characters heuristic and emit `WARNING` events above 80 percent of the provider context window. They do not automatically compact or summarize history.
 - `session.steer` queues a `SteeringTurn` for the next model call, including after the current tool round. Steering is emitted as `STEERING_INJECTED` and is converted to a user-role request message without restarting history.
 - `session.follow_up` queues another user input after natural completion on the same history and event stream. It is not processed after abort or unrecoverable close.
-- `reasoning_effort` accepts runtime values such as `low`, `medium`, `high`, and null, and changes are reflected in the next unified LLM `Request` and provider-specific options.
+- Attractor codergen agent mode uses the same Rust session boundary for tool-enabled turns. Child intervention requests are delivered as steering to the active Rust codergen session when the child run, root run, and target node match; stale, inactive, or mismatched interventions are rejected as unsupported steering instead of mutating a different session.
+- Execution environments are typed and swappable at the adapter boundary. Local sessions and child sessions share the selected backend, scoped child working directories reject path escape before registration, and future environment backends must preserve the same observable file, command, tool, and event contracts.
+- Recoverable tool errors remain model-visible tool results and stream events. Unrecoverable session failures emit `ERROR`, close or abort the session, and prevent queued follow-up processing; thread resume failures are preserved in the serialized agent-turn output.
 - Turn and tool-round limits emit `TURN_LIMIT`; repeated tool-call signatures of pattern length 1, 2, or 3 emit `LOOP_DETECTION` and add recovery steering without silently changing assistant output.
 
 The source-checkout validation gate remains:
@@ -154,7 +159,7 @@ The source-checkout validation gate remains:
 uv run pytest -q
 ```
 
-Focused M3 checks live in `tests/agent/test_truncation.py`, `tests/agent/test_prompts.py`, `tests/agent/test_project_docs.py`, `tests/agent/test_context_usage.py`, `tests/agent/test_steering.py`, `tests/agent/test_reasoning_effort.py`, `tests/agent/test_loop_detection.py`, and `tests/compat/agent`.
+Focused retained-Python compatibility checks live in `tests/agent/test_truncation.py`, `tests/agent/test_prompts.py`, `tests/agent/test_project_docs.py`, `tests/agent/test_context_usage.py`, `tests/agent/test_steering.py`, `tests/agent/test_reasoning_effort.py`, `tests/agent/test_loop_detection.py`, and `tests/compat/agent`. Rust adapter behavior is validated by contract tests under `crates/spark-agent-adapter/tests`, including runtime, event, provider/profile, prompt context, tool dispatch, local environment, and codergen coverage.
 
 ## Requirements
 

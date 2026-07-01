@@ -1724,7 +1724,7 @@ def test_conversation_session_state_round_trips(tmp_path: Path) -> None:
     assert project_paths.project_file.exists()
 
 
-def test_build_session_restores_persisted_thread_id(tmp_path: Path) -> None:
+def test_build_session_uses_persisted_codex_model_without_restoring_app_thread(tmp_path: Path) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     service._write_session_state(
         project_chat.ConversationSessionState(
@@ -1739,8 +1739,9 @@ def test_build_session_restores_persisted_thread_id(tmp_path: Path) -> None:
 
     session = service._build_session("conversation-test", "/tmp/project")
 
-    assert session._thread_id == "thread-restored"
-    assert session._model == "gpt-5.4"
+    assert isinstance(session, project_chat.UnifiedAgentChatSession)
+    assert session.model == "gpt-5.4"
+    assert not hasattr(session, "_thread_id")
 
 
 def test_chat_session_resumes_persisted_thread_before_starting(monkeypatch) -> None:
@@ -2100,7 +2101,10 @@ def test_send_turn_marks_assistant_failed_after_non_runtime_exception(tmp_path: 
     assert state.turns[-1].error == "provider exploded"
 
 
-def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(tmp_path: Path) -> None:
+def test_send_turn_fails_with_continuity_reset_when_rust_resume_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     conversation_id = "conversation-test"
     project_path = str(tmp_path.resolve())
@@ -2136,24 +2140,44 @@ def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(tmp_p
         )
     )
 
-    session = service._build_session(conversation_id, project_path)
-    client = StubChatClient()
-    client.resume_failure = CodexAppServerThreadResumeFailure(
+    failure = CodexAppServerThreadResumeFailure(
         kind="resume_failed",
         code=-32001,
         message="Persisted thread missing from runtime",
     )
-    client.resume_raw_lines = [
-        (
-            "outgoing",
-            '{"jsonrpc":"2.0","id":1,"method":"thread/resume","params":{"threadId":"thread-stale"}}',
-        ),
-        (
-            "incoming",
-            '{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Persisted thread missing from runtime"}}',
-        ),
-    ]
-    session._client = client
+
+    class FailingUnifiedSession:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self.raw_rpc_logger = None
+            self.turn_calls = []
+
+        def set_raw_rpc_logger(self, callback) -> None:
+            self.raw_rpc_logger = callback
+
+        def clear_raw_rpc_logger(self) -> None:
+            self.raw_rpc_logger = None
+
+        def turn(self, prompt, model, *, chat_mode="chat", reasoning_effort=None, on_event=None):
+            del on_event
+            self.turn_calls.append(
+                {
+                    "prompt": prompt,
+                    "model": model,
+                    "chat_mode": chat_mode,
+                    "reasoning_effort": reasoning_effort,
+                }
+            )
+            if self.raw_rpc_logger is not None:
+                self.raw_rpc_logger("outgoing", '{"operation":"agent-turn","thread_id":"thread-stale"}')
+                self.raw_rpc_logger(
+                    "incoming",
+                    '{"error":{"code":-32001,"message":"Persisted thread missing from runtime"}}',
+                )
+            raise project_chat_session.PersistedThreadContinuityResetError("thread-stale", failure)
+
+    monkeypatch.setattr(project_chat, "UnifiedAgentChatSession", FailingUnifiedSession)
+    session = service._build_session(conversation_id, project_path)
 
     with pytest.raises(project_chat_session.PersistedThreadContinuityResetError, match="Continuity reset"):
         service.send_turn(conversation_id, project_path, "Latest message", None)
@@ -2167,11 +2191,11 @@ def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(tmp_p
     assert state.turns[-1].error_code == project_chat_session.CONTINUITY_RESET_ERROR_CODE
     assert "thread-stale" in (state.turns[-1].error or "")
     assert "Persisted thread missing from runtime" in (state.turns[-1].error or "")
-    assert len(client.resume_calls) == 1
-    assert client.resume_calls[0]["thread_id"] == "thread-stale"
-    assert client.start_calls == []
-    assert client.run_turn_calls == []
-    assert session._thread_id is None
+    assert len(session.turn_calls) == 1
+    assert "Latest message" in session.turn_calls[0]["prompt"]
+    assert session.turn_calls[0]["model"] is None
+    assert session.turn_calls[0]["chat_mode"] == "chat"
+    assert session.turn_calls[0]["reasoning_effort"] is None
 
     session_payload = json.loads(
         (ensure_project_paths(tmp_path, project_path).conversations_dir / conversation_id / "session.json").read_text(
@@ -2183,9 +2207,8 @@ def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(tmp_p
     raw_log_path = ensure_project_paths(tmp_path, project_path).conversations_dir / conversation_id / "raw-log.jsonl"
     raw_entries = [json.loads(line) for line in raw_log_path.read_text(encoding="utf-8").splitlines()]
     assert [entry["direction"] for entry in raw_entries] == ["outgoing", "incoming"]
-    assert "thread/resume" in raw_entries[0]["line"]
+    assert "agent-turn" in raw_entries[0]["line"]
     assert "Persisted thread missing from runtime" in raw_entries[1]["line"]
-    assert "thread/start" not in "\n".join(entry["line"] for entry in raw_entries)
     assert all(entry["direction"] in {"outgoing", "incoming"} for entry in raw_entries)
 
     snapshot = service.get_snapshot(conversation_id, project_path)
@@ -2203,7 +2226,10 @@ def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(tmp_p
     assert "thread-stale" in continuity_event["message"]
 
 
-def test_send_turn_starts_fresh_thread_on_next_explicit_message_after_continuity_reset(tmp_path: Path) -> None:
+def test_send_turn_recovers_on_next_explicit_message_after_continuity_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     conversation_id = "conversation-test"
     project_path = str(tmp_path.resolve())
@@ -2223,51 +2249,60 @@ def test_send_turn_starts_fresh_thread_on_next_explicit_message_after_continuity
         )
     )
 
-    session = service._build_session(conversation_id, project_path)
-    client = StubChatClient()
-    client.resume_failure = CodexAppServerThreadResumeFailure(
+    failure = CodexAppServerThreadResumeFailure(
         kind="resume_failed",
         code=-32001,
         message="Persisted thread missing from runtime",
     )
-    session._client = client
+
+    class RecoveringUnifiedSession:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self.turn_calls = 0
+
+        def set_raw_rpc_logger(self, callback) -> None:
+            del callback
+
+        def clear_raw_rpc_logger(self) -> None:
+            return None
+
+        def turn(self, prompt, model, *, chat_mode="chat", reasoning_effort=None, on_event=None):
+            del prompt, model, chat_mode, reasoning_effort
+            self.turn_calls += 1
+            if self.turn_calls == 1:
+                raise project_chat_session.PersistedThreadContinuityResetError("thread-stale", failure)
+            if on_event is not None:
+                on_event(
+                    TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        source=TurnStreamSource(item_id="msg-1"),
+                        content_delta="Recovered.",
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(
+                assistant_message="Recovered.",
+                token_usage=None,
+            )
+
+    monkeypatch.setattr(project_chat, "UnifiedAgentChatSession", RecoveringUnifiedSession)
+    session = service._build_session(conversation_id, project_path)
 
     with pytest.raises(project_chat_session.PersistedThreadContinuityResetError):
         service.send_turn(conversation_id, project_path, "First try", None)
-
-    client.resume_failure = None
-    client.start_result = "thread-fresh"
-
-    def run_turn(**kwargs) -> CodexAppServerTurnResult:
-        kwargs["on_event"](
-            TurnStreamEvent(
-                kind="content_completed",
-                channel="assistant",
-                source=TurnStreamSource(item_id="msg-1"),
-                content_delta="Recovered.",
-                phase="final_answer",
-            )
-        )
-        return _completed_turn_result(
-            thread_id=kwargs["thread_id"],
-            assistant_message="Recovered.",
-        )
-
-    client.run_turn_handler = run_turn
 
     snapshot = service.send_turn(conversation_id, project_path, "Retry after reset", None)
 
     assert snapshot["turns"][-1]["status"] == "complete"
     assert snapshot["turns"][-1]["content"] == "Recovered."
-    assert [call["thread_id"] for call in client.resume_calls] == ["thread-stale"]
-    assert len(client.start_calls) == 1
-    assert client.start_calls[0]["ephemeral"] is False
+    assert session.turn_calls == 2
     session_payload = json.loads(
         (ensure_project_paths(tmp_path, project_path).conversations_dir / conversation_id / "session.json").read_text(
             encoding="utf-8"
         )
     )
-    assert session_payload["thread_id"] == "thread-fresh"
+    assert "thread_id" not in session_payload
 
 
 def test_send_turn_accepts_plain_text_final_response(tmp_path: Path, monkeypatch) -> None:
@@ -2761,26 +2796,25 @@ def test_build_session_does_not_restore_codex_thread_from_different_model(tmp_pa
     )
     captured: dict[str, object] = {}
 
-    class FakeCodexSession:
+    class FakeUnifiedSession:
         def __init__(
             self,
             working_dir: str,
             *,
-            persisted_thread_id=None,
-            persisted_model=None,
-            on_thread_id_updated=None,
-            on_model_updated=None,
+            provider: str,
+            model: str | None = None,
+            persisted_history: list[project_chat.ConversationTurn] | None = None,
+            conversation_id: str = "",
         ) -> None:
-            del working_dir, on_thread_id_updated, on_model_updated
-            captured["persisted_thread_id"] = persisted_thread_id
-            captured["persisted_model"] = persisted_model
+            del working_dir, persisted_history, conversation_id
+            captured["provider"] = provider
+            captured["model"] = model
 
-    monkeypatch.setattr(project_chat, "CodexAppServerChatSession", FakeCodexSession)
+    monkeypatch.setattr(project_chat, "UnifiedAgentChatSession", FakeUnifiedSession)
 
     service._build_session("conversation-model-isolated", str(tmp_path), "codex", "gpt-5.5")
 
-    assert captured["persisted_thread_id"] is None
-    assert captured["persisted_model"] is None
+    assert captured == {"provider": "codex", "model": "gpt-5.5"}
 
 
 def test_unified_chat_session_applies_reasoning_effort_changes_between_turns(
@@ -3188,40 +3222,40 @@ def test_send_turn_uses_persisted_plan_chat_mode_for_execution(tmp_path: Path, m
     assert captured_chat_modes == ["plan"]
 
 
-def test_send_turn_completes_plan_only_real_session_path_with_plan_preview_fallback(tmp_path: Path) -> None:
+def test_send_turn_completes_plan_only_session_path_with_plan_preview_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = project_chat.ProjectChatService(tmp_path)
     conversation_id = "conversation-plan-only"
     project_path = str(tmp_path.resolve())
-    session = service._build_session(conversation_id, project_path)
-    client = StubChatClient()
-    client.start_result = "thread-plan"
 
-    def run_turn(**kwargs) -> CodexAppServerTurnResult:
-        on_event = kwargs["on_event"]
-        on_event(
-            TurnStreamEvent(
-                kind="content_delta",
-                source=TurnStreamSource(item_id="plan-1"),
-                channel="plan",
-                content_delta="1. Patch the real session path.\n",
+    class PlanOnlySession:
+        def turn(self, prompt, model, *, chat_mode="chat", reasoning_effort=None, on_event=None):
+            del prompt, model, chat_mode, reasoning_effort
+            if on_event is not None:
+                on_event(
+                    TurnStreamEvent(
+                        kind="content_delta",
+                        source=TurnStreamSource(item_id="plan-1"),
+                        channel="plan",
+                        content_delta="1. Patch the real session path.\n",
+                    )
+                )
+                on_event(
+                    TurnStreamEvent(
+                        kind="content_completed",
+                        source=TurnStreamSource(item_id="plan-1"),
+                        channel="plan",
+                        content_delta="1. Patch the real session path.\n2. Add the regression coverage.",
+                    )
+                )
+            return project_chat.ChatTurnResult(
+                assistant_message="",
+                token_usage=None,
             )
-        )
-        on_event(
-            TurnStreamEvent(
-                kind="content_completed",
-                source=TurnStreamSource(item_id="plan-1"),
-                channel="plan",
-                content_delta="1. Patch the real session path.\n2. Add the regression coverage.",
-            )
-        )
-        return _completed_turn_result(
-            thread_id=kwargs["thread_id"],
-            assistant_message="",
-            plan_message="1. Patch the real session path.\n2. Add the regression coverage.",
-        )
 
-    client.run_turn_handler = run_turn
-    session._client = client
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: PlanOnlySession())
 
     snapshot = service.send_turn(
         conversation_id,
@@ -5518,24 +5552,26 @@ def test_build_session_ignores_unsupported_persisted_thread_state(tmp_path: Path
         self,
         working_dir: str,
         *,
-        persisted_thread_id=None,
-        persisted_model=None,
-        on_thread_id_updated=None,
-        on_model_updated=None,
+        provider: str,
+        model: str | None = None,
+        persisted_history: list[project_chat.ConversationTurn] | None = None,
+        conversation_id: str = "",
     ):
         captured["working_dir"] = working_dir
-        captured["persisted_thread_id"] = persisted_thread_id
-        captured["persisted_model"] = persisted_model
-        captured["on_thread_id_updated"] = on_thread_id_updated
-        captured["on_model_updated"] = on_model_updated
+        captured["provider"] = provider
+        captured["model"] = model
+        captured["persisted_history"] = persisted_history
+        captured["conversation_id"] = conversation_id
 
-    monkeypatch.setattr(project_chat.CodexAppServerChatSession, "__init__", fake_init)
+    monkeypatch.setattr(project_chat.UnifiedAgentChatSession, "__init__", fake_init)
 
     service._build_session(conversation_id, project_path)
 
     assert captured["working_dir"] == project_path
-    assert captured["persisted_thread_id"] is None
-    assert captured["persisted_model"] is None
+    assert captured["provider"] == "codex"
+    assert captured["model"] is None
+    assert captured["persisted_history"] == []
+    assert captured["conversation_id"] == conversation_id
 
 
 def test_send_turn_writes_raw_jsonrpc_log(tmp_path: Path, monkeypatch) -> None:
