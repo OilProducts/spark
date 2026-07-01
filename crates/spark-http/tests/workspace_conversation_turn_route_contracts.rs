@@ -220,10 +220,9 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
         .read_raw_rpc_log("conversation-http-turn", "/projects/http-turn")
         .expect("raw log");
-    assert_eq!(raw_log.last().expect("raw log line").direction, "outgoing");
-    assert_eq!(
-        raw_log.last().expect("raw log line").line,
-        "{\"event\":\"http-route-turn\"}"
+    assert!(
+        raw_log.is_empty(),
+        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
     );
 
     WorkspaceConversationService::new(settings.clone())
@@ -285,7 +284,7 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
 }
 
 #[tokio::test]
-async fn conversation_turn_route_uses_rust_llm_client_backend_and_normalizes_codex_selector() {
+async fn conversation_turn_route_uses_rust_llm_client_backend_for_openai_compatible_profile() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -309,7 +308,7 @@ async fn conversation_turn_route_uses_rust_llm_client_backend_and_normalizes_cod
         Some(json!({
             "project_path": "/projects/http-rust-agent",
             "message": "Route through the Rust agent backend.",
-            "provider": "codex",
+            "provider": "openai_compatible",
             "model": "gpt-route-agent",
             "llm_profile": "frontier",
             "reasoning_effort": "HIGH",
@@ -358,7 +357,7 @@ async fn conversation_turn_route_uses_rust_llm_client_backend_and_normalizes_cod
     );
     assert_eq!(
         request.metadata["spark.runtime.provider_selector"],
-        json!("codex")
+        json!("openai_compatible")
     );
     assert_eq!(request.metadata["spark.runtime.chat_mode"], json!("chat"));
 }

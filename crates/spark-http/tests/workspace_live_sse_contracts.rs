@@ -420,10 +420,9 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             &project_path.to_string_lossy(),
         )
         .expect("raw log");
-    assert_eq!(raw_log.last().expect("raw log line").direction, "incoming");
-    assert_eq!(
-        raw_log.last().expect("raw log line").line,
-        "{\"event\":\"http-live-ingested\"}"
+    assert!(
+        raw_log.is_empty(),
+        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
     );
 }
 
@@ -524,9 +523,9 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
     let raw_log = ConversationRepository::new(&settings.data_dir)
         .read_raw_rpc_log("conversation-live-failure", &project_path.to_string_lossy())
         .expect("raw log");
-    assert_eq!(
-        raw_log.last().expect("raw log line").line,
-        "{\"event\":\"http-live-thread-resume-failed\"}"
+    assert!(
+        raw_log.is_empty(),
+        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
     );
 }
 
@@ -668,10 +667,9 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     let raw_log = ConversationRepository::new(&settings.data_dir)
         .read_raw_rpc_log("conversation-live-answer", &project_path.to_string_lossy())
         .expect("raw log");
-    assert_eq!(raw_log.last().expect("raw log line").direction, "incoming");
-    assert_eq!(
-        raw_log.last().expect("raw log line").line,
-        "{\"event\":\"http-live-answer\"}"
+    assert!(
+        raw_log.is_empty(),
+        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
     );
 }
 

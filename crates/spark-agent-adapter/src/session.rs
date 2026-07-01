@@ -150,7 +150,7 @@ impl SessionSteeringHandle {
         true
     }
 
-    fn drain(&self) -> Vec<SteeringTurn> {
+    pub fn drain_queued(&self) -> Vec<SteeringTurn> {
         self.state
             .lock()
             .expect("session steering queue lock")
@@ -804,7 +804,7 @@ impl Session {
             let steering = if close_external_if_empty && !has_local_steering {
                 external_steering.drain_and_close_if_empty()
             } else {
-                external_steering.drain()
+                external_steering.drain_queued()
             };
             self.steering_queue.extend(steering);
         }

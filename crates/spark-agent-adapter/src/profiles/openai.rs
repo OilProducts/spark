@@ -48,7 +48,11 @@ pub fn normalize_provider_selector(selector: &str) -> NormalizedProviderSelector
             id: "litellm".to_string(),
             family: ProviderFamily::OpenAICompatible,
         },
-        "codex" | "openai_compatible" | "compatible" => NormalizedProviderSelector {
+        "codex" => NormalizedProviderSelector {
+            id: "codex".to_string(),
+            family: ProviderFamily::OpenAICompatible,
+        },
+        "openai_compatible" | "compatible" => NormalizedProviderSelector {
             id: "openai_compatible".to_string(),
             family: ProviderFamily::OpenAICompatible,
         },

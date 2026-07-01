@@ -16,6 +16,10 @@ use crate::codergen::{
     ActiveCodergenSession, CodergenBackend, CodergenBackendOutput, CodergenBackendRequest,
     CodergenBackendResponse, CodergenError, CodergenEvent, CodergenSessionInterventionBroker,
 };
+use crate::codex_app_server::{
+    usage_from_codex_token_payload, CodexAppServerBackend, CodexAppServerError,
+    CODEX_APP_SERVER_BACKEND,
+};
 use crate::config::SessionConfig;
 use crate::environment::ExecutionEnvironment;
 use crate::events::{workspace_token_usage_payload_from_usage, EventKind, SessionEvent};
@@ -24,6 +28,7 @@ use crate::profiles::{
     create_provider_profile, normalize_provider_selector as normalize_profile_selector,
 };
 use crate::session::Session;
+use crate::session::SessionSteeringHandle;
 
 const BACKEND_NAME: &str = "rust_unified_llm_adapter";
 const PROVIDER_PLACEHOLDERS: &[&str] = &["codex default (config/profile)"];
@@ -58,6 +63,9 @@ impl CodergenBackend for RustLlmCodergenBackend {
         &mut self,
         request: CodergenBackendRequest,
     ) -> Result<CodergenBackendOutput, CodergenError> {
+        if is_codex_provider_selector(&request.provider) {
+            return self.run_codex_app_server_codergen(request);
+        }
         if request.runtime_mode.requires_agent() {
             return self.run_agent_codergen(request);
         }
@@ -66,6 +74,107 @@ impl CodergenBackend for RustLlmCodergenBackend {
 }
 
 impl RustLlmCodergenBackend {
+    fn run_codex_app_server_codergen(
+        &mut self,
+        request: CodergenBackendRequest,
+    ) -> Result<CodergenBackendOutput, CodergenError> {
+        let agent_request = codergen_agent_turn_request(&request);
+        let steering = SessionSteeringHandle::new();
+        let _active_session = self.intervention_broker.as_ref().map(|broker| {
+            broker.register(ActiveCodergenSession {
+                node_id: request.node_id.clone(),
+                child_run_id: metadata_string(&request.metadata, "spark.runtime.run_id"),
+                root_run_id: metadata_string(&request.metadata, "spark.runtime.root_run_id"),
+                provider: "codex".to_string(),
+                model: request.model.clone(),
+                llm_profile: request.llm_profile.clone(),
+                reasoning_effort: request.reasoning_effort.clone(),
+                project_path: request.project_path.clone(),
+                metadata: request.metadata.clone(),
+                steering: steering.clone(),
+            })
+        });
+        let output = CodexAppServerBackend::new()
+            .run_agent_turn_with_steering(agent_request, Some(steering))
+            .map_err(codex_app_server_codergen_error)?;
+        let usage = output
+            .token_usage
+            .as_ref()
+            .and_then(usage_from_codex_token_payload);
+        let response = if let Some(failure) = output.thread_resume_failure.as_ref() {
+            CodergenBackendResponse::Outcome(Outcome {
+                status: OutcomeStatus::Fail,
+                failure_reason: failure.message.clone(),
+                retryable: Some(false),
+                failure_kind: Some(FailureKind::Runtime),
+                ..Outcome::new(OutcomeStatus::Fail)
+            })
+        } else if let Some(text) = output.final_assistant_text.as_deref().and_then(non_empty) {
+            CodergenBackendResponse::Text(text.to_string())
+        } else {
+            CodergenBackendResponse::Outcome(Outcome {
+                status: OutcomeStatus::Fail,
+                failure_reason: "codex app-server completed without assistant text".to_string(),
+                retryable: Some(false),
+                failure_kind: Some(FailureKind::Runtime),
+                ..Outcome::new(OutcomeStatus::Fail)
+            })
+        };
+        let mut events = Vec::new();
+        for event in &output.events {
+            events.push(codergen_event_from_turn_stream_event(&request, event));
+        }
+        for raw_log_line in &output.raw_log_lines {
+            events.push(CodergenEvent::new(
+                "codex_app_server_raw_log_line",
+                BTreeMap::from([
+                    ("node_id".to_string(), json!(request.node_id.clone())),
+                    (
+                        "direction".to_string(),
+                        json!(raw_log_line.direction.clone()),
+                    ),
+                    ("line".to_string(), json!(raw_log_line.line.clone())),
+                ]),
+            ));
+        }
+        events.push(CodergenEvent::new(
+            "codex_app_server_request_completed",
+            BTreeMap::from([
+                ("backend".to_string(), json!(CODEX_APP_SERVER_BACKEND)),
+                ("node_id".to_string(), json!(request.node_id.clone())),
+                (
+                    "provider_selector".to_string(),
+                    json!(request.provider.clone()),
+                ),
+                ("provider".to_string(), json!("codex")),
+                ("model_selector".to_string(), json!(request.model.clone())),
+                ("model".to_string(), json!(request.model.clone())),
+                (
+                    "llm_profile".to_string(),
+                    json!(request.llm_profile.clone()),
+                ),
+                (
+                    "reasoning_effort".to_string(),
+                    json!(request.reasoning_effort.clone()),
+                ),
+                (
+                    "response_contract".to_string(),
+                    json!(request.response_contract.clone()),
+                ),
+                (
+                    "runtime_mode".to_string(),
+                    json!(request.runtime_mode.clone()),
+                ),
+                ("token_usage".to_string(), json!(output.token_usage.clone())),
+            ]),
+        ));
+        Ok(CodergenBackendOutput {
+            response,
+            events,
+            usage,
+        })
+    }
+
     fn run_text_only_codergen(
         &mut self,
         request: CodergenBackendRequest,
@@ -331,6 +440,68 @@ fn codergen_event_from_session_event(
     CodergenEvent::new("rust_agent_session_event", payload)
 }
 
+fn codergen_event_from_turn_stream_event(
+    request: &CodergenBackendRequest,
+    event: &TurnStreamEvent,
+) -> CodergenEvent {
+    let mut payload = BTreeMap::from([
+        ("node_id".to_string(), json!(request.node_id.clone())),
+        (
+            "backend".to_string(),
+            json!(CODEX_APP_SERVER_BACKEND.to_string()),
+        ),
+        (
+            "provider_selector".to_string(),
+            json!(request.provider.clone()),
+        ),
+        ("provider".to_string(), json!("codex")),
+        ("model_selector".to_string(), json!(request.model.clone())),
+        (
+            "reasoning_effort".to_string(),
+            json!(request.reasoning_effort.clone()),
+        ),
+        ("kind".to_string(), json!(event.kind.as_str())),
+        (
+            "category".to_string(),
+            json!(codergen_turn_stream_event_category(event)),
+        ),
+        (
+            "turn_stream_event".to_string(),
+            serde_json::to_value(event).unwrap_or_else(|_| json!({})),
+        ),
+    ]);
+    if let Some(tool_call) = event.tool_call.as_ref() {
+        payload.insert("tool_event".to_string(), tool_call.clone());
+    }
+    if let Some(token_usage) = event.token_usage.as_ref() {
+        payload.insert("token_usage".to_string(), token_usage.clone());
+    }
+    CodergenEvent::new("codex_app_server_session_event", payload)
+}
+
+fn codergen_turn_stream_event_category(event: &TurnStreamEvent) -> &'static str {
+    match event.kind {
+        TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted => {
+            match event.channel {
+                Some(spark_common::events::TurnStreamChannel::Plan) => "plan",
+                Some(spark_common::events::TurnStreamChannel::Reasoning) => "reasoning",
+                _ => "assistant_text",
+            }
+        }
+        TurnStreamEventKind::ToolCallStarted
+        | TurnStreamEventKind::ToolCallUpdated
+        | TurnStreamEventKind::ToolCallCompleted
+        | TurnStreamEventKind::ToolCallFailed => "tool_execution",
+        TurnStreamEventKind::TokenUsageUpdated => "usage",
+        TurnStreamEventKind::RequestUserInputRequested => "request_user_input",
+        TurnStreamEventKind::ContextCompactionStarted
+        | TurnStreamEventKind::ContextCompactionCompleted => "context_compaction",
+        TurnStreamEventKind::TurnCompleted => "processing",
+        TurnStreamEventKind::Error => "error",
+        TurnStreamEventKind::Other(_) => "other",
+    }
+}
+
 fn codergen_usage_event_from_assistant_turn(
     request: &CodergenBackendRequest,
     session: &Session,
@@ -582,6 +753,11 @@ impl RustLlmAgentTurnBackend {
 
 impl AgentTurnBackend for RustLlmAgentTurnBackend {
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        if is_codex_request_provider(request.provider.as_deref(), request.llm_profile.as_deref()) {
+            return CodexAppServerBackend::new()
+                .run_agent_turn(request)
+                .map_err(codex_app_server_agent_error);
+        }
         let prompt = request.prompt.clone();
         let mut session =
             build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
@@ -601,6 +777,11 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         &self,
         request: AgentRequestUserInputAnswerRequest,
     ) -> Result<AgentTurnOutput, AgentError> {
+        if is_codex_request_provider(request.provider.as_deref(), request.llm_profile.as_deref()) {
+            return CodexAppServerBackend::new()
+                .answer_request_user_input(request)
+                .map_err(codex_app_server_agent_error);
+        }
         let continuation = match request_user_input_answer_continuation(&request) {
             Ok(continuation) => continuation,
             Err(failure) => {
@@ -1344,6 +1525,10 @@ fn codergen_adapter_error(error: AdapterError) -> CodergenError {
     CodergenError::Backend(format_adapter_error(&error))
 }
 
+fn codex_app_server_codergen_error(error: CodexAppServerError) -> CodergenError {
+    CodergenError::Backend(format!("codex app-server error: {}", error.message))
+}
+
 fn agent_adapter_error(error: AdapterError) -> AgentError {
     AgentError {
         message: format_adapter_error(&error),
@@ -1352,6 +1537,22 @@ fn agent_adapter_error(error: AdapterError) -> AgentError {
     }
 }
 
+fn codex_app_server_agent_error(error: CodexAppServerError) -> AgentError {
+    AgentError {
+        message: error.message,
+        retryable: error.retryable,
+        raw: error.details,
+    }
+}
+
 fn format_adapter_error(error: &AdapterError) -> String {
     format!("{}: {}", error.kind.spec_error_name(), error.message)
+}
+
+fn is_codex_request_provider(provider: Option<&str>, _llm_profile: Option<&str>) -> bool {
+    provider.is_some_and(is_codex_provider_selector)
+}
+
+fn is_codex_provider_selector(provider: &str) -> bool {
+    provider.trim().eq_ignore_ascii_case("codex")
 }

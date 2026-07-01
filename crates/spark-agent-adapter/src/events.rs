@@ -293,6 +293,7 @@ impl SessionEvent {
         TurnStreamSource {
             backend: Some("agent_session".to_string()),
             session_id: self.session_id.map(|id| id.to_string()),
+            app_thread_id: data_string(&self.data, &["app_thread_id"]),
             app_turn_id: data_string(&self.data, &["app_turn_id"]),
             item_id: data_string(&self.data, &["item_id"]).or_else(|| match self.kind {
                 EventKind::ModelToolCallStart

@@ -112,7 +112,7 @@
     },
     "selector_normalization": {
       "claude_code": "anthropic",
-      "codex": "openai_compatible",
+      "codex": "codex",
       "google-gemini": "gemini",
       "openai-compatible": "openai_compatible"
     },

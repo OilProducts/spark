@@ -1,5 +1,11 @@
 use std::collections::BTreeMap;
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use spark_agent_adapter::{
@@ -16,6 +22,8 @@ use unified_llm_adapter::{
     StreamEventType, StreamEvents, ToolCall, Usage,
 };
 
+static CODEX_APP_SERVER_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 fn tool_names(request: &Request) -> Vec<String> {
     request.tools.iter().map(|tool| tool.name.clone()).collect()
 }
@@ -27,6 +35,152 @@ fn tool_parameters(request: &Request, name: &str) -> Value {
         .find(|tool| tool.name == name)
         .and_then(|tool| tool.parameters.clone())
         .expect("tool parameters")
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            std::env::set_var(self.key, previous);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
+fn fake_codex_app_server_bin(root: &Path, log_path: &Path) -> PathBuf {
+    let bin = root.join("fake-codex-app-server.py");
+    let script = format!(
+        r#"#!/usr/bin/env python3
+import json
+import sys
+
+log_path = {log_path:?}
+awaiting_request_user_input_response = False
+
+def log(message):
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(message) + "\n")
+
+for raw in sys.stdin:
+    message = json.loads(raw)
+    log(message)
+    if awaiting_request_user_input_response:
+        awaiting_request_user_input_response = False
+        print(json.dumps({{"method": "item/agentMessage/delta", "params": {{"turnId": "turn-test", "itemId": "msg-test", "delta": "Ack"}}}}), flush=True)
+        print(json.dumps({{"method": "item/completed", "params": {{"turnId": "turn-test", "item": {{"type": "AgentMessage", "id": "msg-test", "content": [{{"type": "Text", "text": "Ack"}}], "phase": "final_answer"}}}}}}), flush=True)
+        print(json.dumps({{"method": "thread/tokenUsage/updated", "params": {{"turnId": "turn-test", "tokenUsage": {{"total": {{"inputTokens": 2, "cachedInputTokens": 0, "outputTokens": 1, "totalTokens": 3}}}}}}}}), flush=True)
+        print(json.dumps({{"method": "turn/completed", "params": {{"turn": {{"id": "turn-test", "status": "completed"}}}}}}), flush=True)
+        continue
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "initialize":
+        print(json.dumps({{"id": request_id, "result": {{"userAgent": "fake"}}}}), flush=True)
+    elif method == "initialized":
+        continue
+    elif method == "thread/start":
+        print(json.dumps({{"id": request_id, "result": {{"thread": {{"id": "thread-test"}}}}}}), flush=True)
+    elif method == "turn/start":
+        print(json.dumps({{"id": request_id, "result": {{"turn": {{"id": "turn-test", "status": "inProgress", "items": []}}}}}}), flush=True)
+        print(json.dumps({{"id": "server-request-1", "method": "item/tool/requestUserInput", "params": {{"threadId": "thread-test", "turnId": "turn-test", "itemId": "input-test", "questions": [{{"id": "choice", "header": "Choice", "question": "Pick one", "options": [{{"label": "A", "description": "Use A"}}]}}], "autoResolutionMs": None}}}}), flush=True)
+        awaiting_request_user_input_response = True
+    elif method == "model/list":
+        print(json.dumps({{"id": request_id, "result": {{"data": [{{"id": "gpt-codex-test", "model": "gpt-codex-test", "displayName": "Codex Test", "description": "Test model", "isDefault": True, "hidden": False, "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{{"reasoningEffort": "medium", "description": "Medium"}}]}}]}}}}), flush=True)
+    else:
+        print(json.dumps({{"id": request_id, "error": {{"code": -32601, "message": "unexpected method " + str(method)}}}}), flush=True)
+"#,
+        log_path = log_path.display().to_string()
+    );
+    fs::write(&bin, script).expect("write fake codex app-server");
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(&bin).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&bin, permissions).expect("chmod fake codex app-server");
+    }
+    bin
+}
+
+fn fake_steerable_codex_app_server_bin(root: &Path, log_path: &Path) -> PathBuf {
+    let bin = root.join("fake-steerable-codex-app-server.py");
+    let script = format!(
+        r#"#!/usr/bin/env python3
+import json
+import sys
+
+log_path = {log_path:?}
+
+def log(message):
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(message) + "\n")
+
+for raw in sys.stdin:
+    message = json.loads(raw)
+    log(message)
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "initialize":
+        print(json.dumps({{"id": request_id, "result": {{"userAgent": "fake"}}}}), flush=True)
+    elif method == "initialized":
+        continue
+    elif method == "thread/start":
+        print(json.dumps({{"id": request_id, "result": {{"thread": {{"id": "thread-steer"}}}}}}), flush=True)
+    elif method == "turn/start":
+        print(json.dumps({{"id": request_id, "result": {{"turn": {{"id": "turn-steer", "status": "inProgress", "items": []}}}}}}), flush=True)
+    elif method == "turn/steer":
+        print(json.dumps({{"id": request_id, "result": {{}}}}), flush=True)
+        print(json.dumps({{"method": "item/agentMessage/delta", "params": {{"threadId": "thread-steer", "turnId": "turn-steer", "itemId": "msg-steer", "delta": "Steered"}}}}), flush=True)
+        print(json.dumps({{"method": "item/completed", "params": {{"threadId": "thread-steer", "turnId": "turn-steer", "item": {{"type": "AgentMessage", "id": "msg-steer", "content": [{{"type": "Text", "text": "Steered"}}], "phase": "final_answer"}}}}}}), flush=True)
+        print(json.dumps({{"method": "turn/completed", "params": {{"threadId": "thread-steer", "turn": {{"id": "turn-steer", "status": "completed"}}}}}}), flush=True)
+    else:
+        print(json.dumps({{"id": request_id, "error": {{"code": -32601, "message": "unexpected method " + str(method)}}}}), flush=True)
+"#,
+        log_path = log_path.display().to_string()
+    );
+    fs::write(&bin, script).expect("write steerable fake codex app-server");
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(&bin).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&bin, permissions).expect("chmod steerable fake codex app-server");
+    }
+    bin
+}
+
+fn wait_for_logged_method(log_path: &Path, method: &str) {
+    let started = Instant::now();
+    loop {
+        if started.elapsed() > Duration::from_secs(5) {
+            panic!("timed out waiting for logged method {method}");
+        }
+        if fs::read_to_string(log_path)
+            .ok()
+            .into_iter()
+            .flat_map(|content| {
+                content
+                    .lines()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+            .any(|message| message["method"] == json!(method))
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
@@ -190,13 +344,15 @@ fn codergen_backend_enters_rust_unified_llm_adapter_boundary() {
 }
 
 #[test]
-fn codergen_backend_routes_codex_selector_through_openai_compatible() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
-        "openai_compatible",
-        Arc::clone(&calls),
-    ));
-    let client = Client::from_adapters(vec![adapter], None).expect("client");
+fn codergen_backend_routes_codex_selector_through_app_server() {
+    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("rpc-log.jsonl");
+    let fake_bin = fake_codex_app_server_bin(temp.path(), &log_path);
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_bin.as_os_str());
+    let runtime_root = temp.path().join("codex-runtime");
+    let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", runtime_root.as_os_str());
+    let client = Client::new();
     let mut backend = RustLlmCodergenBackend::new(client);
 
     let output = backend
@@ -209,26 +365,53 @@ fn codergen_backend_routes_codex_selector_through_openai_compatible() {
             timeout_seconds: None,
             write_contract: Default::default(),
             provider: "codex".to_string(),
-            model: Some("openai:gpt-5.2".to_string()),
+            model: Some("gpt-codex-test".to_string()),
             llm_profile: None,
-            reasoning_effort: None,
+            reasoning_effort: Some("HIGH".to_string()),
             repair_attempt: None,
             runtime_mode: Default::default(),
-            project_path: None,
+            project_path: Some(temp.path().to_path_buf()),
             metadata: BTreeMap::new(),
         })
         .expect("codergen output");
 
+    assert_eq!(output.response_text(), "Ack");
+    assert_eq!(output.usage.expect("usage").total_tokens, 3);
+    assert!(output.events.iter().any(|event| {
+        event.event_type == "codex_app_server_session_event"
+            && event.payload["turn_stream_event"]["source"]["backend"] == json!("codex_app_server")
+            && event.payload["turn_stream_event"]["source"]["app_thread_id"] == json!("thread-test")
+            && event.payload["turn_stream_event"]["source"]["app_turn_id"] == json!("turn-test")
+    }));
+    let messages = fs::read_to_string(&log_path)
+        .expect("rpc log")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json"))
+        .collect::<Vec<_>>();
+    let methods = messages
+        .iter()
+        .filter_map(|message| message["method"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
     assert_eq!(
-        output.response_text(),
-        "adapter response for openai:gpt-5.2"
+        methods,
+        ["initialize", "initialized", "thread/start", "turn/start"]
     );
-    let requests = calls.lock().expect("calls");
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].provider.as_deref(), Some("openai_compatible"));
+    let turn_start = messages
+        .iter()
+        .find(|message| message["method"] == json!("turn/start"))
+        .expect("turn/start payload");
+    assert_eq!(turn_start["params"]["effort"], json!("high"));
+    assert!(turn_start["params"].get("reasoningEffort").is_none());
+    assert!(turn_start["params"].get("collaborationMode").is_none());
+    let request_user_input_response = messages
+        .iter()
+        .find(|message| {
+            message["id"] == json!("server-request-1") && message.get("result").is_some()
+        })
+        .expect("request-user-input response");
     assert_eq!(
-        requests[0].metadata["spark.runtime.provider"],
-        json!("openai_compatible")
+        request_user_input_response["result"],
+        json!({"answers": {"choice": {"answers": []}}})
     );
 }
 
@@ -1362,7 +1545,7 @@ fn agent_turn_backend_answer_preserves_profile_selector_semantics() {
             history: vec![HistoryTurn::Assistant(AssistantTurn::new(
                 "Which path should I take?",
             ))],
-            provider: Some("codex".to_string()),
+            provider: None,
             model: None,
             llm_profile: Some("implementation".to_string()),
             reasoning_effort: None,
@@ -1407,10 +1590,10 @@ fn agent_turn_backend_answer_preserves_profile_selector_semantics() {
         request.metadata["spark.runtime.llm_profile_selector"],
         json!("implementation")
     );
-    assert_eq!(
-        request.metadata["spark.runtime.provider_selector"],
-        json!("codex")
-    );
+    assert!(request
+        .metadata
+        .get("spark.runtime.provider_selector")
+        .is_none());
 }
 
 #[test]
@@ -1527,7 +1710,7 @@ fn agent_turn_backend_routes_llm_profile_through_session_boundary() {
             project_path: "/repo".to_string(),
             prompt: "Use the selected profile".to_string(),
             history: Vec::new(),
-            provider: Some("codex".to_string()),
+            provider: None,
             model: None,
             llm_profile: Some("implementation".to_string()),
             reasoning_effort: None,
@@ -1716,7 +1899,6 @@ fn agent_turn_backend_uses_gemini_native_profile_at_adapter_boundary() {
 #[test]
 fn agent_turn_backend_normalizes_openai_compatible_selectors_at_adapter_boundary() {
     for (selector, provider) in [
-        ("codex", "openai_compatible"),
         ("openai-compatible", "openai_compatible"),
         ("openrouter", "openrouter"),
         ("litellm", "litellm"),
@@ -1980,7 +2162,14 @@ fn codergen_backend_routes_provider_profile_selector_through_openai_compatible()
 }
 
 #[test]
-fn codergen_backend_uses_profile_default_before_building_low_level_request() {
+fn codergen_backend_routes_codex_provider_with_profile_through_app_server() {
+    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("rpc-log.jsonl");
+    let fake_bin = fake_codex_app_server_bin(temp.path(), &log_path);
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_bin.as_os_str());
+    let runtime_root = temp.path().join("codex-runtime");
+    let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", runtime_root.as_os_str());
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
         "openai_compatible",
@@ -1995,10 +2184,10 @@ fn codergen_backend_uses_profile_default_before_building_low_level_request() {
         .expect("profile client");
     let mut backend = RustLlmCodergenBackend::new(client);
 
-    backend
+    let output = backend
         .run(CodergenBackendRequest {
             node_id: "task".to_string(),
-            prompt: "Use the profile default".to_string(),
+            prompt: "Use Codex even with a profile selector".to_string(),
             context: BTreeMap::new(),
             response_contract: String::new(),
             contract_repair_attempts: 0,
@@ -2010,18 +2199,100 @@ fn codergen_backend_uses_profile_default_before_building_low_level_request() {
             reasoning_effort: None,
             repair_attempt: None,
             runtime_mode: Default::default(),
-            project_path: None,
+            project_path: Some(temp.path().to_path_buf()),
             metadata: BTreeMap::new(),
         })
         .expect("codergen output");
 
-    let requests = calls.lock().expect("calls");
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].provider.as_deref(), Some("openai_compatible"));
-    assert_eq!(requests[0].model, "local-default");
+    assert_eq!(output.response_text(), "Ack");
+    assert!(calls.lock().expect("calls").is_empty());
+    let methods = fs::read_to_string(&log_path)
+        .expect("rpc log")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json"))
+        .filter_map(|message| message["method"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
     assert_eq!(
-        requests[0].metadata["spark.runtime.llm_profile"],
-        json!("implementation")
+        methods,
+        ["initialize", "initialized", "thread/start", "turn/start"]
+    );
+}
+
+#[test]
+fn codergen_backend_delivers_child_intervention_to_codex_app_server_turn() {
+    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("rpc-log.jsonl");
+    let fake_bin = fake_steerable_codex_app_server_bin(temp.path(), &log_path);
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_bin.as_os_str());
+    let runtime_root = temp.path().join("codex-runtime");
+    let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", runtime_root.as_os_str());
+    let broker = CodergenSessionInterventionBroker::default();
+    let mut backend =
+        RustLlmCodergenBackend::with_intervention_broker(Client::new(), broker.clone());
+    let project_path = temp.path().to_path_buf();
+
+    let run_handle = thread::spawn(move || {
+        backend.run(CodergenBackendRequest {
+            node_id: "task".to_string(),
+            prompt: "Wait for intervention".to_string(),
+            context: BTreeMap::new(),
+            response_contract: String::new(),
+            contract_repair_attempts: 0,
+            timeout_seconds: None,
+            write_contract: Default::default(),
+            provider: "codex".to_string(),
+            model: Some("gpt-codex-test".to_string()),
+            llm_profile: None,
+            reasoning_effort: None,
+            repair_attempt: None,
+            runtime_mode: CodergenRuntimeMode::agent(),
+            project_path: Some(project_path),
+            metadata: BTreeMap::from([
+                ("spark.runtime.run_id".to_string(), json!("child-1")),
+                ("spark.runtime.root_run_id".to_string(), json!("root-1")),
+            ]),
+        })
+    });
+
+    wait_for_logged_method(&log_path, "turn/start");
+    let intervention = broker.request_child_intervention(CodergenChildInterventionRequest {
+        child_run_id: "child-1".to_string(),
+        message: "Use the intervention".to_string(),
+        parent_run_id: "parent-1".to_string(),
+        parent_node_id: "manager".to_string(),
+        root_run_id: "root-1".to_string(),
+        reason: "operator".to_string(),
+        source: "test".to_string(),
+        cycle: None,
+        target_node_id: Some("task".to_string()),
+        provider: None,
+        model: None,
+        llm_profile: None,
+        reasoning_effort: None,
+    });
+
+    assert_eq!(intervention.status, "delivered");
+    assert_eq!(intervention.delivery_mode, "codex_app_server_turn");
+    let output = run_handle
+        .join()
+        .expect("codex codergen thread")
+        .expect("codex codergen output");
+    assert_eq!(output.response_text(), "Steered");
+    let messages = fs::read_to_string(&log_path)
+        .expect("rpc log")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json"))
+        .collect::<Vec<_>>();
+    let turn_steer = messages
+        .iter()
+        .find(|message| message["method"] == json!("turn/steer"))
+        .expect("turn/steer");
+    assert_eq!(turn_steer["params"]["threadId"], json!("thread-steer"));
+    assert_eq!(turn_steer["params"]["expectedTurnId"], json!("turn-steer"));
+    assert_eq!(
+        turn_steer["params"]["input"][0]["text"],
+        json!("Use the intervention")
     );
 }
 
@@ -2050,9 +2321,9 @@ fn codergen_backend_requires_explicit_model_or_profile_default_for_profiles() {
             contract_repair_attempts: 0,
             timeout_seconds: None,
             write_contract: Default::default(),
-            provider: "codex".to_string(),
+            provider: "implementation".to_string(),
             model: None,
-            llm_profile: Some("implementation".to_string()),
+            llm_profile: None,
             reasoning_effort: None,
             repair_attempt: None,
             runtime_mode: Default::default(),

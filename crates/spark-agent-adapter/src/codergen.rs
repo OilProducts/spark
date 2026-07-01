@@ -432,12 +432,24 @@ impl CodergenSessionInterventionBroker {
                 "Active Rust codergen session is no longer accepting steering.",
             );
         }
+        let is_codex_app_server = active.provider.trim().eq_ignore_ascii_case("codex")
+            && normalized_optional(active.llm_profile.as_deref()).is_none();
         CodergenChildInterventionResult {
             run_id: request.child_run_id,
             status: "delivered".to_string(),
-            delivery_mode: "rust_boundary_codergen_turn".to_string(),
+            delivery_mode: if is_codex_app_server {
+                "codex_app_server_turn"
+            } else {
+                "rust_boundary_codergen_turn"
+            }
+            .to_string(),
             reason: request.reason,
-            message: "Intervention delivered to active Rust codergen session.".to_string(),
+            message: if is_codex_app_server {
+                "Intervention delivered to active Codex app-server turn."
+            } else {
+                "Intervention delivered to active Rust codergen session."
+            }
+            .to_string(),
             target_node_id: request.target_node_id,
         }
     }

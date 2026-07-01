@@ -6,6 +6,7 @@ pub mod agent;
 pub mod apply_patch;
 pub mod boundary_cli;
 pub mod codergen;
+pub mod codex_app_server;
 pub mod config;
 pub mod context;
 pub mod environment;
@@ -30,6 +31,10 @@ pub use codergen::{
     CodergenBackendRequest, CodergenChildInterventionRequest, CodergenChildInterventionResult,
     CodergenError, CodergenExecution, CodergenExecutionMode, CodergenHandler, CodergenRequest,
     CodergenRuntimeMode, CodergenSessionInterventionBroker,
+};
+pub use codex_app_server::{
+    build_codex_runtime_environment, parse_jsonrpc_line, process_codex_app_server_message,
+    CodexAppServerBackend, CodexAppServerClient, CodexAppServerError, CodexAppServerTurnState,
 };
 pub use config::SessionConfig;
 pub use context::{

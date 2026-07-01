@@ -20,6 +20,8 @@ fn agent_turn_output_carries_normalized_events_usage_raw_logs_and_resume_failure
     };
     let output = AgentTurnOutput {
         events: vec![event],
+        app_thread_id: Some("app-thread-1".to_string()),
+        app_turn_id: Some("app-turn-1".to_string()),
         final_assistant_text: Some("hello".to_string()),
         token_usage: Some(json!({"total": {"inputTokens": 3, "outputTokens": 5}})),
         token_usage_breakdown: Some(json!({"total": {"inputTokens": 3, "outputTokens": 5}})),
@@ -41,6 +43,8 @@ fn agent_turn_output_carries_normalized_events_usage_raw_logs_and_resume_failure
         encoded["token_usage_breakdown"]["total"]["outputTokens"],
         json!(5)
     );
+    assert_eq!(encoded["app_thread_id"], "app-thread-1");
+    assert_eq!(encoded["app_turn_id"], "app-turn-1");
     assert_eq!(encoded["raw_log_lines"][0]["direction"], "incoming");
     assert_eq!(
         encoded["thread_resume_failure"]["error_code"],

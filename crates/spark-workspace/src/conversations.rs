@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -600,7 +601,7 @@ impl WorkspaceConversationService {
             .get("reasoning_effort")
             .and_then(Value::as_str)
             .and_then(non_empty_string);
-        if (effective_profile.is_some()
+        if ((effective_profile.is_some() && effective_provider != "codex")
             || matches!(
                 effective_provider.as_str(),
                 "openrouter" | "litellm" | "openai_compatible"
@@ -616,6 +617,7 @@ impl WorkspaceConversationService {
                 ACTIVE_ASSISTANT_TURN_MESSAGE.to_string(),
             ));
         }
+        let previous_app_thread_id = latest_codex_app_thread_id(&snapshot);
 
         let user_turn = json!({
             "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
@@ -659,6 +661,22 @@ impl WorkspaceConversationService {
             &emitted_payloads,
         )?;
 
+        let mut metadata = BTreeMap::from([
+            (
+                "spark.workspace.user_turn_id".to_string(),
+                json!(user_turn_id.clone()),
+            ),
+            (
+                "spark.workspace.assistant_turn_id".to_string(),
+                json!(assistant_turn_id.clone()),
+            ),
+        ]);
+        if let Some(thread_id) = previous_app_thread_id {
+            metadata.insert(
+                "spark.runtime.codex_app_server.thread_id".to_string(),
+                json!(thread_id),
+            );
+        }
         let agent_turn_request = AgentTurnRequest {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
@@ -669,16 +687,7 @@ impl WorkspaceConversationService {
             llm_profile: effective_profile.clone(),
             reasoning_effort: effective_reasoning_effort.clone(),
             chat_mode: Some(effective_chat_mode.clone()),
-            metadata: BTreeMap::from([
-                (
-                    "spark.workspace.user_turn_id".to_string(),
-                    json!(user_turn_id.clone()),
-                ),
-                (
-                    "spark.workspace.assistant_turn_id".to_string(),
-                    json!(assistant_turn_id.clone()),
-                ),
-            ]),
+            metadata,
         };
 
         let prepared = PreparedConversationTurn {
@@ -709,13 +718,15 @@ impl WorkspaceConversationService {
         let project_path = normalize_project_path_or_400(project_path)?;
         let chat_mode = normalize_chat_mode(chat_mode);
         let repository = self.repository();
-        for raw_line in &output.raw_log_lines {
-            repository.append_raw_rpc_log(
-                conversation_id,
-                &project_path,
-                &raw_line.direction,
-                &raw_line.line,
-            )?;
+        if raw_rpc_logging_enabled() {
+            for raw_line in &output.raw_log_lines {
+                repository.append_raw_rpc_log(
+                    conversation_id,
+                    &project_path,
+                    &raw_line.direction,
+                    &raw_line.line,
+                )?;
+            }
         }
 
         let mut snapshot = repository
@@ -725,6 +736,14 @@ impl WorkspaceConversationService {
             })?;
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, &project_path);
         let mut emitted_payloads = Vec::new();
+        if apply_assistant_turn_app_server_ids(
+            &mut snapshot,
+            assistant_turn_id,
+            output.app_thread_id.as_deref(),
+            output.app_turn_id.as_deref(),
+        ) {
+            emit_assistant_turn_upsert(&snapshot, assistant_turn_id, &mut emitted_payloads);
+        }
         let mut buffered_plan_assistant_event: Option<TurnStreamEvent> = None;
 
         for event in output.events {
@@ -763,6 +782,7 @@ impl WorkspaceConversationService {
                         }
                         if let Some(segment) =
                             materialize_segment_for_event(&mut snapshot, assistant_turn_id, &event)
+                                .filter(|_| should_emit_segment_upsert_for_event(&event))
                         {
                             emitted_payloads
                                 .push(build_segment_upsert_payload(&snapshot, &segment));
@@ -791,6 +811,7 @@ impl WorkspaceConversationService {
                     }
                     if let Some(segment) =
                         materialize_segment_for_event(&mut snapshot, assistant_turn_id, &event)
+                            .filter(|_| should_emit_segment_upsert_for_event(&event))
                     {
                         emitted_payloads.push(build_segment_upsert_payload(&snapshot, &segment));
                     }
@@ -798,6 +819,7 @@ impl WorkspaceConversationService {
                 TurnStreamEventKind::TurnCompleted => {
                     if let Some(segment) =
                         materialize_segment_for_event(&mut snapshot, assistant_turn_id, &event)
+                            .filter(|_| should_emit_segment_upsert_for_event(&event))
                     {
                         emitted_payloads.push(build_segment_upsert_payload(&snapshot, &segment));
                     }
@@ -805,6 +827,7 @@ impl WorkspaceConversationService {
                 _ => {
                     if let Some(segment) =
                         materialize_segment_for_event(&mut snapshot, assistant_turn_id, &event)
+                            .filter(|_| should_emit_segment_upsert_for_event(&event))
                     {
                         emitted_payloads.push(build_segment_upsert_payload(&snapshot, &segment));
                     }
@@ -978,6 +1001,15 @@ impl WorkspaceConversationService {
             &mut emitted_payloads,
         )?;
 
+        let answer_metadata = request_user_input_answer_metadata(
+            &segment,
+            &request_record,
+            &assistant_turn_id,
+            &segment_id,
+            &lookup_id,
+            &submitted_at,
+        );
+
         let answer_request = AgentRequestUserInputAnswerRequest {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
@@ -991,24 +1023,7 @@ impl WorkspaceConversationService {
             llm_profile: effective_profile,
             reasoning_effort: effective_reasoning_effort,
             chat_mode: Some(effective_chat_mode.clone()),
-            metadata: BTreeMap::from([
-                (
-                    "spark.workspace.assistant_turn_id".to_string(),
-                    json!(assistant_turn_id.clone()),
-                ),
-                (
-                    "spark.workspace.request_user_input.segment_id".to_string(),
-                    json!(segment_id.clone()),
-                ),
-                (
-                    "spark.workspace.request_user_input.lookup_id".to_string(),
-                    json!(lookup_id.clone()),
-                ),
-                (
-                    "spark.workspace.request_user_input.submitted_at".to_string(),
-                    json!(submitted_at.clone()),
-                ),
-            ]),
+            metadata: answer_metadata,
         };
 
         let output = match self
@@ -3645,6 +3660,14 @@ fn materialize_segment_for_event(
     }
 }
 
+fn should_emit_segment_upsert_for_event(event: &TurnStreamEvent) -> bool {
+    match &event.kind {
+        TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ToolCallUpdated => false,
+        TurnStreamEventKind::Other(kind) if kind == "model_tool_call_delta" => false,
+        _ => true,
+    }
+}
+
 fn is_agent_event_kind(kind: &str) -> bool {
     matches!(kind, "session_start" | "session_end" | "warning")
 }
@@ -3744,6 +3767,14 @@ fn build_segment_source(event: &TurnStreamEvent, call_id: Option<&str>) -> Value
         .and_then(|value| non_empty_string(value))
     {
         source.insert("session_id".to_string(), json!(value));
+    }
+    if let Some(value) = event
+        .source
+        .app_thread_id
+        .as_ref()
+        .and_then(|value| non_empty_string(value))
+    {
+        source.insert("app_thread_id".to_string(), json!(value));
     }
     if let Some(value) = event
         .source
@@ -4077,10 +4108,63 @@ fn normalize_request_user_input_payload(payload: &Value) -> Option<Map<String, V
     );
     output.insert("questions".to_string(), Value::Array(questions));
     output.insert("answers".to_string(), Value::Object(answers));
+    for key in ["app_thread_id", "app_turn_id"] {
+        if let Some(value) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(non_empty_string)
+        {
+            output.insert(key.to_string(), json!(value));
+        }
+    }
     if let Some(submitted_at) = object.get("submitted_at").and_then(Value::as_str) {
         output.insert("submitted_at".to_string(), json!(submitted_at));
     }
     Some(output)
+}
+
+fn request_user_input_answer_metadata(
+    segment: &Value,
+    request_record: &Map<String, Value>,
+    assistant_turn_id: &str,
+    segment_id: &str,
+    lookup_id: &str,
+    submitted_at: &str,
+) -> BTreeMap<String, Value> {
+    let mut metadata = BTreeMap::from([
+        (
+            "spark.workspace.assistant_turn_id".to_string(),
+            json!(assistant_turn_id),
+        ),
+        (
+            "spark.workspace.request_user_input.segment_id".to_string(),
+            json!(segment_id),
+        ),
+        (
+            "spark.workspace.request_user_input.lookup_id".to_string(),
+            json!(lookup_id),
+        ),
+        (
+            "spark.workspace.request_user_input.submitted_at".to_string(),
+            json!(submitted_at),
+        ),
+    ]);
+    for (source_key, metadata_key) in [
+        ("app_thread_id", "spark.runtime.codex_app_server.thread_id"),
+        ("app_turn_id", "spark.runtime.codex_app_server.turn_id"),
+    ] {
+        if let Some(value) = segment
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get(source_key))
+            .or_else(|| request_record.get(source_key))
+            .and_then(Value::as_str)
+            .and_then(non_empty_string)
+        {
+            metadata.insert(metadata_key.to_string(), json!(value));
+        }
+    }
+    metadata
 }
 
 fn normalize_request_user_input_status(status: Option<&str>) -> &'static str {
@@ -4672,6 +4756,50 @@ fn apply_assistant_turn_token_usage_breakdown(
     changed
 }
 
+fn apply_assistant_turn_app_server_ids(
+    snapshot: &mut Value,
+    assistant_turn_id: &str,
+    app_thread_id: Option<&str>,
+    app_turn_id: Option<&str>,
+) -> bool {
+    let Some(turn) = find_turn_mut(snapshot, assistant_turn_id) else {
+        return false;
+    };
+    let mut changed = false;
+    if let Some(app_thread_id) = app_thread_id.and_then(non_empty_string) {
+        changed |=
+            turn.get("app_thread_id").and_then(Value::as_str) != Some(app_thread_id.as_str());
+        set_string_value(turn, "app_thread_id", &app_thread_id);
+    }
+    if let Some(app_turn_id) = app_turn_id.and_then(non_empty_string) {
+        changed |= turn.get("app_turn_id").and_then(Value::as_str) != Some(app_turn_id.as_str());
+        set_string_value(turn, "app_turn_id", &app_turn_id);
+    }
+    changed
+}
+
+fn latest_codex_app_thread_id(snapshot: &Value) -> Option<String> {
+    snapshot
+        .get("turns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .rev()
+        .filter(|turn| turn.get("role").and_then(Value::as_str) == Some("assistant"))
+        .find_map(|turn| {
+            turn.get("app_thread_id")
+                .and_then(Value::as_str)
+                .and_then(non_empty_string)
+                .or_else(|| {
+                    turn.get("details")
+                        .and_then(Value::as_object)
+                        .and_then(|details| details.get("thread_id"))
+                        .and_then(Value::as_str)
+                        .and_then(non_empty_string)
+                })
+        })
+}
+
 fn emit_assistant_turn_upsert(
     snapshot: &Value,
     assistant_turn_id: &str,
@@ -5025,6 +5153,17 @@ fn append_events(
         repository.append_conversation_event(conversation_id, project_path, event)?;
     }
     Ok(())
+}
+
+fn raw_rpc_logging_enabled() -> bool {
+    env::var("SPARK_ENABLE_RAW_RPC_LOG")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
 }
 
 fn persist_snapshot_with_payloads(

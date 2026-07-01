@@ -275,7 +275,7 @@ fn spark_provider_selectors_normalize_without_erasing_native_contracts() {
         normalize_provider_selector("gemini").family,
         ProviderFamily::Gemini
     );
-    assert_eq!(normalize_provider_selector("codex").id, "openai_compatible");
+    assert_eq!(normalize_provider_selector("codex").id, "codex");
     assert_eq!(normalize_provider_selector("openrouter").id, "openrouter");
     assert_eq!(normalize_provider_selector("litellm").id, "litellm");
     assert_eq!(
@@ -289,7 +289,7 @@ fn spark_provider_selectors_normalize_without_erasing_native_contracts() {
     assert!(native_openai.tool_registry.get("apply_patch").is_some());
 
     let codex = create_provider_profile("codex", "local-model");
-    assert_eq!(codex.id, "openai_compatible");
+    assert_eq!(codex.id, "codex");
     assert!(!codex.supports("reasoning"));
     assert!(codex.tool_registry.get("apply_patch").is_some());
 

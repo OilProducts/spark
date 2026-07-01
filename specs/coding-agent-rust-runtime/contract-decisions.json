@@ -41,7 +41,7 @@
       "spec_refs": ["3.1", "3.2", "3.4", "3.5", "3.6", "3.7", "6.1", "6.2"],
       "architecture_refs": ["Provider Profiles", "System Prompt And Project Context", "Spark Integration"],
       "behavioral_contract": "OpenAI exposes codex-aligned apply_patch as the primary edit surface, Anthropic exposes old_string/new_string edit_file and not apply_patch as its native edit path, and Gemini exposes gemini-cli-style file and directory tools. Spark selectors such as codex, openrouter, litellm, openai_compatible, and configured llm profiles are normalized at the adapter boundary without erasing the native profile contract.",
-      "implementation_contract": "Implement ProviderProfile for native openai, anthropic, and gemini. Treat codex as a Spark-facing selector for the OpenAI/codex-aligned Rust profile or configured default, not as a reason to invoke Python agent code. OpenAI-compatible selectors may use an explicit compatibility profile backed by unified-llm-adapter, but they do not close native provider parity requirements.",
+      "implementation_contract": "Implement ProviderProfile for native openai, anthropic, and gemini. Treat provider=codex as the first-class Rust Codex app-server runtime path, not as openai_compatible and not as a reason to invoke Python agent code. OpenAI-compatible selectors may use an explicit compatibility profile backed by unified-llm-adapter, but they do not close native provider parity requirements.",
       "validation_expectations": "Profile tests must assert observable tool names, editing formats, timeout defaults, provider_options, custom latest-wins registration, and selector normalization without asserting byte-for-byte prompt strings."
     },
     {

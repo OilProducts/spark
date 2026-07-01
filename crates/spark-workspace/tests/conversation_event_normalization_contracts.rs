@@ -354,10 +354,9 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
         .read_raw_rpc_log("conversation-execute", "/projects/execute")
         .expect("raw log");
-    assert_eq!(raw_log.last().expect("raw line").direction, "outgoing");
-    assert_eq!(
-        raw_log.last().expect("raw line").line,
-        "{\"event\":\"backend-second\"}"
+    assert!(
+        raw_log.is_empty(),
+        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
     );
 
     let events = service
@@ -585,9 +584,9 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             "/projects/execute-errors",
         )
         .expect("resume raw log");
-    assert_eq!(
-        resume_raw_log.last().expect("raw line").line,
-        "{\"event\":\"thread-resume-failed\"}"
+    assert!(
+        resume_raw_log.is_empty(),
+        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
     );
 
     let resume_events = service
@@ -673,6 +672,8 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
             processing_completed_event(),
             agent_event("session_end", "closed", json!({"state": "closed"})),
         ],
+        app_thread_id: None,
+        app_turn_id: None,
         final_assistant_text: Some("Hello".to_string()),
         token_usage: Some(json!({"total": {"inputTokens": 10, "outputTokens": 4}})),
         token_usage_breakdown: Some(json!({
@@ -769,8 +770,10 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
         .read_raw_rpc_log("conversation-events", "/projects/events")
         .expect("raw log");
-    assert_eq!(raw_log[0].direction, "incoming");
-    assert_eq!(raw_log[0].line, "{\"event\":\"delta\"}");
+    assert!(
+        raw_log.is_empty(),
+        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+    );
 
     let events = service
         .read_events_after("conversation-events", "/projects/events", 0)
@@ -792,11 +795,26 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
             && envelope.payload["segment"]["kind"] == "assistant_message"
             && envelope.payload["segment"]["content"] == "Hello"
     }));
+    assert!(!live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.segment_upsert"
+            && envelope.payload["segment"]["kind"] == "assistant_message"
+            && envelope.payload["segment"]["content"] == "Hel"
+    }));
     assert!(live_envelopes.iter().any(|envelope| {
         envelope.event_type == "conversation.segment_upsert"
             && envelope.payload["segment"]["kind"] == "reasoning"
             && envelope.payload["segment"]["content"] == "Because."
             && envelope.payload["segment"]["source"]["item_id"] == "reasoning"
+    }));
+    assert!(!live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.segment_upsert"
+            && envelope.payload["segment"]["kind"] == "reasoning"
+            && envelope.payload["segment"]["content"] == "Because"
+    }));
+    assert!(!live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.segment_upsert"
+            && envelope.payload["segment"]["kind"] == "model_tool_call"
+            && envelope.payload["segment"]["source"]["raw_kind"] == "model_tool_call_delta"
     }));
     assert!(live_envelopes.iter().any(|envelope| {
         envelope.event_type == "conversation.segment_upsert"
@@ -1170,8 +1188,10 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
         .read_raw_rpc_log("conversation-input", "/projects/input")
         .expect("raw log");
-    assert_eq!(raw_log[0].direction, "incoming");
-    assert_eq!(raw_log[0].line, "{\"event\":\"request-user-input-answer\"}");
+    assert!(
+        raw_log.is_empty(),
+        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+    );
 
     let answer_requests = answer_requests.lock().expect("answer requests");
     assert_eq!(answer_requests.len(), 1);
@@ -1211,6 +1231,14 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     assert_eq!(
         answer_request.metadata["spark.workspace.request_user_input.lookup_id"],
         json!("decision")
+    );
+    assert_eq!(
+        answer_request.metadata["spark.runtime.codex_app_server.thread_id"],
+        json!("app-thread")
+    );
+    assert_eq!(
+        answer_request.metadata["spark.runtime.codex_app_server.turn_id"],
+        json!("app-turn")
     );
     drop(answer_requests);
 
@@ -1726,6 +1754,7 @@ fn parse_channel(channel: &str) -> TurnStreamChannel {
 
 fn source(app_turn_id: &str, item_id: &str) -> TurnStreamSource {
     TurnStreamSource {
+        app_thread_id: Some("app-thread".to_string()),
         app_turn_id: Some(app_turn_id.to_string()),
         item_id: Some(item_id.to_string()),
         ..TurnStreamSource::default()

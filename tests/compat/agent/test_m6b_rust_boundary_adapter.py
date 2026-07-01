@@ -199,12 +199,12 @@ def test_project_chat_service_uses_committed_rust_boundary_for_profiled_chat_sna
             str(tmp_path / "project"),
             "Please answer from the Rust boundary.",
             model="profile-model",
-            provider="codex",
+            provider="openai_compatible",
             llm_profile="team-profile",
             reasoning_effort="HIGH",
         )
 
-    assert snapshot["provider"] == "codex"
+    assert snapshot["provider"] == "openai_compatible"
     assert snapshot["model"] == "profile-model"
     assert snapshot["llm_profile"] == "team-profile"
     assert snapshot["reasoning_effort"] == "high"
@@ -214,7 +214,7 @@ def test_project_chat_service_uses_committed_rust_boundary_for_profiled_chat_sna
     assert records and records[0]["path"] == "/v1/chat/completions"
     request_body = records[0]["body"]
     assert request_body["model"] == "profile-model"
-    assert request_body["metadata"]["spark.runtime.provider_selector"] == "codex"
+    assert request_body["metadata"]["spark.runtime.provider_selector"] == "openai_compatible"
     assert request_body["metadata"]["spark.runtime.provider"] == "openai_compatible"
     assert request_body["metadata"]["spark.runtime.llm_profile"] == "team-profile"
     assert request_body["metadata"]["spark.runtime.reasoning_effort"] == "high"
@@ -1060,7 +1060,7 @@ def test_provider_router_uses_committed_serialized_boundary_for_profiled_coderge
                 "contract_repair_attempts": 2,
                 "timeout_seconds": 120.0,
                 "write_contract": {"allowed_keys": ["context.allowed"], "parse_error": ""},
-                "provider": "codex",
+                "provider": "openai_compatible",
                 "model": "profile-model",
                 "llm_profile": "team-profile",
                 "reasoning_effort": "HIGH",
@@ -1074,7 +1074,7 @@ def test_provider_router_uses_committed_serialized_boundary_for_profiled_coderge
         )
         payload = completion_event["payload"]
         assert payload["node_id"] == "plan"
-        assert payload["provider_selector"] == "codex"
+        assert payload["provider_selector"] == "openai_compatible"
         assert payload["provider"] == "openai_compatible"
         assert payload["model"] == "profile-model"
         assert payload["llm_profile"] == "team-profile"
@@ -1094,7 +1094,7 @@ def test_provider_router_uses_committed_serialized_boundary_for_profiled_coderge
             "plan",
             "Prompt through provider router",
             Context(values={"context.request": "preserve fields"}),
-            provider="codex",
+            provider="openai_compatible",
             model="profile-model",
             llm_profile="team-profile",
             reasoning_effort="HIGH",
@@ -1147,7 +1147,7 @@ def test_provider_router_maps_committed_serialized_boundary_errors_to_runtime_ou
             "plan",
             "Prompt",
             Context(),
-            provider="codex",
+            provider="openai_compatible",
             model="profile-model",
             llm_profile="team-profile",
             timeout=120.0,

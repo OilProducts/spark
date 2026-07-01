@@ -183,7 +183,7 @@
         "runtime_llm_profile": "team-profile",
         "runtime_model": "profile-model",
         "runtime_provider": "openai_compatible",
-        "runtime_provider_selector": "codex",
+        "runtime_provider_selector": "openai_compatible",
         "runtime_reasoning_effort": "high"
       },
       "snapshot": {
@@ -196,7 +196,7 @@
         "conversation_id": "conversation-m7-http",
         "llm_profile": "team-profile",
         "model": "profile-model",
-        "provider": "codex",
+        "provider": "openai_compatible",
         "reasoning_effort": "high",
         "segment_kinds": [
           "agent_event",

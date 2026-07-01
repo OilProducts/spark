@@ -74,6 +74,10 @@ pub struct AgentTurnOutput {
     #[serde(default)]
     pub events: Vec<TurnStreamEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_assistant_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<Value>,

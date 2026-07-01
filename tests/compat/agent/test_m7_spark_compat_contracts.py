@@ -672,7 +672,7 @@ default_model = "profile-model"
                     json={
                         "project_path": str(project_dir),
                         "message": "Answer through the Rust HTTP route.",
-                        "provider": "codex",
+                        "provider": "openai_compatible",
                         "model": "profile-model",
                         "llm_profile": "team-profile",
                         "reasoning_effort": "HIGH",

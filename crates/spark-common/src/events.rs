@@ -147,6 +147,8 @@ pub struct TurnStreamSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
