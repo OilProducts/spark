@@ -647,6 +647,11 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
             line: "{\"event\":\"delta\"}".to_string(),
         }],
         events: vec![
+            agent_event(
+                "session_start",
+                "processing",
+                json!({"state": "processing"}),
+            ),
             content_delta("assistant", "Hel", "app-turn", "final"),
             content_completed("assistant", "Hello", "app-turn", "final"),
             content_delta("reasoning", "Because", "app-turn", "reasoning"),
@@ -664,6 +669,9 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
             tool_event("tool_call_started", "tool-1", "running", "partial"),
             tool_event("tool_call_completed", "tool-1", "completed", "full output"),
             token_usage(json!({"total": {"inputTokens": 10, "outputTokens": 4}})),
+            agent_warning_event("Context usage at 95%."),
+            processing_completed_event(),
+            agent_event("session_end", "closed", json!({"state": "closed"})),
         ],
         final_assistant_text: Some("Hello".to_string()),
         token_usage: Some(json!({"total": {"inputTokens": 10, "outputTokens": 4}})),
@@ -729,6 +737,34 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
     assert_eq!(tool["status"], "complete");
     assert_eq!(tool["tool_call"]["output"], "full output");
     assert_eq!(tool["source"]["call_id"], "tool-1");
+    assert!(segments.iter().any(|segment| {
+        segment["kind"] == "agent_event"
+            && segment["category"] == "lifecycle"
+            && segment["event_kind"] == "session_start"
+            && segment["event_status"] == "processing"
+            && segment["details"]["state"] == "processing"
+    }));
+    assert!(segments.iter().any(|segment| {
+        segment["kind"] == "agent_event"
+            && segment["category"] == "warning"
+            && segment["event_kind"] == "warning"
+            && segment["message"] == "Context usage at 95%."
+            && segment["details"]["message"] == "Context usage at 95%."
+    }));
+    assert!(segments.iter().any(|segment| {
+        segment["kind"] == "agent_event"
+            && segment["category"] == "processing"
+            && segment["event_kind"] == "processing_end"
+            && segment["event_status"] == "idle"
+            && segment["details"]["state"] == "idle"
+    }));
+    assert!(segments.iter().any(|segment| {
+        segment["kind"] == "agent_event"
+            && segment["category"] == "lifecycle"
+            && segment["event_kind"] == "session_end"
+            && segment["event_status"] == "closed"
+            && segment["details"]["state"] == "closed"
+    }));
 
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
         .read_raw_rpc_log("conversation-events", "/projects/events")
@@ -776,6 +812,30 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
             && envelope.payload["segment"]["status"] == "complete"
             && envelope.payload["segment"]["tool_call"]["output"] == "full output"
             && envelope.payload["segment"]["source"]["call_id"] == "tool-1"
+    }));
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.segment_upsert"
+            && envelope.payload["segment"]["kind"] == "agent_event"
+            && envelope.payload["segment"]["event_kind"] == "warning"
+            && envelope.payload["segment"]["message"] == "Context usage at 95%."
+    }));
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.segment_upsert"
+            && envelope.payload["segment"]["kind"] == "agent_event"
+            && envelope.payload["segment"]["event_kind"] == "processing_end"
+            && envelope.payload["segment"]["event_status"] == "idle"
+    }));
+    assert!(live_envelopes.iter().any(|envelope| {
+        envelope.event_type == "conversation.snapshot"
+            && envelope.payload["state"]["segments"]
+                .as_array()
+                .is_some_and(|segments| {
+                    segments.iter().any(|segment| {
+                        segment["kind"] == "agent_event"
+                            && segment["event_kind"] == "session_end"
+                            && segment["event_status"] == "closed"
+                    })
+                })
     }));
 
     let (failure_prepared, _snapshot) = service
@@ -1574,6 +1634,60 @@ fn request_user_input_event() -> TurnStreamEvent {
         details: None,
         phase: None,
         status: None,
+    }
+}
+
+fn agent_event(kind: &str, status: &str, details: Value) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::Other(kind.to_string()),
+        channel: None,
+        source: TurnStreamSource {
+            backend: Some("agent_session".to_string()),
+            app_turn_id: Some("app-turn".to_string()),
+            item_id: Some(kind.to_string()),
+            raw_kind: Some(kind.to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: None,
+        message: None,
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: Some(details),
+        phase: None,
+        status: Some(status.to_string()),
+    }
+}
+
+fn agent_warning_event(message: &str) -> TurnStreamEvent {
+    let mut event = agent_event("warning", "warning", json!({"message": message}));
+    event.message = Some(message.to_string());
+    event
+}
+
+fn processing_completed_event() -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::TurnCompleted,
+        channel: None,
+        source: TurnStreamSource {
+            backend: Some("agent_session".to_string()),
+            app_turn_id: Some("app-turn".to_string()),
+            item_id: Some("processing".to_string()),
+            raw_kind: Some("processing_end".to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: None,
+        message: None,
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: Some(json!({"state": "idle"})),
+        phase: Some("turn".to_string()),
+        status: Some("idle".to_string()),
     }
 }
 

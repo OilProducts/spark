@@ -2,7 +2,12 @@
   "requirements": [
     {
       "id": "REQ-001",
-      "spec_refs": ["1.2", "1.4", "1.6", "9"],
+      "spec_refs": [
+        "1.2",
+        "1.4",
+        "1.6",
+        "9"
+      ],
       "title": "Rust-owned agent runtime boundary",
       "summary": "Provide a native Rust coding-agent runtime for normal Spark chat, agent-turn, and codergen-adjacent execution, using crates/unified-llm-adapter as the LLM boundary and leaving Python agent modules only as oracle or compatibility assets.",
       "acceptance_criteria": [
@@ -31,7 +36,13 @@
     },
     {
       "id": "REQ-002",
-      "spec_refs": ["2.1", "2.2", "2.3", "2.4", "9.1"],
+      "spec_refs": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "9.1"
+      ],
       "title": "Session model lifecycle and configuration",
       "summary": "Implement the Session orchestrator, configuration defaults, lifecycle states, and history turn records required to run multiple sequential agent inputs.",
       "acceptance_criteria": [
@@ -42,7 +53,9 @@
         "Multiple sequential inputs can be submitted to the same session after a processing cycle returns to IDLE.",
         "Session lifecycle behavior is covered through observable events or public APIs rather than tests that inspect source text."
       ],
-      "dependencies": ["REQ-001"],
+      "dependencies": [
+        "REQ-001"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "tests/agent",
@@ -54,7 +67,13 @@
     },
     {
       "id": "REQ-003",
-      "spec_refs": ["1.4", "1.6", "2.5", "2.8", "9.1"],
+      "spec_refs": [
+        "1.4",
+        "1.6",
+        "2.5",
+        "2.8",
+        "9.1"
+      ],
       "title": "Core agentic loop",
       "summary": "Implement process_input as an agentic loop that alternates Rust-owned LLM calls with tool execution until natural completion, limits, abort, or unrecoverable error.",
       "acceptance_criteria": [
@@ -67,7 +86,13 @@
         "Round limits, turn limits, abort signals, and unrecoverable errors stop the loop according to the specified state transitions.",
         "The loop preserves observable behavior through typed events for user input, assistant output, tool calls, limits, warnings, errors, and processing completion."
       ],
-      "dependencies": ["REQ-001", "REQ-002", "REQ-004", "REQ-005", "REQ-006"],
+      "dependencies": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "crates/unified-llm-adapter",
@@ -80,7 +105,13 @@
     },
     {
       "id": "REQ-004",
-      "spec_refs": ["1.6", "2.9", "3.8", "5.1", "9.10"],
+      "spec_refs": [
+        "1.6",
+        "2.9",
+        "3.8",
+        "5.1",
+        "9.10"
+      ],
       "title": "Typed event stream",
       "summary": "Expose a typed event stream suitable for host applications, preserving assistant streaming, model-proposed tool-call events, actual tool execution events, usage updates, and session lifecycle events.",
       "acceptance_criteria": [
@@ -93,7 +124,10 @@
         "Events are delivered through an async iterator, channel, callback, or equivalent language-appropriate public interface.",
         "Spark-facing Python adapters preserve their existing typed event contract when backed by the Rust runtime."
       ],
-      "dependencies": ["REQ-001", "REQ-002"],
+      "dependencies": [
+        "REQ-001",
+        "REQ-002"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "crates/unified-llm-adapter",
@@ -108,7 +142,15 @@
     },
     {
       "id": "REQ-005",
-      "spec_refs": ["3.1", "3.2", "3.4", "3.5", "3.6", "3.7", "9.2"],
+      "spec_refs": [
+        "3.1",
+        "3.2",
+        "3.4",
+        "3.5",
+        "3.6",
+        "3.7",
+        "9.2"
+      ],
       "title": "Provider-aligned profiles",
       "summary": "Implement OpenAI, Anthropic, and Gemini ProviderProfile support with provider-native model-facing tools, prompts, options, and capability flags.",
       "acceptance_criteria": [
@@ -121,7 +163,9 @@
         "When a custom tool name collides with a profile tool name, the latest registration overrides the prior tool definition and executor.",
         "Profile-facing tests validate observable tool availability and provider options, not byte-for-byte prompt strings."
       ],
-      "dependencies": ["REQ-001"],
+      "dependencies": [
+        "REQ-001"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "crates/unified-llm-adapter",
@@ -134,7 +178,12 @@
     },
     {
       "id": "REQ-006",
-      "spec_refs": ["2.5", "3.8", "9.3", "Appendix B"],
+      "spec_refs": [
+        "2.5",
+        "3.8",
+        "9.3",
+        "Appendix B"
+      ],
       "title": "Tool registry and execution pipeline",
       "summary": "Implement the Rust tool registry and dispatch pipeline that validates model-requested tools, executes registered tools through the active environment, truncates outputs, emits events, and returns ToolResult values.",
       "acceptance_criteria": [
@@ -147,7 +196,10 @@
         "Profiles that support parallel tool calls execute multiple calls concurrently while preserving result association by tool_call_id.",
         "Tool execution emits TOOL_CALL_START before execution and TOOL_CALL_END after success or failure."
       ],
-      "dependencies": ["REQ-001", "REQ-004"],
+      "dependencies": [
+        "REQ-001",
+        "REQ-004"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "crates/unified-llm-adapter",
@@ -160,7 +212,15 @@
     },
     {
       "id": "REQ-007",
-      "spec_refs": ["3.3", "3.4", "3.5", "3.6", "Appendix A", "9.2", "9.3"],
+      "spec_refs": [
+        "3.3",
+        "3.4",
+        "3.5",
+        "3.6",
+        "Appendix A",
+        "9.2",
+        "9.3"
+      ],
       "title": "Built-in coding tools",
       "summary": "Implement provider-aligned built-in tools for file reads and writes, exact-match edits, OpenAI v4a apply_patch, shell execution, grep, glob, and Gemini directory or batch-read extensions where required.",
       "acceptance_criteria": [
@@ -174,7 +234,11 @@
         "Gemini profile extensions such as read_many_files and list_dir are implemented when exposed by that profile.",
         "Provider profiles expose the editing format native to the provider and do not expose apply_patch as the Anthropic native editing path."
       ],
-      "dependencies": ["REQ-005", "REQ-006", "REQ-008"],
+      "dependencies": [
+        "REQ-005",
+        "REQ-006",
+        "REQ-008"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "tests/agent",
@@ -186,7 +250,14 @@
     },
     {
       "id": "REQ-008",
-      "spec_refs": ["4.1", "4.2", "4.3", "4.4", "5.4", "9.4"],
+      "spec_refs": [
+        "4.1",
+        "4.2",
+        "4.3",
+        "4.4",
+        "5.4",
+        "9.4"
+      ],
       "title": "Execution environment abstraction",
       "summary": "Implement the ExecutionEnvironment interface and a required local implementation for file operations, command execution, search, metadata, lifecycle cleanup, and future custom environment support.",
       "acceptance_criteria": [
@@ -200,7 +271,9 @@
         "grep uses ripgrep when available and falls back to a native regex search when ripgrep is unavailable.",
         "The public abstraction can be implemented by consumers for Docker, Kubernetes, WASM, SSH, logging wrappers, or read-only wrappers without changing tool logic."
       ],
-      "dependencies": ["REQ-001"],
+      "dependencies": [
+        "REQ-001"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "tests/agent",
@@ -212,7 +285,12 @@
     },
     {
       "id": "REQ-009",
-      "spec_refs": ["5.1", "5.2", "5.3", "9.5"],
+      "spec_refs": [
+        "5.1",
+        "5.2",
+        "5.3",
+        "9.5"
+      ],
       "title": "Tool output truncation",
       "summary": "Apply deterministic output truncation before ToolResult values are sent to the LLM while preserving full tool output in events for host applications.",
       "acceptance_criteria": [
@@ -226,7 +304,10 @@
         "A pathological output with very few extremely long lines is still bounded by character truncation.",
         "TOOL_CALL_END events expose full untruncated output while ToolResult content contains the truncated output."
       ],
-      "dependencies": ["REQ-004", "REQ-006"],
+      "dependencies": [
+        "REQ-004",
+        "REQ-006"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "tests/agent",
@@ -238,7 +319,15 @@
     },
     {
       "id": "REQ-010",
-      "spec_refs": ["5.5", "6.1", "6.2", "6.3", "6.4", "6.5", "9.8"],
+      "spec_refs": [
+        "5.5",
+        "6.1",
+        "6.2",
+        "6.3",
+        "6.4",
+        "6.5",
+        "9.8"
+      ],
       "title": "System prompts environment context and project docs",
       "summary": "Build provider-specific system prompts from layered instructions, structured environment context, git context, tool descriptions, project documentation, and user overrides.",
       "acceptance_criteria": [
@@ -252,7 +341,11 @@
         "Steering and project documentation are converted to user-role or system-prompt content according to the spec so provider request translation receives the correct roles.",
         "Approximate context usage is tracked with the 1 token ~= 4 characters heuristic and emits a WARNING event above 80 percent of the provider context window without automatic compaction."
       ],
-      "dependencies": ["REQ-002", "REQ-005", "REQ-004"],
+      "dependencies": [
+        "REQ-002",
+        "REQ-005",
+        "REQ-004"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "tests/agent",
@@ -266,7 +359,12 @@
     },
     {
       "id": "REQ-011",
-      "spec_refs": ["2.6", "2.7", "9.6", "9.7"],
+      "spec_refs": [
+        "2.6",
+        "2.7",
+        "9.6",
+        "9.7"
+      ],
       "title": "Steering follow-ups and runtime reasoning controls",
       "summary": "Support host-controlled steering, queued follow-up inputs, and dynamic reasoning_effort changes between model calls.",
       "acceptance_criteria": [
@@ -280,7 +378,11 @@
         "Changing reasoning_effort mid-session takes effect on the next LLM request.",
         "Provider profiles map reasoning_effort to the unified Request and provider-specific options required by OpenAI, Anthropic, and Gemini."
       ],
-      "dependencies": ["REQ-002", "REQ-003", "REQ-005"],
+      "dependencies": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-005"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "crates/unified-llm-adapter",
@@ -293,7 +395,13 @@
     },
     {
       "id": "REQ-012",
-      "spec_refs": ["2.8", "2.10", "5.5", "9.1", "9.11"],
+      "spec_refs": [
+        "2.8",
+        "2.10",
+        "5.5",
+        "9.1",
+        "9.11"
+      ],
       "title": "Stop conditions and loop detection",
       "summary": "Enforce natural completion, round limits, session turn limits, abort cancellation, unrecoverable error handling, context warnings, and repeated-tool loop detection.",
       "acceptance_criteria": [
@@ -307,7 +415,11 @@
         "When the last configured window of tool calls repeats a pattern of length 1, 2, or 3, the runtime appends a SteeringTurn warning and emits LOOP_DETECTION.",
         "Loop detection is enabled by default with a window of 10 and can be disabled through SessionConfig."
       ],
-      "dependencies": ["REQ-002", "REQ-003", "REQ-004"],
+      "dependencies": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-004"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "tests/agent",
@@ -319,7 +431,13 @@
     },
     {
       "id": "REQ-013",
-      "spec_refs": ["7.1", "7.2", "7.3", "7.4", "9.9"],
+      "spec_refs": [
+        "7.1",
+        "7.2",
+        "7.3",
+        "7.4",
+        "9.9"
+      ],
       "title": "Subagent tools and lifecycle",
       "summary": "Allow a parent agent to spawn, communicate with, wait for, and close scoped child sessions that share the execution environment while maintaining independent histories.",
       "acceptance_criteria": [
@@ -333,7 +451,12 @@
         "Depth limiting prevents recursive sub-sub-agent spawning by default with max_subagent_depth=1.",
         "Subagent tool results are returned to the parent as ToolResult values and surfaced in the parent's event stream."
       ],
-      "dependencies": ["REQ-002", "REQ-003", "REQ-005", "REQ-008"],
+      "dependencies": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-005",
+        "REQ-008"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "tests/agent",
@@ -345,7 +468,11 @@
     },
     {
       "id": "REQ-014",
-      "spec_refs": ["2.8", "9.11", "Appendix B"],
+      "spec_refs": [
+        "2.8",
+        "9.11",
+        "Appendix B"
+      ],
       "title": "Error handling and graceful shutdown",
       "summary": "Handle recoverable tool and provider failures without collapsing the session, surface unrecoverable failures correctly, and cleanly shut down LLM streams, processes, events, and subagents.",
       "acceptance_criteria": [
@@ -357,7 +484,12 @@
         "Abort or unrecoverable error shutdown cancels in-flight LLM streams, terminates all running command process groups, waits 2 seconds, kills remaining processes, flushes pending events, closes active subagents, emits SESSION_END, and transitions to CLOSED.",
         "The runtime records enough structured error detail for Spark adapters to preserve existing thread resume and failure reporting behavior."
       ],
-      "dependencies": ["REQ-003", "REQ-004", "REQ-008", "REQ-013"],
+      "dependencies": [
+        "REQ-003",
+        "REQ-004",
+        "REQ-008",
+        "REQ-013"
+      ],
       "target_paths": [
         "crates/spark-agent-adapter",
         "crates/unified-llm-adapter",
@@ -372,7 +504,14 @@
     },
     {
       "id": "REQ-015",
-      "spec_refs": ["1.2", "1.4", "2.9", "9", "9.12", "9.13"],
+      "spec_refs": [
+        "1.2",
+        "1.4",
+        "2.9",
+        "9",
+        "9.12",
+        "9.13"
+      ],
       "title": "Spark chat and codergen integration",
       "summary": "Wire the Rust agent runtime into Spark-facing chat session and codergen backend paths while preserving the existing observable API, event, token, raw-log, and failure contracts.",
       "acceptance_criteria": [
@@ -406,7 +545,21 @@
     },
     {
       "id": "REQ-016",
-      "spec_refs": ["9.1", "9.2", "9.3", "9.4", "9.5", "9.6", "9.7", "9.8", "9.9", "9.10", "9.11", "9.12", "9.13"],
+      "spec_refs": [
+        "9.1",
+        "9.2",
+        "9.3",
+        "9.4",
+        "9.5",
+        "9.6",
+        "9.7",
+        "9.8",
+        "9.9",
+        "9.10",
+        "9.11",
+        "9.12",
+        "9.13"
+      ],
       "title": "Behavioral validation and cross-provider parity",
       "summary": "Validate the Rust-owned runtime with observable behavior tests, compatibility tests, cross-provider parity coverage, and optional live smoke tests.",
       "acceptance_criteria": [
@@ -437,13 +590,19 @@
         "tests/agent",
         "tests/compat/agent"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M7-validation-docs-distribution",
-      "notes": "The AGENTS.md test policy applies to all implementation milestones in this run."
+      "notes": "M7 completed behavioral validation, cross-provider parity coverage, compatibility evidence, optional live smoke skip behavior, and the required uv run pytest -q repository gate for Rust-native distribution readiness."
     },
     {
       "id": "REQ-017",
-      "spec_refs": ["1.2", "1.3", "1.4", "8", "9"],
+      "spec_refs": [
+        "1.2",
+        "1.3",
+        "1.4",
+        "8",
+        "9"
+      ],
       "title": "Distribution readiness documentation",
       "summary": "Document how the Rust-native coding-agent runtime is configured, integrated, validated, and distinguished from out-of-scope extensions and historical Python implementation status.",
       "acceptance_criteria": [
@@ -454,7 +613,10 @@
         "Documentation gives host applications enough information to consume the event stream, steer sessions, supply follow-ups, and swap execution environments.",
         "Docs avoid claiming the historical Python agent ledger completes this run unless the normal runtime path is Rust-owned and validated."
       ],
-      "dependencies": ["REQ-015", "REQ-016"],
+      "dependencies": [
+        "REQ-015",
+        "REQ-016"
+      ],
       "target_paths": [
         "docs/rust-rewrite-migration.md",
         "README.md",
@@ -464,9 +626,9 @@
         "crates/spark-agent-adapter",
         "crates/unified-llm-adapter"
       ],
-      "status": "pending",
+      "status": "completed",
       "milestone_id": "M7-validation-docs-distribution",
-      "notes": "This requirement keeps distribution guidance aligned with the Rust rewrite scope rather than historical Python implementation status."
+      "notes": "M7 completed distribution-readiness documentation for the Rust runtime boundary, provider/profile configuration, validation commands, optional live smoke tests, retained Python compatibility status, host controls, execution environment swapping, and explicit out-of-scope extensions."
     }
   ]
 }

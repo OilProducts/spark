@@ -1063,6 +1063,7 @@ fn agent_turn_backend_builds_session_and_preserves_metadata_and_output_contract(
             .map(|event| event.kind.clone())
             .collect::<Vec<_>>(),
         vec![
+            TurnStreamEventKind::Other("session_start".to_string()),
             TurnStreamEventKind::Other("assistant_text_start".to_string()),
             TurnStreamEventKind::ContentDelta,
             TurnStreamEventKind::ContentCompleted,
@@ -1070,22 +1071,26 @@ fn agent_turn_backend_builds_session_and_preserves_metadata_and_output_contract(
             TurnStreamEventKind::TurnCompleted
         ]
     );
-    assert_eq!(output.events[0].channel, Some(TurnStreamChannel::Assistant));
     assert_eq!(
         output.events[0].source.raw_kind.as_deref(),
-        Some("assistant_text_start")
+        Some("session_start")
     );
     assert_eq!(output.events[1].channel, Some(TurnStreamChannel::Assistant));
     assert_eq!(
-        output.events[1].content_delta.as_deref(),
+        output.events[1].source.raw_kind.as_deref(),
+        Some("assistant_text_start")
+    );
+    assert_eq!(output.events[2].channel, Some(TurnStreamChannel::Assistant));
+    assert_eq!(
+        output.events[2].content_delta.as_deref(),
         Some("adapter response for gpt-agent")
     );
     assert_eq!(
-        output.events[1].source.backend.as_deref(),
+        output.events[2].source.backend.as_deref(),
         Some("agent_session")
     );
     assert_eq!(
-        output.events[1].source.raw_kind.as_deref(),
+        output.events[2].source.raw_kind.as_deref(),
         Some("assistant_text_delta")
     );
     let requests = calls.lock().expect("calls");
@@ -1251,6 +1256,7 @@ fn agent_turn_backend_answers_request_user_input_through_rust_session_lifecycle(
             .map(|event| event.kind.clone())
             .collect::<Vec<_>>(),
         vec![
+            TurnStreamEventKind::Other("session_start".to_string()),
             TurnStreamEventKind::Other("assistant_text_start".to_string()),
             TurnStreamEventKind::ContentDelta,
             TurnStreamEventKind::ContentCompleted,

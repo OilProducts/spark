@@ -187,6 +187,11 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             line: "{\"event\":\"http-live-ingested\"}".to_string(),
         }],
         events: vec![
+            agent_event(
+                "session_start",
+                "processing",
+                json!({"state": "processing"}),
+            ),
             content_delta("Live ", "app-turn-live", "final-answer"),
             content_delta("streamed answer.", "app-turn-live", "final-answer"),
             content_completed(
@@ -216,7 +221,10 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
                 "full live output",
             ),
             token_usage(json!({"total": {"inputTokens": 11, "outputTokens": 4}})),
+            agent_warning_event("Live route compatibility warning."),
             request_user_input_event(),
+            processing_completed_event(),
+            agent_event("session_end", "closed", json!({"state": "closed"})),
         ],
         final_assistant_text: Some("Live streamed answer.".to_string()),
         token_usage: Some(json!({"total": {"inputTokens": 11, "outputTokens": 4}})),
@@ -292,6 +300,30 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             && segment["status"] == "complete"
             && segment["tool_call"]["id"] == "live-tool-1"
             && segment["tool_call"]["output"] == "full live output"));
+    assert!(posted_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "agent_event"
+            && segment["event_kind"] == "warning"
+            && segment["message"] == "Live route compatibility warning."
+            && segment["details"]["message"] == "Live route compatibility warning."));
+    assert!(posted_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "agent_event"
+            && segment["event_kind"] == "processing_end"
+            && segment["event_status"] == "idle"
+            && segment["details"]["state"] == "idle"));
+    assert!(posted_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "agent_event"
+            && segment["event_kind"] == "session_end"
+            && segment["event_status"] == "closed"
+            && segment["details"]["state"] == "closed"));
 
     let mut envelopes = Vec::new();
     for _ in 0..40 {
@@ -352,6 +384,24 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
         envelope["type"] == "conversation.segment_upsert"
             && envelope["payload"]["segment"]["kind"] == "request_user_input"
             && envelope["payload"]["segment"]["request_user_input"]["status"] == "pending"
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "agent_event"
+            && envelope["payload"]["segment"]["event_kind"] == "session_start"
+            && envelope["payload"]["segment"]["event_status"] == "processing"
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "agent_event"
+            && envelope["payload"]["segment"]["event_kind"] == "warning"
+            && envelope["payload"]["segment"]["message"] == "Live route compatibility warning."
+    }));
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["payload"]["segment"]["kind"] == "agent_event"
+            && envelope["payload"]["segment"]["event_kind"] == "processing_end"
+            && envelope["payload"]["segment"]["event_status"] == "idle"
     }));
     let snapshot_envelope = envelopes.last().expect("snapshot envelope");
     assert_eq!(snapshot_envelope["cursor"]["value"], json!(final_revision));
@@ -1337,6 +1387,60 @@ fn token_usage(usage: Value) -> TurnStreamEvent {
         details: None,
         phase: None,
         status: None,
+    }
+}
+
+fn agent_event(kind: &str, status: &str, details: Value) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::Other(kind.to_string()),
+        channel: None,
+        source: TurnStreamSource {
+            backend: Some("agent_session".to_string()),
+            app_turn_id: Some("app-turn-live".to_string()),
+            item_id: Some(kind.to_string()),
+            raw_kind: Some(kind.to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: None,
+        message: None,
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: Some(details),
+        phase: None,
+        status: Some(status.to_string()),
+    }
+}
+
+fn agent_warning_event(message: &str) -> TurnStreamEvent {
+    let mut event = agent_event("warning", "warning", json!({"message": message}));
+    event.message = Some(message.to_string());
+    event
+}
+
+fn processing_completed_event() -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::TurnCompleted,
+        channel: None,
+        source: TurnStreamSource {
+            backend: Some("agent_session".to_string()),
+            app_turn_id: Some("app-turn-live".to_string()),
+            item_id: Some("processing".to_string()),
+            raw_kind: Some("processing_end".to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: None,
+        message: None,
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: Some(json!({"state": "idle"})),
+        phase: Some("turn".to_string()),
+        status: Some("idle".to_string()),
     }
 }
 

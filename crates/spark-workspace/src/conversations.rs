@@ -795,7 +795,13 @@ impl WorkspaceConversationService {
                         emitted_payloads.push(build_segment_upsert_payload(&snapshot, &segment));
                     }
                 }
-                TurnStreamEventKind::TurnCompleted => {}
+                TurnStreamEventKind::TurnCompleted => {
+                    if let Some(segment) =
+                        materialize_segment_for_event(&mut snapshot, assistant_turn_id, &event)
+                    {
+                        emitted_payloads.push(build_segment_upsert_payload(&snapshot, &segment));
+                    }
+                }
                 _ => {
                     if let Some(segment) =
                         materialize_segment_for_event(&mut snapshot, assistant_turn_id, &event)
@@ -3552,6 +3558,49 @@ fn materialize_segment_for_event(
             upsert_segment(snapshot, segment.clone());
             Some(segment)
         }
+        TurnStreamEventKind::TurnCompleted => {
+            let segment_id = agent_event_segment_id(snapshot, assistant_turn_id, event);
+            let mut segment = agent_event_segment_shell(
+                &segment_id,
+                assistant_turn_id,
+                next_turn_segment_order(snapshot, assistant_turn_id),
+                "processing",
+                "complete",
+                &now,
+                event,
+            );
+            if let Some(status) = event.status.as_deref().and_then(non_empty_string) {
+                set_string_value(&mut segment, "event_status", &status);
+            }
+            if let Some(phase) = event.phase.as_deref().and_then(non_empty_string) {
+                set_string_value(&mut segment, "phase", &phase);
+            }
+            upsert_segment(snapshot, segment.clone());
+            Some(segment)
+        }
+        TurnStreamEventKind::Other(kind) if is_agent_event_kind(kind) => {
+            let segment_id = agent_event_segment_id(snapshot, assistant_turn_id, event);
+            let (category, status) = match kind.as_str() {
+                "session_start" => ("lifecycle", "running"),
+                "session_end" => ("lifecycle", "complete"),
+                "warning" => ("warning", "complete"),
+                _ => ("session", "complete"),
+            };
+            let mut segment = agent_event_segment_shell(
+                &segment_id,
+                assistant_turn_id,
+                next_turn_segment_order(snapshot, assistant_turn_id),
+                category,
+                status,
+                &now,
+                event,
+            );
+            if let Some(event_status) = event.status.as_deref().and_then(non_empty_string) {
+                set_string_value(&mut segment, "event_status", &event_status);
+            }
+            upsert_segment(snapshot, segment.clone());
+            Some(segment)
+        }
         TurnStreamEventKind::Error => {
             let segment_id = assistant_segment_id(assistant_turn_id, event);
             let mut segment = find_segment(snapshot, &segment_id)
@@ -3594,6 +3643,51 @@ fn materialize_segment_for_event(
         }
         _ => None,
     }
+}
+
+fn is_agent_event_kind(kind: &str) -> bool {
+    matches!(kind, "session_start" | "session_end" | "warning")
+}
+
+fn agent_event_segment_shell(
+    segment_id: &str,
+    assistant_turn_id: &str,
+    order: i64,
+    category: &str,
+    status: &str,
+    timestamp: &str,
+    event: &TurnStreamEvent,
+) -> Value {
+    let mut segment = segment_shell(
+        segment_id,
+        assistant_turn_id,
+        order,
+        "agent_event",
+        "system",
+        status,
+        timestamp,
+        build_segment_source(event, None),
+    );
+    let event_kind = event
+        .source
+        .raw_kind
+        .as_deref()
+        .and_then(non_empty_string)
+        .unwrap_or_else(|| event.kind.as_str().to_string());
+    set_string_value(&mut segment, "event_kind", &event_kind);
+    set_string_value(&mut segment, "category", category);
+    if let Some(message) = event.message.as_deref().and_then(non_empty_string) {
+        set_string_value(&mut segment, "content", &message);
+        set_string_value(&mut segment, "message", &message);
+    } else {
+        set_string_value(&mut segment, "content", &event_kind);
+    }
+    if let Some(details) = event.details.as_ref() {
+        set_value(&mut segment, "details", details.clone());
+    }
+    set_string_value(&mut segment, "updated_at", timestamp);
+    set_string_value(&mut segment, "completed_at", timestamp);
+    segment
 }
 
 fn segment_shell(
@@ -3734,6 +3828,29 @@ fn plan_segment_id(turn_id: &str, event: &TurnStreamEvent) -> String {
     ) {
         (Some(app_turn_id), Some(item_id)) => format!("segment-plan-{app_turn_id}-{item_id}"),
         _ => format!("segment-plan-{turn_id}"),
+    }
+}
+
+fn agent_event_segment_id(snapshot: &Value, turn_id: &str, event: &TurnStreamEvent) -> String {
+    let kind = event
+        .source
+        .raw_kind
+        .as_deref()
+        .and_then(non_empty_string)
+        .unwrap_or_else(|| event.kind.as_str().to_string());
+    let sequence = next_turn_segment_order(snapshot, turn_id);
+    match (
+        event
+            .source
+            .app_turn_id
+            .as_deref()
+            .and_then(non_empty_string),
+        event.source.item_id.as_deref().and_then(non_empty_string),
+    ) {
+        (Some(app_turn_id), Some(item_id)) => {
+            format!("segment-agent-event-{app_turn_id}-{kind}-{item_id}")
+        }
+        _ => format!("segment-agent-event-{turn_id}-{kind}-{sequence}"),
     }
 }
 

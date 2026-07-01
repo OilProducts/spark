@@ -94,6 +94,9 @@ impl EventKind {
             Self::Other(value) if value == "request_user_input_requested" => {
                 TurnStreamEventKind::RequestUserInputRequested
             }
+            Self::SessionStart | Self::SessionEnd | Self::Warning => {
+                TurnStreamEventKind::Other(self.as_str().to_string())
+            }
             Self::ProcessingEnd => TurnStreamEventKind::TurnCompleted,
             Self::Error => TurnStreamEventKind::Error,
             _ => return None,
@@ -247,12 +250,9 @@ impl SessionEvent {
             EventKind::ModelToolCallDelta => data_string(&self.data, &["delta"]),
             _ => None,
         };
-        let message = content_delta.clone().or_else(|| {
-            if self.kind == EventKind::Error {
-                session_error_message(&self.data)
-            } else {
-                None
-            }
+        let message = content_delta.clone().or_else(|| match self.kind {
+            EventKind::Error | EventKind::Warning => session_error_message(&self.data),
+            _ => data_string(&self.data, &["message"]),
         });
 
         Some(TurnStreamEvent {
@@ -274,10 +274,15 @@ impl SessionEvent {
             } else {
                 None
             },
-            details: if self.kind == EventKind::Error {
-                session_error_details(&self.data)
-            } else {
-                None
+            details: match self.kind {
+                EventKind::Error => session_error_details(&self.data),
+                EventKind::SessionStart
+                | EventKind::SessionEnd
+                | EventKind::ProcessingEnd
+                | EventKind::Warning => Some(Value::Object(
+                    self.data.clone().into_iter().collect::<Map<_, _>>(),
+                )),
+                _ => None,
             },
             phase: data_string(&self.data, &["phase"]),
             status: data_string(&self.data, &["status"]),

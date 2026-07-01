@@ -124,6 +124,8 @@ In source checkouts, `uv run spark` and `uv run spark-server` are development en
 
 Normal Spark chat, `agent-turn`, and codergen-adjacent agent execution are Rust-owned through [crates/spark-agent-adapter/](crates/spark-agent-adapter). Workspace conversation APIs and live delivery keep the public HTTP and SSE shapes, while the Python facade in [src/spark/chat/session.py](src/spark/chat/session.py) serializes requests to the `spark-agent-boundary` Rust binary and maps the returned payloads back to persisted conversation records. The retained [src/agent/](src/agent) package is compatibility, oracle, fallback, and historical implementation support only; it is not the normal runtime implementation for Spark chat or agent execution.
 
+The migration source of truth is [docs/rust-rewrite-migration.md](docs/rust-rewrite-migration.md). It records the distribution-readiness boundary, validation evidence, retained Python compatibility status, and explicitly out-of-scope extensions such as MCP, skills, new sandbox policy systems, automatic compaction, new approval systems, and read-before-write guardrails unless those features have their own implemented evidence.
+
 - [Cargo.toml](Cargo.toml): Rust workspace manifest for the Spark rewrite
 - [crates/spark-cli/](crates/spark-cli): Rust `spark` command surface for conversations, runs, flows, and triggers
 - [crates/spark-server/](crates/spark-server): Rust `spark-server` command surface for serving, init, service management, and hidden worker execution
@@ -145,6 +147,7 @@ The Rust agent adapter boundary preserves Spark adapter payloads, event streams,
 - System prompts are assembled from provider base instructions, environment context, active tool descriptions, project instructions, and user overrides. The environment snapshot is captured at session start and includes working directory, git state, branch, platform, OS version, date, model display name, knowledge cutoff, modified/untracked counts, and recent commits.
 - Project instruction discovery walks from git root or working directory to the active working directory. `AGENTS.md` is always considered; only the active provider file is included among `.codex/instructions.md`, `CLAUDE.md`, and `GEMINI.md`; project instructions are capped at 32 KB with a truncation marker.
 - Provider configuration and selectors are normalized before crossing the Rust boundary. Supported selectors are `codex`, `openai`, `anthropic`, `gemini`, `openrouter`, `litellm`, and `openai_compatible`; `compatible` is normalized to `openai_compatible`, profile IDs preserve request/session identity, and profile-backed calls dispatch through the configured provider. `reasoning_effort` values such as `low`, `medium`, `high`, and null are normalized and reflected in the next unified LLM `Request` and provider-specific options.
+- Native OpenAI, Anthropic, and Gemini coding profiles use provider-specific editing surfaces: OpenAI uses the Codex-style `apply_patch` path for targeted edits, Anthropic uses `edit_file` old/new-string replacements for existing files, and Gemini uses its `edit_file` search-and-replace shape. OpenAI-compatible, OpenRouter, and LiteLLM use the OpenAI-compatible tool-calling path rather than claiming native Anthropic or Gemini behavior.
 - Context warnings use the approximate one-token-per-four-characters heuristic and emit `WARNING` events above 80 percent of the provider context window. They do not automatically compact or summarize history.
 - `session.steer` queues a `SteeringTurn` for the next model call, including after the current tool round. Steering is emitted as `STEERING_INJECTED` and is converted to a user-role request message without restarting history.
 - `session.follow_up` queues another user input after natural completion on the same history and event stream. It is not processed after abort or unrecoverable close.
@@ -159,7 +162,7 @@ The source-checkout validation gate remains:
 uv run pytest -q
 ```
 
-Focused retained-Python compatibility checks live in `tests/agent/test_truncation.py`, `tests/agent/test_prompts.py`, `tests/agent/test_project_docs.py`, `tests/agent/test_context_usage.py`, `tests/agent/test_steering.py`, `tests/agent/test_reasoning_effort.py`, `tests/agent/test_loop_detection.py`, and `tests/compat/agent`. Rust adapter behavior is validated by contract tests under `crates/spark-agent-adapter/tests`, including runtime, event, provider/profile, prompt context, tool dispatch, local environment, and codergen coverage.
+Focused retained-Python compatibility checks live in `tests/agent/test_truncation.py`, `tests/agent/test_prompts.py`, `tests/agent/test_project_docs.py`, `tests/agent/test_context_usage.py`, `tests/agent/test_steering.py`, `tests/agent/test_reasoning_effort.py`, `tests/agent/test_loop_detection.py`, and `tests/compat/agent`. They do not make `src/agent` the normal runtime owner. Rust adapter behavior is validated by contract tests under `crates/spark-agent-adapter/tests`, including runtime, event, provider/profile, prompt context, tool dispatch, local environment, and codergen coverage. Pytest compatibility checks also expose focused Rust Workspace, HTTP, and SSE contract tests for the active adapter boundary, while direct Rust validation remains available with the crate-specific `cargo test` commands documented in the migration guide.
 
 ## Requirements
 
@@ -294,6 +297,31 @@ systemctl --user status spark.service --no-pager
 ```
 
 Do not put API keys in flow DOT, launch context, project files, or checked-in configuration.
+
+### LLM Profiles
+
+Custom OpenAI-compatible model endpoints are configured in `$SPARK_HOME/config/llm-profiles.toml`. Public profile metadata exposes profile id, label, provider, models, default model, and configured status; endpoint URLs, API key environment names, and secret values stay redacted.
+
+Example:
+
+```toml
+[profiles.local-qwen]
+label = "Local Qwen"
+provider = "openai_compatible"
+base_url = "http://127.0.0.1:11434/v1"
+models = ["qwen2.5-coder"]
+default_model = "qwen2.5-coder"
+
+[profiles.team-router]
+label = "Team Router"
+provider = "openai_compatible"
+base_url = "https://llm-gateway.example.com/v1"
+api_key_env = "TEAM_ROUTER_API_KEY"
+models = ["team-coder"]
+default_model = "team-coder"
+```
+
+Profile selection is preserved as request and session identity while low-level calls dispatch through the configured provider. Omitting `api_key_env` creates a local no-key profile; profiles with `api_key_env` require that process environment variable to be non-empty. Chat/session payloads, flow defaults such as `ui_default_llm_profile`, launch context keys, and supported recovery CLI/API commands can carry profile, provider, model, and `reasoning_effort` controls; ordinary provider secrets still come from the Spark server process environment.
 
 Run the full stack locally:
 
@@ -501,6 +529,8 @@ Backend suite:
 ```bash
 uv run pytest -q
 ```
+
+Optional live smoke tests are not part of ordinary validation. The Rust provider smoke harness in `crates/unified-llm-adapter/tests/live_smoke_contracts.rs` runs only when `UNIFIED_LLM_ADAPTER_RUN_LIVE=1` is set and provider credentials are present in the process environment. Retained Python adapter smoke tests require explicit pytest live selection such as `uv run pytest -q --run-live tests/adapters/test_cross_provider_parity.py`.
 
 Frontend checks:
 

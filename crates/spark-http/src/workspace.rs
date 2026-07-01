@@ -275,7 +275,16 @@ async fn send_conversation_turn(
         &agent_turn_backend,
     );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
-    let snapshot = service.execute_turn(&conversation_id, request)?;
+    let conversation_id_for_turn = conversation_id.clone();
+    let snapshot = tokio::task::spawn_blocking(move || {
+        service.execute_turn(&conversation_id_for_turn, request)
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceApiError(WorkspaceError::Internal(format!(
+            "conversation turn task failed: {error}"
+        )))
+    })??;
     publish_conversation_after(
         &settings,
         &live_hub,
@@ -302,8 +311,21 @@ async fn answer_conversation_request_user_input(
         &agent_turn_backend,
     );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
-    let updated =
-        service.submit_request_user_input_answer(&conversation_id, &request_id, request)?;
+    let conversation_id_for_answer = conversation_id.clone();
+    let request_id_for_answer = request_id.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        service.submit_request_user_input_answer(
+            &conversation_id_for_answer,
+            &request_id_for_answer,
+            request,
+        )
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceApiError(WorkspaceError::Internal(format!(
+            "request-user-input answer task failed: {error}"
+        )))
+    })??;
     publish_conversation_after(
         &settings,
         &live_hub,

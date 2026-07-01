@@ -1,0 +1,770 @@
+{
+  "decisions": [
+    "CD-CODING-AGENT-RUST-001",
+    "CD-CODING-AGENT-RUST-011",
+    "CD-CODING-AGENT-RUST-013"
+  ],
+  "fixture_id": "agent/m7-cross-provider-parity-matrix",
+  "input": {
+    "native_providers": [
+      "openai",
+      "anthropic",
+      "gemini"
+    ],
+    "non_native_selectors_observed_but_not_counted": [
+      "openrouter",
+      "openai_compatible",
+      "litellm"
+    ],
+    "probe": "public spark-agent-adapter native provider profiles"
+  },
+  "item_id": "M7-I2",
+  "observation": {
+    "live_smoke_gate": {
+      "credential_policy": "skip_when_absent",
+      "ordinary_validation_requires_credentials": false,
+      "providers": [
+        "openai",
+        "anthropic",
+        "gemini"
+      ],
+      "section_9_13_sequence": [
+        "create_file",
+        "read_then_provider_native_edit",
+        "steering",
+        "shell_execution",
+        "large_output_truncation",
+        "shell_timeout",
+        "subagent_spawn_wait_events"
+      ],
+      "test_module": "tests/agent/test_live_smoke.py"
+    },
+    "parity_matrix": {
+      "anthropic": {
+        "gemini_directory_tools": null,
+        "grep_plus_glob": {
+          "glob": {
+            "content": [
+              "matrix/anthropic/search/one.txt"
+            ],
+            "is_error": false,
+            "tool_call_id": "anthropic-glob"
+          },
+          "grep": {
+            "content": [
+              "matrix/anthropic/search/one.txt"
+            ],
+            "is_error": false,
+            "tool_call_id": "anthropic-grep"
+          }
+        },
+        "large_output_truncation": {
+          "contains_truncation_warning": true,
+          "is_error": false
+        },
+        "multi_file_edits": {
+          "final_files": {
+            "a": "A\n",
+            "b": "B\n"
+          },
+          "results": [
+            {
+              "content": {
+                "bytes_written": 2,
+                "path": "matrix/anthropic/multi-a.txt"
+              },
+              "is_error": false,
+              "tool_call_id": "anthropic-multi-a"
+            },
+            {
+              "content": {
+                "bytes_written": 2,
+                "path": "matrix/anthropic/multi-b.txt"
+              },
+              "is_error": false,
+              "tool_call_id": "anthropic-multi-b"
+            }
+          ],
+          "supports_parallel_tool_calls": true
+        },
+        "multi_step_task": {
+          "edit": {
+            "content": {
+              "bytes_written": 13,
+              "path": "matrix/anthropic/multi-step.txt",
+              "replace_all": false,
+              "replacements": 1
+            },
+            "is_error": false,
+            "tool_call_id": "anthropic-multi-step-edit"
+          },
+          "final_content": "status: done\n",
+          "read": {
+            "content": "001 | status: todo",
+            "is_error": false,
+            "tool_call_id": "anthropic-multi-step-read"
+          }
+        },
+        "parallel_tool_calls": {
+          "observed_result_count": 2,
+          "supported": true
+        },
+        "provider_native_edit_format": {
+          "argument_keys": [
+            "file_path",
+            "new_string",
+            "old_string"
+          ],
+          "has_apply_patch_tool": false,
+          "has_edit_file_tool": true,
+          "tool": "edit_file"
+        },
+        "read_then_edit": {
+          "edit": {
+            "content": {
+              "bytes_written": 14,
+              "path": "matrix/anthropic/read-edit.txt",
+              "replace_all": false,
+              "replacements": 1
+            },
+            "is_error": false,
+            "tool_call_id": "anthropic-native-edit"
+          },
+          "final_content": "anthropic new\n",
+          "read_before_edit": {
+            "content": "001 | anthropic old",
+            "is_error": false,
+            "tool_call_id": "anthropic-read-before-edit"
+          }
+        },
+        "shell_execution": {
+          "content": {
+            "exit_code": 0,
+            "stderr_empty": true,
+            "stdout": "anthropic-shell",
+            "timed_out": false
+          },
+          "is_error": false,
+          "tool_call_id": "anthropic-shell-ok"
+        },
+        "shell_timeout": {
+          "content": {
+            "exit_code": 124,
+            "stderr_empty": false,
+            "stdout": "",
+            "timed_out": true
+          },
+          "is_error": true,
+          "tool_call_id": "anthropic-shell-timeout"
+        },
+        "simple_file_creation": {
+          "content": {
+            "bytes_written": 18,
+            "path": "matrix/anthropic/created.txt"
+          },
+          "is_error": false,
+          "tool_call_id": "anthropic-create"
+        },
+        "tool_error_recovery": {
+          "final_content": "recovered\n",
+          "missing_read": {
+            "content": "File not found: matrix/anthropic/missing.txt",
+            "is_error": true,
+            "tool_call_id": "anthropic-missing-read"
+          },
+          "recovery_write": {
+            "content": {
+              "bytes_written": 10,
+              "path": "matrix/anthropic/missing.txt"
+            },
+            "is_error": false,
+            "tool_call_id": "anthropic-recovery-write"
+          }
+        }
+      },
+      "gemini": {
+        "gemini_directory_tools": {
+          "list_dir": {
+            "content": {
+              "count": 2,
+              "depth": 0,
+              "entries": [
+                {
+                  "is_dir": false,
+                  "name": "one.txt",
+                  "size": 11
+                },
+                {
+                  "is_dir": false,
+                  "name": "two.md",
+                  "size": 11
+                }
+              ],
+              "path": "matrix/gemini/search"
+            },
+            "is_error": false,
+            "tool_call_id": "gemini-list-dir"
+          },
+          "read_many_files": {
+            "content": {
+              "count": 2,
+              "files": [
+                {
+                  "content": "001 | A",
+                  "path": "matrix/gemini/multi-a.txt"
+                },
+                {
+                  "content": "001 | B",
+                  "path": "matrix/gemini/multi-b.txt"
+                }
+              ]
+            },
+            "is_error": false,
+            "tool_call_id": "gemini-read-many"
+          }
+        },
+        "grep_plus_glob": {
+          "glob": {
+            "content": [
+              "matrix/gemini/search/one.txt"
+            ],
+            "is_error": false,
+            "tool_call_id": "gemini-glob"
+          },
+          "grep": {
+            "content": {
+              "matches": [
+                {
+                  "line": "needle one",
+                  "line_number": 1,
+                  "path": "matrix/gemini/search/one.txt"
+                }
+              ]
+            },
+            "is_error": false,
+            "tool_call_id": "gemini-grep"
+          }
+        },
+        "large_output_truncation": {
+          "contains_truncation_warning": true,
+          "is_error": false
+        },
+        "multi_file_edits": {
+          "final_files": {
+            "a": "A\n",
+            "b": "B\n"
+          },
+          "results": [
+            {
+              "content": {
+                "bytes_written": 2,
+                "path": "matrix/gemini/multi-a.txt"
+              },
+              "is_error": false,
+              "tool_call_id": "gemini-multi-a"
+            },
+            {
+              "content": {
+                "bytes_written": 2,
+                "path": "matrix/gemini/multi-b.txt"
+              },
+              "is_error": false,
+              "tool_call_id": "gemini-multi-b"
+            }
+          ],
+          "supports_parallel_tool_calls": true
+        },
+        "multi_step_task": {
+          "edit": {
+            "content": {
+              "bytes_written": 13,
+              "path": "matrix/gemini/multi-step.txt",
+              "replace_all": false,
+              "replacements": 1
+            },
+            "is_error": false,
+            "tool_call_id": "gemini-multi-step-edit"
+          },
+          "final_content": "status: done\n",
+          "read": {
+            "content": "001 | status: todo",
+            "is_error": false,
+            "tool_call_id": "gemini-multi-step-read"
+          }
+        },
+        "parallel_tool_calls": {
+          "observed_result_count": 2,
+          "supported": true
+        },
+        "provider_native_edit_format": {
+          "argument_keys": [
+            "file_path",
+            "instruction",
+            "new_string",
+            "old_string"
+          ],
+          "has_apply_patch_tool": false,
+          "has_edit_file_tool": true,
+          "tool": "edit_file"
+        },
+        "read_then_edit": {
+          "edit": {
+            "content": {
+              "bytes_written": 11,
+              "path": "matrix/gemini/read-edit.txt",
+              "replace_all": false,
+              "replacements": 1
+            },
+            "is_error": false,
+            "tool_call_id": "gemini-native-edit"
+          },
+          "final_content": "gemini new\n",
+          "read_before_edit": {
+            "content": "001 | gemini old",
+            "is_error": false,
+            "tool_call_id": "gemini-read-before-edit"
+          }
+        },
+        "shell_execution": {
+          "content": {
+            "exit_code": 0,
+            "stderr_empty": true,
+            "stdout": "gemini-shell",
+            "timed_out": false
+          },
+          "is_error": false,
+          "tool_call_id": "gemini-shell-ok"
+        },
+        "shell_timeout": {
+          "content": {
+            "exit_code": 124,
+            "stderr_empty": false,
+            "stdout": "",
+            "timed_out": true
+          },
+          "is_error": true,
+          "tool_call_id": "gemini-shell-timeout"
+        },
+        "simple_file_creation": {
+          "content": {
+            "bytes_written": 15,
+            "path": "matrix/gemini/created.txt"
+          },
+          "is_error": false,
+          "tool_call_id": "gemini-create"
+        },
+        "tool_error_recovery": {
+          "final_content": "recovered\n",
+          "missing_read": {
+            "content": "File not found: matrix/gemini/missing.txt",
+            "is_error": true,
+            "tool_call_id": "gemini-missing-read"
+          },
+          "recovery_write": {
+            "content": {
+              "bytes_written": 10,
+              "path": "matrix/gemini/missing.txt"
+            },
+            "is_error": false,
+            "tool_call_id": "gemini-recovery-write"
+          }
+        }
+      },
+      "openai": {
+        "gemini_directory_tools": null,
+        "grep_plus_glob": {
+          "glob": {
+            "content": [
+              "matrix/openai/search/one.txt"
+            ],
+            "is_error": false,
+            "tool_call_id": "openai-glob"
+          },
+          "grep": {
+            "content": {
+              "matches": [
+                {
+                  "line": "needle one",
+                  "line_number": 1,
+                  "path": "matrix/openai/search/one.txt"
+                }
+              ]
+            },
+            "is_error": false,
+            "tool_call_id": "openai-grep"
+          }
+        },
+        "large_output_truncation": {
+          "contains_truncation_warning": true,
+          "is_error": false
+        },
+        "multi_file_edits": {
+          "final_files": {
+            "a": "A\n",
+            "b": "B\n"
+          },
+          "results": [
+            {
+              "content": {
+                "bytes_written": 2,
+                "path": "matrix/openai/multi-a.txt"
+              },
+              "is_error": false,
+              "tool_call_id": "openai-multi-a"
+            },
+            {
+              "content": {
+                "bytes_written": 2,
+                "path": "matrix/openai/multi-b.txt"
+              },
+              "is_error": false,
+              "tool_call_id": "openai-multi-b"
+            }
+          ],
+          "supports_parallel_tool_calls": true
+        },
+        "multi_step_task": {
+          "edit": {
+            "content": [
+              {
+                "hunks": 1,
+                "operation": "update",
+                "path": "matrix/openai/multi-step.txt"
+              }
+            ],
+            "is_error": false,
+            "tool_call_id": "openai-multi-step-edit"
+          },
+          "final_content": "status: done\n",
+          "read": {
+            "content": "001 | status: todo",
+            "is_error": false,
+            "tool_call_id": "openai-multi-step-read"
+          }
+        },
+        "parallel_tool_calls": {
+          "observed_result_count": 2,
+          "supported": true
+        },
+        "provider_native_edit_format": {
+          "argument_keys": [
+            "patch"
+          ],
+          "has_apply_patch_tool": true,
+          "has_edit_file_tool": false,
+          "tool": "apply_patch"
+        },
+        "read_then_edit": {
+          "edit": {
+            "content": [
+              {
+                "hunks": 1,
+                "operation": "update",
+                "path": "matrix/openai/read-edit.txt"
+              }
+            ],
+            "is_error": false,
+            "tool_call_id": "openai-native-edit"
+          },
+          "final_content": "openai new\n",
+          "read_before_edit": {
+            "content": "001 | openai old",
+            "is_error": false,
+            "tool_call_id": "openai-read-before-edit"
+          }
+        },
+        "shell_execution": {
+          "content": {
+            "exit_code": 0,
+            "stderr_empty": true,
+            "stdout": "openai-shell",
+            "timed_out": false
+          },
+          "is_error": false,
+          "tool_call_id": "openai-shell-ok"
+        },
+        "shell_timeout": {
+          "content": {
+            "exit_code": 124,
+            "stderr_empty": false,
+            "stdout": "",
+            "timed_out": true
+          },
+          "is_error": true,
+          "tool_call_id": "openai-shell-timeout"
+        },
+        "simple_file_creation": {
+          "content": {
+            "bytes_written": 15,
+            "path": "matrix/openai/created.txt"
+          },
+          "is_error": false,
+          "tool_call_id": "openai-create"
+        },
+        "tool_error_recovery": {
+          "final_content": "recovered\n",
+          "missing_read": {
+            "content": "File not found: matrix/openai/missing.txt",
+            "is_error": true,
+            "tool_call_id": "openai-missing-read"
+          },
+          "recovery_write": {
+            "content": {
+              "bytes_written": 10,
+              "path": "matrix/openai/missing.txt"
+            },
+            "is_error": false,
+            "tool_call_id": "openai-recovery-write"
+          }
+        }
+      }
+    },
+    "provider_profiles": {
+      "anthropic": {
+        "context_window_size": 200000,
+        "edit_surface": {
+          "primary_tool": "edit_file",
+          "properties": [
+            "file_path",
+            "new_string",
+            "old_string",
+            "replace_all"
+          ],
+          "required": [
+            "file_path",
+            "old_string",
+            "new_string"
+          ]
+        },
+        "id": "anthropic",
+        "model": "claude-sonnet-4-5",
+        "shell_timeout_default": 120000,
+        "supports_parallel_tool_calls": true,
+        "supports_reasoning": true,
+        "tool_names": [
+          "read_file",
+          "write_file",
+          "edit_file",
+          "shell",
+          "grep",
+          "glob",
+          "spawn_agent",
+          "send_input",
+          "wait",
+          "close_agent"
+        ]
+      },
+      "gemini": {
+        "context_window_size": 1048576,
+        "edit_surface": {
+          "primary_tool": "edit_file",
+          "properties": [
+            "allow_multiple",
+            "file_path",
+            "instruction",
+            "new_string",
+            "old_string"
+          ],
+          "required": [
+            "file_path",
+            "instruction",
+            "old_string",
+            "new_string"
+          ]
+        },
+        "id": "gemini",
+        "model": "gemini-3.1-pro-preview",
+        "shell_timeout_default": 10000,
+        "supports_parallel_tool_calls": true,
+        "supports_reasoning": true,
+        "tool_names": [
+          "read_file",
+          "read_many_files",
+          "write_file",
+          "edit_file",
+          "shell",
+          "grep",
+          "glob",
+          "list_dir",
+          "spawn_agent",
+          "send_input",
+          "wait",
+          "close_agent"
+        ]
+      },
+      "gemini_optional_web_tools": {
+        "web_fetch": true,
+        "web_search": true
+      },
+      "openai": {
+        "context_window_size": 1047576,
+        "edit_surface": {
+          "primary_tool": "apply_patch",
+          "properties": [
+            "patch"
+          ],
+          "required": [
+            "patch"
+          ]
+        },
+        "id": "openai",
+        "model": "gpt-5.2",
+        "shell_timeout_default": 10000,
+        "supports_parallel_tool_calls": true,
+        "supports_reasoning": true,
+        "tool_names": [
+          "read_file",
+          "apply_patch",
+          "write_file",
+          "shell",
+          "grep",
+          "glob",
+          "spawn_agent",
+          "send_input",
+          "wait",
+          "close_agent"
+        ]
+      }
+    },
+    "selector_boundary": {
+      "native": {
+        "anthropic": "anthropic",
+        "gemini": "gemini",
+        "openai": "openai"
+      },
+      "not_counted_as_native": {
+        "litellm": "litellm",
+        "openai_compatible": "openai_compatible",
+        "openrouter": "openrouter"
+      }
+    },
+    "session_requests": {
+      "anthropic": {
+        "model": "claude-sonnet-4-5",
+        "provider": "anthropic",
+        "provider_options": {
+          "anthropic": {
+            "output_config": {
+              "effort": "medium"
+            }
+          }
+        },
+        "queued_steering": "respect the latest operator instruction",
+        "reasoning_effort": "medium",
+        "start_event_kind": "session_start",
+        "tool_choice_mode": "auto",
+        "tool_names": [
+          "read_file",
+          "write_file",
+          "edit_file",
+          "shell",
+          "grep",
+          "glob",
+          "spawn_agent",
+          "send_input",
+          "wait",
+          "close_agent"
+        ]
+      },
+      "gemini": {
+        "model": "gemini-3.1-pro-preview",
+        "provider": "gemini",
+        "provider_options": {
+          "gemini": {
+            "thinkingConfig": {
+              "thinkingLevel": "medium"
+            }
+          }
+        },
+        "queued_steering": "respect the latest operator instruction",
+        "reasoning_effort": "medium",
+        "start_event_kind": "session_start",
+        "tool_choice_mode": "auto",
+        "tool_names": [
+          "read_file",
+          "read_many_files",
+          "write_file",
+          "edit_file",
+          "shell",
+          "grep",
+          "glob",
+          "list_dir",
+          "spawn_agent",
+          "send_input",
+          "wait",
+          "close_agent"
+        ]
+      },
+      "openai": {
+        "model": "gpt-5.2",
+        "provider": "openai",
+        "provider_options": {
+          "openai": {
+            "reasoning": {
+              "effort": "medium"
+            }
+          }
+        },
+        "queued_steering": "respect the latest operator instruction",
+        "reasoning_effort": "medium",
+        "start_event_kind": "session_start",
+        "tool_choice_mode": "auto",
+        "tool_names": [
+          "read_file",
+          "apply_patch",
+          "write_file",
+          "shell",
+          "grep",
+          "glob",
+          "spawn_agent",
+          "send_input",
+          "wait",
+          "close_agent"
+        ]
+      },
+      "reasoning_effort_change": {
+        "high": {
+          "openai": {
+            "reasoning": {
+              "effort": "high"
+            }
+          }
+        },
+        "medium": {
+          "openai": {
+            "reasoning": {
+              "effort": "medium"
+            }
+          }
+        }
+      }
+    },
+    "session_state": {
+      "loop_detection": {
+        "detected": true
+      },
+      "subagent_spawn": {
+        "child_depth": 1,
+        "child_model": "gemini-child",
+        "shared_environment": true,
+        "status": "pending"
+      }
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "spark_agent_adapter::ProviderProfile",
+      "spark_agent_adapter::Session",
+      "spark_agent_adapter::ToolRegistry",
+      "spark_agent_adapter::ExecutionEnvironment"
+    ],
+    "oracle": "rust-spark-agent-adapter-public-apis"
+  },
+  "requirements": [
+    "REQ-001",
+    "REQ-016",
+    "REQ-017"
+  ],
+  "scenario": "m7_cross_provider_parity_matrix",
+  "schema_version": "compat-agent-v1"
+}
