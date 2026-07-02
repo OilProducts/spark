@@ -15,8 +15,8 @@ use spark_common::events::{
 use unified_llm_adapter::Usage;
 
 use crate::agent::{
-    AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure, AgentTurnOutput,
-    AgentTurnRequest,
+    AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
+    AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
 use crate::session::SessionSteeringHandle;
 
@@ -123,13 +123,30 @@ impl CodexAppServerBackend {
         &self,
         request: AgentTurnRequest,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
-        self.run_agent_turn_with_steering(request, None)
+        self.run_agent_turn_with_steering_and_sink(request, None, None)
+    }
+
+    pub fn run_agent_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, CodexAppServerError> {
+        self.run_agent_turn_with_steering_and_sink(request, None, event_sink)
     }
 
     pub fn run_agent_turn_with_steering(
         &self,
         request: AgentTurnRequest,
         steering: Option<SessionSteeringHandle>,
+    ) -> Result<AgentTurnOutput, CodexAppServerError> {
+        self.run_agent_turn_with_steering_and_sink(request, steering, None)
+    }
+
+    fn run_agent_turn_with_steering_and_sink(
+        &self,
+        request: AgentTurnRequest,
+        steering: Option<SessionSteeringHandle>,
+        event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
         let mut client = CodexAppServerClient::connect(PathBuf::from(&request.project_path))?;
         let model = request
@@ -159,7 +176,11 @@ impl CodexAppServerBackend {
                 }
             }
         } else {
-            client.start_thread(model.as_deref(), Some(&request.project_path), true)?
+            client.start_thread(
+                model.as_deref(),
+                Some(&request.project_path),
+                codex_app_server_thread_is_ephemeral(&request),
+            )?
         };
         let result = client.run_turn(
             &thread_id,
@@ -169,6 +190,7 @@ impl CodexAppServerBackend {
             request.chat_mode.as_deref(),
             Some(&request.project_path),
             steering,
+            event_sink,
         )?;
         Ok(agent_output_from_app_server_result(result))
     }
@@ -248,6 +270,13 @@ impl CodexAppServerBackend {
             ..AgentTurnOutput::default()
         })
     }
+}
+
+fn codex_app_server_thread_is_ephemeral(request: &AgentTurnRequest) -> bool {
+    request
+        .chat_mode
+        .as_deref()
+        .is_some_and(|mode| mode.trim().eq_ignore_ascii_case("agent"))
 }
 
 fn agent_output_from_app_server_result(result: CodexAppServerTurnResult) -> AgentTurnOutput {
@@ -446,6 +475,7 @@ impl CodexAppServerClient {
         chat_mode: Option<&str>,
         cwd: Option<&str>,
         steering: Option<SessionSteeringHandle>,
+        event_sink: Option<AgentTurnEventSink>,
     ) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
         let mut params = json!({
             "threadId": thread_id,
@@ -473,7 +503,7 @@ impl CodexAppServerClient {
             .ok_or_else(|| {
                 CodexAppServerError::runtime("codex app-server did not return a turn id")
             })?;
-        self.consume_turn_stream(thread_id, &turn_id, steering)
+        self.consume_turn_stream(thread_id, &turn_id, steering, event_sink)
     }
 
     pub fn steer_turn(
@@ -516,6 +546,7 @@ impl CodexAppServerClient {
         thread_id: &str,
         expected_turn_id: &str,
         steering: Option<SessionSteeringHandle>,
+        event_sink: Option<AgentTurnEventSink>,
     ) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
         let mut state = CodexAppServerTurnState::default();
         let mut events = Vec::new();
@@ -558,6 +589,11 @@ impl CodexAppServerClient {
                 .iter()
                 .any(|event| event.kind == TurnStreamEventKind::TurnCompleted)
                 && extracted_turn_id.as_deref() == Some(expected_turn_id);
+            if let Some(sink) = event_sink.as_ref() {
+                for event in &normalized {
+                    sink(event.clone());
+                }
+            }
             events.extend(normalized);
             if completed {
                 break;

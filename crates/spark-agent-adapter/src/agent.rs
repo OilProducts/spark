@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::events::TurnStreamEvent;
 
 use crate::history::HistoryTurn;
+
+pub type AgentTurnEventSink = Arc<dyn Fn(TurnStreamEvent) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentTurnRequest {
@@ -91,6 +94,15 @@ pub struct AgentTurnOutput {
 
 pub trait AgentTurnBackend: Send + Sync {
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError>;
+
+    fn run_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let _ = event_sink;
+        self.run_turn(request)
+    }
 
     fn answer_request_user_input(
         &self,

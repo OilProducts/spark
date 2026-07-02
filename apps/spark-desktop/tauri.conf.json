@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Spark",
+  "version": "0.1.0",
+  "identifier": "dev.spark.desktop",
+  "build": {
+    "beforeBuildCommand": "npm --prefix ../../frontend run build",
+    "beforeDevCommand": "npm --prefix ../../frontend run dev",
+    "frontendDist": "../../frontend/dist",
+    "devUrl": "http://localhost:5173"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all"
+  }
+}

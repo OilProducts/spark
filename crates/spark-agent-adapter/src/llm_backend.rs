@@ -10,7 +10,7 @@ use unified_llm_adapter::{
 
 use crate::agent::{
     AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
-    AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
+    AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
 use crate::codergen::{
     ActiveCodergenSession, CodergenBackend, CodergenBackendOutput, CodergenBackendRequest,
@@ -753,11 +753,20 @@ impl RustLlmAgentTurnBackend {
 
 impl AgentTurnBackend for RustLlmAgentTurnBackend {
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.run_turn_with_event_sink(request, None)
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
         if is_codex_request_provider(request.provider.as_deref(), request.llm_profile.as_deref()) {
             return CodexAppServerBackend::new()
-                .run_agent_turn(request)
+                .run_agent_turn_with_event_sink(request, event_sink)
                 .map_err(codex_app_server_agent_error);
         }
+        let _ = event_sink;
         let prompt = request.prompt.clone();
         let mut session =
             build_agent_session(&self.client, request).map_err(agent_adapter_error)?;

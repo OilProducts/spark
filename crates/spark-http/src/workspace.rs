@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
@@ -22,9 +23,9 @@ use spark_workspace::conversations::{
     RunContinueRequest, RunLaunchRequest, RunRetryRequest, WorkspaceConversationService,
 };
 use spark_workspace::live::{
-    conversation_envelopes_after, conversation_snapshot_envelope, envelope_matches_query,
-    initial_live_envelopes, latest_run_sequence, trigger_delete_envelope, trigger_upsert_envelope,
-    validate_live_query, RawLiveQuery,
+    conversation_envelopes_after, conversation_event_envelope, conversation_snapshot_envelope,
+    envelope_matches_query, initial_live_envelopes, latest_run_sequence, trigger_delete_envelope,
+    trigger_upsert_envelope, validate_live_query, RawLiveQuery,
 };
 use spark_workspace::projects::{ProjectRegistrationRequest, ProjectStateUpdate};
 use spark_workspace::WorkspaceError;
@@ -275,9 +276,30 @@ async fn send_conversation_turn(
         &agent_turn_backend,
     );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
+    let published_revision = Arc::new(AtomicI64::new(before_revision));
     let conversation_id_for_turn = conversation_id.clone();
+    let conversation_id_for_progress = conversation_id.clone();
+    let project_path_for_progress = project_path.clone();
+    let live_hub_for_progress = live_hub.clone();
+    let published_revision_for_progress = Arc::clone(&published_revision);
     let snapshot = tokio::task::spawn_blocking(move || {
-        service.execute_turn(&conversation_id_for_turn, request)
+        service.execute_turn_with_progress_payloads(
+            &conversation_id_for_turn,
+            request,
+            move |payload| {
+                let revision = payload
+                    .get("revision")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(before_revision);
+                published_revision_for_progress.fetch_max(revision, Ordering::Relaxed);
+                live_hub_for_progress.publish(conversation_event_envelope(
+                    &conversation_id_for_progress,
+                    &project_path_for_progress,
+                    payload,
+                    revision,
+                ));
+            },
+        )
     })
     .await
     .map_err(|error| {
@@ -285,12 +307,13 @@ async fn send_conversation_turn(
             "conversation turn task failed: {error}"
         )))
     })??;
+    let after_revision = published_revision.load(Ordering::Relaxed);
     publish_conversation_after(
         &settings,
         &live_hub,
         &conversation_id,
         &project_path,
-        before_revision,
+        after_revision,
     );
     Ok(Json(snapshot))
 }

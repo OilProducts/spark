@@ -390,7 +390,7 @@ fn conversation_snapshot_envelope_from_state(
     }
 }
 
-fn conversation_event_envelope(
+pub fn conversation_event_envelope(
     conversation_id: &str,
     project_path: &str,
     event: Value,

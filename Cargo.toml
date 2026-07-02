@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "apps/spark-desktop",
     "crates/spark-common",
     "crates/spark-storage",
     "crates/spark-assets",

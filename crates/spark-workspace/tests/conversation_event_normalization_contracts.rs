@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use spark_agent_adapter::{
     AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
-    AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
+    AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
@@ -625,6 +625,87 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
 }
 
 #[test]
+fn execute_turn_starts_fresh_codex_thread_after_resume_failure() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            final_assistant_text: Some("Started".to_string()),
+            app_thread_id: Some("thread-stale".to_string()),
+            app_turn_id: Some("turn-started".to_string()),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            thread_resume_failure: Some(AgentThreadResumeFailure {
+                message: "thread resume failed".to_string(),
+                error_code: Some("codex_app_server_resume_failed".to_string()),
+                details: Some(json!({"thread_id": "thread-stale"})),
+            }),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            final_assistant_text: Some("Recovered".to_string()),
+            app_thread_id: Some("thread-fresh".to_string()),
+            app_turn_id: Some("turn-recovered".to_string()),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let requests = backend.requests();
+    let service =
+        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(backend));
+
+    service
+        .execute_turn(
+            "conversation-resume-reset",
+            ConversationTurnRequest {
+                project_path: "/projects/resume-reset".to_string(),
+                message: "Start".to_string(),
+                provider: Some("codex".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start output");
+    service
+        .execute_turn(
+            "conversation-resume-reset",
+            ConversationTurnRequest {
+                project_path: "/projects/resume-reset".to_string(),
+                message: "Resume stale".to_string(),
+                provider: Some("codex".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("resume failure output");
+    let recovered = service
+        .execute_turn(
+            "conversation-resume-reset",
+            ConversationTurnRequest {
+                project_path: "/projects/resume-reset".to_string(),
+                message: "Start fresh".to_string(),
+                provider: Some("codex".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("fresh output");
+
+    let requests = requests.lock().expect("requests");
+    assert_eq!(
+        requests[1].metadata["spark.runtime.codex_app_server.thread_id"],
+        json!("thread-stale")
+    );
+    assert!(
+        !requests[2]
+            .metadata
+            .contains_key("spark.runtime.codex_app_server.thread_id"),
+        "next explicit turn should not retry the stale app-server thread id"
+    );
+    assert_eq!(
+        recovered["turns"].as_array().unwrap().last().unwrap()["content"],
+        "Recovered"
+    );
+}
+
+#[test]
 fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -1084,6 +1165,99 @@ fn stream_error_with_final_text_and_usage_stays_failed() {
 }
 
 #[test]
+fn execute_turn_streams_transient_events_without_persisting_delta_payloads() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::with_stream_events(
+        vec![AgentTurnOutput {
+            events: vec![content_completed("assistant", "Hello", "app-turn", "final")],
+            app_thread_id: Some("thread-live".to_string()),
+            app_turn_id: Some("app-turn".to_string()),
+            final_assistant_text: Some("Hello".to_string()),
+            ..AgentTurnOutput::default()
+        }],
+        vec![vec![
+            content_delta("assistant", "Hel", "app-turn", "final"),
+            content_delta("reasoning", "Thinking", "app-turn", "reasoning"),
+        ]],
+    );
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(backend),
+    );
+    let progress_payloads = Arc::new(Mutex::new(Vec::new()));
+    let progress_payloads_for_callback = Arc::clone(&progress_payloads);
+
+    let snapshot = service
+        .execute_turn_with_progress_payloads(
+            "conversation-live-stream",
+            ConversationTurnRequest {
+                project_path: "/projects/live-stream".to_string(),
+                message: "Stream this".to_string(),
+                provider: Some("codex".to_string()),
+                chat_mode: Some("chat".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+            move |payload| {
+                progress_payloads_for_callback
+                    .lock()
+                    .expect("progress payloads")
+                    .push(payload);
+            },
+        )
+        .expect("execute turn");
+
+    let live_payloads = progress_payloads.lock().expect("progress payloads");
+    assert!(live_payloads.iter().any(|payload| {
+        payload["type"] == "turn_upsert"
+            && payload["turn"]["role"] == "user"
+            && payload["turn"]["content"] == "Stream this"
+    }));
+    assert!(live_payloads.iter().any(|payload| {
+        payload["type"] == "turn_upsert"
+            && payload["turn"]["role"] == "assistant"
+            && payload["turn"]["status"] == "streaming"
+            && payload["turn"]["content"] == "Hel"
+    }));
+    assert!(live_payloads.iter().any(|payload| {
+        payload["type"] == "segment_upsert"
+            && payload["segment"]["kind"] == "assistant_message"
+            && payload["segment"]["status"] == "streaming"
+            && payload["segment"]["content"] == "Hel"
+    }));
+    assert!(live_payloads.iter().any(|payload| {
+        payload["type"] == "segment_upsert"
+            && payload["segment"]["kind"] == "reasoning"
+            && payload["segment"]["status"] == "streaming"
+            && payload["segment"]["content"] == "Thinking"
+    }));
+    drop(live_payloads);
+
+    let assistant_turn = snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["role"] == "assistant")
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "complete");
+    assert_eq!(assistant_turn["content"], "Hello");
+
+    let events = service
+        .read_events_after("conversation-live-stream", "/projects/live-stream", 0)
+        .expect("events");
+    assert!(!events.iter().any(|event| {
+        event["type"] == "segment_upsert"
+            && event["segment"]["kind"] == "assistant_message"
+            && event["segment"]["content"] == "Hel"
+    }));
+    assert!(events.iter().any(|event| {
+        event["type"] == "segment_upsert"
+            && event["segment"]["kind"] == "assistant_message"
+            && event["segment"]["content"] == "Hello"
+    }));
+}
+
+#[test]
 fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -1460,6 +1634,7 @@ fn request_user_input_answer_backend_errors_return_error_without_expiring_reques
 struct ScriptedAgentTurnBackend {
     requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
     outputs: Arc<Mutex<VecDeque<AgentTurnOutput>>>,
+    stream_events: Arc<Mutex<VecDeque<Vec<TurnStreamEvent>>>>,
     answer_requests: Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>>,
     answer_outputs: Arc<Mutex<VecDeque<AgentTurnOutput>>>,
 }
@@ -1469,6 +1644,15 @@ impl ScriptedAgentTurnBackend {
         Self::with_answer_outputs(outputs, Vec::new())
     }
 
+    fn with_stream_events(
+        outputs: Vec<AgentTurnOutput>,
+        stream_events: Vec<Vec<TurnStreamEvent>>,
+    ) -> Self {
+        let backend = Self::with_answer_outputs(outputs, Vec::new());
+        *backend.stream_events.lock().expect("stream events") = VecDeque::from(stream_events);
+        backend
+    }
+
     fn with_answer_outputs(
         outputs: Vec<AgentTurnOutput>,
         answer_outputs: Vec<AgentTurnOutput>,
@@ -1476,6 +1660,7 @@ impl ScriptedAgentTurnBackend {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             outputs: Arc::new(Mutex::new(VecDeque::from(outputs))),
+            stream_events: Arc::new(Mutex::new(VecDeque::new())),
             answer_requests: Arc::new(Mutex::new(Vec::new())),
             answer_outputs: Arc::new(Mutex::new(VecDeque::from(answer_outputs))),
         }
@@ -1502,6 +1687,26 @@ impl AgentTurnBackend for ScriptedAgentTurnBackend {
                 retryable: false,
                 raw: None,
             })
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        if let Some(sink) = event_sink {
+            if let Some(events) = self
+                .stream_events
+                .lock()
+                .expect("stream events")
+                .pop_front()
+            {
+                for event in events {
+                    sink(event);
+                }
+            }
+        }
+        self.run_turn(request)
     }
 
     fn answer_request_user_input(

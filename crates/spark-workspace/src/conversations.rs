@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use attractor_api::{
     ContinuePipelineRequest, PipelineStartRequest, RuntimeHandlerRunnerFactory,
@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use spark_agent_adapter::{
     AgentError, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure, AgentTurnBackend,
-    AgentTurnOutput, AgentTurnRequest, AssistantTurn, HistoryTurn, RustLlmAgentTurnBackend,
-    UserTurn,
+    AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest, AssistantTurn, HistoryTurn,
+    RustLlmAgentTurnBackend, UserTurn,
 };
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
@@ -245,9 +245,17 @@ impl EnvironmentAgentTurnBackend {
 
 impl AgentTurnBackend for EnvironmentAgentTurnBackend {
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.run_turn_with_event_sink(request, None)
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
         let client = unified_llm_adapter::Client::from_env_and_profiles(&self.config_dir, None)
             .map_err(adapter_error_to_agent_error)?;
-        RustLlmAgentTurnBackend::new(client).run_turn(request)
+        RustLlmAgentTurnBackend::new(client).run_turn_with_event_sink(request, event_sink)
     }
 
     fn answer_request_user_input(
@@ -865,10 +873,40 @@ impl WorkspaceConversationService {
         conversation_id: &str,
         request: ConversationTurnRequest,
     ) -> WorkspaceResult<Value> {
-        let (prepared, _started_snapshot) = self.start_turn(conversation_id, request)?;
+        self.execute_turn_with_progress_payloads(conversation_id, request, |_| {})
+    }
+
+    pub fn execute_turn_with_progress_payloads<F>(
+        &self,
+        conversation_id: &str,
+        request: ConversationTurnRequest,
+        progress: F,
+    ) -> WorkspaceResult<Value>
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
+        let requested_project_path = normalize_project_path_or_400(&request.project_path)?;
+        let before_revision = self
+            .repository()
+            .read_snapshot(conversation_id, Some(&requested_project_path))?
+            .and_then(|snapshot| snapshot.get("revision").and_then(Value::as_i64))
+            .unwrap_or(0);
+        let (prepared, started_snapshot) = self.start_turn(conversation_id, request)?;
+        for payload in
+            self.read_events_after(conversation_id, &prepared.project_path, before_revision)?
+        {
+            progress(payload);
+        }
+        let progress = Arc::new(progress);
+        let event_sink = live_conversation_turn_event_sink(
+            started_snapshot,
+            prepared.assistant_turn_id.clone(),
+            prepared.chat_mode.clone(),
+            progress,
+        );
         let output = self
             .agent_turn_backend
-            .run_turn(prepared.agent_turn_request.clone())
+            .run_turn_with_event_sink(prepared.agent_turn_request.clone(), Some(event_sink))
             .map_err(agent_turn_backend_error)?;
         self.ingest_agent_turn_output(
             &prepared.conversation_id,
@@ -3237,6 +3275,157 @@ fn ensure_assistant_streaming(
     emitted_payloads.push(build_turn_upsert_payload(snapshot, &turn));
 }
 
+fn live_conversation_turn_event_sink(
+    snapshot: Value,
+    assistant_turn_id: String,
+    chat_mode: String,
+    progress: Arc<dyn Fn(Value) + Send + Sync + 'static>,
+) -> AgentTurnEventSink {
+    let state = Arc::new(Mutex::new(LiveConversationTurnState {
+        snapshot,
+        assistant_turn_id,
+        chat_mode,
+        progress,
+    }));
+    Arc::new(move |event| {
+        if let Ok(mut state) = state.lock() {
+            state.ingest_event(event);
+        }
+    })
+}
+
+struct LiveConversationTurnState {
+    snapshot: Value,
+    assistant_turn_id: String,
+    chat_mode: String,
+    progress: Arc<dyn Fn(Value) + Send + Sync + 'static>,
+}
+
+impl LiveConversationTurnState {
+    fn ingest_event(&mut self, event: TurnStreamEvent) {
+        let mut emitted_payloads = Vec::new();
+        if apply_assistant_turn_app_server_ids(
+            &mut self.snapshot,
+            &self.assistant_turn_id,
+            event.source.app_thread_id.as_deref(),
+            event.source.app_turn_id.as_deref(),
+        ) {
+            emit_assistant_turn_upsert(
+                &self.snapshot,
+                &self.assistant_turn_id,
+                &mut emitted_payloads,
+            );
+        }
+        ensure_assistant_streaming(
+            &mut self.snapshot,
+            &self.assistant_turn_id,
+            &mut emitted_payloads,
+        );
+        match &event.kind {
+            TurnStreamEventKind::TokenUsageUpdated => {
+                if let Some(token_usage) = event.token_usage.clone() {
+                    if let Some(turn) = find_turn_mut(&mut self.snapshot, &self.assistant_turn_id) {
+                        set_value(turn, "token_usage", token_usage);
+                        let turn = turn.clone();
+                        emitted_payloads.push(build_turn_upsert_payload(&self.snapshot, &turn));
+                    }
+                }
+            }
+            TurnStreamEventKind::ContentDelta
+                if event.channel == Some(TurnStreamChannel::Assistant)
+                    && self.chat_mode != "plan"
+                    && is_final_answer_phase(event.phase.as_deref()) =>
+            {
+                if let Some(delta) = event.content_delta.as_deref() {
+                    if let Some(turn) = find_turn_mut(&mut self.snapshot, &self.assistant_turn_id) {
+                        append_turn_content(turn, delta);
+                        set_string_value(turn, "status", "streaming");
+                        remove_key(turn, "error");
+                        let turn = turn.clone();
+                        emitted_payloads.push(build_turn_upsert_payload(&self.snapshot, &turn));
+                    }
+                }
+                self.emit_materialized_segment(&event, &mut emitted_payloads);
+            }
+            TurnStreamEventKind::ContentCompleted
+                if event.channel == Some(TurnStreamChannel::Assistant) =>
+            {
+                if self.chat_mode == "plan" && is_final_answer_phase(event.phase.as_deref()) {
+                    // Plan-mode final answer is applied by the durable finalizer so the plan
+                    // artifact remains the primary live surface during streaming.
+                } else {
+                    if self.chat_mode != "plan"
+                        && is_final_answer_phase(event.phase.as_deref())
+                        && event_text(&event).is_some()
+                    {
+                        if let Some(turn) =
+                            find_turn_mut(&mut self.snapshot, &self.assistant_turn_id)
+                        {
+                            set_string_value(
+                                turn,
+                                "content",
+                                event_text(&event).as_deref().unwrap_or(""),
+                            );
+                            set_string_value(turn, "status", "streaming");
+                            remove_key(turn, "error");
+                            let turn = turn.clone();
+                            emitted_payloads.push(build_turn_upsert_payload(&self.snapshot, &turn));
+                        }
+                    }
+                    self.emit_materialized_segment(&event, &mut emitted_payloads);
+                }
+            }
+            TurnStreamEventKind::Error => {
+                let message = event
+                    .error
+                    .clone()
+                    .or_else(|| event.message.clone())
+                    .unwrap_or_else(|| "Conversation turn failed.".to_string());
+                if let Some(turn) = find_turn_mut(&mut self.snapshot, &self.assistant_turn_id) {
+                    set_string_value(turn, "status", "failed");
+                    set_string_value(turn, "error", &message);
+                    if let Some(error_code) = event.error_code.as_deref().and_then(non_empty_string)
+                    {
+                        set_string_value(turn, "error_code", &error_code);
+                    }
+                    if let Some(details) = event.details.as_ref() {
+                        set_value(turn, "details", details.clone());
+                    }
+                    let turn = turn.clone();
+                    emitted_payloads.push(build_turn_upsert_payload(&self.snapshot, &turn));
+                }
+                self.emit_materialized_segment(&event, &mut emitted_payloads);
+            }
+            _ => self.emit_materialized_segment(&event, &mut emitted_payloads),
+        }
+        for payload in emitted_payloads {
+            (self.progress)(payload);
+        }
+    }
+
+    fn emit_materialized_segment(
+        &mut self,
+        event: &TurnStreamEvent,
+        emitted_payloads: &mut Vec<Value>,
+    ) {
+        if let Some(segment) =
+            materialize_segment_for_event(&mut self.snapshot, &self.assistant_turn_id, event)
+        {
+            emitted_payloads.push(build_segment_upsert_payload(&self.snapshot, &segment));
+        }
+    }
+}
+
+fn append_turn_content(turn: &mut Value, delta: &str) {
+    let mut content = turn
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    content.push_str(delta);
+    set_string_value(turn, "content", &content);
+}
+
 fn event_text(event: &TurnStreamEvent) -> Option<String> {
     event
         .content_delta
@@ -4787,6 +4976,9 @@ fn latest_codex_app_thread_id(snapshot: &Value) -> Option<String> {
         .rev()
         .filter(|turn| turn.get("role").and_then(Value::as_str) == Some("assistant"))
         .find_map(|turn| {
+            if turn_is_codex_app_thread_resume_failure(turn) {
+                return Some(None);
+            }
             turn.get("app_thread_id")
                 .and_then(Value::as_str)
                 .and_then(non_empty_string)
@@ -4797,7 +4989,22 @@ fn latest_codex_app_thread_id(snapshot: &Value) -> Option<String> {
                         .and_then(Value::as_str)
                         .and_then(non_empty_string)
                 })
+                .map(Some)
         })
+        .flatten()
+}
+
+fn turn_is_codex_app_thread_resume_failure(turn: &Value) -> bool {
+    turn.get("status").and_then(Value::as_str) == Some("failed")
+        && turn
+            .get("error_code")
+            .and_then(Value::as_str)
+            .is_some_and(|error_code| {
+                matches!(
+                    error_code,
+                    "codex_app_server_resume_failed" | "thread_resume_failed"
+                )
+            })
 }
 
 fn emit_assistant_turn_upsert(

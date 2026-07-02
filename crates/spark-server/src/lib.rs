@@ -102,11 +102,11 @@ struct ServiceInstallArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SeedStarterFlowsResult {
-    flows_dir: PathBuf,
-    created: Vec<String>,
-    updated: Vec<String>,
-    skipped: Vec<String>,
+pub struct SeedStarterFlowsResult {
+    pub flows_dir: PathBuf,
+    pub created: Vec<String>,
+    pub updated: Vec<String>,
+    pub skipped: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +115,14 @@ pub struct ServeConfiguration {
     pub port: u16,
     pub reload: bool,
     pub settings: SparkSettings,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RuntimeInitializationOptions {
+    pub data_dir: Option<PathBuf>,
+    pub flows_dir: Option<PathBuf>,
+    pub ui_dir: Option<PathBuf>,
+    pub force: bool,
 }
 
 /// Runs the `spark-server` command and writes process output.
@@ -296,7 +304,7 @@ fn rust_llm_client_from_env() -> unified_llm_adapter::Client {
     }
 }
 
-fn rust_llm_client_from_settings(settings: &SparkSettings) -> unified_llm_adapter::Client {
+pub fn rust_llm_client_from_settings(settings: &SparkSettings) -> unified_llm_adapter::Client {
     let env = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
     unified_llm_adapter::Client::from_env_map_and_profiles(&env, &settings.config_dir, None)
         .unwrap_or_else(|error| {
@@ -313,7 +321,15 @@ fn initialize_runtime(
     args: &InitArgs,
     env: &impl Environment,
 ) -> std::result::Result<(SparkSettings, SeedStarterFlowsResult), String> {
-    initialize_runtime_with_ui(args, None, env)
+    initialize_runtime_with_options(
+        &RuntimeInitializationOptions {
+            data_dir: args.data_dir.clone(),
+            flows_dir: args.flows_dir.clone(),
+            ui_dir: None,
+            force: args.force,
+        },
+        env,
+    )
 }
 
 fn initialize_runtime_with_ui(
@@ -321,19 +337,34 @@ fn initialize_runtime_with_ui(
     ui_dir: Option<PathBuf>,
     env: &impl Environment,
 ) -> std::result::Result<(SparkSettings, SeedStarterFlowsResult), String> {
-    let settings = resolve_server_settings_with_env(
-        &SettingsOverrides {
+    initialize_runtime_with_options(
+        &RuntimeInitializationOptions {
             data_dir: args.data_dir.clone(),
             flows_dir: args.flows_dir.clone(),
-            runs_dir: None,
             ui_dir,
+            force: args.force,
+        },
+        env,
+    )
+}
+
+pub fn initialize_runtime_with_options(
+    options: &RuntimeInitializationOptions,
+    env: &impl Environment,
+) -> std::result::Result<(SparkSettings, SeedStarterFlowsResult), String> {
+    let settings = resolve_server_settings_with_env(
+        &SettingsOverrides {
+            data_dir: options.data_dir.clone(),
+            flows_dir: options.flows_dir.clone(),
+            runs_dir: None,
+            ui_dir: options.ui_dir.clone(),
         },
         env,
     )
     .map_err(|error| error.to_string())?;
     validate_settings(&settings).map_err(|error| error.to_string())?;
 
-    let result = seed_starter_flows(&settings.flows_dir, args.force)?;
+    let result = seed_starter_flows(&settings.flows_dir, options.force)?;
     spark_storage::seed_default_flow_catalog(&settings.config_dir)
         .map_err(|error| error.to_string())?;
     Ok((settings, result))

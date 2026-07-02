@@ -304,6 +304,11 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
         .iter()
         .find(|message| message["method"] == json!("turn/start"))
         .expect("turn/start payload");
+    let thread_start = messages
+        .iter()
+        .find(|message| message["method"] == json!("thread/start"))
+        .expect("thread/start payload");
+    assert_eq!(thread_start["params"]["ephemeral"], json!(true));
     assert_eq!(turn_start["params"]["effort"], json!("high"));
     assert!(turn_start["params"].get("reasoningEffort").is_none());
     assert!(turn_start["params"].get("collaborationMode").is_none());
@@ -1498,6 +1503,48 @@ fn agent_turn_backend_answer_preserves_profile_selector_semantics() {
         .metadata
         .get("spark.runtime.provider_selector")
         .is_none());
+}
+
+#[test]
+fn agent_turn_backend_starts_codex_workspace_chat_threads_as_durable() {
+    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("rpc-log.jsonl");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let backend = RustLlmAgentTurnBackend::new(Client::new());
+
+    let output = backend
+        .run_turn(AgentTurnRequest {
+            conversation_id: "conversation-chat".to_string(),
+            project_path: temp.path().to_string_lossy().into_owned(),
+            prompt: "hello".to_string(),
+            history: Vec::new(),
+            provider: Some("codex".to_string()),
+            model: Some("gpt-codex-test".to_string()),
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: Some("chat".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("codex chat output");
+
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Ack"));
+    let messages = fs::read_to_string(&log_path)
+        .expect("rpc log")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json"))
+        .collect::<Vec<_>>();
+    let thread_start = messages
+        .iter()
+        .find(|message| message["method"] == json!("thread/start"))
+        .expect("thread/start payload");
+    assert_eq!(thread_start["params"]["ephemeral"], json!(false));
 }
 
 #[test]

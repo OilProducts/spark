@@ -7,6 +7,31 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { NativeSelect } from "@/components/ui/native-select"
+import { Switch } from "@/components/ui/switch"
+
+type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
+
+type DesktopServerSettings = {
+    remote_access_enabled: boolean
+    bind_host: string
+    server_url: string
+    requires_restart: boolean
+    remote_access_warning: string
+}
+
+declare global {
+    interface Window {
+        __TAURI__?: {
+            core?: {
+                invoke?: TauriInvoke
+            }
+        }
+    }
+}
+
+function getTauriInvoke(): TauriInvoke | null {
+    return window.__TAURI__?.core?.invoke ?? null
+}
 
 export function SettingsPanel() {
     const uiDefaults = useStore((state) => state.uiDefaults)
@@ -14,6 +39,9 @@ export function SettingsPanel() {
     const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
     const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettingsResponse | null>(null)
     const [settingsError, setSettingsError] = useState<string | null>(null)
+    const [desktopSettings, setDesktopSettings] = useState<DesktopServerSettings | null>(null)
+    const [desktopSettingsError, setDesktopSettingsError] = useState<string | null>(null)
+    const [isSavingDesktopSettings, setIsSavingDesktopSettings] = useState(false)
 
     useEffect(() => {
         void fetchLlmProfiles().then(setLlmProfiles)
@@ -26,9 +54,43 @@ export function SettingsPanel() {
                 setWorkspaceSettings(null)
                 setSettingsError(error instanceof Error ? error.message : 'Unable to load workspace settings.')
             })
+        const invoke = getTauriInvoke()
+        if (invoke) {
+            void invoke<DesktopServerSettings>('desktop_server_settings')
+                .then((payload) => {
+                    setDesktopSettings(payload)
+                    setDesktopSettingsError(null)
+                })
+                .catch((error: unknown) => {
+                    setDesktopSettingsError(error instanceof Error ? error.message : 'Unable to load desktop settings.')
+                })
+        }
     }, [])
 
     const executionPlacement = workspaceSettings?.execution_placement
+    const updateRemoteAccess = async (enabled: boolean) => {
+        const invoke = getTauriInvoke()
+        if (!invoke || !desktopSettings) {
+            return
+        }
+        const confirmedWarning = enabled ? window.confirm(desktopSettings.remote_access_warning) : false
+        if (enabled && !confirmedWarning) {
+            return
+        }
+        setIsSavingDesktopSettings(true)
+        try {
+            const payload = await invoke<DesktopServerSettings>('set_desktop_remote_access_enabled', {
+                enabled,
+                confirmedWarning,
+            })
+            setDesktopSettings(payload)
+            setDesktopSettingsError(null)
+        } catch (error) {
+            setDesktopSettingsError(error instanceof Error ? error.message : 'Unable to save desktop settings.')
+        } finally {
+            setIsSavingDesktopSettings(false)
+        }
+    }
 
     return (
         <div data-testid="settings-panel" className="flex-1 overflow-auto p-6">
@@ -104,6 +166,41 @@ export function SettingsPanel() {
                         </Field>
                     </CardContent>
                 </Card>
+
+                {desktopSettings ? (
+                    <Card className="gap-4 py-4 shadow-sm">
+                        <CardHeader className="gap-1 px-4">
+                            <CardTitle className="text-sm">Desktop Server</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4 px-4 pt-0">
+                            <div className="flex items-center justify-between gap-4 rounded border border-border px-3 py-2">
+                                <div className="min-w-0 space-y-1">
+                                    <div className="text-xs font-medium text-foreground">Remote access</div>
+                                    <div className="break-all text-xs text-muted-foreground">
+                                        {desktopSettings.bind_host} - {desktopSettings.server_url}
+                                    </div>
+                                </div>
+                                <Switch
+                                    data-testid="desktop-remote-access-toggle"
+                                    checked={desktopSettings.remote_access_enabled}
+                                    disabled={isSavingDesktopSettings}
+                                    onCheckedChange={updateRemoteAccess}
+                                    aria-label="Remote desktop server access"
+                                />
+                            </div>
+                            {desktopSettings.requires_restart ? (
+                                <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                                    Restart Spark Desktop to apply the server binding change.
+                                </div>
+                            ) : null}
+                            {desktopSettingsError ? (
+                                <div className="rounded border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                                    {desktopSettingsError}
+                                </div>
+                            ) : null}
+                        </CardContent>
+                    </Card>
+                ) : null}
 
                 <Card className="gap-4 py-4 shadow-sm">
                     <CardHeader className="gap-1 px-4">
