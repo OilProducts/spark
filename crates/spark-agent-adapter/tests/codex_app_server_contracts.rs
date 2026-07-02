@@ -331,6 +331,54 @@ fn app_server_notifications_normalize_assistant_plan_reasoning_tool_usage_and_co
 }
 
 #[test]
+fn app_server_notifications_preserve_stream_delta_whitespace() {
+    let mut state = CodexAppServerTurnState::default();
+    let messages = [
+        json!({"method": "item/agentMessage/delta", "params": {"turnId": "turn-1", "itemId": "msg-1", "delta": "Hello "}}),
+        json!({"method": "item/agentMessage/delta", "params": {"turnId": "turn-1", "itemId": "msg-1", "delta": " world"}}),
+        json!({"method": "item/agentMessage/delta", "params": {"turnId": "turn-1", "itemId": "msg-1", "delta": " "}}),
+        json!({"method": "item/plan/delta", "params": {"turnId": "turn-1", "itemId": "plan-1", "delta": "Plan step \n"}}),
+        json!({"method": "item/reasoning/summaryTextDelta", "params": {"turnId": "turn-1", "itemId": "reason-1", "summaryIndex": 0, "delta": "Thinking "}}),
+        json!({"method": "item/reasoning/summaryTextDelta", "params": {"turnId": "turn-1", "itemId": "reason-1", "summaryIndex": 0, "delta": " more"}}),
+        json!({"method": "item/commandExecution/outputDelta", "params": {"turnId": "turn-1", "itemId": "cmd-1", "delta": "ok \n"}}),
+    ];
+    let events = messages
+        .iter()
+        .flat_map(|message| process_codex_app_server_message(message, &mut state))
+        .collect::<Vec<_>>();
+
+    assert_eq!(state.agent_chunks, ["Hello ", " world", " "]);
+    assert_eq!(state.plan_chunks, ["Plan step \n"]);
+    assert_eq!(state.command_chunks, ["ok \n"]);
+
+    let assistant_deltas = events
+        .iter()
+        .filter(|event| {
+            event.kind == TurnStreamEventKind::ContentDelta
+                && event.channel == Some(TurnStreamChannel::Assistant)
+        })
+        .map(|event| event.content_delta.as_deref().unwrap_or(""))
+        .collect::<Vec<_>>();
+    assert_eq!(assistant_deltas, ["Hello ", " world", " "]);
+
+    let reasoning_deltas = events
+        .iter()
+        .filter(|event| {
+            event.kind == TurnStreamEventKind::ContentDelta
+                && event.channel == Some(TurnStreamChannel::Reasoning)
+        })
+        .map(|event| event.content_delta.as_deref().unwrap_or(""))
+        .collect::<Vec<_>>();
+    assert_eq!(reasoning_deltas, ["Thinking ", " more"]);
+
+    let command_delta = events
+        .iter()
+        .find(|event| event.kind == TurnStreamEventKind::ToolCallUpdated)
+        .and_then(|event| event.content_delta.as_deref());
+    assert_eq!(command_delta, Some("ok \n"));
+}
+
+#[test]
 fn app_server_request_user_input_notification_preserves_payload() {
     let mut state = CodexAppServerTurnState::default();
     let events = process_codex_app_server_message(

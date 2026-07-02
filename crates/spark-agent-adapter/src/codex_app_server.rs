@@ -1621,7 +1621,8 @@ fn object_text(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
 }
 
 fn as_non_empty_string(value: &Value) -> Option<String> {
-    non_empty(&value_to_string(value)).map(str::to_string)
+    let value = value_to_string(value);
+    (!value.is_empty()).then_some(value)
 }
 
 fn value_to_string(value: &Value) -> String {
