@@ -15,6 +15,7 @@ use spark_common::events::{
 use spark_common::settings::SparkSettings;
 use spark_http::{build_app_with_agent_turn_backend, build_app_with_rust_llm_client};
 use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService};
+use tokio::time::{sleep, Duration};
 use tower::ServiceExt;
 use unified_llm_adapter::{
     stream_events, ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
@@ -97,6 +98,23 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     )
     .await;
     assert_eq!(first.0, StatusCode::OK);
+    wait_for_conversation_snapshot(
+        &settings,
+        "conversation-http-turn",
+        "/projects/http-turn",
+        |snapshot| {
+            snapshot["turns"]
+                .as_array()
+                .expect("turns")
+                .iter()
+                .any(|turn| {
+                    turn["role"] == "assistant"
+                        && turn["status"] == "complete"
+                        && turn["content"] == "Previous route answer."
+                })
+        },
+    )
+    .await;
 
     let response = request_json(
         app.clone(),
@@ -124,33 +142,57 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
         .as_array()
         .expect("turns")
         .iter()
+        .find(|turn| turn["role"] == "assistant" && turn["status"] == "pending")
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["content"], "");
+
+    let final_snapshot = wait_for_conversation_snapshot(
+        &settings,
+        "conversation-http-turn",
+        "/projects/http-turn",
+        |snapshot| {
+            snapshot["turns"]
+                .as_array()
+                .expect("turns")
+                .iter()
+                .any(|turn| {
+                    turn["role"] == "assistant"
+                        && turn["status"] == "complete"
+                        && turn["content"] == "Scripted route answer."
+                })
+        },
+    )
+    .await;
+    let assistant_turn = final_snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
         .find(|turn| turn["role"] == "assistant" && turn["content"] == "Scripted route answer.")
         .expect("assistant turn");
-    assert_eq!(assistant_turn["status"], "complete");
     assert_eq!(
         assistant_turn["token_usage"]["total"]["inputTokens"],
         json!(8)
     );
-    assert!(response.1["segments"]
+    assert!(final_snapshot["segments"]
         .as_array()
         .expect("segments")
         .iter()
         .any(|segment| segment["kind"] == "assistant_message"
             && segment["content"] == "Scripted route answer."));
-    assert!(response.1["segments"]
+    assert!(final_snapshot["segments"]
         .as_array()
         .expect("segments")
         .iter()
         .any(|segment| segment["kind"] == "request_user_input"
             && segment["request_user_input"]["status"] == "pending"));
-    assert!(response.1["segments"]
+    assert!(final_snapshot["segments"]
         .as_array()
         .expect("segments")
         .iter()
         .any(|segment| segment["kind"] == "reasoning"
             && segment["content"] == "Checking route contracts."
             && segment["source"]["item_id"] == "reasoning"));
-    assert!(response.1["segments"]
+    assert!(final_snapshot["segments"]
         .as_array()
         .expect("segments")
         .iter()
@@ -159,7 +201,7 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
             && segment["tool_call"]["id"] == "route-tool-1"
             && segment["tool_call"]["arguments"] == json!({"query": "http route"})
             && segment["source"]["raw_kind"] == "model_tool_call_end"));
-    assert!(response.1["segments"]
+    assert!(final_snapshot["segments"]
         .as_array()
         .expect("segments")
         .iter()
@@ -215,8 +257,8 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     let persisted = WorkspaceConversationService::new(settings.clone())
         .get_snapshot("conversation-http-turn", Some("/projects/http-turn"))
         .expect("persisted snapshot");
-    assert_eq!(persisted["turns"], response.1["turns"]);
-    assert_eq!(persisted["segments"], response.1["segments"]);
+    assert_eq!(persisted["turns"], final_snapshot["turns"]);
+    assert_eq!(persisted["segments"], final_snapshot["segments"]);
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
         .read_raw_rpc_log("conversation-http-turn", "/projects/http-turn")
         .expect("raw log");
@@ -299,7 +341,7 @@ async fn conversation_turn_route_uses_rust_llm_client_backend_for_openai_compati
             adapter,
         )
         .expect("client");
-    let app = build_app_with_rust_llm_client(settings, client);
+    let app = build_app_with_rust_llm_client(settings.clone(), client);
 
     let response = request_json(
         app,
@@ -320,6 +362,32 @@ async fn conversation_turn_route_uses_rust_llm_client_backend_for_openai_compati
     assert_eq!(response.0, StatusCode::OK);
     let turns = response.1["turns"].as_array().expect("turns");
     let assistant_turn = turns
+        .iter()
+        .find(|turn| turn["role"] == "assistant")
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "pending");
+    assert_eq!(assistant_turn["content"], "");
+
+    let final_snapshot = wait_for_conversation_snapshot(
+        &settings,
+        "conversation-http-rust-agent",
+        "/projects/http-rust-agent",
+        |snapshot| {
+            snapshot["turns"]
+                .as_array()
+                .expect("turns")
+                .iter()
+                .any(|turn| {
+                    turn["role"] == "assistant"
+                        && turn["status"] == "complete"
+                        && turn["content"] == "route adapter response for gpt-route-agent"
+                })
+        },
+    )
+    .await;
+    let assistant_turn = final_snapshot["turns"]
+        .as_array()
+        .expect("turns")
         .iter()
         .find(|turn| turn["role"] == "assistant")
         .expect("assistant turn");
@@ -387,7 +455,33 @@ async fn conversation_turn_route_persists_structured_backend_error_output() {
     .await;
 
     assert_eq!(response.0, StatusCode::OK);
-    let assistant_turn = response.1["turns"]
+    let started_assistant_turn = response.1["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["role"] == "assistant")
+        .expect("assistant turn");
+    assert_eq!(started_assistant_turn["status"], "pending");
+    assert_eq!(started_assistant_turn["content"], "");
+
+    let final_snapshot = wait_for_conversation_snapshot(
+        &settings,
+        "conversation-http-output-error",
+        "/projects/http-output-error",
+        |snapshot| {
+            snapshot["turns"]
+                .as_array()
+                .expect("turns")
+                .iter()
+                .any(|turn| {
+                    turn["role"] == "assistant"
+                        && turn["status"] == "failed"
+                        && turn["error"] == "route backend stream failed"
+                })
+        },
+    )
+    .await;
+    let assistant_turn = final_snapshot["turns"]
         .as_array()
         .expect("turns")
         .iter()
@@ -399,7 +493,7 @@ async fn conversation_turn_route_persists_structured_backend_error_output() {
         assistant_turn["token_usage"],
         json!({"total": {"inputTokens": 9, "outputTokens": 1}})
     );
-    assert!(response.1["segments"]
+    assert!(final_snapshot["segments"]
         .as_array()
         .expect("segments")
         .iter()
@@ -412,8 +506,8 @@ async fn conversation_turn_route_persists_structured_backend_error_output() {
             Some("/projects/http-output-error"),
         )
         .expect("persisted snapshot");
-    assert_eq!(persisted["turns"], response.1["turns"]);
-    assert_eq!(persisted["segments"], response.1["segments"]);
+    assert_eq!(persisted["turns"], final_snapshot["turns"]);
+    assert_eq!(persisted["segments"], final_snapshot["segments"]);
 
     let events = WorkspaceConversationService::new(settings)
         .read_events_after(
@@ -463,7 +557,32 @@ async fn conversation_turn_route_persists_thread_resume_failure_details() {
     .await;
 
     assert_eq!(response.0, StatusCode::OK);
-    let assistant_turn = response.1["turns"]
+    let started_assistant_turn = response.1["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["role"] == "assistant")
+        .expect("assistant turn");
+    assert_eq!(started_assistant_turn["status"], "pending");
+
+    let final_snapshot = wait_for_conversation_snapshot(
+        &settings,
+        "conversation-http-resume-failure",
+        "/projects/http-resume-failure",
+        |snapshot| {
+            snapshot["turns"]
+                .as_array()
+                .expect("turns")
+                .iter()
+                .any(|turn| {
+                    turn["role"] == "assistant"
+                        && turn["status"] == "failed"
+                        && turn["error_code"] == "thread_resume_failed"
+                })
+        },
+    )
+    .await;
+    let assistant_turn = final_snapshot["turns"]
         .as_array()
         .expect("turns")
         .iter()
@@ -476,9 +595,9 @@ async fn conversation_turn_route_persists_thread_resume_failure_details() {
         assistant_turn["token_usage"],
         json!({"total": {"inputTokens": 5, "outputTokens": 0}})
     );
-    assert_eq!(response.1["event_log"][0]["kind"], "continuity_reset");
+    assert_eq!(final_snapshot["event_log"][0]["kind"], "continuity_reset");
     assert_eq!(
-        response.1["event_log"][0]["details"]["thread_id"],
+        final_snapshot["event_log"][0]["details"]["thread_id"],
         "thread-http-resume"
     );
     let persisted = WorkspaceConversationService::new(settings.clone())
@@ -487,8 +606,8 @@ async fn conversation_turn_route_persists_thread_resume_failure_details() {
             Some("/projects/http-resume-failure"),
         )
         .expect("persisted snapshot");
-    assert_eq!(persisted["turns"], response.1["turns"]);
-    assert_eq!(persisted["event_log"], response.1["event_log"]);
+    assert_eq!(persisted["turns"], final_snapshot["turns"]);
+    assert_eq!(persisted["event_log"], final_snapshot["event_log"]);
 
     let events = WorkspaceConversationService::new(settings)
         .read_events_after(
@@ -514,7 +633,7 @@ async fn conversation_turn_route_returns_workspace_error_for_backend_trait_failu
     let settings = settings(temp.path());
     let backend = ScriptedAgentTurnBackend::new(Vec::new());
     let backend_requests = backend.requests();
-    let app = build_app_with_agent_turn_backend(settings, Arc::new(backend));
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
 
     let response = request_json(
         app,
@@ -527,12 +646,39 @@ async fn conversation_turn_route_returns_workspace_error_for_backend_trait_failu
     )
     .await;
 
-    assert_eq!(response.0, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(
-        response.1,
-        json!({"detail": "No scripted agent output available."})
-    );
-    assert!(response.1.get("turns").is_none());
+    assert_eq!(response.0, StatusCode::OK);
+    let started_assistant_turn = response.1["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["role"] == "assistant")
+        .expect("assistant turn");
+    assert_eq!(started_assistant_turn["status"], "pending");
+
+    let final_snapshot = wait_for_conversation_snapshot(
+        &settings,
+        "conversation-http-backend-error",
+        "/projects/http-backend-error",
+        |snapshot| {
+            snapshot["turns"]
+                .as_array()
+                .expect("turns")
+                .iter()
+                .any(|turn| {
+                    turn["role"] == "assistant"
+                        && turn["status"] == "failed"
+                        && turn["error"] == "No scripted agent output available."
+                })
+        },
+    )
+    .await;
+    assert!(final_snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| turn["role"] == "assistant"
+            && turn["status"] == "failed"
+            && turn["error"] == "No scripted agent output available."));
     let backend_requests = backend_requests.lock().expect("backend requests");
     assert_eq!(backend_requests.len(), 1);
     assert_eq!(backend_requests[0].prompt, "Backend should fail");
@@ -777,6 +923,33 @@ async fn request_json(
         .expect("body");
     let value = serde_json::from_slice::<Value>(&bytes).expect("json");
     (status, value, content_type)
+}
+
+async fn wait_for_conversation_snapshot<F>(
+    settings: &SparkSettings,
+    conversation_id: &str,
+    project_path: &str,
+    predicate: F,
+) -> Value
+where
+    F: Fn(&Value) -> bool,
+{
+    let service = WorkspaceConversationService::new(settings.clone());
+    let mut last_snapshot = None;
+    for _ in 0..100 {
+        let snapshot = service
+            .get_snapshot(conversation_id, Some(project_path))
+            .expect("snapshot");
+        if predicate(&snapshot) {
+            return snapshot;
+        }
+        last_snapshot = Some(snapshot);
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!(
+        "conversation snapshot did not satisfy predicate: {}",
+        serde_json::to_string_pretty(&last_snapshot).expect("snapshot json")
+    );
 }
 
 async fn request_text(

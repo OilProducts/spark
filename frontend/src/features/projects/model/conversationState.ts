@@ -7,10 +7,9 @@ import type {
     ConversationTurnUpsertEventResponse,
 } from '@/lib/workspaceClient'
 
-export type OptimisticSendState = {
+export type PendingConversationTurnState = {
     conversationId: string
-    message: string
-    createdAt: string
+    afterRevision: number
 }
 
 export type ConversationStreamEvent = ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse

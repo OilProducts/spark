@@ -595,7 +595,7 @@ describe('ProjectsPanel', () => {
     expect(screen.getByTestId('project-event-log-list')).toHaveTextContent('Approved plan')
   })
 
-  it('renders the user turn before the assistant response completes', async () => {
+  it('renders the server-created user turn before the assistant response completes', async () => {
     const user = userEvent.setup()
     let resolveTurnResponse: ((response: Response) => void) | null = null
 
@@ -641,9 +641,10 @@ describe('ProjectsPanel', () => {
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Show this message immediately.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
-    expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Show this message immediately.')
-    expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Thinking...')
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Send')
+    expect(screen.queryByTestId('project-ai-conversation-history-list')).not.toBeInTheDocument()
+    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('')
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Sending...')
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
 
     resolveTurnResponse?.(
       new Response(
@@ -663,37 +664,15 @@ describe('ProjectsPanel', () => {
             {
               id: 'turn-assistant-1',
               role: 'assistant',
-              content: 'Visible.',
+              content: '',
               timestamp: '2026-03-06T21:45:02Z',
-              status: 'complete',
+              status: 'pending',
               kind: 'message',
               artifact_id: null,
-            },
-          ],
-          turn_events: [
-            {
-              id: 'event-assistant-delta-1',
-              turn_id: 'turn-assistant-1',
-              sequence: 1,
-              timestamp: '2026-03-06T21:45:01Z',
-              kind: 'content_delta',
-              channel: 'assistant',
-              content_delta: 'Visible.',
-            },
-            {
-              id: 'event-assistant-complete-1',
-              turn_id: 'turn-assistant-1',
-              sequence: 2,
-              timestamp: '2026-03-06T21:45:02Z',
-              kind: 'content_completed',
-              channel: 'assistant',
-              message: 'Assistant turn completed.',
+              parent_turn_id: 'turn-user-1',
             },
           ],
           event_log: [],
-
-
-
         })),
         {
           status: 200,
@@ -703,10 +682,13 @@ describe('ProjectsPanel', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Visible.')
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Show this message immediately.')
     })
+    const history = screen.getByTestId('project-ai-conversation-history-list')
+    expect(within(history).getAllByText('Show this message immediately.')).toHaveLength(1)
+    expect(history).not.toHaveTextContent('Visible.')
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Worked for')
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Send')
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Thinking...')
   })
 
   it('renders the assistant reply even when the backend canonicalizes project_path', async () => {

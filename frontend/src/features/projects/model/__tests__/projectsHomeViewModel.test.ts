@@ -113,11 +113,7 @@ describe('buildProjectsHomeViewModel', () => {
           ],
         },
       },
-      optimisticSend: {
-        conversationId: 'conversation-1',
-        createdAt: '2026-03-24T18:01:10Z',
-        message: 'Continue',
-      },
+      pendingConversationTurn: null,
       projectGitMetadata: {
         '/tmp/project-alpha': {
           branch: 'main',
@@ -149,8 +145,45 @@ describe('buildProjectsHomeViewModel', () => {
     expect(viewModel.chatSendButtonLabel).toBe('Thinking...')
     expect(viewModel.hasRenderableConversationHistory).toBe(true)
     expect(viewModel.activeConversationHistory.at(-1)).toMatchObject({
+      role: 'assistant',
+      status: 'pending',
+    })
+  })
+
+  it('uses pending send state for composer controls without appending timeline messages', () => {
+    const record = hydrateConversationRecordFromSnapshot({
+      ...snapshot,
+      turns: snapshot.turns.slice(0, 1),
+    })
+    const viewModel = buildProjectsHomeViewModel({
+      activeConversationId: 'conversation-1',
+      activeConversationRecord: record,
+      activeProjectPath: '/tmp/project-alpha',
+      activeProjectScope,
+      conversationCache: {
+        conversationsById: {
+          'conversation-1': record,
+        },
+        summariesByProjectPath: {},
+      },
+      pendingConversationTurn: {
+        conversationId: 'conversation-1',
+        afterRevision: record.revision,
+      },
+      projectGitMetadata: {},
+      uiDefaults: {
+        llm_model: '',
+        llm_provider: 'codex',
+        reasoning_effort: '',
+      },
+    })
+
+    expect(viewModel.chatSendButtonLabel).toBe('Sending...')
+    expect(viewModel.isChatInputDisabled).toBe(true)
+    expect(viewModel.activeConversationHistory).toHaveLength(1)
+    expect(viewModel.activeConversationHistory[0]).toMatchObject({
       role: 'user',
-      content: 'Continue',
+      content: 'Start planning.',
     })
   })
 })

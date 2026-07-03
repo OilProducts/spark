@@ -5,7 +5,7 @@ import type {
     ConversationSummaryResponse,
 } from '@/lib/workspaceClient'
 
-import type { OptimisticSendState } from './conversationState'
+import type { PendingConversationTurnState } from './conversationState'
 import type { ProjectGitMetadata } from './presentation'
 import {
     EMPTY_PROJECT_GIT_METADATA,
@@ -30,7 +30,7 @@ type BuildProjectsHomeViewModelArgs = {
     activeProjectPath: string | null
     activeProjectScope: ProjectSessionState | null
     conversationCache: ProjectConversationCacheState
-    optimisticSend: OptimisticSendState | null
+    pendingConversationTurn: PendingConversationTurnState | null
     projectGitMetadata: Record<string, ProjectGitMetadata>
     uiDefaults: UiDefaults
 }
@@ -70,24 +70,11 @@ export function buildProjectsHomeViewModel({
     activeProjectPath,
     activeProjectScope,
     conversationCache,
-    optimisticSend,
+    pendingConversationTurn,
     projectGitMetadata,
     uiDefaults,
 }: BuildProjectsHomeViewModelArgs): ProjectsHomeViewModel {
-    const normalizedHistory = getConversationTimelineEntries(activeConversationRecord)
-    const activeConversationHistory = optimisticSend && optimisticSend.conversationId === activeConversationId
-        ? [
-            ...normalizedHistory,
-            {
-                id: `${optimisticSend.conversationId}:optimistic:user`,
-                kind: 'message' as const,
-                role: 'user' as const,
-                content: optimisticSend.message,
-                timestamp: optimisticSend.createdAt,
-                status: 'complete' as const,
-            },
-        ]
-        : normalizedHistory
+    const activeConversationHistory = getConversationTimelineEntries(activeConversationRecord)
     const activeFlowRunRequests = getConversationFlowRunRequests(activeConversationRecord)
     const activeFlowLaunches = getConversationFlowLaunches(activeConversationRecord)
     const activeProposedPlans = getConversationProposedPlans(activeConversationRecord)
@@ -107,6 +94,11 @@ export function buildProjectsHomeViewModel({
             turn && turn.role === 'assistant' && (turn.status === 'pending' || turn.status === 'streaming'),
         )
     })
+    const isConversationTurnStarting = Boolean(
+        pendingConversationTurn
+            && pendingConversationTurn.conversationId === activeConversationId
+            && (!activeConversationRecord || activeConversationRecord.revision <= pendingConversationTurn.afterRevision),
+    )
 
     return {
         activeChatMode: activeConversationId
@@ -139,10 +131,10 @@ export function buildProjectsHomeViewModel({
             ? projectGitMetadata[activeProjectPath] || EMPTY_PROJECT_GIT_METADATA
             : EMPTY_PROJECT_GIT_METADATA,
         activeProjectLabel: activeProjectPath ? formatProjectListLabel(activeProjectPath) : null,
-        chatSendButtonLabel: hasActiveAssistantTurn ? 'Thinking...' : 'Send',
+        chatSendButtonLabel: isConversationTurnStarting ? 'Sending...' : hasActiveAssistantTurn ? 'Thinking...' : 'Send',
         hasActiveAssistantTurn,
         hasRenderableConversationHistory,
-        isChatInputDisabled: hasActiveAssistantTurn,
+        isChatInputDisabled: isConversationTurnStarting || hasActiveAssistantTurn,
         latestFlowLaunchId: getLatestArtifactId(activeFlowLaunches),
         latestFlowRunRequestId: getLatestArtifactId(activeFlowRunRequests),
     }

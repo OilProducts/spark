@@ -265,75 +265,42 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
     .await;
     assert_eq!(posted.status(), StatusCode::OK);
     let posted_snapshot = json_body(posted).await;
-    let final_revision = posted_snapshot["revision"]
-        .as_i64()
-        .expect("final snapshot revision");
-    assert!(final_revision > 4);
     assert!(posted_snapshot["turns"]
         .as_array()
         .expect("turns")
         .iter()
         .any(|turn| turn["role"] == "assistant"
-            && turn["status"] == "complete"
-            && turn["content"] == "Live streamed answer."
-            && turn["token_usage"]["total"]["inputTokens"] == json!(11)
-            && turn["token_usage_breakdown"]["last"]["outputTokens"] == json!(1)));
-    assert!(posted_snapshot["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .any(|segment| segment["kind"] == "reasoning"
-            && segment["content"] == "Live route reasoning."));
-    assert!(posted_snapshot["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .any(|segment| segment["kind"] == "model_tool_call"
-            && segment["status"] == "complete"
-            && segment["tool_call"]["id"] == "live-tool-1"
-            && segment["tool_call"]["arguments"] == json!({"query": "live route"})));
-    assert!(posted_snapshot["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .any(|segment| segment["kind"] == "tool_call"
-            && segment["status"] == "complete"
-            && segment["tool_call"]["id"] == "live-tool-1"
-            && segment["tool_call"]["output"] == "full live output"));
-    assert!(posted_snapshot["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .any(|segment| segment["kind"] == "agent_event"
-            && segment["event_kind"] == "warning"
-            && segment["message"] == "Live route compatibility warning."
-            && segment["details"]["message"] == "Live route compatibility warning."));
-    assert!(posted_snapshot["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .any(|segment| segment["kind"] == "agent_event"
-            && segment["event_kind"] == "processing_end"
-            && segment["event_status"] == "idle"
-            && segment["details"]["state"] == "idle"));
-    assert!(posted_snapshot["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .any(|segment| segment["kind"] == "agent_event"
-            && segment["event_kind"] == "session_end"
-            && segment["event_status"] == "closed"
-            && segment["details"]["state"] == "closed"));
+            && turn["status"] == "pending"
+            && turn["content"] == ""));
 
     let mut envelopes = Vec::new();
+    let mut snapshot_envelope = None;
     for _ in 0..40 {
         let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        let cursor = envelope["cursor"]["value"].as_i64().expect("cursor");
+        if envelope["type"] == "conversation.snapshot"
+            && envelope["payload"]["state"]["turns"]
+                .as_array()
+                .expect("turns")
+                .iter()
+                .any(|turn| {
+                    turn["role"] == "assistant"
+                        && turn["status"] == "complete"
+                        && turn["content"] == "Live streamed answer."
+                })
+        {
+            snapshot_envelope = Some(envelope.clone());
+        }
         envelopes.push(envelope);
-        if cursor >= final_revision {
+        if snapshot_envelope.is_some() {
             break;
         }
     }
+    let snapshot_envelope = snapshot_envelope.expect("snapshot envelope");
+    let final_snapshot = &snapshot_envelope["payload"]["state"];
+    let final_revision = snapshot_envelope["cursor"]["value"]
+        .as_i64()
+        .expect("final revision");
+    assert!(final_revision > 4);
     assert_eq!(
         envelopes.last().expect("snapshot envelope")["type"],
         "conversation.snapshot"
@@ -343,6 +310,61 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
         .map(|envelope| envelope["cursor"]["value"].as_i64().expect("cursor"))
         .collect::<Vec<_>>();
     assert_eq!(cursors, (3..=final_revision).collect::<Vec<_>>());
+    assert!(final_snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| turn["role"] == "assistant"
+            && turn["status"] == "complete"
+            && turn["content"] == "Live streamed answer."
+            && turn["token_usage"]["total"]["inputTokens"] == json!(11)
+            && turn["token_usage_breakdown"]["last"]["outputTokens"] == json!(1)));
+    assert!(final_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "reasoning"
+            && segment["content"] == "Live route reasoning."));
+    assert!(final_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "model_tool_call"
+            && segment["status"] == "complete"
+            && segment["tool_call"]["id"] == "live-tool-1"
+            && segment["tool_call"]["arguments"] == json!({"query": "live route"})));
+    assert!(final_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "tool_call"
+            && segment["status"] == "complete"
+            && segment["tool_call"]["id"] == "live-tool-1"
+            && segment["tool_call"]["output"] == "full live output"));
+    assert!(final_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "agent_event"
+            && segment["event_kind"] == "warning"
+            && segment["message"] == "Live route compatibility warning."
+            && segment["details"]["message"] == "Live route compatibility warning."));
+    assert!(final_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "agent_event"
+            && segment["event_kind"] == "processing_end"
+            && segment["event_status"] == "idle"
+            && segment["details"]["state"] == "idle"));
+    assert!(final_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "agent_event"
+            && segment["event_kind"] == "session_end"
+            && segment["event_status"] == "closed"
+            && segment["details"]["state"] == "closed"));
 
     assert!(envelopes.iter().any(|envelope| {
         envelope["type"] == "conversation.turn_upsert"
@@ -403,15 +425,10 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             && envelope["payload"]["segment"]["event_kind"] == "processing_end"
             && envelope["payload"]["segment"]["event_status"] == "idle"
     }));
-    let snapshot_envelope = envelopes.last().expect("snapshot envelope");
     assert_eq!(snapshot_envelope["cursor"]["value"], json!(final_revision));
     assert_eq!(
         snapshot_envelope["payload"]["state"]["revision"],
         json!(final_revision)
-    );
-    assert_eq!(
-        snapshot_envelope["payload"]["state"]["turns"],
-        posted_snapshot["turns"]
     );
 
     let raw_log = ConversationRepository::new(&settings.data_dir)
@@ -484,16 +501,31 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
     .await;
     assert_eq!(posted.status(), StatusCode::OK);
     let posted_snapshot = json_body(posted).await;
-    let final_revision = posted_snapshot["revision"]
-        .as_i64()
-        .expect("final snapshot revision");
+    assert!(posted_snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| turn["role"] == "assistant" && turn["status"] == "pending"));
 
     let mut envelopes = Vec::new();
+    let mut snapshot_envelope = None;
     for _ in 0..20 {
         let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        let cursor = envelope["cursor"]["value"].as_i64().expect("cursor");
+        if envelope["type"] == "conversation.snapshot"
+            && envelope["payload"]["state"]["turns"]
+                .as_array()
+                .expect("turns")
+                .iter()
+                .any(|turn| {
+                    turn["role"] == "assistant"
+                        && turn["status"] == "failed"
+                        && turn["error"] == "live thread resume failed"
+                })
+        {
+            snapshot_envelope = Some(envelope.clone());
+        }
         envelopes.push(envelope);
-        if cursor >= final_revision {
+        if snapshot_envelope.is_some() {
             break;
         }
     }
@@ -509,17 +541,12 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
             && envelope["payload"]["turn"]["token_usage_breakdown"]["last"]["outputTokens"]
                 == json!(0)
     }));
-    let snapshot_envelope = envelopes.last().expect("snapshot envelope");
+    let snapshot_envelope = snapshot_envelope.expect("snapshot envelope");
     assert_eq!(snapshot_envelope["type"], "conversation.snapshot");
     assert_eq!(
         snapshot_envelope["payload"]["state"]["event_log"][0]["details"]["thread_id"],
         "thread-live-resume"
     );
-    assert_eq!(
-        snapshot_envelope["payload"]["state"]["turns"],
-        posted_snapshot["turns"]
-    );
-
     let raw_log = ConversationRepository::new(&settings.data_dir)
         .read_raw_rpc_log("conversation-live-failure", &project_path.to_string_lossy())
         .expect("raw log");

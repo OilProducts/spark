@@ -5,7 +5,7 @@ import type {
     TriggerResponse,
 } from '@/lib/workspaceClient'
 import type { PipelineResultResponse } from '@/lib/attractorClient'
-import type { OptimisticSendState } from '@/features/projects/model/conversationState'
+import type { PendingConversationTurnState } from '@/features/projects/model/conversationState'
 import type { NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
 import type { ProjectGitMetadata } from '@/features/projects/model/presentation'
 import type {
@@ -33,7 +33,7 @@ export interface HomeConversationCacheState {
 export interface HomeProjectSessionState {
     chatDraft: string
     panelError: string | null
-    optimisticSend: OptimisticSendState | null
+    pendingConversationTurn: PendingConversationTurnState | null
     pendingDeleteConversationId: string | null
     sidebarPrimarySplitRatio: number | null
 }

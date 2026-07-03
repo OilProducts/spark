@@ -868,6 +868,56 @@ impl WorkspaceConversationService {
         Ok(snapshot)
     }
 
+    fn ingest_agent_turn_backend_failure(
+        &self,
+        prepared: &PreparedConversationTurn,
+        error: AgentError,
+    ) -> WorkspaceResult<Value> {
+        let repository = self.repository();
+        let mut snapshot = repository
+            .read_snapshot(&prepared.conversation_id, Some(&prepared.project_path))?
+            .ok_or_else(|| {
+                WorkspaceError::NotFound(format!(
+                    "Unknown conversation: {}",
+                    prepared.conversation_id
+                ))
+            })?;
+        prepare_snapshot_core_defaults(
+            &mut snapshot,
+            &prepared.conversation_id,
+            &prepared.project_path,
+        );
+        let message =
+            non_empty_string(&error.message).unwrap_or_else(|| "Agent turn failed.".to_string());
+        let mut emitted_payloads = Vec::new();
+        fail_assistant_turn_and_segments(
+            &mut snapshot,
+            &prepared.assistant_turn_id,
+            &message,
+            None,
+            error.raw.as_ref(),
+            true,
+            &mut emitted_payloads,
+        );
+        touch_snapshot(
+            &repository,
+            &mut snapshot,
+            &prepared.conversation_id,
+            &prepared.project_path,
+        )?;
+        emitted_payloads.push(build_conversation_snapshot_payload(&snapshot));
+        stamp_progress_payloads_with_state_revision(&mut snapshot, &mut emitted_payloads);
+        repository.write_snapshot(&snapshot)?;
+        append_events(
+            &repository,
+            &prepared.conversation_id,
+            &prepared.project_path,
+            &emitted_payloads,
+        )?;
+        prepare_snapshot_for_ui(&mut snapshot, &prepared.conversation_id);
+        Ok(snapshot)
+    }
+
     pub fn execute_turn(
         &self,
         conversation_id: &str,
@@ -897,6 +947,18 @@ impl WorkspaceConversationService {
         {
             progress(payload);
         }
+        self.complete_started_turn_with_progress_payloads(prepared, started_snapshot, progress)
+    }
+
+    pub fn complete_started_turn_with_progress_payloads<F>(
+        &self,
+        prepared: PreparedConversationTurn,
+        started_snapshot: Value,
+        progress: F,
+    ) -> WorkspaceResult<Value>
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
         let progress = Arc::new(progress);
         let event_sink = live_conversation_turn_event_sink(
             started_snapshot,
@@ -904,17 +966,19 @@ impl WorkspaceConversationService {
             prepared.chat_mode.clone(),
             progress,
         );
-        let output = self
+        match self
             .agent_turn_backend
             .run_turn_with_event_sink(prepared.agent_turn_request.clone(), Some(event_sink))
-            .map_err(agent_turn_backend_error)?;
-        self.ingest_agent_turn_output(
-            &prepared.conversation_id,
-            &prepared.project_path,
-            &prepared.assistant_turn_id,
-            &prepared.chat_mode,
-            output,
-        )
+        {
+            Ok(output) => self.ingest_agent_turn_output(
+                &prepared.conversation_id,
+                &prepared.project_path,
+                &prepared.assistant_turn_id,
+                &prepared.chat_mode,
+                output,
+            ),
+            Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error),
+        }
     }
 
     pub fn submit_request_user_input_answer(

@@ -5,7 +5,7 @@ import {
     type ConversationSnapshotResponse,
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
-import type { OptimisticSendState } from '../model/conversationState'
+import type { PendingConversationTurnState } from '../model/conversationState'
 
 export type ConversationComposerCommand =
     | {
@@ -48,6 +48,7 @@ type UseConversationComposerArgs = {
     reasoningEffort: string
     ensureConversationId: () => string | null
     getCurrentConversationId: (projectPath: string) => string | null
+    getCurrentConversationRevision: (conversationId: string) => number
     applyConversationSnapshot: (
         projectPath: string,
         snapshot: ConversationSnapshotResponse,
@@ -58,7 +59,7 @@ type UseConversationComposerArgs = {
     formatErrorMessage: (error: unknown, fallback: string) => string
     setChatDraft: Dispatch<SetStateAction<string>>
     setPanelError: (message: string | null) => void
-    setOptimisticSend: Dispatch<SetStateAction<OptimisticSendState | null>>
+    setPendingConversationTurn: Dispatch<SetStateAction<PendingConversationTurnState | null>>
 }
 
 export function useConversationComposer({
@@ -70,16 +71,17 @@ export function useConversationComposer({
     reasoningEffort,
     ensureConversationId,
     getCurrentConversationId,
+    getCurrentConversationRevision,
     applyConversationSnapshot,
     appendLocalProjectEvent,
     formatErrorMessage,
     setChatDraft,
     setPanelError,
-    setOptimisticSend,
+    setPendingConversationTurn,
 }: UseConversationComposerArgs) {
     const resetComposer = () => {
         setChatDraft('')
-        setOptimisticSend(null)
+        setPendingConversationTurn(null)
     }
 
     const onSendChatMessage = async () => {
@@ -95,7 +97,6 @@ export function useConversationComposer({
         if (!conversationId) {
             return
         }
-        const optimisticCreatedAt = new Date().toISOString()
 
         setPanelError(null)
         setChatDraft('')
@@ -117,10 +118,9 @@ export function useConversationComposer({
         }
         const messageToSend = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.message : trimmed
         const chatMode = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.chatMode : null
-        setOptimisticSend({
+        setPendingConversationTurn({
             conversationId,
-            message: messageToSend,
-            createdAt: optimisticCreatedAt,
+            afterRevision: getCurrentConversationRevision(conversationId),
         })
         try {
             const snapshot = await sendConversationTurnValidated(conversationId, {
@@ -131,7 +131,7 @@ export function useConversationComposer({
                 reasoning_effort: reasoningEffort.trim(),
                 chat_mode: chatMode,
             })
-            setOptimisticSend(null)
+            setPendingConversationTurn(null)
             const shouldKeepFocusOnReplyThread = getCurrentConversationId(activeProjectPath) === conversationId
             applyConversationSnapshot(activeProjectPath, snapshot, 'send-response', {
                 forceWorkspaceSync: shouldKeepFocusOnReplyThread,
@@ -141,7 +141,7 @@ export function useConversationComposer({
             setPanelError(message)
             appendLocalProjectEvent(`Project chat turn failed: ${message}`)
         } finally {
-            setOptimisticSend(null)
+            setPendingConversationTurn(null)
         }
     }
 

@@ -276,46 +276,93 @@ async fn send_conversation_turn(
         &agent_turn_backend,
     );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
-    let published_revision = Arc::new(AtomicI64::new(before_revision));
-    let conversation_id_for_turn = conversation_id.clone();
-    let conversation_id_for_progress = conversation_id.clone();
-    let project_path_for_progress = project_path.clone();
-    let live_hub_for_progress = live_hub.clone();
-    let published_revision_for_progress = Arc::clone(&published_revision);
-    let snapshot = tokio::task::spawn_blocking(move || {
-        service.execute_turn_with_progress_payloads(
-            &conversation_id_for_turn,
-            request,
-            move |payload| {
-                let revision = payload
-                    .get("revision")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(before_revision);
-                published_revision_for_progress.fetch_max(revision, Ordering::Relaxed);
-                live_hub_for_progress.publish(conversation_event_envelope(
-                    &conversation_id_for_progress,
-                    &project_path_for_progress,
-                    payload,
-                    revision,
-                ));
-            },
-        )
+    let conversation_id_for_start = conversation_id.clone();
+    let service_for_start = service.clone();
+    let (prepared, started_snapshot) = tokio::task::spawn_blocking(move || {
+        service_for_start.start_turn(&conversation_id_for_start, request)
     })
     .await
     .map_err(|error| {
         WorkspaceApiError(WorkspaceError::Internal(format!(
-            "conversation turn task failed: {error}"
+            "conversation turn start task failed: {error}"
         )))
     })??;
-    let after_revision = published_revision.load(Ordering::Relaxed);
     publish_conversation_after(
         &settings,
         &live_hub,
         &conversation_id,
-        &project_path,
-        after_revision,
+        &prepared.project_path,
+        before_revision,
     );
-    Ok(Json(snapshot))
+
+    let started_revision = started_snapshot
+        .get("revision")
+        .and_then(Value::as_i64)
+        .unwrap_or(before_revision);
+    let published_revision = Arc::new(AtomicI64::new(started_revision));
+    let conversation_id_for_progress = conversation_id.clone();
+    let project_path_for_progress = prepared.project_path.clone();
+    let live_hub_for_progress = live_hub.clone();
+    let published_revision_for_progress = Arc::clone(&published_revision);
+    let settings_for_completion = settings.clone();
+    let live_hub_for_completion = live_hub.clone();
+    let service_for_completion = service.clone();
+    let prepared_for_completion = prepared.clone();
+    let started_snapshot_for_completion = started_snapshot.clone();
+    tokio::spawn(async move {
+        let completion_conversation_id = prepared_for_completion.conversation_id.clone();
+        let completion_project_path = prepared_for_completion.project_path.clone();
+        let completion_result = tokio::task::spawn_blocking(move || {
+            service_for_completion.complete_started_turn_with_progress_payloads(
+                prepared_for_completion,
+                started_snapshot_for_completion,
+                move |payload| {
+                    let revision = payload
+                        .get("revision")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(started_revision);
+                    published_revision_for_progress.fetch_max(revision, Ordering::Relaxed);
+                    live_hub_for_progress.publish(conversation_event_envelope(
+                        &conversation_id_for_progress,
+                        &project_path_for_progress,
+                        payload,
+                        revision,
+                    ));
+                },
+            )
+        })
+        .await;
+
+        let after_revision = published_revision.load(Ordering::Relaxed);
+        match completion_result {
+            Ok(Ok(_)) => publish_conversation_after(
+                &settings_for_completion,
+                &live_hub_for_completion,
+                &completion_conversation_id,
+                &completion_project_path,
+                after_revision,
+            ),
+            Ok(Err(_error)) => {
+                publish_conversation_after(
+                    &settings_for_completion,
+                    &live_hub_for_completion,
+                    &completion_conversation_id,
+                    &completion_project_path,
+                    after_revision,
+                );
+            }
+            Err(_error) => {
+                publish_conversation_after(
+                    &settings_for_completion,
+                    &live_hub_for_completion,
+                    &completion_conversation_id,
+                    &completion_project_path,
+                    after_revision,
+                );
+            }
+        }
+    });
+    Ok(Json(started_snapshot))
 }
 
 async fn answer_conversation_request_user_input(

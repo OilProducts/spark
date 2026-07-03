@@ -157,12 +157,12 @@ export function useProjectsHomeController() {
         chatDraft,
         expandedThinkingEntries,
         expandedToolCalls,
-        optimisticSend,
         panelError,
+        pendingConversationTurn,
         pendingDeleteConversationId,
         setChatDraft,
-        setOptimisticSend,
         setPanelError,
+        setPendingConversationTurn,
         setPendingDeleteConversationId,
         toggleThinkingEntryExpanded,
         toggleToolCallExpanded,
@@ -194,7 +194,7 @@ export function useProjectsHomeController() {
         activeProjectPath,
         activeProjectScope,
         conversationCache,
-        optimisticSend,
+        pendingConversationTurn,
         projectGitMetadata,
         uiDefaults,
     }), [
@@ -203,7 +203,7 @@ export function useProjectsHomeController() {
         activeProjectPath,
         activeProjectScope,
         conversationCache,
-        optimisticSend,
+        pendingConversationTurn,
         projectGitMetadata,
         uiDefaults,
     ])
@@ -306,6 +306,18 @@ export function useProjectsHomeController() {
     }, [isConversationPinnedToBottom])
 
     useEffect(() => {
+        if (!pendingConversationTurn || !activeConversationRecord) {
+            return
+        }
+        if (
+            pendingConversationTurn.conversationId === activeConversationRecord.conversation_id
+            && activeConversationRecord.revision > pendingConversationTurn.afterRevision
+        ) {
+            setPendingConversationTurn(null)
+        }
+    }, [activeConversationRecord, pendingConversationTurn, setPendingConversationTurn])
+
+    useEffect(() => {
         if (!isConversationPinnedToBottomRef.current) {
             return
         }
@@ -360,12 +372,15 @@ export function useProjectsHomeController() {
         getCurrentConversationId: (projectPath) => (
             useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
         ),
+        getCurrentConversationRevision: (conversationId) => (
+            conversationCacheRef.current.conversationsById[conversationId]?.revision ?? 0
+        ),
         applyConversationSnapshot,
         appendLocalProjectEvent,
         formatErrorMessage: extractApiErrorMessage,
         setChatDraft,
         setPanelError,
-        setOptimisticSend,
+        setPendingConversationTurn,
     })
 
     useEffect(() => {
