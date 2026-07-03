@@ -25,6 +25,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const CODEX_RUNTIME_ROOT_ENV: &str = "ATTRACTOR_CODEX_RUNTIME_ROOT";
 const CODEX_SEED_DIR_ENV: &str = "ATTRACTOR_CODEX_SEED_DIR";
+const COLLABORATION_MODE_DEFAULT: &str = "default";
+const COLLABORATION_MODE_PLAN: &str = "plan";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodexAppServerError {
@@ -466,6 +468,27 @@ impl CodexAppServerClient {
         Ok(response.get("result").cloned().unwrap_or_else(|| json!({})))
     }
 
+    fn default_model(&mut self) -> Result<Option<String>, CodexAppServerError> {
+        let models = self.list_models()?;
+        let Some(entries) = models.get("data").and_then(Value::as_array) else {
+            return Ok(None);
+        };
+        let fallback = entries
+            .iter()
+            .find_map(|entry| model_id_from_model_list_entry(entry));
+        let default = entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .get("isDefault")
+                    .or_else(|| entry.get("is_default"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .and_then(model_id_from_model_list_entry);
+        Ok(default.or(fallback))
+    }
+
     pub fn run_turn(
         &mut self,
         thread_id: &str,
@@ -484,10 +507,22 @@ impl CodexAppServerClient {
             "sandboxPolicy": {"type": "dangerFullAccess"},
             "cwd": cwd,
         });
-        if let Some(model) = model.and_then(non_empty) {
+        let effective_model = model.and_then(non_empty).map(str::to_string);
+        if chat_mode.is_some() {
+            let effective_model = match effective_model {
+                Some(model) => model,
+                None => self.default_model()?.ok_or_else(|| {
+                    CodexAppServerError::runtime(
+                        "codex app-server turn/start requires a resolved model",
+                    )
+                })?,
+            };
+            params["model"] = json!(&effective_model);
+            params["collaborationMode"] =
+                collaboration_mode_for_chat_mode(chat_mode, &effective_model);
+        } else if let Some(model) = effective_model {
             params["model"] = json!(model);
         }
-        let _ = chat_mode;
         if let Some(effort) = normalize_reasoning_effort(reasoning_effort)? {
             params["effort"] = json!(effort);
         }
@@ -1535,6 +1570,28 @@ fn remember_agent_message_phase(
 
 fn agent_message_phase(item: &Map<String, Value>) -> Option<String> {
     object_text(item, &["phase"]).map(|phase| phase.to_ascii_lowercase())
+}
+
+fn model_id_from_model_list_entry(entry: &Value) -> Option<String> {
+    entry
+        .get("id")
+        .or_else(|| entry.get("model"))
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+        .map(str::to_string)
+}
+
+fn collaboration_mode_for_chat_mode(chat_mode: Option<&str>, model: &str) -> Value {
+    let mode = match chat_mode.map(str::trim).map(str::to_ascii_lowercase) {
+        Some(mode) if mode == COLLABORATION_MODE_PLAN => COLLABORATION_MODE_PLAN,
+        _ => COLLABORATION_MODE_DEFAULT,
+    };
+    json!({
+        "mode": mode,
+        "settings": {
+            "model": model,
+        },
+    })
 }
 
 fn normalize_reasoning_effort(value: Option<&str>) -> Result<Option<String>, CodexAppServerError> {

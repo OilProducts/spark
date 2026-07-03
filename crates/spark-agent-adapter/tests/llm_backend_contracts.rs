@@ -311,7 +311,14 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
     assert_eq!(thread_start["params"]["ephemeral"], json!(true));
     assert_eq!(turn_start["params"]["effort"], json!("high"));
     assert!(turn_start["params"].get("reasoningEffort").is_none());
-    assert!(turn_start["params"].get("collaborationMode").is_none());
+    assert_eq!(turn_start["params"]["model"], json!("gpt-codex-test"));
+    assert_eq!(
+        turn_start["params"]["collaborationMode"],
+        json!({
+            "mode": "default",
+            "settings": {"model": "gpt-codex-test"}
+        })
+    );
     let request_user_input_response = messages
         .iter()
         .find(|message| {
@@ -2158,15 +2165,36 @@ fn codergen_backend_routes_codex_provider_with_profile_through_app_server() {
 
     assert_eq!(output.response_text(), "Ack");
     assert!(calls.lock().expect("calls").is_empty());
-    let methods = fs::read_to_string(&log_path)
+    let messages = fs::read_to_string(&log_path)
         .expect("rpc log")
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("json"))
+        .collect::<Vec<_>>();
+    let methods = messages
+        .iter()
         .filter_map(|message| message["method"].as_str().map(str::to_string))
         .collect::<Vec<_>>();
     assert_eq!(
         methods,
-        ["initialize", "initialized", "thread/start", "turn/start"]
+        [
+            "initialize",
+            "initialized",
+            "thread/start",
+            "model/list",
+            "turn/start"
+        ]
+    );
+    let turn_start = messages
+        .iter()
+        .find(|message| message["method"] == json!("turn/start"))
+        .expect("turn/start payload");
+    assert_eq!(turn_start["params"]["model"], json!("gpt-codex-test"));
+    assert_eq!(
+        turn_start["params"]["collaborationMode"],
+        json!({
+            "mode": "default",
+            "settings": {"model": "gpt-codex-test"}
+        })
     );
 }
 

@@ -24,6 +24,7 @@ const TURN_START_PARAMS_SCHEMA: &str = r#"{
     "cwd": {"type": ["string", "null"]},
     "model": {"type": ["string", "null"]},
     "effort": {"type": ["string", "null"]},
+    "collaborationMode": true,
     "summary": true,
     "serviceTier": {"type": ["string", "null"]},
     "clientUserMessageId": {"type": ["string", "null"]},
@@ -158,6 +159,10 @@ fn initialize_and_turn_payload_contracts_match_codex_app_server_schema() {
             "sandboxPolicy": {"type": "dangerFullAccess"},
             "cwd": "/repo",
             "model": "gpt-test",
+            "collaborationMode": {
+                "mode": "plan",
+                "settings": {"model": "gpt-test"}
+            },
             "effort": "high"
         }
     });
@@ -169,7 +174,10 @@ fn initialize_and_turn_payload_contracts_match_codex_app_server_schema() {
         json!("dangerFullAccess")
     );
     assert!(turn_start["params"].get("reasoningEffort").is_none());
-    assert!(turn_start["params"].get("collaborationMode").is_none());
+    assert_eq!(
+        turn_start["params"]["collaborationMode"]["mode"],
+        json!("plan")
+    );
 
     let turn_steer = json!({
         "method": "turn/steer",
@@ -199,6 +207,70 @@ fn model_list_is_supported_and_matches_generated_schema_shape() {
 
     assert_schema_valid(MODEL_LIST_RESPONSE_SCHEMA, &models);
     assert_eq!(models["data"][0]["id"], json!("gpt-codex-test"));
+}
+
+#[test]
+fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
+    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("codex-rpc.jsonl");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+
+    let mut client = CodexAppServerClient::connect(temp.path().to_path_buf()).expect("connect");
+    let thread_id = client
+        .start_thread(None, Some(temp.path().to_string_lossy().as_ref()), true)
+        .expect("thread/start");
+    let result = client
+        .run_turn(
+            &thread_id,
+            "Plan this",
+            None,
+            None,
+            Some("plan"),
+            Some(temp.path().to_string_lossy().as_ref()),
+            None,
+            None,
+        )
+        .expect("turn/start");
+
+    assert_eq!(result.state.resolved_agent_text(), "Ack");
+    let messages = fs::read_to_string(&log_path)
+        .expect("rpc log")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json"))
+        .collect::<Vec<_>>();
+    let methods = messages
+        .iter()
+        .filter_map(|message| message["method"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        [
+            "initialize",
+            "initialized",
+            "thread/start",
+            "model/list",
+            "turn/start"
+        ]
+    );
+    let turn_start = messages
+        .iter()
+        .find(|message| message["method"] == json!("turn/start"))
+        .expect("turn/start payload");
+    assert_eq!(turn_start["params"]["model"], json!("gpt-codex-test"));
+    assert_eq!(
+        turn_start["params"]["collaborationMode"],
+        json!({
+            "mode": "plan",
+            "settings": {"model": "gpt-codex-test"}
+        })
+    );
 }
 
 #[test]
