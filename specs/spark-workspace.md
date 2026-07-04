@@ -73,7 +73,7 @@ When both layers run inside one process, they must still remain distinct service
 3. Human approvals are explicit and durable.
 4. Provenance is explicit, not inferred from UI state.
 5. One user send creates one durable user turn and one active assistant turn.
-6. `state.json` is the durable render authority; `raw-log.jsonl` is the wire/debug authority.
+6. `state.json` is the durable render authority; `codex-jsonrpc-trace.jsonl` is the debug-only wire trace authority when enabled.
 7. Spark workflow state stays in `SPARK_HOME`.
 8. Project source artifacts remain authoritative in the project repository.
 
@@ -206,7 +206,7 @@ Rules:
 ## 10. Durable Conversation State Model
 
 Spark persists two different conversation authorities:
-- `raw-log.jsonl`: exact protocol transcript for debug and reasoning about upstream behavior
+- `codex-jsonrpc-trace.jsonl`: optional exact Codex app-server protocol transcript for debug and reasoning about upstream behavior
 - `state.json`: compact, durable, restart-safe render state
 
 `state.json` must contain enough information to restore:
@@ -435,7 +435,7 @@ SPARK_HOME/
 
 Conversation-specific durable files include:
 - `state.json`
-- `raw-log.jsonl`
+- `codex-jsonrpc-trace.jsonl`
 
 Repo-owned material should remain organized by content, not by Spark as a tool.
 

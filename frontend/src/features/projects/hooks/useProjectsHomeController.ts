@@ -157,11 +157,11 @@ export function useProjectsHomeController() {
         chatDraft,
         expandedThinkingEntries,
         expandedToolCalls,
-        optimisticSend,
+        pendingSend,
         panelError,
         pendingDeleteConversationId,
         setChatDraft,
-        setOptimisticSend,
+        setPendingSend,
         setPanelError,
         setPendingDeleteConversationId,
         toggleThinkingEntryExpanded,
@@ -194,7 +194,7 @@ export function useProjectsHomeController() {
         activeProjectPath,
         activeProjectScope,
         conversationCache,
-        optimisticSend,
+        pendingSend,
         projectGitMetadata,
         uiDefaults,
     }), [
@@ -203,7 +203,7 @@ export function useProjectsHomeController() {
         activeProjectPath,
         activeProjectScope,
         conversationCache,
-        optimisticSend,
+        pendingSend,
         projectGitMetadata,
         uiDefaults,
     ])
@@ -306,6 +306,17 @@ export function useProjectsHomeController() {
     }, [isConversationPinnedToBottom])
 
     useEffect(() => {
+        if (
+            pendingSend
+            && pendingSend.conversationId === activeConversationId
+            && activeConversationRecord
+            && activeConversationRecord.revision > pendingSend.startedFromRevision
+        ) {
+            setPendingSend(null)
+        }
+    }, [activeConversationId, activeConversationRecord, pendingSend, setPendingSend])
+
+    useEffect(() => {
         if (!isConversationPinnedToBottomRef.current) {
             return
         }
@@ -357,6 +368,9 @@ export function useProjectsHomeController() {
         provider: activeProjectChatProvider,
         reasoningEffort: activeProjectChatReasoningEffort,
         ensureConversationId,
+        getConversationRevision: (conversationId) => (
+            conversationCacheRef.current.conversationsById[conversationId]?.revision ?? 0
+        ),
         getCurrentConversationId: (projectPath) => (
             useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
         ),
@@ -365,7 +379,7 @@ export function useProjectsHomeController() {
         formatErrorMessage: extractApiErrorMessage,
         setChatDraft,
         setPanelError,
-        setOptimisticSend,
+        setPendingSend,
     })
 
     useEffect(() => {

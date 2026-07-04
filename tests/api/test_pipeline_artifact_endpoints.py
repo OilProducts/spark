@@ -42,7 +42,7 @@ def test_list_pipeline_artifacts_returns_run_outputs_for_known_pipeline(
     (stage_dir / "status.json").write_text('{"outcome":"success"}', encoding="utf-8")
     rpc_dir = run_root / "logs" / "plan"
     rpc_dir.mkdir(parents=True, exist_ok=True)
-    (rpc_dir / "raw-rpc.jsonl").write_text('{"direction":"incoming","line":"{}"}\n', encoding="utf-8")
+    (rpc_dir / "codex-jsonrpc-trace.jsonl").write_text('{"direction":"incoming","line":"{}"}\n', encoding="utf-8")
 
     artifact_file = run_root / "artifacts" / "logs" / "output.txt"
     artifact_file.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +61,7 @@ def test_list_pipeline_artifacts_returns_run_outputs_for_known_pipeline(
         "artifacts/logs/output.txt",
         "checkpoint.json",
         "manifest.json",
-        "logs/plan/raw-rpc.jsonl",
+        "logs/plan/codex-jsonrpc-trace.jsonl",
         "plan/prompt.md",
         "plan/response.md",
         "plan/status.json",

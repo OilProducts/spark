@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
 import re
 import subprocess
 import threading
@@ -66,6 +65,7 @@ from spark_common.codex_app_client import (
     APP_SERVER_REQUEST_TIMEOUT_SECONDS,
     CodexAppServerClient,
 )
+from spark_common.debug import codex_jsonrpc_trace_enabled
 from spark_common.runtime_path import resolve_runtime_workspace_path
 from unified_llm.models import list_models as list_unified_models
 
@@ -118,6 +118,13 @@ def _normalize_assistant_text(value: str) -> str:
 
 def _render_proposed_plan_markup(value: str) -> str:
     return PROPOSED_PLAN_BLOCK_PATTERN.sub(lambda match: (match.group(1) or "").strip(), value)
+
+
+def _extract_first_proposed_plan_block(text: str) -> Optional[str]:
+    match = PROPOSED_PLAN_BLOCK_PATTERN.search(text)
+    if match is None:
+        return None
+    return _as_non_empty_string(_normalize_assistant_text(match.group(1) or ""))
 
 
 def _remove_standalone_text_block(text: str, block: str) -> str:
@@ -1274,7 +1281,7 @@ class ProjectChatService:
         persist_live_event: Callable[[TurnStreamEvent], None],
         progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> ChatTurnResult:
-        enable_raw_rpc_log = os.environ.get("SPARK_ENABLE_RAW_RPC_LOG") == "1"
+        enable_raw_rpc_log = codex_jsonrpc_trace_enabled()
 
         def bind_raw_rpc_logger(target_session: Any) -> None:
             if hasattr(target_session, "set_raw_rpc_logger"):
@@ -1617,6 +1624,24 @@ class ProjectChatService:
             if plan_segment is not None and not plan_segment.artifact_id:
                 self._persist_proposed_plan_segment_artifact(state, current_assistant_turn, plan_segment)
                 emitted_payloads.append(self._build_segment_upsert_payload(state, plan_segment))
+            if plan_segment is None and chat_mode == "plan":
+                extracted_plan_text = _extract_first_proposed_plan_block(assistant_message)
+                if extracted_plan_text:
+                    base_event = buffered_plan_assistant_event
+                    plan_segment = self._materialize_segment_for_live_event(
+                        state,
+                        current_assistant_turn,
+                        TurnStreamEvent(
+                            kind="content_completed",
+                            channel="plan",
+                            content_delta=extracted_plan_text,
+                            source=base_event.source if base_event is not None else TurnStreamSource(),
+                            phase=base_event.phase if base_event is not None else None,
+                        ),
+                    )
+                    if plan_segment is not None:
+                        self._persist_proposed_plan_segment_artifact(state, current_assistant_turn, plan_segment)
+                        emitted_payloads.append(self._build_segment_upsert_payload(state, plan_segment))
             assistant_display_text = assistant_message
             if chat_mode == "plan":
                 assistant_display_text = _extract_plan_mode_assistant_remainder(

@@ -46,6 +46,7 @@ from unified_llm.models import get_latest_model, get_model_info
 from unified_llm.types import Usage
 from spark_common.codex_app_client import CodexAppServerClient
 from spark_common import codex_app_protocol
+from spark_common.debug import CODEX_JSONRPC_TRACE_FILE_NAME, codex_jsonrpc_trace_enabled
 from spark_common.runtime_path import resolve_runtime_workspace_path
 
 UNIFIED_AGENT_PROVIDERS = {"openai", "anthropic", "gemini", "openrouter", "litellm", "openai_compatible"}
@@ -239,11 +240,13 @@ class CodexAppServerBackend(CodergenBackend):
                 self._raw_rpc_log_state.path = previous
 
     def _stage_raw_rpc_log_path(self, node_id: str, logs_root: str | Path | None) -> Path | None:
+        if not codex_jsonrpc_trace_enabled():
+            return None
         if logs_root is None:
             return None
         stage_dir = Path(logs_root) / node_id
         stage_dir.mkdir(parents=True, exist_ok=True)
-        return stage_dir / "raw-rpc.jsonl"
+        return stage_dir / CODEX_JSONRPC_TRACE_FILE_NAME
 
     def _append_raw_rpc_log(self, direction: str, line: str) -> None:
         path = getattr(self._raw_rpc_log_state, "path", None)
@@ -387,7 +390,7 @@ class CodexAppServerBackend(CodergenBackend):
         set_raw_rpc_logger = getattr(client, "set_raw_rpc_logger", None)
         clear_raw_rpc_logger = getattr(client, "clear_raw_rpc_logger", None)
         try:
-            if callable(set_raw_rpc_logger):
+            if callable(set_raw_rpc_logger) and getattr(self._raw_rpc_log_state, "path", None) is not None:
                 set_raw_rpc_logger(self._append_raw_rpc_log)
             client.ensure_process(popen_factory=subprocess.Popen)
 
@@ -436,7 +439,7 @@ class CodexAppServerBackend(CodergenBackend):
         except RuntimeError as exc:
             return fail(str(exc))
         finally:
-            if callable(clear_raw_rpc_logger):
+            if callable(clear_raw_rpc_logger) and getattr(self._raw_rpc_log_state, "path", None) is not None:
                 clear_raw_rpc_logger()
             client.close()
 

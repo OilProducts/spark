@@ -1,7 +1,7 @@
 import { useCallback, useMemo, type SetStateAction } from 'react'
 import { useStore } from '@/store'
 
-import type { OptimisticSendState } from '../model/conversationState'
+import type { PendingSendState } from '../model/conversationState'
 
 type UseProjectsHomeInteractionStateArgs = {
     activeConversationId: string | null
@@ -11,7 +11,7 @@ type UseProjectsHomeInteractionStateArgs = {
 const EMPTY_PROJECT_SESSION = {
     chatDraft: '',
     panelError: null as string | null,
-    optimisticSend: null as OptimisticSendState | null,
+    pendingSend: null as PendingSendState | null,
     pendingDeleteConversationId: null as string | null,
     sidebarPrimarySplitRatio: null as number | null,
 }
@@ -61,14 +61,14 @@ export function useProjectsHomeInteractionState({
         })
     }, [activeProjectPath, projectSession.chatDraft, updateHomeProjectSession])
 
-    const setOptimisticSend = useCallback((value: SetStateAction<OptimisticSendState | null>) => {
+    const setPendingSend = useCallback((value: SetStateAction<PendingSendState | null>) => {
         if (!activeProjectPath) {
             return
         }
         updateHomeProjectSession(activeProjectPath, {
-            optimisticSend: typeof value === 'function' ? value(projectSession.optimisticSend) : value,
+            pendingSend: typeof value === 'function' ? value(projectSession.pendingSend) : value,
         })
-    }, [activeProjectPath, projectSession.optimisticSend, updateHomeProjectSession])
+    }, [activeProjectPath, projectSession.pendingSend, updateHomeProjectSession])
 
     const setPanelError = useCallback((value: string | null) => {
         if (!activeProjectPath) {
@@ -112,11 +112,11 @@ export function useProjectsHomeInteractionState({
         chatDraft: projectSession.chatDraft,
         expandedThinkingEntries: conversationSession.expandedThinkingEntries,
         expandedToolCalls: conversationSession.expandedToolCalls,
-        optimisticSend: projectSession.optimisticSend,
+        pendingSend: projectSession.pendingSend,
         panelError: projectSession.panelError,
         pendingDeleteConversationId: projectSession.pendingDeleteConversationId,
         setChatDraft,
-        setOptimisticSend,
+        setPendingSend,
         setPanelError,
         setPendingDeleteConversationId,
         toggleThinkingEntryExpanded,

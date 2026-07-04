@@ -2132,7 +2132,7 @@ def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SPARK_ENABLE_RAW_RPC_LOG", "1")
+    monkeypatch.setenv("SPARK_DEBUG_CODEX_JSONRPC", "1")
     service = project_chat.ProjectChatService(tmp_path)
     conversation_id = "conversation-test"
     project_path = str(tmp_path.resolve())
@@ -2212,7 +2212,7 @@ def test_send_turn_fails_with_continuity_reset_when_persisted_resume_fails(
     )
     assert "thread_id" not in session_payload
 
-    raw_log_path = ensure_project_paths(tmp_path, project_path).conversations_dir / conversation_id / "raw-log.jsonl"
+    raw_log_path = ensure_project_paths(tmp_path, project_path).conversations_dir / conversation_id / "codex-jsonrpc-trace.jsonl"
     raw_entries = [json.loads(line) for line in raw_log_path.read_text(encoding="utf-8").splitlines()]
     assert [entry["direction"] for entry in raw_entries] == ["outgoing", "incoming"]
     assert "thread/resume" in raw_entries[0]["line"]
@@ -3319,6 +3319,140 @@ def test_send_turn_completes_plan_only_real_session_path_with_plan_preview_fallb
     assert proposed_plan["content"] == "1. Patch the real session path.\n2. Add the regression coverage."
     summaries = service.list_conversations(project_path)
     assert summaries[0]["last_message_preview"] == "1. Patch the real session path.\n2. Add the regression coverage."
+
+
+def test_send_turn_materializes_textual_proposed_plan_block_without_plan_channel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    raw_response = "<PROPOSED_PLAN>\n\n1. Patch the real session path.\n2. Add regression coverage.\n\n</PROPOSED_PLAN>"
+
+    class PlanSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            reasoning_effort: str | None = None,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            del prompt, model, reasoning_effort, on_event, on_dynamic_tool_call
+            assert chat_mode == "plan"
+            return project_chat.ChatTurnResult(assistant_message=raw_response)
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: PlanSession())
+
+    snapshot = service.send_turn(
+        "conversation-textual-plan-only",
+        str(tmp_path),
+        "Plan the remaining fixes.",
+        None,
+        "plan",
+    )
+
+    assistant_turn = snapshot["turns"][-1]
+    assert assistant_turn["content"] == "1. Patch the real session path.\n2. Add regression coverage."
+    assert [segment["kind"] for segment in snapshot["segments"]] == ["plan"]
+    assert snapshot["segments"][0]["content"] == "1. Patch the real session path.\n2. Add regression coverage."
+    assert snapshot["segments"][0]["artifact_id"].startswith("proposed-plan-")
+    assert snapshot["proposed_plans"][0]["content"] == "1. Patch the real session path.\n2. Add regression coverage."
+    assert all("proposed_plan" not in segment["content"].lower() for segment in snapshot["segments"])
+
+
+def test_send_turn_keeps_text_around_textual_proposed_plan_block_as_assistant_remainder(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    raw_response = (
+        "I checked the repository state.\n\n"
+        "<proposed_plan>\n"
+        "1. Patch the real session path.\n"
+        "2. Add regression coverage.\n"
+        "</proposed_plan>\n\n"
+        "Then run validation."
+    )
+
+    class PlanSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            reasoning_effort: str | None = None,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            del prompt, model, reasoning_effort, on_event, on_dynamic_tool_call
+            assert chat_mode == "plan"
+            return project_chat.ChatTurnResult(assistant_message=raw_response)
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: PlanSession())
+
+    snapshot = service.send_turn(
+        "conversation-textual-plan-remainder",
+        str(tmp_path),
+        "Plan the remaining fixes.",
+        None,
+        "plan",
+    )
+
+    assert snapshot["turns"][-1]["content"] == "I checked the repository state.\n\nThen run validation."
+    assert [segment["kind"] for segment in snapshot["segments"]] == ["plan", "assistant_message"]
+    assert snapshot["segments"][0]["content"] == "1. Patch the real session path.\n2. Add regression coverage."
+    assert snapshot["segments"][1]["content"] == "I checked the repository state.\n\nThen run validation."
+    assert len(snapshot["proposed_plans"]) == 1
+    assert all("proposed_plan" not in segment["content"].lower() for segment in snapshot["segments"])
+
+
+def test_send_turn_leaves_textual_proposed_plan_markup_ordinary_outside_plan_mode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    raw_response = "<proposed_plan>\nThis is just chat text.\n</proposed_plan>"
+
+    class ChatSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            reasoning_effort: str | None = None,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            del prompt, model, reasoning_effort, on_dynamic_tool_call
+            assert chat_mode == "chat"
+            if on_event is not None:
+                on_event(
+                    project_chat.TurnStreamEvent(
+                        kind="content_completed",
+                        channel="assistant",
+                        content_delta=raw_response,
+                        phase="final_answer",
+                    )
+                )
+            return project_chat.ChatTurnResult(assistant_message=raw_response)
+
+    monkeypatch.setattr(service, "_build_session", lambda conversation_id, project_path: ChatSession())
+
+    snapshot = service.send_turn(
+        "conversation-chat-markup",
+        str(tmp_path),
+        "Show markup.",
+        None,
+        "chat",
+    )
+
+    assert [segment["kind"] for segment in snapshot["segments"]] == ["assistant_message"]
+    assert snapshot["segments"][0]["content"] == raw_response
+    assert snapshot["proposed_plans"] == []
 
 
 def test_send_turn_buffers_plan_mode_assistant_completion_without_leaking_markup(
@@ -6059,8 +6193,8 @@ def test_send_turn_persists_real_codex_reasoning_summary_on_turn_completion(tmp_
     assert durable_reasoning_events[0]["segment"]["content"] == "Thinking about persistence."
 
 
-def test_send_turn_does_not_write_raw_jsonrpc_log_by_default(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SPARK_ENABLE_RAW_RPC_LOG", raising=False)
+def test_send_turn_does_not_write_codex_jsonrpc_trace_by_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SPARK_DEBUG_CODEX_JSONRPC", raising=False)
     service = project_chat.ProjectChatService(tmp_path)
 
     class FakeSession:
@@ -6110,12 +6244,17 @@ def test_send_turn_does_not_write_raw_jsonrpc_log_by_default(tmp_path: Path, mon
     assert snapshot["turns"][-1]["content"] == "Logged."
     assert fake_session.set_calls == 0
     assert fake_session.clear_calls == 0
-    raw_log_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "raw-log.jsonl"
+    raw_log_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "codex-jsonrpc-trace.jsonl"
     assert not raw_log_path.exists()
 
 
-def test_send_turn_writes_raw_jsonrpc_log_when_enabled(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("SPARK_ENABLE_RAW_RPC_LOG", "1")
+@pytest.mark.parametrize("truthy_value", ["1", "true", "TRUE", "yes", "YES", "on", "ON"])
+def test_send_turn_writes_codex_jsonrpc_trace_when_debug_enabled(
+    tmp_path: Path,
+    monkeypatch,
+    truthy_value: str,
+) -> None:
+    monkeypatch.setenv("SPARK_DEBUG_CODEX_JSONRPC", truthy_value)
     service = project_chat.ProjectChatService(tmp_path)
 
     class FakeSession:
@@ -6167,12 +6306,15 @@ def test_send_turn_writes_raw_jsonrpc_log_when_enabled(tmp_path: Path, monkeypat
     assert snapshot["turns"][-1]["content"] == "Logged."
     assert fake_session.set_calls == 1
     assert fake_session.clear_calls == 1
-    raw_log_path = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test" / "raw-log.jsonl"
+    conversation_dir = ensure_project_paths(tmp_path, str(tmp_path)).conversations_dir / "conversation-test"
+    raw_log_path = conversation_dir / "codex-jsonrpc-trace.jsonl"
     raw_entries = [json.loads(line) for line in raw_log_path.read_text(encoding="utf-8").splitlines()]
     assert [(entry["direction"], entry["line"]) for entry in raw_entries] == [
         ("outgoing", '{"jsonrpc":"2.0","id":1,"method":"turn/start"}'),
         ("incoming", '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"status":"completed"}}}'),
     ]
+    event_lines = (conversation_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert all("turn/start" not in line and "turn/completed" not in line for line in event_lines)
 
 
 def test_start_turn_returns_initial_snapshot_before_background_completion(tmp_path: Path, monkeypatch) -> None:
@@ -6269,6 +6411,70 @@ def test_start_turn_rejects_overlapping_active_assistant_turn(tmp_path: Path) ->
         match="assistant turn is still in progress",
     ):
         service.start_turn("conversation-test", str(tmp_path), "Second request", None)
+
+
+def test_start_turn_publishes_failed_assistant_turn_when_background_completion_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = project_chat.ProjectChatService(tmp_path)
+    progress_updates: list[dict[str, Any]] = []
+
+    class FailingSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            reasoning_effort: str | None = None,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            del prompt, model, chat_mode, reasoning_effort, on_event, on_dynamic_tool_call
+            raise RuntimeError("provider failed after acceptance")
+
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: FailingSession())
+
+    snapshot = service.start_turn(
+        "conversation-background-failure",
+        str(tmp_path),
+        "hello",
+        None,
+        progress_callback=progress_updates.append,
+    )
+
+    assert snapshot["turns"][-1]["status"] == "pending"
+
+    deadline = time.time() + 2.0
+    failed_snapshot: dict[str, Any] | None = None
+    while time.time() < deadline:
+        candidate = service.get_snapshot("conversation-background-failure", str(tmp_path))
+        if candidate["turns"][-1]["status"] == "failed":
+            failed_snapshot = candidate
+            break
+        time.sleep(0.02)
+
+    assert failed_snapshot is not None
+    assistant_turn = failed_snapshot["turns"][-1]
+    assert assistant_turn["error"] == "provider failed after acceptance"
+    assert any(
+        payload.get("type") == "turn_upsert"
+        and payload.get("turn", {}).get("id") == assistant_turn["id"]
+        and payload.get("turn", {}).get("status") == "failed"
+        for payload in progress_updates
+    )
+    replayed_events = service.read_events_after(
+        "conversation-background-failure",
+        str(tmp_path),
+        snapshot["revision"],
+    )
+    assert any(
+        event.get("type") == "turn_upsert"
+        and event.get("turn", {}).get("id") == assistant_turn["id"]
+        and event.get("turn", {}).get("status") == "failed"
+        for event in replayed_events
+    )
 
 
 def test_list_conversations_filters_by_project_and_sorts_latest_first(tmp_path: Path) -> None:
@@ -6568,6 +6774,68 @@ def test_send_project_conversation_turn_endpoint_persists_token_usage_in_snapsho
     assistant_turn = final_snapshot["turns"][-1]
     assert assistant_turn["content"] == "Usage captured."
     assert assistant_turn["token_usage"] == token_usage
+
+
+def test_send_project_conversation_turn_endpoint_returns_started_snapshot_when_background_fails(
+    product_api_client,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    service = _project_chat_service()
+
+    class FailingSession:
+        def turn(
+            self,
+            prompt: str,
+            model: str | None,
+            *,
+            chat_mode: str = "chat",
+            reasoning_effort: str | None = None,
+            on_event=None,
+            on_dynamic_tool_call=None,
+        ) -> project_chat.ChatTurnResult:
+            del prompt, model, chat_mode, reasoning_effort, on_event, on_dynamic_tool_call
+            raise RuntimeError("backend failed after the turn was accepted")
+
+    monkeypatch.setattr(service, "_build_session", lambda *args, **kwargs: FailingSession())
+
+    response = product_api_client.post(
+        "/workspace/api/conversations/conversation-background-failure/turns",
+        json={
+            "project_path": str(tmp_path),
+            "message": "start then fail",
+            "model": "gpt-test",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [turn["role"] for turn in payload["turns"]] == ["user", "assistant"]
+    assert payload["turns"][-1]["status"] == "pending"
+
+    deadline = time.time() + 2.0
+    failed_snapshot: dict[str, Any] | None = None
+    while time.time() < deadline:
+        candidate = service.get_snapshot("conversation-background-failure", str(tmp_path))
+        if candidate["turns"][-1]["status"] == "failed":
+            failed_snapshot = candidate
+            break
+        time.sleep(0.02)
+
+    assert failed_snapshot is not None
+    assistant_turn = failed_snapshot["turns"][-1]
+    assert assistant_turn["error"] == "backend failed after the turn was accepted"
+    replayed_events = service.read_events_after(
+        "conversation-background-failure",
+        str(tmp_path),
+        payload["revision"],
+    )
+    assert any(
+        event.get("type") == "turn_upsert"
+        and event.get("turn", {}).get("id") == assistant_turn["id"]
+        and event.get("turn", {}).get("status") == "failed"
+        for event in replayed_events
+    )
 
 
 def test_update_project_conversation_settings_endpoint_upserts_shell_and_rejects_project_mismatch(

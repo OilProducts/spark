@@ -96,6 +96,30 @@ def test_run_serve_preserves_runtime_path_env_for_reload(monkeypatch, tmp_path: 
     assert spark_server_cli.os.environ["SPARK_UI_DIR"] == str(ui_dir.resolve(strict=False))
 
 
+def test_serve_debug_codex_jsonrpc_flag_sets_process_env(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("SPARK_DEBUG_CODEX_JSONRPC", raising=False)
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+
+    data_dir = tmp_path / "data"
+    ui_dir = tmp_path / "ui"
+    ui_dir.mkdir(parents=True, exist_ok=True)
+    (ui_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    result = spark_server_cli.main(
+        [
+            "serve",
+            "--data-dir",
+            str(data_dir),
+            "--ui-dir",
+            str(ui_dir),
+            "--debug-codex-jsonrpc",
+        ]
+    )
+
+    assert result == 0
+    assert spark_server_cli.os.environ["SPARK_DEBUG_CODEX_JSONRPC"] == "1"
+
+
 def test_worker_run_node_dispatches_to_execution_container(monkeypatch) -> None:
     import attractor.handlers.execution_container as execution_container
 

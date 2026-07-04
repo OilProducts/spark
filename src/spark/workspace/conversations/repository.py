@@ -35,6 +35,7 @@ from spark.workspace.storage import (
     remove_conversation_handle,
     workspace_projects_root,
 )
+from spark_common.debug import CODEX_JSONRPC_TRACE_FILE_NAME
 from spark_common.runtime_path import resolve_runtime_workspace_path
 
 UI_TOOL_OUTPUT_PREVIEW_BYTES = 8 * 1024
@@ -120,7 +121,7 @@ class ProjectChatRepository:
         return self.conversation_root(conversation_id, project_path) / "sessions" / f"{normalized_provider}-{digest}.json"
 
     def conversation_raw_log_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
-        return self.conversation_root(conversation_id, project_path) / "raw-log.jsonl"
+        return self.conversation_root(conversation_id, project_path) / CODEX_JSONRPC_TRACE_FILE_NAME
 
     def conversation_events_path(self, conversation_id: str, project_path: Optional[str] = None) -> Path:
         return self.conversation_root(conversation_id, project_path) / "events.jsonl"

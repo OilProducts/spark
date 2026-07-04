@@ -9,6 +9,7 @@ import sys
 from typing import Mapping, Sequence
 
 import spark.starter_assets as starter_assets
+from spark_common.debug import CODEX_JSONRPC_TRACE_ENV
 
 SERVICE_UNIT_NAME = "spark.service"
 
@@ -69,6 +70,11 @@ def _build_runtime_parser() -> argparse.ArgumentParser:
     serve.add_argument("--data-dir", type=Path, default=None, help="Runtime data directory root")
     serve.add_argument("--flows-dir", type=Path, default=None, help="Flow storage directory")
     serve.add_argument("--ui-dir", type=Path, default=None, help="Built UI directory (contains index.html)")
+    serve.add_argument(
+        "--debug-codex-jsonrpc",
+        action="store_true",
+        help="Write Codex app-server JSON-RPC traces to codex-jsonrpc-trace.jsonl",
+    )
 
     init = subparsers.add_parser(
         "init",
@@ -181,6 +187,8 @@ def _run_serve(args: argparse.Namespace) -> int:
     _set_path_env(ENV_HOME_DIR, args.data_dir)
     _set_path_env(ENV_FLOWS_DIR, args.flows_dir)
     _set_path_env(ENV_UI_DIR, args.ui_dir)
+    if getattr(args, "debug_codex_jsonrpc", False):
+        os.environ[CODEX_JSONRPC_TRACE_ENV] = "1"
 
     uvicorn.run(
         "spark.app:app" if args.reload else product_app.app,

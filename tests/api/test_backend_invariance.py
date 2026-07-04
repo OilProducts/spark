@@ -1666,13 +1666,7 @@ def test_codex_app_server_backend_requires_turn_completed_after_final_answer(
     assert result.failure_reason == "codex app-server turn timed out waiting for activity"
 
 
-def test_codex_app_server_backend_writes_stage_raw_rpc_log(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    events: List[dict] = []
-    backend = server.CodexAppServerBackend(str(tmp_path), events.append, model=None)
-
+def _run_fake_codex_app_server_turn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, backend) -> object:
     class FakeStdout:
         def __init__(self, lines: list[str]) -> None:
             self._lines = list(lines)
@@ -1716,13 +1710,39 @@ def test_codex_app_server_backend_writes_stage_raw_rpc_log(
     ]
 
     monkeypatch.setattr(codex_backends_module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess(lines))
+    return backend.run("plan", "hello", Context())
+
+
+def test_codex_app_server_backend_does_not_write_stage_jsonrpc_trace_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("SPARK_DEBUG_CODEX_JSONRPC", raising=False)
+    events: List[dict] = []
+    backend = server.CodexAppServerBackend(str(tmp_path), events.append, model=None)
 
     logs_root = tmp_path / "logs"
     with backend.bind_stage_raw_rpc_log("plan", logs_root):
-        result = backend.run("plan", "hello", Context())
+        result = _run_fake_codex_app_server_turn(monkeypatch, tmp_path, backend)
 
     assert result == "Ack"
-    raw_log_path = logs_root / "plan" / "raw-rpc.jsonl"
+    assert not (logs_root / "plan" / "codex-jsonrpc-trace.jsonl").exists()
+
+
+def test_codex_app_server_backend_writes_stage_jsonrpc_trace_when_debug_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("SPARK_DEBUG_CODEX_JSONRPC", "1")
+    events: List[dict] = []
+    backend = server.CodexAppServerBackend(str(tmp_path), events.append, model=None)
+
+    logs_root = tmp_path / "logs"
+    with backend.bind_stage_raw_rpc_log("plan", logs_root):
+        result = _run_fake_codex_app_server_turn(monkeypatch, tmp_path, backend)
+
+    assert result == "Ack"
+    raw_log_path = logs_root / "plan" / "codex-jsonrpc-trace.jsonl"
     assert raw_log_path.exists()
     entries = [json.loads(line) for line in raw_log_path.read_text(encoding="utf-8").splitlines()]
     assert any(

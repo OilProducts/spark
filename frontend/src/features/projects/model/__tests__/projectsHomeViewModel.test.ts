@@ -113,10 +113,10 @@ describe('buildProjectsHomeViewModel', () => {
           ],
         },
       },
-      optimisticSend: {
+      pendingSend: {
         conversationId: 'conversation-1',
         createdAt: '2026-03-24T18:01:10Z',
-        message: 'Continue',
+        startedFromRevision: 0,
       },
       projectGitMetadata: {
         '/tmp/project-alpha': {
@@ -148,9 +148,52 @@ describe('buildProjectsHomeViewModel', () => {
     expect(viewModel.isChatInputDisabled).toBe(true)
     expect(viewModel.chatSendButtonLabel).toBe('Thinking...')
     expect(viewModel.hasRenderableConversationHistory).toBe(true)
-    expect(viewModel.activeConversationHistory.at(-1)).toMatchObject({
-      role: 'user',
-      content: 'Continue',
+    expect(viewModel.activeConversationHistory).toHaveLength(2)
+    expect(viewModel.activeConversationHistory).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: 'Continue',
+        }),
+      ]),
+    )
+  })
+
+  it('uses pending send state for composer controls without adding a timeline row', () => {
+    const completeSnapshot = {
+      ...snapshot,
+      turns: snapshot.turns.map((turn) => (
+        turn.role === 'assistant'
+          ? { ...turn, status: 'complete' as const, content: 'Done.' }
+          : turn
+      )),
+    }
+    const viewModel = buildProjectsHomeViewModel({
+      activeConversationId: 'conversation-1',
+      activeConversationRecord: hydrateConversationRecordFromSnapshot(completeSnapshot),
+      activeProjectPath: '/tmp/project-alpha',
+      activeProjectScope,
+      conversationCache: {
+        conversationsById: {
+          'conversation-1': hydrateConversationRecordFromSnapshot(completeSnapshot),
+        },
+        summariesByProjectPath: {},
+      },
+      pendingSend: {
+        conversationId: 'conversation-1',
+        createdAt: '2026-03-24T18:01:10Z',
+        startedFromRevision: 0,
+      },
+      projectGitMetadata: {},
+      uiDefaults: {
+        llm_model: '',
+        llm_provider: 'codex',
+        reasoning_effort: '',
+      },
     })
+
+    expect(viewModel.isChatInputDisabled).toBe(true)
+    expect(viewModel.chatSendButtonLabel).toBe('Sending...')
+    expect(viewModel.activeConversationHistory).toHaveLength(2)
   })
 })
