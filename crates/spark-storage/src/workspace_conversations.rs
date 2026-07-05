@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use spark_common::debug::CODEX_JSONRPC_TRACE_FILE_NAME;
 use spark_common::project::normalize_project_path;
 use time::OffsetDateTime;
 
@@ -522,14 +523,14 @@ impl ConversationRepository {
             .map(|root| root.join("state.json")))
     }
 
-    pub fn conversation_raw_log_path(
+    pub fn conversation_codex_jsonrpc_trace_path(
         &self,
         conversation_id: &str,
         project_path: Option<&str>,
     ) -> Result<Option<PathBuf>> {
         Ok(self
             .conversation_root(conversation_id, project_path)?
-            .map(|root| root.join("raw-log.jsonl")))
+            .map(|root| root.join(CODEX_JSONRPC_TRACE_FILE_NAME)))
     }
 
     pub fn conversation_events_path(
@@ -778,7 +779,7 @@ impl ConversationRepository {
         )
     }
 
-    pub fn append_raw_rpc_log(
+    pub fn append_codex_jsonrpc_trace(
         &self,
         conversation_id: &str,
         project_path: &str,
@@ -789,7 +790,7 @@ impl ConversationRepository {
         let path = project_paths
             .conversations_dir
             .join(conversation_id)
-            .join("raw-log.jsonl");
+            .join(CODEX_JSONRPC_TRACE_FILE_NAME);
         append_jsonl_record(
             path,
             &RawConversationLogLine {
@@ -800,7 +801,7 @@ impl ConversationRepository {
         )
     }
 
-    pub fn read_raw_rpc_log(
+    pub fn read_codex_jsonrpc_trace(
         &self,
         conversation_id: &str,
         project_path: &str,
@@ -809,7 +810,7 @@ impl ConversationRepository {
         let path = project_paths
             .conversations_dir
             .join(conversation_id)
-            .join("raw-log.jsonl");
+            .join(CODEX_JSONRPC_TRACE_FILE_NAME);
         match crate::read_jsonl(path, crate::JsonLinesOptions::allow_blank_lines()) {
             Ok(records) => Ok(records),
             Err(StorageError::Io { source, .. })

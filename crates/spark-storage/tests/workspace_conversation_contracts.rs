@@ -165,10 +165,10 @@ fn conversation_repository_reads_sidecars_writes_split_state_and_deletes_all_art
     .expect("json");
     assert_eq!(requests["flow_run_requests"][0]["id"], "request-b");
 
-    repo.append_raw_rpc_log("conversation-a", project_path, "outbound", "hello")
+    repo.append_codex_jsonrpc_trace("conversation-a", project_path, "outbound", "hello")
         .expect("raw log");
     assert_eq!(
-        repo.read_raw_rpc_log("conversation-a", project_path)
+        repo.read_codex_jsonrpc_trace("conversation-a", project_path)
             .expect("read raw")[0]
             .line,
         "hello"

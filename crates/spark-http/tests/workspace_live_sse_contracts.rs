@@ -432,14 +432,14 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
     );
 
     let raw_log = ConversationRepository::new(&settings.data_dir)
-        .read_raw_rpc_log(
+        .read_codex_jsonrpc_trace(
             "conversation-live-ingested",
             &project_path.to_string_lossy(),
         )
         .expect("raw log");
     assert!(
         raw_log.is_empty(),
-        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+        "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 }
 
@@ -548,11 +548,11 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
         "thread-live-resume"
     );
     let raw_log = ConversationRepository::new(&settings.data_dir)
-        .read_raw_rpc_log("conversation-live-failure", &project_path.to_string_lossy())
+        .read_codex_jsonrpc_trace("conversation-live-failure", &project_path.to_string_lossy())
         .expect("raw log");
     assert!(
         raw_log.is_empty(),
-        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+        "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 }
 
@@ -692,11 +692,11 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     );
 
     let raw_log = ConversationRepository::new(&settings.data_dir)
-        .read_raw_rpc_log("conversation-live-answer", &project_path.to_string_lossy())
+        .read_codex_jsonrpc_trace("conversation-live-answer", &project_path.to_string_lossy())
         .expect("raw log");
     assert!(
         raw_log.is_empty(),
-        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+        "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 }
 

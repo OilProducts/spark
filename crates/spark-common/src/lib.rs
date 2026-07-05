@@ -6,6 +6,7 @@
 //! source checkout, project identity, process output, logging, and event
 //! boundaries.
 
+pub mod debug;
 pub mod error;
 pub mod events;
 pub mod logging;

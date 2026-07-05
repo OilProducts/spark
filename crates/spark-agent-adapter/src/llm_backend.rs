@@ -124,19 +124,6 @@ impl RustLlmCodergenBackend {
         for event in &output.events {
             events.push(codergen_event_from_turn_stream_event(&request, event));
         }
-        for raw_log_line in &output.raw_log_lines {
-            events.push(CodergenEvent::new(
-                "codex_app_server_raw_log_line",
-                BTreeMap::from([
-                    ("node_id".to_string(), json!(request.node_id.clone())),
-                    (
-                        "direction".to_string(),
-                        json!(raw_log_line.direction.clone()),
-                    ),
-                    ("line".to_string(), json!(raw_log_line.line.clone())),
-                ]),
-            ));
-        }
         events.push(CodergenEvent::new(
             "codex_app_server_request_completed",
             BTreeMap::from([

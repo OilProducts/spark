@@ -260,11 +260,11 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     assert_eq!(persisted["turns"], final_snapshot["turns"]);
     assert_eq!(persisted["segments"], final_snapshot["segments"]);
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_raw_rpc_log("conversation-http-turn", "/projects/http-turn")
+        .read_codex_jsonrpc_trace("conversation-http-turn", "/projects/http-turn")
         .expect("raw log");
     assert!(
         raw_log.is_empty(),
-        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+        "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
     WorkspaceConversationService::new(settings.clone())

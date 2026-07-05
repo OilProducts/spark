@@ -8,10 +8,13 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use serde_json::{json, Map, Value};
+use spark_common::debug::{codex_jsonrpc_trace_enabled, CODEX_JSONRPC_TRACE_PATH_METADATA_KEY};
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
+use time::OffsetDateTime;
 use unified_llm_adapter::Usage;
 
 use crate::agent::{
@@ -150,7 +153,16 @@ impl CodexAppServerBackend {
         steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
-        let mut client = CodexAppServerClient::connect(PathBuf::from(&request.project_path))?;
+        let trace_path = codex_jsonrpc_trace_enabled()
+            .then(|| {
+                metadata_string(&request.metadata, &[CODEX_JSONRPC_TRACE_PATH_METADATA_KEY])
+                    .map(PathBuf::from)
+            })
+            .flatten();
+        let mut client = CodexAppServerClient::connect_with_trace_path(
+            PathBuf::from(&request.project_path),
+            trace_path,
+        )?;
         let model = request
             .model
             .as_deref()
@@ -244,7 +256,16 @@ impl CodexAppServerBackend {
                 },
             ));
         }
-        let mut client = CodexAppServerClient::connect(PathBuf::from(&request.project_path))?;
+        let trace_path = codex_jsonrpc_trace_enabled()
+            .then(|| {
+                metadata_string(&request.metadata, &[CODEX_JSONRPC_TRACE_PATH_METADATA_KEY])
+                    .map(PathBuf::from)
+            })
+            .flatten();
+        let mut client = CodexAppServerClient::connect_with_trace_path(
+            PathBuf::from(&request.project_path),
+            trace_path,
+        )?;
         client.steer_turn(&thread_id, &turn_id, &answer_content)?;
         Ok(AgentTurnOutput {
             events: vec![TurnStreamEvent {
@@ -332,11 +353,18 @@ pub struct CodexAppServerClient {
     next_request_id: u64,
     pending_messages: VecDeque<Value>,
     pending_responses: BTreeMap<String, VecDeque<Value>>,
-    raw_log_lines: Vec<AgentRawLogLine>,
+    trace_sink: Option<CodexJsonrpcTraceSink>,
 }
 
 impl CodexAppServerClient {
     pub fn connect(working_dir: PathBuf) -> Result<Self, CodexAppServerError> {
+        Self::connect_with_trace_path(working_dir, None)
+    }
+
+    pub fn connect_with_trace_path(
+        working_dir: PathBuf,
+        trace_path: Option<PathBuf>,
+    ) -> Result<Self, CodexAppServerError> {
         if !working_dir.exists() {
             return Err(CodexAppServerError::configuration(format!(
                 "codex app-server working directory is unavailable in the runtime: {}",
@@ -381,7 +409,7 @@ impl CodexAppServerClient {
             next_request_id: 0,
             pending_messages: VecDeque::new(),
             pending_responses: BTreeMap::new(),
-            raw_log_lines: Vec::new(),
+            trace_sink: trace_path.map(CodexJsonrpcTraceSink::new),
         };
         let response = client.send_request(
             "initialize",
@@ -654,7 +682,7 @@ impl CodexAppServerClient {
             turn_id: expected_turn_id.to_string(),
             state,
             events,
-            raw_log_lines: self.raw_log_lines.clone(),
+            raw_log_lines: Vec::new(),
         })
     }
 
@@ -796,10 +824,7 @@ impl CodexAppServerClient {
         let line = serde_json::to_string(payload).map_err(|error| {
             CodexAppServerError::runtime(format!("codex app-server request encode failed: {error}"))
         })?;
-        self.raw_log_lines.push(AgentRawLogLine {
-            direction: "outgoing".to_string(),
-            line: line.clone(),
-        });
+        self.append_trace_line("outgoing", &line)?;
         self.stdin
             .write_all(line.as_bytes())
             .and_then(|_| self.stdin.write_all(b"\n"))
@@ -814,14 +839,18 @@ impl CodexAppServerClient {
     fn read_message(&mut self, wait: Duration) -> Result<Option<Value>, CodexAppServerError> {
         match self.stdout.recv_timeout(wait) {
             Ok(line) => {
-                self.raw_log_lines.push(AgentRawLogLine {
-                    direction: "incoming".to_string(),
-                    line: line.clone(),
-                });
+                self.append_trace_line("incoming", &line)?;
                 Ok(parse_jsonrpc_line(&line))
             }
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => Ok(None),
         }
+    }
+
+    fn append_trace_line(&self, direction: &str, line: &str) -> Result<(), CodexAppServerError> {
+        if let Some(sink) = self.trace_sink.as_ref() {
+            sink.append(direction, line)?;
+        }
+        Ok(())
     }
 
     fn pop_pending_response(&mut self, id: &str) -> Option<Value> {
@@ -841,6 +870,38 @@ impl CodexAppServerClient {
                 .push_back(message);
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct CodexJsonrpcTraceSink {
+    path: PathBuf,
+}
+
+impl CodexJsonrpcTraceSink {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn append(&self, direction: &str, line: &str) -> Result<(), CodexAppServerError> {
+        spark_storage::append_jsonl_record(
+            &self.path,
+            &CodexJsonrpcTraceLine {
+                timestamp: iso_now(),
+                direction,
+                line,
+            },
+        )
+        .map_err(|error| {
+            CodexAppServerError::runtime(format!("codex app-server trace write failed: {error}"))
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct CodexJsonrpcTraceLine<'a> {
+    timestamp: String,
+    direction: &'a str,
+    line: &'a str,
 }
 
 impl Drop for CodexAppServerClient {
@@ -1694,6 +1755,19 @@ fn value_to_string(value: &Value) -> String {
 fn non_empty(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
+}
+
+fn iso_now() -> String {
+    let now = OffsetDateTime::now_utc();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    )
 }
 
 pub fn usage_from_codex_token_payload(payload: &Value) -> Option<Usage> {

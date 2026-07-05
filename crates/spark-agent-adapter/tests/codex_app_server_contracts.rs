@@ -5,8 +5,9 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 use spark_agent_adapter::{
     build_codex_runtime_environment, parse_jsonrpc_line, process_codex_app_server_message,
-    CodexAppServerClient, CodexAppServerTurnState,
+    AgentTurnRequest, CodexAppServerBackend, CodexAppServerClient, CodexAppServerTurnState,
 };
+use spark_common::debug::{CODEX_JSONRPC_TRACE_PATH_METADATA_KEY, ENV_SPARK_DEBUG_CODEX_JSONRPC};
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
 
 static CODEX_APP_SERVER_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -109,6 +110,12 @@ impl EnvVarGuard {
     fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
         let previous = std::env::var(key).ok();
         std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::remove_var(key);
         Self { key, previous }
     }
 }
@@ -271,6 +278,70 @@ fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
             "settings": {"model": "gpt-codex-test"}
         })
     );
+}
+
+#[test]
+fn codex_app_server_trace_file_is_debug_only_and_uses_jsonl_records() {
+    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let trace_path = temp.path().join("codex-jsonrpc-trace.jsonl");
+    let mut metadata = std::collections::BTreeMap::new();
+    metadata.insert(
+        CODEX_JSONRPC_TRACE_PATH_METADATA_KEY.to_string(),
+        json!(trace_path.to_string_lossy().to_string()),
+    );
+    let request = AgentTurnRequest {
+        conversation_id: "conversation-trace".to_string(),
+        project_path: temp.path().to_string_lossy().to_string(),
+        prompt: "Trace this".to_string(),
+        history: Vec::new(),
+        provider: Some("codex".to_string()),
+        model: Some("gpt-codex-test".to_string()),
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: Some("agent".to_string()),
+        metadata,
+    };
+
+    let _debug_guard = EnvVarGuard::remove(ENV_SPARK_DEBUG_CODEX_JSONRPC);
+    let output = CodexAppServerBackend::new()
+        .run_agent_turn(request.clone())
+        .expect("turn without debug");
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Ack"));
+    assert!(!trace_path.exists());
+
+    drop(_debug_guard);
+    let _debug_guard = EnvVarGuard::set(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
+    let output = CodexAppServerBackend::new()
+        .run_agent_turn(request)
+        .expect("turn with debug");
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Ack"));
+    let records = fs::read_to_string(&trace_path)
+        .expect("trace")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("trace json"))
+        .collect::<Vec<_>>();
+    assert!(records.iter().any(|record| {
+        record["direction"] == json!("outgoing")
+            && record["line"]
+                .as_str()
+                .is_some_and(|line| line.contains(r#""method":"turn/start""#))
+            && record["timestamp"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(records.iter().any(|record| {
+        record["direction"] == json!("incoming")
+            && record["line"]
+                .as_str()
+                .is_some_and(|line| line.contains(r#""method":"turn/completed""#))
+    }));
 }
 
 #[test]

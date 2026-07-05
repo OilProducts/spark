@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
 use spark_assets::ResourceSource;
+use spark_common::debug::ENV_SPARK_DEBUG_CODEX_JSONRPC;
 use spark_common::settings::SettingsOverrides;
 use spark_server::run_with_args_and_env;
 use spark_server::{
@@ -303,6 +304,53 @@ fn serve_validates_settings_and_parses_host_port_without_binding_socket() {
         serve.stdout,
         "spark-server serve configured for 127.0.0.1:9100\n"
     );
+}
+
+#[test]
+fn serve_debug_codex_jsonrpc_flag_and_env_enable_process_debug_configuration() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let data_dir = temp.path().join("spark-home");
+    let flows_dir = temp.path().join("flows");
+
+    let flag_config = build_serve_configuration_from_args(
+        &[
+            "serve".to_string(),
+            "--data-dir".to_string(),
+            data_dir.to_string_lossy().into_owned(),
+            "--flows-dir".to_string(),
+            flows_dir.to_string_lossy().into_owned(),
+            "--debug-codex-jsonrpc".to_string(),
+        ],
+        &BTreeMap::new(),
+    )
+    .expect("serve config");
+    assert!(flag_config.debug_codex_jsonrpc);
+
+    let env_config = build_serve_configuration_from_args(
+        &[
+            "serve".to_string(),
+            "--data-dir".to_string(),
+            data_dir.to_string_lossy().into_owned(),
+            "--flows-dir".to_string(),
+            flows_dir.to_string_lossy().into_owned(),
+        ],
+        &BTreeMap::from([(ENV_SPARK_DEBUG_CODEX_JSONRPC.to_string(), "YES".to_string())]),
+    )
+    .expect("serve env config");
+    assert!(env_config.debug_codex_jsonrpc);
+
+    let default_config = build_serve_configuration_from_args(
+        &[
+            "serve".to_string(),
+            "--data-dir".to_string(),
+            data_dir.to_string_lossy().into_owned(),
+            "--flows-dir".to_string(),
+            flows_dir.to_string_lossy().into_owned(),
+        ],
+        &BTreeMap::new(),
+    )
+    .expect("serve default config");
+    assert!(!default_config.debug_codex_jsonrpc);
 }
 
 #[test]

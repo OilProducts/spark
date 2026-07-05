@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -15,6 +14,7 @@ use spark_agent_adapter::{
     AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest, AssistantTurn, HistoryTurn,
     RustLlmAgentTurnBackend, UserTurn,
 };
+use spark_common::debug::{codex_jsonrpc_trace_enabled, CODEX_JSONRPC_TRACE_PATH_METADATA_KEY};
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
@@ -685,6 +685,16 @@ impl WorkspaceConversationService {
                 json!(thread_id),
             );
         }
+        if codex_jsonrpc_trace_enabled() {
+            if let Some(trace_path) = repository
+                .conversation_codex_jsonrpc_trace_path(conversation_id, Some(&project_path))?
+            {
+                metadata.insert(
+                    CODEX_JSONRPC_TRACE_PATH_METADATA_KEY.to_string(),
+                    json!(trace_path.to_string_lossy().to_string()),
+                );
+            }
+        }
         let agent_turn_request = AgentTurnRequest {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
@@ -726,16 +736,6 @@ impl WorkspaceConversationService {
         let project_path = normalize_project_path_or_400(project_path)?;
         let chat_mode = normalize_chat_mode(chat_mode);
         let repository = self.repository();
-        if raw_rpc_logging_enabled() {
-            for raw_line in &output.raw_log_lines {
-                repository.append_raw_rpc_log(
-                    conversation_id,
-                    &project_path,
-                    &raw_line.direction,
-                    &raw_line.line,
-                )?;
-            }
-        }
 
         let mut snapshot = repository
             .read_snapshot(conversation_id, Some(&project_path))?
@@ -1103,6 +1103,12 @@ impl WorkspaceConversationService {
             &mut emitted_payloads,
         )?;
 
+        let answer_trace_path = if codex_jsonrpc_trace_enabled() {
+            repository
+                .conversation_codex_jsonrpc_trace_path(conversation_id, Some(&project_path))?
+        } else {
+            None
+        };
         let answer_metadata = request_user_input_answer_metadata(
             &segment,
             &request_record,
@@ -1110,6 +1116,7 @@ impl WorkspaceConversationService {
             &segment_id,
             &lookup_id,
             &submitted_at,
+            answer_trace_path.as_deref(),
         );
 
         let answer_request = AgentRequestUserInputAnswerRequest {
@@ -4383,6 +4390,7 @@ fn request_user_input_answer_metadata(
     segment_id: &str,
     lookup_id: &str,
     submitted_at: &str,
+    trace_path: Option<&Path>,
 ) -> BTreeMap<String, Value> {
     let mut metadata = BTreeMap::from([
         (
@@ -4416,6 +4424,12 @@ fn request_user_input_answer_metadata(
         {
             metadata.insert(metadata_key.to_string(), json!(value));
         }
+    }
+    if let Some(trace_path) = trace_path {
+        metadata.insert(
+            CODEX_JSONRPC_TRACE_PATH_METADATA_KEY.to_string(),
+            json!(trace_path.to_string_lossy().to_string()),
+        );
     }
     metadata
 }
@@ -5424,17 +5438,6 @@ fn append_events(
         repository.append_conversation_event(conversation_id, project_path, event)?;
     }
     Ok(())
-}
-
-fn raw_rpc_logging_enabled() -> bool {
-    env::var("SPARK_ENABLE_RAW_RPC_LOG")
-        .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.as_str(),
-                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
-            )
-        })
 }
 
 fn persist_snapshot_with_payloads(

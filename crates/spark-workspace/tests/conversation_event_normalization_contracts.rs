@@ -9,6 +9,10 @@ use spark_agent_adapter::{
     AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
+use spark_common::debug::{
+    CODEX_JSONRPC_TRACE_FILE_NAME, CODEX_JSONRPC_TRACE_PATH_METADATA_KEY,
+    ENV_SPARK_DEBUG_CODEX_JSONRPC,
+};
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
@@ -18,6 +22,35 @@ use spark_workspace::{
     live::conversation_envelopes_after, ConversationRequestUserInputAnswerRequest,
     ConversationTurnRequest, WorkspaceConversationService, WorkspaceError,
 };
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            std::env::set_var(self.key, previous);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
 
 #[test]
 fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
@@ -87,6 +120,55 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
         )
         .expect_err("active assistant conflict");
     assert!(matches!(conflict, WorkspaceError::Conflict(_)));
+}
+
+#[test]
+fn start_turn_passes_codex_jsonrpc_trace_path_only_in_debug_mode() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let service = WorkspaceConversationService::new(settings.clone());
+
+    let _debug_guard = EnvVarGuard::remove(ENV_SPARK_DEBUG_CODEX_JSONRPC);
+    let (default_prepared, _) = service
+        .start_turn(
+            "conversation-trace-default",
+            ConversationTurnRequest {
+                project_path: "/projects/trace-default".to_string(),
+                message: "Default trace".to_string(),
+                provider: Some("codex".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start default turn");
+    assert!(default_prepared
+        .agent_turn_request
+        .metadata
+        .get(CODEX_JSONRPC_TRACE_PATH_METADATA_KEY)
+        .is_none());
+
+    drop(_debug_guard);
+    let _debug_guard = EnvVarGuard::set(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
+    let (debug_prepared, _) = service
+        .start_turn(
+            "conversation-trace-debug",
+            ConversationTurnRequest {
+                project_path: "/projects/trace-debug".to_string(),
+                message: "Debug trace".to_string(),
+                provider: Some("codex".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start debug turn");
+    let trace_path = debug_prepared
+        .agent_turn_request
+        .metadata
+        .get(CODEX_JSONRPC_TRACE_PATH_METADATA_KEY)
+        .and_then(Value::as_str)
+        .expect("trace path");
+    assert!(trace_path.ends_with(&format!(
+        "/conversation-trace-debug/{CODEX_JSONRPC_TRACE_FILE_NAME}"
+    )));
+    assert!(!Path::new(trace_path).exists());
 }
 
 #[test]
@@ -352,11 +434,11 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
     assert_eq!(snapshot["turns"], persisted["turns"]);
 
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_raw_rpc_log("conversation-execute", "/projects/execute")
+        .read_codex_jsonrpc_trace("conversation-execute", "/projects/execute")
         .expect("raw log");
     assert!(
         raw_log.is_empty(),
-        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+        "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
     let events = service
@@ -579,14 +661,14 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
         "thread-public-execute"
     );
     let resume_raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_raw_rpc_log(
+        .read_codex_jsonrpc_trace(
             "conversation-execute-resume-failure",
             "/projects/execute-errors",
         )
         .expect("resume raw log");
     assert!(
         resume_raw_log.is_empty(),
-        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+        "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
     let resume_events = service
@@ -849,11 +931,11 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
     }));
 
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_raw_rpc_log("conversation-events", "/projects/events")
+        .read_codex_jsonrpc_trace("conversation-events", "/projects/events")
         .expect("raw log");
     assert!(
         raw_log.is_empty(),
-        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+        "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
     let events = service
@@ -1360,11 +1442,11 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
         .any(|segment| segment["kind"] == "assistant_message"
             && segment["content"] == "Approved after input."));
     let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_raw_rpc_log("conversation-input", "/projects/input")
+        .read_codex_jsonrpc_trace("conversation-input", "/projects/input")
         .expect("raw log");
     assert!(
         raw_log.is_empty(),
-        "raw RPC logs are disabled unless SPARK_ENABLE_RAW_RPC_LOG=1"
+        "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
     let answer_requests = answer_requests.lock().expect("answer requests");

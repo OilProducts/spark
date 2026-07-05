@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::Mutex;
 
 use attractor_core::{ContextMap, FailureKind, Outcome, OutcomeStatus};
 use attractor_dsl::{
@@ -10,12 +11,45 @@ use serde_json::json;
 use spark_agent_adapter::{
     build_status_envelope_prompt_appendix, CodergenBackend, CodergenBackendOutput,
     CodergenBackendRequest, CodergenError, CodergenExecutionMode, CodergenHandler, CodergenRequest,
+    RustLlmCodergenBackend,
 };
+use spark_common::debug::{CODEX_JSONRPC_TRACE_FILE_NAME, ENV_SPARK_DEBUG_CODEX_JSONRPC};
 use tempfile::tempdir;
 use unified_llm_adapter::{
-    Usage, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
-    RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+    Client, Usage, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY,
+    RUNTIME_LAUNCH_PROVIDER_KEY, RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
 };
+
+static CODEX_APP_SERVER_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            std::env::set_var(self.key, previous);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
 
 #[derive(Clone)]
 struct ScriptedBackend {
@@ -92,6 +126,104 @@ fn codergen_selects_authored_prompt_expands_goal_and_writes_artifacts() {
             .trim(),
         "backend text response"
     );
+}
+
+#[test]
+fn codergen_app_server_stage_trace_sidecar_is_debug_only() {
+    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let graph = parse_dot(
+        r#"
+        digraph G {
+          task [
+            shape=box,
+            prompt="Use Codex",
+            llm_provider="codex",
+            llm_model="gpt-codex-test"
+          ];
+        }
+        "#,
+    )
+    .expect("dot parses");
+    let temp = tempdir().unwrap();
+    let project = tempdir().unwrap();
+    let logs_default = tempdir().unwrap();
+    let logs_debug = tempdir().unwrap();
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+
+    let debug_guard = EnvVarGuard::remove(ENV_SPARK_DEBUG_CODEX_JSONRPC);
+    let mut handler = CodergenHandler::with_backend(RustLlmCodergenBackend::new(Client::new()));
+    let execution = handler
+        .execute(CodergenRequest {
+            node_id: "task".to_string(),
+            node: graph.nodes["task"].clone(),
+            graph: graph.clone(),
+            context: ContextMap::new(),
+            logs_root: Some(logs_default.path().to_path_buf()),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+            project_path: Some(project.path().to_path_buf()),
+            metadata: Default::default(),
+        })
+        .expect("default codergen");
+    assert_eq!(execution.response_text, "Ack");
+    assert!(!logs_default
+        .path()
+        .join("task")
+        .join(CODEX_JSONRPC_TRACE_FILE_NAME)
+        .exists());
+
+    drop(debug_guard);
+    let _debug_guard = EnvVarGuard::set(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
+    let mut handler = CodergenHandler::with_backend(RustLlmCodergenBackend::new(Client::new()));
+    let execution = handler
+        .execute(CodergenRequest {
+            node_id: "task".to_string(),
+            node: graph.nodes["task"].clone(),
+            graph,
+            context: ContextMap::new(),
+            logs_root: Some(logs_debug.path().to_path_buf()),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+            project_path: Some(project.path().to_path_buf()),
+            metadata: Default::default(),
+        })
+        .expect("debug codergen");
+    assert_eq!(execution.response_text, "Ack");
+    assert!(!execution
+        .events
+        .iter()
+        .any(|event| event.event_type.contains("raw_log")));
+    let trace_path = logs_debug
+        .path()
+        .join("task")
+        .join(CODEX_JSONRPC_TRACE_FILE_NAME);
+    let records = std::fs::read_to_string(trace_path)
+        .expect("trace")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("trace json"))
+        .collect::<Vec<_>>();
+    assert!(records.iter().any(|record| {
+        record["direction"] == json!("outgoing")
+            && record["line"]
+                .as_str()
+                .is_some_and(|line| line.contains(r#""method":"turn/start""#))
+            && record["timestamp"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+    }));
+}
+
+fn fake_codex_app_server_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_spark-agent-fake-codex-app-server")
 }
 
 #[test]

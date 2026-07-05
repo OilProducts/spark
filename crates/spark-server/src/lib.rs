@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use spark_common::debug::{codex_jsonrpc_trace_enabled_with_env, ENV_SPARK_DEBUG_CODEX_JSONRPC};
 use spark_common::logging::init_spark_logging;
 use spark_common::paths::{Environment, ProcessEnvironment};
 use spark_common::settings::{
@@ -90,6 +91,7 @@ struct ServeArgs {
     host: String,
     port: u16,
     reload: bool,
+    debug_codex_jsonrpc: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -114,6 +116,7 @@ pub struct ServeConfiguration {
     pub host: String,
     pub port: u16,
     pub reload: bool,
+    pub debug_codex_jsonrpc: bool,
     pub settings: SparkSettings,
 }
 
@@ -699,6 +702,8 @@ pub fn build_serve_configuration_from_args(
         host: serve_args.host,
         port: serve_args.port,
         reload: serve_args.reload,
+        debug_codex_jsonrpc: serve_args.debug_codex_jsonrpc
+            || codex_jsonrpc_trace_enabled_with_env(env),
         settings,
     })
 }
@@ -730,6 +735,9 @@ fn run_serve_process(
     env: &impl Environment,
 ) -> std::result::Result<(), CommandOutput> {
     let config = build_serve_configuration_from_args(args, env)?;
+    if config.debug_codex_jsonrpc {
+        std::env::set_var(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
+    }
     let bind_addr = format!("{}:{}", config.host, config.port);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -866,6 +874,10 @@ fn parse_serve_args(args: &[String]) -> std::result::Result<ServeArgs, String> {
             }
             "--reload" => {
                 parsed.reload = true;
+                index += 1;
+            }
+            "--debug-codex-jsonrpc" => {
+                parsed.debug_codex_jsonrpc = true;
                 index += 1;
             }
             value if is_help_arg(value) => return Ok(parsed),
