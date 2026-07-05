@@ -5,7 +5,7 @@ const DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT = 320
 const HOME_SIDEBAR_MIN_PRIMARY_HEIGHT = 208
 const HOME_SIDEBAR_MIN_SECONDARY_HEIGHT = 208
 const HOME_SIDEBAR_RESIZE_HANDLE_HEIGHT = 12
-const CONVERSATION_BOTTOM_THRESHOLD_PX = 24
+const CONVERSATION_BOTTOM_THRESHOLD_PX = 4
 
 function getHomeSidebarSplitSpace(containerHeight: number) {
     return Math.max(containerHeight - HOME_SIDEBAR_RESIZE_HANDLE_HEIGHT, 0)
@@ -71,18 +71,25 @@ export function useHomeSidebarLayout(
         if (!activeConversationId) {
             return
         }
-        const currentConversationSession = homeConversationSessionsById[activeConversationId] ?? {
+        const currentConversationSession = useStore.getState().homeConversationSessionsById[activeConversationId] ?? {
             isPinnedToBottom: true,
             scrollTop: null,
         }
-        updateHomeConversationSession(activeConversationId, {
+        const nextConversationSession = {
             ...(Object.prototype.hasOwnProperty.call(patch, 'isPinnedToBottom')
                 ? { isPinnedToBottom: patch.isPinnedToBottom }
                 : { isPinnedToBottom: currentConversationSession.isPinnedToBottom }),
             ...(Object.prototype.hasOwnProperty.call(patch, 'scrollTop')
                 ? { scrollTop: patch.scrollTop }
                 : { scrollTop: currentConversationSession.scrollTop }),
-        })
+        }
+        if (
+            nextConversationSession.isPinnedToBottom === currentConversationSession.isPinnedToBottom
+            && nextConversationSession.scrollTop === currentConversationSession.scrollTop
+        ) {
+            return
+        }
+        updateHomeConversationSession(activeConversationId, nextConversationSession)
     }
 
     const syncConversationPinnedState = () => {
@@ -119,6 +126,24 @@ export function useHomeSidebarLayout(
         setHomeSidebarPrimaryHeight((currentHeight) => (
             currentHeight === nextHeight ? currentHeight : nextHeight
         ))
+    })
+
+    const restoreConversationScrollState = useEffectEvent(() => {
+        const node = conversationBodyRef.current
+        if (!node || !activeConversationId) {
+            return
+        }
+        const conversationSession = useStore.getState().homeConversationSessionsById[activeConversationId]
+        if (!conversationSession) {
+            return
+        }
+        if (conversationSession.isPinnedToBottom) {
+            node.scrollTop = node.scrollHeight
+            return
+        }
+        if (typeof conversationSession.scrollTop === 'number') {
+            node.scrollTop = conversationSession.scrollTop
+        }
     })
 
     const setSidebarPrimaryHeight = (nextHeight: number) => {
@@ -239,22 +264,8 @@ export function useHomeSidebarLayout(
     }, [isHomeSidebarResizing, isNarrowViewport, activeProjectPath])
 
     useEffect(() => {
-        const node = conversationBodyRef.current
-        if (!node || !activeConversationId) {
-            return
-        }
-        const conversationSession = homeConversationSessionsById[activeConversationId]
-        if (!conversationSession) {
-            return
-        }
-        if (conversationSession.isPinnedToBottom) {
-            node.scrollTop = node.scrollHeight
-            return
-        }
-        if (typeof conversationSession.scrollTop === 'number') {
-            node.scrollTop = conversationSession.scrollTop
-        }
-    }, [activeConversationId, homeConversationSessionsById])
+        restoreConversationScrollState()
+    }, [activeConversationId])
 
     return {
         conversationBodyRef,

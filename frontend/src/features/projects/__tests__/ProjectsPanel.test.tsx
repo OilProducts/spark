@@ -4039,7 +4039,7 @@ describe('ProjectsPanel', () => {
     })
     expect(screen.queryByTestId('project-ai-conversation-jump-to-bottom')).not.toBeInTheDocument()
 
-    scrollTop = 120
+    scrollTop = 315
     fireEvent.scroll(conversationBody)
 
     await waitFor(() => {
@@ -4072,7 +4072,7 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-jump-to-bottom')).toBeVisible()
     })
-    expect(scrollTop).toBe(120)
+    expect(scrollTop).toBe(315)
 
     await user.click(screen.getByTestId('project-ai-conversation-jump-to-bottom'))
 
@@ -4198,12 +4198,70 @@ describe('ProjectsPanel', () => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Discuss the design changes.')
     })
 
+    const conversationBody = screen.getByTestId('project-ai-conversation-body') as HTMLDivElement
+    let scrollTop = 120
+    let scrollHeight = 600
+    Object.defineProperty(conversationBody, 'clientHeight', {
+      configurable: true,
+      get: () => 200,
+    })
+    Object.defineProperty(conversationBody, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    Object.defineProperty(conversationBody, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      },
+    })
+
+    fireEvent.scroll(conversationBody)
+
+    await waitFor(() => {
+      expect(useStore.getState().homeConversationSessionsById['conversation-thread-a']?.scrollTop).toBe(120)
+    })
+
     await user.click(await screen.findByRole('button', { name: /Open thread Planning thread/i }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
     })
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Discuss the design changes.')
+
+    scrollHeight = 720
+    scrollTop = 260
+    fireEvent.scroll(conversationBody)
+
+    await waitFor(() => {
+      expect(useStore.getState().homeConversationSessionsById['conversation-thread-b']?.scrollTop).toBe(260)
+    })
+
+    await user.click(await screen.findByRole('button', { name: /Open thread Design thread/i }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Discuss the design changes.')
+    })
+    expect(scrollTop).toBe(120)
+
+    scrollTop = 180
+    fireEvent.scroll(conversationBody)
+
+    await waitFor(() => {
+      expect(useStore.getState().homeConversationSessionsById['conversation-thread-a']?.scrollTop).toBe(180)
+    })
+
+    scrollTop = 190
+    act(() => {
+      useStore.getState().updateHomeConversationSession('conversation-thread-a', {
+        expandedToolCalls: {
+          'tool-active': true,
+        },
+      })
+    })
+
+    expect(scrollTop).toBe(190)
   })
 
   it('does not switch back to a thread when an in-flight send resolves after the user selects another thread', async () => {
