@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use spark_agent_adapter::{
@@ -1629,6 +1630,100 @@ fn request_user_input_live_delivery_keeps_assistant_turn_streaming_until_origina
 }
 
 #[test]
+fn request_user_input_live_request_is_answerable_before_original_turn_finishes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let backend = BlockingRequestInputBackend::new();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings(temp.path()),
+        Arc::new(backend.clone()),
+    );
+    let (prepared, started_snapshot) = service
+        .start_turn(
+            "conversation-input-live-pending",
+            ConversationTurnRequest {
+                project_path: "/projects/input-live-pending".to_string(),
+                message: "Need approval".to_string(),
+                provider: Some("codex".to_string()),
+                chat_mode: Some("plan".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    let assistant_turn_id = prepared.assistant_turn_id.clone();
+    let progress_payloads = Arc::new(Mutex::new(Vec::new()));
+    let progress_payloads_for_callback = Arc::clone(&progress_payloads);
+    let service_for_turn = service.clone();
+
+    let turn_handle = std::thread::spawn(move || {
+        service_for_turn.complete_started_turn_with_progress_payloads(
+            prepared,
+            started_snapshot,
+            move |payload| {
+                progress_payloads_for_callback
+                    .lock()
+                    .expect("progress payloads")
+                    .push(payload);
+            },
+        )
+    });
+
+    backend.wait_for_request();
+    assert!(
+        progress_payloads
+            .lock()
+            .expect("progress payloads")
+            .iter()
+            .any(|payload| {
+                payload["type"] == "segment_upsert"
+                    && payload["segment"]["kind"] == "request_user_input"
+                    && payload["segment"]["request_user_input"]["status"] == "pending"
+            }),
+        "request-user-input card should be emitted live before the turn completes"
+    );
+
+    let answered = service
+        .submit_request_user_input_answer(
+            "conversation-input-live-pending",
+            "decision",
+            ConversationRequestUserInputAnswerRequest {
+                project_path: "/projects/input-live-pending".to_string(),
+                answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+            },
+        )
+        .expect("live pending answer");
+    let request_segment = segment_by_kind(
+        answered["segments"].as_array().expect("segments"),
+        "request_user_input",
+    );
+    assert_eq!(request_segment["request_user_input"]["status"], "answered");
+    assert_eq!(
+        request_segment["request_user_input"]["answers"]["decision"],
+        "Approve"
+    );
+    let assistant_turn = answered["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "streaming");
+
+    let completed = turn_handle
+        .join()
+        .expect("turn thread")
+        .expect("turn completes after answer");
+    let completed_assistant_turn = completed["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(completed_assistant_turn["status"], "complete");
+    assert_eq!(completed_assistant_turn["content"], "Approved.");
+    assert_eq!(backend.answer_requests().lock().expect("answers").len(), 1);
+}
+
+#[test]
 fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
     let temp = tempfile::tempdir().expect("tempdir");
     let backend = ScriptedAgentTurnBackend::with_answer_outputs(
@@ -1803,6 +1898,126 @@ fn request_user_input_answer_backend_errors_return_error_without_expiring_reques
         .expect("assistant turn");
     assert_eq!(assistant_turn["status"], "streaming");
     assert!(assistant_turn.get("error").is_none());
+}
+
+#[derive(Clone)]
+struct BlockingRequestInputBackend {
+    requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
+    answer_requests: Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>>,
+    request_emitted: Arc<(Mutex<bool>, Condvar)>,
+    answer_delivered: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl BlockingRequestInputBackend {
+    fn new() -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            answer_requests: Arc::new(Mutex::new(Vec::new())),
+            request_emitted: Arc::new((Mutex::new(false), Condvar::new())),
+            answer_delivered: Arc::new((Mutex::new(false), Condvar::new())),
+        }
+    }
+
+    fn wait_for_request(&self) {
+        let (lock, cvar) = &*self.request_emitted;
+        let emitted = lock.lock().expect("request emitted");
+        let (emitted, timeout) = cvar
+            .wait_timeout_while(emitted, Duration::from_secs(5), |emitted| !*emitted)
+            .expect("request emitted wait");
+        assert!(*emitted, "request-user-input event was not emitted");
+        assert!(
+            !timeout.timed_out(),
+            "timed out waiting for request-user-input"
+        );
+    }
+
+    fn answer_requests(&self) -> Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>> {
+        Arc::clone(&self.answer_requests)
+    }
+}
+
+impl AgentTurnBackend for BlockingRequestInputBackend {
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.run_turn_with_event_sink(request, None)
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        self.requests.lock().expect("requests").push(request);
+        if let Some(sink) = event_sink {
+            sink(request_user_input_event());
+        }
+        {
+            let (lock, cvar) = &*self.request_emitted;
+            *lock.lock().expect("request emitted") = true;
+            cvar.notify_all();
+        }
+        let (lock, cvar) = &*self.answer_delivered;
+        let delivered = lock.lock().expect("answer delivered");
+        let (delivered, timeout) = cvar
+            .wait_timeout_while(delivered, Duration::from_secs(5), |delivered| !*delivered)
+            .expect("answer delivered wait");
+        if !*delivered || timeout.timed_out() {
+            return Err(AgentError {
+                message: "Timed out waiting for request-user-input answer.".to_string(),
+                retryable: false,
+                raw: None,
+            });
+        }
+        Ok(AgentTurnOutput {
+            events: vec![content_completed(
+                "assistant",
+                "Approved.",
+                "app-turn",
+                "final",
+            )],
+            app_thread_id: Some("thread-live".to_string()),
+            app_turn_id: Some("app-turn".to_string()),
+            final_assistant_text: Some("Approved.".to_string()),
+            ..AgentTurnOutput::default()
+        })
+    }
+
+    fn answer_request_user_input(
+        &self,
+        request: AgentRequestUserInputAnswerRequest,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        self.answer_requests
+            .lock()
+            .expect("answer requests")
+            .push(request);
+        let (lock, cvar) = &*self.answer_delivered;
+        *lock.lock().expect("answer delivered") = true;
+        cvar.notify_all();
+        Ok(AgentTurnOutput {
+            events: vec![TurnStreamEvent {
+                kind: TurnStreamEventKind::Other("request_user_input_answer_delivered".to_string()),
+                channel: None,
+                source: TurnStreamSource {
+                    backend: Some("codex_app_server".to_string()),
+                    app_thread_id: Some("app-thread".to_string()),
+                    app_turn_id: Some("app-turn".to_string()),
+                    item_id: Some("input-1".to_string()),
+                    raw_kind: Some("request_user_input_answer_delivered".to_string()),
+                    ..TurnStreamSource::default()
+                },
+                content_delta: None,
+                message: Some("request-user-input answer delivered.".to_string()),
+                tool_call: None,
+                request_user_input: None,
+                token_usage: None,
+                error: None,
+                error_code: None,
+                details: None,
+                phase: Some("request_user_input_answer".to_string()),
+                status: Some("delivered".to_string()),
+            }],
+            ..AgentTurnOutput::default()
+        })
+    }
 }
 
 #[derive(Clone)]

@@ -964,6 +964,9 @@ impl WorkspaceConversationService {
             started_snapshot,
             prepared.assistant_turn_id.clone(),
             prepared.chat_mode.clone(),
+            self.repository(),
+            prepared.conversation_id.clone(),
+            prepared.project_path.clone(),
             progress,
         );
         match self
@@ -3355,12 +3358,18 @@ fn live_conversation_turn_event_sink(
     snapshot: Value,
     assistant_turn_id: String,
     chat_mode: String,
+    repository: ConversationRepository,
+    conversation_id: String,
+    project_path: String,
     progress: Arc<dyn Fn(Value) + Send + Sync + 'static>,
 ) -> AgentTurnEventSink {
     let state = Arc::new(Mutex::new(LiveConversationTurnState {
         snapshot,
         assistant_turn_id,
         chat_mode,
+        repository,
+        conversation_id,
+        project_path,
         progress,
     }));
     Arc::new(move |event| {
@@ -3374,6 +3383,9 @@ struct LiveConversationTurnState {
     snapshot: Value,
     assistant_turn_id: String,
     chat_mode: String,
+    repository: ConversationRepository,
+    conversation_id: String,
+    project_path: String,
     progress: Arc<dyn Fn(Value) + Send + Sync + 'static>,
 }
 
@@ -3473,6 +3485,18 @@ impl LiveConversationTurnState {
                 self.emit_materialized_segment(&event, &mut emitted_payloads);
             }
             _ => self.emit_materialized_segment(&event, &mut emitted_payloads),
+        }
+        if event.kind == TurnStreamEventKind::RequestUserInputRequested
+            && persist_snapshot_with_payloads(
+                &self.repository,
+                &self.conversation_id,
+                &self.project_path,
+                &mut self.snapshot,
+                &mut emitted_payloads,
+            )
+            .is_err()
+        {
+            emitted_payloads.clear();
         }
         for payload in emitted_payloads {
             (self.progress)(payload);
