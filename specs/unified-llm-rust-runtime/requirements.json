@@ -1,0 +1,14 @@
+[
+  {
+    "id": "unified-llm-rust-runtime",
+    "summary": "Rust-owned Unified LLM runtime remains covered through crate tests.",
+    "acceptance_criteria": [
+      "Cargo tests cover provider selection, profile resolution, native providers, compatible providers, HTTP transport, catalog loading, streaming, retry, tools, and structured output.",
+      "Default validation does not require Python packages or pytest."
+    ],
+    "target_paths": [
+      "crates/unified-llm-adapter",
+      "crates/spark-assets/assets/unified_llm/data/models.json"
+    ]
+  }
+]

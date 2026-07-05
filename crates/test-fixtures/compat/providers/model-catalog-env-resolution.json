@@ -1,0 +1,85 @@
+{
+  "decisions": [
+    "CD-RR-006",
+    "CD-RR-013"
+  ],
+  "fixture_id": "providers/model-catalog-env-resolution",
+  "input": {
+    "env_keys": [
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
+      "OPENAI_ORG_ID"
+    ]
+  },
+  "item_id": "M3-I05-CODERGEN-AGENT-LLM-ADAPTERS",
+  "observation": {
+    "client_default_provider": "openai",
+    "client_providers": [
+      "anthropic",
+      "openai"
+    ],
+    "compatible_latest_defaults": {
+      "litellm": null,
+      "openai_compatible": null,
+      "openrouter": null
+    },
+    "gemini_models": [
+      "gemini-3.1-pro-preview",
+      "gemini-3-flash-preview"
+    ],
+    "native_capability_latest": {
+      "anthropic_reasoning": "claude-opus-4-6",
+      "gemini_vision": "gemini-3.1-pro-preview",
+      "openai_tools": "gpt-5.2"
+    },
+    "openai_latest": {
+      "aliases": [
+        "gpt-5.2-2025-12-11",
+        "gpt5.2"
+      ],
+      "context_window": 1047576,
+      "display_name": "GPT-5.2",
+      "id": "gpt-5.2",
+      "input_cost_per_million": 1.75,
+      "max_output": 128000,
+      "output_cost_per_million": 14.0,
+      "provider": "openai",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "sonnet_alias": {
+      "aliases": [
+        "sonnet",
+        "claude-sonnet",
+        "claude-sonnet-4.5"
+      ],
+      "context_window": 200000,
+      "display_name": "Claude Sonnet 4.5",
+      "id": "claude-sonnet-4-5",
+      "input_cost_per_million": 3.0,
+      "max_output": 64000,
+      "output_cost_per_million": 15.0,
+      "provider": "anthropic",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "unified_llm.Client.from_env",
+      "unified_llm.models",
+      "unified_llm.retry",
+      "unified_llm.errors",
+      "unified_llm.StreamAccumulator",
+      "unified_llm.Request"
+    ],
+    "oracle": "python-unified-llm-public-interfaces"
+  },
+  "requirements": [
+    "RR-EXE-006"
+  ],
+  "scenario": "model_catalog_env_resolution",
+  "schema_version": "compat-provider-v1"
+}

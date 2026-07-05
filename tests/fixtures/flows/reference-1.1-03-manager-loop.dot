@@ -1,8 +1,0 @@
-digraph reference_1_1_03_manager_loop {
-  graph [label="Raw DOT manager-loop baseline", stack.child_dotfile="child/worker.dot", ui_default_llm_model="gpt-5.3-codex-spark", ui_default_llm_provider="openai"];
-  done [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="done", max_parallel=4, reasoning_effort="high", shape="Msquare"];
-  manager [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="manager", manager.actions="observe,steer", manager.max_cycles=4, manager.poll_interval=25ms, manager.stop_condition="context.stack.child.ready=true", max_parallel=4, reasoning_effort="high", shape="house", type="stack.manager_loop"];
-  start [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="start", max_parallel=4, reasoning_effort="high", shape="Mdiamond"];
-  manager -> done [condition="outcome=success", label="Complete", loop_restart=false];
-  start -> manager [loop_restart=false];
-}

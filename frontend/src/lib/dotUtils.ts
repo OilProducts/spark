@@ -10,7 +10,7 @@ import {
     sanitizeGraphId as canonicalSanitizeGraphId,
 } from './canonicalFlowModel.js'
 
-interface DotSerializationContext {
+export interface DotSerializationContext {
     defaults?: Partial<CanonicalDefaultsScope>
     subgraphs?: CanonicalSubgraph[]
 }
@@ -37,13 +37,15 @@ export function generateDot(
     nodes: Node[],
     edges: Edge[],
     graphAttrs: GraphAttrs = {},
+    context?: DotSerializationContext,
 ): string {
+    const serializationContext = context ?? dotSerializationContext
     const canonicalModel = buildCanonicalFlowModelFromEditorState(flowName, {
         nodes,
         edges,
         graphAttrs,
-        defaults: dotSerializationContext.defaults,
-        subgraphs: dotSerializationContext.subgraphs,
+        defaults: serializationContext.defaults,
+        subgraphs: serializationContext.subgraphs,
     })
     return generateDotFromCanonicalFlowModel(flowName, canonicalModel)
 }

@@ -1,0 +1,174 @@
+{
+  "decisions": [
+    "CD-CODING-AGENT-RUST-004",
+    "CD-CODING-AGENT-RUST-005",
+    "CD-CODING-AGENT-RUST-006"
+  ],
+  "fixture_id": "agent/m2-rust-provider-tool-environment",
+  "input": {
+    "probe": "public spark-agent-adapter Rust APIs",
+    "workspace": "temporary directory"
+  },
+  "item_id": "M2-006-milestone-behavior-validation",
+  "observation": {
+    "custom_latest_wins": {
+      "read_file_count": 1,
+      "read_file_description": "custom read replacement"
+    },
+    "local_environment": {
+      "inherit_none_exit_code": 0,
+      "inherit_none_stdout": "unset|unset|from-env-vars",
+      "inherit_none_timed_out": false
+    },
+    "provider_profiles": {
+      "anthropic": {
+        "context_window_size": 200000,
+        "edit_file_properties": [
+          "file_path",
+          "new_string",
+          "old_string",
+          "replace_all"
+        ],
+        "edit_file_required": [
+          "file_path",
+          "old_string",
+          "new_string"
+        ],
+        "has_apply_patch": false,
+        "id": "anthropic",
+        "shell_timeout_default": 120000,
+        "tool_names": [
+          "read_file",
+          "write_file",
+          "edit_file",
+          "shell",
+          "grep",
+          "glob",
+          "spawn_agent",
+          "send_input",
+          "wait",
+          "close_agent"
+        ]
+      },
+      "gemini": {
+        "context_window_size": 1048576,
+        "edit_file_properties": [
+          "allow_multiple",
+          "file_path",
+          "instruction",
+          "new_string",
+          "old_string"
+        ],
+        "id": "gemini",
+        "read_many_files_required": [
+          "paths"
+        ],
+        "tool_names": [
+          "read_file",
+          "read_many_files",
+          "write_file",
+          "edit_file",
+          "shell",
+          "grep",
+          "glob",
+          "list_dir",
+          "spawn_agent",
+          "send_input",
+          "wait",
+          "close_agent"
+        ]
+      },
+      "openai": {
+        "apply_patch_properties": [
+          "patch"
+        ],
+        "context_window_size": 1047576,
+        "id": "openai",
+        "provider_options": {
+          "openai": {
+            "reasoning": {
+              "effort": "high",
+              "summary": "auto"
+            }
+          }
+        },
+        "shell_timeout_default": 10000,
+        "supports_parallel_tool_calls": true,
+        "supports_reasoning": true,
+        "supports_streaming": true,
+        "tool_names": [
+          "read_file",
+          "apply_patch",
+          "write_file",
+          "shell",
+          "grep",
+          "glob",
+          "spawn_agent",
+          "send_input",
+          "wait",
+          "close_agent"
+        ]
+      }
+    },
+    "selector_normalization": {
+      "claude_code": "anthropic",
+      "codex": "codex",
+      "google-gemini": "gemini",
+      "openai-compatible": "openai_compatible"
+    },
+    "tool_dispatch": {
+      "apply_patch": {
+        "content": [
+          {
+            "hunks": 1,
+            "operation": "update",
+            "path": "notes.txt"
+          }
+        ],
+        "is_error": false,
+        "tool_call_id": "call-patch"
+      },
+      "final_file": "gamma\nbeta\n",
+      "invalid_arguments": {
+        "content": "Invalid arguments for tool: read_file: \"path\" is a required property",
+        "is_error": true,
+        "tool_call_id": "call-invalid"
+      },
+      "read_file": {
+        "content": "002 | beta",
+        "is_error": false,
+        "tool_call_id": "call-read"
+      },
+      "unknown_tool": {
+        "content": "Unknown tool: missing_tool",
+        "is_error": true,
+        "tool_call_id": "call-unknown"
+      },
+      "write_file": {
+        "content": {
+          "bytes_written": 11,
+          "path": "notes.txt"
+        },
+        "is_error": false,
+        "tool_call_id": "call-write"
+      }
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "spark_agent_adapter::ProviderProfile",
+      "spark_agent_adapter::ToolRegistry",
+      "spark_agent_adapter::ExecutionEnvironment",
+      "spark_agent_adapter::LocalExecutionEnvironment"
+    ],
+    "oracle": "rust-spark-agent-adapter-public-apis"
+  },
+  "requirements": [
+    "REQ-005",
+    "REQ-006",
+    "REQ-007",
+    "REQ-008"
+  ],
+  "scenario": "m2_rust_provider_tool_environment",
+  "schema_version": "compat-agent-v1"
+}

@@ -1,0 +1,42 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "dsl/validate-launch-context-contracts",
+  "input": {
+    "dot": "\ndigraph ContractIssues {\n  graph [spark.launch_inputs=\"{\\\"not\\\":\\\"a list\\\"}\"];\n  start [shape=Mdiamond];\n  write [shape=box, prompt=\"Write\", spark.reads_context=\"[\\\"bad key\\\"]\", spark.writes_context=\"[\\\"_attractor.runtime.execution_mode\\\"]\"];\n  done [shape=Msquare];\n  start -> write -> done;\n}\n"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "diagnostics": [
+      {
+        "line": 5,
+        "message": "node 'write' cannot declare execution placement runtime keys in spark.writes_context: _attractor.runtime.execution_mode",
+        "node": "write",
+        "rule": "execution_placement_context_non_authoritative",
+        "severity": "error"
+      }
+    ],
+    "error_rules": [
+      "execution_placement_context_non_authoritative"
+    ]
+  },
+  "operation": "validate",
+  "provenance": {
+    "interfaces": [
+      "attractor.dsl.parse_dot",
+      "attractor.dsl.formatter.format_readable_dot",
+      "attractor.dsl.validate_graph",
+      "attractor.validation_preview.preview_dot_source",
+      "attractor.api.flow_sources.normalize_flow_name"
+    ],
+    "oracle": "python-dsl-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": "compat-dsl-v1"
+}

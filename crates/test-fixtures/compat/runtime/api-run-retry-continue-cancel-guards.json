@@ -1,0 +1,98 @@
+{
+  "api": {
+    "cancel_missing": {
+      "request": {
+        "body": null,
+        "method": "POST",
+        "path": "/attractor/pipelines/missing/cancel"
+      },
+      "response": {
+        "body": {
+          "json": {
+            "detail": "Unknown pipeline"
+          },
+          "kind": "json"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 404
+      }
+    },
+    "continue_guard": {
+      "request": {
+        "body": {
+          "json": {
+            "flow_source_mode": "snapshot",
+            "start_node": ""
+          },
+          "kind": "json"
+        },
+        "method": "POST",
+        "path": "/attractor/pipelines/run-m0-i04-api/continue"
+      },
+      "response": {
+        "body": {
+          "json": {
+            "error": "start_node is required.",
+            "status": "validation_error"
+          },
+          "kind": "json"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 200
+      }
+    },
+    "retry_missing": {
+      "request": {
+        "body": null,
+        "method": "POST",
+        "path": "/attractor/pipelines/missing/retry"
+      },
+      "response": {
+        "body": {
+          "json": {
+            "detail": "Unknown pipeline"
+          },
+          "kind": "json"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 404
+      }
+    }
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {},
+  "fixture_id": "runtime/api-run-retry-continue-cancel-guards",
+  "input": {
+    "run_id": "run-m0-i04-api"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "provenance": {
+    "interfaces": [
+      "POST /attractor/pipelines",
+      "GET /attractor/pipelines/{id}",
+      "GET /attractor/pipelines/{id}/journal",
+      "GET /attractor/pipelines/{id}/checkpoint",
+      "GET /attractor/pipelines/{id}/context",
+      "GET /attractor/pipelines/{id}/result",
+      "GET /attractor/pipelines/{id}/artifacts",
+      "durable run root files"
+    ],
+    "oracle": "python-attractor-api-runtime"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "api_run_retry_continue_cancel_guards",
+  "schema_version": "compat-runtime-v1"
+}

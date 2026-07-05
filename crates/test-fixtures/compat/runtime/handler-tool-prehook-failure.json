@@ -1,0 +1,83 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "logs_root": {
+      "parsed": {
+        "tool_node/tool_hook_failures.jsonl": {
+          "exists": true,
+          "records": [
+            {
+              "command": "false",
+              "exit_code": 1,
+              "hook_phase": "pre",
+              "stderr": "",
+              "stdout": ""
+            }
+          ]
+        },
+        "tool_node/tool_output.txt": {
+          "exists": true,
+          "text": ""
+        }
+      },
+      "root": "__LOGS_ROOT__",
+      "tree": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "tool_node"
+          },
+          {
+            "kind": "file",
+            "path": "tool_node/tool_hook_failures.jsonl",
+            "sha256": "45cf1493008e53574305c585ea8094b8b0f2dd19d6eaee74dea0de4c5291401e",
+            "size": 86
+          },
+          {
+            "kind": "file",
+            "path": "tool_node/tool_output.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "size": 0
+          }
+        ],
+        "root": "__LOGS_ROOT__"
+      }
+    }
+  },
+  "fixture_id": "runtime/handler-tool-prehook-failure",
+  "input": {
+    "dot": "\ndigraph ToolPrehook {\n  graph [tool.hooks.pre=\"false\"];\n  tool_node [shape=parallelogram, tool.command=\"printf should-not-run\"];\n}\n"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "outcome": {
+      "context_updates": {
+        "context.tool.exit_code": -1,
+        "context.tool.output": ""
+      },
+      "failure_reason": "tool pre-hook blocked execution (exit code 1): false",
+      "notes": "",
+      "preferred_label": "",
+      "status": "fail",
+      "suggested_next_ids": []
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "attractor.handlers.HandlerRunner",
+      "built-in handler protocol",
+      "deterministic fake backend/interviewer/child launcher"
+    ],
+    "oracle": "python-handler-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "handler_tool_prehook_failure",
+  "schema_version": "compat-runtime-v1"
+}

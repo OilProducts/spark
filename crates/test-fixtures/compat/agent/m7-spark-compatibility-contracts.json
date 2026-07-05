@@ -1,0 +1,290 @@
+{
+  "decisions": [
+    "CD-CODING-AGENT-RUST-001",
+    "CD-CODING-AGENT-RUST-011",
+    "CD-CODING-AGENT-RUST-013"
+  ],
+  "fixture_id": "agent/m7-spark-compatibility-contracts",
+  "input": {
+    "chat_mode": "plan",
+    "profile": "team-profile",
+    "providers": [
+      "codex",
+      "openai-compatible"
+    ],
+    "response_contract": "status_envelope"
+  },
+  "item_id": "M7-I3",
+  "observation": {
+    "codergen_adapter": {
+      "emitted": [
+        {
+          "msg": "[task] tool event visible",
+          "type": "log"
+        }
+      ],
+      "outcome": {
+        "context_updates": {
+          "context.allowed": "codergen",
+          "last_response": "codergen compatibility complete",
+          "last_stage": "task"
+        },
+        "failure_reason": "",
+        "notes": "codergen compatibility complete",
+        "preferred_label": "done",
+        "status": "success",
+        "suggested_next_ids": []
+      },
+      "progress": [
+        {
+          "channel": "reasoning",
+          "content": null,
+          "event": "LLMContent"
+        }
+      ],
+      "raw_log_directions": [
+        "incoming"
+      ],
+      "request": {
+        "context": {
+          "context.request": "m7 compat"
+        },
+        "contract_repair_attempts": 1,
+        "llm_profile": "team-profile",
+        "metadata_keys": [
+          "spark.config_dir"
+        ],
+        "model": "profile-model",
+        "node_id": "task",
+        "project_path": "__TMP__/codergen/project",
+        "provider": "openai_compatible",
+        "reasoning_effort": "high",
+        "response_contract": "status_envelope",
+        "write_contract": {
+          "allowed_keys": [
+            "context.allowed"
+          ],
+          "parse_error": ""
+        }
+      },
+      "usage_total": 10
+    },
+    "python_facade": {
+      "channels": [
+        "reasoning",
+        "assistant"
+      ],
+      "event_kinds": [
+        "session_start",
+        "content_delta",
+        "model_tool_call_start",
+        "model_tool_call_delta",
+        "model_tool_call_end",
+        "tool_call_started",
+        "tool_call_completed",
+        "token_usage_updated",
+        "warning",
+        "request_user_input_requested",
+        "content_completed",
+        "processing_end",
+        "session_end"
+      ],
+      "execution_tool": [
+        {
+          "command": "printf facade",
+          "kind": "tool_call_started",
+          "output": null,
+          "status": "running"
+        },
+        {
+          "command": "printf facade",
+          "kind": "tool_call_completed",
+          "output": "facade",
+          "status": "completed"
+        }
+      ],
+      "history": [
+        {
+          "content": "Earlier complete request",
+          "role": "user",
+          "timestamp": "2026-06-01T00:00:00Z"
+        },
+        {
+          "content": "Earlier complete answer",
+          "role": "assistant",
+          "timestamp": "2026-06-01T00:00:01Z"
+        }
+      ],
+      "model_tool_statuses": [
+        "proposed",
+        "streaming",
+        "completed"
+      ],
+      "raw_logs": [
+        {
+          "direction": "incoming",
+          "line": "{\"facade\":true}"
+        }
+      ],
+      "request": {
+        "chat_mode": "plan",
+        "conversation_id": "conversation-m7-facade",
+        "llm_profile": "team-profile",
+        "metadata": {
+          "source": "m7-compat",
+          "spark.config_dir": "__TMP__/facade/config"
+        },
+        "model": "profile-model",
+        "project_path": "__TMP__/facade",
+        "prompt": {
+          "contains_latest_user_message": true,
+          "non_empty": true
+        },
+        "provider": "openai_compatible",
+        "reasoning_effort": "high"
+      },
+      "request_user_input": [
+        {
+          "answers": {},
+          "questions": [
+            {
+              "allow_other": false,
+              "header": "Decision",
+              "id": "decision",
+              "is_secret": false,
+              "options": [
+                {
+                  "description": "Proceed",
+                  "label": "Continue"
+                }
+              ],
+              "question": "Continue?",
+              "question_type": "MULTIPLE_CHOICE"
+            }
+          ],
+          "request_id": "request-1",
+          "status": "pending"
+        }
+      ],
+      "result": {
+        "assistant_message": "Facade compatibility answer.",
+        "token_total": 21
+      },
+      "warnings": [
+        "compat warning"
+      ]
+    },
+    "rust_http_route": {
+      "http_status": 200,
+      "provider_request": {
+        "message_count": 2,
+        "model": "profile-model",
+        "path": "/v1/chat/completions",
+        "runtime_llm_profile": "team-profile",
+        "runtime_model": "profile-model",
+        "runtime_provider": "openai_compatible",
+        "runtime_provider_selector": "openai_compatible",
+        "runtime_reasoning_effort": "high"
+      },
+      "snapshot": {
+        "assistant": {
+          "content": "Rust HTTP route answer.",
+          "role": "assistant",
+          "status": "complete",
+          "token_total": 13
+        },
+        "conversation_id": "conversation-m7-http",
+        "llm_profile": "team-profile",
+        "model": "profile-model",
+        "provider": "openai_compatible",
+        "reasoning_effort": "high",
+        "segment_kinds": [
+          "agent_event",
+          "assistant_message",
+          "agent_event"
+        ]
+      }
+    },
+    "thread_resume_failure": {
+      "error_code": "continuity_reset",
+      "event": "continuity_reset",
+      "persisted_thread_id": "thread-old",
+      "replacement_thread_started": false,
+      "resume_failure": {
+        "kind": "thread_resume_failed",
+        "message": "persisted thread was unavailable"
+      }
+    },
+    "workspace_service": {
+      "raw_log_directions": [
+        "outgoing"
+      ],
+      "request": {
+        "chat_mode": "plan",
+        "conversation_id": "conversation-m7-workspace",
+        "llm_profile": "team-profile",
+        "metadata": {
+          "spark.config_dir": "__TMP__/workspace/spark-home/config"
+        },
+        "model": "profile-model",
+        "project_path": "__TMP__/workspace/project",
+        "prompt": {
+          "contains_latest_user_message": true,
+          "non_empty": true
+        },
+        "provider": "codex",
+        "reasoning_effort": "medium"
+      },
+      "snapshot": {
+        "assistant": {
+          "content": "Workspace compatibility answer.",
+          "role": "assistant",
+          "status": "complete",
+          "token_total": 11
+        },
+        "chat_mode": "plan",
+        "conversation_id": "conversation-m7-workspace",
+        "execution_tool_segments": [
+          {
+            "command": "pwd",
+            "id": "workspace-exec-tool",
+            "kind": "command_execution",
+            "output": "workspace-output",
+            "output_size": 16,
+            "output_truncated": false,
+            "status": "completed",
+            "title": "Run command"
+          }
+        ],
+        "llm_profile": "team-profile",
+        "model": "profile-model",
+        "model_tool_segments": [],
+        "provider": "codex",
+        "reasoning_effort": "medium",
+        "segment_kinds": [
+          "reasoning",
+          "tool_call",
+          "assistant_message"
+        ]
+      }
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "spark.chat.session.UnifiedAgentChatSession",
+      "spark.chat.service.ProjectChatService",
+      "attractor.api.codex_backends.ProviderRouterBackend",
+      "attractor.handlers.HandlerRunner",
+      "spark-agent-adapter.AgentTurnBackend",
+      "spark-http workspace conversation turn route"
+    ],
+    "oracle": "public-spark-python-facades-and-rust-http-route"
+  },
+  "requirements": [
+    "REQ-001",
+    "REQ-016",
+    "REQ-017"
+  ],
+  "scenario": "m7_spark_payload_contracts_backed_by_rust_boundary",
+  "schema_version": "compat-agent-v1"
+}

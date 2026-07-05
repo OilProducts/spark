@@ -1,0 +1,94 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "http/attractor-flow-save-parse-error",
+  "item_id": "M0-I03-HTTP-SSE-FIXTURES",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "python-spark-server",
+    "server_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "58923",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": {
+      "json": {
+        "content": "digraph Workflow { start -> }\n",
+        "name": "bad.dot"
+      },
+      "kind": "json"
+    },
+    "headers": {},
+    "method": "POST",
+    "path": "/attractor/api/flows",
+    "query": {}
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "response": {
+    "body": {
+      "json": {
+        "detail": {
+          "diagnostics": [
+            {
+              "line": 1,
+              "message": "line 1: expected IDENT, got RBRACE",
+              "node": null,
+              "node_id": null,
+              "rule": "parse_error",
+              "rule_id": "parse_error",
+              "severity": "error"
+            }
+          ],
+          "error": "invalid DOT: line 1: expected IDENT, got RBRACE",
+          "errors": [
+            {
+              "line": 1,
+              "message": "line 1: expected IDENT, got RBRACE",
+              "node": null,
+              "node_id": null,
+              "rule": "parse_error",
+              "rule_id": "parse_error",
+              "severity": "error"
+            }
+          ],
+          "status": "parse_error"
+        }
+      },
+      "kind": "json"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status_code": 422
+  },
+  "schema_version": "compat-http-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

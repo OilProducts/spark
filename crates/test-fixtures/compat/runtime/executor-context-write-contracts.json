@@ -1,0 +1,205 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {},
+  "events": [
+    {
+      "current_node": "start",
+      "id": "ContextContractFixture",
+      "name": "ContextContractFixture",
+      "resumed": false,
+      "type": "PipelineStarted"
+    },
+    {
+      "completed_nodes": [],
+      "current_node": "start",
+      "persisted": true,
+      "type": "CheckpointSaved"
+    },
+    {
+      "index": 0,
+      "name": "start",
+      "node_id": "start",
+      "type": "StageStarted"
+    },
+    {
+      "index": 0,
+      "name": "start",
+      "node_id": "start",
+      "outcome": "success",
+      "type": "StageCompleted"
+    },
+    {
+      "completed_nodes": [
+        "start"
+      ],
+      "current_node": "allowed",
+      "persisted": true,
+      "type": "CheckpointSaved"
+    },
+    {
+      "index": 1,
+      "name": "allowed",
+      "node_id": "allowed",
+      "type": "StageStarted"
+    },
+    {
+      "index": 1,
+      "name": "allowed",
+      "node_id": "allowed",
+      "outcome": "success",
+      "type": "StageCompleted"
+    },
+    {
+      "completed_nodes": [
+        "start",
+        "allowed"
+      ],
+      "current_node": "denied",
+      "persisted": true,
+      "type": "CheckpointSaved"
+    },
+    {
+      "index": 2,
+      "name": "denied",
+      "node_id": "denied",
+      "type": "StageStarted"
+    },
+    {
+      "error": "undeclared context_updates keys for node 'denied': artifact_path; declared spark.writes_context allowlist: <none>",
+      "index": 2,
+      "name": "denied",
+      "node_id": "denied",
+      "type": "StageFailed",
+      "will_retry": false
+    },
+    {
+      "error": "undeclared context_updates keys for node 'denied': artifact_path; declared spark.writes_context allowlist: <none>",
+      "index": 2,
+      "name": "denied",
+      "node_id": "denied",
+      "type": "StageFailed",
+      "will_retry": false
+    },
+    {
+      "completed_nodes": [
+        "start",
+        "allowed",
+        "denied"
+      ],
+      "current_node": "denied",
+      "persisted": true,
+      "type": "CheckpointSaved"
+    },
+    {
+      "artifact_count": 3,
+      "current_node": "denied",
+      "error": "undeclared context_updates keys for node 'denied': artifact_path; declared spark.writes_context allowlist: <none>",
+      "status": "failed",
+      "type": "PipelineFailed"
+    }
+  ],
+  "fixture_id": "runtime/executor-context-write-contracts",
+  "input": {
+    "dot": "\ndigraph ContextContractFixture {\n  graph [goal=\"Context contract\", release=\"canary\"];\n  start [shape=Mdiamond];\n  allowed [shape=box, spark.writes_context=\"[\\\"context.keep\\\",\\\"context.remove\\\"]\"];\n  denied [shape=box];\n  done [shape=Msquare];\n\n  start -> allowed;\n  allowed -> denied;\n  denied -> done;\n}\n"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "call_counts": {
+      "allowed": 1,
+      "denied": 1,
+      "start": 1
+    },
+    "result": {
+      "completed_nodes": [
+        "start",
+        "allowed",
+        "denied"
+      ],
+      "context": {
+        "_attractor.node_outcomes": {
+          "allowed": "success",
+          "denied": "fail",
+          "start": "success"
+        },
+        "_attractor.runtime.context_carryover": "carryover:compact\ngoal=Context contract\nrun_id=\ncompleted=start:success, allowed:success\n- context.keep=kept\n- context.workflow_outcome=\n- context.workflow_outcome_reason_code=\n- context.workflow_outcome_reason_message=\n- current_node=denied\n- graph.default_max_retries=0\n- graph.release=canary\n- outcome=success",
+        "_attractor.runtime.fidelity": "compact",
+        "_attractor.runtime.retry.attempt": 0,
+        "_attractor.runtime.retry.failure_reason": "",
+        "_attractor.runtime.retry.max_attempts": 0,
+        "_attractor.runtime.retry.node_id": "",
+        "_attractor.runtime.thread_id": "",
+        "context.keep": "kept",
+        "context.workflow_outcome": "",
+        "context.workflow_outcome_reason_code": "",
+        "context.workflow_outcome_reason_message": "",
+        "current_node": "denied",
+        "graph.default_max_retries": 0,
+        "graph.goal": "Context contract",
+        "graph.release": "canary",
+        "outcome": "fail",
+        "preferred_label": ""
+      },
+      "current_node": "denied",
+      "failure_reason": "undeclared context_updates keys for node 'denied': artifact_path; declared spark.writes_context allowlist: <none>",
+      "node_outcomes": {
+        "allowed": {
+          "context_updates": {
+            "context.keep": "kept",
+            "context.remove": null
+          },
+          "failure_reason": "",
+          "notes": "",
+          "preferred_label": "",
+          "status": "success",
+          "suggested_next_ids": []
+        },
+        "denied": {
+          "context_updates": {},
+          "failure_kind": "contract",
+          "failure_reason": "undeclared context_updates keys for node 'denied': artifact_path; declared spark.writes_context allowlist: <none>",
+          "notes": "",
+          "preferred_label": "",
+          "retryable": false,
+          "status": "fail",
+          "suggested_next_ids": []
+        },
+        "start": {
+          "context_updates": {},
+          "failure_reason": "",
+          "notes": "",
+          "preferred_label": "",
+          "status": "success",
+          "suggested_next_ids": []
+        }
+      },
+      "outcome": null,
+      "outcome_reason_code": null,
+      "outcome_reason_message": null,
+      "route_trace": [
+        "start",
+        "allowed",
+        "denied"
+      ],
+      "status": "failed"
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "attractor.engine.executor.PipelineExecutor",
+      "attractor.engine.context.Context",
+      "attractor.engine.outcome.Outcome",
+      "durable run logs_root files"
+    ],
+    "oracle": "python-runtime-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "context_write_contracts",
+  "schema_version": "compat-runtime-v1"
+}

@@ -1,0 +1,8 @@
+[
+  {
+    "id": "coding-agent-rust-runtime",
+    "summary": "Rust crates own normal coding-agent runtime behavior.",
+    "implementation_contract": "Agent-backed Spark behavior must stay inside Rust crate boundaries and public Rust/HTTP/CLI interfaces.",
+    "validation_expectations": "Run the Cargo/frontend gate documented in AGENTS.md."
+  }
+]

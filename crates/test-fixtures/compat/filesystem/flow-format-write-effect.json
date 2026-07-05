@@ -1,0 +1,187 @@
+{
+  "command": {
+    "argv": [
+      "uv",
+      "run",
+      "spark",
+      "flow",
+      "format",
+      "--file",
+      "__PROJECT_DIR__/messy-write.dot",
+      "--write"
+    ],
+    "cwd": "__WORKTREE__",
+    "normalized_argv": [
+      "uv",
+      "run",
+      "spark",
+      "flow",
+      "format",
+      "--file",
+      "__PROJECT_DIR__/messy-write.dot",
+      "--write"
+    ]
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "after": {
+      "formatted_flow": {
+        "exists": true,
+        "format": "bytes",
+        "path": "__PROJECT_DIR__/messy-write.dot",
+        "size": 151
+      }
+    },
+    "before": {
+      "formatted_flow": {
+        "exists": true,
+        "format": "bytes",
+        "path": "__PROJECT_DIR__/messy-write.dot",
+        "size": 143
+      }
+    }
+  },
+  "environment": {
+    "selected": {
+      "ANTHROPIC_API_KEY": "<redacted>",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__CODEX_RUNTIME_ROOT__",
+      "CODEX_CI": "1",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "CODEX_MANAGED_BY_NPM": "1",
+      "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
+      "CODEX_THREAD_ID": "019ef013-15bd-7d11-a48e-cad8977bd59e",
+      "SPARK_FLOWS_DIR": "__FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "selected_keys": [
+      "ANTHROPIC_API_KEY",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT",
+      "CODEX_CI",
+      "CODEX_HOME",
+      "CODEX_MANAGED_BY_NPM",
+      "CODEX_MANAGED_PACKAGE_ROOT",
+      "CODEX_THREAD_ID",
+      "SPARK_FLOWS_DIR",
+      "SPARK_HOME"
+    ]
+  },
+  "filesystem": {
+    "after": {
+      "project": {
+        "entries": [
+          {
+            "kind": "file",
+            "path": "invalid-flow.dot",
+            "sha256": "38ef56e80d7bceb4eda824163ed8e7d78dc01c811dfeb50b9d88e0e20936836a",
+            "size": 30
+          },
+          {
+            "kind": "file",
+            "path": "messy-flow.dot",
+            "sha256": "8ac837b2a71867000a649e061705c3c4d536bc37f545e4ba705471a6d65b9aa9",
+            "size": 143
+          },
+          {
+            "kind": "file",
+            "path": "messy-write.dot",
+            "sha256": "fe8c8a1736ef0a3484ab8912e8c948a2e049408f14e0221bf4058219169ed4e4",
+            "size": 151
+          },
+          {
+            "kind": "file",
+            "path": "valid-flow.dot",
+            "sha256": "3db7ea20fd3e84422164f2ab3a61316664e5ce15506bd9044ac4cbe16e6e2702",
+            "size": 142
+          },
+          {
+            "kind": "file",
+            "path": "validation-error-flow.dot",
+            "sha256": "28f0f739c181a78768527e122bf3d73293be8a70b1a29d8d62aefc29e214643f",
+            "size": 68
+          }
+        ],
+        "exists": true,
+        "root": "__PROJECT_DIR__"
+      }
+    },
+    "before": {
+      "project": {
+        "entries": [
+          {
+            "kind": "file",
+            "path": "invalid-flow.dot",
+            "sha256": "38ef56e80d7bceb4eda824163ed8e7d78dc01c811dfeb50b9d88e0e20936836a",
+            "size": 30
+          },
+          {
+            "kind": "file",
+            "path": "messy-flow.dot",
+            "sha256": "8ac837b2a71867000a649e061705c3c4d536bc37f545e4ba705471a6d65b9aa9",
+            "size": 143
+          },
+          {
+            "kind": "file",
+            "path": "messy-write.dot",
+            "sha256": "8ac837b2a71867000a649e061705c3c4d536bc37f545e4ba705471a6d65b9aa9",
+            "size": 143
+          },
+          {
+            "kind": "file",
+            "path": "valid-flow.dot",
+            "sha256": "3db7ea20fd3e84422164f2ab3a61316664e5ce15506bd9044ac4cbe16e6e2702",
+            "size": 142
+          },
+          {
+            "kind": "file",
+            "path": "validation-error-flow.dot",
+            "sha256": "28f0f739c181a78768527e122bf3d73293be8a70b1a29d8d62aefc29e214643f",
+            "size": 68
+          }
+        ],
+        "exists": true,
+        "root": "__PROJECT_DIR__"
+      }
+    }
+  },
+  "fixture_id": "filesystem/flow-format-write-effect",
+  "item_id": "M0-I02-CLI-FILESYSTEM-FIXTURES",
+  "normalization": {
+    "tokens": {
+      "__CODEX_HOME__": "__CODEX_HOME__",
+      "__CODEX_RUNTIME_ROOT__": "__CODEX_RUNTIME_ROOT__",
+      "__FLOWS_DIR__": "__FLOWS_DIR__",
+      "__OUTPUT_DIR__": "__COMPAT_FIXTURE_ROOT__/filesystem",
+      "__OUTPUT__": "__COMPAT_FIXTURE_ROOT__/filesystem/flow-format-write-effect.json",
+      "__PROJECT_DIR__": "__PROJECT_DIR__",
+      "__SPARK_HOME__": "__SPARK_HOME__",
+      "__WORKTREE__": "__WORKTREE__"
+    }
+  },
+  "paths": {
+    "attractor_codex_runtime_root": "__CODEX_RUNTIME_ROOT__",
+    "codex_home": "__CODEX_HOME__",
+    "output": "__COMPAT_FIXTURE_ROOT__/filesystem/flow-format-write-effect.json",
+    "spark_flows_dir": "__FLOWS_DIR__",
+    "spark_home": "__SPARK_HOME__"
+  },
+  "process": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": ""
+  },
+  "provenance": {
+    "capture_tool": "scripts/compat_capture.py",
+    "captured_at_utc": "2026-06-22T16:16:05.893598Z",
+    "oracle": "python-worktree",
+    "worktree_path": "__WORKTREE__"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": 1
+}

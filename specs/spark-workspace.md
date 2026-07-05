@@ -274,7 +274,7 @@ Spark must expose a first-class Spark agent control surface.
 
 Inside the assistant runtime, the canonical interface is the bare `spark` CLI. The runtime must make that surface available on `PATH` without requiring a user-global install.
 
-Human source-checkout shell instructions are a separate operational concern. In a source checkout, human docs should use `uv run spark ...` rather than treating bare `spark ...` as the default shell entrypoint.
+Human source-checkout shell instructions are a separate operational concern. In a source checkout before installing the binaries, human docs should use `cargo run -p spark-cli --bin spark -- ...` rather than treating bare `spark ...` as the default shell entrypoint.
 
 Stable read-only flow inspection and validation commands:
 

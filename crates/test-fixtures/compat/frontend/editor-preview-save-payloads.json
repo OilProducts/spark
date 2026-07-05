@@ -1,0 +1,138 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "frontend/editor-preview-save-payloads",
+  "input": {
+    "dot": "digraph CompatFrontend {\n  graph [\n    goal=\"Ship frontend contract\",\n    spark.launch_inputs=\"[{\\\"key\\\":\\\"context.ticket\\\",\\\"type\\\":\\\"string\\\",\\\"required\\\":true}]\"\n  ];\n  start [shape=Mdiamond];\n  review [shape=box, prompt=\"Review contract\", spark.writes_context=\"[\\\"context.review\\\"]\"];\n  done [shape=Msquare];\n  start -> review [condition=\"outcome=success\"];\n  review -> done;\n}",
+    "flow_name": "compat/frontend-flow.dot"
+  },
+  "item_id": "M0-I05-FRONTEND-PACKAGING-FIXTURES",
+  "observation": {
+    "capturedRequests": [
+      {
+        "body": {
+          "expand_children": true,
+          "flow_content": "digraph CompatFrontend {\n  graph [\n    goal=\"Ship frontend contract\",\n    spark.launch_inputs=\"[{\\\"key\\\":\\\"context.ticket\\\",\\\"type\\\":\\\"string\\\",\\\"required\\\":true}]\"\n  ];\n  start [shape=Mdiamond];\n  review [shape=box, prompt=\"Review contract\", spark.writes_context=\"[\\\"context.review\\\"]\"];\n  done [shape=Msquare];\n  start -> review [condition=\"outcome=success\"];\n  review -> done;\n}",
+          "flow_name": "compat/frontend-flow.dot"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "url": "/attractor/preview"
+      },
+      {
+        "body": {
+          "content": "digraph CompatFrontend {\n  graph [\n    goal=\"Ship frontend contract\",\n    spark.launch_inputs=\"[{\\\"key\\\":\\\"context.ticket\\\",\\\"type\\\":\\\"string\\\",\\\"required\\\":true}]\"\n  ];\n  start [shape=Mdiamond];\n  review [shape=box, prompt=\"Review contract\", spark.writes_context=\"[\\\"context.review\\\"]\"];\n  done [shape=Msquare];\n  start -> review [condition=\"outcome=success\"];\n  review -> done;\n}",
+          "expect_semantic_equivalence": true,
+          "name": "compat/frontend-flow.dot"
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "url": "/attractor/api/flows"
+      }
+    ],
+    "fetchedPreview": {
+      "diagnostics": [
+        {
+          "line": 3,
+          "message": "Recorded warning",
+          "rule_id": "compat.warning",
+          "severity": "warning"
+        }
+      ],
+      "graph": {
+        "child_previews": null,
+        "defaults": {
+          "edge": {},
+          "node": {}
+        },
+        "edges": [
+          {
+            "condition": "outcome=success",
+            "from": "start",
+            "to": "review"
+          }
+        ],
+        "graph_attrs": {
+          "goal": "Ship frontend contract"
+        },
+        "nodes": [
+          {
+            "id": "review",
+            "label": "Review contract",
+            "prompt": "Review contract",
+            "shape": "box"
+          }
+        ],
+        "subgraphs": []
+      },
+      "status": "ok"
+    },
+    "parsedDirect": {
+      "diagnostics": [
+        {
+          "line": 3,
+          "message": "Recorded warning",
+          "rule_id": "compat.warning",
+          "severity": "warning"
+        }
+      ],
+      "graph": {
+        "child_previews": null,
+        "defaults": {
+          "edge": {},
+          "node": {}
+        },
+        "edges": [
+          {
+            "condition": "outcome=success",
+            "from": "start",
+            "to": "review"
+          }
+        ],
+        "graph_attrs": {
+          "goal": "Ship frontend contract"
+        },
+        "nodes": [
+          {
+            "id": "review",
+            "label": "Review contract",
+            "prompt": "Review contract",
+            "shape": "box"
+          }
+        ],
+        "subgraphs": []
+      },
+      "status": "ok"
+    },
+    "saveResult": {
+      "ok": true,
+      "payload": {
+        "name": "compat/frontend-flow.dot",
+        "status": "saved"
+      },
+      "statusCode": 200
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "frontend Vitest contract runner",
+      "public TypeScript API parser functions",
+      "public TypeScript request builder functions",
+      "workspace live-event URL helper"
+    ],
+    "oracle": "python-backed-typescript-frontend-contract"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "editor_preview_save_payloads",
+  "schema_version": "compat-frontend-v1"
+}

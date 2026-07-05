@@ -1,0 +1,146 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "sse/live-trigger-upsert-delete",
+  "frames": [
+    {
+      "data": {
+        "cursor": null,
+        "payload": {
+          "triggers": []
+        },
+        "project_path": "__PROJECT_DIR__",
+        "resource": {
+          "id": null,
+          "kind": "trigger"
+        },
+        "type": "trigger.snapshot"
+      },
+      "data_text": "{\"type\":\"trigger.snapshot\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":null},\"cursor\":null,\"payload\":{\"triggers\":[]}}",
+      "event": "message",
+      "kind": "event"
+    },
+    {
+      "data": {
+        "cursor": null,
+        "payload": {
+          "trigger": {
+            "action": {
+              "flow_name": "software-development/implement-change-request.dot",
+              "project_path": "__PROJECT_DIR__",
+              "static_context": {
+                "origin": "compat"
+              }
+            },
+            "created_at": "2026-06-28T19:40:52Z",
+            "enabled": true,
+            "id": "trigger-57518a1da083",
+            "name": "Compat webhook",
+            "protected": false,
+            "source": {
+              "webhook_key": "B5q2u9CZ7HI7aprN"
+            },
+            "source_type": "webhook",
+            "state": {
+              "last_error": null,
+              "last_fired_at": null,
+              "last_result": null,
+              "next_run_at": null,
+              "recent_history": []
+            },
+            "updated_at": "2026-06-28T19:40:52Z",
+            "webhook_secret": "BY1XV8Gf7F0CjZqvMlkWuHxDD7sTlNbA"
+          },
+          "type": "trigger_upsert"
+        },
+        "project_path": "__PROJECT_DIR__",
+        "resource": {
+          "id": "trigger-57518a1da083",
+          "kind": "trigger"
+        },
+        "type": "trigger.upsert"
+      },
+      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-57518a1da083\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.dot\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-28T19:40:52Z\",\"enabled\":true,\"id\":\"trigger-57518a1da083\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"B5q2u9CZ7HI7aprN\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":null,\"last_result\":null,\"next_run_at\":null,\"recent_history\":[]},\"updated_at\":\"2026-06-28T19:40:52Z\",\"webhook_secret\":\"BY1XV8Gf7F0CjZqvMlkWuHxDD7sTlNbA\"},\"type\":\"trigger_upsert\"}}",
+      "event": "message",
+      "kind": "event"
+    },
+    {
+      "data": {
+        "cursor": null,
+        "payload": {
+          "trigger": {
+            "id": "trigger-57518a1da083",
+            "status": "deleted"
+          },
+          "type": "trigger_deleted"
+        },
+        "project_path": "__PROJECT_DIR__",
+        "resource": {
+          "id": "trigger-57518a1da083",
+          "kind": "trigger"
+        },
+        "type": "trigger.delete"
+      },
+      "data_text": "{\"type\":\"trigger.delete\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-57518a1da083\"},\"cursor\":null,\"payload\":{\"trigger\":{\"id\":\"trigger-57518a1da083\",\"status\":\"deleted\"},\"type\":\"trigger_deleted\"}}",
+      "event": "message",
+      "kind": "event"
+    }
+  ],
+  "item_id": "M0-I03-HTTP-SSE-FIXTURES",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "python-spark-server",
+    "server_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "58633",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": null,
+    "headers": {},
+    "method": "GET",
+    "path": "/workspace/api/live/events",
+    "query": {
+      "include_triggers": true,
+      "triggers_project_path": "__PROJECT_DIR__"
+    }
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "response": {
+    "headers": {
+      "cache-control": "no-cache",
+      "connection": "keep-alive",
+      "content-type": "text/event-stream; charset=utf-8"
+    },
+    "status_code": 200
+  },
+  "schema_version": "compat-sse-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

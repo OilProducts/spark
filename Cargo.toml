@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "apps/spark-desktop",
+    "crates/spark-common",
+    "crates/spark-storage",
+    "crates/spark-assets",
+    "crates/spark-cli",
+    "crates/spark-server",
+    "crates/spark-workspace",
+    "crates/spark-triggers",
+    "crates/spark-http",
+    "crates/attractor-core",
+    "crates/attractor-dsl",
+    "crates/attractor-runtime",
+    "crates/attractor-execution",
+    "crates/attractor-api",
+    "crates/spark-agent-adapter",
+    "crates/unified-llm-adapter",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"

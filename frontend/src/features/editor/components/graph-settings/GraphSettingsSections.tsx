@@ -1,6 +1,12 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
+import type {
+    CanonicalAttrMap,
+    CanonicalAttrValue,
+    CanonicalDefaultsScope,
+    CanonicalSubgraph,
+} from '@/lib/canonicalFlowModel'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import { GRAPH_FIDELITY_OPTIONS } from '@/lib/graphAttrValidation'
 import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from '@/lib/llmSuggestions'
@@ -155,6 +161,103 @@ function GraphSettingsNotice({
             <AlertDescription className="text-inherit">{children}</AlertDescription>
         </Alert>
     )
+}
+
+function canonicalAttrEntries(attrs: CanonicalAttrMap, excludedKeys?: Set<string>): ExtensionAttrEntry[] {
+    return Object.entries(attrs)
+        .filter(([key]) => !excludedKeys?.has(key))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => ({
+            key,
+            value: value === null ? '' : String(value),
+        }))
+}
+
+function parseCanonicalEditorValue(value: string): CanonicalAttrValue {
+    const trimmed = value.trim()
+    if (trimmed === 'true') {
+        return true
+    }
+    if (trimmed === 'false') {
+        return false
+    }
+    if (/^-?(?:\d+|\d*\.\d+)$/.test(trimmed)) {
+        const parsed = Number(trimmed)
+        if (Number.isFinite(parsed)) {
+            return parsed
+        }
+    }
+    return value
+}
+
+function updateCanonicalAttr(
+    attrs: CanonicalAttrMap,
+    key: string,
+    value: string,
+    options?: { deleteWhenBlank?: boolean },
+): CanonicalAttrMap {
+    const trimmedKey = key.trim()
+    if (!trimmedKey) {
+        return attrs
+    }
+    const nextAttrs = { ...attrs }
+    if (options?.deleteWhenBlank && value.trim() === '') {
+        delete nextAttrs[trimmedKey]
+        return nextAttrs
+    }
+    nextAttrs[trimmedKey] = parseCanonicalEditorValue(value)
+    return nextAttrs
+}
+
+function removeCanonicalAttr(attrs: CanonicalAttrMap, key: string): CanonicalAttrMap {
+    const nextAttrs = { ...attrs }
+    delete nextAttrs[key]
+    return nextAttrs
+}
+
+function emptyDefaultsScope(): CanonicalDefaultsScope {
+    return { node: {}, edge: {} }
+}
+
+function updateDefaultsAttr(
+    defaults: CanonicalDefaultsScope,
+    scope: keyof CanonicalDefaultsScope,
+    key: string,
+    value: string,
+): CanonicalDefaultsScope {
+    return {
+        ...defaults,
+        [scope]: updateCanonicalAttr(defaults[scope], key, value),
+    }
+}
+
+function removeDefaultsAttr(
+    defaults: CanonicalDefaultsScope,
+    scope: keyof CanonicalDefaultsScope,
+    key: string,
+): CanonicalDefaultsScope {
+    return {
+        ...defaults,
+        [scope]: removeCanonicalAttr(defaults[scope], key),
+    }
+}
+
+function parseNodeIdList(value: string): string[] {
+    return value
+        .split(/[\n,]/)
+        .map((nodeId) => nodeId.trim())
+        .filter((nodeId, index, nodeIds) => nodeId.length > 0 && nodeIds.indexOf(nodeId) === index)
+}
+
+function buildUniqueSubgraphId(subgraphs: CanonicalSubgraph[]): string {
+    const existingIds = new Set(subgraphs.map((subgraph) => subgraph.id).filter(Boolean))
+    let index = subgraphs.length + 1
+    let candidate = `cluster_scope_${index}`
+    while (existingIds.has(candidate)) {
+        index += 1
+        candidate = `cluster_scope_${index}`
+    }
+    return candidate
 }
 
 interface GraphRunConfigurationSectionProps {
@@ -453,6 +556,260 @@ export function GraphExecutionDefaultsSection({
                     </div>
                 </div>
             </div>
+        </section>
+    )
+}
+
+interface GraphScopedDefaultsSectionProps {
+    defaults: CanonicalDefaultsScope
+    onDefaultsChange: (defaults: CanonicalDefaultsScope) => void
+}
+
+export function GraphScopedDefaultsSection({
+    defaults,
+    onDefaultsChange,
+}: GraphScopedDefaultsSectionProps) {
+    return (
+        <section className="space-y-3" data-testid="graph-scoped-defaults-section">
+            <GraphSettingsSectionIntro
+                title="Scoped Defaults"
+                description="Graph-level node and edge defaults emitted as DOT default statements."
+            />
+            <div className="space-y-3">
+                <AdvancedKeyValueEditor
+                    testIdPrefix="graph-node-defaults"
+                    title="Node Defaults"
+                    description="Attributes emitted as a graph-level node default statement."
+                    entries={canonicalAttrEntries(defaults.node)}
+                    onValueChange={(key, value) => onDefaultsChange(updateDefaultsAttr(defaults, 'node', key, value))}
+                    onRemove={(key) => onDefaultsChange(removeDefaultsAttr(defaults, 'node', key))}
+                    onAdd={(key, value) => onDefaultsChange(updateDefaultsAttr(defaults, 'node', key, value))}
+                />
+                <AdvancedKeyValueEditor
+                    testIdPrefix="graph-edge-defaults"
+                    title="Edge Defaults"
+                    description="Attributes emitted as a graph-level edge default statement."
+                    entries={canonicalAttrEntries(defaults.edge)}
+                    onValueChange={(key, value) => onDefaultsChange(updateDefaultsAttr(defaults, 'edge', key, value))}
+                    onRemove={(key) => onDefaultsChange(removeDefaultsAttr(defaults, 'edge', key))}
+                    onAdd={(key, value) => onDefaultsChange(updateDefaultsAttr(defaults, 'edge', key, value))}
+                />
+            </div>
+        </section>
+    )
+}
+
+interface GraphSubgraphsSectionProps {
+    subgraphs: CanonicalSubgraph[]
+    onSubgraphsChange: (subgraphs: CanonicalSubgraph[]) => void
+}
+
+const SUBGRAPH_CORE_ATTR_KEYS = new Set<string>(['label'])
+
+export function GraphSubgraphsSection({
+    subgraphs,
+    onSubgraphsChange,
+}: GraphSubgraphsSectionProps) {
+    const [nodeIdDrafts, setNodeIdDrafts] = useState<Record<string, string>>({})
+
+    const updateSubgraph = (index: number, updater: (subgraph: CanonicalSubgraph) => CanonicalSubgraph) => {
+        onSubgraphsChange(subgraphs.map((subgraph, currentIndex) => (
+            currentIndex === index ? updater(subgraph) : subgraph
+        )))
+    }
+
+    const addSubgraph = () => {
+        onSubgraphsChange([
+            ...subgraphs,
+            {
+                id: buildUniqueSubgraphId(subgraphs),
+                attrs: {},
+                nodeIds: [],
+                defaults: emptyDefaultsScope(),
+                subgraphs: [],
+            },
+        ])
+    }
+
+    return (
+        <section className="space-y-3" data-testid="graph-subgraphs-section">
+            <GraphSettingsSectionIntro
+                title="Subgraphs"
+                description="Top-level subgraph scopes, membership, graph attrs, and scoped defaults."
+                action={(
+                    <Button
+                        type="button"
+                        data-testid="graph-subgraph-add"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+                        onClick={addSubgraph}
+                    >
+                        Add Subgraph
+                    </Button>
+                )}
+            />
+            {subgraphs.length === 0 ? (
+                <GraphSettingsNotice className="text-[11px]">
+                    No subgraphs set.
+                </GraphSettingsNotice>
+            ) : (
+                <div className="space-y-3">
+                    {subgraphs.map((subgraph, index) => {
+                        const labelValue = typeof subgraph.attrs.label === 'string' ? subgraph.attrs.label : ''
+                        const subgraphId = subgraph.id ?? ''
+                        const nodeIdDraftKey = `${subgraphId || 'anonymous'}-${index}`
+                        const nodeIdValue = nodeIdDrafts[nodeIdDraftKey] ?? subgraph.nodeIds.join(', ')
+                        return (
+                            <div
+                                key={`subgraph-${index}`}
+                                data-testid={`graph-subgraph-${index}`}
+                                className="space-y-3 rounded-md border border-border/80 bg-muted/10 p-3"
+                            >
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <p className="text-xs font-semibold text-foreground">
+                                            {subgraphId || 'Anonymous subgraph'}
+                                        </p>
+                                        <p className="text-[11px] text-muted-foreground">
+                                            {subgraph.nodeIds.length} node ids
+                                        </p>
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="xs"
+                                        className="h-8 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                        onClick={() => onSubgraphsChange(subgraphs.filter((_, currentIndex) => currentIndex !== index))}
+                                    >
+                                        Remove
+                                    </Button>
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                    <GraphSettingsField label="Subgraph ID" htmlFor={`graph-subgraph-id-${index}`}>
+                                        <Input
+                                            id={`graph-subgraph-id-${index}`}
+                                            data-testid={`graph-subgraph-id-${index}`}
+                                            value={subgraphId}
+                                            onChange={(event) => updateSubgraph(index, (current) => ({
+                                                ...current,
+                                                id: event.target.value.trim() || null,
+                                            }))}
+                                            className="h-8 font-mono text-xs"
+                                            placeholder="cluster_review"
+                                        />
+                                    </GraphSettingsField>
+                                    <GraphSettingsField label="Label" htmlFor={`graph-subgraph-label-${index}`}>
+                                        <Input
+                                            id={`graph-subgraph-label-${index}`}
+                                            data-testid={`graph-subgraph-label-${index}`}
+                                            value={labelValue}
+                                            onChange={(event) => updateSubgraph(index, (current) => ({
+                                                ...current,
+                                                attrs: updateCanonicalAttr(current.attrs, 'label', event.target.value, {
+                                                    deleteWhenBlank: true,
+                                                }),
+                                            }))}
+                                            className="h-8 text-xs"
+                                            placeholder="Review Loop"
+                                        />
+                                    </GraphSettingsField>
+                                </div>
+                                <GraphSettingsField label="Node IDs" htmlFor={`graph-subgraph-node-ids-${index}`}>
+                                    <Input
+                                        id={`graph-subgraph-node-ids-${index}`}
+                                        data-testid={`graph-subgraph-node-ids-${index}`}
+                                        value={nodeIdValue}
+                                        onChange={(event) => {
+                                            const nextValue = event.target.value
+                                            setNodeIdDrafts((current) => ({
+                                                ...current,
+                                                [nodeIdDraftKey]: nextValue,
+                                            }))
+                                            updateSubgraph(index, (current) => ({
+                                                ...current,
+                                                nodeIds: parseNodeIdList(nextValue),
+                                            }))
+                                        }}
+                                        onBlur={() => {
+                                            setNodeIdDrafts((current) => {
+                                                const next = { ...current }
+                                                delete next[nodeIdDraftKey]
+                                                return next
+                                            })
+                                        }}
+                                        className="h-8 font-mono text-xs"
+                                        placeholder="author, review"
+                                    />
+                                </GraphSettingsField>
+                                <AdvancedKeyValueEditor
+                                    testIdPrefix={`graph-subgraph-${index}-attrs`}
+                                    title="Subgraph Attrs"
+                                    description="Additional graph attrs emitted inside this subgraph."
+                                    entries={canonicalAttrEntries(subgraph.attrs, SUBGRAPH_CORE_ATTR_KEYS)}
+                                    reservedKeys={SUBGRAPH_CORE_ATTR_KEYS}
+                                    onValueChange={(key, value) => updateSubgraph(index, (current) => ({
+                                        ...current,
+                                        attrs: updateCanonicalAttr(current.attrs, key, value),
+                                    }))}
+                                    onRemove={(key) => updateSubgraph(index, (current) => ({
+                                        ...current,
+                                        attrs: removeCanonicalAttr(current.attrs, key),
+                                    }))}
+                                    onAdd={(key, value) => updateSubgraph(index, (current) => ({
+                                        ...current,
+                                        attrs: updateCanonicalAttr(current.attrs, key, value),
+                                    }))}
+                                />
+                                <AdvancedKeyValueEditor
+                                    testIdPrefix={`graph-subgraph-${index}-node-defaults`}
+                                    title="Scoped Node Defaults"
+                                    description="Node defaults emitted inside this subgraph."
+                                    entries={canonicalAttrEntries(subgraph.defaults.node)}
+                                    onValueChange={(key, value) => updateSubgraph(index, (current) => ({
+                                        ...current,
+                                        defaults: updateDefaultsAttr(current.defaults, 'node', key, value),
+                                    }))}
+                                    onRemove={(key) => updateSubgraph(index, (current) => ({
+                                        ...current,
+                                        defaults: removeDefaultsAttr(current.defaults, 'node', key),
+                                    }))}
+                                    onAdd={(key, value) => updateSubgraph(index, (current) => ({
+                                        ...current,
+                                        defaults: updateDefaultsAttr(current.defaults, 'node', key, value),
+                                    }))}
+                                />
+                                <AdvancedKeyValueEditor
+                                    testIdPrefix={`graph-subgraph-${index}-edge-defaults`}
+                                    title="Scoped Edge Defaults"
+                                    description="Edge defaults emitted inside this subgraph."
+                                    entries={canonicalAttrEntries(subgraph.defaults.edge)}
+                                    onValueChange={(key, value) => updateSubgraph(index, (current) => ({
+                                        ...current,
+                                        defaults: updateDefaultsAttr(current.defaults, 'edge', key, value),
+                                    }))}
+                                    onRemove={(key) => updateSubgraph(index, (current) => ({
+                                        ...current,
+                                        defaults: removeDefaultsAttr(current.defaults, 'edge', key),
+                                    }))}
+                                    onAdd={(key, value) => updateSubgraph(index, (current) => ({
+                                        ...current,
+                                        defaults: updateDefaultsAttr(current.defaults, 'edge', key, value),
+                                    }))}
+                                />
+                                {subgraph.subgraphs.length > 0 ? (
+                                    <GraphSettingsNotice
+                                        data-testid={`graph-subgraph-${index}-nested-summary`}
+                                        className="text-[11px]"
+                                    >
+                                        Nested subgraphs: {subgraph.subgraphs.map((nested) => nested.id || 'anonymous').join(', ')}
+                                    </GraphSettingsNotice>
+                                ) : null}
+                            </div>
+                        )
+                    })}
+                </div>
+            )}
         </section>
     )
 }

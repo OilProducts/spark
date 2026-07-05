@@ -5,7 +5,7 @@ import {
     type ConversationSnapshotResponse,
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
-import type { PendingSendState } from '../model/conversationState'
+import type { PendingConversationTurnState } from '../model/conversationState'
 
 export type ConversationComposerCommand =
     | {
@@ -47,8 +47,8 @@ type UseConversationComposerArgs = {
     model: string
     reasoningEffort: string
     ensureConversationId: () => string | null
-    getConversationRevision: (conversationId: string) => number
     getCurrentConversationId: (projectPath: string) => string | null
+    getCurrentConversationRevision: (conversationId: string) => number
     applyConversationSnapshot: (
         projectPath: string,
         snapshot: ConversationSnapshotResponse,
@@ -59,7 +59,7 @@ type UseConversationComposerArgs = {
     formatErrorMessage: (error: unknown, fallback: string) => string
     setChatDraft: Dispatch<SetStateAction<string>>
     setPanelError: (message: string | null) => void
-    setPendingSend: Dispatch<SetStateAction<PendingSendState | null>>
+    setPendingConversationTurn: Dispatch<SetStateAction<PendingConversationTurnState | null>>
 }
 
 export function useConversationComposer({
@@ -70,18 +70,18 @@ export function useConversationComposer({
     model,
     reasoningEffort,
     ensureConversationId,
-    getConversationRevision,
     getCurrentConversationId,
+    getCurrentConversationRevision,
     applyConversationSnapshot,
     appendLocalProjectEvent,
     formatErrorMessage,
     setChatDraft,
     setPanelError,
-    setPendingSend,
+    setPendingConversationTurn,
 }: UseConversationComposerArgs) {
     const resetComposer = () => {
         setChatDraft('')
-        setPendingSend(null)
+        setPendingConversationTurn(null)
     }
 
     const onSendChatMessage = async () => {
@@ -97,7 +97,6 @@ export function useConversationComposer({
         if (!conversationId) {
             return
         }
-        const sendStartedAt = new Date().toISOString()
 
         setPanelError(null)
         setChatDraft('')
@@ -119,10 +118,9 @@ export function useConversationComposer({
         }
         const messageToSend = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.message : trimmed
         const chatMode = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.chatMode : null
-        setPendingSend({
+        setPendingConversationTurn({
             conversationId,
-            createdAt: sendStartedAt,
-            startedFromRevision: getConversationRevision(conversationId),
+            afterRevision: getCurrentConversationRevision(conversationId),
         })
         try {
             const snapshot = await sendConversationTurnValidated(conversationId, {
@@ -133,7 +131,7 @@ export function useConversationComposer({
                 reasoning_effort: reasoningEffort.trim(),
                 chat_mode: chatMode,
             })
-            setPendingSend(null)
+            setPendingConversationTurn(null)
             const shouldKeepFocusOnReplyThread = getCurrentConversationId(activeProjectPath) === conversationId
             applyConversationSnapshot(activeProjectPath, snapshot, 'send-response', {
                 forceWorkspaceSync: shouldKeepFocusOnReplyThread,
@@ -143,7 +141,7 @@ export function useConversationComposer({
             setPanelError(message)
             appendLocalProjectEvent(`Project chat turn failed: ${message}`)
         } finally {
-            setPendingSend(null)
+            setPendingConversationTurn(null)
         }
     }
 

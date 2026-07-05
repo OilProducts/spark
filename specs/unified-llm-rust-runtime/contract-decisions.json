@@ -1,0 +1,8 @@
+[
+  {
+    "id": "unified-llm-rust-runtime",
+    "summary": "Rust crates own normal Unified LLM provider runtime behavior.",
+    "implementation_contract": "Spark server and CLI provider execution must use crates/unified-llm-adapter and Rust-owned model catalog assets.",
+    "validation_expectations": "Run the Cargo/frontend gate documented in AGENTS.md."
+  }
+]

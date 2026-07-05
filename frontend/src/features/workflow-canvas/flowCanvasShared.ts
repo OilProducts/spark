@@ -166,6 +166,13 @@ function buildHydratedNode(
             ? node.attrs['manager.stop_condition']
             : '',
         'manager.actions': typeof node.attrs['manager.actions'] === 'string' ? node.attrs['manager.actions'] : '',
+        'manager.steer_cooldown': typeof node.attrs['manager.steer_cooldown'] === 'string'
+            ? node.attrs['manager.steer_cooldown']
+            : '',
+        'stack.child_autostart': typeof node.attrs['stack.child_autostart'] === 'boolean'
+            || typeof node.attrs['stack.child_autostart'] === 'string'
+            ? node.attrs['stack.child_autostart']
+            : '',
         status: 'idle',
     }
     delete nodeData['human.default_choice']

@@ -14,10 +14,16 @@ services:
       - SPARK_DOCKER_HOST_GID=${SPARK_DOCKER_HOST_GID:-1000}
       - SPARK_PROJECTS_HOST_DIR=${SPARK_PROJECTS_HOST_DIR:-$HOME/projects}
       - ATTRACTOR_CODEX_RUNTIME_ROOT=/spark/runtime/codex
+      - HOME=/spark/runtime/codex
+      - CODEX_HOME=/spark/runtime/codex/.codex
+      - XDG_CONFIG_HOME=/spark/runtime/codex/.config
+      - XDG_DATA_HOME=/spark/runtime/codex/.local/share
       - OPENAI_API_KEY
       - OPENAI_BASE_URL
       - OPENAI_ORG_ID
       - OPENAI_PROJECT_ID
+      - OPENAI_COMPATIBLE_BASE_URL
+      - OPENAI_COMPATIBLE_API_KEY
       - ANTHROPIC_API_KEY
       - ANTHROPIC_BASE_URL
       - GEMINI_API_KEY

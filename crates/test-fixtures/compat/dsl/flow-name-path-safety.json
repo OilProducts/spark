@@ -1,0 +1,87 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "dsl/flow-name-path-safety",
+  "input": {
+    "accepted": [
+      "examples/simple-linear",
+      "nested/flow.dot",
+      "windows\\path\\flow"
+    ],
+    "rejected": [
+      "",
+      "/absolute/path.dot",
+      "../escape.dot",
+      "nested/../escape.dot",
+      "./same.dot",
+      "folder/"
+    ]
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "accepted": [
+      {
+        "input": "examples/simple-linear",
+        "normalized": "examples/simple-linear.dot"
+      },
+      {
+        "input": "nested/flow.dot",
+        "normalized": "nested/flow.dot"
+      },
+      {
+        "input": "windows\\path\\flow",
+        "normalized": "windows/path/flow.dot"
+      }
+    ],
+    "rejected": [
+      {
+        "detail": "Flow name is required.",
+        "input": "",
+        "status_code": 400
+      },
+      {
+        "detail": "Flow name must be a relative path inside flows_dir.",
+        "input": "/absolute/path.dot",
+        "status_code": 400
+      },
+      {
+        "detail": "Flow name must be a relative path inside flows_dir.",
+        "input": "../escape.dot",
+        "status_code": 400
+      },
+      {
+        "detail": "Flow name must be a relative path inside flows_dir.",
+        "input": "nested/../escape.dot",
+        "status_code": 400
+      },
+      {
+        "accepted": true,
+        "input": "./same.dot"
+      },
+      {
+        "detail": "Flow name must reference a file.",
+        "input": "folder/",
+        "status_code": 400
+      }
+    ]
+  },
+  "operation": "flow_name_normalization",
+  "provenance": {
+    "interfaces": [
+      "attractor.dsl.parse_dot",
+      "attractor.dsl.formatter.format_readable_dot",
+      "attractor.dsl.validate_graph",
+      "attractor.validation_preview.preview_dot_source",
+      "attractor.api.flow_sources.normalize_flow_name"
+    ],
+    "oracle": "python-dsl-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": "compat-dsl-v1"
+}

@@ -157,12 +157,12 @@ export function useProjectsHomeController() {
         chatDraft,
         expandedThinkingEntries,
         expandedToolCalls,
-        pendingSend,
         panelError,
+        pendingConversationTurn,
         pendingDeleteConversationId,
         setChatDraft,
-        setPendingSend,
         setPanelError,
+        setPendingConversationTurn,
         setPendingDeleteConversationId,
         toggleThinkingEntryExpanded,
         toggleToolCallExpanded,
@@ -194,7 +194,7 @@ export function useProjectsHomeController() {
         activeProjectPath,
         activeProjectScope,
         conversationCache,
-        pendingSend,
+        pendingConversationTurn,
         projectGitMetadata,
         uiDefaults,
     }), [
@@ -203,7 +203,7 @@ export function useProjectsHomeController() {
         activeProjectPath,
         activeProjectScope,
         conversationCache,
-        pendingSend,
+        pendingConversationTurn,
         projectGitMetadata,
         uiDefaults,
     ])
@@ -306,15 +306,16 @@ export function useProjectsHomeController() {
     }, [isConversationPinnedToBottom])
 
     useEffect(() => {
-        if (
-            pendingSend
-            && pendingSend.conversationId === activeConversationId
-            && activeConversationRecord
-            && activeConversationRecord.revision > pendingSend.startedFromRevision
-        ) {
-            setPendingSend(null)
+        if (!pendingConversationTurn || !activeConversationRecord) {
+            return
         }
-    }, [activeConversationId, activeConversationRecord, pendingSend, setPendingSend])
+        if (
+            pendingConversationTurn.conversationId === activeConversationRecord.conversation_id
+            && activeConversationRecord.revision > pendingConversationTurn.afterRevision
+        ) {
+            setPendingConversationTurn(null)
+        }
+    }, [activeConversationRecord, pendingConversationTurn, setPendingConversationTurn])
 
     useEffect(() => {
         if (!isConversationPinnedToBottomRef.current) {
@@ -368,18 +369,18 @@ export function useProjectsHomeController() {
         provider: activeProjectChatProvider,
         reasoningEffort: activeProjectChatReasoningEffort,
         ensureConversationId,
-        getConversationRevision: (conversationId) => (
-            conversationCacheRef.current.conversationsById[conversationId]?.revision ?? 0
-        ),
         getCurrentConversationId: (projectPath) => (
             useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
+        ),
+        getCurrentConversationRevision: (conversationId) => (
+            conversationCacheRef.current.conversationsById[conversationId]?.revision ?? 0
         ),
         applyConversationSnapshot,
         appendLocalProjectEvent,
         formatErrorMessage: extractApiErrorMessage,
         setChatDraft,
         setPanelError,
-        setPendingSend,
+        setPendingConversationTurn,
     })
 
     useEffect(() => {

@@ -1,0 +1,16 @@
+[
+  {
+    "id": "coding-agent-rust-runtime",
+    "summary": "Rust-owned coding-agent behavior remains covered through crate and integration tests.",
+    "acceptance_criteria": [
+      "Cargo tests cover prompt context, tool dispatch, provider/profile selection, runtime events, codergen integration, and local execution behavior.",
+      "Default validation does not require Python packages or pytest."
+    ],
+    "target_paths": [
+      "crates/spark-agent-adapter",
+      "crates/unified-llm-adapter",
+      "crates/attractor-runtime",
+      "crates/spark-http"
+    ]
+  }
+]

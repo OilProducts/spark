@@ -595,7 +595,7 @@ describe('ProjectsPanel', () => {
     expect(screen.getByTestId('project-event-log-list')).toHaveTextContent('Approved plan')
   })
 
-  it('renders the server-created user turn once after the accepted turn starts', async () => {
+  it('renders the server-created user turn before the assistant response completes', async () => {
     const user = userEvent.setup()
     let resolveTurnResponse: ((response: Response) => void) | null = null
 
@@ -641,22 +641,16 @@ describe('ProjectsPanel', () => {
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Show this message immediately.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
-    const conversationId = useStore.getState().projectSessionsByPath['/tmp/chat-project']?.conversationId
-    expect(conversationId).toBeTruthy()
-
     expect(screen.queryByTestId('project-ai-conversation-history-list')).not.toBeInTheDocument()
-    expect(screen.getByTestId('project-ai-conversation-surface')).not.toHaveTextContent('Show this message immediately.')
+    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Sending...')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
 
     resolveTurnResponse?.(
       new Response(
         JSON.stringify(withSnapshotSchema({
-          conversation_id: conversationId,
+          conversation_id: 'conversation-chat-project-1',
           project_path: '/tmp/chat-project',
-          title: 'Show this message immediately.',
-          created_at: '2026-03-06T21:45:00Z',
-          updated_at: '2026-03-06T21:45:01Z',
           turns: [
             {
               id: 'turn-user-1',
@@ -671,14 +665,13 @@ describe('ProjectsPanel', () => {
               id: 'turn-assistant-1',
               role: 'assistant',
               content: '',
-              timestamp: '2026-03-06T21:45:01Z',
+              timestamp: '2026-03-06T21:45:02Z',
               status: 'pending',
               kind: 'message',
               artifact_id: null,
               parent_turn_id: 'turn-user-1',
             },
           ],
-          segments: [],
           event_log: [],
         })),
         {
@@ -693,6 +686,7 @@ describe('ProjectsPanel', () => {
     })
     const history = screen.getByTestId('project-ai-conversation-history-list')
     expect(within(history).getAllByText('Show this message immediately.')).toHaveLength(1)
+    expect(history).not.toHaveTextContent('Visible.')
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Worked for')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Thinking...')
   })

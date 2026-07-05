@@ -8,17 +8,20 @@ changelog: public
 
 ## Summary
 
-`POST /workspace/api/conversations/{conversation_id}/turns` now represents durable turn acceptance: the service returns a snapshot containing the completed user turn and pending assistant turn while assistant execution continues in the background. Post-acceptance backend failures are persisted as failed assistant turns and surfaced through conversation progress events instead of turning the accepted POST into a failure.
+`POST /workspace/api/conversations/{conversation_id}/turns` now represents durable turn acceptance instead of assistant completion. The route synchronously validates and persists the user turn plus pending assistant turn, publishes the started events, returns the started snapshot, and continues assistant execution in the background. Post-acceptance backend failures are recorded as failed assistant turns and published through the existing SSE path.
 
-The project chat UI no longer inserts an optimistic user timeline row. Sending clears the draft, disables the composer with a short `Sending...` state, and waits for the started snapshot or live events to populate the timeline through the normal conversation cache.
+The projects frontend no longer appends timeline-level optimistic user messages. Sending clears the draft and uses a short non-timeline pending-start state until the conversation cache advances from the POST snapshot or live SSE.
 
 ## Validation
 
-- `uv run pytest -q` passed: 1955 passed, 26 skipped.
+- `cargo fmt --all -- --check` passed.
+- `cargo test --workspace --all-features` passed.
+- `npm --prefix frontend run test:unit` passed with existing stderr warnings from React act/schema/mock-request test cases.
+- `npm --prefix frontend run build` passed with the existing Vite chunk-size warning.
 
 ## Shipped Changes
 
-- Backend conversation service and workspace API behavior: `ProjectChatService.start_turn` prepares and persists the accepted user/pending assistant turn pair, starts background assistant completion, and keeps failure/progress events durable and replayable.
-- Frontend project conversation state: replaced `optimisticSend` with `pendingSend`, removed optimistic timeline message construction, and used pending state only for composer disabled/label behavior.
-- Frontend controller/composer hooks: record the starting conversation revision, clear pending send state when a newer snapshot/event arrives, and treat the POST response as the started snapshot.
-- Tests: updated project panel/view-model expectations for no optimistic duplicate and added API/service regression coverage for started snapshots plus background failure publishing.
+- `crates/spark-workspace/src/conversations.rs`: added a reusable completion path for prepared started turns and converted agent backend failures after acceptance into durable failed assistant turns with final snapshot events.
+- `crates/spark-http/src/workspace.rs`: changed the conversation turn route to call `start_turn`, publish started events, return the started snapshot immediately, and spawn asynchronous completion that keeps SSE state contiguous.
+- `crates/spark-http/tests/*conversation*`: updated HTTP and SSE contracts to assert started snapshots, eventual completion, and failed assistant publication through SSE.
+- `frontend/src/features/projects` and `frontend/src/state`: replaced optimistic timeline message state with pending conversation turn state, disabled/sent composer affordances while the started snapshot is pending, and preserved snapshot/SSE cache behavior.

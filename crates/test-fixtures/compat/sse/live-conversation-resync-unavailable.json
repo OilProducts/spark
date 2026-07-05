@@ -1,0 +1,105 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "sse/live-conversation-resync-unavailable",
+  "frames": [
+    {
+      "data": {
+        "cursor": {
+          "kind": "conversation_revision",
+          "value": 0
+        },
+        "payload": {
+          "state": {
+            "chat_mode": "chat",
+            "conversation_handle": "",
+            "conversation_id": "missing-conversation",
+            "created_at": "2026-06-28T19:40:51Z",
+            "event_log": [],
+            "flow_launches": [],
+            "flow_run_requests": [],
+            "llm_profile": null,
+            "model": null,
+            "project_path": "__PROJECT_DIR__",
+            "proposed_plans": [],
+            "provider": "codex",
+            "reasoning_effort": null,
+            "revision": 0,
+            "run_recoveries": [],
+            "schema_version": 5,
+            "segments": [],
+            "title": "New thread",
+            "turns": [],
+            "updated_at": "2026-06-28T19:40:51Z"
+          }
+        },
+        "project_path": "__PROJECT_DIR__",
+        "resource": {
+          "id": "missing-conversation",
+          "kind": "conversation"
+        },
+        "type": "conversation.snapshot"
+      },
+      "data_text": "{\"type\":\"conversation.snapshot\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"conversation\",\"id\":\"missing-conversation\"},\"cursor\":{\"kind\":\"conversation_revision\",\"value\":0},\"payload\":{\"state\":{\"chat_mode\":\"chat\",\"conversation_handle\":\"\",\"conversation_id\":\"missing-conversation\",\"created_at\":\"2026-06-28T19:40:51Z\",\"event_log\":[],\"flow_launches\":[],\"flow_run_requests\":[],\"llm_profile\":null,\"model\":null,\"project_path\":\"__PROJECT_DIR__\",\"proposed_plans\":[],\"provider\":\"codex\",\"reasoning_effort\":null,\"revision\":0,\"run_recoveries\":[],\"schema_version\":5,\"segments\":[],\"title\":\"New thread\",\"turns\":[],\"updated_at\":\"2026-06-28T19:40:51Z\"}}}",
+      "event": "message",
+      "kind": "event"
+    }
+  ],
+  "item_id": "M0-I03-HTTP-SSE-FIXTURES",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "python-spark-server",
+    "server_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "36391",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": null,
+    "headers": {},
+    "method": "GET",
+    "path": "/workspace/api/live/events",
+    "query": {
+      "conversation_id": "missing-conversation",
+      "conversation_project_path": "__PROJECT_DIR__"
+    }
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "response": {
+    "headers": {
+      "cache-control": "no-cache",
+      "connection": "keep-alive",
+      "content-type": "text/event-stream; charset=utf-8"
+    },
+    "status_code": 200
+  },
+  "schema_version": "compat-sse-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

@@ -13,7 +13,7 @@ backend() {
     source "${env_file}"
     set +a
   fi
-  SPARK_HOME="${spark_home}" uv run spark-server serve --host 127.0.0.1 --port "${spark_port}" --reload
+  SPARK_HOME="${spark_home}" cargo run -p spark-server --bin spark-server -- serve --host 127.0.0.1 --port "${spark_port}"
 }
 
 backend &

@@ -50,7 +50,7 @@ From the repo root, `just dev-run` is the normal full-stack workflow.
 ## Build Output
 
 Production assets are emitted to `frontend/dist/`.
-From the repo root, use `just deliverable` to build the distributable wheel and sdist with the bundled UI:
+From the repo root, use `just deliverable` to build the production frontend and Cargo release binaries:
 
 ```bash
 just deliverable
@@ -59,4 +59,3 @@ just deliverable
 ## Related Docs
 
 - Root project overview: [README.md](../README.md)
-- UI workflow acceptance assets: [tests/acceptance/agent-workflows/README.md](../tests/acceptance/agent-workflows/README.md)

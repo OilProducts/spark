@@ -1,0 +1,57 @@
+{
+  "decisions": [
+    "CD-RR-005",
+    "CD-RR-006",
+    "CD-RR-013"
+  ],
+  "fixture_id": "agent/codergen-status-envelope-resolution",
+  "input": {
+    "dot": "\n    digraph G {\n      task [\n        shape=box,\n        prompt=\"Review\",\n        codergen.response_contract=\"status_envelope\",\n        codergen.contract_repair_attempts=2,\n        spark.writes_context=\"[\\\"review.required_changes\\\",\\\"context.review.summary\\\"]\",\n        llm_provider=\"Anthropic\"\n      ];\n    }\n    "
+  },
+  "item_id": "M3-I05-CODERGEN-AGENT-LLM-ADAPTERS",
+  "observation": {
+    "backend_call": {
+      "context": {
+        "_attractor.runtime.launch_model": "gpt-launch",
+        "_attractor.runtime.launch_reasoning_effort": "medium"
+      },
+      "contract_repair_attempts": 2,
+      "llm_profile": "backend-profile",
+      "model": "gpt-launch",
+      "node_id": "task",
+      "provider": "anthropic",
+      "reasoning_effort": "medium",
+      "response_contract": "status_envelope",
+      "timeout": null,
+      "write_contract_allowed_keys": [
+        "context.review.required_changes",
+        "context.review.summary"
+      ]
+    },
+    "outcome": {
+      "context_updates": {
+        "last_response": "backend text response",
+        "last_stage": "task"
+      },
+      "failure_reason": "",
+      "notes": "backend text response",
+      "preferred_label": "",
+      "status": "success",
+      "suggested_next_ids": []
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "attractor.handlers.HandlerRunner",
+      "attractor.handlers.build_default_registry",
+      "attractor.handlers.builtin.CodergenHandler"
+    ],
+    "oracle": "python-codergen-handler-public-interfaces"
+  },
+  "requirements": [
+    "RR-EXE-002",
+    "RR-EXE-006"
+  ],
+  "scenario": "status_envelope_resolution",
+  "schema_version": "compat-agent-v1"
+}

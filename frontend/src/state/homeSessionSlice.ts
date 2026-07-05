@@ -11,7 +11,7 @@ import type {
 const DEFAULT_HOME_PROJECT_SESSION_STATE: HomeProjectSessionState = {
     chatDraft: '',
     panelError: null,
-    pendingSend: null,
+    pendingConversationTurn: null,
     pendingDeleteConversationId: null,
     sidebarPrimarySplitRatio: null,
 }

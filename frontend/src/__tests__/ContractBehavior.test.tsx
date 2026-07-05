@@ -338,6 +338,8 @@ describe('Frontend contract behavior', () => {
           'manager.max_cycles': 3,
           'manager.stop_condition': 'child.outcome == "success"',
           'manager.actions': 'observe,steer',
+          'manager.steer_cooldown': '2s',
+          'stack.child_autostart': false,
         },
       },
     ]
@@ -2422,6 +2424,10 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByText('Manager Max Cycles')).toBeVisible()
     expect(screen.getByText('Manager Stop Condition')).toBeVisible()
     expect(screen.getByText('Manager Actions')).toBeVisible()
+    expect(screen.getByText('Manager Steer Cooldown')).toBeVisible()
+    expect(screen.getByText('Start Child Automatically')).toBeVisible()
+    expect(screen.getByTestId('node-attr-input-manager.steer_cooldown')).toHaveValue('2s')
+    expect(screen.getByTestId('node-attr-checkbox-stack.child_autostart')).toHaveAttribute('aria-checked', 'false')
   })
 
   it('[CID:6.7.03] renders manager-loop child-linkage affordance in sidebar inspector', async () => {
@@ -2604,6 +2610,8 @@ describe('Frontend contract behavior', () => {
         'manager.max_cycles': 3,
         'manager.stop_condition': 'child.outcome == "success"',
         'manager.actions': 'observe,steer',
+        'manager.steer_cooldown': '2s',
+        'stack.child_autostart': false,
       },
     })
 
@@ -2614,6 +2622,10 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByText('Manager Max Cycles')).toBeVisible()
     expect(screen.getByText('Manager Stop Condition')).toBeVisible()
     expect(screen.getByText('Manager Actions')).toBeVisible()
+    expect(screen.getByText('Manager Steer Cooldown')).toBeVisible()
+    expect(screen.getByText('Start Child Automatically')).toBeVisible()
+    expect(screen.getByTestId('node-toolbar-attr-input-manager.steer_cooldown')).toHaveValue('2s')
+    expect(screen.getByTestId('node-toolbar-attr-checkbox-stack.child_autostart')).not.toBeChecked()
   })
 
   it('[CID:10.1.01] keeps pending human gates answerable only from runs controls', async () => {

@@ -1,0 +1,257 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "dsl/parse-valid-typed-defaults",
+  "input": {
+    "dot": "\ndigraph Workflow {\n  graph [goal=\"Ship $goal\", default_max_retries=2, default_fidelity=\"summary:high\"];\n  node [shape=box, max_retries=1];\n  edge [weight=1, condition=\"outcome=success\"];\n\n  start [shape=Mdiamond];\n  subgraph cluster_review {\n    graph [label=\"Review cluster\"];\n    review [prompt=\"Review typed defaults\", timeout=5s, auto_status=true];\n  }\n  task [prompt=\"Task\", score=1.5, enabled=false];\n  done [shape=Msquare];\n\n  start -> task -> review [label=\"go\", weight=2];\n  review -> done;\n}\n"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "graph": {
+      "defaults": {
+        "edge": {
+          "condition": {
+            "value": "outcome=success",
+            "value_type": "string"
+          },
+          "weight": {
+            "value": 1,
+            "value_type": "integer"
+          }
+        },
+        "node": {
+          "max_retries": {
+            "value": 1,
+            "value_type": "integer"
+          },
+          "shape": {
+            "value": "box",
+            "value_type": "string"
+          }
+        }
+      },
+      "edges": [
+        {
+          "attrs": {
+            "condition": {
+              "value": "outcome=success",
+              "value_type": "string"
+            },
+            "label": {
+              "value": "go",
+              "value_type": "string"
+            },
+            "weight": {
+              "value": 2,
+              "value_type": "integer"
+            }
+          },
+          "source": "start",
+          "target": "task"
+        },
+        {
+          "attrs": {
+            "condition": {
+              "value": "outcome=success",
+              "value_type": "string"
+            },
+            "label": {
+              "value": "go",
+              "value_type": "string"
+            },
+            "weight": {
+              "value": 2,
+              "value_type": "integer"
+            }
+          },
+          "source": "task",
+          "target": "review"
+        },
+        {
+          "attrs": {
+            "condition": {
+              "value": "outcome=success",
+              "value_type": "string"
+            },
+            "weight": {
+              "value": 1,
+              "value_type": "integer"
+            }
+          },
+          "source": "review",
+          "target": "done"
+        }
+      ],
+      "graph_attrs": {
+        "default_fidelity": {
+          "value": "summary:high",
+          "value_type": "string"
+        },
+        "default_max_retries": {
+          "value": 2,
+          "value_type": "integer"
+        },
+        "goal": {
+          "value": "Ship $goal",
+          "value_type": "string"
+        }
+      },
+      "graph_id": "Workflow",
+      "nodes": {
+        "done": {
+          "attrs": {
+            "max_retries": {
+              "value": 1,
+              "value_type": "integer"
+            },
+            "shape": {
+              "value": "Msquare",
+              "value_type": "string"
+            }
+          },
+          "explicit_attr_keys": [
+            "shape"
+          ]
+        },
+        "review": {
+          "attrs": {
+            "auto_status": {
+              "value": true,
+              "value_type": "boolean"
+            },
+            "class": {
+              "value": "review-cluster",
+              "value_type": "string"
+            },
+            "max_retries": {
+              "value": 1,
+              "value_type": "integer"
+            },
+            "prompt": {
+              "value": "Review typed defaults",
+              "value_type": "string"
+            },
+            "shape": {
+              "value": "box",
+              "value_type": "string"
+            },
+            "timeout": {
+              "value": {
+                "raw": "5s",
+                "unit": "s",
+                "value": 5
+              },
+              "value_type": "duration"
+            }
+          },
+          "explicit_attr_keys": [
+            "auto_status",
+            "prompt",
+            "timeout"
+          ]
+        },
+        "start": {
+          "attrs": {
+            "max_retries": {
+              "value": 1,
+              "value_type": "integer"
+            },
+            "shape": {
+              "value": "Mdiamond",
+              "value_type": "string"
+            }
+          },
+          "explicit_attr_keys": [
+            "shape"
+          ]
+        },
+        "task": {
+          "attrs": {
+            "enabled": {
+              "value": false,
+              "value_type": "boolean"
+            },
+            "max_retries": {
+              "value": 1,
+              "value_type": "integer"
+            },
+            "prompt": {
+              "value": "Task",
+              "value_type": "string"
+            },
+            "score": {
+              "value": 1.5,
+              "value_type": "float"
+            },
+            "shape": {
+              "value": "box",
+              "value_type": "string"
+            }
+          },
+          "explicit_attr_keys": [
+            "enabled",
+            "prompt",
+            "score"
+          ]
+        }
+      },
+      "subgraphs": [
+        {
+          "attrs": {
+            "label": {
+              "value": "Review cluster",
+              "value_type": "string"
+            }
+          },
+          "defaults": {
+            "edge": {
+              "condition": {
+                "value": "outcome=success",
+                "value_type": "string"
+              },
+              "weight": {
+                "value": 1,
+                "value_type": "integer"
+              }
+            },
+            "node": {
+              "max_retries": {
+                "value": 1,
+                "value_type": "integer"
+              },
+              "shape": {
+                "value": "box",
+                "value_type": "string"
+              }
+            }
+          },
+          "id": "cluster_review",
+          "node_ids": [
+            "review"
+          ],
+          "subgraphs": []
+        }
+      ]
+    },
+    "result": "accepted"
+  },
+  "operation": "parse",
+  "provenance": {
+    "interfaces": [
+      "attractor.dsl.parse_dot",
+      "attractor.dsl.formatter.format_readable_dot",
+      "attractor.dsl.validate_graph",
+      "attractor.validation_preview.preview_dot_source",
+      "attractor.api.flow_sources.normalize_flow_name"
+    ],
+    "oracle": "python-dsl-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": "compat-dsl-v1"
+}

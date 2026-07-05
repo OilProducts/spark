@@ -51,7 +51,7 @@ const baseSnapshot: ConversationSnapshotResponse = {
         kind: 'command_execution',
         status: 'completed',
         title: 'Run tests',
-        command: 'pytest -q',
+        command: 'cargo test -p spark-cli',
         output: 'ok',
         file_paths: [],
       },

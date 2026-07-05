@@ -1,0 +1,98 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "artifacts": {
+      "parsed": {
+        "tool_node/tool/stdout.txt": {
+          "exists": true,
+          "text": "compat-tool"
+        }
+      },
+      "root": "__ARTIFACT_ROOT__",
+      "tree": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "tool_node"
+          },
+          {
+            "kind": "dir",
+            "path": "tool_node/tool"
+          },
+          {
+            "kind": "file",
+            "path": "tool_node/tool/stdout.txt",
+            "sha256": "7e722c1fcbad1ec91aeb588d6ce27c036ea34c7834520bc434208d62e802d4aa",
+            "size": 11
+          }
+        ],
+        "root": "__ARTIFACT_ROOT__"
+      }
+    },
+    "logs_root": {
+      "parsed": {
+        "tool_node/tool_output.txt": {
+          "exists": true,
+          "text": "compat-tool"
+        }
+      },
+      "root": "__LOGS_ROOT__",
+      "tree": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "tool_node"
+          },
+          {
+            "kind": "file",
+            "path": "tool_node/tool_output.txt",
+            "sha256": "7e722c1fcbad1ec91aeb588d6ce27c036ea34c7834520bc434208d62e802d4aa",
+            "size": 11
+          }
+        ],
+        "root": "__LOGS_ROOT__"
+      }
+    }
+  },
+  "fixture_id": "runtime/handler-tool-success-artifacts",
+  "input": {
+    "dot": "\ndigraph ToolSuccess {\n  tool_node [\n    shape=parallelogram,\n    tool.command=\"printf compat-tool\",\n    tool.artifacts.stdout=\"tool/stdout.txt\"\n  ];\n}\n"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "context_after_merge": {
+      "context.tool.exit_code": 0,
+      "context.tool.output": "compat-tool",
+      "internal.run_workdir": "__TMP__"
+    },
+    "outcome": {
+      "context_updates": {
+        "context.tool.exit_code": 0,
+        "context.tool.output": "compat-tool"
+      },
+      "failure_reason": "",
+      "notes": "compat-tool",
+      "preferred_label": "",
+      "status": "success",
+      "suggested_next_ids": []
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "attractor.handlers.HandlerRunner",
+      "built-in handler protocol",
+      "deterministic fake backend/interviewer/child launcher"
+    ],
+    "oracle": "python-handler-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "handler_tool_success_artifacts",
+  "schema_version": "compat-runtime-v1"
+}

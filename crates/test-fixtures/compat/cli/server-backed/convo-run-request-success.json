@@ -1,0 +1,461 @@
+{
+  "command": {
+    "argv": [
+      "uv",
+      "run",
+      "spark",
+      "convo",
+      "run-request",
+      "--conversation",
+      "__CONVERSATION_HANDLE__",
+      "--flow",
+      "software-development/implement-change-request.dot",
+      "--summary",
+      "Compatibility fixture request",
+      "--goal",
+      "Keep this request pending.",
+      "--base-url",
+      "__API_BASE_URL__"
+    ],
+    "cwd": "__WORKTREE__",
+    "normalized_argv": [
+      "uv",
+      "run",
+      "spark",
+      "convo",
+      "run-request",
+      "--conversation",
+      "__CONVERSATION_HANDLE__",
+      "--flow",
+      "software-development/implement-change-request.dot",
+      "--summary",
+      "Compatibility fixture request",
+      "--goal",
+      "Keep this request pending.",
+      "--base-url",
+      "__API_BASE_URL__"
+    ]
+  },
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "durable_state": {
+    "after": {
+      "conversation_state": {
+        "data": {
+          "chat_mode": "chat",
+          "conversation_handle": "__CONVERSATION_HANDLE__",
+          "conversation_id": "conversation-compat",
+          "created_at": "__TIMESTAMP__",
+          "llm_profile": null,
+          "model": null,
+          "project_path": "__PROJECT_DIR__",
+          "provider": "codex",
+          "reasoning_effort": null,
+          "revision": 3,
+          "schema_version": 5,
+          "segments": [
+            {
+              "artifact_id": "flow-run-request-__ID__",
+              "content": "",
+              "id": "segment-artifact-flow-run-request-__ID__",
+              "kind": "flow_run_request",
+              "order": 1,
+              "role": "system",
+              "source": {},
+              "status": "complete",
+              "timestamp": "__TIMESTAMP__",
+              "turn_id": "turn-assistant-compat",
+              "updated_at": "__TIMESTAMP__"
+            }
+          ],
+          "title": "New thread",
+          "turns": [
+            {
+              "content": "Ready for a compatibility run request.",
+              "id": "turn-assistant-compat",
+              "kind": "message",
+              "role": "assistant",
+              "status": "complete",
+              "timestamp": "__TIMESTAMP__"
+            }
+          ],
+          "updated_at": "__TIMESTAMP__"
+        },
+        "exists": true,
+        "format": "json",
+        "path": "__SPARK_HOME__/workspace/projects/__PROJECT_ID__/conversations/conversation-compat/state.json"
+      },
+      "flow_run_requests": {
+        "data": {
+          "conversation_id": "conversation-compat",
+          "event_log": [
+            {
+              "message": "Created flow run request flow-run-request-__ID__ for software-development/implement-change-request.dot.",
+              "timestamp": "__TIMESTAMP__"
+            }
+          ],
+          "flow_run_requests": [
+            {
+              "conversation_id": "conversation-compat",
+              "created_at": "__TIMESTAMP__",
+              "flow_name": "software-development/implement-change-request.dot",
+              "goal": "Keep this request pending.",
+              "id": "flow-run-request-__ID__",
+              "project_path": "__PROJECT_DIR__",
+              "source_segment_id": "segment-artifact-flow-run-request-__ID__",
+              "source_turn_id": "turn-assistant-compat",
+              "status": "pending",
+              "summary": "Compatibility fixture request",
+              "updated_at": "__TIMESTAMP__"
+            }
+          ],
+          "project_id": "__PROJECT_ID__",
+          "project_path": "__PROJECT_DIR__"
+        },
+        "exists": true,
+        "format": "json",
+        "path": "__SPARK_HOME__/workspace/projects/__PROJECT_ID__/flow-run-requests/conversation-compat.json"
+      }
+    },
+    "before": {
+      "conversation_state": {
+        "data": {
+          "chat_mode": "chat",
+          "conversation_handle": "__CONVERSATION_HANDLE__",
+          "conversation_id": "conversation-compat",
+          "created_at": "__TIMESTAMP__",
+          "llm_profile": null,
+          "model": null,
+          "project_path": "__PROJECT_DIR__",
+          "provider": "codex",
+          "reasoning_effort": null,
+          "revision": 2,
+          "schema_version": 5,
+          "segments": [],
+          "title": "New thread",
+          "turns": [
+            {
+              "content": "Ready for a compatibility run request.",
+              "id": "turn-assistant-compat",
+              "kind": "message",
+              "role": "assistant",
+              "status": "complete",
+              "timestamp": "__TIMESTAMP__"
+            }
+          ],
+          "updated_at": "__TIMESTAMP__"
+        },
+        "exists": true,
+        "format": "json",
+        "path": "__SPARK_HOME__/workspace/projects/__PROJECT_ID__/conversations/conversation-compat/state.json"
+      },
+      "flow_run_requests": {
+        "data": {
+          "conversation_id": "conversation-compat",
+          "event_log": [],
+          "flow_run_requests": [],
+          "project_id": "__PROJECT_ID__",
+          "project_path": "__PROJECT_DIR__"
+        },
+        "exists": true,
+        "format": "json",
+        "path": "__SPARK_HOME__/workspace/projects/__PROJECT_ID__/flow-run-requests/conversation-compat.json"
+      }
+    }
+  },
+  "environment": {
+    "selected": {
+      "ANTHROPIC_API_KEY": "<redacted>",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__CODEX_RUNTIME_ROOT__",
+      "CODEX_CI": "1",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "CODEX_MANAGED_BY_NPM": "1",
+      "CODEX_MANAGED_PACKAGE_ROOT": "__CODEX_MANAGED_PACKAGE_ROOT__",
+      "CODEX_THREAD_ID": "__PROJECT_ID__",
+      "SPARK_API_BASE_URL": "__API_BASE_URL__",
+      "SPARK_FLOWS_DIR": "__FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "selected_keys": [
+      "ANTHROPIC_API_KEY",
+      "ATTRACTOR_CODEX_RUNTIME_ROOT",
+      "CODEX_CI",
+      "CODEX_HOME",
+      "CODEX_MANAGED_BY_NPM",
+      "CODEX_MANAGED_PACKAGE_ROOT",
+      "CODEX_THREAD_ID",
+      "SPARK_API_BASE_URL",
+      "SPARK_FLOWS_DIR",
+      "SPARK_HOME"
+    ]
+  },
+  "filesystem": {
+    "after": {
+      "spark_home": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "attractor"
+          },
+          {
+            "kind": "dir",
+            "path": "attractor/runs"
+          },
+          {
+            "kind": "dir",
+            "path": "config"
+          },
+          {
+            "kind": "file",
+            "path": "config/flow-catalog.toml",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "config/triggers"
+          },
+          {
+            "kind": "dir",
+            "path": "logs"
+          },
+          {
+            "kind": "dir",
+            "path": "runtime"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/conversation-handles.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/conversations"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/conversations/conversation-compat"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/conversations/conversation-compat/events.jsonl",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/conversations/conversation-compat/state.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/flow-launches"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/flow-launches/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/flow-run-requests"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/flow-run-requests/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/project.toml",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/proposed-plans"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/proposed-plans/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/trigger-state"
+          }
+        ],
+        "exists": true,
+        "root": "__SPARK_HOME__"
+      }
+    },
+    "before": {
+      "spark_home": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "attractor"
+          },
+          {
+            "kind": "dir",
+            "path": "attractor/runs"
+          },
+          {
+            "kind": "dir",
+            "path": "config"
+          },
+          {
+            "kind": "file",
+            "path": "config/flow-catalog.toml",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "config/triggers"
+          },
+          {
+            "kind": "dir",
+            "path": "logs"
+          },
+          {
+            "kind": "dir",
+            "path": "runtime"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/conversation-handles.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/conversations"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/conversations/conversation-compat"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/conversations/conversation-compat/state.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/flow-launches"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/flow-launches/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/flow-run-requests"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/flow-run-requests/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/project.toml",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/projects/__PROJECT_ID__/proposed-plans"
+          },
+          {
+            "kind": "file",
+            "path": "workspace/projects/__PROJECT_ID__/proposed-plans/conversation-compat.json",
+            "sha256": "__SHA256__",
+            "size": "__SIZE__"
+          },
+          {
+            "kind": "dir",
+            "path": "workspace/trigger-state"
+          }
+        ],
+        "exists": true,
+        "root": "__SPARK_HOME__"
+      }
+    }
+  },
+  "fixture_id": "cli/server-backed/convo-run-request-success",
+  "item_id": "M0-I02-CLI-FILESYSTEM-FIXTURES",
+  "normalization": {
+    "tokens": {
+      "__API_BASE_URL__": "__API_BASE_URL__",
+      "__CODEX_HOME__": "__CODEX_HOME__",
+      "__CODEX_RUNTIME_ROOT__": "__CODEX_RUNTIME_ROOT__",
+      "__FLOWS_DIR__": "__FLOWS_DIR__",
+      "__OUTPUT_DIR__": "__COMPAT_FIXTURE_ROOT__/cli/server-backed",
+      "__OUTPUT__": "__COMPAT_FIXTURE_ROOT__/cli/server-backed/convo-run-request-success.json",
+      "__PROJECT_DIR__": "__PROJECT_DIR__",
+      "__SPARK_HOME__": "__SPARK_HOME__",
+      "__WORKTREE__": "__WORKTREE__"
+    }
+  },
+  "paths": {
+    "attractor_codex_runtime_root": "__CODEX_RUNTIME_ROOT__",
+    "codex_home": "__CODEX_HOME__",
+    "output": "__COMPAT_FIXTURE_ROOT__/cli/server-backed/convo-run-request-success.json",
+    "spark_flows_dir": "__FLOWS_DIR__",
+    "spark_home": "__SPARK_HOME__"
+  },
+  "process": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "{\n  \"conversation_handle\": \"__CONVERSATION_HANDLE__\",\n  \"conversation_id\": \"conversation-compat\",\n  \"flow_run_request_id\": \"flow-run-request-__ID__\",\n  \"ok\": true,\n  \"project_path\": \"__PROJECT_DIR__\",\n  \"segment_id\": \"segment-artifact-flow-run-request-__ID__\",\n  \"turn_id\": \"turn-assistant-compat\"\n}\n"
+  },
+  "provenance": {
+    "capture_tool": "scripts/compat_capture.py",
+    "captured_at_utc": "__TIMESTAMP__",
+    "oracle": "python-worktree",
+    "worktree_path": "__WORKTREE__"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "schema_version": 1
+}

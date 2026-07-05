@@ -1,0 +1,153 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "frontend/canonical-flow-model-inputs",
+  "input": {
+    "dot": "digraph CompatFrontend {\n  graph [\n    goal=\"Ship frontend contract\",\n    spark.launch_inputs=\"[{\\\"key\\\":\\\"context.ticket\\\",\\\"type\\\":\\\"string\\\",\\\"required\\\":true}]\"\n  ];\n  start [shape=Mdiamond];\n  review [shape=box, prompt=\"Review contract\", spark.writes_context=\"[\\\"context.review\\\"]\"];\n  done [shape=Msquare];\n  start -> review [condition=\"outcome=success\"];\n  review -> done;\n}",
+    "flow_name": "compat/frontend-flow"
+  },
+  "item_id": "M0-I05-FRONTEND-PACKAGING-FIXTURES",
+  "observation": {
+    "fromEditor": {
+      "defaults": {
+        "edge": {
+          "weight": 1
+        },
+        "node": {
+          "timeout": "45s"
+        }
+      },
+      "edges": [
+        {
+          "attrs": {
+            "condition": "outcome=success",
+            "spark.edge_flag": "kept",
+            "weight": 2
+          },
+          "source": "start",
+          "target": "review"
+        }
+      ],
+      "graphAttrs": {
+        "default_max_retries": 2,
+        "goal": "Ship frontend contract",
+        "spark.result_node": "done"
+      },
+      "graphId": "compat/frontend-flow",
+      "nodes": [
+        {
+          "attrs": {
+            "label": "Review contract",
+            "prompt": "Review contract",
+            "shape": "box",
+            "spark.writes_context": "[\"context.review\"]",
+            "type": "codergen"
+          },
+          "id": "review"
+        }
+      ],
+      "rawDot": null,
+      "subgraphs": [
+        {
+          "attrs": {
+            "label": "Review",
+            "spark.scope": "review"
+          },
+          "defaults": {
+            "edge": {
+              "weight": 4
+            },
+            "node": {
+              "fidelity": "summary:high"
+            }
+          },
+          "id": "cluster_review",
+          "nodeIds": [
+            "review"
+          ],
+          "subgraphs": []
+        }
+      ]
+    },
+    "fromPreview": {
+      "defaults": {
+        "edge": {
+          "spark.default_edge": "kept",
+          "weight": 2
+        },
+        "node": {
+          "spark.default_node": "kept",
+          "timeout": "45s"
+        }
+      },
+      "edges": [
+        {
+          "attrs": {
+            "condition": "outcome=success",
+            "spark.edge_flag": "kept"
+          },
+          "source": "start",
+          "target": "review"
+        }
+      ],
+      "graphAttrs": {
+        "goal": "Ship frontend contract",
+        "spark.launch_inputs": "[{\"key\":\"context.ticket\",\"type\":\"string\",\"required\":true}]",
+        "spark.result_node": "done"
+      },
+      "graphId": "compat/frontend-flow",
+      "nodes": [
+        {
+          "attrs": {
+            "label": "Review contract",
+            "prompt": "Review contract",
+            "shape": "box",
+            "spark.writes_context": "[\"context.review\"]"
+          },
+          "id": "review"
+        }
+      ],
+      "rawDot": "digraph CompatFrontend {\n  graph [\n    goal=\"Ship frontend contract\",\n    spark.launch_inputs=\"[{\\\"key\\\":\\\"context.ticket\\\",\\\"type\\\":\\\"string\\\",\\\"required\\\":true}]\"\n  ];\n  start [shape=Mdiamond];\n  review [shape=box, prompt=\"Review contract\", spark.writes_context=\"[\\\"context.review\\\"]\"];\n  done [shape=Msquare];\n  start -> review [condition=\"outcome=success\"];\n  review -> done;\n}",
+      "subgraphs": [
+        {
+          "attrs": {
+            "label": "Review",
+            "spark.scope": "review"
+          },
+          "defaults": {
+            "edge": {
+              "weight": 4
+            },
+            "node": {
+              "fidelity": "summary:high"
+            }
+          },
+          "id": "cluster_review",
+          "nodeIds": [
+            "review"
+          ],
+          "subgraphs": []
+        }
+      ]
+    },
+    "generatedDot": "digraph compat_frontend_flow {\n  graph [goal=\"Ship frontend contract\", default_max_retries=2, spark.result_node=done];\n  node [timeout=\"45s\"];\n  edge [weight=1];\n  review [label=\"Review contract\", shape=box, prompt=\"Review contract\", type=codergen, spark.writes_context=\"[\\\"context.review\\\"]\"];\n  start -> review [condition=\"outcome=success\", weight=2, spark.edge_flag=kept];\n  subgraph cluster_review {\n    graph [label=Review, spark.scope=review];\n    node [fidelity=\"summary:high\"];\n    edge [weight=4];\n    review;\n  }\n}\n"
+  },
+  "provenance": {
+    "interfaces": [
+      "frontend Vitest contract runner",
+      "public TypeScript API parser functions",
+      "public TypeScript request builder functions",
+      "workspace live-event URL helper"
+    ],
+    "oracle": "python-backed-typescript-frontend-contract"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "canonical_flow_model_inputs",
+  "schema_version": "compat-frontend-v1"
+}

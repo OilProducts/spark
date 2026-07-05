@@ -150,6 +150,7 @@ export function ProjectConversationSurface({
                                 onKeyDown={onChatComposerKeyDown}
                                 aria-label="Message"
                                 placeholder="Describe the spec change or requirement you want to work on..."
+                                className="h-[clamp(6rem,18vh,12rem)] overflow-y-auto resize-y [field-sizing:fixed]"
                                 rows={4}
                             />
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

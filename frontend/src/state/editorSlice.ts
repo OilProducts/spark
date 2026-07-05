@@ -1,5 +1,11 @@
 import { type StateCreator } from 'zustand'
 import {
+    cloneCanonicalDefaultsScope,
+    cloneCanonicalSubgraphs,
+    type CanonicalDefaultsScope,
+    type CanonicalSubgraph,
+} from '@/lib/canonicalFlowModel'
+import {
     buildDiagnosticMaps,
     DEFAULT_WORKING_DIRECTORY,
     deriveGraphAttrErrors,
@@ -33,6 +39,21 @@ const graphAttrsEqual = (left: Record<string, unknown>, right: Record<string, un
     return leftKeys.every((key) => left[key] === right[key])
 }
 
+const EMPTY_CANONICAL_DEFAULTS = cloneCanonicalDefaultsScope()
+
+const canonicalStructureEqual = (
+    leftDefaults: CanonicalDefaultsScope,
+    leftSubgraphs: CanonicalSubgraph[],
+    rightDefaults: CanonicalDefaultsScope,
+    rightSubgraphs: CanonicalSubgraph[],
+) => JSON.stringify({
+    defaults: leftDefaults,
+    subgraphs: leftSubgraphs,
+}) === JSON.stringify({
+    defaults: rightDefaults,
+    subgraphs: rightSubgraphs,
+})
+
 const deriveNextGraphAttrState = (
     state: Pick<EditorSlice, 'graphAttrs' | 'graphAttrErrors' | 'graphAttrsUserEditVersion'>,
     attrs: EditorSlice['graphAttrs'],
@@ -54,6 +75,26 @@ const deriveNextGraphAttrState = (
         graphAttrsUserEditVersion: markDirty
             ? state.graphAttrsUserEditVersion + 1
             : state.graphAttrsUserEditVersion,
+    }
+}
+
+const deriveNextCanonicalStructureState = (
+    state: Pick<EditorSlice, 'canonicalDefaults' | 'canonicalSubgraphs' | 'canonicalStructureUserEditVersion'>,
+    defaults: CanonicalDefaultsScope,
+    subgraphs: CanonicalSubgraph[],
+    markDirty: boolean,
+) => {
+    const nextDefaults = cloneCanonicalDefaultsScope(defaults)
+    const nextSubgraphs = cloneCanonicalSubgraphs(subgraphs)
+    if (canonicalStructureEqual(state.canonicalDefaults, state.canonicalSubgraphs, nextDefaults, nextSubgraphs)) {
+        return state
+    }
+    return {
+        canonicalDefaults: nextDefaults,
+        canonicalSubgraphs: nextSubgraphs,
+        canonicalStructureUserEditVersion: markDirty
+            ? state.canonicalStructureUserEditVersion + 1
+            : state.canonicalStructureUserEditVersion,
     }
 }
 
@@ -180,6 +221,30 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 true,
             )
         }),
+    canonicalDefaults: EMPTY_CANONICAL_DEFAULTS,
+    canonicalSubgraphs: [],
+    canonicalStructureUserEditVersion: 0,
+    setCanonicalDefaults: (defaults) =>
+        set((state) => deriveNextCanonicalStructureState(
+            state,
+            defaults,
+            state.canonicalSubgraphs,
+            true,
+        )),
+    setCanonicalSubgraphs: (subgraphs) =>
+        set((state) => deriveNextCanonicalStructureState(
+            state,
+            state.canonicalDefaults,
+            subgraphs,
+            true,
+        )),
+    replaceCanonicalFlowScopes: (defaults, subgraphs) =>
+        set((state) => deriveNextCanonicalStructureState(
+            state,
+            defaults,
+            subgraphs,
+            false,
+        )),
     diagnostics: [],
     setDiagnostics: (diagnostics) =>
         set(() => {

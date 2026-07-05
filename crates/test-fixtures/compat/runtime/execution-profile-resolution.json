@@ -1,0 +1,102 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "runtime/execution-profile-resolution",
+  "input": {
+    "config_dir": "__CONFIG_DIR__"
+  },
+  "item_id": "M0-I04-DSL-RUNTIME-FIXTURES",
+  "observation": {
+    "default_selection": {
+      "profile": {
+        "capabilities": [
+          "filesystem",
+          "subprocess"
+        ],
+        "enabled": true,
+        "id": "native-fast",
+        "image": null,
+        "label": "Native Fast",
+        "metadata": {},
+        "mode": "native"
+      },
+      "selected_profile_id": "native-fast",
+      "selection_source": "spark_default"
+    },
+    "explicit_selection": {
+      "profile": {
+        "capabilities": [
+          "filesystem",
+          "subprocess"
+        ],
+        "enabled": true,
+        "id": "native-fast",
+        "image": null,
+        "label": "Native Fast",
+        "metadata": {},
+        "mode": "native"
+      },
+      "selected_profile_id": "native-fast",
+      "selection_source": "explicit"
+    },
+    "settings_view": {
+      "config": {
+        "exists": true,
+        "filename": "execution-profiles.toml",
+        "loaded": true,
+        "path": "__CONFIG_DIR__/execution-profiles.toml",
+        "synthesized_native_default": false
+      },
+      "default_execution_profile_id": "native-fast",
+      "execution_modes": [
+        "native",
+        "local_container"
+      ],
+      "profiles": [
+        {
+          "capabilities": [
+            "filesystem"
+          ],
+          "enabled": false,
+          "id": "container",
+          "image": "spark-worker:compat",
+          "label": "Container",
+          "metadata": {
+            "worker": "spark-server worker run-node"
+          },
+          "mode": "local_container"
+        },
+        {
+          "capabilities": [
+            "filesystem",
+            "subprocess"
+          ],
+          "enabled": true,
+          "id": "native-fast",
+          "image": null,
+          "label": "Native Fast",
+          "metadata": {},
+          "mode": "native"
+        }
+      ],
+      "validation_errors": []
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "attractor.execution.load_execution_profile_config",
+      "attractor.execution.resolve_execution_profile_by_id",
+      "attractor.execution.public_execution_placement_settings"
+    ],
+    "oracle": "python-execution-profile-public-interfaces"
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "scenario": "execution_profile_resolution",
+  "schema_version": "compat-runtime-v1"
+}

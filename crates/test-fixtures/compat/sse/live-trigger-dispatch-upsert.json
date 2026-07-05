@@ -1,0 +1,173 @@
+{
+  "decisions": [
+    "CD-RR-007",
+    "CD-RR-010",
+    "CD-RR-013"
+  ],
+  "fixture_id": "sse/live-trigger-dispatch-upsert",
+  "frames": [
+    {
+      "data": {
+        "cursor": null,
+        "payload": {
+          "triggers": []
+        },
+        "project_path": "__PROJECT_DIR__",
+        "resource": {
+          "id": null,
+          "kind": "trigger"
+        },
+        "type": "trigger.snapshot"
+      },
+      "data_text": "{\"type\":\"trigger.snapshot\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":null},\"cursor\":null,\"payload\":{\"triggers\":[]}}",
+      "event": "message",
+      "kind": "event"
+    },
+    {
+      "data": {
+        "cursor": null,
+        "payload": {
+          "trigger": {
+            "action": {
+              "flow_name": "software-development/implement-change-request.dot",
+              "project_path": "__PROJECT_DIR__",
+              "static_context": {
+                "origin": "compat"
+              }
+            },
+            "created_at": "2026-06-25T01:22:46Z",
+            "enabled": true,
+            "id": "trigger-861e82eb1e85",
+            "name": "Compat webhook",
+            "protected": false,
+            "source": {
+              "webhook_key": "vcjC9rl-A-IZR4R8"
+            },
+            "source_type": "webhook",
+            "state": {
+              "last_error": null,
+              "last_fired_at": null,
+              "last_result": null,
+              "next_run_at": null,
+              "recent_history": []
+            },
+            "updated_at": "2026-06-25T01:22:46Z",
+            "webhook_secret": "weGKMZTMIAJ8C1fKgt-q_IQ_wZ1hHz8u"
+          },
+          "type": "trigger_upsert"
+        },
+        "project_path": "__PROJECT_DIR__",
+        "resource": {
+          "id": "trigger-861e82eb1e85",
+          "kind": "trigger"
+        },
+        "type": "trigger.upsert"
+      },
+      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-861e82eb1e85\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.dot\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-25T01:22:46Z\",\"enabled\":true,\"id\":\"trigger-861e82eb1e85\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"vcjC9rl-A-IZR4R8\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":null,\"last_result\":null,\"next_run_at\":null,\"recent_history\":[]},\"updated_at\":\"2026-06-25T01:22:46Z\",\"webhook_secret\":\"weGKMZTMIAJ8C1fKgt-q_IQ_wZ1hHz8u\"},\"type\":\"trigger_upsert\"}}",
+      "event": "message",
+      "kind": "event"
+    },
+    {
+      "data": {
+        "cursor": null,
+        "payload": {
+          "trigger": {
+            "action": {
+              "flow_name": "software-development/implement-change-request.dot",
+              "project_path": "__PROJECT_DIR__",
+              "static_context": {
+                "origin": "compat"
+              }
+            },
+            "created_at": "2026-06-25T01:22:46Z",
+            "enabled": true,
+            "id": "trigger-861e82eb1e85",
+            "name": "Compat webhook",
+            "protected": false,
+            "source": {
+              "webhook_key": "vcjC9rl-A-IZR4R8"
+            },
+            "source_type": "webhook",
+            "state": {
+              "last_error": null,
+              "last_fired_at": "2026-06-25T01:22:46Z",
+              "last_result": "success",
+              "next_run_at": null,
+              "recent_history": [
+                {
+                  "message": "Trigger fired successfully.",
+                  "run_id": "run-18bc2e65af9f0616",
+                  "status": "success",
+                  "timestamp": "2026-06-25T01:22:46Z"
+                }
+              ]
+            },
+            "updated_at": "2026-06-25T01:22:46Z"
+          },
+          "type": "trigger_upsert"
+        },
+        "project_path": "__PROJECT_DIR__",
+        "resource": {
+          "id": "trigger-861e82eb1e85",
+          "kind": "trigger"
+        },
+        "type": "trigger.upsert"
+      },
+      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-861e82eb1e85\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.dot\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-25T01:22:46Z\",\"enabled\":true,\"id\":\"trigger-861e82eb1e85\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"vcjC9rl-A-IZR4R8\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":\"2026-06-25T01:22:46Z\",\"last_result\":\"success\",\"next_run_at\":null,\"recent_history\":[{\"message\":\"Trigger fired successfully.\",\"run_id\":\"run-18bc2e65af9f0616\",\"status\":\"success\",\"timestamp\":\"2026-06-25T01:22:46Z\"}]},\"updated_at\":\"2026-06-25T01:22:46Z\"},\"type\":\"trigger_upsert\"}}",
+      "event": "message",
+      "kind": "event"
+    }
+  ],
+  "item_id": "M6-I04-TRIGGER-REGRESSION-AND-LIVE-GATE",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "rust-spark-server",
+    "server_argv": [
+      "target/debug/spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "42327",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": null,
+    "headers": {},
+    "method": "GET",
+    "path": "/workspace/api/live/events",
+    "query": {
+      "include_triggers": true,
+      "triggers_project_path": "__PROJECT_DIR__"
+    }
+  },
+  "requirements": [
+    "RR-WKF-004",
+    "RR-WKF-005"
+  ],
+  "response": {
+    "headers": {
+      "cache-control": "no-cache",
+      "connection": "keep-alive",
+      "content-type": "text/event-stream; charset=utf-8"
+    },
+    "status_code": 200
+  },
+  "schema_version": "compat-sse-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

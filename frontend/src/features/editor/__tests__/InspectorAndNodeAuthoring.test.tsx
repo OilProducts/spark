@@ -186,4 +186,55 @@ describe('Inspector and node authoring behavior', () => {
       ),
     ).toEqual({ join_policy: 'k_of_n', join_k: '2' })
   })
+
+  it('renders and edits full manager-loop authoring fields in the node inspector', () => {
+    const onPropertyChange = vi.fn()
+    render(
+      <NodeInspectorPanel
+        selectedNodeId="manager"
+        selectedNode={{
+          id: 'manager',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Manager',
+            shape: 'house',
+            type: 'stack.manager_loop',
+            'manager.poll_interval': '25ms',
+            'manager.max_cycles': '4',
+            'manager.stop_condition': 'context.stack.child.ready=true',
+            'manager.actions': 'observe,steer',
+            'manager.steer_cooldown': '2s',
+            'stack.child_autostart': false,
+          },
+        }}
+        graphAttrs={{ 'stack.child_dotfile': 'child.dot' }}
+        visibility={getNodeFieldVisibility('stack.manager_loop')}
+        readsContextDraft=""
+        readsContextError={null}
+        writesContextDraft=""
+        writesContextError={null}
+        showAdvanced={false}
+        nodeFieldDiagnostics={{}}
+        selectedNodeExtensionEntries={[]}
+        selectedNodeToolHookPreWarning={null}
+        selectedNodeToolHookPostWarning={null}
+        selectedNodeShapeTypeMismatchWarning={null}
+        onPropertyChange={onPropertyChange}
+        onOpenGraphChildSettings={vi.fn()}
+        onReadsContextChange={vi.fn()}
+        onWritesContextChange={vi.fn()}
+        onSetShowAdvanced={vi.fn()}
+        onNodeExtensionValueChange={vi.fn()}
+        onNodeExtensionRemove={vi.fn()}
+        onNodeExtensionAdd={vi.fn()}
+        renderFieldDiagnostics={vi.fn(() => null)}
+      />,
+    )
+
+    fireEvent.change(screen.getByTestId('node-attr-input-manager.steer_cooldown'), { target: { value: '5s' } })
+    expect(onPropertyChange).toHaveBeenCalledWith('manager.steer_cooldown', '5s')
+
+    fireEvent.click(screen.getByTestId('node-attr-checkbox-stack.child_autostart'))
+    expect(onPropertyChange).toHaveBeenCalledWith('stack.child_autostart', true)
+  })
 })

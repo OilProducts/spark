@@ -1,0 +1,96 @@
+{
+  "decisions": [
+    "CD-CODING-AGENT-RUST-007",
+    "CD-CODING-AGENT-RUST-012"
+  ],
+  "fixture_id": "agent/m3-tool-event-truncation",
+  "input": {
+    "error_tool": "grep",
+    "probe": "public spark-agent-adapter ToolRegistry dispatch API",
+    "success_tool": "shell"
+  },
+  "item_id": "M3-I2",
+  "observation": {
+    "recoverable_error": {
+      "event_error_matches_full_error": true,
+      "events": [
+        {
+          "data": {
+            "arguments": {},
+            "tool_call_id": "call-error",
+            "tool_name": "grep"
+          },
+          "kind": "tool_call_start"
+        },
+        {
+          "data": {
+            "error": {
+              "exit_code": 2,
+              "stderr": "ERROR-START\n0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\nERROR-END"
+            },
+            "model_content": "[WARNING: Tool output was truncated. First 81 characters were removed. The full output is available in the event stream.]\n\nMNOPQRSTUVWXYZ\nERROR-END",
+            "tool_call_id": "call-error",
+            "tool_name": "grep"
+          },
+          "kind": "tool_call_end"
+        }
+      ],
+      "full_error": {
+        "exit_code": 2,
+        "stderr": "ERROR-START\n0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\nERROR-END"
+      },
+      "result": {
+        "content": "[WARNING: Tool output was truncated. First 81 characters were removed. The full output is available in the event stream.]\n\nMNOPQRSTUVWXYZ\nERROR-END",
+        "is_error": true,
+        "tool_call_id": "call-error"
+      },
+      "result_has_truncation_marker": true
+    },
+    "success": {
+      "event_output_matches_full_output": true,
+      "events": [
+        {
+          "data": {
+            "arguments": {},
+            "tool_call_id": "call-success",
+            "tool_name": "shell"
+          },
+          "kind": "tool_call_start"
+        },
+        {
+          "data": {
+            "model_content": "SUCCESS-STAR\n\n[WARNING: Tool output was truncated. 64 characters were removed from the middle. The full output is available in the event stream. If you need to see specific parts, re-run the tool with more targeted parameters.]\n\n\nSUCCESS-END",
+            "output": "SUCCESS-START\nabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\nSUCCESS-END",
+            "tool_call_id": "call-success",
+            "tool_name": "shell"
+          },
+          "kind": "tool_call_end"
+        }
+      ],
+      "full_output": "SUCCESS-START\nabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\nSUCCESS-END",
+      "result": {
+        "content": "SUCCESS-STAR\n\n[WARNING: Tool output was truncated. 64 characters were removed from the middle. The full output is available in the event stream. If you need to see specific parts, re-run the tool with more targeted parameters.]\n\n\nSUCCESS-END",
+        "is_error": false,
+        "tool_call_id": "call-success"
+      },
+      "result_has_truncation_marker": true
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "spark_agent_adapter::ToolRegistry",
+      "spark_agent_adapter::ToolDispatchContext",
+      "spark_agent_adapter::ToolDispatchEvent",
+      "unified_llm_adapter::ToolResult"
+    ],
+    "oracle": "rust-spark-agent-adapter-public-dispatch-api"
+  },
+  "requirements": [
+    "REQ-004",
+    "REQ-006",
+    "REQ-009",
+    "REQ-012"
+  ],
+  "scenario": "m3_tool_event_truncation",
+  "schema_version": "compat-agent-v1"
+}

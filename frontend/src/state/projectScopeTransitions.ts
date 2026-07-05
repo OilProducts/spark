@@ -43,6 +43,9 @@ type ProjectScopeTransitionState = Pick<
     | 'graphAttrs'
     | 'graphAttrErrors'
     | 'graphAttrsUserEditVersion'
+    | 'canonicalDefaults'
+    | 'canonicalSubgraphs'
+    | 'canonicalStructureUserEditVersion'
     | 'diagnostics'
     | 'nodeDiagnostics'
     | 'edgeDiagnostics'
@@ -128,6 +131,9 @@ const preserveEditorSession = (state: AppState) => ({
     graphAttrs: state.graphAttrs,
     graphAttrErrors: state.graphAttrErrors,
     graphAttrsUserEditVersion: state.graphAttrsUserEditVersion,
+    canonicalDefaults: state.canonicalDefaults,
+    canonicalSubgraphs: state.canonicalSubgraphs,
+    canonicalStructureUserEditVersion: state.canonicalStructureUserEditVersion,
     diagnostics: state.diagnostics,
     nodeDiagnostics: state.nodeDiagnostics,
     edgeDiagnostics: state.edgeDiagnostics,

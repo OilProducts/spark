@@ -113,11 +113,7 @@ describe('buildProjectsHomeViewModel', () => {
           ],
         },
       },
-      pendingSend: {
-        conversationId: 'conversation-1',
-        createdAt: '2026-03-24T18:01:10Z',
-        startedFromRevision: 0,
-      },
+      pendingConversationTurn: null,
       projectGitMetadata: {
         '/tmp/project-alpha': {
           branch: 'main',
@@ -148,41 +144,31 @@ describe('buildProjectsHomeViewModel', () => {
     expect(viewModel.isChatInputDisabled).toBe(true)
     expect(viewModel.chatSendButtonLabel).toBe('Thinking...')
     expect(viewModel.hasRenderableConversationHistory).toBe(true)
-    expect(viewModel.activeConversationHistory).toHaveLength(2)
-    expect(viewModel.activeConversationHistory).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: 'user',
-          content: 'Continue',
-        }),
-      ]),
-    )
+    expect(viewModel.activeConversationHistory.at(-1)).toMatchObject({
+      role: 'assistant',
+      status: 'pending',
+    })
   })
 
-  it('uses pending send state for composer controls without adding a timeline row', () => {
-    const completeSnapshot = {
+  it('uses pending send state for composer controls without appending timeline messages', () => {
+    const record = hydrateConversationRecordFromSnapshot({
       ...snapshot,
-      turns: snapshot.turns.map((turn) => (
-        turn.role === 'assistant'
-          ? { ...turn, status: 'complete' as const, content: 'Done.' }
-          : turn
-      )),
-    }
+      turns: snapshot.turns.slice(0, 1),
+    })
     const viewModel = buildProjectsHomeViewModel({
       activeConversationId: 'conversation-1',
-      activeConversationRecord: hydrateConversationRecordFromSnapshot(completeSnapshot),
+      activeConversationRecord: record,
       activeProjectPath: '/tmp/project-alpha',
       activeProjectScope,
       conversationCache: {
         conversationsById: {
-          'conversation-1': hydrateConversationRecordFromSnapshot(completeSnapshot),
+          'conversation-1': record,
         },
         summariesByProjectPath: {},
       },
-      pendingSend: {
+      pendingConversationTurn: {
         conversationId: 'conversation-1',
-        createdAt: '2026-03-24T18:01:10Z',
-        startedFromRevision: 0,
+        afterRevision: record.revision,
       },
       projectGitMetadata: {},
       uiDefaults: {
@@ -192,8 +178,12 @@ describe('buildProjectsHomeViewModel', () => {
       },
     })
 
-    expect(viewModel.isChatInputDisabled).toBe(true)
     expect(viewModel.chatSendButtonLabel).toBe('Sending...')
-    expect(viewModel.activeConversationHistory).toHaveLength(2)
+    expect(viewModel.isChatInputDisabled).toBe(true)
+    expect(viewModel.activeConversationHistory).toHaveLength(1)
+    expect(viewModel.activeConversationHistory[0]).toMatchObject({
+      role: 'user',
+      content: 'Start planning.',
+    })
   })
 })

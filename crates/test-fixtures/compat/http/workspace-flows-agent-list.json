@@ -1,0 +1,94 @@
+{
+  "decisions": [
+    "CD-RR-001",
+    "CD-RR-013",
+    "CD-RR-015"
+  ],
+  "fixture_id": "http/workspace-flows-agent-list",
+  "item_id": "M0-I03-HTTP-SSE-FIXTURES",
+  "provenance": {
+    "environment": {
+      "ATTRACTOR_CODEX_RUNTIME_ROOT": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+      "CODEX_HOME": "__CODEX_HOME__",
+      "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
+      "SPARK_HOME": "__SPARK_HOME__"
+    },
+    "oracle": "python-spark-server",
+    "server_argv": [
+      "uv",
+      "run",
+      "spark-server",
+      "serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "58923",
+      "--data-dir",
+      "__SPARK_HOME__",
+      "--flows-dir",
+      "__SPARK_FLOWS_DIR__"
+    ]
+  },
+  "request": {
+    "body": null,
+    "headers": {},
+    "method": "GET",
+    "path": "/workspace/api/flows",
+    "query": {
+      "surface": "agent"
+    }
+  },
+  "requirements": [
+    "RR-VAL-001",
+    "RR-VAL-002"
+  ],
+  "response": {
+    "body": {
+      "json": [
+        {
+          "description": "A minimal starter flow that plans a small change, executes it, and summarizes the outcome.",
+          "effective_launch_policy": "agent_requestable",
+          "execution_lock": null,
+          "graph_goal": "Inspect the repository, make one targeted improvement, and summarize the result.",
+          "graph_label": "Simple Linear Workflow",
+          "launch_policy": "agent_requestable",
+          "name": "examples/simple-linear.dot",
+          "title": "Simple Linear Workflow"
+        },
+        {
+          "description": "Read an approved change request from changes/<CR-id>/request.md, keep runtime state under .spark/change-requests/<CR-id>/, implement the required work, evaluate completion against the durable request, and write changes/<CR-id>/result.md when the repository is ready.",
+          "effective_launch_policy": "agent_requestable",
+          "execution_lock": null,
+          "graph_goal": "Implement an approved durable change request in the repository, evaluate whether the requested change is completed in full, record the shipped result, and iterate until the result is ready.",
+          "graph_label": "Implement Change Request",
+          "launch_policy": "agent_requestable",
+          "name": "software-development/implement-change-request.dot",
+          "title": "Implement Change Request"
+        },
+        {
+          "description": "A greenfield software-development program flow. It creates committed spec packages under specs/<slug>/, stores workflow state under .spark/spec-implementation/<slug>/, refreshes .spark/spec-implementation/current/ as a stable runtime alias to the active workspace, surfaces the committed spec package through current/spec/, extracts a requirement ledger, proposes an architecture, plans milestones, dispatches a milestone worker as a child flow, and audits conformance until the specification is covered or the effort is blocked.",
+          "effective_launch_policy": "agent_requestable",
+          "execution_lock": null,
+          "graph_goal": "Implement a written specification in the repository by turning the spec into requirements, architecture, milestones, and validated milestone deliveries until all in-scope requirements are covered or the effort is blocked.",
+          "graph_label": "Implement Spec Program",
+          "launch_policy": "agent_requestable",
+          "name": "software-development/spec-implementation/implement-spec.dot",
+          "title": "Implement Spec Program"
+        }
+      ],
+      "kind": "json"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status_code": 200
+  },
+  "schema_version": "compat-http-v1",
+  "server": {
+    "base_url": "__API_BASE_URL__",
+    "codex_home": "__CODEX_HOME__",
+    "flows_dir": "__SPARK_FLOWS_DIR__",
+    "runtime_root": "__ATTRACTOR_CODEX_RUNTIME_ROOT__",
+    "spark_home": "__SPARK_HOME__"
+  }
+}

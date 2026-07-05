@@ -1,0 +1,222 @@
+{
+  "decisions": [
+    "CD-CODING-AGENT-RUST-001",
+    "CD-CODING-AGENT-RUST-003",
+    "CD-CODING-AGENT-RUST-004",
+    "CD-CODING-AGENT-RUST-011",
+    "CD-CODING-AGENT-RUST-012"
+  ],
+  "fixture_id": "agent/m6-integration-boundary-snapshot",
+  "input": {
+    "chat_provider": "codex",
+    "codergen_provider": "openai-compatible",
+    "profile": "team-profile",
+    "selectors": [
+      "codex",
+      "openai-compatible",
+      "openai",
+      "anthropic",
+      "gemini"
+    ]
+  },
+  "item_id": "M6-I3",
+  "observation": {
+    "codergen_runtime": {
+      "outcome": {
+        "context_updates": {
+          "context.allowed": "done",
+          "last_response": "codergen completed",
+          "last_stage": "task"
+        },
+        "failure_reason": "",
+        "notes": "codergen completed",
+        "preferred_label": "done",
+        "status": "success",
+        "suggested_next_ids": []
+      },
+      "request": {
+        "llm_profile": "team-profile",
+        "model": "profile-model",
+        "provider": "openai_compatible",
+        "reasoning_effort": "high",
+        "response_contract": "status_envelope",
+        "write_contract": {
+          "allowed_keys": [
+            "context.allowed"
+          ],
+          "parse_error": ""
+        }
+      }
+    },
+    "facade_events": {
+      "assistant_message": "Facade answer.",
+      "channels": [
+        "reasoning",
+        "assistant"
+      ],
+      "event_kinds": [
+        "session_start",
+        "content_delta",
+        "model_tool_call_start",
+        "tool_call_started",
+        "tool_call_failed",
+        "token_usage_updated",
+        "warning",
+        "request_user_input_requested",
+        "content_completed",
+        "turn_limit",
+        "processing_end",
+        "session_end"
+      ],
+      "execution_tool_events": [
+        {
+          "kind": "tool_call_started",
+          "output": null,
+          "status": "running",
+          "tool_kind": "command_execution"
+        },
+        {
+          "kind": "tool_call_failed",
+          "output": "recoverable tool failure visible to model",
+          "status": "failed",
+          "tool_kind": "command_execution"
+        }
+      ],
+      "lifecycle": [
+        "session_start",
+        "turn_limit",
+        "processing_end",
+        "session_end"
+      ],
+      "model_tool_events": [
+        {
+          "kind": "model_tool_call_start",
+          "status": "proposed",
+          "tool_kind": "model_tool_call"
+        }
+      ],
+      "request_user_input": [
+        {
+          "answers": {},
+          "questions": [
+            {
+              "allow_other": false,
+              "header": "Decision",
+              "id": "decision",
+              "is_secret": false,
+              "options": [
+                {
+                  "description": "Proceed",
+                  "label": "Continue"
+                }
+              ],
+              "question": "Continue?",
+              "question_type": "MULTIPLE_CHOICE"
+            }
+          ],
+          "request_id": "request-1",
+          "status": "pending"
+        }
+      ],
+      "usage_totals": [
+        12
+      ],
+      "warnings": [
+        "bounded warning"
+      ]
+    },
+    "failures": {
+      "recoverable_codergen": {
+        "context_updates": {},
+        "failure_kind": "runtime",
+        "failure_reason": "recoverable tool failure",
+        "notes": "",
+        "preferred_label": "",
+        "retryable": true,
+        "status": "fail",
+        "suggested_next_ids": []
+      },
+      "unrecoverable_chat": {
+        "kind": "auth_error",
+        "message": "auth failed",
+        "retryable": false
+      }
+    },
+    "selectors": {
+      "anthropic": "anthropic",
+      "codex": "codex",
+      "gemini": "gemini",
+      "openai": "openai",
+      "openai-compatible": "openai_compatible"
+    },
+    "workspace_snapshot": {
+      "assistant_turn": {
+        "content": "Workspace answer.",
+        "role": "assistant",
+        "status": "complete",
+        "token_usage": {
+          "total": {
+            "cachedInputTokens": 0,
+            "inputTokens": 3,
+            "outputTokens": 4,
+            "totalTokens": 7
+          }
+        }
+      },
+      "conversation_id": "conversation-m6-workspace",
+      "llm_profile": "team-profile",
+      "model": "profile-model",
+      "provider": "codex",
+      "raw_log_directions": [
+        "incoming"
+      ],
+      "reasoning_effort": "high",
+      "segments": [
+        {
+          "content": "reasoning through public service",
+          "kind": "reasoning",
+          "status": "streaming",
+          "tool_call": null
+        },
+        {
+          "content": "",
+          "kind": "tool_call",
+          "status": "completed",
+          "tool_call": {
+            "command": "pwd",
+            "id": "workspace-tool-1",
+            "kind": "command_execution",
+            "output": "workspace output",
+            "output_size": 16,
+            "output_truncated": false,
+            "status": "completed",
+            "title": "Run command"
+          }
+        },
+        {
+          "content": "Workspace answer.",
+          "kind": "assistant_message",
+          "status": "complete",
+          "tool_call": null
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "interfaces": [
+      "spark.chat.session.UnifiedAgentChatSession",
+      "spark.chat.service.ProjectChatService",
+      "attractor.api.codex_backends.ProviderRouterBackend",
+      "attractor.handlers.HandlerRunner"
+    ],
+    "oracle": "m6-public-python-facade-workspace-codergen-boundary"
+  },
+  "requirements": [
+    "REQ-001",
+    "REQ-004",
+    "REQ-014",
+    "REQ-015"
+  ],
+  "scenario": "m6_integration_boundary_snapshot",
+  "schema_version": "compat-agent-v1"
+}
