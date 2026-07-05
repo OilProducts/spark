@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -213,80 +214,48 @@ impl CodexAppServerBackend {
         &self,
         request: AgentRequestUserInputAnswerRequest,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
-        let thread_id = metadata_string(
-            &request.metadata,
-            &[
-                "spark.runtime.codex_app_server.thread_id",
-                "codex_app_server.thread_id",
-                "codex_thread_id",
-            ],
-        )
-        .ok_or_else(|| {
-            CodexAppServerError::configuration(
-                "codex app-server request-user-input answer requires a persisted thread id",
-            )
-        })?;
-        let turn_id = metadata_string(
-            &request.metadata,
-            &[
-                "spark.runtime.codex_app_server.turn_id",
-                "codex_app_server.turn_id",
-                "codex_turn_id",
-            ],
-        )
-        .or_else(|| non_empty(&request.assistant_turn_id).map(str::to_string))
-        .ok_or_else(|| {
-            CodexAppServerError::configuration(
-                "codex app-server request-user-input answer requires a persisted turn id",
-            )
-        })?;
-        let answer_content = request_user_input_answer_content(
-            &request.answers,
-            request.request_user_input.as_ref(),
-        );
-        if answer_content.trim().is_empty() {
-            return Ok(thread_resume_failure_output(
+        let answers = match request_user_input_answer_payload(&request) {
+            Ok(answers) => answers,
+            Err(failure) => {
+                return Ok(request_user_input_resume_failure_output(
+                    request.request_id.as_str(),
+                    failure,
+                ));
+            }
+        };
+        let Some(pending) = find_pending_request_user_input(&request) else {
+            return Ok(request_user_input_resume_failure_output(
                 request.request_id.as_str(),
                 AgentThreadResumeFailure {
                     message:
-                        "request-user-input answer could not resume because no answers were supplied."
+                        "request-user-input answer could not resume because the live request is no longer pending."
                             .to_string(),
-                    error_code: Some("request_user_input_missing_answers".to_string()),
+                    error_code: Some("request_user_input_not_pending".to_string()),
                     details: Some(json!({ "request_id": request.request_id })),
                 },
             ));
-        }
-        let trace_path = codex_jsonrpc_trace_enabled()
-            .then(|| {
-                metadata_string(&request.metadata, &[CODEX_JSONRPC_TRACE_PATH_METADATA_KEY])
-                    .map(PathBuf::from)
-            })
-            .flatten();
-        let mut client = CodexAppServerClient::connect_with_trace_path(
-            PathBuf::from(&request.project_path),
-            trace_path,
-        )?;
-        client.steer_turn(&thread_id, &turn_id, &answer_content)?;
+        };
+        pending.deliver_answers(answers.clone());
         Ok(AgentTurnOutput {
             events: vec![TurnStreamEvent {
-                kind: TurnStreamEventKind::Other("steering_injected".to_string()),
+                kind: TurnStreamEventKind::Other("request_user_input_answer_delivered".to_string()),
                 channel: None,
                 source: TurnStreamSource {
                     backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
-                    app_thread_id: Some(thread_id),
-                    app_turn_id: Some(turn_id),
-                    item_id: non_empty(&request.request_id).map(str::to_string),
-                    raw_kind: Some("turn_steer".to_string()),
+                    app_thread_id: pending.app_thread_id.clone(),
+                    app_turn_id: pending.app_turn_id.clone(),
+                    item_id: Some(pending.request_id.clone()),
+                    raw_kind: Some("request_user_input_answer_delivered".to_string()),
                     ..TurnStreamSource::default()
                 },
-                content_delta: Some(answer_content.clone()),
-                message: Some(answer_content),
+                content_delta: None,
+                message: Some("request-user-input answer delivered.".to_string()),
                 tool_call: None,
-                request_user_input: None,
+                request_user_input: Some(request_user_input_response_payload(&answers)),
                 token_usage: None,
                 error: None,
                 error_code: None,
-                details: None,
+                details: Some(json!({ "request_id": pending.request_id })),
                 phase: Some("request_user_input_answer".to_string()),
                 status: Some("delivered".to_string()),
             }],
@@ -353,6 +322,7 @@ pub struct CodexAppServerClient {
     next_request_id: u64,
     pending_messages: VecDeque<Value>,
     pending_responses: BTreeMap<String, VecDeque<Value>>,
+    pending_request_user_input: Option<PendingRequestUserInputResponse>,
     trace_sink: Option<CodexJsonrpcTraceSink>,
 }
 
@@ -409,6 +379,7 @@ impl CodexAppServerClient {
             next_request_id: 0,
             pending_messages: VecDeque::new(),
             pending_responses: BTreeMap::new(),
+            pending_request_user_input: None,
             trace_sink: trace_path.map(CodexJsonrpcTraceSink::new),
         };
         let response = client.send_request(
@@ -658,6 +629,7 @@ impl CodexAppServerClient {
                 }
             }
             events.extend(normalized);
+            self.answer_pending_request_user_input()?;
             if completed {
                 break;
             }
@@ -794,17 +766,15 @@ impl CodexAppServerClient {
         ) {
             json!({"decision": "acceptForSession"})
         } else if method == "item/tool/requestUserInput" {
-            let empty = Map::new();
-            request_user_input_empty_response(
-                message
-                    .get("params")
-                    .and_then(Value::as_object)
-                    .unwrap_or(&empty),
-            )
+            self.pending_request_user_input = Some(register_request_user_input_response(&message));
+            Value::Null
         } else {
             Value::Null
         };
-        if result.is_null() {
+        if method == "item/tool/requestUserInput" {
+            // The response is sent after the request card has been emitted to the UI and
+            // a user answer is submitted through the workspace route.
+        } else if result.is_null() {
             self.send_json(&json!({
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -817,6 +787,18 @@ impl CodexAppServerClient {
             "jsonrpc": message.get("jsonrpc").cloned().unwrap_or_else(|| json!("2.0")),
             "method": method,
             "params": message.get("params").cloned().unwrap_or_else(|| json!({})),
+        }))
+    }
+
+    fn answer_pending_request_user_input(&mut self) -> Result<(), CodexAppServerError> {
+        let Some(pending_response) = self.pending_request_user_input.take() else {
+            return Ok(());
+        };
+        let result = pending_response.wait_for_result(&mut self.child)?;
+        self.send_json(&json!({
+            "jsonrpc": "2.0",
+            "id": pending_response.jsonrpc_request_id,
+            "result": result,
         }))
     }
 
@@ -869,6 +851,361 @@ impl CodexAppServerClient {
                 .or_default()
                 .push_back(message);
         }
+    }
+}
+
+#[derive(Debug)]
+struct PendingRequestUserInputResponse {
+    jsonrpc_request_id: Value,
+    pending: Arc<PendingRequestUserInput>,
+}
+
+impl PendingRequestUserInputResponse {
+    fn wait_for_result(&self, child: &mut Child) -> Result<Value, CodexAppServerError> {
+        loop {
+            if let Some(answers) = self.pending.take_answers() {
+                unregister_request_user_input(&self.pending);
+                return Ok(request_user_input_response_payload(&answers));
+            }
+            if child.try_wait().ok().flatten().is_some() {
+                unregister_request_user_input(&self.pending);
+                return Err(CodexAppServerError::runtime(
+                    "codex app-server exited before request-user-input was answered",
+                ));
+            }
+            self.pending.wait_for_answer(Duration::from_millis(100));
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PendingRequestUserInput {
+    request_id: String,
+    app_thread_id: Option<String>,
+    app_turn_id: Option<String>,
+    aliases: Vec<String>,
+    state: Mutex<PendingRequestUserInputState>,
+    ready: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct PendingRequestUserInputState {
+    answers: Option<BTreeMap<String, String>>,
+}
+
+impl PendingRequestUserInput {
+    fn take_answers(&self) -> Option<BTreeMap<String, String>> {
+        self.state.lock().ok()?.answers.take()
+    }
+
+    fn wait_for_answer(&self, timeout: Duration) {
+        if let Ok(guard) = self.state.lock() {
+            let _ = self.ready.wait_timeout(guard, timeout);
+        }
+    }
+
+    fn deliver_answers(&self, answers: BTreeMap<String, String>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.answers = Some(answers);
+            self.ready.notify_all();
+        }
+    }
+}
+
+fn request_user_input_registry() -> &'static Mutex<BTreeMap<String, Arc<PendingRequestUserInput>>> {
+    static REGISTRY: OnceLock<Mutex<BTreeMap<String, Arc<PendingRequestUserInput>>>> =
+        OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn register_request_user_input_response(message: &Value) -> PendingRequestUserInputResponse {
+    let params = message
+        .get("params")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let jsonrpc_request_id = message.get("id").cloned().unwrap_or(Value::Null);
+    let request_id = request_user_input_request_id(&params)
+        .or_else(|| {
+            jsonrpc_request_id
+                .as_str()
+                .and_then(non_empty)
+                .map(str::to_string)
+        })
+        .or_else(|| jsonrpc_request_id.as_u64().map(|id| id.to_string()))
+        .unwrap_or_else(|| "request-user-input".to_string());
+    let app_thread_id = object_text(&params, &["threadId", "thread_id"]);
+    let app_turn_id = object_text(&params, &["turnId", "turn_id"]);
+    let aliases = request_user_input_aliases(&request_id, &params);
+    let pending = Arc::new(PendingRequestUserInput {
+        request_id,
+        app_thread_id,
+        app_turn_id,
+        aliases,
+        state: Mutex::new(PendingRequestUserInputState::default()),
+        ready: Condvar::new(),
+    });
+    if let Ok(mut registry) = request_user_input_registry().lock() {
+        for key in request_user_input_registry_keys(&pending) {
+            registry.insert(key, Arc::clone(&pending));
+        }
+    }
+    PendingRequestUserInputResponse {
+        jsonrpc_request_id,
+        pending,
+    }
+}
+
+fn unregister_request_user_input(pending: &Arc<PendingRequestUserInput>) {
+    if let Ok(mut registry) = request_user_input_registry().lock() {
+        registry.retain(|_, value| !Arc::ptr_eq(value, pending));
+    }
+}
+
+fn request_user_input_request_id(params: &Map<String, Value>) -> Option<String> {
+    params
+        .get("request_id")
+        .or_else(|| params.get("requestId"))
+        .or_else(|| params.get("itemId"))
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+        .map(str::to_string)
+}
+
+fn request_user_input_aliases(request_id: &str, params: &Map<String, Value>) -> Vec<String> {
+    let mut aliases = Vec::new();
+    push_unique_non_empty(&mut aliases, request_id);
+    if let Some(item_id) = params
+        .get("itemId")
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+    {
+        push_unique_non_empty(&mut aliases, item_id);
+    }
+    if let Some(questions) = params.get("questions").and_then(Value::as_array) {
+        for question in questions {
+            if let Some(id) = question
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+            {
+                push_unique_non_empty(&mut aliases, id);
+            }
+        }
+    }
+    aliases
+}
+
+fn push_unique_non_empty(values: &mut Vec<String>, value: &str) {
+    let Some(value) = non_empty(value) else {
+        return;
+    };
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value.to_string());
+    }
+}
+
+fn request_user_input_registry_keys(pending: &PendingRequestUserInput) -> Vec<String> {
+    pending
+        .aliases
+        .iter()
+        .flat_map(|alias| {
+            [
+                scoped_request_user_input_key(
+                    pending.app_thread_id.as_deref(),
+                    pending.app_turn_id.as_deref(),
+                    alias,
+                ),
+                alias_request_user_input_key(alias),
+            ]
+        })
+        .collect()
+}
+
+fn scoped_request_user_input_key(
+    app_thread_id: Option<&str>,
+    app_turn_id: Option<&str>,
+    alias: &str,
+) -> String {
+    format!(
+        "{}\u{0}{}\u{0}{}",
+        app_thread_id.unwrap_or(""),
+        app_turn_id.unwrap_or(""),
+        alias
+    )
+}
+
+fn alias_request_user_input_key(alias: &str) -> String {
+    format!("\u{0}\u{0}{alias}")
+}
+
+fn find_pending_request_user_input(
+    request: &AgentRequestUserInputAnswerRequest,
+) -> Option<Arc<PendingRequestUserInput>> {
+    let alias = non_empty(&request.request_id)?;
+    let app_thread_id = metadata_string(
+        &request.metadata,
+        &[
+            "spark.runtime.codex_app_server.thread_id",
+            "codex_app_server.thread_id",
+            "codex_thread_id",
+        ],
+    );
+    let app_turn_id = metadata_string(
+        &request.metadata,
+        &[
+            "spark.runtime.codex_app_server.turn_id",
+            "codex_app_server.turn_id",
+            "codex_turn_id",
+        ],
+    )
+    .or_else(|| non_empty(&request.assistant_turn_id).map(str::to_string));
+    let keys = [
+        scoped_request_user_input_key(app_thread_id.as_deref(), app_turn_id.as_deref(), alias),
+        alias_request_user_input_key(alias),
+    ];
+    let registry = request_user_input_registry().lock().ok()?;
+    keys.iter().find_map(|key| registry.get(key).cloned())
+}
+
+fn request_user_input_response_payload(answers: &BTreeMap<String, String>) -> Value {
+    let answers = answers
+        .iter()
+        .map(|(question_id, answer)| {
+            (
+                question_id.clone(),
+                json!({
+                    "answers": [answer],
+                }),
+            )
+        })
+        .collect::<Map<_, _>>();
+    json!({ "answers": answers })
+}
+
+fn request_user_input_answer_payload(
+    request: &AgentRequestUserInputAnswerRequest,
+) -> Result<BTreeMap<String, String>, AgentThreadResumeFailure> {
+    let request_id = non_empty(&request.request_id).ok_or_else(|| {
+        request_user_input_resume_failure(
+            "request-user-input answer could not resume because the request id is empty.",
+            "request_user_input_missing_request_id",
+            json!({}),
+        )
+    })?;
+    let answers = normalize_request_user_input_answer_map(&request.answers);
+    if answers.is_empty() {
+        return Err(request_user_input_resume_failure(
+            "request-user-input answer could not resume because no answers were supplied.",
+            "request_user_input_missing_answers",
+            json!({ "request_id": request_id }),
+        ));
+    }
+    if let Some(payload_id) = request
+        .request_user_input
+        .as_ref()
+        .and_then(request_user_input_payload_request_id)
+    {
+        if payload_id != request_id {
+            return Err(request_user_input_resume_failure(
+                "request-user-input answer could not resume because the persisted request id does not match the answer request.",
+                "request_user_input_id_mismatch",
+                json!({
+                    "request_id": request_id,
+                    "payload_request_id": payload_id,
+                }),
+            ));
+        }
+    }
+    if matches!(
+        request
+            .request_user_input
+            .as_ref()
+            .and_then(request_user_input_payload_status)
+            .as_deref(),
+        Some("expired")
+    ) {
+        return Err(request_user_input_resume_failure(
+            "request-user-input answer could not resume because the persisted request is no longer pending.",
+            "request_user_input_not_pending",
+            json!({ "request_id": request_id }),
+        ));
+    }
+    Ok(answers)
+}
+
+fn normalize_request_user_input_answer_map(
+    answers: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    answers
+        .iter()
+        .filter_map(|(key, value)| {
+            let key = non_empty(key)?;
+            let value = non_empty(value)?;
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn request_user_input_payload_request_id(payload: &Value) -> Option<String> {
+    let object = payload.as_object()?;
+    object
+        .get("request_id")
+        .or_else(|| object.get("requestId"))
+        .or_else(|| object.get("itemId"))
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+        .map(str::to_string)
+}
+
+fn request_user_input_payload_status(payload: &Value) -> Option<String> {
+    payload
+        .as_object()?
+        .get("status")
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+        .map(|status| status.to_ascii_lowercase())
+}
+
+fn request_user_input_resume_failure(
+    message: impl Into<String>,
+    error_code: impl Into<String>,
+    details: Value,
+) -> AgentThreadResumeFailure {
+    AgentThreadResumeFailure {
+        message: message.into(),
+        error_code: Some(error_code.into()),
+        details: Some(details),
+    }
+}
+
+fn request_user_input_resume_failure_output(
+    request_id: &str,
+    failure: AgentThreadResumeFailure,
+) -> AgentTurnOutput {
+    AgentTurnOutput {
+        events: vec![TurnStreamEvent {
+            kind: TurnStreamEventKind::Error,
+            channel: None,
+            source: TurnStreamSource {
+                backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
+                item_id: non_empty(request_id).map(str::to_string),
+                raw_kind: Some("request_user_input_resume_failure".to_string()),
+                ..TurnStreamSource::default()
+            },
+            content_delta: None,
+            message: Some(failure.message.clone()),
+            tool_call: None,
+            request_user_input: None,
+            token_usage: None,
+            error: Some(failure.message.clone()),
+            error_code: failure.error_code.clone(),
+            details: failure.details.clone(),
+            phase: Some("request_user_input_answer".to_string()),
+            status: Some("failed".to_string()),
+        }],
+        thread_resume_failure: Some(failure),
+        ..AgentTurnOutput::default()
     }
 }
 
@@ -1483,21 +1820,6 @@ fn path_separator() -> &'static str {
     }
 }
 
-fn request_user_input_empty_response(params: &Map<String, Value>) -> Value {
-    let answers = params
-        .get("questions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|question| {
-            let question = question.as_object()?;
-            let id = object_text(question, &["id"])?;
-            Some((id, json!({ "answers": [] })))
-        })
-        .collect::<Map<_, _>>();
-    json!({ "answers": answers })
-}
-
 fn extract_turn_id(message: &Value) -> Option<String> {
     let params = message.get("params")?.as_object()?;
     object_text(params, &["turnId"]).or_else(|| {
@@ -1666,48 +1988,6 @@ fn normalize_reasoning_effort(value: Option<&str>) -> Result<Option<String>, Cod
     Err(CodexAppServerError::configuration(
         "reasoning_effort must be blank or one of: low, medium, high, xhigh",
     ))
-}
-
-fn request_user_input_answer_content(
-    answers: &BTreeMap<String, String>,
-    payload: Option<&Value>,
-) -> String {
-    let questions = payload
-        .and_then(Value::as_object)
-        .and_then(|payload| payload.get("questions"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .filter_map(|(index, question)| {
-            let question = question.as_object()?;
-            let id =
-                object_text(question, &["id"]).unwrap_or_else(|| format!("question-{}", index + 1));
-            let prompt = object_text(question, &["question"]).unwrap_or_default();
-            Some((id, prompt))
-        })
-        .collect::<Vec<_>>();
-    let mut consumed = Vec::new();
-    let mut lines = Vec::new();
-    for (id, prompt) in questions {
-        if let Some(answer) = answers.get(&id).and_then(|answer| non_empty(answer)) {
-            if prompt.trim().is_empty() {
-                lines.push(format!("{id}: {answer}"));
-            } else {
-                lines.push(format!("{prompt}\nAnswer: {answer}"));
-            }
-            consumed.push(id);
-        }
-    }
-    for (id, answer) in answers {
-        if consumed.iter().any(|consumed| consumed == id) {
-            continue;
-        }
-        if let Some(answer) = non_empty(answer) {
-            lines.push(format!("{id}: {answer}"));
-        }
-    }
-    lines.join("\n\n")
 }
 
 fn rpc_error(prefix: &str, response: &Value) -> CodexAppServerError {

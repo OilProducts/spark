@@ -319,16 +319,6 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
             "settings": {"model": "gpt-codex-test"}
         })
     );
-    let request_user_input_response = messages
-        .iter()
-        .find(|message| {
-            message["id"] == json!("server-request-1") && message.get("result").is_some()
-        })
-        .expect("request-user-input response");
-    assert_eq!(
-        request_user_input_response["result"],
-        json!({"answers": {"choice": {"answers": []}}})
-    );
 }
 
 #[test]

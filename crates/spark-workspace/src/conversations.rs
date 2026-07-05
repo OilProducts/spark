@@ -1163,6 +1163,11 @@ impl WorkspaceConversationService {
             Err(error) => return Err(agent_turn_backend_error(error)),
         };
 
+        if request_user_input_answer_delivered_to_live_request(&output) {
+            prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+            return Ok(snapshot);
+        }
+
         self.ingest_agent_turn_output(
             conversation_id,
             &project_path,
@@ -4596,6 +4601,16 @@ fn request_user_input_answer_cannot_resume(output: &AgentTurnOutput) -> bool {
         || output.events.iter().any(|event| {
             event.source.raw_kind.as_deref() == Some("request_user_input_resume_failure")
         })
+}
+
+fn request_user_input_answer_delivered_to_live_request(output: &AgentTurnOutput) -> bool {
+    output.events.iter().any(|event| {
+        event.source.raw_kind.as_deref() == Some("request_user_input_answer_delivered")
+            || matches!(
+                &event.kind,
+                TurnStreamEventKind::Other(kind) if kind == "request_user_input_answer_delivered"
+            )
+    })
 }
 
 fn normalize_request_user_input_answers(

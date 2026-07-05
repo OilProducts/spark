@@ -12,11 +12,11 @@ fn main() {
     if mode == "steerable" {
         run_steerable(log_path);
     } else {
-        run_default(log_path, mode == "model-list");
+        run_default(log_path, mode == "model-list", mode == "request-user-input");
     }
 }
 
-fn run_default(log_path: Option<PathBuf>, model_list_only: bool) {
+fn run_default(log_path: Option<PathBuf>, model_list_only: bool, request_user_input: bool) {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut awaiting_request_user_input_response = false;
@@ -54,26 +54,37 @@ fn run_default(log_path: Option<PathBuf>, model_list_only: bool) {
                     &mut stdout,
                     json!({"id": request_id, "result": {"turn": {"id": "turn-test", "status": "inProgress", "items": []}}}),
                 );
-                write_json(
-                    &mut stdout,
-                    json!({
-                        "id": "server-request-1",
-                        "method": "item/tool/requestUserInput",
-                        "params": {
-                            "threadId": "thread-test",
-                            "turnId": "turn-test",
-                            "itemId": "input-test",
-                            "questions": [{
-                                "id": "choice",
-                                "header": "Choice",
-                                "question": "Pick one",
-                                "options": [{"label": "A", "description": "Use A"}]
-                            }],
-                            "autoResolutionMs": null
-                        }
-                    }),
-                );
-                awaiting_request_user_input_response = true;
+                if request_user_input {
+                    write_json(
+                        &mut stdout,
+                        json!({
+                            "id": "server-request-1",
+                            "method": "item/tool/requestUserInput",
+                            "params": {
+                                "threadId": "thread-test",
+                                "turnId": "turn-test",
+                                "itemId": "input-test",
+                                "questions": [{
+                                    "id": "choice",
+                                    "header": "Choice",
+                                    "question": "Pick one",
+                                    "options": [{"label": "A", "description": "Use A"}]
+                                }],
+                                "autoResolutionMs": null
+                            }
+                        }),
+                    );
+                    awaiting_request_user_input_response = true;
+                } else {
+                    emit_turn_completion(
+                        &mut stdout,
+                        "thread-test",
+                        "turn-test",
+                        "msg-test",
+                        "Ack",
+                        true,
+                    );
+                }
             }
             "model/list" => write_json(
                 &mut stdout,

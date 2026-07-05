@@ -1536,6 +1536,99 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
 }
 
 #[test]
+fn request_user_input_live_delivery_keeps_assistant_turn_streaming_until_original_turn_finishes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let backend = ScriptedAgentTurnBackend::with_answer_outputs(
+        Vec::new(),
+        vec![AgentTurnOutput {
+            events: vec![TurnStreamEvent {
+                kind: TurnStreamEventKind::Other("request_user_input_answer_delivered".to_string()),
+                channel: None,
+                source: TurnStreamSource {
+                    backend: Some("codex_app_server".to_string()),
+                    app_thread_id: Some("app-thread".to_string()),
+                    app_turn_id: Some("app-turn".to_string()),
+                    item_id: Some("input-1".to_string()),
+                    raw_kind: Some("request_user_input_answer_delivered".to_string()),
+                    ..TurnStreamSource::default()
+                },
+                content_delta: None,
+                message: Some("request-user-input answer delivered.".to_string()),
+                tool_call: None,
+                request_user_input: None,
+                token_usage: None,
+                error: None,
+                error_code: None,
+                details: None,
+                phase: Some("request_user_input_answer".to_string()),
+                status: Some("delivered".to_string()),
+            }],
+            ..AgentTurnOutput::default()
+        }],
+    );
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings(temp.path()),
+        Arc::new(backend),
+    );
+    let (prepared, _snapshot) = service
+        .start_turn(
+            "conversation-input-live",
+            ConversationTurnRequest {
+                project_path: "/projects/input-live".to_string(),
+                message: "Need approval".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    service
+        .ingest_agent_turn_output(
+            "conversation-input-live",
+            "/projects/input-live",
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![request_user_input_event()],
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("request input");
+
+    let answered = service
+        .submit_request_user_input_answer(
+            "conversation-input-live",
+            "decision",
+            ConversationRequestUserInputAnswerRequest {
+                project_path: "/projects/input-live".to_string(),
+                answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+            },
+        )
+        .expect("live answer");
+    let request_segment = segment_by_kind(
+        answered["segments"].as_array().expect("segments"),
+        "request_user_input",
+    );
+    assert_eq!(request_segment["status"], "complete");
+    assert_eq!(request_segment["request_user_input"]["status"], "answered");
+    assert_eq!(
+        request_segment["request_user_input"]["answers"]["decision"],
+        "Approve"
+    );
+    let assistant_turn = answered["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == prepared.assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant_turn["status"], "streaming");
+    assert_eq!(assistant_turn["content"], "");
+    assert!(!answered["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "assistant_message"));
+}
+
+#[test]
 fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
     let temp = tempfile::tempdir().expect("tempdir");
     let backend = ScriptedAgentTurnBackend::with_answer_outputs(
