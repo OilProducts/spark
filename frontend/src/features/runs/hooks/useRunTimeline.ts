@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { ApiHttpError, fetchPipelineAnswerValidated } from '@/lib/attractorClient'
 import { useStore } from '@/store'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
@@ -7,6 +7,8 @@ import type {
     PendingInterviewGate,
     PendingQuestionSnapshot,
     RunProgressProjection,
+    RunTranscriptProjection,
+    RunTranscriptEntry,
     TimelineEventEntry,
     TimelineEventCategory,
     TimelineSeverity,
@@ -21,7 +23,7 @@ import {
     timelineCorrelationDescriptorFromEvent,
     toTimelineEvent,
 } from '../model/timelineModel'
-import { loadSelectedRunJournal } from '../services/runStreamTransport'
+import { loadSelectedRunJournal, loadSelectedRunTranscript } from '../services/runStreamTransport'
 import {
     iterateRunJournalEntries,
     useRunJournalStore,
@@ -53,6 +55,12 @@ const DEFAULT_TIMELINE_SESSION = {
 }
 
 const RUN_JOURNAL_PAGE_SIZE = 100
+const ACTIVE_RUN_TRANSCRIPT_RELOAD_INTERVAL_MS = 1000
+const ACTIVE_RUN_TRANSCRIPT_STATUSES = new Set([
+    'running',
+    'abort_requested',
+    'cancel_requested',
+])
 const DEFAULT_RUN_JOURNAL_STATE: RunJournalStateEntry = {
     segments: [],
     oldestSequence: null,
@@ -85,6 +93,56 @@ const EMPTY_TIMELINE_PROJECTION: TimelineProjection = {
         nodeOptions: [],
     },
 }
+
+const isRunTranscriptEntry = (entry: unknown): entry is RunTranscriptEntry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return false
+    }
+    const record = entry as Record<string, unknown>
+    const kind = record.kind
+    if (kind === 'boundary') {
+        return typeof record.id === 'string' && typeof record.sequence === 'number'
+    }
+    return (
+        kind === 'assistant_message'
+        || kind === 'plan'
+        || kind === 'reasoning'
+        || kind === 'context_compaction'
+        || kind === 'request_user_input'
+        || kind === 'tool_call'
+    ) && typeof record.id === 'string' && typeof record.order === 'number'
+}
+
+const buildTranscriptProjection = (
+    entries: RunTranscriptEntry[],
+): RunTranscriptProjection => ({
+    entries: mergeTranscriptEntries(entries).sort((left, right) => {
+        const leftOrder = left.kind === 'boundary' ? left.sequence : left.order
+        const rightOrder = right.kind === 'boundary' ? right.sequence : right.order
+        if (leftOrder !== rightOrder) {
+            return leftOrder - rightOrder
+        }
+        return left.id.localeCompare(right.id)
+    }),
+})
+
+const transcriptMergeKey = (entry: RunTranscriptEntry): string => (
+    entry.kind === 'boundary'
+        ? [
+            'boundary',
+            entry.sourceScope,
+            entry.sourceParentNodeId ?? '',
+            entry.sourceFlowName ?? '',
+            entry.nodeId ?? '',
+            entry.stageIndex ?? '',
+            entry.attempt ?? '',
+        ].join('::')
+        : entry.id
+)
+
+const mergeTranscriptEntries = (entries: RunTranscriptEntry[]): RunTranscriptEntry[] => (
+    Array.from(new Map(entries.map((entry) => [transcriptMergeKey(entry), entry])).values())
+)
 
 const buildTimelineProjection = (
     journalState: RunJournalStateEntry,
@@ -207,6 +265,7 @@ export function useRunTimeline({
     selectedRunTimelineId,
 }: UseRunTimelineArgs) {
     const runDetailSessionsByRunId = useStore((state) => state.runDetailSessionsByRunId)
+    const selectedRunRecord = useStore((state) => state.selectedRunRecord)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const timelineSession = selectedRunTimelineId
         ? {
@@ -218,10 +277,26 @@ export function useRunTimeline({
         selectedRunTimelineId ? state.byRunId[selectedRunTimelineId] : undefined
     ))
     const journalState = journalStateFromStore ?? DEFAULT_RUN_JOURNAL_STATE
+    const [transcriptState, setTranscriptState] = useState<{
+        runId: string | null
+        entries: RunTranscriptEntry[]
+        error: string | null
+    }>({ runId: null, entries: [], error: null })
     const patchRunJournal = useRunJournalStore((state) => state.patchRun)
     const appendOlderPage = useRunJournalStore((state) => state.appendOlderPage)
-    const timelineError = journalState.error || journalState.liveError
+    const timelineError = transcriptState.error || journalState.error || journalState.liveError
     const isTimelineLive = journalState.liveStatus === 'live'
+    const selectedRunStatus = selectedRunRecord?.run_id === selectedRunTimelineId
+        ? selectedRunRecord.status
+        : selectedRunTimelineId
+            ? runDetailSessionsByRunId[selectedRunTimelineId]?.summaryRecord?.status
+            : null
+    const shouldPollActiveTranscript = Boolean(
+        selectedRunTimelineId
+        && isTimelineLive
+        && selectedRunStatus
+        && ACTIVE_RUN_TRANSCRIPT_STATUSES.has(selectedRunStatus),
+    )
     const timelineFilters = useMemo(() => ({
         timelineTypeFilter: timelineSession.timelineTypeFilter,
         timelineCategoryFilter: timelineSession.timelineCategoryFilter,
@@ -292,6 +367,126 @@ export function useRunTimeline({
         () => filterAnsweredPendingInterviewGates(pendingInterviewGates, timelineSession.answeredGateIds),
         [pendingInterviewGates, timelineSession.answeredGateIds],
     )
+    const reloadSelectedTranscript = useCallback((runId: string, options: { silent?: boolean } = {}) => {
+        loadSelectedRunTranscript(runId)
+            .then((response) => {
+                setTranscriptState({
+                    runId,
+                    entries: response.entries
+                        .filter((entry) => isRunTranscriptEntry(entry))
+                        .map((entry) => entry as RunTranscriptEntry),
+                    error: null,
+                })
+            })
+            .catch((error) => {
+                logUnexpectedRunError(error)
+                if (options.silent) {
+                    return
+                }
+                setTranscriptState((previous) => ({
+                    runId,
+                    entries: previous.runId === runId ? previous.entries : [],
+                    error: error instanceof ApiHttpError
+                        ? `Unable to load run transcript (HTTP ${error.status})${error.detail ? `: ${error.detail}` : ''}.`
+                        : 'Unable to load run transcript. Check connection/backend and retry.',
+                }))
+            })
+    }, [])
+    useEffect(() => {
+        if (!selectedRunTimelineId) {
+            setTranscriptState({ runId: null, entries: [], error: null })
+            return
+        }
+        let closed = false
+        const runId = selectedRunTimelineId
+        setTranscriptState((previous) => previous.runId === runId
+            ? { ...previous, error: null }
+            : { runId, entries: [], error: null })
+        loadSelectedRunTranscript(runId)
+            .then((response) => {
+                if (closed) {
+                    return
+                }
+                setTranscriptState({
+                    runId,
+                    entries: response.entries
+                        .filter((entry) => isRunTranscriptEntry(entry))
+                        .map((entry) => entry as RunTranscriptEntry),
+                    error: null,
+                })
+            })
+            .catch((error) => {
+                logUnexpectedRunError(error)
+                if (closed) {
+                    return
+                }
+                setTranscriptState((previous) => ({
+                    runId,
+                    entries: previous.runId === runId ? previous.entries : [],
+                    error: error instanceof ApiHttpError
+                        ? `Unable to load run transcript (HTTP ${error.status})${error.detail ? `: ${error.detail}` : ''}.`
+                        : 'Unable to load run transcript. Check connection/backend and retry.',
+                }))
+            })
+        return () => {
+            closed = true
+        }
+    }, [selectedRunTimelineId])
+    useEffect(() => {
+        if (!selectedRunTimelineId || journalState.newestSequence === null) {
+            return
+        }
+        reloadSelectedTranscript(selectedRunTimelineId)
+    }, [journalState.newestSequence, reloadSelectedTranscript, selectedRunTimelineId])
+    useEffect(() => {
+        if (!selectedRunTimelineId || !shouldPollActiveTranscript) {
+            return
+        }
+        let closed = false
+        let inFlight = false
+        const pollTranscript = () => {
+            if (closed || inFlight) {
+                return
+            }
+            inFlight = true
+            loadSelectedRunTranscript(selectedRunTimelineId)
+                .then((response) => {
+                    if (closed) {
+                        return
+                    }
+                    setTranscriptState({
+                        runId: selectedRunTimelineId,
+                        entries: response.entries
+                            .filter((entry) => isRunTranscriptEntry(entry))
+                            .map((entry) => entry as RunTranscriptEntry),
+                        error: null,
+                    })
+                })
+                .catch((error) => {
+                    if (closed) {
+                        return
+                    }
+                    logUnexpectedRunError(error)
+                })
+                .finally(() => {
+                    inFlight = false
+                })
+        }
+        const intervalId = window.setInterval(
+            pollTranscript,
+            ACTIVE_RUN_TRANSCRIPT_RELOAD_INTERVAL_MS,
+        )
+        return () => {
+            closed = true
+            window.clearInterval(intervalId)
+        }
+    }, [selectedRunTimelineId, shouldPollActiveTranscript])
+    const transcriptProjection = useMemo<RunTranscriptProjection>(
+        () => buildTranscriptProjection(
+            transcriptState.runId === selectedRunTimelineId ? transcriptState.entries : [],
+        ),
+        [selectedRunTimelineId, transcriptState.entries, transcriptState.runId],
+    )
     const groupedPendingInterviewGates = useMemo(() => {
         return buildGroupedPendingInterviewGates(visiblePendingInterviewGates)
     }, [visiblePendingInterviewGates])
@@ -333,6 +528,7 @@ export function useRunTimeline({
                 },
                 freeformAnswersByGateId: nextFreeformAnswers,
             })
+            reloadSelectedTranscript(selectedRunTimelineId, { silent: true })
         } catch (err) {
             logUnexpectedRunError(err)
             patchTimelineSession({
@@ -347,7 +543,7 @@ export function useRunTimeline({
                 submittingGateIds: nextSubmittingGateIds,
             })
         }
-    }, [patchTimelineSession, selectedRunTimelineId, timelineSession.answeredGateIds, timelineSession.freeformAnswersByGateId, timelineSession.submittingGateIds])
+    }, [patchTimelineSession, reloadSelectedTranscript, selectedRunTimelineId, timelineSession.answeredGateIds, timelineSession.freeformAnswersByGateId, timelineSession.submittingGateIds])
 
     const loadOlderTimelineEvents = useCallback(async () => {
         if (
@@ -422,6 +618,7 @@ export function useRunTimeline({
         timelineEventCount: journalState.loadedEntryCount,
         timelineNodeStageFilter: timelineSession.timelineNodeStageFilter,
         timelineSeverityFilter: timelineSession.timelineSeverityFilter,
+        transcriptProjection,
         timelineTypeFilter: timelineSession.timelineTypeFilter,
         timelineTypeOptions: journalState.timelineTypeOptions,
         visiblePendingInterviewGates,

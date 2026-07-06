@@ -2124,6 +2124,21 @@ describe('App shell behavior', () => {
             ],
           })
         }
+        if (url.includes('/attractor/pipelines/run-session/result')) {
+          return jsonResponse({
+            run_id: 'run-session',
+            status: 'completed',
+            state: 'unavailable',
+            source_node_id: null,
+            source_artifact_path: null,
+            display_mode: null,
+            body_markdown: '',
+            summary_enabled: false,
+            summary_prompt: null,
+            summary_error: null,
+            error: null,
+          })
+        }
         if (url.includes('/attractor/pipelines/run-session/graph-preview')) {
           return jsonResponse({
             status: 'ok',
@@ -2165,6 +2180,60 @@ describe('App shell behavior', () => {
             has_older: false,
           })
         }
+        if (url.includes('/attractor/pipelines/run-session/transcript')) {
+          return jsonResponse({
+            pipeline_id: 'run-session',
+            entries: [
+              {
+                id: 'boundary-review',
+                kind: 'boundary',
+                sequence: 1,
+                nodeId: 'review',
+                stageIndex: 2,
+                attempt: null,
+                status: 'running',
+                startedAt: '2026-03-25T12:01:00Z',
+                endedAt: null,
+                model: null,
+                sourceScope: 'root',
+                sourceParentNodeId: null,
+                sourceFlowName: null,
+                summary: 'Stage review started',
+              },
+              {
+                id: 'segment-request-user-input-gate-freeform',
+                kind: 'request_user_input',
+                turn_id: 'run-node-review_gate',
+                order: 2,
+                role: 'system',
+                status: 'pending',
+                timestamp: '2026-03-25T12:02:00Z',
+                updated_at: '2026-03-25T12:02:00Z',
+                content: 'Need another review pass?',
+                request_user_input: {
+                  request_id: 'gate-freeform',
+                  status: 'pending',
+                  questions: [{
+                    id: 'gate-freeform',
+                    header: 'review_gate',
+                    question: 'Need another review pass?',
+                    question_type: 'FREEFORM',
+                    options: [],
+                    allow_other: true,
+                    is_secret: false,
+                  }],
+                  answers: {},
+                },
+                source: {
+                  node_id: 'review_gate',
+                  source_scope: 'root',
+                  source_parent_node_id: null,
+                  source_flow_name: null,
+                },
+              },
+            ],
+          })
+        }
         return jsonResponse({})
       }),
     )
@@ -2189,7 +2258,7 @@ describe('App shell behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('run-advanced-panel')).toBeVisible()
-      expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toBeVisible()
+      expect(screen.getByTestId('project-request-user-input-field-gate-freeform')).toBeVisible()
     })
     expect(screen.queryByTestId('run-context-search-input')).not.toBeInTheDocument()
 
@@ -2226,18 +2295,9 @@ describe('App shell behavior', () => {
     })
 
     await waitFor(() => {
-      expect(
-        within(screen.getByTestId('run-event-timeline-panel')).getByText('Stage review started'),
-      ).toBeVisible()
-    })
-    await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-filter-type')).toBeVisible()
+      expect(screen.getByTestId('run-transcript-panel')).toHaveTextContent('review')
     })
 
-    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-type'), 'StageStarted')
-    await user.type(screen.getByTestId('run-event-timeline-filter-node-stage'), 'review')
-    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-category'), 'stage')
-    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'info')
     await user.clear(screen.getByTestId('run-context-search-input'))
     await user.type(screen.getByTestId('run-context-search-input'), 'alpha')
     await user.click(screen.getByTestId('run-artifact-view-button'))
@@ -2247,20 +2307,13 @@ describe('App shell behavior', () => {
     })
 
     await user.type(
-      screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform'),
+      screen.getByTestId('project-request-user-input-field-gate-freeform'),
       'Need another pass',
     )
 
     expect(useStore.getState().runDetailSessionsByRunId['run-session']).toMatchObject({
-      timelineTypeFilter: 'StageStarted',
-      timelineNodeStageFilter: 'review',
-      timelineCategoryFilter: 'stage',
-      timelineSeverityFilter: 'info',
       contextSearchQuery: 'alpha',
       selectedArtifactPath: 'logs/summary.txt',
-      freeformAnswersByGateId: {
-        'gate-freeform': 'Need another pass',
-      },
     })
 
     await user.click(screen.getByTestId('nav-mode-projects'))
@@ -2269,14 +2322,11 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('review-session.dot')
     })
-    expect(screen.getByTestId('run-event-timeline-filter-type')).toHaveValue('StageStarted')
-    expect(screen.getByTestId('run-event-timeline-filter-node-stage')).toHaveValue('review')
-    expect(screen.getByTestId('run-event-timeline-filter-category')).toHaveValue('stage')
-    expect(screen.getByTestId('run-event-timeline-filter-severity')).toHaveValue('info')
+    expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
     expect(screen.getByTestId('run-context-search-input')).toHaveValue('alpha')
     expect(screen.getByTestId('run-artifact-viewer')).toHaveTextContent('Preview: logs/summary.txt')
     expect(screen.getByTestId('run-artifact-viewer-payload')).toHaveTextContent('artifact preview contents')
-    expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toHaveValue('Need another pass')
+    expect(screen.getByTestId('project-request-user-input-field-gate-freeform')).toBeVisible()
   })
 
   it('keeps selected run timeline sync live while Runs is hidden', async () => {
@@ -2330,6 +2380,21 @@ describe('App shell behavior', () => {
           artifacts: [],
         })
       }
+      if (url.includes('/attractor/pipelines/run-hidden/result')) {
+        return jsonResponse({
+          run_id: 'run-hidden',
+          status: 'running',
+          state: 'unavailable',
+          source_node_id: null,
+          source_artifact_path: null,
+          display_mode: null,
+          body_markdown: '',
+          summary_enabled: false,
+          summary_prompt: null,
+          summary_error: null,
+          error: null,
+        })
+      }
       if (url.includes('/attractor/pipelines/run-hidden/graph-preview')) {
         return jsonResponse({
           status: 'ok',
@@ -2360,6 +2425,12 @@ describe('App shell behavior', () => {
           oldest_sequence: null,
           newest_sequence: null,
           has_older: false,
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-hidden/transcript')) {
+        return jsonResponse({
+          pipeline_id: 'run-hidden',
+          entries: [],
         })
       }
       return jsonResponse({})
@@ -2410,10 +2481,9 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-runs'))
 
     await waitFor(() => {
-      expect(
-        within(screen.getByTestId('run-event-timeline-panel')).getByText('Stage review started'),
-      ).toBeVisible()
+      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('review')
     })
+    expect(screen.getByTestId('run-transcript-panel')).not.toHaveTextContent('review')
   })
 
   it('lets the operator resize the editor sidebar without affecting execution width', async () => {

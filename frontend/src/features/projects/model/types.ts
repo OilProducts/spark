@@ -33,6 +33,7 @@ export interface ConversationTimelineRequestUserInputQuestion {
     questionType: 'MULTIPLE_CHOICE' | 'FREEFORM'
     options: Array<{
         label: string
+        value?: string
         description?: string | null
     }>
     allowOther: boolean

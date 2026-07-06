@@ -253,6 +253,31 @@ fn raw_events_append_and_normalize_to_newest_first_journal_entries() {
 }
 
 #[test]
+fn raw_event_append_does_not_update_render_transcript() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store(&temp);
+    let project_path = temp.path().join("Project Three");
+    std::fs::create_dir_all(&project_path).expect("project dir");
+    let paths = store
+        .create_run(CreateRunRequest {
+            record: record("run-raw-only", &project_path.to_string_lossy()),
+            checkpoint: Some(checkpoint("start", &[])),
+            ..CreateRunRequest::default()
+        })
+        .expect("create run");
+
+    store
+        .append_event(&paths, stage_started_event("run-raw-only", 0, "work"))
+        .expect("stage started");
+
+    let events = store.read_raw_events(&paths).expect("events");
+    assert_eq!(events.last().and_then(|event| event.sequence), Some(4));
+
+    let transcript = store.read_transcript(&paths).expect("transcript");
+    assert!(transcript.entries.is_empty());
+}
+
+#[test]
 fn checkpoint_reads_state_root_checkpoint_and_logs_checkpoint_fallbacks() {
     let temp = tempfile::tempdir().expect("tempdir");
     let runs_dir = temp.path().join("runs");

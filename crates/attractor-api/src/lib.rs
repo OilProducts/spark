@@ -957,6 +957,29 @@ impl AttractorApiService {
         )
     }
 
+    pub fn get_pipeline_transcript(&self, pipeline_id: &str) -> RuntimeRouteResponse {
+        let store = RunStore::for_settings(&self.settings);
+        let bundle = match store.read_run_bundle(pipeline_id) {
+            Ok(Some(bundle)) => bundle,
+            Ok(None) => {
+                return RuntimeRouteResponse::json(404, json!({"detail": "Unknown pipeline"}))
+            }
+            Err(error) => {
+                return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
+            }
+        };
+        match store.read_transcript(&bundle.paths) {
+            Ok(transcript) => RuntimeRouteResponse::json(
+                200,
+                json!({
+                    "pipeline_id": pipeline_id,
+                    "entries": transcript.entries,
+                }),
+            ),
+            Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error.to_string()})),
+        }
+    }
+
     pub fn get_pipeline_events(
         &self,
         pipeline_id: &str,
@@ -1276,7 +1299,7 @@ impl AttractorApiService {
                 .map(str::to_string),
             answer.to_string(),
         );
-        if let Err(error) = store.append_event(&bundle.paths, event) {
+        if let Err(error) = store.append_transcript_event(&bundle.paths, event) {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
         }
         RuntimeRouteResponse::json(
@@ -1555,6 +1578,7 @@ fn dispatch_pipeline_route(
             query_i64(query, "limit"),
             query_i64(query, "before_sequence"),
         ),
+        ("GET", "transcript") => service.get_pipeline_transcript(pipeline_id),
         ("GET", "events") => match query_i64_strict(
             query,
             "after_sequence",

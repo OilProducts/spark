@@ -71,7 +71,7 @@ function conversationEntryKey(entry: ConversationTimelineEntry) {
     return `${entry.kind}:${entry.id}:${entry.timestamp}`
 }
 
-const ToolCallRow = memo(function ToolCallRow({
+export const ToolCallRow = memo(function ToolCallRow({
     entry,
     fullOutput,
     isLoadingFullOutput,

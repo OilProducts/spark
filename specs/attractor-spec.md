@@ -1787,6 +1787,7 @@ Implementations may expose the pipeline engine as an HTTP service for web-based 
 | `GET`  | `/runs`                                 | Authoritative snapshot run overview, optionally scoped by `project_path`. |
 | `GET`  | `/pipelines/{id}`                       | Get authoritative per-run lifecycle/detail state for inspection, including progress and persisted run metadata. |
 | `GET`  | `/pipelines/{id}/journal`               | Get durable run history as normalized journal entries, newest-first, with explicit paging via `limit` and `before_sequence`. |
+| `GET`  | `/pipelines/{id}/transcript`            | Get durable run-local render transcript state for selected-run inspection. |
 | `POST` | `/pipelines/{id}/cancel`                | Cancel a running pipeline. |
 | `GET`  | `/pipelines/{id}/graph`                 | Get rendered graph visualization (SVG). |
 | `GET`  | `/pipelines/{id}/graph-preview`         | Get structured graph preview JSON from the stored run DOT snapshot. |
@@ -1831,6 +1832,17 @@ It must:
 - support `before_sequence` for explicit older-page loading
 - preserve stable journal fields including `id`, `sequence`, `emitted_at`, `kind`, `raw_type`, `severity`, `summary`, `node_id`, `stage_index`, `source_scope`, `source_parent_node_id`, `source_flow_name`, `question_id`, and `payload`
 - include child-flow linkage metadata on parent entries that reference child timelines
+
+`GET /pipelines/{id}/transcript` is the durable render-state endpoint for selected-run transcript inspection.
+It must:
+- return coalesced transcript entries in render order for the complete run-local transcript
+- use Spark conversation turn and segment semantics adapted to run scope for assistant text, reasoning, plans, tool calls, human input requests, context compaction notices, and notice-style output
+- persist assistant, reasoning, and plan content as stable segment upserts keyed by upstream item identity when available
+- retain final/completed content as the reload source; streaming deltas may update live state but must not be replayed from `/journal` to reconstruct completed transcript rows
+- include explicit run, node, and stage boundary entries so multi-node flows read as one continuous transcript with clear workflow separators
+- key boundary identity by source scope, source parent node id, source flow name, node id, stage index, and attempt; boundary upserts must preserve the original `started_at` and only set terminal `ended_at` and status from terminal events
+
+`GET /pipelines/{id}/journal` is operational history only. It is for lifecycle, stage, checkpoint, human-gate, child-run, cancellation, retry, LLM request summary, usage, and similar low-volume operational events. Normal transcript rendering must load `/transcript` rather than reconstructing assistant, tool, plan, reasoning, or provider/session rows from raw adapter payloads, `turn_stream_event`, provider deltas, or journal payload internals.
 
 Selected-run browser live delivery is not an Attractor SSE contract. Clients hydrate run detail from `GET /pipelines/{id}`, browse durable history through `GET /pipelines/{id}/journal`, and subscribe to the Workspace live stream with `run_id` only after the initial journal cursor is known. The stream includes `run_sequence` as a resource-scoped reconnect/catch-up cursor equal to the latest loaded sequence, or `0` for a loaded empty journal; it is not steady-state stream identity. Live delivery covers additive `run.journal_entry`, `run.question_pending`, and `run.question_answered` hints. Catch-up uses stable per-run event identity via monotonically increasing `sequence`; events include server-assigned `emitted_at` timestamps. Parent runs may include child-run lifecycle/linkage journal entries, and entries that reference child timelines may be labeled with `source_scope="child"` plus `source_parent_node_id` and `source_flow_name`.
 

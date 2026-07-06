@@ -313,4 +313,84 @@ describe('timelineModel', () => {
       content: 'Draft output',
     })
   })
+
+  it('does not build progress rows from legacy CodergenAdapter stream content', () => {
+    const events = [
+      toTimelineEvent({
+        type: 'StageStarted',
+        sequence: 1,
+        emitted_at: '2026-04-06T12:00:00Z',
+        node_id: 'implement',
+        index: 1,
+      }),
+      toTimelineEvent({
+        type: 'CodergenAdapter',
+        sequence: 2,
+        emitted_at: '2026-04-06T12:00:01Z',
+        node_id: 'implement',
+        adapter_event_type: 'codex_app_server_session_event',
+        payload: {
+          kind: 'content_delta',
+          category: 'assistant_text',
+          turn_stream_event: {
+            kind: 'content_delta',
+            channel: 'assistant',
+            content_delta: 'Drafted ',
+            source: {
+              backend: 'codex_app_server',
+              app_turn_id: 'turn-1',
+              item_id: 'msg-1',
+              raw_kind: 'assistant_delta',
+            },
+          },
+        },
+      }),
+      toTimelineEvent({
+        type: 'CodergenAdapter',
+        sequence: 3,
+        emitted_at: '2026-04-06T12:00:02Z',
+        node_id: 'implement',
+        adapter_event_type: 'codex_app_server_session_event',
+        payload: {
+          kind: 'content_completed',
+          category: 'assistant_text',
+          turn_stream_event: {
+            kind: 'content_completed',
+            channel: 'assistant',
+            content_delta: 'Drafted final patch.',
+            source: {
+              backend: 'codex_app_server',
+              app_turn_id: 'turn-1',
+              item_id: 'msg-1',
+              raw_kind: 'assistant_message_completed',
+            },
+          },
+        },
+      }),
+      toTimelineEvent({
+        type: 'CodergenAdapter',
+        sequence: 4,
+        emitted_at: '2026-04-06T12:00:03Z',
+        node_id: 'implement',
+        adapter_event_type: 'codex_app_server_session_event',
+        payload: {
+          kind: 'token_usage_updated',
+          category: 'usage',
+          token_usage: { total: { totalTokens: 12 } },
+          turn_stream_event: {
+            kind: 'token_usage_updated',
+            token_usage: { total: { totalTokens: 12 } },
+            source: {
+              backend: 'codex_app_server',
+              raw_kind: 'token_usage_updated',
+            },
+          },
+        },
+      }),
+    ].filter(Boolean)
+
+    const progressEntries = buildRunProgressEntries(events)
+
+    expect(progressEntries).toHaveLength(0)
+  })
 })

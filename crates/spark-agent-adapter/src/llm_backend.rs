@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use attractor_core::{FailureKind, Outcome, OutcomeStatus};
 use serde_json::{json, Map, Value};
@@ -13,8 +14,9 @@ use crate::agent::{
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
 use crate::codergen::{
-    ActiveCodergenSession, CodergenBackend, CodergenBackendOutput, CodergenBackendRequest,
-    CodergenBackendResponse, CodergenError, CodergenEvent, CodergenSessionInterventionBroker,
+    emit_codergen_event, ActiveCodergenSession, CodergenBackend, CodergenBackendOutput,
+    CodergenBackendRequest, CodergenBackendResponse, CodergenError, CodergenEvent,
+    CodergenSessionInterventionBroker,
 };
 use crate::codex_app_server::{
     usage_from_codex_token_payload, CodexAppServerBackend, CodexAppServerError,
@@ -94,8 +96,13 @@ impl RustLlmCodergenBackend {
                 steering: steering.clone(),
             })
         });
+        let sink_request = request.clone();
+        let event_sink = Arc::new(move |event: TurnStreamEvent| {
+            let codergen_event = codergen_event_from_turn_stream_event(&sink_request, &event);
+            emit_codergen_event(&codergen_event);
+        });
         let output = CodexAppServerBackend::new()
-            .run_agent_turn_with_steering(agent_request, Some(steering))
+            .run_agent_turn_with_steering_and_sink(agent_request, Some(steering), Some(event_sink))
             .map_err(codex_app_server_codergen_error)?;
         let usage = output
             .token_usage
@@ -122,9 +129,10 @@ impl RustLlmCodergenBackend {
         };
         let mut events = Vec::new();
         for event in &output.events {
-            events.push(codergen_event_from_turn_stream_event(&request, event));
+            let codergen_event = codergen_event_from_turn_stream_event(&request, event);
+            events.push(codergen_event);
         }
-        events.push(CodergenEvent::new(
+        let completed_event = CodergenEvent::new(
             "codex_app_server_request_completed",
             BTreeMap::from([
                 ("backend".to_string(), json!(CODEX_APP_SERVER_BACKEND)),
@@ -154,7 +162,9 @@ impl RustLlmCodergenBackend {
                 ),
                 ("token_usage".to_string(), json!(output.token_usage.clone())),
             ]),
-        ));
+        );
+        emit_codergen_event(&completed_event);
+        events.push(completed_event);
         Ok(CodergenBackendOutput {
             response,
             events,
@@ -366,16 +376,20 @@ fn codergen_output_from_session(
 
     let mut events = Vec::new();
     for event in &session_events {
-        events.push(codergen_event_from_session_event(&request, session, event));
+        let codergen_event = codergen_event_from_session_event(&request, session, event);
+        emit_codergen_event(&codergen_event);
+        events.push(codergen_event);
         if let Some(raw_log_line) = raw_log_line_from_event(event) {
-            events.push(CodergenEvent::new(
+            let raw_log_event = CodergenEvent::new(
                 "rust_agent_raw_log_line",
                 BTreeMap::from([
                     ("node_id".to_string(), json!(request.node_id.clone())),
                     ("direction".to_string(), json!(raw_log_line.direction)),
                     ("line".to_string(), json!(raw_log_line.line)),
                 ]),
-            ));
+            );
+            emit_codergen_event(&raw_log_event);
+            events.push(raw_log_event);
         }
     }
     if !session_events
@@ -383,15 +397,17 @@ fn codergen_output_from_session(
         .any(|event| event.kind == EventKind::ModelUsageUpdate)
     {
         if let Some(usage) = usage.as_ref() {
-            events.push(codergen_usage_event_from_assistant_turn(
-                &request, session, usage,
-            ));
+            let usage_event = codergen_usage_event_from_assistant_turn(&request, session, usage);
+            emit_codergen_event(&usage_event);
+            events.push(usage_event);
         }
     }
-    events.push(CodergenEvent::new(
+    let completed_event = CodergenEvent::new(
         "rust_agent_adapter_request_completed",
         codergen_completion_event_payload(&request, session, usage.as_ref()),
-    ));
+    );
+    emit_codergen_event(&completed_event);
+    events.push(completed_event);
 
     CodergenBackendOutput {
         response,

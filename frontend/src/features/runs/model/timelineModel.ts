@@ -35,6 +35,9 @@ const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
     log: 'log',
     runtime: 'runtime',
     LLMContent: 'runtime',
+    LLMRequestStarted: 'runtime',
+    LLMRequestCompleted: 'runtime',
+    LLMTokenUsage: 'runtime',
     state: 'state',
     run_meta: 'metadata',
 }
@@ -837,6 +840,40 @@ const progressSourceKey = (payload: Record<string, unknown>): string => {
     ].join(':')
 }
 
+interface VisibleStreamContent {
+    payload: Record<string, unknown>
+    nodeId: string | null
+    channel: RunProgressEntry['channel']
+    status: RunProgressEntry['status']
+    contentDelta: string
+}
+
+const visibleTurnStreamPayloadFromEvent = (event: TimelineEventEntry): Record<string, unknown> | null => (
+    event.type === 'LLMContent' ? event.payload : null
+)
+
+const visibleStreamContentFromEvent = (event: TimelineEventEntry): VisibleStreamContent | null => {
+    const payload = visibleTurnStreamPayloadFromEvent(event)
+    if (!payload) {
+        return null
+    }
+
+    const kind = asTrimmedString(payload.kind)
+    const channel = asProgressChannel(payload.channel)
+    const contentDelta = typeof payload.content_delta === 'string' ? payload.content_delta : ''
+    if (!channel || !contentDelta) {
+        return null
+    }
+
+    return {
+        payload,
+        nodeId: event.nodeId ?? asTrimmedString(event.payload.node_id),
+        channel,
+        status: kind === 'content_completed' ? 'complete' : asProgressStatus(payload.status),
+        contentDelta,
+    }
+}
+
 const buildAllRunProgressEntries = (
     timelineEntries: Iterable<TimelineEventEntry>,
 ): RunProgressEntry[] => {
@@ -846,30 +883,27 @@ const buildAllRunProgressEntries = (
         .sort((left, right) => left.sequence - right.sequence)
 
     for (const entry of sortedEntries) {
-        const payload = entry.payload
-        const channel = asProgressChannel(payload.channel)
-        const contentDelta = typeof payload.content_delta === 'string' ? payload.content_delta : ''
-        if (!channel || !contentDelta) {
+        const streamContent = visibleStreamContentFromEvent(entry)
+        if (!streamContent) {
             continue
         }
-        const nodeId = entry.nodeId ?? asTrimmedString(payload.node_id)
         const key = [
             entry.sourceScope,
             entry.sourceParentNodeId ?? 'root',
-            nodeId ?? 'run',
-            channel,
-            progressSourceKey(payload),
+            entry.sourceFlowName ?? '',
+            streamContent.nodeId ?? 'run',
+            streamContent.channel,
+            progressSourceKey(streamContent.payload),
         ].join('::')
         const previous = byKey.get(key)
-        const status = asProgressStatus(payload.status)
         byKey.set(key, {
             id: `progress-${key}`,
-            nodeId,
-            channel,
-            status,
-            content: status === 'complete'
-                ? contentDelta
-                : `${previous?.content ?? ''}${contentDelta}`,
+            nodeId: streamContent.nodeId,
+            channel: streamContent.channel,
+            status: streamContent.status,
+            content: streamContent.status === 'complete'
+                ? streamContent.contentDelta
+                : `${previous?.content ?? ''}${streamContent.contentDelta}`,
             updatedAt: entry.receivedAt,
             latestSequence: entry.sequence,
         })

@@ -528,19 +528,41 @@ pub fn state_event(
     )
 }
 
-pub fn codergen_adapter_event(
+pub fn llm_request_started_event(
     run_id: impl Into<String>,
     node_id: impl Into<String>,
-    adapter_event_type: impl Into<String>,
     payload: Value,
 ) -> RawRuntimeEvent {
     event_with_payload(
         run_id,
-        "CodergenAdapter",
+        "LLMRequestStarted",
+        [("node_id", json!(node_id.into())), ("payload", payload)],
+    )
+}
+
+pub fn llm_request_completed_event(
+    run_id: impl Into<String>,
+    node_id: impl Into<String>,
+    payload: Value,
+) -> RawRuntimeEvent {
+    event_with_payload(
+        run_id,
+        "LLMRequestCompleted",
+        [("node_id", json!(node_id.into())), ("payload", payload)],
+    )
+}
+
+pub fn llm_token_usage_event(
+    run_id: impl Into<String>,
+    node_id: impl Into<String>,
+    token_usage: Value,
+) -> RawRuntimeEvent {
+    event_with_payload(
+        run_id,
+        "LLMTokenUsage",
         [
             ("node_id", json!(node_id.into())),
-            ("adapter_event_type", json!(adapter_event_type.into())),
-            ("payload", payload),
+            ("token_usage", token_usage),
         ],
     )
 }

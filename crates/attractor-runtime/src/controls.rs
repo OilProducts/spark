@@ -302,7 +302,7 @@ impl RuntimeControls {
             graph_source: request.graph_source,
             graph_dot: request.graph_dot,
         })?;
-        self.store.append_event(
+        self.store.append_transcript_event(
             &paths,
             crate::events::pipeline_started_event(
                 &new_run_id,

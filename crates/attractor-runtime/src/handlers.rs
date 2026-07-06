@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -13,6 +14,9 @@ use attractor_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use spark_agent_adapter::codergen::CodergenEvent;
+use spark_common::debug::{agent_trace_enabled, AGENT_TRACE_FILE_NAME};
+use spark_storage::append_jsonl;
 use unified_llm_adapter::{
     resolve_effective_llm_model, resolve_effective_llm_profile, resolve_effective_llm_provider,
     resolve_effective_reasoning_effort, LlmResolutionInputs,
@@ -322,6 +326,46 @@ fn default_manager_loop_source() -> String {
     "manager_loop".to_string()
 }
 
+fn codergen_event_sink(
+    runtime: &HandlerRuntime,
+) -> Option<spark_agent_adapter::codergen::CodergenEventSink> {
+    let paths = runtime.run_paths.clone()?;
+    let run_id = runtime.run_id.clone();
+    let node_id = runtime.node_id.clone();
+    let trace_path = runtime
+        .logs_root
+        .as_ref()
+        .map(|logs_root| logs_root.join(&node_id).join(AGENT_TRACE_FILE_NAME));
+    Some(Arc::new(move |event: &CodergenEvent| {
+        if let Err(error) =
+            crate::transcript::persist_codergen_transcript_event(&paths, &run_id, &node_id, event)
+        {
+            eprintln!("failed to persist codergen transcript event: {error}");
+        }
+        if should_write_agent_trace(event) {
+            if let Some(trace_path) = trace_path.as_ref() {
+                if let Some(parent) = trace_path.parent() {
+                    if let Err(error) = fs::create_dir_all(parent) {
+                        eprintln!("failed to create agent trace directory: {error}");
+                        return;
+                    }
+                }
+                if let Err(error) = append_jsonl(trace_path, event) {
+                    eprintln!("failed to append agent trace event: {error}");
+                }
+            }
+        }
+    }))
+}
+
+fn should_write_agent_trace(event: &CodergenEvent) -> bool {
+    agent_trace_enabled()
+        && matches!(
+            event.event_type.as_str(),
+            "rust_agent_session_event" | "rust_agent_raw_log_line"
+        )
+}
+
 fn adapter_intervention_request_from_runtime(
     request: ChildInterventionRequest,
 ) -> spark_agent_adapter::CodergenChildInterventionRequest {
@@ -626,6 +670,28 @@ impl RuntimeHandlerRunner {
         Ok(())
     }
 
+    pub(crate) fn emit_transcript_event(
+        &self,
+        runtime: &HandlerRuntime,
+        event: attractor_core::RawRuntimeEvent,
+    ) -> Result<()> {
+        if let Some(paths) = &runtime.run_paths {
+            let _guard = self.event_append_lock.lock().map_err(|_| {
+                crate::error::RuntimeStorageError::io(
+                    "lock runtime event append",
+                    paths.events_jsonl(),
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "runtime event append lock poisoned",
+                    ),
+                )
+            })?;
+            let event = append_event(paths, event)?;
+            crate::transcript::persist_transcript_runtime_event(paths, &event)?;
+        }
+        Ok(())
+    }
+
     fn execute_codergen(
         &self,
         runtime: HandlerRuntime,
@@ -666,11 +732,18 @@ impl RuntimeHandlerRunner {
                     json!(runtime.run_workdir.to_string_lossy().to_string()),
                 ),
             ]),
-        );
+        )
+        .with_event_sink(self.codergen_event_sink(&runtime));
         let execution = codergen
             .execute(&runtime.node_id, runtime.context.clone())
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-        if runtime.run_paths.is_some() {
+        if let Some(paths) = runtime.run_paths.as_ref() {
+            crate::transcript::persist_codergen_final_response_text(
+                paths,
+                &runtime.node_id,
+                &execution.response_text,
+            )
+            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
             for event in codergen_events_for_journal(&runtime.run_id, &runtime.node_id, &execution)
             {
                 self.emit(&runtime, event)
@@ -678,6 +751,13 @@ impl RuntimeHandlerRunner {
             }
         }
         Ok(codergen_outcome(execution))
+    }
+
+    fn codergen_event_sink(
+        &self,
+        runtime: &HandlerRuntime,
+    ) -> Option<spark_agent_adapter::codergen::CodergenEventSink> {
+        codergen_event_sink(runtime)
     }
 
     fn execute_tool(
@@ -835,7 +915,7 @@ impl RuntimeHandlerRunner {
             .map_err(|_| RuntimeNodeError::runtime("interviewer lock poisoned"))?
             .ask(question);
         if answer.skipped || answer.value == "skipped" {
-            self.emit(
+            self.emit_transcript_event(
                 &runtime,
                 interview_completed_event(
                     &runtime.run_id,
@@ -854,7 +934,7 @@ impl RuntimeHandlerRunner {
             .as_ref()
             .map(|choice| choice.label.clone())
             .unwrap_or_else(|| answer.value.clone());
-        self.emit(
+        self.emit_transcript_event(
             &runtime,
             interview_completed_event(
                 &runtime.run_id,

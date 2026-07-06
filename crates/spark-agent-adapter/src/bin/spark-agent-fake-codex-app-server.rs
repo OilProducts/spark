@@ -1,5 +1,5 @@
 use std::env;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
@@ -12,11 +12,21 @@ fn main() {
     if mode == "steerable" {
         run_steerable(log_path);
     } else {
-        run_default(log_path, mode == "model-list", mode == "request-user-input");
+        run_default(
+            log_path,
+            mode == "model-list",
+            mode == "request-user-input",
+            mode == "tool-calls",
+        );
     }
 }
 
-fn run_default(log_path: Option<PathBuf>, model_list_only: bool, request_user_input: bool) {
+fn run_default(
+    log_path: Option<PathBuf>,
+    model_list_only: bool,
+    request_user_input: bool,
+    tool_calls: bool,
+) {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut awaiting_request_user_input_response = false;
@@ -75,6 +85,16 @@ fn run_default(log_path: Option<PathBuf>, model_list_only: bool, request_user_in
                         }),
                     );
                     awaiting_request_user_input_response = true;
+                } else if tool_calls {
+                    emit_tool_notifications(&mut stdout);
+                    emit_turn_completion(
+                        &mut stdout,
+                        "thread-test",
+                        "turn-test",
+                        "msg-test",
+                        "Ack",
+                        true,
+                    );
                 } else {
                     emit_turn_completion(
                         &mut stdout,
@@ -107,6 +127,19 @@ fn run_default(log_path: Option<PathBuf>, model_list_only: bool, request_user_in
                 json!({"id": request_id, "error": {"code": -32601, "message": format!("unexpected method {method}")}}),
             ),
         }
+    }
+}
+
+fn emit_tool_notifications(stdout: &mut impl Write) {
+    let fixture_path = env::var("SPARK_FAKE_CODEX_APP_SERVER_TOOL_TRACE")
+        .expect("SPARK_FAKE_CODEX_APP_SERVER_TOOL_TRACE");
+    for line in fs::read_to_string(fixture_path)
+        .expect("tool notification fixture")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        let message = serde_json::from_str::<Value>(line).expect("tool notification json");
+        write_json(stdout, message);
     }
 }
 

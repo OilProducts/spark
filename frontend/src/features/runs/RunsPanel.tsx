@@ -9,13 +9,12 @@ import { RunAdvancedSection } from './components/RunAdvancedSection'
 import { RunArtifactsCard } from './components/RunArtifactsCard'
 import { RunCheckpointCard } from './components/RunCheckpointCard'
 import { RunContextCard } from './components/RunContextCard'
-import { RunEventTimelineCard } from './components/RunEventTimelineCard'
 import { RunGraphCard } from './components/RunGraphCard'
 import { RunList } from './components/RunList'
-import { RunProgressCard } from './components/RunProgressCard'
 import { RunSummaryCard } from './components/RunSummaryCard'
-import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { RunResultCard } from './components/RunResultCard'
+import { RunTranscriptCard } from './components/RunTranscriptCard'
+import { RunEventTimelineCard } from './components/RunEventTimelineCard'
 import { STATUS_LABELS, type RunRecord } from './model/shared'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
@@ -198,32 +197,29 @@ export function RunsPanel() {
     })
     const checkpointResumeNode = checkpointCurrentNode !== '—' ? checkpointCurrentNode : null
     const {
-        filteredTimelineEventCount,
-        freeformAnswersByGateId,
-        groupedPendingInterviewGates,
-        groupedTimelineEntries,
         hasOlderTimelineEvents,
+        filteredTimelineEventCount,
+        groupedTimelineEntries,
         isTimelineLive,
         isTimelineLoadingOlder,
         latestRetryTimelineEvent,
         latestTimelineEvent,
         loadOlderTimelineEvents,
         pendingGateActionError,
-        progressProjection,
-        setFreeformAnswersByGateId,
-        setTimelineCategoryFilter,
-        setTimelineNodeStageFilter,
-        setTimelineSeverityFilter,
-        setTimelineTypeFilter,
         submittingGateIds,
         submitPendingGateAnswer,
-        timelineCategoryFilter,
         timelineError,
         timelineEventCount,
+        timelineCategoryFilter,
         timelineNodeStageFilter,
         timelineSeverityFilter,
         timelineTypeFilter,
         timelineTypeOptions,
+        setTimelineCategoryFilter,
+        setTimelineNodeStageFilter,
+        setTimelineSeverityFilter,
+        setTimelineTypeFilter,
+        transcriptProjection,
         visiblePendingInterviewGates,
     } = useRunTimeline({
         pendingQuestionSnapshots,
@@ -234,8 +230,6 @@ export function RunsPanel() {
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
     const isSummaryCollapsed = selectedRunSessionState?.isSummaryCollapsed ?? false
-    const isProgressCollapsed = selectedRunSessionState?.isProgressCollapsed ?? false
-    const progressNodeFilter = selectedRunSessionState?.progressNodeFilter ?? 'current'
     const isTimelineCollapsed = selectedRunSessionState?.isTimelineCollapsed ?? false
     const isAdvancedCollapsed = selectedRunSessionState?.isAdvancedCollapsed ?? true
     const isCheckpointCollapsed = selectedRunSessionState?.isCheckpointCollapsed ?? false
@@ -514,66 +508,31 @@ export function RunsPanel() {
                             </Alert>
                         )}
                         {selectedRun && (
-                            <RunQuestionsPanel
-                                freeformAnswersByGateId={freeformAnswersByGateId}
-                                groupedPendingInterviewGates={groupedPendingInterviewGates}
-                                onFreeformAnswerChange={(questionId, value) => {
-                                    setFreeformAnswersByGateId((previous) => ({
-                                        ...previous,
-                                        [questionId]: value,
-                                    }))
-                                }}
+                            <RunTranscriptCard
+                                entries={transcriptProjection.entries}
+                                isNarrowViewport={isNarrowViewport}
+                                isTimelineLive={isTimelineLive}
                                 onSubmitPendingGateAnswer={(gate, selectedValue) => {
                                     void submitPendingGateAnswer(gate, selectedValue)
                                 }}
                                 pendingGateActionError={pendingGateActionError}
                                 submittingGateIds={submittingGateIds}
-                            />
-                        )}
-                        {selectedRun && (
-                            <RunResultCard
-                                result={resultData}
-                                resultError={resultError}
-                                isLoading={isResultLoading || resultStatus === 'idle'}
-                                onRefresh={() => {
-                                    void fetchResult()
-                                }}
-                                onViewSource={(artifactPath) => {
-                                    void viewArtifact({ path: artifactPath, viewable: true })
-                                }}
-                            />
-                        )}
-                        {selectedRun && (
-                            <RunProgressCard
-                                collapsed={isProgressCollapsed}
-                                currentNodeId={currentNodeForSummary}
-                                isLive={isTimelineLive}
-                                progressNodeFilter={progressNodeFilter}
-                                progressProjection={progressProjection}
-                                onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isProgressCollapsed: collapsed })
-                                }}
-                                onProgressNodeFilterChange={(filter) => {
-                                    patchSelectedRunSession({ progressNodeFilter: filter })
-                                }}
+                                timelineError={timelineError}
+                                timelineEventCount={timelineEventCount}
                             />
                         )}
                         {selectedRun && (
                             <RunEventTimelineCard
                                 collapsed={isTimelineCollapsed}
-                                isNarrowViewport={isNarrowViewport}
-                                isTimelineLive={isTimelineLive}
-                                timelineError={timelineError}
-                                timelineEventCount={timelineEventCount}
-                                timelineTypeFilter={timelineTypeFilter}
-                                timelineTypeOptions={timelineTypeOptions}
-                                timelineNodeStageFilter={timelineNodeStageFilter}
-                                timelineCategoryFilter={timelineCategoryFilter}
-                                timelineSeverityFilter={timelineSeverityFilter}
                                 filteredTimelineEventCount={filteredTimelineEventCount}
                                 groupedTimelineEntries={groupedTimelineEntries}
                                 hasOlderTimelineEvents={hasOlderTimelineEvents}
+                                isNarrowViewport={isNarrowViewport}
+                                isTimelineLive={isTimelineLive}
                                 isTimelineLoadingOlder={isTimelineLoadingOlder}
+                                onCollapsedChange={(collapsed) => {
+                                    patchSelectedRunSession({ isTimelineCollapsed: collapsed })
+                                }}
                                 onLoadOlderTimelineEvents={() => {
                                     void loadOlderTimelineEvents()
                                 }}
@@ -581,9 +540,13 @@ export function RunsPanel() {
                                 onTimelineNodeStageFilterChange={setTimelineNodeStageFilter}
                                 onTimelineSeverityFilterChange={setTimelineSeverityFilter}
                                 onTimelineTypeFilterChange={setTimelineTypeFilter}
-                                onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isTimelineCollapsed: collapsed })
-                                }}
+                                timelineCategoryFilter={timelineCategoryFilter}
+                                timelineError={timelineError}
+                                timelineEventCount={timelineEventCount}
+                                timelineNodeStageFilter={timelineNodeStageFilter}
+                                timelineSeverityFilter={timelineSeverityFilter}
+                                timelineTypeFilter={timelineTypeFilter}
+                                timelineTypeOptions={timelineTypeOptions}
                             />
                         )}
                         {selectedRun && (
@@ -593,6 +556,17 @@ export function RunsPanel() {
                                     patchSelectedRunSession({ isAdvancedCollapsed: collapsed })
                                 }}
                             >
+                                <RunResultCard
+                                    result={resultData}
+                                    resultError={resultError}
+                                    isLoading={isResultLoading || resultStatus === 'idle'}
+                                    onRefresh={() => {
+                                        void fetchResult()
+                                    }}
+                                    onViewSource={(artifactPath) => {
+                                        void viewArtifact({ path: artifactPath, viewable: true })
+                                    }}
+                                />
                                 <RunGraphCard
                                     key={`graph-${selectedRun.run_id}`}
                                     run={selectedRun}

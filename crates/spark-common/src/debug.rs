@@ -1,15 +1,27 @@
 use crate::paths::{Environment, ProcessEnvironment};
 
 pub const ENV_SPARK_DEBUG_CODEX_JSONRPC: &str = "SPARK_DEBUG_CODEX_JSONRPC";
+pub const ENV_SPARK_DEBUG_AGENT_TRACE: &str = "SPARK_DEBUG_AGENT_TRACE";
 pub const CODEX_JSONRPC_TRACE_FILE_NAME: &str = "codex-jsonrpc-trace.jsonl";
+pub const AGENT_TRACE_FILE_NAME: &str = "unified-agent-session-trace.jsonl";
 pub const CODEX_JSONRPC_TRACE_PATH_METADATA_KEY: &str = "spark.runtime.codex_jsonrpc_trace_path";
 
 pub fn codex_jsonrpc_trace_enabled() -> bool {
     codex_jsonrpc_trace_enabled_with_env(&ProcessEnvironment)
 }
 
+pub fn agent_trace_enabled() -> bool {
+    agent_trace_enabled_with_env(&ProcessEnvironment)
+}
+
 pub fn codex_jsonrpc_trace_enabled_with_env(env: &impl Environment) -> bool {
     env.get_var(ENV_SPARK_DEBUG_CODEX_JSONRPC)
+        .as_deref()
+        .is_some_and(is_truthy_env_value)
+}
+
+pub fn agent_trace_enabled_with_env(env: &impl Environment) -> bool {
+    env.get_var(ENV_SPARK_DEBUG_AGENT_TRACE)
         .as_deref()
         .is_some_and(is_truthy_env_value)
 }

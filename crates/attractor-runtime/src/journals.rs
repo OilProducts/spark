@@ -61,11 +61,10 @@ fn journal_node_id(event: &RawRuntimeEvent, raw_type: &str) -> Option<String> {
 fn journal_kind(raw_type: &str) -> String {
     if raw_type == "log" {
         "log"
-    } else if matches!(
-        raw_type,
-        "runtime" | "state" | "LLMContent" | "CodergenAdapter"
-    ) {
+    } else if matches!(raw_type, "runtime" | "state" | "LLMContent") {
         raw_type
+    } else if raw_type.starts_with("LLM") {
+        "runtime"
     } else if raw_type == "run_meta" {
         "metadata"
     } else if matches!(
@@ -301,19 +300,24 @@ fn journal_summary(
                     node_id.unwrap_or("unknown")
                 )
             }),
-        "CodergenAdapter" => string_payload(event, "adapter_event_type")
-            .map(|event_type| {
-                format!(
-                    "{source_prefix}Codergen adapter event for {}: {event_type}",
-                    node_id.unwrap_or("unknown")
-                )
-            })
-            .unwrap_or_else(|| {
-                format!(
-                    "{source_prefix}Codergen adapter event for {}",
-                    node_id.unwrap_or("unknown")
-                )
-            }),
+        "LLMRequestStarted" => {
+            format!(
+                "{source_prefix}LLM request started for {}",
+                node_id.unwrap_or("unknown")
+            )
+        }
+        "LLMRequestCompleted" => {
+            format!(
+                "{source_prefix}LLM request completed for {}",
+                node_id.unwrap_or("unknown")
+            )
+        }
+        "LLMTokenUsage" => {
+            format!(
+                "{source_prefix}LLM token usage updated for {}",
+                node_id.unwrap_or("unknown")
+            )
+        }
         "ParallelStarted" => numeric_payload(event, "branch_count")
             .map(|count| format!("{source_prefix}Parallel fan-out started ({count} branches)"))
             .unwrap_or_else(|| format!("{source_prefix}Parallel fan-out started")),

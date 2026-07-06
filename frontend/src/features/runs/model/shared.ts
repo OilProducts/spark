@@ -185,6 +185,84 @@ export interface RunProgressProjection {
     nodeOptions: string[]
 }
 
+export type RunTranscriptBoundaryStatus = 'running' | 'completed' | 'failed' | 'retrying'
+
+export interface RunTranscriptBoundaryEntry {
+    id: string
+    kind: 'boundary'
+    sequence: number
+    nodeId: string | null
+    stageIndex: number | null
+    attempt: number | null
+    status: RunTranscriptBoundaryStatus
+    startedAt: string | null
+    endedAt: string | null
+    model: string | null
+    sourceScope: TimelineSourceScope
+    sourceParentNodeId: string | null
+    sourceFlowName: string | null
+    summary: string
+}
+
+export interface RunTranscriptSegmentToolCall {
+    id: string
+    kind: 'command_execution' | 'file_change' | 'dynamic_tool'
+    status: 'running' | 'completed' | 'failed'
+    title: string
+    command?: string | null
+    output?: string | null
+    output_size?: number | null
+    output_truncated?: boolean
+    file_paths: string[]
+}
+
+export interface RunTranscriptRequestUserInput {
+    request_id: string
+    status: 'pending' | 'answered' | 'expired'
+    questions: Array<{
+        id: string
+        header: string
+        question: string
+        question_type: 'MULTIPLE_CHOICE' | 'FREEFORM'
+        options: Array<{
+            label: string
+            value?: string | null
+            description?: string | null
+        }>
+        allow_other: boolean
+        is_secret: boolean
+    }>
+    answers: Record<string, string>
+    submitted_at?: string | null
+}
+
+export interface RunTranscriptSegmentEntry {
+    id: string
+    turn_id: string
+    order: number
+    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'context_compaction' | 'request_user_input'
+    role: 'assistant' | 'system'
+    status: 'pending' | 'answered' | 'streaming' | 'complete' | 'failed' | 'running'
+    timestamp: string
+    updated_at: string
+    content: string
+    completed_at?: string | null
+    error?: string | null
+    artifact_id?: string | null
+    phase?: string | null
+    tool_call?: RunTranscriptSegmentToolCall | null
+    request_user_input?: RunTranscriptRequestUserInput | null
+    source?: Record<string, unknown> | null
+}
+
+export type RunTranscriptEntry =
+    | RunTranscriptBoundaryEntry
+    | RunTranscriptSegmentEntry
+
+export interface RunTranscriptProjection {
+    entries: RunTranscriptEntry[]
+}
+
 export interface PendingQuestionOption {
     label: string
     value: string

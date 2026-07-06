@@ -900,6 +900,9 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
     assert_eq!(model_tool["source"]["response_id"], "resp-1");
     let tool = segment_by_kind(segments, "tool_call");
     assert_eq!(tool["status"], "complete");
+    assert_eq!(tool["tool_call"]["kind"], "command_execution");
+    assert_eq!(tool["tool_call"]["title"], "Run command");
+    assert_eq!(tool["tool_call"]["command"], "cargo test");
     assert_eq!(tool["tool_call"]["output"], "full output");
     assert_eq!(tool["source"]["call_id"], "tool-1");
     assert!(segments.iter().any(|segment| {
@@ -2160,6 +2163,7 @@ fn tool_event(kind: &str, id: &str, status: &str, output: &str) -> TurnStreamEve
             "kind": "command_execution",
             "status": status,
             "title": "Run command",
+            "command": "cargo test",
             "output": output,
             "file_paths": [],
         })),

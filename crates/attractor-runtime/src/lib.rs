@@ -21,6 +21,7 @@ pub mod retry;
 pub mod routing;
 pub mod store;
 pub mod terminal;
+pub mod transcript;
 
 pub use artifacts::{
     append_tool_hook_failure, copy_tool_artifact_matches, ensure_run_layout, list_artifacts,
@@ -51,15 +52,16 @@ pub use error::{Result, RuntimeStorageError};
 pub use events::{
     append_event, cancel_requested_event, checkpoint_saved_event,
     child_intervention_requested_event, child_run_completed_event, child_run_started_event,
-    cleanup_error_event, codergen_adapter_event, human_gate_answered_event,
-    human_gate_pending_event, human_intervention_requested_event, interview_completed_event,
-    interview_started_event, lifecycle_event, log_event, parallel_branch_completed_event,
-    parallel_branch_started_event, parallel_completed_event, parallel_started_event,
-    pipeline_completed_event, pipeline_completed_event_with_reasons, pipeline_failed_event,
-    pipeline_paused_event, pipeline_retry_completed_event, pipeline_retry_started_event,
-    pipeline_started_event, read_raw_events, run_metadata_event,
-    run_metadata_event_with_graph_paths, runtime_status_event, stage_completed_event,
-    stage_failed_event, stage_retrying_event, stage_started_event, state_event,
+    cleanup_error_event, human_gate_answered_event, human_gate_pending_event,
+    human_intervention_requested_event, interview_completed_event, interview_started_event,
+    lifecycle_event, llm_request_completed_event, llm_request_started_event, llm_token_usage_event,
+    log_event, parallel_branch_completed_event, parallel_branch_started_event,
+    parallel_completed_event, parallel_started_event, pipeline_completed_event,
+    pipeline_completed_event_with_reasons, pipeline_failed_event, pipeline_paused_event,
+    pipeline_retry_completed_event, pipeline_retry_started_event, pipeline_started_event,
+    read_raw_events, run_metadata_event, run_metadata_event_with_graph_paths, runtime_status_event,
+    stage_completed_event, stage_failed_event, stage_retrying_event, stage_started_event,
+    state_event,
 };
 pub use executor::{
     ExecuteRunRequest, ExecutionControlAction, ExecutionStart, NodeExecutionRequest, NodeExecutor,
@@ -98,3 +100,4 @@ pub use terminal::{
     resolve_terminal_workflow_outcome, GoalGateCheck, TerminalWorkflowOutcome,
     GOAL_GATE_NO_RETRY_TARGET_REASON, GOAL_GATE_UNSATISFIED_OUTCOME_CODE,
 };
+pub use transcript::{read_run_transcript, RunTranscript, RunTranscriptEntry};

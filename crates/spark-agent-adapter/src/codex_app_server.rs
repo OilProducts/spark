@@ -148,7 +148,7 @@ impl CodexAppServerBackend {
         self.run_agent_turn_with_steering_and_sink(request, steering, None)
     }
 
-    fn run_agent_turn_with_steering_and_sink(
+    pub(crate) fn run_agent_turn_with_steering_and_sink(
         &self,
         request: AgentTurnRequest,
         steering: Option<SessionSteeringHandle>,
@@ -1275,7 +1275,7 @@ pub fn process_codex_app_server_message(
                     "command_approval_requested",
                 )
                 .content(extract_command_text(&params))
-                .tool(Value::Object(params.clone()))
+                .tool(command_execution_tool_call_payload(&params, "running"))
                 .item_id(object_text(&params, &["itemId"]))
                 .build(),
             );
@@ -1286,7 +1286,7 @@ pub fn process_codex_app_server_message(
                     TurnStreamEventKind::ToolCallStarted,
                     "file_change_approval_requested",
                 )
-                .tool(Value::Object(params.clone()))
+                .tool(file_change_tool_call_payload(&params, "running"))
                 .item_id(object_text(&params, &["itemId"]))
                 .build(),
             );
@@ -1318,7 +1318,7 @@ pub fn process_codex_app_server_message(
                 } else if is_tool_item(item) {
                     events.push(
                         event(TurnStreamEventKind::ToolCallStarted, "tool_item_started")
-                            .tool(Value::Object(item.clone()))
+                            .tool(tool_call_payload_from_codex_item(item, "running"))
                             .item_id(object_text(item, &["id"]))
                             .build(),
                     );
@@ -1370,7 +1370,7 @@ pub fn process_codex_app_server_message(
                             TurnStreamEventKind::ToolCallCompleted,
                             "tool_item_completed",
                         )
-                        .tool(Value::Object(item.clone()))
+                        .tool(tool_call_payload_from_codex_item(item, "completed"))
                         .item_id(item_id)
                         .build(),
                     );
@@ -1861,6 +1861,142 @@ fn extract_command_text(payload: &Map<String, Value>) -> Option<String> {
         .get("command")
         .and_then(Value::as_object)
         .and_then(extract_command_text)
+}
+
+fn tool_call_payload_from_codex_item(item: &Map<String, Value>, default_status: &str) -> Value {
+    match object_text(item, &["type"]).as_deref() {
+        Some("commandExecution") => command_execution_tool_call_payload(item, default_status),
+        Some("fileChange") => file_change_tool_call_payload(item, default_status),
+        _ => Value::Object(item.clone()),
+    }
+}
+
+fn command_execution_tool_call_payload(
+    payload: &Map<String, Value>,
+    default_status: &str,
+) -> Value {
+    let mut tool_call = Map::new();
+    tool_call.insert(
+        "id".to_string(),
+        Value::String(
+            object_text(payload, &["id"])
+                .or_else(|| object_text(payload, &["itemId"]))
+                .unwrap_or_else(|| "command_execution".to_string()),
+        ),
+    );
+    tool_call.insert(
+        "kind".to_string(),
+        Value::String("command_execution".to_string()),
+    );
+    tool_call.insert(
+        "status".to_string(),
+        Value::String(normalize_tool_status(payload, default_status)),
+    );
+    tool_call.insert(
+        "title".to_string(),
+        Value::String("Run command".to_string()),
+    );
+    if let Some(command) = extract_command_text(payload) {
+        tool_call.insert("command".to_string(), Value::String(command));
+    }
+    tool_call.insert(
+        "output".to_string(),
+        object_text(payload, &["aggregatedOutput", "aggregated_output"])
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    Value::Object(tool_call)
+}
+
+fn file_change_tool_call_payload(payload: &Map<String, Value>, default_status: &str) -> Value {
+    let mut tool_call = Map::new();
+    tool_call.insert(
+        "id".to_string(),
+        Value::String(
+            object_text(payload, &["id"])
+                .or_else(|| object_text(payload, &["itemId"]))
+                .unwrap_or_else(|| "file_change".to_string()),
+        ),
+    );
+    tool_call.insert("kind".to_string(), Value::String("file_change".to_string()));
+    tool_call.insert(
+        "status".to_string(),
+        Value::String(normalize_tool_status(payload, default_status)),
+    );
+    tool_call.insert(
+        "title".to_string(),
+        Value::String("Apply file changes".to_string()),
+    );
+    tool_call.insert(
+        "file_paths".to_string(),
+        Value::Array(
+            extract_file_paths(payload)
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    Value::Object(tool_call)
+}
+
+fn normalize_tool_status(payload: &Map<String, Value>, default_status: &str) -> String {
+    let raw_status = object_text(payload, &["status", "state"])
+        .unwrap_or_else(|| default_status.to_string())
+        .to_ascii_lowercase();
+    match raw_status.as_str() {
+        "running" | "in_progress" | "inprogress" | "started" | "pending" => "running",
+        "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled" => "failed",
+        "completed" | "complete" | "succeeded" | "success" | "done" => "completed",
+        _ => default_status,
+    }
+    .to_string()
+}
+
+fn extract_file_paths(payload: &Map<String, Value>) -> Vec<String> {
+    let mut paths = Vec::new();
+    for key in ["file_paths", "filePaths", "paths"] {
+        collect_file_paths(payload.get(key), &mut paths);
+    }
+    for key in ["changes", "edits", "files"] {
+        collect_file_paths(payload.get(key), &mut paths);
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn collect_file_paths(value: Option<&Value>, paths: &mut Vec<String>) {
+    match value {
+        Some(Value::String(path)) => push_file_path(path, paths),
+        Some(Value::Array(entries)) => {
+            for entry in entries {
+                collect_file_path_value(entry, paths);
+            }
+        }
+        Some(Value::Object(object)) => {
+            for key in ["path", "filePath", "file_path", "filename", "name"] {
+                if let Some(path) = object.get(key).and_then(as_non_empty_string) {
+                    push_file_path(&path, paths);
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_file_path_value(value: &Value, paths: &mut Vec<String>) {
+    match value {
+        Value::String(path) => push_file_path(path, paths),
+        Value::Object(object) => collect_file_paths(Some(&Value::Object(object.clone())), paths),
+        _ => {}
+    }
+}
+
+fn push_file_path(path: &str, paths: &mut Vec<String>) {
+    if let Some(path) = non_empty(path) {
+        paths.push(path.to_string());
+    }
 }
 
 fn extract_agent_message_text_from_item(item: &Map<String, Value>) -> Option<String> {

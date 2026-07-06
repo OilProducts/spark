@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -601,6 +602,40 @@ impl CodergenEvent {
             payload,
         }
     }
+}
+
+pub type CodergenEventSink = Arc<dyn Fn(&CodergenEvent) + Send + Sync>;
+
+thread_local! {
+    static CURRENT_CODERGEN_EVENT_SINK: RefCell<Option<CodergenEventSink>> = RefCell::new(None);
+}
+
+pub fn emit_codergen_event(event: &CodergenEvent) {
+    CURRENT_CODERGEN_EVENT_SINK.with(|current| {
+        if let Some(sink) = current.borrow().as_ref() {
+            sink(event);
+        }
+    });
+}
+
+pub fn with_codergen_event_sink<T>(
+    event_sink: Option<CodergenEventSink>,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct SinkGuard(Option<CodergenEventSink>);
+
+    impl Drop for SinkGuard {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            CURRENT_CODERGEN_EVENT_SINK.with(|current| {
+                *current.borrow_mut() = previous;
+            });
+        }
+    }
+
+    let previous = CURRENT_CODERGEN_EVENT_SINK.with(|current| current.replace(event_sink));
+    let _guard = SinkGuard(previous);
+    run()
 }
 
 pub trait CodergenBackend {

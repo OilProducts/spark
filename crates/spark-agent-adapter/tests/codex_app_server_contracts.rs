@@ -581,6 +581,147 @@ fn app_server_notifications_normalize_assistant_plan_reasoning_tool_usage_and_co
 }
 
 #[test]
+fn app_server_tool_items_emit_frontend_renderable_tool_call_payloads() {
+    let mut state = CodexAppServerTurnState::default();
+    let events = recorded_tool_notification_messages()
+        .iter()
+        .flat_map(|message| process_codex_app_server_message(message, &mut state))
+        .collect::<Vec<_>>();
+
+    let started = events
+        .iter()
+        .find(|event| event.kind == TurnStreamEventKind::ToolCallStarted)
+        .and_then(|event| event.tool_call.as_ref())
+        .expect("started tool call");
+    assert_eq!(started["id"], json!("cmd-1"));
+    assert_eq!(started["kind"], json!("command_execution"));
+    assert_eq!(started["status"], json!("running"));
+    assert_eq!(started["title"], json!("Run command"));
+    assert_eq!(started["command"], json!("cargo test"));
+    assert_eq!(started["output"], Value::Null);
+
+    let completed_command = events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::ToolCallCompleted)
+        .find_map(|event| {
+            let tool_call = event.tool_call.as_ref()?;
+            (tool_call["kind"] == "command_execution").then_some(tool_call)
+        })
+        .expect("completed command tool call");
+    assert_eq!(completed_command["id"], json!("cmd-1"));
+    assert_eq!(completed_command["status"], json!("completed"));
+    assert_eq!(completed_command["title"], json!("Run command"));
+    assert_eq!(completed_command["command"], json!("cargo test"));
+    assert_eq!(completed_command["output"], json!("test result: ok\n"));
+
+    let file_change = events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::ToolCallCompleted)
+        .find_map(|event| {
+            let tool_call = event.tool_call.as_ref()?;
+            (tool_call["kind"] == "file_change").then_some(tool_call)
+        })
+        .expect("file change tool call");
+    assert_eq!(file_change["id"], json!("file-1"));
+    assert_eq!(file_change["status"], json!("completed"));
+    assert_eq!(file_change["title"], json!("Apply file changes"));
+    assert_eq!(
+        file_change["file_paths"],
+        json!(["src/lib.rs", "tests/lib_contracts.rs"])
+    );
+}
+
+#[test]
+fn app_server_tool_approval_requests_emit_normalized_tool_call_payloads() {
+    let mut state = CodexAppServerTurnState::default();
+    let events = recorded_tool_notification_messages()
+        .iter()
+        .filter(|message| {
+            message["method"]
+                .as_str()
+                .is_some_and(|method| method.ends_with("/requestApproval"))
+        })
+        .flat_map(|message| process_codex_app_server_message(message, &mut state))
+        .collect::<Vec<_>>();
+
+    let command = events[0].tool_call.as_ref().expect("command tool call");
+    assert_eq!(command["id"], json!("cmd-approve"));
+    assert_eq!(command["kind"], json!("command_execution"));
+    assert_eq!(command["status"], json!("running"));
+    assert_eq!(command["title"], json!("Run command"));
+    assert_eq!(command["command"], json!("cargo fmt --all"));
+
+    let file_change = events[1].tool_call.as_ref().expect("file tool call");
+    assert_eq!(file_change["id"], json!("file-approve"));
+    assert_eq!(file_change["kind"], json!("file_change"));
+    assert_eq!(file_change["status"], json!("running"));
+    assert_eq!(file_change["title"], json!("Apply file changes"));
+    assert_eq!(file_change["file_paths"], json!(["Cargo.toml"]));
+}
+
+#[test]
+fn fake_app_server_tool_trace_emits_normalized_frontend_renderable_tool_events() {
+    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fixture_path = recorded_tool_notification_fixture_path();
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "tool-calls");
+    let _trace_guard = EnvVarGuard::set(
+        "SPARK_FAKE_CODEX_APP_SERVER_TOOL_TRACE",
+        fixture_path.as_os_str(),
+    );
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let output = CodexAppServerBackend::new()
+        .run_agent_turn(AgentTurnRequest {
+            conversation_id: "conversation-tool-trace".to_string(),
+            project_path: temp.path().to_string_lossy().into_owned(),
+            prompt: "Run the trace".to_string(),
+            history: Vec::new(),
+            provider: Some("codex".to_string()),
+            model: Some("gpt-codex-test".to_string()),
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: Some("agent".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("tool trace turn");
+
+    let tool_calls = output
+        .events
+        .iter()
+        .filter_map(|event| event.tool_call.as_ref())
+        .collect::<Vec<_>>();
+    assert!(tool_calls.iter().any(|tool_call| {
+        tool_call["id"] == json!("cmd-1")
+            && tool_call["kind"] == json!("command_execution")
+            && tool_call["title"] == json!("Run command")
+            && tool_call["command"] == json!("cargo test")
+            && tool_call["output"] == json!("test result: ok\n")
+    }));
+    assert!(tool_calls.iter().any(|tool_call| {
+        tool_call["id"] == json!("cmd-approve")
+            && tool_call["kind"] == json!("command_execution")
+            && tool_call["title"] == json!("Run command")
+            && tool_call["command"] == json!("cargo fmt --all")
+    }));
+    assert!(tool_calls.iter().any(|tool_call| {
+        tool_call["id"] == json!("file-1")
+            && tool_call["kind"] == json!("file_change")
+            && tool_call["title"] == json!("Apply file changes")
+            && tool_call["file_paths"] == json!(["src/lib.rs", "tests/lib_contracts.rs"])
+    }));
+    assert!(tool_calls.iter().any(|tool_call| {
+        tool_call["id"] == json!("file-approve")
+            && tool_call["kind"] == json!("file_change")
+            && tool_call["title"] == json!("Apply file changes")
+            && tool_call["file_paths"] == json!(["Cargo.toml"])
+    }));
+}
+
+#[test]
 fn app_server_notifications_preserve_stream_delta_whitespace() {
     let mut state = CodexAppServerTurnState::default();
     let messages = [
@@ -656,6 +797,20 @@ fn app_server_request_user_input_notification_preserves_payload() {
             .unwrap()["questions"][0]["id"],
         json!("choice")
     );
+}
+
+fn recorded_tool_notification_fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../test-fixtures/compat/agent/codex-app-server-tool-notifications.jsonl")
+}
+
+fn recorded_tool_notification_messages() -> Vec<Value> {
+    fs::read_to_string(recorded_tool_notification_fixture_path())
+        .expect("tool notification fixture")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).expect("tool notification json"))
+        .collect()
 }
 
 fn assert_schema_valid(schema: &str, instance: &Value) {

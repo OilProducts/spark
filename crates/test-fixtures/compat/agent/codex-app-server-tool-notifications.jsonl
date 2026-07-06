@@ -1,0 +1,5 @@
+{"method":"item/started","params":{"threadId":"thread-test","turnId":"turn-test","item":{"type":"commandExecution","id":"cmd-1","command":["cargo","test"],"status":"in_progress"}}}
+{"method":"item/completed","params":{"threadId":"thread-test","turnId":"turn-test","item":{"type":"commandExecution","id":"cmd-1","command":["cargo","test"],"status":"success","aggregatedOutput":"test result: ok\n"}}}
+{"method":"item/completed","params":{"threadId":"thread-test","turnId":"turn-test","item":{"type":"fileChange","id":"file-1","status":"completed","changes":[{"path":"src/lib.rs"},{"filePath":"tests/lib_contracts.rs"}]}}}
+{"jsonrpc":"2.0","id":"approval-command-1","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-test","turnId":"turn-test","itemId":"cmd-approve","commandLine":"cargo fmt --all"}}
+{"jsonrpc":"2.0","id":"approval-file-1","method":"item/fileChange/requestApproval","params":{"threadId":"thread-test","turnId":"turn-test","itemId":"file-approve","filePaths":["Cargo.toml"]}}

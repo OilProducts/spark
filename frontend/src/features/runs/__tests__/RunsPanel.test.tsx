@@ -1,6 +1,7 @@
 import { RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { RunsPanel } from '@/features/runs/RunsPanel'
 import { RunStream } from '@/features/runs/RunStream'
+import { RUN_JOURNAL_WINDOW_SIZE } from '@/features/runs/model/shared'
 import {
   flattenRunJournalSegments,
   useRunJournalStore,
@@ -249,6 +250,7 @@ describe('RunsPanel', () => {
   })
 
   afterEach(() => {
+    localStorage.removeItem('spark.debug.performance')
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -665,24 +667,63 @@ describe('RunsPanel', () => {
       }
       if (url.includes('/attractor/pipelines/run-selected/journal')) {
         return jsonResponse(makeJournalPage('run-selected', [
-          makeJournalEntry(3, {
-            type: 'LLMContent',
-            node_id: 'draft',
-            channel: 'assistant',
-            status: 'complete',
-            content_delta: 'Draft archive output.',
-            source: { app_turn_id: 'turn-2', item_id: 'msg-1' },
-          }, { summary: 'Assistant output complete for draft' }),
-          makeJournalEntry(2, {
-            type: 'LLMContent',
-            node_id: 'validate',
-            channel: 'assistant',
-            status: 'complete',
-            content_delta: 'Validation **passed**.',
-            source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
-          }, { summary: 'Assistant output complete for validate' }),
           makeJournalEntry(1, { type: 'StageStarted', node_id: 'validate' }, { summary: 'Stage validate started' }),
         ]))
+      }
+      if (url.includes('/attractor/pipelines/run-selected/transcript')) {
+        return jsonResponse({
+          pipeline_id: 'run-selected',
+          entries: [
+            {
+              id: 'segment-request-user-input-approve-1',
+              kind: 'request_user_input',
+              turn_id: 'run-node-validate',
+              order: 1,
+              role: 'system',
+              status: 'pending',
+              timestamp: '2026-06-20T12:00:30Z',
+              updated_at: '2026-06-20T12:00:30Z',
+              content: 'Approve the validation result?',
+              request_user_input: {
+                request_id: 'approve-1',
+                status: 'pending',
+                questions: [{
+                  id: 'approve-1',
+                  header: 'validate',
+                  question: 'Approve the validation result?',
+                  question_type: 'MULTIPLE_CHOICE',
+                  options: [{ label: 'Approve' }, { label: 'Reject' }],
+                  allow_other: false,
+                  is_secret: false,
+                }],
+                answers: {},
+              },
+              source: { node_id: 'validate', source_scope: 'root' },
+            },
+            {
+              id: 'message-validate-assistant',
+              kind: 'assistant_message',
+              turn_id: 'run-node-validate',
+              order: 2,
+              role: 'assistant',
+              status: 'complete',
+              timestamp: '2026-06-20T12:01:00Z',
+              content: 'Validation **passed**.',
+              updated_at: '2026-06-20T12:01:00Z',
+            },
+            {
+              id: 'message-draft-assistant',
+              kind: 'assistant_message',
+              turn_id: 'run-node-draft',
+              order: 3,
+              role: 'assistant',
+              status: 'complete',
+              timestamp: '2026-06-20T12:02:00Z',
+              content: 'Draft archive output.',
+              updated_at: '2026-06-20T12:02:00Z',
+            },
+          ],
+        })
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -733,9 +774,7 @@ describe('RunsPanel', () => {
     const scopeSection = screen.getByTestId('run-summary-section-scope')
     const usageSection = screen.getByTestId('run-summary-section-usage')
     const runActivityPanel = screen.getByTestId('run-activity-panel')
-    const runPendingQuestionsPanel = screen.getByTestId('run-pending-human-gates-panel')
-    const runProgressPanel = screen.getByTestId('run-progress-panel')
-    const runTimelinePanel = screen.getByTestId('run-event-timeline-panel')
+    const runTranscriptPanel = screen.getByTestId('run-transcript-panel')
     const runAdvancedPanel = screen.getByTestId('run-advanced-panel')
     expect(screen.getByTestId('run-summary-spec-artifact-link')).toBeVisible()
     expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
@@ -754,35 +793,22 @@ describe('RunsPanel', () => {
       expect(screen.getByTestId('run-summary-now-latest-journal')).toHaveTextContent('Stage validate started')
     })
     expect(runActivityPanel).toBeVisible()
-    expect(runPendingQuestionsPanel).toBeVisible()
-    expect(runProgressPanel).toBeVisible()
-    expect(screen.getByTestId('run-progress-node-filter')).toHaveValue('current')
-    expect(screen.getByTestId('run-progress-entry-current-label')).toHaveTextContent('Current node')
-    expect(screen.getAllByTestId('run-progress-entry-node')[0]).toHaveTextContent('validate')
+    expect(runTranscriptPanel).toBeVisible()
+    expect(screen.getByTestId('run-transcript-input')).toBeVisible()
+    expect(screen.getAllByTestId('run-transcript-message')).toHaveLength(2)
+    expect(screen.queryByTestId('run-transcript-boundary')).not.toBeInTheDocument()
+    expect(runTranscriptPanel).not.toHaveTextContent('Stage validate started')
     expect(screen.getByText('passed', { selector: 'strong' })).toBeVisible()
     expect(screen.getByText('Draft archive output.')).toBeVisible()
-    await user.selectOptions(screen.getByTestId('run-progress-node-filter'), 'recent')
-    expect(within(screen.getByTestId('run-progress-list')).queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
-    expect(screen.getByText('Draft archive output.')).toBeVisible()
-    await user.selectOptions(screen.getByTestId('run-progress-node-filter'), 'draft')
-    const filteredProgressList = screen.getByTestId('run-progress-list')
-    expect(within(filteredProgressList).getAllByTestId('run-progress-entry-node')).toHaveLength(1)
-    expect(within(filteredProgressList).getByTestId('run-progress-entry-node')).toHaveTextContent('draft')
-    expect(runTimelinePanel).toBeVisible()
     expect(runAdvancedPanel).toBeVisible()
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
     expect(screen.queryByTestId('run-graph-panel')).not.toBeInTheDocument()
     expect(screen.getByTestId('run-summary-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-advanced-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-event-timeline-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-progress-toggle-button')).toBeVisible()
     expect(screen.queryByTestId('run-graph-canvas')).not.toBeInTheDocument()
     expect(runSummaryPanel).toContainElement(runActivityPanel)
     expect(
-      runPendingQuestionsPanel.compareDocumentPosition(runProgressPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    expect(
-      runProgressPanel.compareDocumentPosition(runTimelinePanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runSummaryPanel.compareDocumentPosition(runTranscriptPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
       nowSection.compareDocumentPosition(outcomeSection) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -794,7 +820,7 @@ describe('RunsPanel', () => {
       scopeSection.compareDocumentPosition(usageSection) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
-      runTimelinePanel.compareDocumentPosition(runAdvancedPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runTranscriptPanel.compareDocumentPosition(runAdvancedPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
 
     await user.click(screen.getByTestId('run-advanced-toggle-button'))
@@ -2253,6 +2279,247 @@ describe('RunsPanel', () => {
     })
   })
 
+  it('reloads canonical transcript content for an active run without a journal event', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-live-transcript',
+      flow_name: 'selected.dot',
+      status: 'running',
+      outcome: null,
+      ended_at: null,
+      current_node: 'write',
+      project_path: '/tmp/project-one',
+    })
+    const transcriptEntries: Record<string, unknown>[] = []
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [selectedRun] })
+      }
+      if (url.endsWith('/attractor/pipelines/run-live-transcript')) {
+        return jsonResponse({
+          ...selectedRun,
+          pipeline_id: selectedRun.run_id,
+          completed_nodes: [],
+          progress: {
+            current_node: 'write',
+            completed_nodes: [],
+            completed_count: 0,
+          },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-transcript/checkpoint')) {
+        return jsonResponse({
+          pipeline_id: selectedRun.run_id,
+          checkpoint: {
+            current_node: 'write',
+            completed_nodes: [],
+          },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-transcript/context')) {
+        return jsonResponse({ pipeline_id: selectedRun.run_id, context: {} })
+      }
+      if (url.includes('/attractor/pipelines/run-live-transcript/artifacts')) {
+        return jsonResponse({ pipeline_id: selectedRun.run_id, artifacts: [] })
+      }
+      if (url.includes('/attractor/pipelines/run-live-transcript/graph-preview')) {
+        return jsonResponse({
+          status: 'ok',
+          graph: {
+            graph_attrs: {},
+            nodes: [
+              { id: 'write', label: 'Write', shape: 'box' },
+            ],
+            edges: [],
+          },
+          diagnostics: [],
+          errors: [],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-transcript/questions')) {
+        return jsonResponse({ pipeline_id: selectedRun.run_id, questions: [] })
+      }
+      if (url.includes('/attractor/pipelines/run-live-transcript/journal')) {
+        return jsonResponse(makeJournalPage(selectedRun.run_id, []))
+      }
+      if (url.includes('/attractor/pipelines/run-live-transcript/transcript')) {
+        return jsonResponse({
+          pipeline_id: selectedRun.run_id,
+          entries: transcriptEntries,
+        })
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    installControllableEventSource()
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+
+    await user.click(screen.getByTestId('run-history-row'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-transcript-empty')).toBeVisible()
+      expect(useRunJournalStore.getState().byRunId[selectedRun.run_id]?.liveStatus).toBe('live')
+    })
+
+    transcriptEntries.push({
+      id: 'message-write-assistant',
+      kind: 'assistant_message',
+      turn_id: 'run-node-write',
+      order: 1,
+      role: 'assistant',
+      status: 'streaming',
+      timestamp: '2026-06-20T12:01:00Z',
+      content: 'Canonical transcript updated without a journal event.',
+      updated_at: '2026-06-20T12:01:00Z',
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-transcript-panel')).toHaveTextContent('Canonical transcript updated without a journal event.')
+    }, { timeout: 2500 })
+
+    expect(useRunJournalStore.getState().byRunId[selectedRun.run_id]?.loadedEntryCount).toBe(0)
+  })
+
+  it('reloads an answered request_user_input transcript row after answer submission without leaving an actionable duplicate', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-answer-transcript',
+      flow_name: 'selected.dot',
+      status: 'running',
+      outcome: null,
+      ended_at: null,
+      current_node: 'review',
+      project_path: '/tmp/project-one',
+    })
+    let answered = false
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method === 'POST' && url.includes('/attractor/pipelines/run-answer-transcript/questions/approval/answer')) {
+        const body = JSON.parse(String(init?.body ?? '{}'))
+        expect(body).toEqual({ question_id: 'approval', selected_value: 'approve' })
+        answered = true
+        return jsonResponse({ status: 'accepted', pipeline_id: selectedRun.run_id, question_id: 'approval' })
+      }
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [selectedRun] })
+      }
+      if (url.endsWith('/attractor/pipelines/run-answer-transcript')) {
+        return jsonResponse({
+          ...selectedRun,
+          pipeline_id: selectedRun.run_id,
+          completed_nodes: [],
+          progress: { current_node: 'review', completed_nodes: [], completed_count: 0 },
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-answer-transcript/checkpoint')) {
+        return jsonResponse({ pipeline_id: selectedRun.run_id, checkpoint: { current_node: 'review', completed_nodes: [] } })
+      }
+      if (url.includes('/attractor/pipelines/run-answer-transcript/context')) {
+        return jsonResponse({ pipeline_id: selectedRun.run_id, context: {} })
+      }
+      if (url.includes('/attractor/pipelines/run-answer-transcript/artifacts')) {
+        return jsonResponse({ pipeline_id: selectedRun.run_id, artifacts: [] })
+      }
+      if (url.includes('/attractor/pipelines/run-answer-transcript/result')) {
+        return jsonResponse({
+          pipeline_id: selectedRun.run_id,
+          run_id: selectedRun.run_id,
+          status: 'unavailable',
+          state: 'unavailable',
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-answer-transcript/graph-preview')) {
+        return jsonResponse({ status: 'ok', graph: { graph_attrs: {}, nodes: [{ id: 'review', label: 'Review', shape: 'box' }], edges: [] }, diagnostics: [], errors: [] })
+      }
+      if (url.includes('/attractor/pipelines/run-answer-transcript/questions')) {
+        return jsonResponse({ pipeline_id: selectedRun.run_id, questions: answered ? [] : [{ question_id: 'approval', node_id: 'review', prompt: 'Approve release?', type: 'CONFIRMATION' }] })
+      }
+      if (url.includes('/attractor/pipelines/run-answer-transcript/journal')) {
+        return jsonResponse(makeJournalPage(selectedRun.run_id, []))
+      }
+      if (url.includes('/attractor/pipelines/run-answer-transcript/transcript')) {
+        return jsonResponse({
+          pipeline_id: selectedRun.run_id,
+          entries: [{
+            id: 'segment-request-user-input-approval',
+            kind: 'request_user_input',
+            turn_id: 'run-node-review',
+            order: 1,
+            role: 'system',
+            status: answered ? 'answered' : 'pending',
+            timestamp: '2026-07-06T10:00:00Z',
+            updated_at: answered ? '2026-07-06T10:05:00Z' : '2026-07-06T10:00:00Z',
+            completed_at: answered ? '2026-07-06T10:05:00Z' : null,
+            content: 'Approve release?',
+            request_user_input: {
+              request_id: 'approval',
+              status: answered ? 'answered' : 'pending',
+              questions: [{
+                id: 'approval',
+                header: 'review',
+                question: 'Approve release?',
+                question_type: 'MULTIPLE_CHOICE',
+                options: [{ label: 'Approve', value: 'approve' }, { label: 'Reject', value: 'reject' }],
+                allow_other: false,
+                is_secret: false,
+              }],
+              answers: answered ? { approval: 'approve' } : {},
+              submitted_at: answered ? '2026-07-06T10:05:00Z' : null,
+            },
+            source: { node_id: 'review', source_scope: 'root' },
+          }],
+        })
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    installControllableEventSource()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+    await user.click(screen.getByTestId('run-history-row'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-request-user-input-card-segment-request-user-input-approval')).toBeVisible()
+    })
+    await user.click(screen.getByTestId('run-pending-human-gate-answer-approve'))
+    await user.click(screen.getByTestId('project-request-user-input-submit-approval'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-request-user-input-summary-segment-request-user-input-approval')).toBeVisible()
+    })
+    expect(screen.queryByTestId('project-request-user-input-card-segment-request-user-input-approval')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('run-transcript-input')).toHaveLength(1)
+    expect(screen.getByTestId('run-transcript-panel')).toHaveTextContent('approve')
+  })
+
   it('hydrates durable journal history, shows child events inline, and deduplicates reconnects and reselects', async () => {
     const selectedRun = makeRun({
       run_id: 'run-history-replay',
@@ -2431,6 +2698,95 @@ describe('RunsPanel', () => {
             [],
           ))
         }
+        if (resource === 'transcript') {
+          return jsonResponse({
+            pipeline_id: runId,
+            entries: runId === selectedRun.run_id
+              ? [
+                ...selectedRunJournalEntries.map((entry) => ({
+                  id: `boundary-${entry.sequence}`,
+                  kind: 'boundary',
+                  sequence: entry.sequence,
+                  nodeId: entry.node_id,
+                  stageIndex: entry.stage_index,
+                  attempt: null,
+                  status: entry.raw_type === 'StageCompleted' ? 'completed' : 'running',
+                  startedAt: entry.emitted_at,
+                  endedAt: entry.raw_type === 'StageCompleted' ? entry.emitted_at : null,
+                  model: null,
+                  sourceScope: entry.source_scope,
+                  sourceParentNodeId: entry.source_parent_node_id,
+                  sourceFlowName: entry.source_flow_name,
+                  summary: entry.summary,
+                })),
+                {
+                  id: 'boundary-done',
+                  kind: 'boundary',
+                  sequence: 4,
+                  nodeId: 'done',
+                  stageIndex: 3,
+                  attempt: null,
+                  status: 'completed',
+                  startedAt: '2026-03-22T00:05:00Z',
+                  endedAt: '2026-03-22T00:05:00Z',
+                  model: null,
+                  sourceScope: 'root',
+                  sourceParentNodeId: null,
+                  sourceFlowName: null,
+                  summary: 'Stage done completed',
+                },
+                {
+                  id: 'tool-tool-started',
+                  kind: 'tool_call',
+                  turn_id: 'run-node-implement',
+                  order: 5,
+                  role: 'system',
+                  status: 'running',
+                  timestamp: '2026-03-22T00:06:00Z',
+                  updated_at: '2026-03-22T00:06:00Z',
+                  content: 'Run command',
+                  tool_call: { id: 'tool-started', kind: 'command_execution', status: 'running', title: 'Run command', command: 'cargo test', file_paths: [] },
+                },
+                {
+                  id: 'tool-tool-updated',
+                  kind: 'tool_call',
+                  turn_id: 'run-node-implement',
+                  order: 6,
+                  role: 'system',
+                  status: 'running',
+                  timestamp: '2026-03-22T00:07:00Z',
+                  updated_at: '2026-03-22T00:07:00Z',
+                  content: 'Run command',
+                  tool_call: { id: 'tool-updated', kind: 'command_execution', status: 'running', title: 'Run command', command: 'npm test', output: 'running tests', file_paths: [] },
+                },
+                {
+                  id: 'tool-tool-completed',
+                  kind: 'tool_call',
+                  turn_id: 'run-node-implement',
+                  order: 7,
+                  role: 'system',
+                  status: 'complete',
+                  timestamp: '2026-03-22T00:08:00Z',
+                  updated_at: '2026-03-22T00:08:00Z',
+                  content: 'Apply file changes',
+                  tool_call: { id: 'tool-completed', kind: 'file_change', status: 'completed', title: 'Apply file changes', file_paths: ['src/lib.rs'] },
+                },
+                {
+                  id: 'tool-tool-failed',
+                  kind: 'tool_call',
+                  turn_id: 'run-node-implement',
+                  order: 8,
+                  role: 'system',
+                  status: 'failed',
+                  timestamp: '2026-03-22T00:09:00Z',
+                  updated_at: '2026-03-22T00:09:00Z',
+                  content: 'Run command',
+                  tool_call: { id: 'tool-failed', kind: 'command_execution', status: 'failed', title: 'Run command', command: 'cargo fmt --all', output: 'format failed', file_paths: [] },
+                },
+              ]
+              : [],
+          })
+        }
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -2490,7 +2846,7 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
     })
 
     expect(latestEventSourceForRun(selectedRun.run_id)).toBeNull()
@@ -2507,13 +2863,13 @@ describe('RunsPanel', () => {
     expect(initialReplaySource?.url).toContain('run_sequence=3')
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(3)
+      expect(screen.getAllByTestId('run-transcript-boundary').length).toBeGreaterThanOrEqual(3)
     })
-    expect(screen.getAllByTestId('run-event-timeline-row-summary')).toHaveLength(3)
-    expect(screen.getAllByTestId('run-event-timeline-row-source')).toHaveLength(2)
-    expect(screen.getAllByTestId('run-event-timeline-row-source')[0]).toHaveTextContent(
-      'Source: Child flow implement-milestone.dot via run_milestone',
-    )
+    expect(
+      screen.getAllByTestId('run-transcript-boundary').some((node) => (
+        (node.textContent ?? '').includes('Child flow implement-milestone.dot via run_milestone')
+      )),
+    ).toBe(true)
 
     const otherRunCard = screen.getByText('other.dot').closest('[data-testid="run-history-row"]')
     expect(otherRunCard).toBeTruthy()
@@ -2530,7 +2886,7 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(latestEventSourceForRun(selectedRun.run_id)).not.toBe(initialReplaySource)
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
     })
 
     const replayAfterReselect = latestEventSourceForRun(selectedRun.run_id)
@@ -2568,7 +2924,11 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(4)
+      expect(screen.getAllByTestId('run-transcript-boundary').length).toBeGreaterThanOrEqual(3)
+      expect(screen.getByTestId('project-tool-call-toggle-tool-started')).toBeVisible()
+      expect(screen.getByTestId('project-tool-call-toggle-tool-updated')).toBeVisible()
+      expect(screen.getByTestId('project-tool-call-toggle-tool-completed')).toBeVisible()
+      expect(screen.getByTestId('project-tool-call-toggle-tool-failed')).toBeVisible()
     })
 
     expect(
@@ -2576,15 +2936,16 @@ describe('RunsPanel', () => {
         .map(({ sequence }) => sequence),
     ).toEqual([4, 3, 2, 1])
 
-    const timelineSummaries = screen.getAllByTestId('run-event-timeline-row-summary').map((node) => node.textContent ?? '')
-    expect(timelineSummaries.filter((summary) => summary.includes('Stage plan_current started'))).toHaveLength(1)
-    expect(timelineSummaries.filter((summary) => summary.includes('Stage plan_current completed'))).toHaveLength(1)
-    expect(timelineSummaries).toEqual([
-      'Stage done completed',
-      'Child flow implement-milestone.dot via run_milestone: Stage plan_current completed',
-      'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
-      'Stage prepare completed',
-    ])
+    const boundarySummaries = screen.getAllByTestId('run-transcript-boundary').map((node) => node.textContent ?? '')
+    expect(boundarySummaries.some((summary) => summary.includes('done'))).toBe(true)
+    expect(boundarySummaries.some((summary) => summary.includes('plan_current'))).toBe(true)
+    expect(boundarySummaries.some((summary) => summary.includes('prepare'))).toBe(true)
+    expect(screen.getByTestId('run-transcript-panel')).toHaveTextContent('running tests')
+    expect(screen.getByTestId('run-transcript-panel')).toHaveTextContent('src/lib.rs')
+    expect(screen.getByTestId('run-transcript-panel')).toHaveTextContent('format failed')
+    expect(screen.getByTestId('run-transcript-panel')).not.toHaveTextContent('CodergenAdapter')
+    expect(screen.getByTestId('run-transcript-panel')).not.toHaveTextContent('turn_stream_event')
+    expect(screen.getByTestId('run-transcript-panel')).not.toHaveTextContent('item/commandExecution/outputDelta')
   })
 
   it('keeps Load older available when filters empty the loaded journal and reveals older matching history', async () => {
@@ -2764,6 +3125,31 @@ describe('RunsPanel', () => {
           }
           return jsonResponse(makeJournalPage(runId, latestEntries, true))
         }
+        if (resource === 'transcript') {
+          return jsonResponse({
+            pipeline_id: runId,
+            entries: latestEntries.map((entry) => ({
+              id: `boundary-${entry.sequence}`,
+              kind: 'boundary',
+              sequence: entry.sequence,
+              nodeId: entry.node_id,
+              stageIndex: entry.stage_index,
+              attempt: null,
+              status: entry.raw_type === 'StageFailed'
+                ? 'failed'
+                : entry.raw_type === 'StageCompleted'
+                  ? 'completed'
+                  : 'running',
+              startedAt: entry.emitted_at,
+              endedAt: entry.raw_type === 'StageStarted' ? null : entry.emitted_at,
+              model: null,
+              sourceScope: entry.source_scope,
+              sourceParentNodeId: entry.source_parent_node_id,
+              sourceFlowName: entry.source_flow_name,
+              summary: entry.summary,
+            })),
+          })
+        }
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -2785,26 +3171,21 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
-      expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
+      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
     })
-
-    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'error')
-
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-empty')).toHaveTextContent('No journal entries match the current filters.')
       expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
-      expect(screen.queryByTestId('run-event-timeline-list')).not.toBeInTheDocument()
     })
 
     await user.click(screen.getByTestId('run-journal-load-older'))
 
     await waitFor(() => {
-      expect(screen.queryByTestId('run-event-timeline-empty')).not.toBeInTheDocument()
+      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('legacy_validate')
       expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('Stage legacy_validate failed: validation gate rejected')
-      expect(screen.getAllByTestId('run-event-timeline-row-summary')).toHaveLength(1)
       expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
     })
+    expect(screen.getByTestId('run-transcript-list')).not.toHaveTextContent('legacy_validate')
+    expect(screen.getByTestId('run-transcript-list')).not.toHaveTextContent('Stage legacy_validate failed: validation gate rejected')
 
     expect(
       journalRequestUrls.filter((requestUrl) => requestUrl.includes(`/attractor/pipelines/${selectedRun.run_id}/journal?limit=100&before_sequence=3`)),
@@ -2940,6 +3321,30 @@ describe('RunsPanel', () => {
         if (resource === 'journal') {
           return jsonResponse(makeJournalPage(runId, groupedHistory, false))
         }
+        if (resource === 'transcript') {
+          return jsonResponse({
+            pipeline_id: runId,
+            entries: groupedHistory
+              .slice()
+              .reverse()
+              .map((entry) => ({
+                id: `boundary-${entry.sequence}`,
+                kind: 'boundary',
+                sequence: entry.sequence,
+                nodeId: entry.node_id,
+                stageIndex: entry.stage_index,
+                attempt: typeof entry.payload.attempt === 'number' ? entry.payload.attempt : null,
+                status: entry.raw_type === 'StageRetrying' ? 'retrying' : entry.raw_type === 'StageCompleted' ? 'completed' : 'running',
+                startedAt: entry.emitted_at,
+                endedAt: entry.raw_type === 'StageStarted' ? null : entry.emitted_at,
+                model: null,
+                sourceScope: entry.source_scope,
+                sourceParentNodeId: entry.source_parent_node_id,
+                sourceFlowName: entry.source_flow_name,
+                summary: entry.summary,
+              })),
+          })
+        }
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -2961,24 +3366,13 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
-      expect(screen.getByTestId('run-event-timeline-throughput')).toHaveAttribute('data-loaded-count', '140')
-      expect(screen.getAllByTestId('run-event-timeline-group')).toHaveLength(1)
+      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+      expect(screen.getAllByTestId('run-transcript-boundary')).toHaveLength(RUN_JOURNAL_WINDOW_SIZE)
     })
 
-    const throughput = screen.getByTestId('run-event-timeline-throughput')
-    const renderedCount = Number(throughput.getAttribute('data-rendered-count') ?? '0')
-
-    expect(renderedCount).toBeGreaterThan(0)
-    expect(renderedCount).toBeLessThan(groupedHistory.length)
-    expect(renderedCount).toBeLessThanOrEqual(80)
-    expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(renderedCount)
-    expect(screen.getByTestId('run-event-timeline-group-label')).toHaveTextContent('Retry sequence for review_loop')
-    expect(screen.getByText('140 entries')).toBeVisible()
-    expect(screen.getAllByTestId('run-event-timeline-row-summary')[0]).toHaveTextContent('Retry attempt 140')
-    expect(
-      screen.getAllByTestId('run-event-timeline-row-summary').some((node) => node.textContent === 'Retry attempt 1'),
-    ).toBe(false)
+    expect(screen.getAllByTestId('run-transcript-boundary')[0]).toHaveTextContent('review_loop')
+    expect(screen.getAllByTestId('run-transcript-boundary-status')[0]).toHaveTextContent('retrying')
+    expect(Number(screen.getByTestId('run-event-timeline-throughput').dataset.renderedCount)).toBeLessThanOrEqual(RUN_JOURNAL_WINDOW_SIZE)
   })
 
   it('keeps exhausted journal history marked complete after reselect so Load older does not reappear', async () => {
@@ -3172,6 +3566,45 @@ describe('RunsPanel', () => {
             runId === selectedRun.run_id,
           ))
         }
+        if (resource === 'transcript') {
+          return jsonResponse({
+            pipeline_id: runId,
+            entries: [
+              {
+                id: 'boundary-prepare',
+                kind: 'boundary',
+                sequence: 1,
+                nodeId: 'prepare',
+                stageIndex: 1,
+                attempt: null,
+                status: 'completed',
+                startedAt: '2026-03-22T00:02:00Z',
+                endedAt: '2026-03-22T00:02:00Z',
+                model: null,
+                sourceScope: 'root',
+                sourceParentNodeId: null,
+                sourceFlowName: null,
+                summary: 'Stage prepare completed',
+              },
+              {
+                id: 'boundary-plan_current',
+                kind: 'boundary',
+                sequence: 3,
+                nodeId: 'plan_current',
+                stageIndex: 2,
+                attempt: null,
+                status: 'completed',
+                startedAt: '2026-03-22T00:03:00Z',
+                endedAt: '2026-03-22T00:04:00Z',
+                model: null,
+                sourceScope: 'root',
+                sourceParentNodeId: null,
+                sourceFlowName: null,
+                summary: 'Stage plan_current completed',
+              },
+            ],
+          })
+        }
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -3193,7 +3626,9 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+    })
+    await waitFor(() => {
       expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
     })
 
@@ -3201,7 +3636,7 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
-      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('Stage prepare completed')
+      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('prepare')
     })
 
     expect(useRunJournalStore.getState().byRunId[selectedRun.run_id]).toMatchObject({

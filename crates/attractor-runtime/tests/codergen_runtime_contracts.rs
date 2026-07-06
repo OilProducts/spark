@@ -48,11 +48,11 @@ fn runtime_codergen_wrapper_writes_stage_artifacts_and_maps_events() {
     );
 
     let events = codergen_events_for_journal("run-1", "task", &execution);
-    assert_eq!(events[0].event_type, "CodergenAdapter");
+    assert_eq!(events[0].event_type, "LLMRequestStarted");
     assert_eq!(events[0].payload["node_id"], json!("task"));
     assert_eq!(
-        events[0].payload["adapter_event_type"],
-        json!("codergen_backend_request_started")
+        events[0].payload["payload"]["runtime_mode"]["mode"],
+        json!("text_only")
     );
 }
 
@@ -138,25 +138,23 @@ fn runtime_codergen_executes_text_only_rust_backend_through_public_api() {
 
     let journal_events = codergen_events_for_journal("run-text", "task", &execution);
     assert!(journal_events.iter().all(|event| {
-        event.event_type == "CodergenAdapter" && event.payload["node_id"] == json!("task")
+        event.event_type != "CodergenAdapter" && event.payload["node_id"] == json!("task")
     }));
     let request_started = journal_events
         .iter()
-        .find(|event| {
-            event.payload["adapter_event_type"] == json!("codergen_backend_request_started")
-        })
+        .find(|event| event.event_type == "LLMRequestStarted")
         .expect("request started journal event");
     assert_eq!(
         request_started.payload["payload"]["runtime_mode"]["mode"],
         json!("text_only")
     );
     assert!(journal_events.iter().any(|event| {
-        event.payload["adapter_event_type"] == json!("rust_llm_adapter_request_completed")
+        event.event_type == "LLMRequestCompleted"
             && event.payload["payload"]["runtime_mode"]["mode"] == json!("text_only")
     }));
-    assert!(journal_events.iter().any(|event| {
-        event.payload["adapter_event_type"] == json!("codergen_backend_response_accepted")
-    }));
+    assert!(!serde_json::to_string(&journal_events)
+        .expect("journal json")
+        .contains("codergen_backend_response_accepted"));
 }
 
 #[test]
@@ -248,21 +246,20 @@ fn runtime_codergen_executes_agent_required_rust_session_backend_through_public_
 
     let journal_events = codergen_events_for_journal("run-agent", "task", &execution);
     assert!(journal_events.iter().any(|event| {
-        event.payload["adapter_event_type"] == json!("codergen_backend_request_started")
+        event.event_type == "LLMRequestStarted"
             && event.payload["payload"]["runtime_mode"]["mode"] == json!("agent")
     }));
     assert!(journal_events.iter().any(|event| {
-        event.payload["adapter_event_type"] == json!("rust_agent_session_event")
-            && event.payload["payload"]["kind"] == json!("model_usage_update")
-            && event.payload["payload"]["token_usage"]["total_tokens"] == json!(13)
+        event.event_type == "LLMTokenUsage"
+            && event.payload["token_usage"]["total_tokens"] == json!(13)
     }));
     assert!(journal_events.iter().any(|event| {
-        event.payload["adapter_event_type"] == json!("rust_agent_adapter_request_completed")
+        event.event_type == "LLMRequestCompleted"
             && event.payload["payload"]["runtime_mode"]["mode"] == json!("agent")
     }));
-    assert!(journal_events.iter().any(|event| {
-        event.payload["adapter_event_type"] == json!("codergen_backend_response_accepted")
-    }));
+    assert!(!serde_json::to_string(&journal_events)
+        .expect("journal json")
+        .contains("rust_agent_session_event"));
 }
 
 struct RecordingProviderAdapter {

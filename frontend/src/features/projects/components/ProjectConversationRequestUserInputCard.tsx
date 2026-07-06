@@ -37,7 +37,7 @@ export function ProjectConversationRequestUserInputCard({
     useEffect(() => {
         setValidationError(null)
         setDraftAnswers(entry.requestUserInput.answers)
-    }, [entry.id, entry.requestUserInput.answers])
+    }, [entry.id])
 
     if (entry.requestUserInput.status === 'answered') {
         return (
@@ -149,11 +149,14 @@ export function ProjectConversationRequestUserInputCard({
                                 <div className="flex flex-wrap gap-1.5">
                                     {question.options.map((option) => {
                                         const isSelected = currentAnswer === option.label
+                                        const optionTestId = option.value
+                                            ? `run-pending-human-gate-answer-${option.value}`
+                                            : `project-request-user-input-option-${question.id}-${option.label}`
                                         return (
                                             <Button
                                                 key={`${question.id}-${option.label}`}
                                                 type="button"
-                                                data-testid={`project-request-user-input-option-${question.id}-${option.label}`}
+                                                data-testid={optionTestId}
                                                 onClick={() => {
                                                     setValidationError(null)
                                                     setDraftAnswers((current) => ({

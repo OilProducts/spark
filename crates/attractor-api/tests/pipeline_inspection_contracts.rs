@@ -262,7 +262,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
         .expect("read")
         .expect("run");
     store
-        .append_event(
+        .append_transcript_event(
             &bundle.paths,
             human_gate_pending_event(
                 "run-journal",
@@ -274,6 +274,43 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
             ),
         )
         .expect("pending question");
+    let transcript = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-journal/transcript",
+        "",
+        settings.clone(),
+    );
+    assert_eq!(transcript.status_code, 200);
+    let transcript_entries = transcript.body["entries"].as_array().expect("entries");
+    let request_user_input_segment = transcript_entries
+        .iter()
+        .find(|entry| entry["kind"] == json!("request_user_input"))
+        .expect("request_user_input transcript segment");
+    assert_eq!(
+        request_user_input_segment["request_user_input"]["request_id"],
+        json!("question-1")
+    );
+    assert_eq!(
+        request_user_input_segment["request_user_input"]["questions"][0]["question"],
+        json!("Approve plan?")
+    );
+    assert!(request_user_input_segment.get("gate").is_none());
+    assert!(request_user_input_segment["turn_id"].as_str().is_some());
+    assert!(request_user_input_segment["order"].as_u64().is_some());
+
+    let journal_after_question = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-journal/journal?limit=20",
+        "",
+        settings.clone(),
+    );
+    assert_eq!(journal_after_question.status_code, 200);
+    let journal_json = serde_json::to_string(&journal_after_question.body).expect("journal json");
+    assert!(journal_json.contains("Human gate pending"));
+    assert!(!journal_json.contains("\"kind\":\"request_user_input\""));
+    assert!(!journal_json.contains("\"request_user_input\""));
+    assert!(!journal_json.contains("turn_stream_event"));
+
     let questions = service.list_pipeline_questions("run-journal");
     assert_eq!(questions.status_code, 200);
     assert_eq!(
@@ -317,6 +354,43 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
             && event.payload.get("answer") == Some(&json!("yes"))
             && event.payload.get("outcome_provenance") == Some(&json!("accepted"))
     }));
+    let answered_transcript = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-journal/transcript",
+        "",
+        settings.clone(),
+    );
+    assert_eq!(answered_transcript.status_code, 200);
+    let answered_transcript_entries = answered_transcript.body["entries"]
+        .as_array()
+        .expect("answered transcript entries");
+    let answered_input_segments = answered_transcript_entries
+        .iter()
+        .filter(|entry| entry["kind"] == json!("request_user_input"))
+        .collect::<Vec<_>>();
+    assert_eq!(answered_input_segments.len(), 1);
+    let answered_input_segment = answered_input_segments[0];
+    assert_eq!(
+        answered_input_segment["id"],
+        request_user_input_segment["id"]
+    );
+    assert_eq!(
+        answered_input_segment["order"],
+        request_user_input_segment["order"]
+    );
+    assert_eq!(answered_input_segment["content"], json!("Approve plan?"));
+    assert_eq!(answered_input_segment["status"], json!("answered"));
+    assert_eq!(
+        answered_input_segment["request_user_input"]["status"],
+        json!("answered")
+    );
+    assert_eq!(
+        answered_input_segment["request_user_input"]["answers"],
+        json!({"question-1": "yes"})
+    );
+    assert!(answered_input_segment["request_user_input"]["submitted_at"]
+        .as_str()
+        .is_some());
 
     service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-other".to_string()),

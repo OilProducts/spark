@@ -39,6 +39,10 @@ export function pipelineJournalUrl(
     return `${attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/journal`)}${query ? `?${query}` : ''}`
 }
 
+export function pipelineTranscriptUrl(pipelineId: string): string {
+    return attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/transcript`)
+}
+
 export interface FlowPayloadResponse {
     name: string
     content: string
@@ -220,6 +224,11 @@ export interface RunJournalPageResponse {
     oldest_sequence?: number | null
     newest_sequence?: number | null
     has_older: boolean
+}
+
+export interface RunTranscriptResponse {
+    pipeline_id: string
+    entries: Record<string, unknown>[]
 }
 
 export interface PipelineAnswerResponse {
@@ -562,6 +571,22 @@ export function parseRunJournalPageResponse(
                 ? null
                 : undefined,
         has_older: record.has_older === true,
+    }
+}
+
+export function parseRunTranscriptResponse(
+    payload: unknown,
+    endpoint = '/attractor/pipelines/{id}/transcript',
+): RunTranscriptResponse {
+    const record = expectObjectRecord(payload, endpoint)
+    if (!Array.isArray(record.entries)) {
+        throw new ApiSchemaError(endpoint, 'Expected "entries" to be an array.')
+    }
+    return {
+        pipeline_id: expectString(record.pipeline_id, endpoint, 'pipeline_id'),
+        entries: record.entries
+            .map((entry) => asUnknownRecord(entry))
+            .filter((entry): entry is Record<string, unknown> => entry !== null),
     }
 }
 
@@ -959,6 +984,17 @@ export async function fetchPipelineJournalValidated(
         undefined,
         '/attractor/pipelines/{id}/journal',
         parseRunJournalPageResponse,
+    )
+}
+
+export async function fetchPipelineTranscriptValidated(
+    pipelineId: string,
+): Promise<RunTranscriptResponse> {
+    return fetchJsonWithValidation(
+        pipelineTranscriptUrl(pipelineId),
+        undefined,
+        '/attractor/pipelines/{id}/transcript',
+        parseRunTranscriptResponse,
     )
 }
 

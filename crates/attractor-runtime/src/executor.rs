@@ -333,7 +333,7 @@ where
                 (paths, false)
             }
         };
-        store.append_event(
+        store.append_transcript_event(
             &paths,
             pipeline_started_event(&run_id, &graph.graph_id, &current_node, resumed),
         )?;
@@ -538,7 +538,7 @@ where
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string();
-            store.append_event(
+            store.append_transcript_event(
                 &paths,
                 stage_started_event(&run_id, stage_index, &current_node),
             )?;
@@ -611,7 +611,7 @@ where
                     &stage_failure_reason(&outcome),
                 )?;
                 if outcome.status == OutcomeStatus::Fail {
-                    store.append_event(
+                    store.append_transcript_event(
                         &paths,
                         stage_failed_event(
                             &run_id,
@@ -623,7 +623,7 @@ where
                         ),
                     )?;
                 }
-                store.append_event(
+                store.append_transcript_event(
                     &paths,
                     stage_retrying_event(
                         &run_id,
@@ -680,7 +680,7 @@ where
             }
 
             if outcome.status == OutcomeStatus::Fail {
-                store.append_event(
+                store.append_transcript_event(
                     &paths,
                     stage_failed_event(
                         &run_id,
@@ -692,7 +692,7 @@ where
                     ),
                 )?;
             } else {
-                store.append_event(
+                store.append_transcript_event(
                     &paths,
                     stage_completed_event(
                         &run_id,
@@ -1254,7 +1254,7 @@ fn finalize_completed(
             None,
         ),
     )?;
-    store.append_event(
+    store.append_transcript_event(
         paths,
         pipeline_completed_event_with_reasons(
             run_id,
@@ -1324,7 +1324,7 @@ fn finalize_failed(
             Some(failure_reason.clone()),
         ),
     )?;
-    store.append_event(
+    store.append_transcript_event(
         paths,
         pipeline_failed_event(run_id, current_node, &failure_reason, artifact_count),
     )?;
@@ -1433,7 +1433,7 @@ fn finalize_canceled(
             Some(last_error.to_string()),
         ),
     )?;
-    store.append_event(
+    store.append_transcript_event(
         paths,
         pipeline_failed_event(run_id, current_node, last_error, node_outcomes.len()),
     )?;
