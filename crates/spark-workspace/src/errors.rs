@@ -49,6 +49,9 @@ impl From<spark_storage::StorageError> for WorkspaceError {
             spark_storage::StorageError::InvalidConversationState { reason, .. } => {
                 Self::Validation(reason)
             }
+            spark_storage::StorageError::ConversationCommitRejected { reason, .. } => {
+                Self::Conflict(reason)
+            }
             other => Self::Internal(other.to_string()),
         }
     }

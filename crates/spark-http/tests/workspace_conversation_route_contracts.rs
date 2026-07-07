@@ -106,7 +106,8 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
     .await;
     assert_eq!(settings_response.0, StatusCode::OK);
     assert_eq!(settings_response.1["chat_mode"], "plan");
-    assert_eq!(settings_response.1["revision"], 2);
+    // Mode-change turn entry plus settings journal entry.
+    assert_eq!(settings_response.1["revision"], 3);
 
     let deprecated = request_text(
         app.clone(),

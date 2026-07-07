@@ -140,7 +140,8 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
             },
         )
         .expect("settings update");
-    assert_eq!(snapshot["revision"], 1);
+    // One mode-change turn entry plus one settings journal entry.
+    assert_eq!(snapshot["revision"], 2);
     assert_eq!(snapshot["chat_mode"], "plan");
     assert_eq!(snapshot["provider"], "openai");
     assert_eq!(snapshot["model"], "gpt-5");
@@ -167,7 +168,8 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
             },
         )
         .expect("same mode update");
-    assert_eq!(second["revision"], 2);
+    // Same-mode update journals the settings write without a new mode turn.
+    assert_eq!(second["revision"], 3);
     assert_eq!(second["turns"].as_array().expect("turns").len(), 1);
 
     let project = ProjectRegistry::new(&settings.data_dir)

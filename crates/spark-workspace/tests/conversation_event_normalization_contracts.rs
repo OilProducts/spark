@@ -90,7 +90,9 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
     assert_eq!(turns[2]["role"], "assistant");
     assert_eq!(turns[2]["status"], "pending");
     assert_eq!(turns[2]["parent_turn_id"], turns[1]["id"]);
-    assert_eq!(snapshot["revision"], 3);
+    // Mode-change turn, user turn, assistant turn, plus one settings-change
+    // journal entry.
+    assert_eq!(snapshot["revision"], 4);
 
     let events = service
         .read_events_after("conversation-turn", "/projects/turns", 0)
@@ -100,14 +102,19 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
             .iter()
             .map(|event| event["type"].as_str().expect("type"))
             .collect::<Vec<_>>(),
-        vec!["turn_upsert", "turn_upsert", "turn_upsert"]
+        vec![
+            "turn_upsert",
+            "turn_upsert",
+            "turn_upsert",
+            "conversation_snapshot"
+        ]
     );
     assert_eq!(
         events
             .iter()
             .map(|event| event["revision"].as_i64().expect("revision"))
             .collect::<Vec<_>>(),
-        vec![1, 2, 3]
+        vec![1, 2, 3, 4]
     );
 
     let conflict = service
@@ -450,9 +457,6 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
             && event["turn"]["id"] == assistant_turn_id
             && event["turn"]["status"] == "complete"
     }));
-    assert!(events
-        .iter()
-        .any(|event| event["type"] == "conversation_snapshot"));
 
     let live_envelopes =
         conversation_envelopes_after(&settings, "conversation-execute", "/projects/execute", 0)
@@ -463,19 +467,8 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
             && envelope.payload["turn"]["status"] == "complete"
             && envelope.payload["turn"]["content"] == "Second answer"
             && envelope.payload["turn"]["token_usage"]["total"]["inputTokens"] == json!(12)
+            && envelope.payload["turn"]["token_usage"]["total"]["outputTokens"] == json!(5)
             && envelope.payload["turn"]["token_usage_breakdown"]["last"]["outputTokens"] == json!(2)
-    }));
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.snapshot"
-            && envelope.payload["state"]["turns"]
-                .as_array()
-                .is_some_and(|turns| {
-                    turns.iter().any(|turn| {
-                        turn["id"] == assistant_turn_id
-                            && turn["status"] == "complete"
-                            && turn["token_usage"]["total"]["outputTokens"] == json!(5)
-                    })
-                })
     }));
 }
 
@@ -596,9 +589,6 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             && event["segment"]["error"] == "backend stream failed"
             && event["segment"]["details"]["raw"]["error"]["code"] == "rate_limit_exceeded"
     }));
-    assert!(stream_events
-        .iter()
-        .any(|event| event["type"] == "conversation_snapshot"));
 
     let stream_live = conversation_envelopes_after(
         &settings,
@@ -1175,9 +1165,6 @@ fn stream_error_without_final_answer_remains_failed_and_does_not_write_fallback_
     assert!(events.iter().any(|event| {
         event["type"] == "segment_upsert" && event["segment"]["status"] == "failed"
     }));
-    assert!(events
-        .iter()
-        .any(|event| event["type"] == "conversation_snapshot"));
 }
 
 #[test]
@@ -1245,9 +1232,6 @@ fn stream_error_with_final_text_and_usage_stays_failed() {
             && event["turn"]["status"] == "failed"
             && event["turn"]["token_usage"]["total"]["inputTokens"] == json!(9)
     }));
-    assert!(events
-        .iter()
-        .any(|event| event["type"] == "conversation_snapshot"));
 }
 
 #[test]

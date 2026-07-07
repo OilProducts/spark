@@ -254,7 +254,7 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
     assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
 
     let posted = request(
-        app,
+        app.clone(),
         "POST",
         "/workspace/api/conversations/conversation-live-ingested/turns",
         Some(json!({
@@ -273,38 +273,50 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             && turn["status"] == "pending"
             && turn["content"] == ""));
 
+    // Committed completion arrives as coalesced turn/segment upserts; the
+    // completed assistant turn signals the turn finished durably.
     let mut envelopes = Vec::new();
-    let mut snapshot_envelope = None;
+    let mut turn_completed = false;
     for _ in 0..40 {
         let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        if envelope["type"] == "conversation.snapshot"
-            && envelope["payload"]["state"]["turns"]
-                .as_array()
-                .expect("turns")
-                .iter()
-                .any(|turn| {
-                    turn["role"] == "assistant"
-                        && turn["status"] == "complete"
-                        && turn["content"] == "Live streamed answer."
-                })
+        if envelope["type"] == "conversation.turn_upsert"
+            && envelope["payload"]["turn"]["role"] == "assistant"
+            && envelope["payload"]["turn"]["status"] == "complete"
+            && envelope["payload"]["turn"]["content"] == "Live streamed answer."
         {
-            snapshot_envelope = Some(envelope.clone());
+            turn_completed = true;
         }
         envelopes.push(envelope);
-        if snapshot_envelope.is_some() {
+        if turn_completed {
             break;
         }
     }
-    let snapshot_envelope = snapshot_envelope.expect("snapshot envelope");
-    let final_snapshot = &snapshot_envelope["payload"]["state"];
-    let final_revision = snapshot_envelope["cursor"]["value"]
-        .as_i64()
-        .expect("final revision");
+    assert!(turn_completed, "completed assistant turn upsert");
+    let hydrated = request(
+        app,
+        "GET",
+        &format!(
+            "/workspace/api/conversations/conversation-live-ingested?project_path={}",
+            url_encode(&project_path.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(hydrated.status(), StatusCode::OK);
+    let hydrated_snapshot = json_body(hydrated).await;
+    let final_snapshot = &hydrated_snapshot;
+    let final_revision = final_snapshot["revision"].as_i64().expect("final revision");
     assert!(final_revision > 4);
-    assert_eq!(
-        envelopes.last().expect("snapshot envelope")["type"],
-        "conversation.snapshot"
-    );
+    for _ in 0..40 {
+        let last_cursor = envelopes
+            .last()
+            .and_then(|envelope| envelope["cursor"]["value"].as_i64())
+            .unwrap_or(0);
+        if last_cursor >= final_revision {
+            break;
+        }
+        envelopes.push(sse_data_json(&next_sse_chunk(&mut live_stream).await));
+    }
     let cursors = envelopes
         .iter()
         .map(|envelope| envelope["cursor"]["value"].as_i64().expect("cursor"))
@@ -425,9 +437,8 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             && envelope["payload"]["segment"]["event_kind"] == "processing_end"
             && envelope["payload"]["segment"]["event_status"] == "idle"
     }));
-    assert_eq!(snapshot_envelope["cursor"]["value"], json!(final_revision));
     assert_eq!(
-        snapshot_envelope["payload"]["state"]["revision"],
+        envelopes.last().expect("final envelope")["cursor"]["value"],
         json!(final_revision)
     );
 
@@ -623,7 +634,7 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
 
     let posted = request(
-        app,
+        app.clone(),
         "POST",
         "/workspace/api/conversations/conversation-live-answer/request-user-input/decision/answer",
         Some(json!({
@@ -648,10 +659,6 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
             break;
         }
     }
-    assert_eq!(
-        envelopes.last().expect("snapshot envelope")["type"],
-        "conversation.snapshot"
-    );
     let cursors = envelopes
         .iter()
         .map(|envelope| envelope["cursor"]["value"].as_i64().expect("cursor"))
@@ -684,12 +691,22 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
             && envelope["payload"]["turn"]["id"] == prepared.assistant_turn_id
             && envelope["payload"]["turn"]["token_usage"]["total"]["outputTokens"] == json!(3)
     }));
-    let snapshot_envelope = envelopes.last().expect("snapshot envelope");
-    assert_eq!(snapshot_envelope["cursor"]["value"], json!(final_revision));
-    assert_eq!(
-        snapshot_envelope["payload"]["state"]["turns"],
-        posted_snapshot["turns"]
-    );
+    // Hydration after the committed replay returns the same durable state the
+    // answer route reported.
+    let hydrated = request(
+        app,
+        "GET",
+        &format!(
+            "/workspace/api/conversations/conversation-live-answer?project_path={}",
+            url_encode(&project_path_text)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(hydrated.status(), StatusCode::OK);
+    let hydrated_snapshot = json_body(hydrated).await;
+    assert_eq!(hydrated_snapshot["revision"], json!(final_revision));
+    assert_eq!(hydrated_snapshot["turns"], posted_snapshot["turns"]);
 
     let raw_log = ConversationRepository::new(&settings.data_dir)
         .read_codex_jsonrpc_trace("conversation-live-answer", &project_path.to_string_lossy())

@@ -20,6 +20,10 @@ use spark_common::events::{
 };
 use spark_common::project::normalize_project_path;
 use spark_common::settings::SparkSettings;
+use spark_storage::conversation::{
+    ArtifactCollection, ConversationCommit, ConversationMetadataPatch, ConversationMutation,
+    TranscriptSegment, TranscriptTurn, ORDER_UNASSIGNED,
+};
 use spark_storage::{
     ConversationRepository, ProjectRegistry, StorageError, CONVERSATION_STATE_SCHEMA_VERSION,
 };
@@ -458,10 +462,10 @@ impl WorkspaceConversationService {
         let normalized_profile = request.llm_profile.as_deref().and_then(non_empty_string);
 
         let repository = self.repository();
-        let mut snapshot = match repository.read_snapshot(conversation_id, None)? {
-            Some(snapshot) => snapshot,
-            None => shell_snapshot(conversation_id, &project_path),
-        };
+        let existing_snapshot = repository.read_snapshot(conversation_id, None)?;
+        let conversation_exists = existing_snapshot.is_some();
+        let snapshot =
+            existing_snapshot.unwrap_or_else(|| shell_snapshot(conversation_id, &project_path));
         let actual_project_path = snapshot
             .get("project_path")
             .and_then(Value::as_str)
@@ -473,46 +477,51 @@ impl WorkspaceConversationService {
             ));
         }
 
-        prepare_snapshot_core_defaults(&mut snapshot, conversation_id, &project_path);
+        let base_revision = snapshot_revision(&snapshot);
         let current_chat_mode = normalize_chat_mode(
             snapshot
                 .get("chat_mode")
                 .and_then(Value::as_str)
                 .unwrap_or("chat"),
         );
+        let mut mutations = Vec::new();
+        let mut patch = ConversationMetadataPatch::default();
         if let Some(chat_mode) = chat_mode {
             if chat_mode != current_chat_mode {
-                append_mode_change_turn(&mut snapshot, &chat_mode);
-                set_string(&mut snapshot, "chat_mode", &chat_mode);
-            } else {
-                set_string(&mut snapshot, "chat_mode", &current_chat_mode);
+                mutations.push(turn_mutation_from_value(&mode_change_turn_value(
+                    &chat_mode,
+                ))?);
             }
-        } else {
-            set_string(&mut snapshot, "chat_mode", &current_chat_mode);
+            patch.chat_mode = Some(chat_mode);
         }
         if request.provider.is_some() {
-            set_string(
-                &mut snapshot,
-                "provider",
-                provider.as_deref().unwrap_or("codex"),
-            );
+            patch.provider = Some(provider.unwrap_or_else(|| "codex".to_string()));
         }
         if request.model.is_some() {
-            set_optional_string(&mut snapshot, "model", normalized_model.as_deref());
+            patch.model = Some(normalized_model);
         }
         if request.llm_profile.is_some() {
-            set_optional_string(&mut snapshot, "llm_profile", normalized_profile.as_deref());
+            patch.llm_profile = Some(normalized_profile);
         }
         if request.reasoning_effort.is_some() {
-            set_optional_string(
-                &mut snapshot,
-                "reasoning_effort",
-                reasoning_effort.as_deref(),
-            );
+            patch.reasoning_effort = Some(reasoning_effort);
         }
-
-        touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-        repository.write_snapshot(&snapshot)?;
+        if !patch.is_empty() || !conversation_exists {
+            mutations.push(ConversationMutation::MetadataUpdated { patch });
+        }
+        if mutations.is_empty() {
+            let mut snapshot = snapshot;
+            prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+            return Ok(snapshot);
+        }
+        let commit = commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            &project_path,
+            base_revision,
+            mutations,
+        )?;
+        let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok(snapshot)
     }
@@ -556,6 +565,7 @@ impl WorkspaceConversationService {
             ));
         }
 
+        let base_revision = snapshot_revision(&snapshot);
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, &project_path);
         let current_chat_mode = normalize_chat_mode(
             snapshot
@@ -564,24 +574,27 @@ impl WorkspaceConversationService {
                 .unwrap_or("chat"),
         );
         let effective_chat_mode = chat_mode.unwrap_or(current_chat_mode.clone());
-        let mut emitted_payloads = Vec::new();
+        let mut mutations = Vec::new();
+        let mut settings_patch = ConversationMetadataPatch::default();
         if effective_chat_mode != current_chat_mode {
-            let mode_change = append_mode_change_turn(&mut snapshot, &effective_chat_mode);
-            emitted_payloads.push(build_turn_upsert_payload(&snapshot, &mode_change));
+            let mode_change = mode_change_turn_value(&effective_chat_mode);
+            push_turn(&mut snapshot, mode_change.clone());
+            mutations.push(turn_mutation_from_value(&mode_change)?);
+            settings_patch.chat_mode = Some(effective_chat_mode.clone());
         }
         set_string(&mut snapshot, "chat_mode", &effective_chat_mode);
         if request.provider.is_some() {
-            set_string(
-                &mut snapshot,
-                "provider",
-                provider.as_deref().unwrap_or("codex"),
-            );
+            let effective = provider.as_deref().unwrap_or("codex").to_string();
+            set_string(&mut snapshot, "provider", &effective);
+            settings_patch.provider = Some(effective);
         }
         if request.model.is_some() {
             set_optional_string(&mut snapshot, "model", normalized_model.as_deref());
+            settings_patch.model = Some(normalized_model.clone());
         }
         if request.llm_profile.is_some() {
             set_optional_string(&mut snapshot, "llm_profile", normalized_profile.as_deref());
+            settings_patch.llm_profile = Some(normalized_profile.clone());
         }
         if request.reasoning_effort.is_some() {
             set_optional_string(
@@ -589,6 +602,7 @@ impl WorkspaceConversationService {
                 "reasoning_effort",
                 reasoning_effort.as_deref(),
             );
+            settings_patch.reasoning_effort = Some(reasoning_effort.clone());
         }
 
         let effective_provider = snapshot
@@ -654,13 +668,21 @@ impl WorkspaceConversationService {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        push_turn(&mut snapshot, user_turn.clone());
-        push_turn(&mut snapshot, assistant_turn.clone());
-        maybe_set_title_from_message(&mut snapshot, &message);
-        touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-        emitted_payloads.push(build_turn_upsert_payload(&snapshot, &user_turn));
-        emitted_payloads.push(build_turn_upsert_payload(&snapshot, &assistant_turn));
-        repository.persist_snapshot_with_events(&mut snapshot, &mut emitted_payloads)?;
+        if !settings_patch.is_empty() {
+            mutations.push(ConversationMutation::MetadataUpdated {
+                patch: settings_patch,
+            });
+        }
+        mutations.push(turn_mutation_from_value(&user_turn)?);
+        mutations.push(turn_mutation_from_value(&assistant_turn)?);
+        let commit = commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            &project_path,
+            base_revision,
+            mutations,
+        )?;
+        let mut snapshot = commit.snapshot;
 
         let mut metadata = BTreeMap::from([
             (
@@ -736,6 +758,17 @@ impl WorkspaceConversationService {
                 WorkspaceError::NotFound(format!("Unknown conversation: {conversation_id}"))
             })?;
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, &project_path);
+        let base_revision = snapshot_revision(&snapshot);
+        let event_log_len_before = snapshot
+            .get("event_log")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        let proposed_plans_before = snapshot
+            .get("proposed_plans")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let mut emitted_payloads = Vec::new();
         if apply_assistant_turn_app_server_ids(
             &mut snapshot,
@@ -847,9 +880,28 @@ impl WorkspaceConversationService {
             buffered_plan_assistant_event.as_ref(),
             &mut emitted_payloads,
         );
-        touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-        emitted_payloads.push(build_conversation_snapshot_payload(&snapshot));
-        repository.persist_snapshot_with_events(&mut snapshot, &mut emitted_payloads)?;
+        let mut mutations = mutations_from_emitted_payloads(&emitted_payloads)?;
+        mutations.extend(appended_workflow_event_mutations(
+            &snapshot,
+            event_log_len_before,
+        ));
+        mutations.extend(changed_artifact_mutations(
+            ArtifactCollection::ProposedPlans,
+            &proposed_plans_before,
+            snapshot.get("proposed_plans").and_then(Value::as_array),
+        ));
+        if mutations.is_empty() {
+            prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+            return Ok(snapshot);
+        }
+        let commit = commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            &project_path,
+            base_revision,
+            mutations,
+        )?;
+        let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok(snapshot)
     }
@@ -873,6 +925,7 @@ impl WorkspaceConversationService {
             &prepared.conversation_id,
             &prepared.project_path,
         );
+        let base_revision = snapshot_revision(&snapshot);
         let message =
             non_empty_string(&error.message).unwrap_or_else(|| "Agent turn failed.".to_string());
         let mut emitted_payloads = Vec::new();
@@ -885,14 +938,19 @@ impl WorkspaceConversationService {
             true,
             &mut emitted_payloads,
         );
-        touch_snapshot(
+        let mutations = mutations_from_emitted_payloads(&emitted_payloads)?;
+        if mutations.is_empty() {
+            prepare_snapshot_for_ui(&mut snapshot, &prepared.conversation_id);
+            return Ok(snapshot);
+        }
+        let commit = commit_conversation_mutations(
             &repository,
-            &mut snapshot,
             &prepared.conversation_id,
             &prepared.project_path,
+            base_revision,
+            mutations,
         )?;
-        emitted_payloads.push(build_conversation_snapshot_payload(&snapshot));
-        repository.persist_snapshot_with_events(&mut snapshot, &mut emitted_payloads)?;
+        let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, &prepared.conversation_id);
         Ok(snapshot)
     }
@@ -985,6 +1043,7 @@ impl WorkspaceConversationService {
                 WorkspaceError::NotFound(format!("Unknown conversation input request: {lookup_id}"))
             })?;
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, &project_path);
+        let base_revision = snapshot_revision(&snapshot);
         let Some(segment_id) = find_request_user_input_segment_id(&snapshot, &lookup_id) else {
             return Err(WorkspaceError::NotFound(format!(
                 "Unknown conversation input request: {lookup_id}"
@@ -1076,14 +1135,14 @@ impl WorkspaceConversationService {
             answered_request_user_input_segment(&segment, &request_record, &submitted_at);
         upsert_segment(&mut snapshot, updated_segment.clone());
 
-        let mut emitted_payloads = vec![build_segment_upsert_payload(&snapshot, &updated_segment)];
-        persist_snapshot_with_payloads(
+        let answered_commit = commit_conversation_mutations(
             &repository,
             conversation_id,
             &project_path,
-            &mut snapshot,
-            &mut emitted_payloads,
+            base_revision,
+            vec![segment_mutation_from_value(&updated_segment)?],
         )?;
+        snapshot = answered_commit.snapshot;
 
         let answer_trace_path = if codex_jsonrpc_trace_enabled() {
             repository
@@ -1132,13 +1191,17 @@ impl WorkspaceConversationService {
                     &expired_at,
                     &mut emitted_payloads,
                 );
-                persist_snapshot_with_payloads(
-                    &repository,
-                    conversation_id,
-                    &project_path,
-                    &mut snapshot,
-                    &mut emitted_payloads,
-                )?;
+                let mutations = mutations_from_emitted_payloads(&emitted_payloads)?;
+                if !mutations.is_empty() {
+                    let commit = commit_conversation_mutations(
+                        &repository,
+                        conversation_id,
+                        &project_path,
+                        answered_commit.revision,
+                        mutations,
+                    )?;
+                    snapshot = commit.snapshot;
+                }
                 prepare_snapshot_for_ui(&mut snapshot, conversation_id);
                 return Ok(snapshot);
             }
@@ -1191,6 +1254,7 @@ impl WorkspaceConversationService {
             &handle_match.conversation_id,
             &handle_match.project_path,
         );
+        let base_revision = snapshot_revision(&snapshot);
         let actual_project_path =
             snapshot_project_path(&snapshot).unwrap_or_else(|| handle_match.project_path.clone());
         if actual_project_path != handle_match.project_path {
@@ -1255,33 +1319,32 @@ impl WorkspaceConversationService {
             payload.execution_profile_id.as_deref(),
         );
 
-        let request_segment = json!({
-            "id": segment_id.clone(),
-            "turn_id": parent_turn_id.clone(),
-            "order": next_turn_segment_order(&snapshot, &parent_turn_id),
-            "kind": "flow_run_request",
-            "role": "system",
-            "status": "complete",
-            "timestamp": now.clone(),
-            "updated_at": now.clone(),
-            "content": "",
-            "artifact_id": request_id.clone(),
-            "source": {},
-        });
-        push_array_value(&mut snapshot, "flow_run_requests", request_record);
-        upsert_segment(&mut snapshot, request_segment);
-        append_workflow_event(
-            &mut snapshot,
-            json!({
-                "message": format!("Created flow run request {request_id} for {}.", payload.flow_name),
-                "timestamp": now,
-            }),
+        let request_segment = artifact_anchor_segment(
+            &segment_id,
+            &parent_turn_id,
+            "flow_run_request",
+            &request_id,
+            &now,
         );
-        persist_snapshot(
+        commit_conversation_mutations(
             &repository,
             &handle_match.conversation_id,
             &handle_match.project_path,
-            &mut snapshot,
+            base_revision,
+            vec![
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::FlowRunRequests,
+                    artifact: request_record,
+                },
+                segment_mutation_from_value(&request_segment)?,
+                workflow_event_mutation(
+                    format!(
+                        "Created flow run request {request_id} for {}.",
+                        payload.flow_name
+                    ),
+                    &now,
+                ),
+            ],
         )?;
 
         Ok(FlowRunRequestCreateResponse {
@@ -1315,6 +1378,7 @@ impl WorkspaceConversationService {
                 WorkspaceError::Validation("Conversation not found for project.".to_string())
             })?;
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, &project_path);
+        let base_revision = snapshot_revision(&snapshot);
         let actual_project_path = snapshot_project_path(&snapshot).unwrap_or_default();
         if actual_project_path != project_path {
             return Err(WorkspaceError::Validation(
@@ -1343,14 +1407,25 @@ impl WorkspaceConversationService {
                     set_string_value(artifact, "updated_at", &now);
                 },
             );
-            append_workflow_event(
-                &mut snapshot,
-                json!({
-                    "message": format!("Rejected flow run request {request_id}."),
-                    "timestamp": now,
-                }),
-            );
-            persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
+            let artifact =
+                artifact_at(&snapshot, "flow_run_requests", request_index).unwrap_or_default();
+            let commit = commit_conversation_mutations(
+                &repository,
+                conversation_id,
+                &project_path,
+                base_revision,
+                vec![
+                    ConversationMutation::ArtifactUpserted {
+                        collection: ArtifactCollection::FlowRunRequests,
+                        artifact,
+                    },
+                    workflow_event_mutation(
+                        format!("Rejected flow run request {request_id}."),
+                        &now,
+                    ),
+                ],
+            )?;
+            let mut snapshot = commit.snapshot;
             prepare_snapshot_for_ui(&mut snapshot, conversation_id);
             return Ok(snapshot);
         }
@@ -1418,14 +1493,21 @@ impl WorkspaceConversationService {
                 remove_key(artifact, "launch_error");
             },
         );
-        append_workflow_event(
-            &mut snapshot,
-            json!({
-                "message": format!("Approved flow run request {request_id}."),
-                "timestamp": now,
-            }),
-        );
-        persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
+        let approved_artifact =
+            artifact_at(&snapshot, "flow_run_requests", request_index).unwrap_or_default();
+        let approve_commit = commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            &project_path,
+            base_revision,
+            vec![
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::FlowRunRequests,
+                    artifact: approved_artifact,
+                },
+                workflow_event_mutation(format!("Approved flow run request {request_id}."), &now),
+            ],
+        )?;
 
         let launch_artifact =
             artifact_at(&snapshot, "flow_run_requests", request_index).unwrap_or_default();
@@ -1453,20 +1535,28 @@ impl WorkspaceConversationService {
                 }
             },
         );
-        append_workflow_event(
-            &mut snapshot,
-            match &launch_result {
-                Ok(run_id) => json!({
-                    "message": format!("Launched flow run request {request_id} as run {run_id} using {approved_flow_name}."),
-                    "timestamp": now,
-                }),
-                Err(error) => json!({
-                    "message": format!("Flow run request {request_id} failed to launch: {error}"),
-                    "timestamp": now,
-                }),
-            },
-        );
-        persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
+        let launch_event_message = match &launch_result {
+            Ok(run_id) => format!(
+                "Launched flow run request {request_id} as run {run_id} using {approved_flow_name}."
+            ),
+            Err(error) => format!("Flow run request {request_id} failed to launch: {error}"),
+        };
+        let launched_artifact =
+            artifact_at(&snapshot, "flow_run_requests", request_index).unwrap_or_default();
+        let commit = commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            &project_path,
+            approve_commit.revision,
+            vec![
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::FlowRunRequests,
+                    artifact: launched_artifact,
+                },
+                workflow_event_mutation(launch_event_message, &now),
+            ],
+        )?;
+        let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok(snapshot)
     }
@@ -1489,6 +1579,7 @@ impl WorkspaceConversationService {
                 WorkspaceError::Validation("Conversation not found for project.".to_string())
             })?;
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, &project_path);
+        let base_revision = snapshot_revision(&snapshot);
         let actual_project_path = snapshot_project_path(&snapshot).unwrap_or_default();
         if actual_project_path != project_path {
             return Err(WorkspaceError::Validation(
@@ -1513,14 +1604,21 @@ impl WorkspaceConversationService {
                 set_optional_artifact_string(artifact, "review_note", review_note.as_deref());
                 set_string_value(artifact, "updated_at", &now);
             });
-            append_workflow_event(
-                &mut snapshot,
-                json!({
-                    "message": format!("Rejected proposed plan {plan_id}."),
-                    "timestamp": now,
-                }),
-            );
-            persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
+            let artifact = artifact_at(&snapshot, "proposed_plans", plan_index).unwrap_or_default();
+            let commit = commit_conversation_mutations(
+                &repository,
+                conversation_id,
+                &project_path,
+                base_revision,
+                vec![
+                    ConversationMutation::ArtifactUpserted {
+                        collection: ArtifactCollection::ProposedPlans,
+                        artifact,
+                    },
+                    workflow_event_mutation(format!("Rejected proposed plan {plan_id}."), &now),
+                ],
+            )?;
+            let mut snapshot = commit.snapshot;
             prepare_snapshot_for_ui(&mut snapshot, conversation_id);
             return Ok(snapshot);
         }
@@ -1574,21 +1672,14 @@ impl WorkspaceConversationService {
             "goal": format!("Implement the approved change request written to {relative_request_path}."),
             "launch_context": launch_context.clone(),
         });
-        let flow_launch_segment = json!({
-            "id": flow_launch_segment_id,
-            "turn_id": source_turn_id.clone(),
-            "order": next_turn_segment_order(&snapshot, &source_turn_id),
-            "kind": "flow_launch",
-            "role": "system",
-            "status": "complete",
-            "timestamp": now.clone(),
-            "updated_at": now.clone(),
-            "content": "",
-            "artifact_id": flow_launch_id.clone(),
-            "source": {},
-        });
-        push_array_value(&mut snapshot, "flow_launches", flow_launch);
-        upsert_segment(&mut snapshot, flow_launch_segment);
+        let flow_launch_segment = artifact_anchor_segment(
+            &flow_launch_segment_id,
+            &source_turn_id,
+            "flow_launch",
+            &flow_launch_id,
+            &now,
+        );
+        push_array_value(&mut snapshot, "flow_launches", flow_launch.clone());
         update_artifact_at(&mut snapshot, "proposed_plans", plan_index, |artifact| {
             set_string_value(artifact, "status", "approved");
             set_optional_artifact_string(artifact, "review_note", review_note.as_deref());
@@ -1602,14 +1693,29 @@ impl WorkspaceConversationService {
             remove_key(artifact, "run_id");
             remove_key(artifact, "launch_error");
         });
-        append_workflow_event(
-            &mut snapshot,
-            json!({
-                "message": format!("Approved proposed plan {plan_id} and wrote {relative_request_path}."),
-                "timestamp": now,
-            }),
-        );
-        persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
+        let approved_plan =
+            artifact_at(&snapshot, "proposed_plans", plan_index).unwrap_or_default();
+        let approve_commit = commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            &project_path,
+            base_revision,
+            vec![
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::FlowLaunches,
+                    artifact: flow_launch,
+                },
+                segment_mutation_from_value(&flow_launch_segment)?,
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::ProposedPlans,
+                    artifact: approved_plan,
+                },
+                workflow_event_mutation(
+                    format!("Approved proposed plan {plan_id} and wrote {relative_request_path}."),
+                    &now,
+                ),
+            ],
+        )?;
 
         let launch_index =
             artifact_index(&snapshot, "flow_launches", &flow_launch_id).ok_or_else(|| {
@@ -1654,20 +1760,36 @@ impl WorkspaceConversationService {
                 }
             }
         });
-        append_workflow_event(
-            &mut snapshot,
-            match &launch_result {
-                Ok(run_id) => json!({
-                    "message": format!("Launched proposed plan {plan_id} as run {run_id} using {IMPLEMENT_CHANGE_REQUEST_FLOW}."),
-                    "timestamp": now,
-                }),
-                Err(error) => json!({
-                    "message": format!("Approved proposed plan {plan_id} failed to launch {IMPLEMENT_CHANGE_REQUEST_FLOW}: {error}"),
-                    "timestamp": now,
-                }),
-            },
-        );
-        persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
+        let launch_event_message = match &launch_result {
+            Ok(run_id) => format!(
+                "Launched proposed plan {plan_id} as run {run_id} using {IMPLEMENT_CHANGE_REQUEST_FLOW}."
+            ),
+            Err(error) => format!(
+                "Approved proposed plan {plan_id} failed to launch {IMPLEMENT_CHANGE_REQUEST_FLOW}: {error}"
+            ),
+        };
+        let launched_plan =
+            artifact_at(&snapshot, "proposed_plans", plan_index).unwrap_or_default();
+        let launched_flow_launch =
+            artifact_at(&snapshot, "flow_launches", launch_index).unwrap_or_default();
+        let commit = commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            &project_path,
+            approve_commit.revision,
+            vec![
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::ProposedPlans,
+                    artifact: launched_plan,
+                },
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::FlowLaunches,
+                    artifact: launched_flow_launch,
+                },
+                workflow_event_mutation(launch_event_message, &now),
+            ],
+        )?;
+        let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok(snapshot)
     }
@@ -2202,29 +2324,33 @@ impl WorkspaceConversationService {
         });
         copy_payload_options_to_artifact(&mut launch, payload);
 
-        let segment = json!({
-            "id": segment_id.clone(),
-            "turn_id": parent_turn_id.clone(),
-            "order": next_turn_segment_order(&snapshot, &parent_turn_id),
-            "kind": "flow_launch",
-            "role": "system",
-            "status": "complete",
-            "timestamp": now.clone(),
-            "updated_at": now.clone(),
-            "content": "",
-            "artifact_id": flow_launch_id.clone(),
-            "source": {},
-        });
-        push_array_value(&mut snapshot, "flow_launches", launch);
-        upsert_segment(&mut snapshot, segment);
-        append_workflow_event(
-            &mut snapshot,
-            json!({
-                "message": format!("Created flow launch {flow_launch_id} for {}.", payload.flow_name),
-                "timestamp": now,
-            }),
+        let segment = artifact_anchor_segment(
+            &segment_id,
+            &parent_turn_id,
+            "flow_launch",
+            &flow_launch_id,
+            &now,
         );
-        persist_snapshot(&repository, conversation_id, project_path, &mut snapshot)?;
+        commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            project_path,
+            snapshot_revision(&snapshot),
+            vec![
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::FlowLaunches,
+                    artifact: launch,
+                },
+                segment_mutation_from_value(&segment)?,
+                workflow_event_mutation(
+                    format!(
+                        "Created flow launch {flow_launch_id} for {}.",
+                        payload.flow_name
+                    ),
+                    &now,
+                ),
+            ],
+        )?;
         Ok(FlowLaunchArtifactCreated {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.to_string(),
@@ -2274,24 +2400,30 @@ impl WorkspaceConversationService {
                 }
             }
         });
-        append_workflow_event(
-            &mut snapshot,
-            match outcome {
-                Ok(outcome) => json!({
-                    "message": format!("Launched flow launch {} as run {} using {flow_name}.", artifact.flow_launch_id, outcome.run_id),
-                    "timestamp": now,
-                }),
-                Err(error) => json!({
-                    "message": format!("Flow launch {} failed to launch: {}", artifact.flow_launch_id, error.detail),
-                    "timestamp": now,
-                }),
-            },
-        );
-        persist_snapshot(
+        let event_message = match outcome {
+            Ok(outcome) => format!(
+                "Launched flow launch {} as run {} using {flow_name}.",
+                artifact.flow_launch_id, outcome.run_id
+            ),
+            Err(error) => format!(
+                "Flow launch {} failed to launch: {}",
+                artifact.flow_launch_id, error.detail
+            ),
+        };
+        let updated_launch =
+            artifact_at(&snapshot, "flow_launches", launch_index).unwrap_or_default();
+        commit_conversation_mutations(
             &repository,
             &artifact.conversation_id,
             &artifact.project_path,
-            &mut snapshot,
+            snapshot_revision(&snapshot),
+            vec![
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::FlowLaunches,
+                    artifact: updated_launch,
+                },
+                workflow_event_mutation(event_message, &now),
+            ],
         )?;
         Ok(())
     }
@@ -2380,33 +2512,26 @@ impl WorkspaceConversationService {
         record.insert("source_turn_id".to_string(), json!(parent_turn_id.clone()));
         record.insert("source_segment_id".to_string(), json!(segment_id.clone()));
         let record = Value::Object(record);
-        let segment = json!({
-            "id": segment_id.clone(),
-            "turn_id": parent_turn_id.clone(),
-            "order": next_turn_segment_order(&snapshot, &parent_turn_id),
-            "kind": "run_recovery",
-            "role": "system",
-            "status": "complete",
-            "timestamp": now.clone(),
-            "updated_at": now.clone(),
-            "content": "",
-            "artifact_id": run_recovery_id.clone(),
-            "source": {},
-        });
-        push_array_value(&mut snapshot, "run_recoveries", record);
-        upsert_segment(&mut snapshot, segment);
-        append_workflow_event(
-            &mut snapshot,
-            json!({
-                "message": format!("Created run recovery {run_recovery_id}."),
-                "timestamp": now,
-            }),
+        let segment = artifact_anchor_segment(
+            &segment_id,
+            &parent_turn_id,
+            "run_recovery",
+            &run_recovery_id,
+            &now,
         );
-        persist_snapshot(
+        commit_conversation_mutations(
             &repository,
             &selection.conversation_id,
             &selection.project_path,
-            &mut snapshot,
+            snapshot_revision(&snapshot),
+            vec![
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::RunRecoveries,
+                    artifact: record,
+                },
+                segment_mutation_from_value(&segment)?,
+                workflow_event_mutation(format!("Created run recovery {run_recovery_id}."), &now),
+            ],
         )?;
         Ok(RunRecoveryArtifactCreated {
             run_recovery_id,
@@ -2446,18 +2571,25 @@ impl WorkspaceConversationService {
             set_string_value(entry, "result_run_id", result_run_id);
             set_optional_artifact_string(entry, "recovery_error", recovery_error);
         });
-        append_workflow_event(
-            &mut snapshot,
-            json!({
-                "message": format!("Updated run recovery {} to {status}.", recovery.run_recovery_id),
-                "timestamp": now,
-            }),
-        );
-        persist_snapshot(
+        let updated_recovery = artifact_at(&snapshot, "run_recoveries", index).unwrap_or_default();
+        commit_conversation_mutations(
             &repository,
             &selection.conversation_id,
             &selection.project_path,
-            &mut snapshot,
+            snapshot_revision(&snapshot),
+            vec![
+                ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::RunRecoveries,
+                    artifact: updated_recovery,
+                },
+                workflow_event_mutation(
+                    format!(
+                        "Updated run recovery {} to {status}.",
+                        recovery.run_recovery_id
+                    ),
+                    &now,
+                ),
+            ],
         )?;
         Ok(())
     }
@@ -2690,52 +2822,6 @@ fn shell_snapshot(conversation_id: &str, project_path: &str) -> Value {
     })
 }
 
-fn touch_snapshot(
-    repository: &ConversationRepository,
-    snapshot: &mut Value,
-    conversation_id: &str,
-    project_path: &str,
-) -> WorkspaceResult<()> {
-    prepare_snapshot_core_defaults(snapshot, conversation_id, project_path);
-    let now = iso_now();
-    let created_at = snapshot
-        .get("created_at")
-        .and_then(Value::as_str)
-        .and_then(non_empty_string)
-        .unwrap_or_else(|| now.clone());
-    set_string(snapshot, "created_at", &created_at);
-    if snapshot
-        .get("title")
-        .and_then(Value::as_str)
-        .and_then(non_empty_string)
-        .is_none()
-    {
-        let title = derive_conversation_title(snapshot.get("turns").and_then(Value::as_array));
-        set_string(snapshot, "title", &title);
-    }
-    let project_paths = repository.project_paths(project_path)?;
-    let preferred_handle = snapshot.get("conversation_handle").and_then(Value::as_str);
-    let handle = repository.handle_repository().ensure_conversation_handle(
-        conversation_id,
-        &project_paths.project_id,
-        project_path,
-        &created_at,
-        preferred_handle,
-    )?;
-    set_string(snapshot, "conversation_handle", &handle);
-    set_string(snapshot, "project_path", project_path);
-    set_string(snapshot, "updated_at", &now);
-    let revision = snapshot
-        .get("revision")
-        .and_then(Value::as_i64)
-        .unwrap_or(0)
-        + 1;
-    if let Some(object) = snapshot.as_object_mut() {
-        object.insert("revision".to_string(), json!(revision));
-    }
-    Ok(())
-}
-
 fn prepare_snapshot_for_ui(snapshot: &mut Value, conversation_id: &str) {
     let project_path = snapshot
         .get("project_path")
@@ -2852,16 +2938,6 @@ fn push_array_value(snapshot: &mut Value, key: &str, value: Value) {
         values.push(value);
     } else if let Some(object) = snapshot.as_object_mut() {
         object.insert(key.to_string(), json!([value]));
-    }
-}
-
-fn maybe_set_title_from_message(snapshot: &mut Value, message: &str) {
-    let current = snapshot
-        .get("title")
-        .and_then(Value::as_str)
-        .and_then(non_empty_string);
-    if current.as_deref().is_none() || current.as_deref() == Some("New thread") {
-        set_string(snapshot, "title", &truncate_text(message, 64));
     }
 }
 
@@ -3265,8 +3341,11 @@ fn live_conversation_turn_event_sink(
     project_path: String,
     progress: Arc<dyn Fn(Value) + Send + Sync + 'static>,
 ) -> AgentTurnEventSink {
+    let base_revision = snapshot_revision(&snapshot);
     let state = Arc::new(Mutex::new(LiveConversationTurnState {
         snapshot,
+        base_revision,
+        pending_payloads: Vec::new(),
         assistant_turn_id,
         chat_mode,
         repository,
@@ -3283,6 +3362,11 @@ fn live_conversation_turn_event_sink(
 
 struct LiveConversationTurnState {
     snapshot: Value,
+    /// Latest committed revision this turn's working view builds on.
+    base_revision: i64,
+    /// All turn/segment upserts materialized since the last mid-turn commit;
+    /// committed together when the turn must persist durable state early.
+    pending_payloads: Vec<Value>,
     assistant_turn_id: String,
     chat_mode: String,
     repository: ConversationRepository,
@@ -3388,18 +3472,38 @@ impl LiveConversationTurnState {
             }
             _ => self.emit_materialized_segment(&event, &mut emitted_payloads),
         }
-        if event.kind == TurnStreamEventKind::RequestUserInputRequested
-            && persist_snapshot_with_payloads(
-                &self.repository,
-                &self.conversation_id,
-                &self.project_path,
-                &mut self.snapshot,
-                &mut emitted_payloads,
-            )
-            .is_err()
-        {
-            emitted_payloads.clear();
+        if event.kind == TurnStreamEventKind::RequestUserInputRequested {
+            // Pending user input must survive a restart, so everything the
+            // turn has streamed so far commits now; other stream updates stay
+            // transient until turn completion.
+            self.pending_payloads
+                .extend(emitted_payloads.iter().cloned());
+            let committed =
+                mutations_from_emitted_payloads(&self.pending_payloads).and_then(|mutations| {
+                    if mutations.is_empty() {
+                        return Ok(None);
+                    }
+                    commit_conversation_mutations(
+                        &self.repository,
+                        &self.conversation_id,
+                        &self.project_path,
+                        self.base_revision,
+                        mutations,
+                    )
+                    .map(Some)
+                });
+            if let Ok(Some(commit)) = committed {
+                self.snapshot = commit.snapshot;
+                self.base_revision = commit.revision;
+                self.pending_payloads.clear();
+                for payload in commit.journal_payloads {
+                    (self.progress)(payload);
+                }
+            }
+            return;
         }
+        self.pending_payloads
+            .extend(emitted_payloads.iter().cloned());
         for payload in emitted_payloads {
             (self.progress)(payload);
         }
@@ -5330,63 +5434,169 @@ fn build_segment_upsert_payload(snapshot: &Value, segment: &Value) -> Value {
     })
 }
 
-fn build_conversation_snapshot_payload(snapshot: &Value) -> Value {
+fn snapshot_revision(snapshot: &Value) -> i64 {
+    snapshot
+        .get("revision")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+}
+
+fn turn_mutation_from_value(turn: &Value) -> WorkspaceResult<ConversationMutation> {
+    let turn: TranscriptTurn = serde_json::from_value(turn.clone()).map_err(|error| {
+        WorkspaceError::Internal(format!("Conversation turn is not a valid record: {error}"))
+    })?;
+    Ok(ConversationMutation::TurnUpserted { turn })
+}
+
+fn segment_mutation_from_value(segment: &Value) -> WorkspaceResult<ConversationMutation> {
+    let segment: TranscriptSegment = serde_json::from_value(segment.clone()).map_err(|error| {
+        WorkspaceError::Internal(format!(
+            "Conversation segment is not a valid record: {error}"
+        ))
+    })?;
+    Ok(ConversationMutation::SegmentUpserted { segment })
+}
+
+/// Convert accumulated `turn_upsert`/`segment_upsert` wire payloads into
+/// mutations, coalescing repeated upserts of the same turn/segment to the last
+/// emitted state. Committed journal entries carry final render values, not the
+/// intermediate stream states.
+fn mutations_from_emitted_payloads(
+    payloads: &[Value],
+) -> WorkspaceResult<Vec<ConversationMutation>> {
+    let mut order: Vec<(&str, String)> = Vec::new();
+    let mut latest: BTreeMap<(&str, String), &Value> = BTreeMap::new();
+    for payload in payloads {
+        let (kind, inner_key) = match payload.get("type").and_then(Value::as_str) {
+            Some("turn_upsert") => ("turn", "turn"),
+            Some("segment_upsert") => ("segment", "segment"),
+            _ => continue,
+        };
+        let Some(inner) = payload.get(inner_key) else {
+            continue;
+        };
+        let Some(id) = inner.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let key = (kind, id.to_string());
+        if !latest.contains_key(&key) {
+            order.push(key.clone());
+        }
+        latest.insert(key, inner);
+    }
+    order
+        .into_iter()
+        .map(|key| {
+            let value = latest[&key];
+            match key.0 {
+                "turn" => turn_mutation_from_value(value),
+                _ => segment_mutation_from_value(value),
+            }
+        })
+        .collect()
+}
+
+/// Workflow events appended to the working view since `len_before` become
+/// append mutations so the commit carries only this path's additions.
+fn appended_workflow_event_mutations(
+    snapshot: &Value,
+    len_before: usize,
+) -> Vec<ConversationMutation> {
+    snapshot
+        .get("event_log")
+        .and_then(Value::as_array)
+        .map(|events| {
+            events
+                .iter()
+                .skip(len_before)
+                .map(|event| ConversationMutation::WorkflowEventAppended {
+                    event: event.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Artifacts whose value changed (or that are new) versus the pre-mutation
+/// working view become identity-keyed upserts.
+fn changed_artifact_mutations(
+    collection: ArtifactCollection,
+    before: &[Value],
+    after: Option<&Vec<Value>>,
+) -> Vec<ConversationMutation> {
+    let Some(after) = after else {
+        return Vec::new();
+    };
+    after
+        .iter()
+        .filter(|artifact| {
+            let id = artifact.get("id").and_then(Value::as_str);
+            match id {
+                Some(id) => !before.iter().any(|existing| {
+                    existing.get("id").and_then(Value::as_str) == Some(id) && existing == *artifact
+                }),
+                None => true,
+            }
+        })
+        .map(|artifact| ConversationMutation::ArtifactUpserted {
+            collection,
+            artifact: artifact.clone(),
+        })
+        .collect()
+}
+
+fn workflow_event_mutation(message: String, timestamp: &str) -> ConversationMutation {
+    ConversationMutation::WorkflowEventAppended {
+        event: json!({
+            "message": message,
+            "timestamp": timestamp,
+        }),
+    }
+}
+
+fn artifact_anchor_segment(
+    segment_id: &str,
+    turn_id: &str,
+    kind: &str,
+    artifact_id: &str,
+    timestamp: &str,
+) -> Value {
     json!({
-        "type": "conversation_snapshot",
-        "revision": snapshot.get("revision").and_then(Value::as_i64).unwrap_or(0),
-        "state": snapshot,
+        "id": segment_id,
+        "turn_id": turn_id,
+        "order": ORDER_UNASSIGNED,
+        "kind": kind,
+        "role": "system",
+        "status": "complete",
+        "timestamp": timestamp,
+        "updated_at": timestamp,
+        "content": "",
+        "artifact_id": artifact_id,
+        "source": {},
     })
 }
 
-fn persist_snapshot_with_payloads(
+fn commit_conversation_mutations(
     repository: &ConversationRepository,
     conversation_id: &str,
     project_path: &str,
-    snapshot: &mut Value,
-    emitted_payloads: &mut Vec<Value>,
-) -> WorkspaceResult<()> {
-    touch_snapshot(repository, snapshot, conversation_id, project_path)?;
-    emitted_payloads.push(build_conversation_snapshot_payload(snapshot));
-    repository.persist_snapshot_with_events(snapshot, emitted_payloads)?;
-    Ok(())
+    base_revision: i64,
+    mutations: Vec<ConversationMutation>,
+) -> WorkspaceResult<ConversationCommit> {
+    repository
+        .commit_conversation(conversation_id, project_path, base_revision, mutations)
+        .map_err(Into::into)
 }
 
-fn persist_snapshot(
-    repository: &ConversationRepository,
-    conversation_id: &str,
-    project_path: &str,
-    snapshot: &mut Value,
-) -> WorkspaceResult<()> {
-    let mut emitted_payloads = Vec::new();
-    persist_snapshot_with_payloads(
-        repository,
-        conversation_id,
-        project_path,
-        snapshot,
-        &mut emitted_payloads,
-    )
-}
-
-fn append_mode_change_turn(snapshot: &mut Value, chat_mode: &str) -> Value {
-    let now = iso_now();
-    let turn = json!({
+fn mode_change_turn_value(chat_mode: &str) -> Value {
+    json!({
         "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
         "role": "system",
         "content": chat_mode,
-        "timestamp": now,
+        "timestamp": iso_now(),
         "status": "complete",
         "kind": "mode_change",
-    });
-    if let Some(turns) = snapshot
-        .as_object_mut()
-        .and_then(|object| object.get_mut("turns"))
-        .and_then(Value::as_array_mut)
-    {
-        turns.push(turn.clone());
-    } else if let Some(object) = snapshot.as_object_mut() {
-        object.insert("turns".to_string(), json!([turn.clone()]));
-    }
-    turn
+    })
 }
 
 fn conversation_summary_from_snapshot(
