@@ -205,11 +205,31 @@ Rules:
 
 ## 10. Durable Conversation State Model
 
-Spark persists two different conversation authorities:
-- `codex-jsonrpc-trace.jsonl`: optional exact Codex app-server protocol transcript for debug and reasoning about upstream behavior
-- `state.json`: compact, durable, restart-safe render state
+Spark conversation persistence separates durable render state from runtime continuity and debug traces. Each conversation directory holds its complete record set.
 
-`state.json` must contain enough information to restore:
+The persistent authorities per conversation are:
+- `conversation.json`: stable metadata — id, handle, project path, settings, title, timestamps — plus the committed revision cursor. No transcript arrays, no protocol payloads.
+- `transcript.json`: canonical durable render state — ordered turns and segments with inline artifact anchors by id and kind. Values are coalesced render state, never raw deltas.
+- `artifacts/<kind>.json` and `event-log.json`: artifact records (flow run requests, flow launches, run recoveries, proposed plans) and the workflow event log. Transcript segments anchor artifacts by id; artifact state never subordinates to render state.
+- `journal.jsonl`: append-only committed mutation journal with strictly increasing revisions. Replay-after-revision serves reconnecting clients; a cursor the journal cannot cover recovers through a fresh snapshot.
+- `runtime-session.json`: best-effort model continuity (backend thread id, resume-failure tombstone). A separate failure domain: losing it only costs thread resume, never render state.
+- `codex-jsonrpc-trace.jsonl`: optional exact Codex app-server protocol transcript for debugging upstream behavior.
+
+All writes go through one typed commit boundary. Services construct identity-keyed mutations (metadata patch, turn upsert, segment upsert, artifact upsert, workflow event append); the repository loads the latest committed state, applies the mutations onto it — a stale base revision rebases by identity instead of clobbering concurrent writes — allocates segment orders and every journal revision, maintains metadata (timestamps, title, handle), writes the record files with the revision cursor last, and appends the stamped journal entries. Services never allocate revisions and never hand-build journal payloads.
+
+Legacy single-file `state.json` conversations migrate once, on first read: the merged legacy content is projected into the record files, `journal.jsonl` is seeded with a snapshot checkpoint at the carried-over revision (so pre-migration replay cursors recover naturally and revisions never regress), the originals are renamed aside as `*.migrated`, and the project-level artifact sidecar files are absorbed. Unsupported historical shapes are rejected untouched rather than heuristically reconstructed.
+
+Normal chat rendering, prompt construction, and live replay must not parse debug traces or `runtime-session.json`.
+
+Committed journal entries and transient live stream events are distinct:
+- committed events have conversation revisions, are appended to the durable journal, and are replayable after reconnect
+- transient `stream_delta` events carry a per-turn stream sequence and the committed base revision they render on top of; they are never appended to the durable journal and exist to make connected clients responsive during streaming
+- transient events may be dropped on reconnect; recovery uses the latest committed transcript state plus committed journal entries, not raw stream deltas
+- clients apply transient deltas to the active view without advancing the committed revision
+
+Run and project-chat transcripts share the same turn/segment record contract, including segment identity derivation and delta coalescing; run-only workflow boundary metadata lives outside the shared segment core.
+
+The durable render state must contain enough information to restore:
 - conversation metadata
 - turns
 - segments
@@ -224,7 +244,7 @@ It does not need to persist frontend-only view sessions such as:
 - Runs inspection filters, artifact/context selection, or pending freeform gate-answer drafts
 - Triggers selection, unsaved create/edit drafts, or revealed-secret UI state
 
-`state.json` is a materialized view, not a raw transcript.
+Durable render state is a materialized view, not a raw transcript.
 
 Durable workspace state is the render, provenance, and restart authority for the workspace surface. It is not required to be the primary continuity mechanism for the upstream model runtime on every turn.
 
@@ -434,7 +454,12 @@ SPARK_HOME/
 ```
 
 Conversation-specific durable files include:
-- `state.json`
+- `conversation.json`
+- `transcript.json`
+- `artifacts/<kind>.json`
+- `event-log.json`
+- `journal.jsonl`
+- `runtime-session.json`
 - `codex-jsonrpc-trace.jsonl`
 
 Repo-owned material should remain organized by content, not by Spark as a tool.

@@ -5,7 +5,7 @@ use attractor_core::{CheckpointState, FlowDefinition, RunRecord};
 use attractor_runtime::{CreateRunRequest, RunStore};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_storage::{ConversationHandleRepository, ConversationRepository, ProjectRegistry};
+use spark_storage::{ConversationHandleRepository, ProjectRegistry};
 use spark_workspace::{
     RunContinueRequest, RunLaunchRequest, RunRetryRequest, WorkspaceConversationService,
     WorkspaceError,
@@ -346,8 +346,9 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
     let project = registry
         .ensure_project_paths(project_path)
         .expect("project");
-    ConversationRepository::new(&settings.data_dir)
-        .write_snapshot(&json!({
+    write_legacy_conversation_files(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 0,
             "conversation_id": conversation_id,
@@ -371,8 +372,8 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
             "flow_launches": [],
             "run_recoveries": [],
             "proposed_plans": []
-        }))
-        .expect("write state");
+        }),
+    );
     ConversationHandleRepository::new(&settings.data_dir)
         .ensure_conversation_handle(
             conversation_id,
@@ -432,5 +433,74 @@ fn settings(root: &Path) -> SparkSettings {
         flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
+    }
+}
+
+/// Seed the pre-split legacy conversation layout by hand: core keys in
+/// `state.json`, artifact arrays in the project-level sidecar files. The
+/// repository migrates these on first read.
+fn write_legacy_conversation_files(data_dir: &Path, snapshot: &serde_json::Value) {
+    let object = snapshot.as_object().expect("snapshot object");
+    let conversation_id = snapshot["conversation_id"]
+        .as_str()
+        .expect("conversation id");
+    let project_path = snapshot["project_path"].as_str().expect("project path");
+    let project = ProjectRegistry::new(data_dir)
+        .ensure_project_paths(project_path)
+        .expect("project paths");
+    let root = project.conversations_dir.join(conversation_id);
+    fs::create_dir_all(&root).expect("conversation dir");
+    let mut core = object.clone();
+    let artifact = |key: &str| object.get(key).cloned().unwrap_or_else(|| json!([]));
+    for key in [
+        "event_log",
+        "flow_run_requests",
+        "flow_launches",
+        "run_recoveries",
+        "proposed_plans",
+    ] {
+        core.remove(key);
+    }
+    fs::write(
+        root.join("state.json"),
+        serde_json::to_string_pretty(&serde_json::Value::Object(core)).expect("state json"),
+    )
+    .expect("state.json");
+    for (dir, payload) in [
+        (
+            &project.flow_run_requests_dir,
+            json!({
+                "conversation_id": conversation_id,
+                "project_id": project.project_id,
+                "project_path": project_path,
+                "event_log": artifact("event_log"),
+                "flow_run_requests": artifact("flow_run_requests"),
+            }),
+        ),
+        (
+            &project.flow_launches_dir,
+            json!({
+                "conversation_id": conversation_id,
+                "project_id": project.project_id,
+                "project_path": project_path,
+                "flow_launches": artifact("flow_launches"),
+                "run_recoveries": artifact("run_recoveries"),
+            }),
+        ),
+        (
+            &project.proposed_plans_dir,
+            json!({
+                "conversation_id": conversation_id,
+                "project_id": project.project_id,
+                "project_path": project_path,
+                "proposed_plans": artifact("proposed_plans"),
+            }),
+        ),
+    ] {
+        fs::write(
+            dir.join(format!("{conversation_id}.json")),
+            serde_json::to_string_pretty(&payload).expect("sidecar json"),
+        )
+        .expect("sidecar");
     }
 }

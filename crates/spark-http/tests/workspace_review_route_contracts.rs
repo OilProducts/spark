@@ -7,7 +7,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 use spark_http::{build_app, build_app_with_rust_llm_client};
-use spark_storage::{ConversationHandleRepository, ConversationRepository, ProjectRegistry};
+use spark_storage::{ConversationHandleRepository, ProjectRegistry};
 use tower::ServiceExt;
 use unified_llm_adapter::{
     ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
@@ -357,8 +357,9 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
 }
 
 fn seed_proposed_plan(settings: &SparkSettings, project_path: &str, conversation_id: &str) {
-    ConversationRepository::new(&settings.data_dir)
-        .write_snapshot(&json!({
+    write_legacy_conversation_files(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 0,
             "conversation_id": conversation_id,
@@ -410,8 +411,8 @@ fn seed_proposed_plan(settings: &SparkSettings, project_path: &str, conversation
                     "source_segment_id": "segment-plan-inline"
                 }
             ]
-        }))
-        .expect("write proposed plan");
+        }),
+    );
 }
 
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
@@ -480,5 +481,74 @@ impl ProviderAdapter for RecordingAdapter {
 
     fn stream(&self, _request: LlmRequest) -> Result<StreamEvents, AdapterError> {
         unimplemented!("workspace review route codergen uses complete")
+    }
+}
+
+/// Seed the pre-split legacy conversation layout by hand: core keys in
+/// `state.json`, artifact arrays in the project-level sidecar files. The
+/// repository migrates these on first read.
+fn write_legacy_conversation_files(data_dir: &Path, snapshot: &serde_json::Value) {
+    let object = snapshot.as_object().expect("snapshot object");
+    let conversation_id = snapshot["conversation_id"]
+        .as_str()
+        .expect("conversation id");
+    let project_path = snapshot["project_path"].as_str().expect("project path");
+    let project = ProjectRegistry::new(data_dir)
+        .ensure_project_paths(project_path)
+        .expect("project paths");
+    let root = project.conversations_dir.join(conversation_id);
+    fs::create_dir_all(&root).expect("conversation dir");
+    let mut core = object.clone();
+    let artifact = |key: &str| object.get(key).cloned().unwrap_or_else(|| json!([]));
+    for key in [
+        "event_log",
+        "flow_run_requests",
+        "flow_launches",
+        "run_recoveries",
+        "proposed_plans",
+    ] {
+        core.remove(key);
+    }
+    fs::write(
+        root.join("state.json"),
+        serde_json::to_string_pretty(&serde_json::Value::Object(core)).expect("state json"),
+    )
+    .expect("state.json");
+    for (dir, payload) in [
+        (
+            &project.flow_run_requests_dir,
+            json!({
+                "conversation_id": conversation_id,
+                "project_id": project.project_id,
+                "project_path": project_path,
+                "event_log": artifact("event_log"),
+                "flow_run_requests": artifact("flow_run_requests"),
+            }),
+        ),
+        (
+            &project.flow_launches_dir,
+            json!({
+                "conversation_id": conversation_id,
+                "project_id": project.project_id,
+                "project_path": project_path,
+                "flow_launches": artifact("flow_launches"),
+                "run_recoveries": artifact("run_recoveries"),
+            }),
+        ),
+        (
+            &project.proposed_plans_dir,
+            json!({
+                "conversation_id": conversation_id,
+                "project_id": project.project_id,
+                "project_path": project_path,
+                "proposed_plans": artifact("proposed_plans"),
+            }),
+        ),
+    ] {
+        fs::write(
+            dir.join(format!("{conversation_id}.json")),
+            serde_json::to_string_pretty(&payload).expect("sidecar json"),
+        )
+        .expect("sidecar");
     }
 }

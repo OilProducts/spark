@@ -1,6 +1,7 @@
 use std::fs;
 
 use serde_json::{json, Value};
+use spark_storage::conversation::{ArtifactCollection, ConversationMutation};
 use spark_storage::{
     ConversationHandleRepository, ConversationRepository, ProjectRegistry,
     CONVERSATION_HANDLE_PATTERN, CONVERSATION_STATE_SCHEMA_VERSION,
@@ -61,7 +62,7 @@ fn conversation_handle_index_preserves_immutable_handles_and_tolerates_malformed
 }
 
 #[test]
-fn conversation_repository_reads_sidecars_writes_split_state_and_deletes_all_artifacts() {
+fn conversation_repository_migrates_legacy_sidecars_commits_artifacts_and_deletes_conversations() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
     let project_path = "/projects/conversation-app";
@@ -134,7 +135,7 @@ fn conversation_repository_reads_sidecars_writes_split_state_and_deletes_all_art
     )
     .expect("plans");
 
-    let mut snapshot = repo
+    let snapshot = repo
         .read_snapshot("conversation-a", Some(project_path))
         .expect("read")
         .expect("snapshot");
@@ -144,26 +145,38 @@ fn conversation_repository_reads_sidecars_writes_split_state_and_deletes_all_art
     assert_eq!(snapshot["run_recoveries"][0]["id"], "recovery-a");
     assert_eq!(snapshot["proposed_plans"][0]["id"], "plan-a");
     assert_eq!(snapshot["llm_profile"], Value::Null);
+    // The first read migrated the legacy layout aside.
+    assert!(!state_path.exists());
 
-    snapshot["revision"] = json!(3);
-    snapshot["event_log"] = json!([{"message": "written", "timestamp": "2026-01-01T00:00:03Z"}]);
-    snapshot["flow_run_requests"] = json!([{"id": "request-b"}]);
-    snapshot["flow_launches"] = json!([{"id": "launch-b"}]);
-    snapshot["run_recoveries"] = json!([{"id": "recovery-b"}]);
-    snapshot["proposed_plans"] = json!([{"id": "plan-b"}]);
-    repo.write_snapshot(&snapshot).expect("write split");
-
-    let core: Value =
-        serde_json::from_str(&fs::read_to_string(&state_path).expect("state")).expect("json");
-    assert!(core.get("flow_run_requests").is_none());
-    assert_eq!(core["revision"], 3);
-    assert_eq!(core["llm_profile"], Value::Null);
+    // Artifact changes flow through the commit boundary and land in the
+    // conversation-owned artifact record file, keyed by id.
+    repo.commit_conversation(
+        "conversation-a",
+        project_path,
+        snapshot["revision"].as_i64().expect("revision"),
+        vec![ConversationMutation::ArtifactUpserted {
+            collection: ArtifactCollection::FlowRunRequests,
+            artifact: json!({"id": "request-b", "status": "pending_review"}),
+        }],
+    )
+    .expect("artifact commit");
     let requests: Value = serde_json::from_str(
-        &fs::read_to_string(project.flow_run_requests_dir.join("conversation-a.json"))
-            .expect("requests"),
+        &fs::read_to_string(
+            project
+                .conversations_dir
+                .join("conversation-a")
+                .join("artifacts/flow-run-requests.json"),
+        )
+        .expect("requests"),
     )
     .expect("json");
-    assert_eq!(requests["flow_run_requests"][0]["id"], "request-b");
+    let request_ids: Vec<&str> = requests
+        .as_array()
+        .expect("requests array")
+        .iter()
+        .map(|artifact| artifact["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(request_ids, vec!["request-a", "request-b"]);
 
     repo.append_codex_jsonrpc_trace("conversation-a", project_path, "outbound", "hello")
         .expect("raw log");
@@ -173,33 +186,35 @@ fn conversation_repository_reads_sidecars_writes_split_state_and_deletes_all_art
             .line,
         "hello"
     );
+    // Journal appends require a top-level revision and a non-empty type;
+    // anything else is refused rather than persisted.
     repo.append_conversation_event(
         "conversation-a",
         project_path,
-        &json!({"type": "later", "revision": 5}),
+        &json!({"type": "later", "revision": 9}),
     )
     .expect("event");
     repo.append_conversation_event(
         "conversation-a",
         project_path,
-        &json!({"type": "", "revision": 6}),
+        &json!({"type": "", "revision": 10}),
     )
-    .expect("skip event");
+    .expect("skip empty type");
     repo.append_conversation_event(
         "conversation-a",
         project_path,
-        &json!({"type": "nested", "state": {"revision": 4}}),
+        &json!({"type": "nested", "state": {"revision": 11}}),
     )
-    .expect("nested event");
+    .expect("skip revisionless payload");
     let events = repo
-        .read_conversation_events_after("conversation-a", project_path, 3)
+        .read_conversation_events_after("conversation-a", project_path, 8)
         .expect("read events");
     assert_eq!(
         events
             .iter()
             .map(|event| event["type"].as_str().expect("type"))
             .collect::<Vec<_>>(),
-        vec!["nested", "later"]
+        vec!["later"]
     );
 
     repo.handle_repository()

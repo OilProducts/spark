@@ -3685,7 +3685,6 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "serde_json",
- "sha2",
  "spark-common",
  "tempfile",
  "thiserror 1.0.69",

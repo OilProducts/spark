@@ -5156,7 +5156,8 @@ fn apply_assistant_turn_app_server_ids(
 
 /// Prompt-time thread continuity: the runtime-session sidecar is the
 /// authority; the transcript turn scan remains only as a fallback for
-/// conversations that predate the sidecar.
+/// conversations that predate the sidecar. A successful scan materializes the
+/// sidecar so subsequent reads never need the transcript.
 fn resume_codex_app_thread_id(
     repository: &ConversationRepository,
     conversation_id: &str,
@@ -5171,7 +5172,29 @@ fn resume_codex_app_thread_id(
                 session.thread_id
             }
         }
-        _ => latest_codex_app_thread_id(snapshot),
+        _ => {
+            let thread_id = latest_codex_app_thread_id(snapshot)?;
+            let confirming_turn_id = snapshot
+                .get("turns")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .rev()
+                .find(|turn| {
+                    turn.get("app_thread_id").and_then(Value::as_str) == Some(thread_id.as_str())
+                })
+                .and_then(|turn| turn.get("id").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_string();
+            record_runtime_session_thread(
+                repository,
+                conversation_id,
+                project_path,
+                &confirming_turn_id,
+                Some(&thread_id),
+            );
+            Some(thread_id)
+        }
     }
 }
 
@@ -5216,7 +5239,7 @@ fn record_runtime_session_thread(
             provider: "codex_app_server".to_string(),
             thread_id: Some(thread_id),
             established_at,
-            last_turn_id: Some(assistant_turn_id.to_string()),
+            last_turn_id: non_empty_string(assistant_turn_id),
             resume_failed: false,
             updated_at: now,
         },

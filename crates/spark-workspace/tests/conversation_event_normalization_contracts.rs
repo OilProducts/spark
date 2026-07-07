@@ -2710,4 +2710,16 @@ fn runtime_session_absent_falls_back_to_transcript_turn_scan() {
         requests.lock().expect("requests")[1].metadata["spark.runtime.codex_app_server.thread_id"],
         json!("thread-legacy")
     );
+
+    // The successful turn scan self-heals: the sidecar is materialized so the
+    // next continuity read never touches the transcript.
+    let healed = repository
+        .read_runtime_session(
+            "conversation-legacy-continuity",
+            Some("/projects/runtime-session"),
+        )
+        .expect("read healed session")
+        .expect("healed session");
+    assert_eq!(healed.thread_id.as_deref(), Some("thread-legacy"));
+    assert!(!healed.resume_failed);
 }

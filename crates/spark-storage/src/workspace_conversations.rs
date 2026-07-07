@@ -5,7 +5,6 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use spark_common::debug::CODEX_JSONRPC_TRACE_FILE_NAME;
-use spark_common::project::normalize_project_path;
 use time::OffsetDateTime;
 
 use crate::error::{Result, StorageError};
@@ -513,16 +512,6 @@ impl ConversationRepository {
             .map(|paths| paths.conversations_dir.join(conversation_id)))
     }
 
-    pub fn conversation_state_path(
-        &self,
-        conversation_id: &str,
-        project_path: Option<&str>,
-    ) -> Result<Option<PathBuf>> {
-        Ok(self
-            .conversation_root(conversation_id, project_path)?
-            .map(|root| root.join("state.json")))
-    }
-
     pub fn conversation_codex_jsonrpc_trace_path(
         &self,
         conversation_id: &str,
@@ -533,16 +522,6 @@ impl ConversationRepository {
             .map(|root| root.join(CODEX_JSONRPC_TRACE_FILE_NAME)))
     }
 
-    pub fn conversation_events_path(
-        &self,
-        conversation_id: &str,
-        project_path: Option<&str>,
-    ) -> Result<Option<PathBuf>> {
-        Ok(self
-            .conversation_root(conversation_id, project_path)?
-            .map(|root| root.join("events.jsonl")))
-    }
-
     pub fn conversation_session_path(
         &self,
         conversation_id: &str,
@@ -551,67 +530,6 @@ impl ConversationRepository {
         Ok(self
             .conversation_root(conversation_id, project_path)?
             .map(|root| root.join(crate::conversation::RUNTIME_SESSION_FILE_NAME)))
-    }
-
-    pub fn conversation_keyed_session_path(
-        &self,
-        conversation_id: &str,
-        project_path: Option<&str>,
-        provider: &str,
-        model: Option<&str>,
-    ) -> Result<Option<PathBuf>> {
-        let Some(root) = self.conversation_root(conversation_id, project_path)? else {
-            return Ok(None);
-        };
-        let provider = non_empty_str(provider).unwrap_or("codex").to_lowercase();
-        let model = model.and_then(non_empty_str).unwrap_or("");
-        let digest = sha256_digest_24(&format!("{provider}\0{model}"));
-        Ok(Some(
-            root.join("sessions")
-                .join(format!("{provider}-{digest}.json")),
-        ))
-    }
-
-    pub fn flow_run_requests_state_path(
-        &self,
-        conversation_id: &str,
-        project_path: Option<&str>,
-    ) -> Result<Option<PathBuf>> {
-        Ok(self
-            .project_paths_for_conversation(conversation_id, project_path)?
-            .map(|paths| {
-                paths
-                    .flow_run_requests_dir
-                    .join(format!("{conversation_id}.json"))
-            }))
-    }
-
-    pub fn flow_launches_state_path(
-        &self,
-        conversation_id: &str,
-        project_path: Option<&str>,
-    ) -> Result<Option<PathBuf>> {
-        Ok(self
-            .project_paths_for_conversation(conversation_id, project_path)?
-            .map(|paths| {
-                paths
-                    .flow_launches_dir
-                    .join(format!("{conversation_id}.json"))
-            }))
-    }
-
-    pub fn proposed_plans_state_path(
-        &self,
-        conversation_id: &str,
-        project_path: Option<&str>,
-    ) -> Result<Option<PathBuf>> {
-        Ok(self
-            .project_paths_for_conversation(conversation_id, project_path)?
-            .map(|paths| {
-                paths
-                    .proposed_plans_dir
-                    .join(format!("{conversation_id}.json"))
-            }))
     }
 
     pub fn read_snapshot(
@@ -637,131 +555,6 @@ impl ConversationRepository {
             return Ok(None);
         };
         Ok(Some(crate::conversation::snapshot_from_record(&record)))
-    }
-
-    pub fn write_snapshot(&self, snapshot: &Value) -> Result<()> {
-        let object = snapshot
-            .as_object()
-            .ok_or_else(|| StorageError::InvalidDocumentShape {
-                path: PathBuf::from("conversation snapshot"),
-                format: "JSON",
-                expected: "object",
-            })?;
-        let conversation_id = object
-            .get("conversation_id")
-            .and_then(Value::as_str)
-            .and_then(non_empty_str)
-            .map(str::to_string)
-            .ok_or_else(|| StorageError::InvalidRepositoryPath {
-                path: PathBuf::from("conversation snapshot"),
-                reason: "Conversation id is required.".to_string(),
-            })?;
-        let project_path = object
-            .get("project_path")
-            .and_then(Value::as_str)
-            .and_then(normalize_project_path_string)
-            .ok_or_else(|| StorageError::InvalidRepositoryPath {
-                path: PathBuf::from("conversation snapshot"),
-                reason: "Project path is required.".to_string(),
-            })?;
-        let project_paths = self.registry.ensure_project_paths(&project_path)?;
-
-        let mut core = Map::new();
-        for key in [
-            "schema_version",
-            "revision",
-            "conversation_id",
-            "conversation_handle",
-            "project_path",
-            "chat_mode",
-            "provider",
-            "model",
-            "llm_profile",
-            "reasoning_effort",
-            "title",
-            "created_at",
-            "updated_at",
-            "turns",
-            "segments",
-        ] {
-            if let Some(value) = object.get(key) {
-                core.insert(key.to_string(), value.clone());
-            }
-        }
-        core.entry("schema_version".to_string())
-            .or_insert_with(|| json!(CONVERSATION_STATE_SCHEMA_VERSION));
-        core.entry("revision".to_string())
-            .or_insert_with(|| json!(0));
-        core.entry("conversation_id".to_string())
-            .or_insert_with(|| json!(&conversation_id));
-        core.entry("project_path".to_string())
-            .or_insert_with(|| json!(&project_path));
-        core.entry("chat_mode".to_string())
-            .or_insert_with(|| json!("chat"));
-        core.entry("provider".to_string())
-            .or_insert_with(|| json!("codex"));
-        core.entry("model".to_string()).or_insert(Value::Null);
-        core.entry("llm_profile".to_string()).or_insert(Value::Null);
-        core.entry("reasoning_effort".to_string())
-            .or_insert(Value::Null);
-        core.entry("title".to_string())
-            .or_insert_with(|| json!("New thread"));
-        core.entry("created_at".to_string())
-            .or_insert_with(|| json!(""));
-        core.entry("updated_at".to_string())
-            .or_insert_with(|| json!(""));
-        core.entry("turns".to_string()).or_insert_with(|| json!([]));
-        core.entry("segments".to_string())
-            .or_insert_with(|| json!([]));
-
-        let state_path = project_paths
-            .conversations_dir
-            .join(&conversation_id)
-            .join("state.json");
-        write_json_atomic(
-            &state_path,
-            &Value::Object(core),
-            JsonWriteOptions::default(),
-        )?;
-
-        write_json_atomic(
-            project_paths
-                .flow_run_requests_dir
-                .join(format!("{conversation_id}.json")),
-            &json!({
-                "conversation_id": &conversation_id,
-                "project_id": project_paths.project_id,
-                "project_path": &project_path,
-                "event_log": array_or_empty(object.get("event_log")),
-                "flow_run_requests": array_or_empty(object.get("flow_run_requests")),
-            }),
-            JsonWriteOptions::default(),
-        )?;
-        write_json_atomic(
-            project_paths
-                .flow_launches_dir
-                .join(format!("{conversation_id}.json")),
-            &json!({
-                "conversation_id": &conversation_id,
-                "project_id": project_paths.project_id,
-                "project_path": &project_path,
-                "flow_launches": array_or_empty(object.get("flow_launches")),
-                "run_recoveries": array_or_empty(object.get("run_recoveries")),
-            }),
-            JsonWriteOptions::default(),
-        )?;
-        write_json_atomic(
-            project_paths
-                .proposed_plans_dir
-                .join(format!("{conversation_id}.json")),
-            &json!({
-                "conversation_id": &conversation_id,
-                "project_id": project_paths.project_id,
-                "project_path": &project_path,
-                "proposed_plans": array_or_empty(object.get("proposed_plans")),
-            }),
-            JsonWriteOptions::default(),
-        )
     }
 
     pub fn append_codex_jsonrpc_trace(
@@ -1178,50 +971,16 @@ fn read_json_object_lossy(path: impl AsRef<Path>) -> Option<Map<String, Value>> 
         .and_then(|value| value.as_object().cloned())
 }
 
-fn array_or_empty(value: Option<&Value>) -> Value {
-    value
-        .filter(|value| value.is_array())
-        .cloned()
-        .unwrap_or_else(|| json!([]))
-}
-
 fn event_revision(payload: &Value) -> Option<i64> {
     match payload.get("revision") {
         Some(Value::Number(number)) => number.as_i64(),
-        _ => payload
-            .get("state")
-            .and_then(Value::as_object)
-            .and_then(|state| state.get("revision"))
-            .and_then(|value| match value {
-                Value::Number(number) => number.as_i64(),
-                _ => None,
-            }),
+        _ => None,
     }
-}
-
-fn normalize_project_path_string(value: &str) -> Option<String> {
-    normalize_project_path(value)
-        .ok()
-        .flatten()
-        .map(|path| path.to_string_lossy().into_owned())
 }
 
 fn non_empty_str(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then_some(trimmed)
-}
-
-fn sha256_digest_24(value: &str) -> String {
-    use sha2::{Digest, Sha256};
-
-    let digest = Sha256::digest(value.as_bytes());
-    digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
-        .chars()
-        .take(24)
-        .collect()
 }
 
 fn iso_now() -> String {

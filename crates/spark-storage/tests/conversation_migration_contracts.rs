@@ -16,8 +16,79 @@ fn setup(project_path: &str) -> (tempfile::TempDir, ConversationRepository, Proj
     (temp, ConversationRepository::new(&home), project)
 }
 
+/// Write the real pre-split layout by hand: core keys in `state.json`,
+/// artifact arrays in the project-level sidecar files.
+fn write_legacy_files(project: &ProjectPaths, snapshot: &Value) {
+    let object = snapshot.as_object().expect("snapshot object");
+    let conversation_id = snapshot["conversation_id"]
+        .as_str()
+        .expect("conversation id");
+    let project_path = snapshot["project_path"].as_str().expect("project path");
+    let root = project.conversations_dir.join(conversation_id);
+    fs::create_dir_all(&root).expect("conversation dir");
+    let mut core = serde_json::Map::new();
+    for (key, value) in object {
+        if !matches!(
+            key.as_str(),
+            "event_log"
+                | "flow_run_requests"
+                | "flow_launches"
+                | "run_recoveries"
+                | "proposed_plans"
+        ) {
+            core.insert(key.clone(), value.clone());
+        }
+    }
+    let array = |key: &str| object.get(key).cloned().unwrap_or_else(|| json!([]));
+    fs::write(
+        root.join("state.json"),
+        serde_json::to_string_pretty(&Value::Object(core)).expect("state json"),
+    )
+    .expect("state.json");
+    fs::write(
+        project
+            .flow_run_requests_dir
+            .join(format!("{conversation_id}.json")),
+        serde_json::to_string_pretty(&json!({
+            "conversation_id": conversation_id,
+            "project_id": project.project_id,
+            "project_path": project_path,
+            "event_log": array("event_log"),
+            "flow_run_requests": array("flow_run_requests"),
+        }))
+        .expect("json"),
+    )
+    .expect("flow-run-requests sidecar");
+    fs::write(
+        project
+            .flow_launches_dir
+            .join(format!("{conversation_id}.json")),
+        serde_json::to_string_pretty(&json!({
+            "conversation_id": conversation_id,
+            "project_id": project.project_id,
+            "project_path": project_path,
+            "flow_launches": array("flow_launches"),
+            "run_recoveries": array("run_recoveries"),
+        }))
+        .expect("json"),
+    )
+    .expect("flow-launches sidecar");
+    fs::write(
+        project
+            .proposed_plans_dir
+            .join(format!("{conversation_id}.json")),
+        serde_json::to_string_pretty(&json!({
+            "conversation_id": conversation_id,
+            "project_id": project.project_id,
+            "project_path": project_path,
+            "proposed_plans": array("proposed_plans"),
+        }))
+        .expect("json"),
+    )
+    .expect("proposed-plans sidecar");
+}
+
 fn seed_legacy_conversation(
-    repo: &ConversationRepository,
     project: &ProjectPaths,
     project_path: &str,
     conversation_id: &str,
@@ -49,7 +120,7 @@ fn seed_legacy_conversation(
         "run_recoveries": [{"id": "recovery-a"}],
         "proposed_plans": [{"id": "plan-a"}]
     });
-    repo.write_snapshot(&snapshot).expect("seed legacy state");
+    write_legacy_files(project, &snapshot);
     // Legacy journal entries in the legacy file.
     let events_path = project
         .conversations_dir
@@ -80,7 +151,7 @@ fn seed_legacy_conversation(
 fn legacy_conversation_migrates_once_on_first_read() {
     let project_path = "/projects/migration-basic";
     let (_temp, repo, project) = setup(project_path);
-    seed_legacy_conversation(&repo, &project, project_path, "conversation-legacy");
+    seed_legacy_conversation(&project, project_path, "conversation-legacy");
 
     // Pre-migration merged view, straight from the legacy files.
     let root = project.conversations_dir.join("conversation-legacy");
@@ -144,7 +215,7 @@ fn legacy_conversation_migrates_once_on_first_read() {
 fn migration_preserves_revision_continuity_and_checkpoint_replay() {
     let project_path = "/projects/migration-continuity";
     let (_temp, repo, project) = setup(project_path);
-    seed_legacy_conversation(&repo, &project, project_path, "conversation-cont");
+    seed_legacy_conversation(&project, project_path, "conversation-cont");
 
     // First read migrates (carried revision 7); the next commit continues
     // from it without regressing.
@@ -226,7 +297,7 @@ fn unsupported_legacy_schema_errors_and_leaves_files_untouched() {
 fn second_read_after_migration_does_not_re_migrate() {
     let project_path = "/projects/migration-idempotent";
     let (_temp, repo, project) = setup(project_path);
-    seed_legacy_conversation(&repo, &project, project_path, "conversation-idem");
+    seed_legacy_conversation(&project, project_path, "conversation-idem");
     let root = project.conversations_dir.join("conversation-idem");
 
     let first = repo

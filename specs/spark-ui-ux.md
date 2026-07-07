@@ -389,6 +389,7 @@ The primary monitoring hierarchy is:
 
 The selected-run summary is the primary answer to `what is happening now?` and should reconcile against authoritative `GET /pipelines/{id}` detail state.
 Run Journal is the durable operational history browser. It should carry logs, child-flow activity, and question audit history inline rather than splitting those concerns into separate primary surfaces.
+Run transcript content — assistant, reasoning, plan, tool-call, and request-user-input rows — renders from the run transcript record served by `GET /pipelines/{id}/transcript`, which shares the workspace turn/segment contract (workflow boundaries appear as boundary segments carrying run-only metadata). The journal is operational history only: run surfaces must not reconstruct transcript rows from raw adapter payloads, `turn_stream_event` payloads, provider deltas, or journal payload internals.
 When the graph lacks live state overlays, it is a secondary reference surface rather than a primary monitoring surface.
 The `Advanced` disclosure remains collapsed by default.
 
